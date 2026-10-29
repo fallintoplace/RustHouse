@@ -1,6 +1,6 @@
 //! Numeric aggregates over typed wide parts, including text filters and nullable values.
 use super::typed::{self, Cell};
-use super::{AggregateState, ExecutionError, Number};
+use super::{AggregateState, ExecutionError};
 use crate::{AggregateFunction, Projection, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, hash_map::Entry};

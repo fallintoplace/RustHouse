@@ -10,13 +10,39 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TORELATIVEMONTHNUM"
+            | "TORELATIVEWEEKNUM"
+            | "TORELATIVEDAYNUM"
+            | "TORELATIVEHOURNUM"
+            | "TORELATIVEMINUTENUM"
+            | "TORELATIVESECONDNUM"
+            | "TOLASTDAYOFYEAR"
+            | "TOLASTDAYOFQUARTER"
+            | "TOWEEK"
+            | "ISLEAPYEAR"
+            | "DAYSINMONTH"
+            | "TIMESLOT"
+            | "TORELATIVEYEARNUM"
+            | "TORELATIVEQUARTERNUM"
+            | "TOYEARWEEK"
+            | "DATEDIFF"
+            | "DATE_DIFF"
             | "TIMEDIFF"
+            | "FROMDAYSSINCEYEARZERO32"
+            | "FROMDAYSSINCEYEARZERO"
+            | "FROM_DAYS"
+            | "TODAYSSINCEYEARZERO"
+            | "TO_DAYS"
             | "TOISOYEAR"
             | "TOISOWEEK"
+            | "TOUNIXTIMESTAMP64NANO"
+            | "TOUNIXTIMESTAMP64MICRO"
+            | "TOUNIXTIMESTAMP64MILLI"
             | "TOYYYYMMDDHHMMSS"
             | "TOYYYYMMDD"
             | "TOYYYYMM"
             | "TOQUARTER"
+            | "MONTHNAME"
             | "TOMONTH"
             | "TODAYOFYEAR"
             | "TODAYOFWEEK"
@@ -49,6 +75,104 @@ pub(super) fn parse_after_open(
     depth: usize,
 ) -> Result<ConstantValue, ParseError> {
     match name {
+        "TOYEARWEEK" => unary_date(parser, depth, |value| {
+            Ok({
+                let days = value.seconds.div_euclid(DAY_SECONDS);
+                let (year, _, _) = civil_from_days(days);
+                let jan_one = days_from_civil(year, 1, 1);
+                let first_sunday = jan_one + (7 - (jan_one + 4).rem_euclid(7)).rem_euclid(7);
+                let (week_year, week) = if days < first_sunday {
+                    let previous_year = year - 1;
+                    let prev_jan_one = days_from_civil(previous_year, 1, 1);
+                    let first_prev_sunday = prev_jan_one
+                        + (7 - (prev_jan_one + 4).rem_euclid(7)).rem_euclid(7);
+                    (previous_year, (jan_one - 1 - first_prev_sunday) / 7 + 1)
+                } else {
+                    (year, (days - first_sunday) / 7 + 1)
+                };
+                ConstantValue::Integer(week_year * 100 + week)
+            })
+        }),
+        "TOLASTDAYOFYEAR" => unary_date(parser, depth, |value| {
+            Ok({
+                let (year, _, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                let days = days_from_civil(year, 12, 31);
+                ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?)
+            })
+        }),
+        "TOLASTDAYOFQUARTER" => unary_date(parser, depth, |value| {
+            Ok({
+                let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                let last_month = ((month - 1) / 3 + 1) * 3;
+                let last_day = days_in_month(year, last_month);
+                let days = days_from_civil(year, last_month, last_day);
+                ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?)
+            })
+        }),
+        "TOWEEK" => unary_date(parser, depth, |value| {
+            Ok({
+                let days = value.seconds.div_euclid(DAY_SECONDS);
+                let (year, _, _) = civil_from_days(days);
+                let jan_one = days_from_civil(year, 1, 1);
+                let first_sunday = jan_one + (7 - (jan_one + 4).rem_euclid(7)).rem_euclid(7);
+                let week = if days < first_sunday {
+                    0
+                } else {
+                    (days - first_sunday) / 7 + 1
+                };
+                ConstantValue::Integer(week)
+            })
+        }),
+        "ISLEAPYEAR" => unary_date(parser, depth, |value| {
+            Ok({
+                let (year, _, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                ConstantValue::Integer(i64::from(
+                    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0),
+                ))
+            })
+        }),
+        "DAYSINMONTH" => unary_date(parser, depth, |value| {
+            Ok({
+                let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                ConstantValue::Integer(i64::from(days_in_month(year, month)))
+            })
+        }),
+        "TIMESLOT" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Text(Temporal::render(value.seconds.div_euclid(1_800) * 1_800, true)?))
+        }),
+        "TORELATIVEYEARNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer({
+                let (year, _, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                year - 1970
+            }))
+        }),
+        "TORELATIVEQUARTERNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer({
+                let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                (year - 1970) * 4 + i64::from((month - 1) / 3)
+            }))
+        }),
+        "TORELATIVEMONTHNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer({
+                let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                (year - 1970) * 12 + i64::from(month) - 1
+            }))
+        }),
+        "TORELATIVEWEEKNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer((value.seconds.div_euclid(DAY_SECONDS) + 4).div_euclid(7)))
+        }),
+        "TORELATIVEDAYNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.div_euclid(DAY_SECONDS)))
+        }),
+        "TORELATIVEHOURNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.div_euclid(3_600)))
+        }),
+        "TORELATIVEMINUTENUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.div_euclid(60)))
+        }),
+        "TORELATIVESECONDNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds))
+        }),
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
         "ADDWEEKS" => offset_seconds(parser, depth, 7 * DAY_SECONDS, false, false),
@@ -152,6 +276,126 @@ pub(super) fn parse_after_open(
             let (year, _) = iso_week_and_year(days);
             Ok(ConstantValue::Integer(year))
         }),
+        "DATEDIFF" | "DATE_DIFF" => {
+            let unit = super::text_scalar::text_arg(parser, depth + 1)?;
+            if !parser.take(Token::Comma) {
+                return Err(ParseError("dateDiff requires a start date".into()));
+            }
+            let start = super::text_scalar::text_arg(parser, depth + 1)?;
+            if !parser.take(Token::Comma) {
+                return Err(ParseError("dateDiff requires an end date".into()));
+            }
+            let end = super::text_scalar::text_arg(parser, depth + 1)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("dateDiff requires three arguments".into()));
+            }
+            let (Some(unit), Some(start), Some(end)) = (unit, start, end) else {
+                return Ok(ConstantValue::Null);
+            };
+            let start = Temporal::parse(&start)?;
+            let end = Temporal::parse(&end)?;
+            let start_days = start.seconds.div_euclid(DAY_SECONDS);
+            let end_days = end.seconds.div_euclid(DAY_SECONDS);
+            let difference = match unit.to_ascii_lowercase().as_str() {
+                "second" | "seconds" | "s" => end.seconds - start.seconds,
+                "minute" | "minutes" => {
+                    end.seconds.div_euclid(60) - start.seconds.div_euclid(60)
+                }
+                "hour" | "hours" => {
+                    end.seconds.div_euclid(3_600) - start.seconds.div_euclid(3_600)
+                }
+                "day" | "days" | "d" => end_days - start_days,
+                "week" | "weeks" => {
+                    (end_days + 3).div_euclid(7) - (start_days + 3).div_euclid(7)
+                }
+                "month" | "months" => {
+                    let (sy, sm, _) = civil_from_days(start_days);
+                    let (ey, em, _) = civil_from_days(end_days);
+                    ey * 12 + i64::from(em) - sy * 12 - i64::from(sm)
+                }
+                "quarter" | "quarters" => {
+                    let (sy, sm, _) = civil_from_days(start_days);
+                    let (ey, em, _) = civil_from_days(end_days);
+                    ey * 4 + i64::from((em - 1) / 3)
+                        - sy * 4 - i64::from((sm - 1) / 3)
+                }
+                "year" | "years" => {
+                    let (sy, _, _) = civil_from_days(start_days);
+                    let (ey, _, _) = civil_from_days(end_days);
+                    ey - sy
+                }
+                _ => return Err(ParseError("unsupported dateDiff unit".into())),
+            };
+            Ok(ConstantValue::Integer(difference))
+        },
+        "MONTHNAME" => unary_date(parser, depth, |value| {
+            let (_, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+            const MONTHS: &[&str; 12] = &[
+                "January", "February", "March", "April",
+                "May", "June", "July", "August",
+                "September", "October", "November", "December",
+            ];
+            Ok(ConstantValue::Text(MONTHS[(month - 1) as usize].to_owned()))
+        }),
+        "TOUNIXTIMESTAMP64NANO" => unary_date(parser, depth, |value| {
+            let scaled = value
+                .seconds
+                .checked_mul(1_000_000_000)
+                .ok_or_else(|| ParseError("TOUNIXTIMESTAMP64NANO overflows Int64".into()))?;
+            Ok(ConstantValue::Integer(scaled))
+        }),
+        "TOUNIXTIMESTAMP64MICRO" => unary_date(parser, depth, |value| {
+            let scaled = value
+                .seconds
+                .checked_mul(1_000_000)
+                .ok_or_else(|| ParseError("TOUNIXTIMESTAMP64MICRO overflows Int64".into()))?;
+            Ok(ConstantValue::Integer(scaled))
+        }),
+        "TOUNIXTIMESTAMP64MILLI" => unary_date(parser, depth, |value| {
+            let scaled = value
+                .seconds
+                .checked_mul(1_000)
+                .ok_or_else(|| ParseError("TOUNIXTIMESTAMP64MILLI overflows Int64".into()))?;
+            Ok(ConstantValue::Integer(scaled))
+        }),
+        "FROMDAYSSINCEYEARZERO32" => {
+            let days = super::text_scalar::integer_arg(parser, depth + 1)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("fromDaysSinceYearZero32 requires one argument".into()));
+            }
+            match days {
+                None => Ok(ConstantValue::Null),
+                Some(days) => {
+                    if !(693_961..=840_057).contains(&days) {
+                        return Err(ParseError("Date32 day count is outside 1900..2299".into()));
+                    }
+                    let unix_days = days - 719_528;
+                    let seconds = unix_days * DAY_SECONDS;
+                    Ok(ConstantValue::Text(Temporal::render(seconds, false)?))
+                }
+            }
+        },
+        "FROMDAYSSINCEYEARZERO" | "FROM_DAYS" => {
+            let days = super::text_scalar::integer_arg(parser, depth + 1)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("fromDaysSinceYearZero requires one argument".into()));
+            }
+            match days {
+                None => Ok(ConstantValue::Null),
+                Some(days) => {
+                    if !(719_528..=785_063).contains(&days) {
+                        return Err(ParseError("Date day count is outside 1970..2149".into()));
+                    }
+                    let unix_days = days - 719_528;
+                    let seconds = unix_days * DAY_SECONDS;
+                    Ok(ConstantValue::Text(Temporal::render(seconds, false)?))
+                }
+            }
+        },
+        "TODAYSSINCEYEARZERO" | "TO_DAYS" => unary_date(parser, depth, |value| {
+            let unix_days = value.seconds.div_euclid(DAY_SECONDS);
+            Ok(ConstantValue::Integer(unix_days + 719_528))
+        }),
         "TIMEDIFF" => time_difference(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
@@ -181,9 +425,14 @@ impl Temporal {
         {
             return Err(date_error());
         }
-        let year = source[0..4].parse::<i64>().map_err(|_| date_error())?;
-        let month = source[5..7].parse::<u32>().map_err(|_| date_error())?;
-        let day = source[8..10].parse::<u32>().map_err(|_| date_error())?;
+        // Separators and ASCII digits were validated above. Decode each pair
+        // directly instead of calling the generic integer parser repeatedly.
+        let pair = |index: usize| {
+            i64::from(data[index] - b'0') * 10 + i64::from(data[index + 1] - b'0')
+        };
+        let year = pair(0) * 100 + pair(2);
+        let month = pair(5) as u32;
+        let day = pair(8) as u32;
         if !(MIN_YEAR..=MAX_YEAR).contains(&year)
             || !(1..=12).contains(&month)
             || day == 0
@@ -202,11 +451,7 @@ impl Temporal {
             {
                 return Err(date_error());
             }
-            (
-                source[11..13].parse::<i64>().map_err(|_| date_error())?,
-                source[14..16].parse::<i64>().map_err(|_| date_error())?,
-                source[17..19].parse::<i64>().map_err(|_| date_error())?,
-            )
+            (pair(11), pair(14), pair(17))
         } else {
             (0, 0, 0)
         };
@@ -399,6 +644,15 @@ mod utc_compat_tests {
             crate::Projection::Literal(v) => ConstantValue::Integer(v),
             projection => panic!("unexpected projection: {projection:?}"),
         }
+    }
+
+    #[test]
+    fn parses_ascii_temporal_digits_at_calendar_boundaries() {
+        let value = Temporal::parse("2024-02-29 23:59:58").unwrap();
+        assert_eq!(Temporal::render(value.seconds, true).unwrap(),
+            "2024-02-29 23:59:58");
+        assert!(Temporal::parse("2024-02-30").is_err());
+        assert!(Temporal::parse("2024-02-29 24:00:00").is_err());
     }
 
     #[test]

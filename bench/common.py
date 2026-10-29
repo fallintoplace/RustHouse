@@ -36,8 +36,15 @@ def latency_summary(seconds):
     """Report a common nearest-rank p90 for wall-clock timings."""
     if not seconds:
         return None
-    if any(not math.isfinite(value) or value < 0 for value in seconds):
-        raise ValueError("timing samples must be finite and nonnegative")
+    for value in seconds:
+        if type(value) not in (int, float) or value < 0:
+            raise ValueError("timing samples must be finite nonnegative numbers")
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise ValueError("timing samples must be finite nonnegative numbers")
     ordered = sorted(seconds)
     return {
         "min_seconds": ordered[0],

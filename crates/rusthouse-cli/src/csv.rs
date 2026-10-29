@@ -37,7 +37,14 @@ impl<W: Write> CsvWriter<W> {
     }
 
     fn push_field_byte(&mut self, byte: u8) -> io::Result<()> {
-        self.push_field_bytes(&[byte])
+        if self.field.len() >= MAX_FIELD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CSV field exceeds 1 MiB",
+            ));
+        }
+        self.field.push(byte);
+        Ok(())
     }
 
     /// Returns true when an LF has completed a previous CRLF row boundary.

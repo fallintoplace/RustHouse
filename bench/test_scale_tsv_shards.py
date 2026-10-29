@@ -80,5 +80,28 @@ class ShardTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
 
+    def test_byte_limit_preserves_record_boundaries(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "input.tsv"
+            source.write_bytes(b"a\nbb\ncccc\n")
+            target = Path(root) / "shards"
+            report = split_tsv(source, target, rows_per_chunk=100,
+                               max_bytes_per_chunk=5)
+            self.assertEqual([p["rows"] for p in report["shards"]], [2, 1])
+            self.assertEqual([p["bytes"] for p in report["shards"]], [5, 5])
+            self.assertEqual(
+                b"".join((target / p["path"]).read_bytes() for p in report["shards"]),
+                source.read_bytes())
+
+    def test_oversized_record_has_no_published_shards(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "input.tsv"
+            source.write_bytes(b"0123456789\n")
+            target = Path(root) / "shards"
+            with self.assertRaisesRegex(ValueError, "max_bytes_per_chunk"):
+                split_tsv(source, target, max_bytes_per_chunk=10)
+            self.assertFalse(target.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

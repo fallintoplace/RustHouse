@@ -10,6 +10,24 @@ class AggregateProbeTests(unittest.TestCase):
         self.assertEqual(values["count(*)"], 1_000_000_000)
         self.assertEqual(values["sum(id)"], 499_999_999_500_000_000)
 
+    def test_offset_column_uses_exact_arithmetic_series(self):
+        start = (1 << 64) - 3
+        expected = dict(aggregates(3, start=start, column="event_id"))
+        self.assertEqual(expected["sum(event_id)"], 3 * start + 3)
+        self.assertEqual(expected["min(event_id)"], start)
+        self.assertEqual(expected["max(event_id)"], (1 << 64) - 1)
+        def execute(command, **kwargs):
+            expr = command[2].removeprefix("SELECT ").removesuffix(" FROM part")
+            return SimpleNamespace(returncode=0,
+                stdout=f"{expected[expr]}\n".encode(), stderr=b"")
+        report = verify("rusthouse", "part", 3, start=start,
+                        column="event_id", execute=execute)
+        self.assertEqual(report["column"], "event_id")
+        with self.assertRaisesRegex(ValueError, "interval"):
+            aggregates(4, start=start)
+        with self.assertRaisesRegex(ValueError, "identifier"):
+            aggregates(4, column="id;DROP")
+
     def test_rejects_boolean_float_and_overflow_rows(self):
         for rows in (True, 1.0, -1, 0, 2**64):
             with self.subTest(rows=rows):

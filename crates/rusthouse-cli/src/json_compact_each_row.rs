@@ -51,7 +51,22 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
     }
 
     fn write_row(&mut self, columns: usize) -> io::Result<()> {
-        if count_tsv_fields(&self.line) != columns {
+        write_complete_row(
+            &mut self.output,
+            &mut self.encoded,
+            &self.line,
+            columns,
+        )
+    }
+}
+
+fn write_complete_row<W: Write>(
+    output: &mut W,
+    encoded: &mut Vec<u8>,
+    line: &[u8],
+    columns: usize,
+) -> io::Result<()> {
+    if count_tsv_fields(line) != columns {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "JSON row width differs from header",
@@ -59,26 +74,25 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
         }
         // Quotes and separators expand plain TSV rows by about three
         // bytes per field, so reserve that framing before serializing.
-        let capacity = self
-            .line
+        let capacity = line
             .len()
             .saturating_add(columns.saturating_mul(3))
             .saturating_add(3);
-        self.encoded.clear();
-        self.encoded.reserve(capacity);
-        let encoded = &mut self.encoded;
+        encoded.clear();
+        encoded.reserve(capacity);
         encoded.write_all(b"[")?;
-        for (index, value) in self.line.split(|byte| *byte == b'\t').enumerate() {
+        for (index, value) in line.split(|byte| *byte == b'\t').enumerate() {
             if index != 0 {
                 encoded.write_all(b",")?;
             }
             write_json_value(&mut *encoded, value)?;
         }
         encoded.write_all(b"]\n")?;
-        self.output.write_all(encoded)?;
+        output.write_all(encoded)?;
         Ok(())
-    }
+}
 
+impl<W: Write> JsonCompactEachRowWriter<W> {
     pub(super) fn finish(mut self) -> io::Result<W> {
         if self.columns.is_none() || !self.line.is_empty() {
             return Err(io::Error::new(
@@ -106,6 +120,17 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
                     "JSON row exceeds 1 MiB",
                 ));
             }
+            if complete && self.line.is_empty() {
+                if let Some(columns) = self.columns {
+                    write_complete_row(
+                        &mut self.output,
+                        &mut self.encoded,
+                        fragment,
+                        columns,
+                    )?;
+                    continue;
+                }
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -122,6 +147,20 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_rows_bypass_input_staging_but_keep_output_framing() {
+        let mut writer = JsonCompactEachRowWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let before = writer.line.capacity();
+        let value = "a".repeat(16 * 1024);
+        writer.write_all(format!("{value}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        assert_eq!(
+            writer.finish().unwrap(),
+            format!("[\"{value}\"]\n").as_bytes()
+        );
+    }
 
     #[test]
     fn reuses_output_allocation_across_shorter_rows() {

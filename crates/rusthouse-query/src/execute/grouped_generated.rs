@@ -88,6 +88,55 @@ pub(super) fn execute<W: Write>(
             return Ok(());
         }
     }
+    if query.limit.is_none() && query.having.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some(order) = query.order_by.as_ref().filter(|order| order.column == "number") {
+            let bounds = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                Some((0, rows))
+            } else {
+                super::monotonic_range_indices(&comparisons, start, rows, step)
+            };
+            if let Some((lower, upper)) = bounds {
+                let selected = upper - lower;
+                if selected > MAX_GROUPS as u64 {
+                    return Err(ExecutionError::Invalid(
+                        "generated GROUP BY supports at most 200000 groups".into(),
+                    ));
+                }
+                let mut per_group = 0usize;
+                charge_group_states(&mut per_group, items)?;
+                if (selected as usize).checked_mul(per_group)
+                    .is_none_or(|total| total > MAX_GENERATED_GROUP_BYTES)
+                {
+                    return Err(ExecutionError::Invalid(
+                        "generated GROUP BY exceeds 64 MiB state budget".into(),
+                    ));
+                }
+                let begin = (query.offset.unwrap_or(0) as u64).min(selected);
+                for position in begin..selected {
+                    let index = if order.descending {
+                        upper - 1 - position
+                    } else {
+                        lower + position
+                    };
+                    let value = u128::from(start) + u128::from(index) * u128::from(step);
+                    write!(output, "{value}")?;
+                    for (function, _) in items {
+                        let mut state = AggregateState::new(*function);
+                        state.update(if *function == AggregateFunction::Count {
+                            Number::Unsigned(1)
+                        } else {
+                            Number::Unsigned(value)
+                        })?;
+                        write!(output, "\t{}", state.render())?;
+                    }
+                    writeln!(output)?;
+                }
+                return Ok(());
+            }
+        }
+    }
     let mut groups=Vec::<(u128,Vec<AggregateState>)>::new();
     let mut retained_state_bytes = 0usize;
     for index in 0..rows {
