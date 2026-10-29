@@ -105,7 +105,10 @@ impl ResumeMap {
         for (index, byte) in text.bytes().enumerate() {
             match byte {
                 b'0' => {}
-                b'1' => result.completed[index / 8] |= 1u8 << (index % 8),
+                b'1' => {
+                    let (byte, mask) = Self::bit_position(index);
+                    result.completed[byte] |= mask;
+                }
                 _ => return Err("invalid resume map byte"),
             }
         }
