@@ -31,6 +31,18 @@ fn filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionErr
 
 const MAX_GROUP_STATE_BYTES: usize = 64 * 1024 * 1024;
 
+fn reserve_median_value(retained: &mut usize) -> Result<(), ExecutionError> {
+    let bytes = retained.checked_add(std::mem::size_of::<Number>())
+        .ok_or_else(|| ExecutionError::Invalid("grouped median memory overflow".into()))?;
+    if bytes > MAX_GROUP_STATE_BYTES {
+        return Err(ExecutionError::Invalid(
+            "grouped median values exceed 64 MiB retained budget".into(),
+        ));
+    }
+    *retained = bytes;
+    Ok(())
+}
+
 fn reserve_group(
     retained: &mut usize,
     metric_count: usize,
@@ -147,6 +159,7 @@ pub(super) fn execute<W: Write>(
         .collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
     let mut retained_group_bytes = 0usize;
+    let mut retained_median_bytes = 0usize;
     // Direct slots avoid repeated hashing on compact grouping columns.
     let mut dense_slots = match group_type.as_str() {
         "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
@@ -284,6 +297,11 @@ pub(super) fn execute<W: Write>(
                     let enabled = filter_enabled(&batch[filter_index], row)?;
                     if !enabled {continue;}
                 }
+                if *function == AggregateFunction::Median
+                    && !typed::is_null_at(&batch[column_index], row)
+                {
+                    reserve_median_value(&mut retained_median_bytes)?;
+                }
                 if *function == AggregateFunction::Count {
                     if !typed::is_null_at(&batch[column_index], row) {
                         state.update(Number::Unsigned(1))?;
@@ -420,5 +438,22 @@ mod borrowed_metric_filter_tests {
         let floats = TypedColumn::Numeric(NumericColumn::Float64(vec![0.0, 2.5]));
         assert!(!filter_enabled(&floats, 0).unwrap());
         assert!(filter_enabled(&floats, 1).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod grouped_multi_median_budget_tests {
+    use super::*;
+
+    #[test]
+    fn bounds_median_storage_across_metrics_and_groups() {
+        let mut retained = 0;
+        reserve_median_value(&mut retained).unwrap();
+        let one = retained;
+        reserve_median_value(&mut retained).unwrap();
+        assert_eq!(retained, one * 2);
+        retained = MAX_GROUP_STATE_BYTES - 1;
+        assert!(reserve_median_value(&mut retained).is_err());
+        assert_eq!(retained, MAX_GROUP_STATE_BYTES - 1);
     }
 }
