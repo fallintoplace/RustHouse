@@ -82,6 +82,16 @@ class TestBillionMatrix(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertEqual(calls[1][-2:], ['--format', 'tsv-no-header'])
 
+    def test_rejects_invalid_benchmark_timings_before_doctor(self):
+        for kwargs in (
+            {"runs": 0}, {"runs": True}, {"warmups": -1},
+            {"timeout": float("nan")}, {"timeout": 0},
+            {"max_p90_seconds": float("inf")},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                benchmark("binary", "database", 100_000,
+                          execute=lambda *a, **k: self.fail("unexpected SQL"), **kwargs)
+
     def test_benchmark_fails_on_wrong_answer(self):
         case = dict(name='mod', kind='modulo', aggregate='count', modulus=2, residue=0)
         with tempfile.TemporaryDirectory() as root:
