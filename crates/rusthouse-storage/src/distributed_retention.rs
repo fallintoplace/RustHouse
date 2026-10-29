@@ -1,4 +1,6 @@
 //! Conservative generation-retention planning; no files are deleted.
+
+const MAX_RETENTION_GENERATIONS: usize = 16_384;
 fn validated_generations(generations: &[u64], active: u64) -> Result<Vec<u64>, &'static str> {
     let mut sorted_generations = generations.to_vec();
     sorted_generations.sort_unstable();
@@ -16,7 +18,7 @@ fn planned_retention(
     active: u64,
     keep_latest: usize,
 ) -> Result<(Vec<u64>, Vec<u64>), &'static str> {
-    if generations.is_empty() || generations.len() > 16_384 || keep_latest == 0 || active == 0 {
+    if generations.is_empty() || generations.len() > MAX_RETENTION_GENERATIONS || keep_latest == 0 || active == 0 {
         return Err("invalid generation retention configuration");
     }
     let sorted_generations = validated_generations(generations, active)?;
@@ -91,7 +93,7 @@ pub fn retention_candidates_with_pins(
     keep_latest: usize,
     pinned: &[u64],
 ) -> Result<Vec<u64>, &'static str> {
-    if pinned.len() > 16_384 {
+    if pinned.len() > MAX_RETENTION_GENERATIONS {
         return Err("too many pinned generations");
     }
     let (candidates, known) = planned_retention(generations, active, keep_latest)?;
