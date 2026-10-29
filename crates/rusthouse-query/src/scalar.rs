@@ -132,9 +132,13 @@ fn term(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 .checked_div(factor(parser, depth)?)
                 .ok_or(ParseError("scalar division by zero or overflow".into()))?;
         } else if parser.take(Token::Percent) {
-            value = value
-                .checked_rem(factor(parser, depth)?)
-                .ok_or(ParseError("scalar modulo by zero or overflow".into()))?;
+            let divisor = factor(parser, depth)?;
+            value = if divisor == -1 {
+                0
+            } else {
+                value.checked_rem(divisor)
+                    .ok_or(ParseError("scalar modulo by zero or overflow".into()))?
+            };
         } else {
             break;
         }
