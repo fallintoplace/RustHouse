@@ -117,6 +117,9 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
             });
         }
 
+        if offset == self.offset && !self.done {
+            return Ok(());
+        }
         self.reader
             .seek(SeekFrom::Start(offset))
             .map_err(|source| PartError::Io {
@@ -314,6 +317,45 @@ mod tests {
         CompressedBlockReader::new(Cursor::new(bytes), "data.bin")
             .unwrap()
             .collect()
+    }
+
+    #[test]
+    fn adjacent_blocks_skip_seeking_without_skipping_validation() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct CountingSeek {
+            data: Cursor<Vec<u8>>,
+            seeks: Rc<Cell<usize>>,
+        }
+        impl Read for CountingSeek {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                self.data.read(out)
+            }
+        }
+        impl Seek for CountingSeek {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+                self.seeks.set(self.seeks.get() + 1);
+                self.data.seek(position)
+            }
+        }
+
+        let mut data = checked_block(0x02, b"first", 5);
+        let second_offset = data.len() as u64;
+        data.extend(checked_block(0x02, b"second", 6));
+        let seeks = Rc::new(Cell::new(0));
+        let mut reader = CompressedBlockReader::new(
+            CountingSeek { data: Cursor::new(data), seeks: Rc::clone(&seeks) },
+            "test.bin",
+        ).unwrap();
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"first");
+        let before = seeks.get();
+        reader.seek_to_block(second_offset).unwrap();
+        assert_eq!(seeks.get(), before);
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"second");
+        reader.seek_to_block(0).unwrap();
+        assert!(seeks.get() > before);
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"first");
     }
 
     #[test]

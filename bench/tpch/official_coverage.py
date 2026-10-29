@@ -6,6 +6,7 @@ calculate a TPC-H Power, Throughput, or QphH score.
 """
 import argparse
 import math
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
 from pathlib import Path
@@ -13,49 +14,90 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json
 from run import benchmark_one, summarize_coverage, query_fingerprint
 
+MAX_REFERENCE_BYTES = 64 * 1024 * 1024
+MAX_QUERY_FILE_BYTES = 64 * 1024
+
 
 def clean_sql(path):
-    text = "\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
+    with Path(path).open("rb") as source:
+        payload = source.read(MAX_QUERY_FILE_BYTES + 1)
+    if len(payload) > MAX_QUERY_FILE_BYTES:
+        raise ValueError("TPC-H SQL source exceeds 64 KiB")
+    text = "\n".join(line for line in payload.decode("utf-8").splitlines()
                      if not line.lstrip().startswith("--")).strip()
     return text.rstrip(";").strip()
 
 
 def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
-             timeout=120, execute=None):
+             timeout=120, execute=None, jobs=1):
     if (type(runs) is not int or type(warmups) is not int
             or runs < 1 or warmups < 0
             or type(timeout) not in (int, float)
-            or not math.isfinite(timeout) or timeout <= 0):
+            or not math.isfinite(timeout) or timeout <= 0
+            or type(jobs) is not int or not 1 <= jobs <= 22):
         raise ValueError("invalid timing parameters")
     if execute is None:
         execute = lambda sql: cli_sql(binary, database, sql, timeout)
-    results = []
+    results = [None] * 22
     executed_sql = []
+    pending = []
     for number in range(1, 23):
         path = Path(query_dir) / f"q{number:02d}.sql"
         if not path.is_file():
-            results.append({"query": number, "status": "missing_query",
-                            "timings_seconds": [], "latency": None, "error": str(path)})
+            results[number - 1] = {"query": number, "status": "missing_query",
+                            "timings_seconds": [], "latency": None, "error": str(path)}
             continue
-        sql = clean_sql(path)
+        try:
+            sql = clean_sql(path)
+        except (OSError, UnicodeError, ValueError) as error:
+            results[number - 1] = {"query": number, "status": "unsupported_query",
+                                    "timings_seconds": [], "latency": None,
+                                    "error": str(error)[:200]}
+            continue
         if not sql or len(sql.encode("utf-8")) > 64 * 1024:
-            results.append({"query": number, "status": "unsupported_query",
+            results[number - 1] = {"query": number, "status": "unsupported_query",
                             "timings_seconds": [], "latency": None,
-                            "error": "empty query or exceeds SQL statement limit"})
+                            "error": "empty query or exceeds SQL statement limit"}
             continue
         executed_sql.append((number, sql))
         reference = None
         if reference_dir is not None:
             ref = Path(reference_dir) / f"q{number:02d}.tsv"
             if not ref.is_file():
-                results.append({"query": number, "status": "missing_reference",
-                                "timings_seconds": [], "latency": None, "error": str(ref)})
+                results[number - 1] = {"query": number, "status": "missing_reference",
+                                "timings_seconds": [], "latency": None, "error": str(ref)}
                 continue
-            reference = ref.read_bytes()
-        results.append(benchmark_one(number, sql, execute, runs, warmups, reference))
+            # Cap third-party reference reads and refuse known symlinks.
+            if ref.is_symlink() or ref.stat().st_size > MAX_REFERENCE_BYTES:
+                results[number - 1] = {"query": number, "status": "reference_error",
+                                       "timings_seconds": [], "latency": None,
+                                       "error": "unsafe or oversized reference file"}
+                continue
+            with ref.open("rb") as stream:
+                reference = stream.read(MAX_REFERENCE_BYTES + 1)
+            if len(reference) > MAX_REFERENCE_BYTES:
+                results[number - 1] = {"query": number, "status": "reference_error",
+                                       "timings_seconds": [], "latency": None,
+                                       "error": "reference file grew beyond byte limit"}
+                continue
+        pending.append((number, sql, reference))
+
+    def run_query(item):
+        number, sql, reference = item
+        return benchmark_one(number, sql, execute, runs, warmups, reference)
+
+    if jobs == 1:
+        completed = map(run_query, pending)
+        for item in completed:
+            results[item["query"] - 1] = item
+    else:
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            for item in pool.map(run_query, pending):
+                results[item["query"] - 1] = item
     return {"workload": "tpch-22-query-execution-inventory",
             "query_sha256": query_fingerprint(executed_sql),
             "official_tpch_score": False, "reference_checked": reference_dir is not None,
+            "concurrent_queries": jobs, "timing_scope": "contended CLI queries" if jobs > 1 else "serial CLI queries",
             "coverage": summarize_coverage(results), "results": results}
 
 
@@ -66,13 +108,16 @@ def main(argv=None):
     parser.add_argument("--queries-dir", type=Path, required=True)
     parser.add_argument("--reference-dir", type=Path)
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="Parallel query inventory workers; use 1 for comparable latency")
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         result = coverage(args.binary, args.database, args.queries_dir,
-                          args.reference_dir, args.runs, args.warmups, args.timeout)
+                          args.reference_dir, args.runs, args.warmups, args.timeout,
+                          jobs=args.jobs)
     except (OSError, ValueError) as error:
         parser.exit(1, f"TPC-H inventory failed: {error}\n")
     emit_json(result, args.output)

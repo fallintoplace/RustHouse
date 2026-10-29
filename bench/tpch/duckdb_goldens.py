@@ -10,14 +10,19 @@ import tempfile
 from pathlib import Path
 
 from run import load_queries
+from canonical_integrity import verify as verify_canonical_sql
+
+MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
 
 def generate(duckdb_binary, database, queries_dir, output_dir,
-             timeout=300, overwrite=False, execute=None, jobs=1):
+             timeout=300, overwrite=False, execute=None, jobs=1, require_canonical=False):
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be positive")
     if type(jobs) is not int or not 1 <= jobs <= 22:
         raise ValueError("jobs must be an integer between 1 and 22")
+    if require_canonical:
+        verify_canonical_sql(queries_dir)
     queries = load_queries(Path(queries_dir))
     if [number for number, _ in queries] != list(range(1, 23)):
         raise ValueError("full canonical Q1-Q22 SQL corpus required")
@@ -42,6 +47,8 @@ def generate(duckdb_binary, database, queries_dir, output_dir,
             raise ValueError(f"q{number:02d}: DuckDB query failed: {stderr}")
         if not isinstance(result.stdout, bytes):
             raise ValueError("DuckDB output must be raw bytes")
+        if len(result.stdout) > MAX_REFERENCE_BYTES:
+            raise ValueError(f"q{number:02d}: DuckDB reference exceeds 16 MiB")
         return number, sql, result.stdout
 
     # Separate readonly DuckDB processes can execute independent queries.
@@ -81,13 +88,15 @@ def main(argv=None):
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=300)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--require-canonical", action="store_true",
+                        help="Generate references only from pinned full Q1-Q22 SQL")
     parser.add_argument("--jobs", type=int, default=1,
                         help="Concurrent readonly DuckDB reference queries")
     args = parser.parse_args(argv)
     try:
         report = generate(args.duckdb, args.database, args.queries_dir,
                           args.output_dir, args.timeout, args.overwrite,
-                          jobs=args.jobs)
+                          jobs=args.jobs, require_canonical=args.require_canonical)
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         parser.exit(1, f"TPC-H DuckDB golden generation failed: {error}\n")
     print(json.dumps(report, indent=2))

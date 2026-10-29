@@ -55,17 +55,18 @@ fn write_number(writer: &mut impl Write, number: Number) -> Result<(), Execution
         Number::Signed(v) => (1u8, v.to_le_bytes()),
         Number::Float(v) => (2u8, (v.to_bits() as u128).to_le_bytes()),
     };
-    writer.write_all(&[tag])?;
-    writer.write_all(&payload)?;
+    let mut encoded = [0u8; 17];
+    encoded[0] = tag;
+    encoded[1..].copy_from_slice(&payload);
+    writer.write_all(&encoded)?;
     Ok(())
 }
 
 fn read_number(reader: &mut impl Read) -> Result<Number, ExecutionError> {
-    let mut tag = [0u8; 1];
-    let mut payload = [0u8; 16];
-    reader.read_exact(&mut tag)?;
-    reader.read_exact(&mut payload)?;
-    match tag[0] {
+    let mut encoded = [0u8; 17];
+    reader.read_exact(&mut encoded)?;
+    let payload: [u8; 16] = encoded[1..].try_into().expect("fixed numeric record");
+    match encoded[0] {
         0 => Ok(Number::Unsigned(u128::from_le_bytes(payload))),
         1 => Ok(Number::Signed(i128::from_le_bytes(payload))),
         2 => {
@@ -84,9 +85,11 @@ fn write_sorted_row(writer: &mut impl Write, row: &SortedRow)
         .map_err(|_| invalid("too many ORDER BY keys"))?;
     let width = u32::try_from(row.values.len())
         .map_err(|_| invalid("too many sorted columns"))?;
-    writer.write_all(&index.to_le_bytes())?;
-    writer.write_all(&secondary.to_le_bytes())?;
-    writer.write_all(&width.to_le_bytes())?;
+    let mut header = [0u8; 16];
+    header[..8].copy_from_slice(&index.to_le_bytes());
+    header[8..12].copy_from_slice(&secondary.to_le_bytes());
+    header[12..].copy_from_slice(&width.to_le_bytes());
+    writer.write_all(&header)?;
     write_number(writer, row.key)?;
     for &key in &row.extra_keys { write_number(writer, key)?; }
     for &value in &row.values { write_number(writer, value)?; }
@@ -98,16 +101,13 @@ fn read_sorted_row(
     descending: bool,
     directions: &Arc<[bool]>,
 ) -> Result<Option<SortedRow>, ExecutionError> {
-    let mut sequence = [0u8; 8];
-    if reader.read(&mut sequence[..1])? == 0 { return Ok(None); }
-    reader.read_exact(&mut sequence[1..])?;
-    let sequence = usize::try_from(u64::from_le_bytes(sequence))
+    let mut header = [0u8; 16];
+    if reader.read(&mut header[..1])? == 0 { return Ok(None); }
+    reader.read_exact(&mut header[1..])?;
+    let sequence = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
         .map_err(|_| invalid("external sort sequence overflow"))?;
-    let mut bytes = [0u8; 4];
-    reader.read_exact(&mut bytes)?;
-    let extra = u32::from_le_bytes(bytes) as usize;
-    reader.read_exact(&mut bytes)?;
-    let width = u32::from_le_bytes(bytes) as usize;
+    let extra = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+    let width = u32::from_le_bytes(header[12..].try_into().unwrap()) as usize;
     if extra != directions.len() || width > 128 {
         return Err(invalid("malformed external sort run width"));
     }
@@ -129,7 +129,7 @@ fn merge_runs(
     mut output: impl FnMut(&SortedRow) -> Result<bool, ExecutionError>,
 ) -> Result<(), ExecutionError> {
     let mut streams = inputs.iter().map(File::open)
-        .map(|source| source.map(BufReader::new))
+        .map(|source| source.map(|file| BufReader::with_capacity(64 * 1024, file)))
         .collect::<Result<Vec<_>, _>>()?;
     let mut heap = BinaryHeap::<Reverse<(SortedRow, usize)>>::new();
     for (index, stream) in streams.iter_mut().enumerate() {
@@ -331,7 +331,7 @@ impl SortedRows {
     fn flush_run(&mut self) -> Result<(), ExecutionError> {
         if self.rows.is_empty() { return Ok(()); }
         let path = self.next_path()?;
-        let mut writer = BufWriter::new(OpenOptions::new()
+        let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
             .create_new(true).write(true).open(&path)?);
         for row in std::mem::take(&mut self.rows).into_sorted_vec() {
             write_sorted_row(&mut writer, &row)?;
@@ -443,7 +443,7 @@ impl SortedRows {
                 for group in previous.chunks(MERGE_FAN_IN) {
                     self.preflight_merge_run(group)?;
                     let path = self.next_path()?;
-                    let mut writer = BufWriter::new(OpenOptions::new()
+                    let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
                         .create_new(true).write(true).open(&path)?);
                     merge_runs(group, self.descending, &self.extra_descending, |row| {
                         write_sorted_row(&mut writer, row)?;
@@ -487,6 +487,33 @@ impl SortedRows {
             writeln!(output)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use super::*;
+
+    #[test]
+    fn numeric_records_keep_the_exact_external_sort_wire_format() {
+        for number in [
+            Number::Unsigned(u128::MAX),
+            Number::Signed(-123),
+            Number::Float(-0.0),
+        ] {
+            let mut bytes = Vec::new();
+            write_number(&mut bytes, number).unwrap();
+            assert_eq!(bytes.len(), 17);
+            let mut input = bytes.as_slice();
+            let recovered = read_number(&mut input).unwrap();
+            match (number, recovered) {
+                (Number::Unsigned(a), Number::Unsigned(b)) => assert_eq!(a, b),
+                (Number::Signed(a), Number::Signed(b)) => assert_eq!(a, b),
+                (Number::Float(a), Number::Float(b)) => assert_eq!(a.to_bits(), b.to_bits()),
+                _ => panic!("numeric record changed type"),
+            }
+            assert!(input.is_empty());
+        }
     }
 }
 

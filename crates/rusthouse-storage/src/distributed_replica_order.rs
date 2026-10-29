@@ -64,28 +64,115 @@ pub fn rank_read_replicas_at_least(
     minimum_epoch: u64,
     minimum_generation: u64,
 ) -> Result<Vec<String>, &'static str> {
-    let ranked = rank_read_replicas(replicas)?;
-    let eligible: HashSet<&str> = replicas
+    if replicas.is_empty() || replicas.len() > 64 {
+        return Err("invalid replica status set");
+    }
+    validate_replica_nodes(replicas)?;
+    if minimum_epoch == 0 || minimum_generation == 0 {
+        return Err("invalid replica freshness floor");
+    }
+    let mut eligible: Vec<_> = replicas
         .iter()
         .filter(|replica| {
             replica.healthy
                 && replica.epoch == minimum_epoch
                 && replica.generation >= minimum_generation
         })
-        .map(|replica| replica.node.as_str())
         .collect();
     if eligible.is_empty() {
-        return Err("no storage replica meets the freshness floor");
+        return Err(if replicas.iter().any(|replica| replica.healthy) {
+            "no storage replica meets the freshness floor"
+        } else {
+            "no healthy storage replica"
+        });
     }
-    Ok(ranked
+    eligible.sort_unstable_by(|left, right| newest_first(left, right));
+    Ok(eligible
         .into_iter()
-        .filter(|node| eligible.contains(node.as_str()))
+        .map(|replica| replica.node.clone())
         .collect())
+}
+
+/// Select only the preferred healthy replica in one scan.
+/// This avoids sorting and cloning an entire replica list for point reads.
+pub fn best_read_replica(replicas: &[ReplicaStatus]) -> Result<String, &'static str> {
+    if replicas.is_empty() || replicas.len() > 64 {
+        return Err("invalid replica status set");
+    }
+    validate_replica_nodes(replicas)?;
+    replicas
+        .iter()
+        .filter(|replica| replica.healthy)
+        .min_by(|left, right| newest_first(left, right))
+        .map(|replica| replica.node.clone())
+        .ok_or("no healthy storage replica")
+}
+
+/// Select one healthy replica at or above a verified freshness floor.
+pub fn best_read_replica_at_least(
+    replicas: &[ReplicaStatus],
+    minimum_epoch: u64,
+    minimum_generation: u64,
+) -> Result<String, &'static str> {
+    if replicas.is_empty() || replicas.len() > 64 {
+        return Err("invalid replica status set");
+    }
+    validate_replica_nodes(replicas)?;
+    if minimum_epoch == 0 || minimum_generation == 0 {
+        return Err("invalid replica freshness floor");
+    }
+    replicas
+        .iter()
+        .filter(|replica| {
+            replica.healthy
+                && replica.epoch == minimum_epoch
+                && replica.generation >= minimum_generation
+        })
+        .min_by(|left, right| newest_first(left, right))
+        .map(|replica| replica.node.clone())
+        .ok_or_else(|| {
+            if replicas.iter().any(|replica| replica.healthy) {
+                "no storage replica meets the freshness floor"
+            } else {
+                "no healthy storage replica"
+            }
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_selection_matches_sorted_replica_rankings() {
+        let replicas = (0..64)
+            .map(|index| ReplicaStatus {
+                node: format!("node_{index:02}"),
+                epoch: 1 + (index % 3) as u64,
+                generation: 1 + (index % 11) as u64,
+                healthy: index % 7 != 0,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            best_read_replica(&replicas).unwrap(),
+            rank_read_replicas(&replicas).unwrap()[0],
+        );
+        for epoch in 1..=4 {
+            for generation in [1, 5, 11, 12] {
+                assert_eq!(
+                    best_read_replica_at_least(&replicas, epoch, generation).ok(),
+                    rank_read_replicas_at_least(&replicas, epoch, generation)
+                        .ok()
+                        .and_then(|ranked| ranked.into_iter().next()),
+                );
+            }
+        }
+        let mut duplicates = replicas.clone();
+        duplicates[1].node = duplicates[0].node.clone();
+        assert!(best_read_replica(&duplicates).is_err());
+        assert!(best_read_replica_at_least(&duplicates, 1, 1).is_err());
+        assert!(best_read_replica(&[]).is_err());
+    }
 
     #[test]
     fn prefers_newest_healthy_replica() {
@@ -205,5 +292,32 @@ mod zero_version_replica_tests {
         assert!(rank_read_replicas(&[base.clone()]).is_ok());
         assert!(rank_read_replicas(&[ReplicaStatus { epoch: 0, ..base.clone() }]).is_err());
         assert!(rank_read_replicas(&[ReplicaStatus { generation: 0, ..base }]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod freshness_floor_validation_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_zero_version_read_floors_for_both_selection_paths() {
+        let candidates = [ReplicaStatus {
+            node: "node_a".into(),
+            epoch: 1,
+            generation: 2,
+            healthy: true,
+        }];
+        for (epoch, generation) in [(0, 1), (1, 0), (0, 0)] {
+            assert!(rank_read_replicas_at_least(&candidates, epoch, generation).is_err());
+            assert!(best_read_replica_at_least(&candidates, epoch, generation).is_err());
+        }
+        assert_eq!(
+            rank_read_replicas_at_least(&candidates, 1, 1).unwrap(),
+            vec!["node_a"]
+        );
+        assert_eq!(
+            best_read_replica_at_least(&candidates, 1, 1).unwrap(),
+            "node_a"
+        );
     }
 }

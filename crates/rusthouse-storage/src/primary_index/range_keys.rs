@@ -98,7 +98,11 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
         .map(|(lower, upper)| candidate_mark_range_sorted(len, &key_at, *lower, *upper))
         .filter(|range| !range.is_empty())
         .collect();
-    ranges.sort_unstable_by_key(|range| range.start);
+    // IN and OR ranges are often already ordered. Skip the n log n sort
+    // when their candidate mark ranges arrive in ascending order.
+    if ranges.windows(2).any(|pair| pair[0].start > pair[1].start) {
+        ranges.sort_unstable_by_key(|range| range.start);
+    }
     let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
     for range in ranges {
         if let Some(previous) = merged.last_mut() {
@@ -122,6 +126,27 @@ pub(super) fn u64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize)
 
 pub(super) fn i64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<i64> {
     Some(i64::from_le_bytes(key_bytes(index, mark, field)?))
+}
+
+#[cfg(test)]
+mod ordered_intervals_tests {
+    use super::*;
+
+    #[test]
+    fn sorted_and_unsorted_interval_inputs_have_identical_mark_ranges() {
+        let sorted = [
+            (Bound::Included(10_u64), Bound::Included(15_u64)),
+            (Bound::Included(14_u64), Bound::Included(22_u64)),
+            (Bound::Included(20_u64), Bound::Included(25_u64)),
+            (Bound::Included(40_u64), Bound::Included(42_u64)),
+        ];
+        let unsorted = [sorted[3], sorted[1], sorted[0], sorted[2]];
+        let plan = |intervals: &[(Bound<u64>, Bound<u64>)]| {
+            candidate_mark_ranges(64, |mark| Some(mark as u64), intervals).unwrap()
+        };
+        assert_eq!(plan(&sorted), vec![9..26, 39..43]);
+        assert_eq!(plan(&unsorted), plan(&sorted));
+    }
 }
 
 #[cfg(test)]

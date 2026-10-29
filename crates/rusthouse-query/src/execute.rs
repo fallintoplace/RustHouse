@@ -1517,11 +1517,16 @@ fn execute_numbers<W: Write>(
                 || (query.order_by.as_ref().is_some_and(|order| order.column == "number")
                     && query.having.is_none() && !query.distinct
                     && query.order_by_extra.is_empty()
-                    && matches!(&query.projection,
-                    Projection::GroupedAggregates { column, items, filters, .. }
-                        if column == "number" && items.iter().all(|(_, key)| key == "number")
-                            && filters.iter().all(Option::is_none)
-                )))
+                    && (matches!(&query.projection,
+                        Projection::GroupedCount { column } if column == "number"
+                    ) || matches!(&query.projection,
+                        Projection::GroupedAggregate { column, value_column, .. }
+                            if column == "number" && value_column == "number"
+                    ) || matches!(&query.projection,
+                        Projection::GroupedAggregates { column, items, filters, .. }
+                            if column == "number" && items.iter().all(|(_, key)| key == "number")
+                                && filters.iter().all(Option::is_none)
+                    ))))
             && ((query.predicates.is_empty() && query.or_predicates.is_empty())
                 || monotonic_range_indices(&compile_numbers_predicates(query)?, start, rows, step)
                     .is_some());
@@ -1546,10 +1551,18 @@ fn execute_numbers<W: Write>(
         } else {
             false
         };
+        let formula_multi_aggregate = matches!(
+            &query.projection,
+            Projection::MultipleAggregates(items)
+                if multi_aggregate::supports_generated_series_metrics(items)
+        ) && query.predicates.is_empty()
+            && query.or_predicates.is_empty()
+            && simple_result;
         if !(scalar_count && simple_result && arithmetic_count)
             && !bounded_page
             && !grouped_page
             && !direct_aggregate
+            && !formula_multi_aggregate
         {
             return Err(ExecutionError::Invalid(
                 "virtual inputs over 10000000 rows require an exact aggregate or bounded page query".into(),
