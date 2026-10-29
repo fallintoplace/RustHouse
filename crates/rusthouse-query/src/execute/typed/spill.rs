@@ -339,6 +339,15 @@ impl TypedExternalSort {
     ) -> Result<(), ExecutionError>
     where F: FnMut(SortEntry) -> Result<bool, ExecutionError>,
     {
+        if let [path] = paths {
+            // An already-sorted single run needs neither a heap nor a
+            // comparator. Preserve the callback's early-stop behavior.
+            let mut source = BufReader::new(File::open(path)?);
+            while let Some(entry) = read_entry(&mut source)? {
+                if !emit(entry)? { break; }
+            }
+            return Ok(());
+        }
         let mut sources = paths.iter().map(|path| {
             File::open(path).map(BufReader::new).map_err(ExecutionError::from)
         }).collect::<Result<Vec<_>, _>>()?;
@@ -447,6 +456,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn one_run_typed_merge_preserves_global_limit_and_offset() {
+        let mut sorter = TypedExternalSort::new(0, 0, 0);
+        for index in 0..MAX_BUFFER_ROWS {
+            sorter.push(row("single-run", index as u64)).unwrap();
+        }
+        assert_eq!(sorter.runs.len(), 1);
+        let mut output = Vec::new();
+        sorter.write(&mut output, &["String", "UInt64"], 19, 3).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(),
+            "single-run\t19\nsingle-run\t20\nsingle-run\t21\n");
+    }
     #[test]
     fn spill_round_trip_retains_nullable_strings_uuids_and_numbers() {
         let mut input = Vec::new();
