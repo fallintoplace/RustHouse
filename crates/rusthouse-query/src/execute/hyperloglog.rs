@@ -129,8 +129,10 @@ impl HyperLogLog {
     pub(super) fn estimate(&self) -> u64 {
         let register_count = REGISTERS as f64;
         let zero_register_count = self.registers.iter().filter(|&&rank| rank == 0).count();
+        // Every rank is at most 51, so 2^-rank is a normal IEEE-754
+        // value. Building its exponent avoids a powi call per register.
         let harmonic = self.registers.iter()
-            .map(|&rank| 2.0_f64.powi(-i32::from(rank)))
+            .map(|&rank| f64::from_bits((1023 - u64::from(rank)) << 52))
             .sum::<f64>();
         let alpha = 0.7213 / (1.0 + 1.079 / register_count);
         let raw_estimate = alpha * register_count * register_count / harmonic;
@@ -146,6 +148,17 @@ impl HyperLogLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_exponents_match_powi_for_all_register_ranks() {
+        for rank in 0..=MAX_REGISTER_RANK {
+            let bits = (1023 - u64::from(rank)) << 52;
+            assert_eq!(
+                f64::from_bits(bits).to_bits(),
+                2.0_f64.powi(-i32::from(rank)).to_bits()
+            );
+        }
+    }
 
     #[test]
     fn empty_duplicates_and_small_counts_are_stable() {
