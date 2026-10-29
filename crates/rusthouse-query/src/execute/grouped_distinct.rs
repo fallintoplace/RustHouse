@@ -12,6 +12,24 @@ const MAX_GROUPS: usize = 200_000;
 const MAX_GROUP_VALUE_PAIRS: usize = 200_000;
 
 const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_GROUP_STATE_BYTES: usize = 64 * 1024 * 1024;
+
+fn charge_group_fixed(used: &mut usize) -> Result<(), ExecutionError> {
+    // Account for the three HashSet headers, byte-value bitmap, Group row,
+    // and the key lookup entry, even when no distinct payloads are present.
+    let extra = std::mem::size_of::<Group>()
+        .checked_add(std::mem::size_of::<(Key, usize)>())
+        .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT state size overflow".into()))?;
+    let next = used.checked_add(extra)
+        .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT state size overflow".into()))?;
+    if next > MAX_GROUP_STATE_BYTES {
+        return Err(ExecutionError::Invalid(
+            "grouped DISTINCT exceeds 64 MiB fixed group state budget".into(),
+        ));
+    }
+    *used = next;
+    Ok(())
+}
 
 fn charge_text(used: &mut usize, length: usize, copies: usize) -> Result<(), ExecutionError> {
     let added = length.checked_mul(copies)
@@ -127,6 +145,7 @@ pub(super) fn execute<W: Write>(
     let byte_distinct = matches!(typed::base_type(types[value_column].as_str()), "UInt8" | "Int8");
     let mut total_pairs = 0usize;
     let mut retained_text_bytes = 0usize;
+    let mut retained_group_bytes = 0usize;
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
@@ -158,6 +177,7 @@ pub(super) fn execute<W: Write>(
                 let slot = &mut slots[usize::from(byte)];
                 if *slot == usize::MAX {
                     *slot = groups.len();
+                    charge_group_fixed(&mut retained_group_bytes)?;
                     groups.push(Group {
                         key: typed::cell(&batch[group_index], row),
                         distinct: HashSet::new(),
@@ -187,6 +207,7 @@ pub(super) fn execute<W: Write>(
                 } else {
                     let id = groups.len();
                     *slot = id;
+                    charge_group_fixed(&mut retained_group_bytes)?;
                     groups.push(Group {
                         key: typed::cell(&batch[group_index], row),
                         distinct: HashSet::new(),
@@ -207,6 +228,7 @@ pub(super) fn execute<W: Write>(
                     }
                     let id = groups.len();
                     uuid_groups.insert(key, id);
+                    charge_group_fixed(&mut retained_group_bytes)?;
                     groups.push(Group {
                         key: typed::cell(&batch[group_index], row),
                         distinct: HashSet::new(),
@@ -228,6 +250,7 @@ pub(super) fn execute<W: Write>(
                     charge_text(&mut retained_text_bytes, text.len(), 2)?;
                     let id = groups.len();
                     text_groups.insert(text.to_vec(), id);
+                    charge_group_fixed(&mut retained_group_bytes)?;
                     groups.push(Group {
                         key: Cell::Text(text.to_vec()),
                         distinct: HashSet::new(),
@@ -249,6 +272,7 @@ pub(super) fn execute<W: Write>(
                         }
                         let id = groups.len();
                         entry.insert(id);
+                        charge_group_fixed(&mut retained_group_bytes)?;
                         groups.push(Group {
                             key: group,
                             distinct: HashSet::new(),
@@ -464,5 +488,23 @@ mod wide_grouped_string_budget_tests {
         assert_eq!(used, 16 * 1024 * 1024);
         charge_text(&mut used, 48 * 1024 * 1024, 1).unwrap();
         assert_eq!(used, MAX_TEXT_BYTES);
+    }
+}
+
+#[cfg(test)]
+mod fixed_group_memory_budget_tests {
+    use super::*;
+
+    #[test]
+    fn newly_created_groups_charge_all_fixed_state() {
+        let mut bytes = 0usize;
+        charge_group_fixed(&mut bytes).unwrap();
+        assert!(bytes >= std::mem::size_of::<Group>());
+        let one = bytes;
+        charge_group_fixed(&mut bytes).unwrap();
+        assert_eq!(bytes, one * 2);
+        bytes = MAX_GROUP_STATE_BYTES - 1;
+        assert!(charge_group_fixed(&mut bytes).is_err());
+        assert_eq!(bytes, MAX_GROUP_STATE_BYTES - 1);
     }
 }
