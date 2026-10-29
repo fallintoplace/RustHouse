@@ -1,5 +1,7 @@
 use super::*;
 
+const UUID_HYPHEN_OFFSETS: [usize; 4] = [8, 13, 18, 23];
+
 pub(super) fn push_varuint(mut value: u64, output: &mut Vec<u8>) {
     while value >= 128 {
         output.push((value as u8 & 0x7f) | 0x80);
@@ -10,13 +12,13 @@ pub(super) fn push_varuint(mut value: u64, output: &mut Vec<u8>) {
 
 fn push_uuid(value: &str, output: &mut Vec<u8>) -> Result<(), PartError> {
     let bytes = value.as_bytes();
-    if bytes.len() != 36 || [8, 13, 18, 23].iter().any(|&index| bytes[index] != b'-') {
+    if bytes.len() != 36 || UUID_HYPHEN_OFFSETS.iter().any(|&index| bytes[index] != b'-') {
         return Err(invalid(format!("invalid UUID value: {value}")));
     }
     let mut canonical = [0u8; 16];
     let mut digit_index = 0usize;
     for (position, &byte) in bytes.iter().enumerate() {
-        if matches!(position, 8 | 13 | 18 | 23) {
+        if UUID_HYPHEN_OFFSETS.contains(&position) {
             continue;
         }
         let digit = match byte {
