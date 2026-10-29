@@ -5,7 +5,17 @@ import json
 import re
 import sys
 from urllib.parse import quote, urlsplit
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, build_opener
+
+
+class NoRedirect(HTTPRedirectHandler):
+    """A loopback endpoint must not redirect requests to other hosts."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+NO_REDIRECT_OPENER = build_opener(NoRedirect())
 
 
 def validate_url(origin):
@@ -37,7 +47,7 @@ def columns(payload):
 
 def fetch(base, table, timeout=5):
     url = base + "/schema?table=" + quote(table, safe="")
-    with urlopen(url, timeout=timeout) as response:
+    with NO_REDIRECT_OPENER.open(url, timeout=timeout) as response:
         body = response.read(1_048_577)
     if len(body) > 1_048_576:
         raise ValueError("schema response too large")
