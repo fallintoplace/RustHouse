@@ -1,4 +1,17 @@
 #[test]
+fn short_contains_pruning_keeps_unicode_case_fold_matches() {
+    let literal = compile_like("%abcdefgh%").unwrap();
+    assert!(!like_matches(b"abc", &literal, false));
+    assert!(!like_matches(b"abc", &literal, true));
+
+    // The Kelvin sign folds to ASCII k. Its three-byte pattern must still
+    // match a one-byte value when ILIKE is used.
+    let unicode = compile_like("%K%").unwrap();
+    assert!(like_matches(b"k", &unicode, true));
+    assert!(!like_matches(b"k", &unicode, false));
+}
+
+#[test]
 fn unicode_multi_percent_patterns_reuse_compiled_folded_tokens() {
     let pattern = compile_like("x%É%Y").unwrap();
     assert!(matches!(&pattern, LikePattern::Wildcard {
