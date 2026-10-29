@@ -10,7 +10,7 @@ Run the current RustHouse compatibility inventory after loading appropriate inpu
 python3 bench/tpch/official_coverage.py \\
   --binary target/release/rusthouse \\
   --database /path/to/tpch-db \\
-  --queries-dir bench/tpch/queries \\
+  --query-dir bench/tpch/queries \\
   --reference-dir /path/to/reference-results \\
   --output /tmp/rusthouse-tpch-coverage.json
 ```
