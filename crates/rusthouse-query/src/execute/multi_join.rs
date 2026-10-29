@@ -339,7 +339,6 @@ pub fn execute_multi_join<W: Write>(
         return Ok(());
     }
 
-
     // Keep the complete logical row layout for JOIN keys and OUTER NULLs,
     // but decode only columns referenced by any step or output expression.
     // This avoids reading and cloning unrelated wide String dimensions.
@@ -350,13 +349,19 @@ pub fn execute_multi_join<W: Write>(
     {
         let right_start = relations[index + 1].start;
         let (left, right) = step_keys(join, &relations[..=index + 1], right_start)?;
-        for key in left { needed[key] = true; }
-        for key in right { needed[right_start + key] = true; }
+        for key in left {
+            needed[key] = true;
+        }
+        for key in right {
+            needed[right_start + key] = true;
+        }
     }
     let selected = output_columns(query, &relations, &initial_step)?;
     for (index, _, fallback) in &selected {
         needed[*index] = true;
-        if let Some(fallback) = fallback { needed[*fallback] = true; }
+        if let Some(fallback) = fallback {
+            needed[*fallback] = true;
+        }
     }
     if let Some((column, _)) = &query.where_null {
         needed[column_index(&relations, column)?] = true;
@@ -364,14 +369,19 @@ pub fn execute_multi_join<W: Write>(
     for (column, _, _) in &query.order_by {
         needed[column_index(&relations, column)?] = true;
     }
-    let projected: Vec<Vec<usize>> = relations.iter().map(|relation| {
-        let mut columns = (0..relation.names.len())
-            .filter(|&local| needed[relation.start + local])
-            .collect::<Vec<_>>();
-        // The reader needs at least one physical column to count rows.
-        if columns.is_empty() && !relation.names.is_empty() { columns.push(0); }
-        columns
-    }).collect();
+    let projected: Vec<Vec<usize>> = relations
+        .iter()
+        .map(|relation| {
+            let mut columns = (0..relation.names.len())
+                .filter(|&local| needed[relation.start + local])
+                .collect::<Vec<_>>();
+            // The reader needs at least one physical column to count rows.
+            if columns.is_empty() && !relation.names.is_empty() {
+                columns.push(0);
+            }
+            columns
+        })
+        .collect();
 
     let mut rows = read_projected_build_rows(
         &paths[0],
