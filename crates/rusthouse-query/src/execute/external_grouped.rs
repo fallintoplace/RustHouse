@@ -70,11 +70,16 @@ fn read_varint(input: &mut impl Read, eof_allowed: bool) -> Result<Option<u64>, 
 }
 
 fn write_varint(output: &mut impl Write, mut value: u64) -> Result<(), ExecutionError> {
+    // Encode on the stack and write once, including the full-width 10-byte case.
+    let mut bytes = [0u8; 10];
+    let mut len = 0;
     while value >= 128 {
-        output.write_all(&[((value as u8) & 0x7f) | 0x80])?;
+        bytes[len] = ((value as u8) & 0x7f) | 0x80;
+        len += 1;
         value >>= 7;
     }
-    output.write_all(&[value as u8])?;
+    bytes[len] = value as u8;
+    output.write_all(&bytes[..len + 1])?;
     Ok(())
 }
 
@@ -333,6 +338,26 @@ mod tests {
         let mut total = 0_u64;
         groups.finish(|_, count| { total += count; Ok(()) }).unwrap();
         assert_eq!(total, RUN_KEYS as u64);
+    }
+
+
+    #[test]
+    fn ten_byte_varints_write_once_and_preserve_unsigned_extremes() {
+        struct CountWrites { calls: usize, bytes: Vec<u8> }
+        impl Write for CountWrites {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        for value in [0, 127, 128, 16_384, u32::MAX as u64, u64::MAX] {
+            let mut writer = CountWrites { calls: 0, bytes: Vec::new() };
+            write_varint(&mut writer, value).unwrap();
+            assert_eq!(writer.calls, 1);
+            assert_eq!(read_varint(&mut writer.bytes.as_slice(), false).unwrap(), Some(value));
+        }
     }
 
     #[test]
