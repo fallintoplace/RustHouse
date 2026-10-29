@@ -139,16 +139,28 @@ pub fn format_date(days: u16) -> String {
     format_calendar_day(i64::from(days))
 }
 
+fn put_two_digits(output: &mut [u8; 19], offset: usize, number: u32) {
+    output[offset] = b'0' + (number / 10) as u8;
+    output[offset + 1] = b'0' + (number % 10) as u8;
+}
+
 pub fn format_datetime(seconds: u32) -> String {
     let days = seconds / 86_400;
     let remainder = seconds % 86_400;
-    // Format the calendar date and time together rather than allocating
-    // an intermediate String for every timestamp in a result batch.
     let (year, month, day) = from_days(i64::from(days));
-    let hour = remainder / 3_600;
-    let minute = remainder / 60 % 60;
-    let second = remainder % 60;
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+    // UInt32 timestamps cover 1970-2106, so the year always has four digits.
+    let year = year as u32;
+    let mut output = *b"0000-00-00 00:00:00";
+    output[0] = b'0' + (year / 1000) as u8;
+    output[1] = b'0' + ((year / 100) % 10) as u8;
+    output[2] = b'0' + ((year / 10) % 10) as u8;
+    output[3] = b'0' + (year % 10) as u8;
+    put_two_digits(&mut output, 5, month as u32);
+    put_two_digits(&mut output, 8, day as u32);
+    put_two_digits(&mut output, 11, remainder / 3_600);
+    put_two_digits(&mut output, 14, remainder / 60 % 60);
+    put_two_digits(&mut output, 17, remainder % 60);
+    String::from_utf8(output.to_vec()).expect("UTC date formatting emits ASCII")
 }
 
 #[cfg(test)]
@@ -215,6 +227,16 @@ mod tests {
             );
             assert_eq!(format_datetime(seconds), expected);
         }
+    }
+
+    #[test]
+    fn fixed_width_utc_rendering_roundtrips_large_timestamp_samples() {
+        for value in (0..=u32::MAX).step_by(4_000_001) {
+            let text = format_datetime(value);
+            assert_eq!(text.len(), 19);
+            assert_eq!(parse_datetime(&text), Some(value), "{value}");
+        }
+        assert_eq!(format_datetime(u32::MAX), "2106-02-07 06:28:15");
     }
 
     #[test]
