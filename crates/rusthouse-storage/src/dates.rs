@@ -10,15 +10,18 @@ fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
+fn ascii_digits(bytes: &[u8]) -> bool {
+    bytes.iter().all(u8::is_ascii_digit)
+}
+
 fn ymd(text: &str) -> Option<(i64, i64, i64)> {
     let bytes = text.as_bytes();
     if bytes.len() != 10
         || bytes[4] != b'-'
         || bytes[7] != b'-'
-        || bytes
-            .iter()
-            .enumerate()
-            .any(|(index, byte)| index != 4 && index != 7 && !byte.is_ascii_digit())
+        || !ascii_digits(&bytes[..4])
+        || !ascii_digits(&bytes[5..7])
+        || !ascii_digits(&bytes[8..])
     {
         return None;
     }
@@ -79,9 +82,9 @@ fn parse_clock_time(text: &str) -> Option<u64> {
     if bytes.len() != 8
         || bytes[2] != b':'
         || bytes[5] != b':'
-        || bytes[..2].iter().any(|byte| !byte.is_ascii_digit())
-        || bytes[3..5].iter().any(|byte| !byte.is_ascii_digit())
-        || bytes[6..].iter().any(|byte| !byte.is_ascii_digit())
+        || !ascii_digits(&bytes[..2])
+        || !ascii_digits(&bytes[3..5])
+        || !ascii_digits(&bytes[6..])
     {
         return None;
     }
