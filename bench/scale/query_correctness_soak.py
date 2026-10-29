@@ -48,6 +48,13 @@ def run_sql(binary, database, statement, timeout):
         return digest, length, elapsed
 
 
+def validate_attempt(actual, bytes_written, seconds, reference, size, attempt):
+    if (actual, bytes_written) != (reference, size):
+        raise ValueError(f"query output drift on iteration {attempt + 1}")
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError("invalid elapsed query time")
+
+
 def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
          execute=None):
     if (type(runs) is not int or type(warmups) is not int or runs < 1
@@ -61,10 +68,7 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
     samples = []
     for attempt in range(runs + warmups):
         actual, bytes_written, seconds = execute()
-        if (actual, bytes_written) != (reference, size):
-            raise ValueError(f"query output drift on iteration {attempt + 1}")
-        if not math.isfinite(seconds) or seconds < 0:
-            raise ValueError("invalid elapsed query time")
+        validate_attempt(actual, bytes_written, seconds, reference, size, attempt)
         if attempt >= warmups:
             samples.append(seconds)
     return {"verified": True, "runs": runs, "warmups": warmups, "output_sha256": reference,
