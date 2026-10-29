@@ -44,6 +44,18 @@ class DiskGuardTests(unittest.TestCase):
                 guard("unused", "unused", "events", fake, temp,
                       poll_seconds=0.001)
 
+    def test_rejects_monitor_on_another_existing_database_device(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "input.tsv"
+            source.write_bytes(b"1\n")
+            db = root / "db"
+            db.mkdir()
+            with patch("bench.scale.copy_disk_pressure_guard.same_device", return_value=False):
+                with self.assertRaisesRegex(ValueError, "database filesystem"):
+                    guard("rusthouse", db, "events", source, root,
+                          min_free_gib=0.000001)
+
 
 if __name__ == "__main__":
     unittest.main()
