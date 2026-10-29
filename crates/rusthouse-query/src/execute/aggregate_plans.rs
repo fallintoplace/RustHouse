@@ -624,6 +624,40 @@ pub(super) fn execute_grouped_numbers<W: Write>(
     if query.limit == Some(0) {
         return groups.write(query, column, output);
     }
+    // Group keys generated with a positive step are already sorted.
+    // ORDER BY number can address any bounded ASC/DESC page without
+    // constructing or sorting a group map, even at billion-row scale.
+    if query.having.is_none() && query.order_by_extra.is_empty() {
+        if let (Some(order), Some(limit)) = (query.order_by.as_ref(), query.limit) {
+            if order.column == "number" {
+                let range = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                    Some((0, rows))
+                } else {
+                    monotonic_range_indices(&comparisons, start, rows, step)
+                };
+                if let Some((lower, upper)) = range {
+                    let available = upper - lower;
+                    let skip = (query.offset.unwrap_or(0) as u64).min(available);
+                    let length = (limit as u64).min(available - skip);
+                    writeln!(
+                        output,
+                        "{column}\t{}",
+                        query.alias.as_deref().unwrap_or("count")
+                    )?;
+                    for position in skip..skip + length {
+                        let index = if order.descending {
+                            upper - 1 - position
+                        } else {
+                            lower + position
+                        };
+                        let number = u128::from(start) + u128::from(index) * u128::from(step);
+                        writeln!(output, "{number}\t1")?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
     // GROUP BY number contains exactly one row per generated key. If the
     // client requests a bounded unordered page, jump directly to its keys.
     if query.predicates.is_empty()
