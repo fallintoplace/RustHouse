@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn only_json_whitespace_is_accepted_between_tokens() {
         assert!(parse_json(" \t\r\n true \n").is_ok());
-        for input in ["\\u{000b}true", "true\\u{000c}", "[1,\\u{001f}2]"] {
+        for input in ["\u{000b}true", "true\u{000c}", "[1,\u{001f}2]"] {
             assert!(parse_json(input).is_err(), "{input:?}");
         }
     }
