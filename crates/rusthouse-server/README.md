@@ -12,7 +12,7 @@ curl 'http://127.0.0.1:8123/explain?query=SELECT%20number%20FROM%20numbers(10)'
 curl http://127.0.0.1:8123/ --data-binary 'SELECT count(*) FROM part'
 ```
 
-The endpoint supports GET /?query=... and POST / with raw SQL. Responses are TSV by default.
+The endpoint supports GET /?query=... and POST / with raw SQL. A POST may also put the start of a SELECT in `?query=...` and the remaining SQL in its body; the server inserts a newline between nonempty pieces, like ClickHouse. The combined query must still fit within 65536 bytes, and writes remain disabled. Responses are TSV by default.
 Pass `format=tsv-no-header` to remove the header row, including for empty results.
 Pass `format=csv` on either method for RFC 4180-style CSV with CRLF row endings.
 CSV includes headers, quotes embedded commas/newlines, and uses an unquoted `\\N` for NULL.

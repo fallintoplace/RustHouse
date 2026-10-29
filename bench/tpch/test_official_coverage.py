@@ -98,5 +98,18 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(bad["results"][0]["status"], "mismatch")
 
 
+class BoundedOfficialSQLInventoryTests(unittest.TestCase):
+    def test_large_raw_sql_is_reported_without_query_execution(self):
+        with tempfile.TemporaryDirectory() as root:
+            queries = Path(root)
+            (queries / "q01.sql").write_bytes(b"-- verbose\n" * 20 + b"SELECT 1\n")
+            invoked = []
+            with patch("official_coverage.MAX_QUERY_FILE_BYTES", 32):
+                report = coverage("unused", "db", queries, runs=1, warmups=0,
+                                  execute=lambda sql: invoked.append(sql))
+            self.assertEqual(report["results"][0]["status"], "unsupported_query")
+            self.assertIn("64 KiB", report["results"][0]["error"])
+            self.assertEqual(invoked, [])
+
 if __name__ == "__main__":
     unittest.main()

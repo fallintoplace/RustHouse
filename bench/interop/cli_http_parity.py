@@ -59,7 +59,11 @@ def request(port, statement):
     with NO_REDIRECT_OPENER.open(req, timeout=10) as response:
         if response.status != 200:
             raise RuntimeError(f"HTTP SQL returned {response.status}")
-        return response.read()
+        # A parity failure should not consume unbounded memory.
+        payload = response.read(4 * 1024 * 1024 + 1)
+        if len(payload) > 4 * 1024 * 1024:
+            raise ValueError("HTTP parity SQL response exceeds 4 MiB")
+        return payload
 
 
 def verify_server_identity(port):

@@ -157,5 +157,14 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result["status"], "unverified")
         self.assertEqual(summary([1, 4, 2, 3, 5])["p90_seconds"], 5)
 
+class QueryFileBudgetTests(unittest.TestCase):
+    def test_excessively_large_sql_file_is_rejected_before_decoding(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "q01.sql"
+            path.write_bytes(b"SELECT 1\n" * 20)
+            with mock.patch("run.MAX_QUERY_FILE_BYTES", 32):
+                with self.assertRaisesRegex(ValueError, "exceeds 64 KiB"):
+                    load_queries(Path(root))
+
 if __name__ == "__main__":
     unittest.main()

@@ -169,13 +169,15 @@ pub(super) fn execute<W: Write>(
         groups.retain(|(_, states)| states.get(index)
             .is_some_and(|state| state.passes_having(having)));
     }
+    let mut bounded_order = None;
     if query.order_by.is_some() {
         let terms=query.order_terms().map(|order|{
             let metric=order.column.strip_prefix("#aggregate")
                 .and_then(|name|name.parse::<usize>().ok());
             (metric,order.descending,order.nulls_first)
         }).collect::<Vec<_>>();
-        groups.sort_by(|left,right|{
+        let compare = |left: &(u128, Vec<AggregateState>),
+                       right: &(u128, Vec<AggregateState>)| {
             for &(metric,descending,nulls_first) in &terms {
                 let order=if let Some(index)=metric {
                     typed::compare_order_cells(&left.1[index].sort_cell(),
@@ -188,16 +190,37 @@ pub(super) fn execute<W: Write>(
                 if order!=Ordering::Equal {return order;}
             }
             left.0.cmp(&right.0)
-        });
+        };
+        if let Some(end) = query.limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit))
+            .filter(|&end| end < groups.len())
+        {
+            // O(groups + page*log(page)) instead of sorting all groups.
+            // The original index resolves ties in the same stable order.
+            bounded_order = Some(super::sorted_group_positions(&groups, end, compare));
+        } else {
+            groups.sort_by(compare);
+        }
     }
-    for (value,states) in groups.iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX)) {
+    let mut write_group = |(value, states): &(u128, Vec<AggregateState>)| {
         write!(output,"{value}")?;
         for state in states {
             write!(output,"\t{}",state.render())?;
         }
         writeln!(output)?;
+        Ok::<(), ExecutionError>(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index])?;
+        }
+    } else {
+        for group in groups.iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(group)?;
+        }
     }
     Ok(())
 }
@@ -210,6 +233,13 @@ mod generated_multi_group_having_tests {
         let mut bytes = Vec::new();
         execute(&parse_select(sql).unwrap(), None, &mut bytes).unwrap();
         String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn descending_ordered_group_page_selects_without_full_sort() {
+        assert_eq!(run(
+            "SELECT number, sum(number), max(number) FROM numbers(15)              GROUP BY number ORDER BY number DESC LIMIT 3 OFFSET 2"
+        ), "number\tsum(number)\tmax(number)\n12\t12\t12\n11\t11\t11\n10\t10\t10\n");
     }
 
     #[test]

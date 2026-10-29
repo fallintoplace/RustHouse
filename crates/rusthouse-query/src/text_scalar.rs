@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
         "IPV4STRINGTONUMORNULL"
+            | "DECODEURLFORMCOMPONENT"
             | "LENGTH"
             | "TOYEAR"
             | "LENGTHUTF8"
@@ -2798,7 +2799,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "URL_DECODE" | "DECODEURLCOMPONENT" => {
+        "URL_DECODE" | "DECODEURLCOMPONENT" | "DECODEURLFORMCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL_DECODE requires one argument")?;
             match input {
@@ -2822,7 +2823,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.push(byte);
                             index += 3;
                         } else {
-                            result.push(source[index]);
+                            result.push(if source[index] == b'+'
+                                && name == "DECODEURLFORMCOMPONENT"
+                            {
+                                b' '
+                            } else {
+                                source[index]
+                            });
                             index += 1;
                         }
                     }
@@ -3591,6 +3598,35 @@ mod ch_position_byte_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_decode_url_form_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn decodes_plus_and_percent_escaped_form_components() {
+        for (sql, expected) in [
+            ("SELECT decodeURLFormComponent('hello+world')", "hello world"),
+            ("SELECT decodeURLFormComponent('x%2By+z')", "x+y z"),
+            ("SELECT decodeURLFormComponent('a%20b')", "a b"),
+            ("SELECT decodeURLFormComponent('')", ""),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT decodeURLFormComponent('%GG')",
+            "SELECT decodeURLFormComponent('%')",
+            "SELECT decodeURLFormComponent('x', 'y')",
+        ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
