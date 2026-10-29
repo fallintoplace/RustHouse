@@ -1,0 +1,10 @@
+{
+  "name": "filtered-topk-desc",
+  "description": "Filtered descending top-K page",
+  "kind": "page",
+  "direction": "DESC",
+  "limit": 24,
+  "offset": 1000,
+  "modulus": 2,
+  "residue": 0
+}

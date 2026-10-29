@@ -32,6 +32,30 @@ class SkewedFixtureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "groups"):
             emit(io.StringIO(), 1, groups=0)
 
+    def test_rejects_boolean_and_fractional_controls_without_output(self):
+        for kwargs in (
+            {"rows": True},
+            {"rows": 4, "groups": False},
+            {"rows": 4, "hot_percent": 5.5},
+            {"rows": 4, "batch_rows": True},
+            {"rows": 4, "batch_rows": 1.5},
+        ):
+            with self.subTest(kwargs=kwargs):
+                output = io.StringIO()
+                with self.assertRaises(ValueError):
+                    emit(output, **kwargs)
+                self.assertEqual(output.getvalue(), "")
+
+    def test_concurrent_create_cannot_clobber_existing_output(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "events.tsv"
+            with patch("bench.scale.skewed_fixture.os.link", side_effect=FileExistsError):
+                with self.assertRaises(FileExistsError):
+                    generate(path, 10)
+            self.assertFalse(path.exists())
+            self.assertEqual(list(Path(root).iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()
