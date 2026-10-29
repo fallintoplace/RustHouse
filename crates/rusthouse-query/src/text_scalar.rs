@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "MACSTRINGTOOUI"
+        "ISIPADDRESSINRANGE"
+            | "MACSTRINGTOOUI"
             | "MACNUMTOSTRING"
             | "MACSTRINGTONUM"
             | "IPV4NUMTOSTRINGCLASSC"
@@ -578,6 +579,39 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(oui))
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "ISIPADDRESSINRANGE" => {
+            let address = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "isIPAddressInRange requires a CIDR range")?;
+            let range = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPAddressInRange requires two arguments")?;
+            match (address, range) {
+                (Some(address), Some(range)) => {
+                    let address = address.parse::<std::net::IpAddr>()
+                        .map_err(|_| ParseError("invalid IP address".into()))?;
+                    let (network, prefix) = range.split_once('/')
+                        .ok_or_else(|| ParseError("invalid CIDR range".into()))?;
+                    let network = network.parse::<std::net::IpAddr>()
+                        .map_err(|_| ParseError("invalid CIDR network address".into()))?;
+                    let prefix = prefix.parse::<u32>()
+                        .map_err(|_| ParseError("invalid CIDR prefix length".into()))?;
+                    let contains = match (address, network) {
+                        (std::net::IpAddr::V4(address), std::net::IpAddr::V4(network))
+                            if prefix <= 32 => {
+                            let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+                            u32::from(address) & mask == u32::from(network) & mask
+                        }
+                        (std::net::IpAddr::V6(address), std::net::IpAddr::V6(network))
+                            if prefix <= 128 => {
+                            let mask = if prefix == 0 { 0 } else { u128::MAX << (128 - prefix) };
+                            u128::from(address) & mask == u128::from(network) & mask
+                        }
+                        _ => return Err(ParseError("incompatible CIDR address or prefix".into())),
+                    };
+                    ConstantValue::Integer(i64::from(contains))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "PORT" => {
@@ -4192,5 +4226,37 @@ mod clickhouse_mac_string_to_oui_tests {
             );
         }
         assert!(parse_select("SELECT MACStringToOUI('x', 'y')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ip_address_in_range_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn matches_ipv4_and_ipv6_with_prefix_boundaries() {
+        for (sql, expected) in [
+            ("SELECT isIPAddressInRange('192.168.1.10', '192.168.0.0/16')", 1),
+            ("SELECT isIPAddressInRange('192.167.1.10', '192.168.0.0/16')", 0),
+            ("SELECT isIPAddressInRange('1.2.3.4', '0.0.0.0/0')", 1),
+            ("SELECT isIPAddressInRange('2001:db8::1', '2001:db8::/32')", 1),
+            ("SELECT isIPAddressInRange('2001:db9::1', '2001:db8::/32')", 0),
+            ("SELECT isIPAddressInRange('::1', '::1/128')", 1),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT isIPAddressInRange('1.2.3.4', '1.2.3.4/33')",
+            "SELECT isIPAddressInRange('1.2.3.4', '::1/128')",
+            "SELECT isIPAddressInRange('x', '1.2.3.4/32')",
+            "SELECT isIPAddressInRange('1.2.3.4')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
