@@ -16,5 +16,20 @@ class ClusterTests(unittest.TestCase):
                       "peers": [{"address": "127.0.0.1:8124", "healthy": False}]})
 
 
+    def test_redirect_handler_refuses_destination(self):
+        from cluster_health import NoRedirect
+        self.assertIsNone(NoRedirect().redirect_request(None, None, 301, "Moved", {}, "http://example.org/"))
+
+    def test_inspect_uses_redirect_rejecting_opener(self):
+        from unittest.mock import patch
+        from cluster_health import inspect
+        payload = b'{"total":0,"healthy":0,"peers":[]}'
+        with patch("cluster_health.NO_REDIRECT_OPENER") as opener:
+            opener.open.return_value.__enter__.return_value.read.return_value = payload
+            healthy, info = inspect("http://127.0.0.1:8123", timeout=3)
+            self.assertTrue(healthy)
+            self.assertEqual(info["total"], 0)
+            opener.open.assert_called_once_with("http://127.0.0.1:8123/cluster/health", timeout=3)
+
 if __name__ == "__main__":
     unittest.main()
