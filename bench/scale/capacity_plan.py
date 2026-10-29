@@ -4,6 +4,11 @@ import json
 import math
 
 
+def _ceil_div(numerator, denominator):
+    """Ceiling division for validated positive integers without floats."""
+    return (numerator - 1) // denominator + 1
+
+
 def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
          disk_budget_bytes=None, disk_copies=2):
     if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
@@ -18,8 +23,8 @@ def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
         raise ValueError("disk_budget_bytes must be positive")
     if type(disk_copies) is not int or not 1 <= disk_copies <= 8:
         raise ValueError("disk_copies must be in 1..8")
-    required_parts = (rows - 1) // rows_per_part + 1
-    minimum_rows = (rows - 1) // max_parts + 1
+    required_parts = _ceil_div(rows, rows_per_part)
+    minimum_rows = _ceil_div(rows, max_parts)
     estimated_bytes = rows * bytes_per_row
     part_fit = required_parts <= max_parts
     estimated_peak_bytes = estimated_bytes * disk_copies
