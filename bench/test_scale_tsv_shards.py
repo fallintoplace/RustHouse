@@ -68,6 +68,17 @@ class ShardTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 split_tsv(source, target)
 
+    def test_part_limit_fails_without_publishing_partial_shards(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.tsv"
+            source.write_bytes(b"0\n1\n2\n")
+            output = Path(root) / "chunks"
+            with patch("bench.scale.tsv_shards.MAX_SHARDS", 2):
+                with self.assertRaisesRegex(ValueError, "shard count"):
+                    split_tsv(source, output, rows_per_chunk=1)
+            self.assertFalse(output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
