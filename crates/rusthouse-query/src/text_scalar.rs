@@ -104,6 +104,9 @@ pub(super) fn is_function(name: &str) -> bool {
             | "FROMUNIXTIMESTAMP64MICRO"
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
+            | "TOUINT8ORZERO"
+            | "TOUINT16ORZERO"
+            | "TOUINT32ORZERO"
             | "TOINT8ORZERO"
             | "TOINT16ORZERO"
             | "TOINT32ORZERO"
@@ -3380,6 +3383,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     "TOINT16ORZERO" => text.parse::<i128>().ok().map(|n| i64::from(n as i16)),
                     "TOINT32ORZERO" => text.parse::<i128>().ok().map(|n| i64::from(n as i32)),
                     "TOINT64ORZERO" => text.parse::<i64>().ok(),
+                        _ => unreachable!("only registered casts reach this branch"),
+                    };
+                    ConstantValue::Integer(parsed.unwrap_or(0))
+                }
+            }
+        }
+        "TOUINT8ORZERO" | "TOUINT16ORZERO" | "TOUINT32ORZERO" => {
+            let text = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "integer OrZero cast requires one argument")?;
+            match text {
+                None => ConstantValue::Null,
+                Some(text) => {
+                    let parsed = match name.as_str() {
+                    "TOUINT8ORZERO" => text.parse::<u128>().ok().map(|n| i64::from(n as u8)),
+                    "TOUINT16ORZERO" => text.parse::<u128>().ok().map(|n| i64::from(n as u16)),
+                    "TOUINT32ORZERO" => text.parse::<u128>().ok().map(|n| i64::from(n as u32)),
                         _ => unreachable!("only registered casts reach this branch"),
                     };
                     ConstantValue::Integer(parsed.unwrap_or(0))
