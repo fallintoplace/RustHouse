@@ -21,11 +21,12 @@ def choose_ids(start, rows, count, seed):
     rng = random.Random(seed)
     chosen = set()
     sampled = []
-    while len(sampled) < count:
-        value = start + rng.randrange(rows)
-        if value not in chosen:
-            chosen.add(value)
-            sampled.append(value)
+    # Floyd's algorithm avoids retrying duplicate draws when the sample is dense.
+    for upper in range(rows - count, rows):
+        candidate = rng.randrange(upper + 1)
+        selected = upper if candidate in chosen else candidate
+        chosen.add(selected)
+        sampled.append(start + selected)
     return sampled
 
 
