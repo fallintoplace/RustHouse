@@ -126,7 +126,7 @@ fn merge_runs(
     inputs: &[PathBuf],
     descending: bool,
     directions: &Arc<[bool]>,
-    mut output: impl FnMut(&SortedRow) -> Result<(), ExecutionError>,
+    mut output: impl FnMut(&SortedRow) -> Result<bool, ExecutionError>,
 ) -> Result<(), ExecutionError> {
     let mut streams = inputs.iter().map(File::open)
         .map(|source| source.map(BufReader::new))
@@ -138,7 +138,7 @@ fn merge_runs(
         }
     }
     while let Some(Reverse((row, index))) = heap.pop() {
-        output(&row)?;
+        if !output(&row)? { break; }
         if let Some(next) = read_sorted_row(&mut streams[index], descending, directions)? {
             heap.push(Reverse((next, index)));
         }
@@ -446,7 +446,8 @@ impl SortedRows {
                     let mut writer = BufWriter::new(OpenOptions::new()
                         .create_new(true).write(true).open(&path)?);
                     merge_runs(group, self.descending, &self.extra_descending, |row| {
-                        write_sorted_row(&mut writer, row)
+                        write_sorted_row(&mut writer, row)?;
+                        Ok(true)
                     })?;
                     writer.flush()?;
                     self.charge_temp(&path)?;
@@ -461,6 +462,7 @@ impl SortedRows {
             let mut returned = 0usize;
             let limit = self.requested.saturating_sub(self.offset);
             merge_runs(&self.run_paths, self.descending, &self.extra_descending, |row| {
+                if scanned >= self.requested { return Ok(false); }
                 if scanned >= self.offset && returned < limit {
                     for (index, value) in row.values.iter().enumerate() {
                         if index != 0 { write!(output, "\t")?; }
@@ -469,8 +471,9 @@ impl SortedRows {
                     writeln!(output)?;
                     returned += 1;
                 }
-                scanned += 1;
-                Ok(())
+                scanned = scanned.checked_add(1)
+                    .ok_or_else(|| invalid("external sort page count overflow"))?;
+                Ok(scanned < self.requested)
             })?;
             return Ok(());
         }
@@ -490,6 +493,34 @@ impl SortedRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_merge_can_stop_before_reading_the_remaining_run() {
+        let scratch = SortScratch::new().unwrap();
+        let path = scratch.0.join("run.bin");
+        let directions: Arc<[bool]> = Arc::from(Vec::<bool>::new());
+        let first = SortedRow {
+            key: Number::Unsigned(1), extra_keys: Vec::new(),
+            values: vec![Number::Unsigned(1)], sequence: 0,
+            descending: false, extra_descending: directions.clone(),
+        };
+        let second = SortedRow {
+            key: Number::Unsigned(2), extra_keys: Vec::new(),
+            values: vec![Number::Unsigned(2)], sequence: 1,
+            descending: false, extra_descending: directions.clone(),
+        };
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        write_sorted_row(&mut writer, &first).unwrap();
+        write_sorted_row(&mut writer, &second).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+        let mut visited = 0;
+        merge_runs(&[path], false, &directions, |_| {
+            visited += 1;
+            Ok(false)
+        }).unwrap();
+        assert_eq!(visited, 1);
+    }
 
     #[test]
     fn rejects_noncanonical_float_spill_bytes() {
