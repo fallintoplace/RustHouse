@@ -86,16 +86,22 @@ fn write_cell(output: &mut impl Write, value: &Cell) -> Result<(), ExecutionErro
     match value {
         Cell::Null => output.write_all(&[0])?,
         Cell::Numeric(Number::Unsigned(v)) => {
-            output.write_all(&[1])?;
-            output.write_all(&v.to_le_bytes())?;
+            let mut encoded = [0u8; 17];
+            encoded[0] = 1;
+            encoded[1..].copy_from_slice(&v.to_le_bytes());
+            output.write_all(&encoded)?;
         }
         Cell::Numeric(Number::Signed(v)) => {
-            output.write_all(&[2])?;
-            output.write_all(&v.to_le_bytes())?;
+            let mut encoded = [0u8; 17];
+            encoded[0] = 2;
+            encoded[1..].copy_from_slice(&v.to_le_bytes());
+            output.write_all(&encoded)?;
         }
         Cell::Numeric(Number::Float(v)) => {
-            output.write_all(&[3])?;
-            output.write_all(&v.to_bits().to_le_bytes())?;
+            let mut encoded = [0u8; 9];
+            encoded[0] = 3;
+            encoded[1..].copy_from_slice(&v.to_bits().to_le_bytes());
+            output.write_all(&encoded)?;
         }
         Cell::Text(value) => {
             output.write_all(&[4])?;
@@ -447,6 +453,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn numeric_typed_cells_write_tag_and_bytes_together() {
+        struct Sink { writes: usize, data: Vec<u8> }
+        impl Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                self.data.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let values = [
+            Cell::Numeric(Number::Unsigned(u128::MAX)),
+            Cell::Numeric(Number::Signed(-129)),
+            Cell::Numeric(Number::Float(-0.0)),
+        ];
+        let mut sink = Sink { writes: 0, data: Vec::new() };
+        for cell in &values { write_cell(&mut sink, cell).unwrap(); }
+        assert_eq!(sink.writes, values.len());
+        let mut encoded = sink.data.as_slice();
+        for cell in values {
+            assert_eq!(std::mem::discriminant(&read_cell(&mut encoded).unwrap()), std::mem::discriminant(&cell));
+        }
+        assert!(encoded.is_empty());
+    }
     #[test]
     fn spill_round_trip_retains_nullable_strings_uuids_and_numbers() {
         let mut input = Vec::new();
