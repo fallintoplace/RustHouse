@@ -1,6 +1,7 @@
 //! In-memory, bounded equi-join over validated immutable typed snapshots.
 
 mod keys;
+mod count_column;
 
 use self::keys::*;
 
@@ -1193,6 +1194,14 @@ pub fn execute_join<W: Write>(
         }
         left_keys.push(left_index);
         right_keys.push(right_index);
+    }
+
+    if let Some(JoinAggregate::CountColumn(column)) = &query.aggregate {
+        return count_column::execute(
+            query, left_path, right_path,
+            &left_names, &right_names, &left_keys, &right_keys,
+            null_filter, column, output,
+        );
     }
 
     if query.aggregate == Some(JoinAggregate::CountStar) {
