@@ -22,5 +22,25 @@ class SourceProbeTests(unittest.TestCase):
         self.assertEqual(probe("http://127.0.0.1:8123", "database", "events")["source"], "database")
 
 
+    @patch("source_probe.read_json")
+    def test_rejects_invalid_schema_descriptors(self, read):
+        for columns in ([], [{"name": "id"}], [{"name": "", "type": "UInt64"}],
+                        [{"name": "id", "type": " " }], [
+                            {"name": "id", "type": "UInt64"},
+                            {"name": "id", "type": "UInt64"}]):
+            with self.subTest(columns=columns):
+                read.side_effect = [
+                    {"source": "database", "read_only": True},
+                    {"columns": columns},
+                ]
+                with self.assertRaises(ValueError):
+                    probe("http://127.0.0.1:8123", "database", "items")
+    @patch("source_probe.read_json")
+    def test_rejects_nonobject_schema_response(self, read):
+        read.side_effect = [{"source": "database", "read_only": True}, []]
+        with self.assertRaises(ValueError):
+            probe("http://127.0.0.1:8123", "database", "items")
+
+
 if __name__ == "__main__":
     unittest.main()
