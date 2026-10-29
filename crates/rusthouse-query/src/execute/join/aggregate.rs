@@ -20,12 +20,13 @@ pub(super) fn execute_numeric<W: Write>(
 ) -> Result<(), ExecutionError> {
     let width = left_names.len();
     let index = resolve(query, column, left_names, right_names)?;
-    let metadata = if index < width {
+    let from_left = index < width;
+    let metadata = if from_left {
         inspect_query_source(left_path)?
     } else {
         inspect_query_source(right_path)?
     };
-    let source_index = if index < width { index } else { index - width };
+    let source_index = if from_left { index } else { index - width };
     let data_type = base_type(&metadata.columns[source_index].data_type);
     if matches!(data_type, "String" | "UUID" | "Date" | "DateTime")
         || data_type.starts_with("Array(")
@@ -71,14 +72,14 @@ pub(super) fn execute_numeric<W: Write>(
             &right_rows,
             &hash,
             ProbeOptions {
-                materialize_rows: index < width,
+                materialize_rows: from_left,
                 materialize_after: 0,
                 stop_after: Some(usize::MAX),
                 any: query.any,
                 null_filter,
             },
             |left, right| {
-                let cell = if index < width {
+                let cell = if from_left {
                     &left[index]
                 } else {
                     &right[index - width]
