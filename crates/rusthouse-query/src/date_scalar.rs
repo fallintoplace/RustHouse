@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOHOUR"
             | "TORELATIVEMONTHNUM"
             | "TORELATIVEWEEKNUM"
             | "TORELATIVEDAYNUM"
@@ -172,6 +173,9 @@ pub(super) fn parse_after_open(
         }),
         "TORELATIVESECONDNUM" => unary_date(parser, depth, |value| {
             Ok(ConstantValue::Integer(value.seconds))
+        }),
+        "TOHOUR" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.rem_euclid(DAY_SECONDS) / 3_600))
         }),
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),

@@ -170,6 +170,8 @@ pub(super) fn is_function(name: &str) -> bool {
             | "EDITDISTANCEUTF8"
             | "FORMATREADABLESIZE"
             | "FORMATREADABLEDECIMALSIZE"
+            | "TOTYPENAME"
+            | "POSITION"
             | "ENCODEURLFORMCOMPONENT"
             | "ISIPV4PRIVATE"
             | "ISIPV4LOOPBACK"
@@ -579,6 +581,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     ConstantValue::Text(format!("{number:.precision$}{}", UNITS[index]))
                 }
+                _ => ConstantValue::Null,
+            }
+        }
+        "TOTYPENAME" => {
+            let input = constant_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toTypeName requires one argument")?;
+            let name = match input {
+                ConstantValue::Integer(_) => "Int64",
+                ConstantValue::Text(_) => "String",
+                ConstantValue::Null => "Nullable(Nothing)",
+            };
+            ConstantValue::Text(name.into())
+        }
+        "POSITION" => {
+            let haystack = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "position requires two arguments")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "position requires two arguments")?;
+            match (haystack, needle) {
+                (Some(haystack), Some(needle)) => ConstantValue::Integer(
+                    i64::try_from(haystack.find(&needle).map_or(0, |index| index + 1))
+                        .map_err(|_| ParseError("position result exceeds Int64".into()))?,
+                ),
                 _ => ConstantValue::Null,
             }
         }
@@ -3524,5 +3549,31 @@ mod string_bytes_uniq_bitmap_tests {
         let parsed = parse_select("SELECT stringBytesUniq(NULL)").unwrap();
         assert!(matches!(parsed.projection, Projection::Constants(values)
             if values[0].value == ConstantValue::Null));
+    }
+}
+
+#[cfg(test)]
+mod ch_position_byte_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn supported_values_and_invalid_arity() {
+        for (sql, expected) in [
+            ("SELECT position('éa', 'a')", ConstantValue::Integer(3)),
+            ("SELECT position('hello', 'll')", ConstantValue::Integer(3)),
+            ("SELECT position('abc', 'Z')", ConstantValue::Integer(0)),
+            ("SELECT position(NULL, 'a')", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
