@@ -198,23 +198,57 @@ fn numeric_argument_at(
     }
 }
 
+/// Compare a UInt128 against an IEEE Float64 without rounding the integer
+/// through Float64 first. Conversions below are exact for in-range whole
+/// Float64 values; fractional portions are resolved after integer comparison.
+fn compare_unsigned_float(integer: u128, float: f64) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    if float.is_nan() { return None; }
+    if float < 0.0 { return Some(Ordering::Greater); }
+    if float.is_infinite() || float >= 2.0_f64.powi(128) {
+        return Some(Ordering::Less);
+    }
+    let whole = float.trunc() as u128;
+    Some(integer.cmp(&whole).then_with(|| {
+        if float.fract() > 0.0 { Ordering::Less } else { Ordering::Equal }
+    }))
+}
+
+fn compare_signed_float(integer: i128, float: f64) -> Option<std::cmp::Ordering> {
+    if integer >= 0 {
+        compare_unsigned_float(integer as u128, float)
+    } else if float >= 0.0 {
+        Some(std::cmp::Ordering::Less)
+    } else {
+        compare_unsigned_float(integer.unsigned_abs(), -float)
+            .map(std::cmp::Ordering::reverse)
+    }
+}
+
 /// SQL expression comparisons must compare numeric values, not the
 /// internal Number enum variant order used by mixed-type sort keys.
-fn compare_expression_numbers(left: Number, right: Number) -> std::cmp::Ordering {
+fn compare_expression_numbers(left: Number, right: Number) -> Option<std::cmp::Ordering> {
     match (left, right) {
-        (Number::Unsigned(left), Number::Signed(right)) => {
+        (Number::Unsigned(left), Number::Signed(right)) => Some(
             match u128::try_from(right) {
                 Ok(right) => left.cmp(&right),
                 Err(_) => std::cmp::Ordering::Greater,
             }
-        }
-        (Number::Signed(left), Number::Unsigned(right)) => {
+        ),
+        (Number::Signed(left), Number::Unsigned(right)) => Some(
             match u128::try_from(left) {
                 Ok(left) => left.cmp(&right),
                 Err(_) => std::cmp::Ordering::Less,
             }
-        }
-        _ => super::compare_numbers(left, right),
+        ),
+        (Number::Float(left), Number::Float(right)) => left.partial_cmp(&right),
+        (Number::Unsigned(left), Number::Float(right)) => compare_unsigned_float(left, right),
+        (Number::Signed(left), Number::Float(right)) => compare_signed_float(left, right),
+        (Number::Float(left), Number::Unsigned(right)) => compare_unsigned_float(right, left)
+            .map(std::cmp::Ordering::reverse),
+        (Number::Float(left), Number::Signed(right)) => compare_signed_float(right, left)
+            .map(std::cmp::Ordering::reverse),
+        _ => Some(super::compare_numbers(left, right)),
     }
 }
 
@@ -230,12 +264,12 @@ fn eval_number(
             let Some(right) = eval_number(right, batch, row)? else {return Ok(None)};
             let order = compare_expression_numbers(left, right);
             let matched = match operator {
-                crate::Operator::Eq => order.is_eq(),
-                crate::Operator::Ne => order.is_ne(),
-                crate::Operator::Lt => order.is_lt(),
-                crate::Operator::Le => order.is_le(),
-                crate::Operator::Gt => order.is_gt(),
-                crate::Operator::Ge => order.is_ge(),
+                crate::Operator::Eq => order.is_some_and(|order| order.is_eq()),
+                crate::Operator::Ne => order.is_none_or(|order| order.is_ne()),
+                crate::Operator::Lt => order.is_some_and(|order| order.is_lt()),
+                crate::Operator::Le => order.is_some_and(|order| order.is_le()),
+                crate::Operator::Gt => order.is_some_and(|order| order.is_gt()),
+                crate::Operator::Ge => order.is_some_and(|order| order.is_ge()),
                 _ => return Err(ExecutionError::Invalid(
                     "unsupported numeric comparison operator".into())),
             };
@@ -965,9 +999,81 @@ mod mixed_integer_expression_comparison_tests {
         }
         assert_eq!(compare_expression_numbers(
             Number::Unsigned(u128::MAX), Number::Signed(-1)
-        ), std::cmp::Ordering::Greater);
+        ), Some(std::cmp::Ordering::Greater));
         assert_eq!(compare_expression_numbers(
             Number::Signed(i128::MIN), Number::Unsigned(0)
-        ), std::cmp::Ordering::Less);
+        ), Some(std::cmp::Ordering::Less));
+    }
+}
+
+#[cfg(test)]
+mod ieee_comparison_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn compares_float_zero_normally_and_nan_as_unordered() {
+        assert_eq!(compare_expression_numbers(
+            Number::Float(-0.0), Number::Float(0.0)),
+            Some(std::cmp::Ordering::Equal));
+        assert_eq!(compare_expression_numbers(
+            Number::Float(f64::NAN), Number::Float(f64::NAN)), None);
+        let batch = [
+            TypedColumn::Numeric(NumericColumn::Float64(vec![-0.0, f64::NAN])),
+            TypedColumn::Numeric(NumericColumn::Float64(vec![0.0, f64::NAN])),
+        ];
+        for (operator, row, expected) in [
+            (crate::Operator::Eq, 0, 1),
+            (crate::Operator::Ne, 0, 0),
+            (crate::Operator::Eq, 1, 0),
+            (crate::Operator::Ne, 1, 1),
+            (crate::Operator::Lt, 1, 0),
+            (crate::Operator::Ge, 1, 0),
+        ] {
+            let expression = BoundExpr::Compare(
+                Box::new(BoundExpr::Column(0)), operator,
+                Box::new(BoundExpr::Column(1)),
+            );
+            assert!(matches!(eval_number(&expression, &batch, row).unwrap(),
+                Some(Number::Unsigned(actual)) if actual == expected));
+        }
+    }
+}
+
+#[cfg(test)]
+mod exact_mixed_float_integer_comparison_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn integer_float_comparisons_keep_u128_precision() {
+        let border = 9_007_199_254_740_992u128;
+        assert_eq!(compare_unsigned_float(border + 1, border as f64), Some(Ordering::Greater));
+        assert_eq!(compare_unsigned_float(u128::MAX, 2.0_f64.powi(128)), Some(Ordering::Less));
+        assert_eq!(compare_unsigned_float(u128::MAX, f64::INFINITY), Some(Ordering::Less));
+        assert_eq!(compare_unsigned_float(0, -0.0), Some(Ordering::Equal));
+        assert_eq!(compare_signed_float(-1, -1.5), Some(Ordering::Greater));
+        assert_eq!(compare_signed_float(i128::MIN, -2.0_f64.powi(127)), Some(Ordering::Equal));
+        assert_eq!(compare_signed_float(-1, f64::NEG_INFINITY), Some(Ordering::Greater));
+        assert_eq!(compare_unsigned_float(1, f64::NAN), None);
+        assert_eq!(compare_expression_numbers(
+            Number::Float(-1.5), Number::Signed(-1)), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn float_columns_compare_against_signed_constant_literals() {
+        let batch = [TypedColumn::Numeric(NumericColumn::Float64(
+            vec![-1.0, 3.0, 4.5, f64::NAN]
+        ))];
+        let comparison = BoundExpr::Compare(
+            Box::new(BoundExpr::Column(0)),
+            crate::Operator::Gt,
+            Box::new(BoundExpr::Integer(3)),
+        );
+        for (index, expected) in [0u128, 0, 1, 0].into_iter().enumerate() {
+            assert!(matches!(eval_number(&comparison, &batch, index).unwrap(),
+                Some(Number::Unsigned(actual)) if actual == expected));
+        }
     }
 }
