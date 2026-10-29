@@ -55,7 +55,7 @@ class PermutedFixturesTests(unittest.TestCase):
             output = io.StringIO()
             emit(output, 11, seed=seed, batch_rows=2)
             self.assertEqual(output.getvalue(),
-                             "".join(f"{permuted(i, seed)}\\n" for i in range(11)))
+                             "".join(f"{permuted(i, seed)}\n" for i in range(11)))
 
 
 if __name__ == "__main__":
