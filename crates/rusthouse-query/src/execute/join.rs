@@ -1196,6 +1196,20 @@ impl Ord for OrderedJoinRow {
     }
 }
 
+// Compare a candidate against the worst retained row before cloning any
+// selected values. Equal keys lose because incoming sequence numbers are later.
+fn ordered_join_loses_topk<'a>(
+    order: &[(usize, bool, Option<bool>)],
+    worst: &[typed::Cell],
+    cell: impl Fn(usize) -> &'a typed::Cell,
+) -> bool {
+    for (&(index, descending, nulls_first), previous) in order.iter().zip(worst) {
+        let cmp = typed::compare_order_cells(cell(index), previous, descending, nulls_first);
+        if cmp != Ordering::Equal { return cmp == Ordering::Greater; }
+    }
+    true
+}
+
 fn ordered_join_retained_bytes(cells: &[typed::Cell]) -> Result<usize, ExecutionError> {
     cells.iter().try_fold(
         std::mem::size_of_val(cells),
@@ -1267,6 +1281,14 @@ fn execute_streaming_ordered_inner<W: Write>(
             let at = |index: usize| -> &typed::Cell {
                 if index < width { &left[index] } else { &right[index - width] }
             };
+            let candidate_sequence = sequence;
+            sequence = sequence.checked_add(1)
+                .ok_or_else(|| invalid("ordered JOIN row count overflow"))?;
+            if heap.len() == requested && heap.peek().is_some_and(|worst| {
+                ordered_join_loses_topk(order, &worst.keys, at)
+            }) {
+                return Ok(());
+            }
             let keys: Vec<typed::Cell> = order.iter().map(|(index, _, _)| at(*index).clone()).collect();
             let values: Vec<typed::Cell> = selected
                 .iter().map(|(index, _, _)| at(*index).clone()).collect();
@@ -1274,15 +1296,9 @@ fn execute_streaming_ordered_inner<W: Write>(
                 .checked_add(ordered_join_retained_bytes(&values)?)
                 .ok_or_else(|| invalid("ordered JOIN output size overflow"))?;
             let candidate = OrderedJoinRow {
-                values, keys, directions: directions.clone(), sequence,
+                values, keys, directions: directions.clone(), sequence: candidate_sequence,
                 retained_bytes: bytes,
             };
-            sequence = sequence.checked_add(1)
-                .ok_or_else(|| invalid("ordered JOIN row count overflow"))?;
-            if heap.len() == requested &&
-                heap.peek().is_some_and(|worst| candidate >= *worst) {
-                return Ok(());
-            }
             let removed = if heap.len() == requested {
                 heap.peek().map_or(0, |row| row.retained_bytes)
             } else { 0 };
@@ -1769,6 +1785,26 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn topk_comparison_rejects_late_ties_without_cloning_payload() {
+        let order = [(0, false, None), (1, true, None)];
+        let worst = vec![
+            typed::Cell::Numeric(Number::Unsigned(10)),
+            typed::Cell::Numeric(Number::Unsigned(3)),
+        ];
+        let losing = [
+            typed::Cell::Numeric(Number::Unsigned(10)),
+            typed::Cell::Numeric(Number::Unsigned(2)),
+        ];
+        assert!(ordered_join_loses_topk(&order, &worst, |i| &losing[i]));
+        let winning = [
+            typed::Cell::Numeric(Number::Unsigned(10)),
+            typed::Cell::Numeric(Number::Unsigned(4)),
+        ];
+        assert!(!ordered_join_loses_topk(&order, &worst, |i| &winning[i]));
+        assert!(ordered_join_loses_topk(&order, &worst, |i| &worst[i]));
+    }
 
     #[test]
     fn streaming_join_probe_decodes_only_required_physical_columns() {
