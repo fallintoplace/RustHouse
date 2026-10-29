@@ -496,13 +496,13 @@ fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseErro
     let offset = u32::try_from(offset)
         .map_err(|_| ParseError("BIT_EXTRACT offset must be between 0 and 63".into()))?;
     let width = u32::try_from(width)
-        .map_err(|_| ParseError("BIT_EXTRACT width must be between 1 and 63".into()))?;
-    if offset >= 64 || width == 0 || width > 63 || offset + width > 64 {
+        .map_err(|_| ParseError("BIT_EXTRACT width must be between 1 and 64".into()))?;
+    if offset >= 64 || width == 0 || width > 64 || offset + width > 64 {
         return Err(ParseError(
             "BIT_EXTRACT field must fit within 64 bits".into(),
         ));
     }
-    let mask = (1_u64 << width) - 1;
+    let mask = if width == 64 { u64::MAX } else { (1_u64 << width) - 1 };
     Ok((((value as u64) >> offset) & mask) as i64)
 }
 
