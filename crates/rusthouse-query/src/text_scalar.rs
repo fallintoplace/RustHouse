@@ -703,7 +703,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "REVERSE requires one argument")?;
             match input {
-                Some(value) => ConstantValue::Text(value.chars().rev().collect()),
+                Some(value) => {
+                    let result = if value.is_ascii() {
+                        let mut bytes = value.into_bytes();
+                        bytes.reverse();
+                        String::from_utf8(bytes).expect("ASCII input remains valid UTF-8")
+                    } else {
+                        value.chars().rev().collect()
+                    };
+                    ConstantValue::Text(result)
+                },
                 None => ConstantValue::Null,
             }
         }
@@ -3383,6 +3392,28 @@ mod ch_perf_ascii_upperutf8_tests {
             ("SELECT upperUTF8('hello')", ConstantValue::Text("HELLO".into())),
             ("SELECT upperUTF8('äbc')", ConstantValue::Text("ÄBC".into())),
             ("SELECT upperUTF8(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_perf_ascii_reverseutf8_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn ascii_and_unicode_keep_the_same_results() {
+        for (sql, expected) in [
+            ("SELECT reverseUTF8('hello')", ConstantValue::Text("olleh".into())),
+            ("SELECT reverseUTF8('é🙂a')", ConstantValue::Text("a🙂é".into())),
+            ("SELECT reverseUTF8(NULL)", ConstantValue::Null),
         ] {
             assert_eq!(value(sql), expected, "{sql}");
         }
