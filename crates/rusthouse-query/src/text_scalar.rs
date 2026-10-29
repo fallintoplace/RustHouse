@@ -64,6 +64,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "DATETRUNC"
             | "JSON_QUOTE"
             | "ISVALIDJSON"
+            | "JSONLENGTH"
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTINT"
@@ -2674,6 +2675,31 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "JSONLENGTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "JSONLength requires one or two arguments")?;
+            match (input, path) {
+                (None, _) | (_, Some(None)) => ConstantValue::Null,
+                (Some(input), path) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let value = match path {
+                        Some(Some(path)) => json.at_path(&path),
+                        None => Some(&json),
+                        Some(None) => unreachable!(),
+                    };
+                    let length = value.map_or(0, |node| node.container_len());
+                    ConstantValue::Integer(
+                        i64::try_from(length).map_err(|_| ParseError("JSONLength exceeds Int64".into()))?
+                    )
+                }
             }
         }
         "JSONEXTRACTINT" => {
