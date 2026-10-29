@@ -8,6 +8,7 @@ use crate::scan_layout::ScanLayout;
 use crate::{
     ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError,
     PartMetadata, StringColumn, UuidValue, WideMark, inspect_part, read_array_offsets,
+    read_part_row_count,
     read_legacy_strings, read_numeric_array_column, read_numeric_column, read_uuid_values,
     read_wide_marks,
 };
@@ -1000,8 +1001,8 @@ impl TypedQueryReader {
         let mut skipped = 0usize;
         while skipped < max_rows && self.next_part < self.parts.len() {
             let part = &self.parts[self.next_part];
-            let metadata = inspect_part(part)?;
-            if let Ok(rows) = usize::try_from(metadata.rows) {
+            let rows = read_part_row_count(part)?;
+            if let Ok(rows) = usize::try_from(rows) {
                 if rows <= max_rows - skipped {
                     skipped += rows;
                     self.next_part += 1;
