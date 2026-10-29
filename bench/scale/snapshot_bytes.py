@@ -28,7 +28,10 @@ def inventory(root, *, max_files=1_000_000):
         raise ValueError("max_files must be positive")
     groups = dict.fromkeys(("data_bytes", "mark_bytes", "index_bytes", "metadata_bytes"), 0)
     count = 0
-    for directory, dirs, files in os.walk(root, followlinks=False):
+    def fail_walk(error):
+        raise error
+
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail_walk):
         for name in dirs:
             if (Path(directory) / name).is_symlink():
                 raise ValueError("symlinked directory is unsafe")
