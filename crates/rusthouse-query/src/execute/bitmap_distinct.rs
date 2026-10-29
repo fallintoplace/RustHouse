@@ -14,6 +14,15 @@ enum Block {
 
 const DENSE_THRESHOLD: usize = 4096;
 
+fn insert_bitmap_bit(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
+    let index = usize::from(suffix);
+    let mask = 1u64 << (index % 64);
+    let word = &mut bitmap[index / 64];
+    let fresh = *word & mask == 0;
+    *word |= mask;
+    fresh
+}
+
 #[derive(Default)]
 pub(super) struct BitmapDistinct32 {
     blocks: HashMap<u16, Block>,
@@ -41,20 +50,14 @@ impl BitmapDistinct32 {
                 if fresh && values.len() == DENSE_THRESHOLD {
                     let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
                     for &value in values.iter() {
-                        let index = usize::from(value);
-                        bitmap[index / 64] |= 1u64 << (index % 64);
+                        insert_bitmap_bit(bitmap.as_mut(), value);
                     }
                     *block = Block::Dense(bitmap);
                 }
                 fresh
             }
             Block::Dense(bitmap) => {
-                let index = usize::from(suffix);
-                let mask = 1u64 << (index % 64);
-                let word = &mut bitmap[index / 64];
-                let fresh = *word & mask == 0;
-                *word |= mask;
-                fresh
+                insert_bitmap_bit(bitmap.as_mut(), suffix)
             }
         };
         if inserted {
