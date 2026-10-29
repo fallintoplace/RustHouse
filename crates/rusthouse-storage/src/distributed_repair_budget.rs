@@ -8,14 +8,16 @@ pub struct RepairJob {
     pub missing_replicas: u8,
 }
 
-fn valid_repair_job(job: &RepairJob) -> bool {
-    !job.shard.is_empty()
-        && job.shard.len() <= 128
-        && job.missing_replicas != 0
-        && job
-            .shard
+fn valid_shard(shard: &str) -> bool {
+    !shard.is_empty()
+        && shard.len() <= 128
+        && shard
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn valid_repair_job(job: &RepairJob) -> bool {
+    job.missing_replicas != 0 && valid_shard(&job.shard)
 }
 
 fn repair_priority(left: &RepairJob, right: &RepairJob) -> std::cmp::Ordering {
@@ -156,11 +158,7 @@ pub fn plan_repairs_excluding(
     validate_repair_jobs(jobs)?;
     let mut excluded = HashSet::with_capacity(in_flight.len());
     for &shard in in_flight {
-        if shard.is_empty()
-            || shard.len() > 128
-            || !shard.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            || !excluded.insert(shard)
-        {
+        if !valid_shard(shard) || !excluded.insert(shard) {
             return Err("invalid or duplicate in-flight repair shard");
         }
     }
