@@ -23,13 +23,14 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024):
         raise error
 
     for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail_walk):
+        directory_path = Path(directory)
         dirs.sort()
         files.sort()
         for name in dirs:
-            if (Path(directory) / name).is_symlink():
+            if (directory_path / name).is_symlink():
                 raise ValueError("snapshot contains a symlink")
         for name in files:
-            path = Path(directory) / name
+            path = directory_path / name
             before = path.lstat()
             if not stat.S_ISREG(before.st_mode):
                 raise ValueError("snapshot contains a nonregular file")
