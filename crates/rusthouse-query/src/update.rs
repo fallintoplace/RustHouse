@@ -9,7 +9,7 @@ pub struct Update {
     pub select: Select,
 }
 
-fn value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
+fn parse_update_assignment_value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::String(value)) | Some(Token::Number(value)) => {
             parser.index += 1;
@@ -50,7 +50,7 @@ fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)
         if !parser.take(Token::Operator(Operator::Eq)) {
             return Err(ParseError("UPDATE assignments require =".into()));
         }
-        assignments.push((column, value(parser)?));
+        assignments.push((column, parse_update_assignment_value(parser)?));
         if !parser.take(Token::Comma) {
             break;
         }
