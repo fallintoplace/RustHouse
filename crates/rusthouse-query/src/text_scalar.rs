@@ -91,6 +91,10 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOUINT8ORDEFAULT"
             | "TOUINT16ORDEFAULT"
             | "TOUINT32ORDEFAULT"
+            | "TOINT8ORDEFAULT"
+            | "TOINT16ORDEFAULT"
+            | "TOINT32ORDEFAULT"
+            | "TOINT64ORDEFAULT"
             | "TOINT64ORNULL"
             | "LPAD"
             | "LEFTPADUTF8"
@@ -2575,6 +2579,40 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             i64::from(u32::try_from(fallback)
                                 .map_err(|_| ParseError("UInt32 default is out of range".into()))?),
                         ),
+                        _ => unreachable!(),
+                    };
+                    ConstantValue::Integer(parsed.unwrap_or(fallback))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "TOINT8ORDEFAULT" | "TOINT16ORDEFAULT" | "TOINT32ORDEFAULT" | "TOINT64ORDEFAULT" => {
+            let input = text_arg(parser, depth + 1)?;
+            let fallback = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "signed OrDefault requires one or two arguments")?;
+            match (input, fallback) {
+                (Some(input), Some(fallback)) => {
+                    let (parsed, fallback) = match name.as_str() {
+                        "TOINT8ORDEFAULT" => (
+                            input.parse::<i128>().ok().map(|n| i64::from(n as i8)),
+                            i64::from(i8::try_from(fallback)
+                                .map_err(|_| ParseError("Int8 default is out of range".into()))?),
+                        ),
+                        "TOINT16ORDEFAULT" => (
+                            input.parse::<i128>().ok().map(|n| i64::from(n as i16)),
+                            i64::from(i16::try_from(fallback)
+                                .map_err(|_| ParseError("Int16 default is out of range".into()))?),
+                        ),
+                        "TOINT32ORDEFAULT" => (
+                            input.parse::<i128>().ok().map(|n| i64::from(n as i32)),
+                            i64::from(i32::try_from(fallback)
+                                .map_err(|_| ParseError("Int32 default is out of range".into()))?),
+                        ),
+                        "TOINT64ORDEFAULT" => (input.parse::<i64>().ok(), fallback),
                         _ => unreachable!(),
                     };
                     ConstantValue::Integer(parsed.unwrap_or(fallback))
