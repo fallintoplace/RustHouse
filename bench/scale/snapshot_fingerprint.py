@@ -19,7 +19,10 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024):
     aggregate = hashlib.sha256()
     count = 0
     total_bytes = 0
-    for directory, dirs, files in os.walk(root, followlinks=False):
+    def fail_walk(error):
+        raise error
+
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail_walk):
         dirs.sort()
         files.sort()
         for name in dirs:
