@@ -298,11 +298,11 @@ pub fn write_wide_part_with_compression(
                             let mut sizes = Vec::with_capacity(granule.len() * size_of::<u64>());
                             for row in granule {
                                 push_numeric_array(
-                                inner,
-                                row[index].as_deref(),
-                                &mut data,
-                                &mut sizes,
-                            )?;
+                                    inner,
+                                    row[index].as_deref(),
+                                    &mut data,
+                                    &mut sizes,
+                                )?;
                             }
                             data_granules.push(data);
                             size_granules.push(sizes);
