@@ -63,7 +63,32 @@ pub fn crc32c(bytes: &[u8]) -> u32 {
     checksum.finish()
 }
 
-fn update(mut crc: u32, bytes: &[u8]) -> u32 {
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.2")]
+unsafe fn update_sse42(mut crc: u32, bytes: &[u8]) -> u32 {
+    use std::arch::x86_64::{_mm_crc32_u8, _mm_crc32_u64};
+
+    let mut words = bytes.chunks_exact(8);
+    for word in &mut words {
+        let value = u64::from_le_bytes(word.try_into().expect("eight-byte chunk"));
+        crc = _mm_crc32_u64(u64::from(crc), value) as u32;
+    }
+    for &byte in words.remainder() {
+        crc = _mm_crc32_u8(crc, byte);
+    }
+    crc
+}
+
+fn update(crc: u32, bytes: &[u8]) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if bytes.len() >= 128 && std::is_x86_feature_detected!("sse4.2") {
+        // SAFETY: the CPU feature is verified before entering this function.
+        return unsafe { update_sse42(crc, bytes) };
+    }
+    update_software(crc, bytes)
+}
+
+fn update_software(mut crc: u32, bytes: &[u8]) -> u32 {
     // A slicing-by-eight lookup processes two UInt32 words per iteration
     // without platform-specific instructions.
     let mut wide_chunks = bytes.chunks_exact(8);
@@ -155,6 +180,21 @@ impl Default for Crc32cState {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn hardware_crc_matches_software_for_streaming_boundaries() {
+        if !std::is_x86_feature_detected!("sse4.2") {
+            return;
+        }
+        let input = (0..16_389).map(|n| (n * 17 % 251) as u8).collect::<Vec<_>>();
+        for split in [0, 1, 7, 8, 127, 128, 4096, input.len()] {
+            // SAFETY: the feature is checked before calling this routine.
+            let first = unsafe { update_sse42(!0, &input[..split]) };
+            let second = unsafe { update_sse42(first, &input[split..]) };
+            assert_eq!(second, update_software(!0, &input));
+        }
+    }
 
     #[test]
     fn matches_castagnoli_reference_vector() {
