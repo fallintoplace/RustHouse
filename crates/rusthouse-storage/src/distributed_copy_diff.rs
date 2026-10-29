@@ -63,19 +63,15 @@ pub fn plan_replica_copies(
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
     let source = index(source)?;
     let destination = index(destination)?;
-    let mut changed: Vec<ObjectMetadata> = if destination.is_empty() {
-        source.into_values().cloned().collect()
-    } else {
-        source
-            .into_values()
-            .filter(|meta| {
-                destination
-                    .get(meta.key.as_str())
-                    .is_none_or(|existing| !meta.same_contents(existing))
-            })
-            .cloned()
-            .collect()
-    };
+    let mut changed: Vec<ObjectMetadata> = source
+        .into_values()
+        .filter(|meta| {
+            destination
+                .get(meta.key.as_str())
+                .is_none_or(|existing| !meta.same_contents(existing))
+        })
+        .cloned()
+        .collect();
     changed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
     Ok(changed)
 }
