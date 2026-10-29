@@ -153,5 +153,19 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(results[1]["seconds"].__len__(), 3)
 
 
+    def test_missing_reference_does_not_execute_expensive_query(self):
+        with tempfile.TemporaryDirectory() as temp:
+            calls = []
+            def execute(sql, timeout):
+                calls.append((sql, timeout))
+                return b"1\n"
+            result = runner.run_benchmark(
+                ["SELECT 1"], [0], 3, 60, execute, Path(temp), 1
+            )[0]
+            self.assertEqual(result["status"], "missing_reference")
+            self.assertEqual(result["seconds"], [])
+            self.assertEqual(calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()
