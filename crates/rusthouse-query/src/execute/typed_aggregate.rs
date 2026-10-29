@@ -7,6 +7,10 @@ use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
+fn group_limit_error() -> ExecutionError {
+    ExecutionError::Invalid("GROUP BY supports at most 100000 groups".into())
+}
+
 fn replaces_text_extreme(
     value: &[u8],
     current: Option<&Cell>,
@@ -310,9 +314,7 @@ fn parallel_grouped_integer_sum(
                                 Entry::Occupied(entry) => *entry.get(),
                                 Entry::Vacant(entry) => {
                                     if groups.len() >= MAX_GROUPS {
-                                        return Err(ExecutionError::Invalid(
-                                            "GROUP BY supports at most 100000 groups".into(),
-                                        ));
+                                        return Err(group_limit_error());
                                     }
                                     let id = groups.len();
                                     entry.insert(id);
@@ -347,9 +349,7 @@ fn parallel_grouped_integer_sum(
                 }
             } else {
                 if groups.len() >= MAX_GROUPS {
-                    return Err(ExecutionError::Invalid(
-                        "GROUP BY supports at most 100000 groups".into(),
-                    ));
+                    return Err(group_limit_error());
                 }
                 by_key.insert(key_id, groups.len());
                 groups.push((key, partial));
@@ -505,9 +505,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                         existing
                     } else {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 100000 groups".into(),
-                            ));
+                            return Err(group_limit_error());
                         }
                         let index = groups.len();
                         uuid_groups.insert(key, index);
@@ -522,9 +520,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                         existing
                     } else {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 100000 groups".into(),
-                            ));
+                            return Err(group_limit_error());
                         }
                         charge_grouped_text(&mut retained_text_bytes, key.len())?;
                         let index = groups.len();
@@ -538,9 +534,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                         Entry::Occupied(entry) => *entry.get(),
                         Entry::Vacant(entry) => {
                             if groups.len() >= MAX_GROUPS {
-                                return Err(ExecutionError::Invalid(
-                                    "GROUP BY supports at most 100000 groups".into(),
-                                ));
+                                return Err(group_limit_error());
                             }
                             entry.insert(groups.len());
                             groups.push((key, AggregateState::new(*function)));
