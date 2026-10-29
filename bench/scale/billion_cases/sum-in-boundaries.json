@@ -1,0 +1,10 @@
+{
+  "id": "sum-in-boundaries",
+  "kind": "sum_in",
+  "values": [
+    "start",
+    "p25",
+    "p50",
+    "last"
+  ]
+}
