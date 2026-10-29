@@ -54,6 +54,14 @@ pub(super) fn execute<W: Write>(
         }
         groups.push((value,states));
     }
+    // HAVING applies to aggregate results before ORDER BY and pagination.
+    if let Some(having) = &query.having {
+        let index = having.aggregate_index.ok_or_else(|| {
+            ExecutionError::Invalid("HAVING metric index is required".into())
+        })?;
+        groups.retain(|(_, states)| states.get(index)
+            .is_some_and(|state| state.passes_having(having)));
+    }
     if query.order_by.is_some() {
         let terms=query.order_terms().map(|order|{
             let metric=order.column.strip_prefix("#aggregate")
@@ -85,4 +93,31 @@ pub(super) fn execute<W: Write>(
         writeln!(output)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod generated_multi_group_having_tests {
+    use crate::{execute, parse_select};
+
+    fn run(sql: &str) -> String {
+        let mut bytes = Vec::new();
+        execute(&parse_select(sql).unwrap(), None, &mut bytes).unwrap();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn filters_generated_group_metrics_before_paging() {
+        assert_eq!(run(
+            "SELECT number, sum(number), max(number) FROM numbers(5) \
+             GROUP BY number HAVING sum(number) >= 3 ORDER BY number LIMIT 1 OFFSET 1"
+        ), "number\tsum(number)\tmax(number)\n4\t4\t4\n");
+    }
+
+    #[test]
+    fn having_does_not_return_filtered_generated_groups() {
+        assert_eq!(run(
+            "SELECT number, sum(number), max(number) FROM numbers(4) \
+             GROUP BY number HAVING max(number) > 100"
+        ), "number\tsum(number)\tmax(number)\n");
+    }
 }
