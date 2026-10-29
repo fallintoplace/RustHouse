@@ -1,0 +1,6 @@
+{
+  "id": "count-upper-half",
+  "kind": "count_range",
+  "lo": "p50",
+  "hi": "end"
+}
