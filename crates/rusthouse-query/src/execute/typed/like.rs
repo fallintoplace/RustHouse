@@ -107,9 +107,7 @@ fn unicode_folded_match(
     Some(compare(&value.to_lowercase(), &literal.to_lowercase()))
 }
 
-/// Rebuild literal runs after Unicode case folding while keeping LIKE wildcards.
-/// The pure-% variant is safe because it does not change underscore's
-/// one-original-character semantics when lowercasing expands a character.
+/// Case-fold literal runs while preserving both LIKE wildcard token kinds.
 fn folded_multisegment_pattern(pattern: &[LikeToken]) -> Option<Vec<LikeToken>> {
     let mut folded = Vec::with_capacity(pattern.len());
     let mut literal = Vec::new();
@@ -126,11 +124,32 @@ fn folded_multisegment_pattern(pattern: &[LikeToken]) -> Option<Vec<LikeToken>> 
                 flush(&mut literal, &mut folded)?;
                 folded.push(LikeToken::Any);
             }
-            LikeToken::One => return None,
+            LikeToken::One => {
+                flush(&mut literal, &mut folded)?;
+                folded.push(LikeToken::One);
+            }
         }
     }
     flush(&mut literal, &mut folded)?;
     Some(folded)
+}
+
+/// Original Unicode boundaries in the folded UTF-8 string. Lowercasing a
+/// character like İ expands it, but LIKE '_' still consumes one source char.
+fn fold_with_source_boundaries(value: &str) -> (String, Vec<usize>) {
+    let mut folded = String::with_capacity(value.len());
+    let mut boundaries = Vec::with_capacity(value.chars().count() + 1);
+    boundaries.push(0);
+    for character in value.chars() {
+        folded.extend(character.to_lowercase());
+        boundaries.push(folded.len());
+    }
+    (folded, boundaries)
+}
+
+fn next_folded_boundary(boundaries: &[usize], offset: usize) -> Option<usize> {
+    boundaries.binary_search(&offset).ok()
+        .and_then(|index| boundaries.get(index + 1).copied())
 }
 
 pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive: bool) -> bool {
@@ -236,21 +255,22 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
         }
         LikePattern::Wildcard(tokens) => {
             // Multi-segment ILIKE patterns must fold Unicode as a whole.
-            // ASCII and '_' patterns keep the allocation-free scan.
+            // ASCII patterns keep the allocation-free scan.
             if case_insensitive
                 && (!value.is_ascii() || tokens.iter().any(|token| {
                     matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())
                 }))
-                && !tokens.iter().any(|token| matches!(token, LikeToken::One))
             {
                 if let (Ok(text), Some(pattern)) = (
                     std::str::from_utf8(value),
                     folded_multisegment_pattern(tokens),
                 ) {
-                    return like_matches_wildcards(
-                        text.to_lowercase().as_bytes(),
+                    let (folded, boundaries) = fold_with_source_boundaries(text);
+                    return like_matches_wildcards_inner(
+                        folded.as_bytes(),
                         &pattern,
                         false,
+                        Some(&boundaries),
                     );
                 }
             }
@@ -264,6 +284,19 @@ pub(super) fn like_matches_wildcards(
     pattern: &[LikeToken],
     case_insensitive: bool,
 ) -> bool {
+    like_matches_wildcards_inner(value, pattern, case_insensitive, None)
+}
+
+fn like_matches_wildcards_inner(
+    value: &[u8],
+    pattern: &[LikeToken],
+    case_insensitive: bool,
+    source_boundaries: Option<&[usize]>,
+) -> bool {
+    let next_char = |offset| match source_boundaries {
+        Some(boundaries) => next_folded_boundary(boundaries, offset),
+        None => next_utf8_boundary(value, offset),
+    };
     let (mut row, mut pat) = (0, 0);
     let mut last_any = None;
     let mut restart = 0;
@@ -277,7 +310,7 @@ pub(super) fn like_matches_wildcards(
                 pat += 1;
             }
             Some(LikeToken::One) => {
-                let Some(next) = next_utf8_boundary(value, row) else {
+                let Some(next) = next_char(row) else {
                     return false;
                 };
                 row = next;
@@ -292,7 +325,7 @@ pub(super) fn like_matches_wildcards(
                 let Some(any) = last_any else {
                     return false;
                 };
-                let Some(next) = next_utf8_boundary(value, restart) else {
+                let Some(next) = next_char(restart) else {
                     return false;
                 };
                 restart = next;
@@ -500,5 +533,23 @@ mod unicode_multisegment_ilike_tests {
         assert!(like_matches("city i\u{307} island".as_bytes(), &pattern, true));
         assert!(like_matches("city İ island".as_bytes(), &pattern, true));
         assert!(!like_matches("city izland".as_bytes(), &pattern, true));
+    }
+}
+
+#[cfg(test)]
+mod unicode_wildcard_codepoint_tests {
+    use super::*;
+
+    #[test]
+    fn underscore_matches_one_original_char_after_unicode_expansion() {
+        let starts = compile_like("_stanbul").unwrap();
+        assert!(like_matches("İstanbul".as_bytes(), &starts, true));
+        assert!(like_matches("İstanbul".as_bytes(), &starts, false));
+        let middle = compile_like("a_b").unwrap();
+        assert!(like_matches("AİB".as_bytes(), &middle, true));
+        assert!(!like_matches("AB".as_bytes(), &middle, true));
+        let tail = compile_like("%_X").unwrap();
+        assert!(like_matches("İX".as_bytes(), &tail, true));
+        assert!(!like_matches("X".as_bytes(), &tail, true));
     }
 }
