@@ -204,18 +204,20 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
 pub(super) fn product(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     let mut expr = primary(parser)?;
     loop {
-        let multiply = if parser.take(Token::Star) {
-            true
+        let operator = if parser.take(Token::Star) {
+            0
         } else if parser.take(Token::Slash) {
-            false
+            1
+        } else if parser.take(Token::Percent) {
+            2
         } else {
             break;
         };
         let right = Box::new(primary(parser)?);
-        expr = if multiply {
-            ScalarExpr::Multiply(Box::new(expr), right)
-        } else {
-            ScalarExpr::Divide(Box::new(expr), right)
+        expr = match operator {
+            0 => ScalarExpr::Multiply(Box::new(expr), right),
+            1 => ScalarExpr::Divide(Box::new(expr), right),
+            _ => ScalarExpr::Modulo(Box::new(expr), right),
         };
     }
     Ok(expr)
