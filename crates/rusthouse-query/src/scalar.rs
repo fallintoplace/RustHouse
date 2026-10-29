@@ -117,6 +117,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("PMOD")
         || name.eq_ignore_ascii_case("TRAILING_ONES")
+        || name.eq_ignore_ascii_case("ISODD")
         || name.eq_ignore_ascii_case("TOINT8")
 }
 
@@ -1101,6 +1102,12 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         )
     ) {
         return parse_bit_scans(parser, depth);
+    }
+    if parser.keyword("ISODD") {
+        require_token(parser, Token::LParen, "ISODD requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "ISODD requires ')'")?;
+        return Ok(i64::from(value & 1 != 0));
     }
     if parser.keyword("DIGITAL_ROOT") {
         return parse_digital_root(parser, depth);
