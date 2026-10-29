@@ -180,7 +180,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "lengthUTF8 requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Integer(
-                    i64::try_from(value.chars().count())
+                    i64::try_from(if value.is_ascii() { value.len() } else { value.chars().count() })
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
                 None => ConstantValue::Null,
@@ -3262,6 +3262,28 @@ mod ch_ipv4_num_to_string_tests {
         }
         for sql in ["SELECT IPv4NumToString()", "SELECT IPv4NumToString(-1)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_perf_ascii_lengthutf8_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn ascii_and_unicode_keep_the_same_results() {
+        for (sql, expected) in [
+            ("SELECT lengthUTF8('Hello')", ConstantValue::Integer(5)),
+            ("SELECT lengthUTF8('aé🙂')", ConstantValue::Integer(3)),
+            ("SELECT lengthUTF8(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
         }
     }
 }
