@@ -62,5 +62,13 @@ class BenchmarkComparisonTests(unittest.TestCase):
         self.assertEqual(report["incomparable"][0]["reason"], "missing_positive_median")
 
 
+    def test_extreme_json_integer_medians_are_incomparable(self):
+        value = 10 ** 400
+        self.assertIsNone(elapsed(result(1, "passed", value)))
+        report = compare({"results": [result(1, "passed", value)]},
+                         {"results": [result(1, "passed", 1.0)]})
+        self.assertEqual(report["compared_queries"], 0)
+        self.assertEqual(report["incomparable"][0]["reason"], "missing_positive_median")
+
 if __name__ == "__main__":
     unittest.main()
