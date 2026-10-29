@@ -4,6 +4,10 @@ use std::io::{self, Write};
 
 const MAX_JSON_ROW_BYTES: usize = 4 * 1024 * 1024;
 
+fn json_object_too_large() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "JSON object exceeds 4 MiB")
+}
+
 fn array_prefix(first: bool, pretty: bool) -> &'static [u8] {
     match (first, pretty) {
         (true, true) => b"[\n  ",
@@ -74,10 +78,7 @@ impl<W: Write> Write for JsonArraySink<W> {
             if let Some(row) = bytes.strip_suffix(b"\n") {
                 if !row.contains(&b'\n') {
                     if row.len() > MAX_JSON_ROW_BYTES {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "JSON object exceeds 4 MiB",
-                        ));
+                        return Err(json_object_too_large());
                     }
                     self.output
                         .write_all(array_prefix(self.first, self.pretty))?;
@@ -99,10 +100,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                 chunk
             };
             if fragment.len() > MAX_JSON_ROW_BYTES.saturating_sub(self.row.len()) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "JSON object exceeds 4 MiB",
-                ));
+                return Err(json_object_too_large());
             }
             if complete && self.row.is_empty() {
                 self.output
