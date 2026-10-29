@@ -1,6 +1,8 @@
 //! Deterministic retry delays for a future replica transfer scheduler.
 use std::time::Duration;
 
+const MAX_RETRY_ATTEMPTS: u32 = 33;
+
 /// Cap exponential retries at max_ms; jitter is stable for the supplied seed.
 pub fn retry_delay(
     attempt: u32,
@@ -8,7 +10,7 @@ pub fn retry_delay(
     max_ms: u64,
     seed: u64,
 ) -> Result<Duration, &'static str> {
-    if attempt > 32 || base_ms == 0 || max_ms == 0 || base_ms > max_ms {
+    if attempt >= MAX_RETRY_ATTEMPTS || base_ms == 0 || max_ms == 0 || base_ms > max_ms {
         return Err("invalid replica retry configuration");
     }
     let exponent = base_ms.saturating_mul(1u64 << attempt).min(max_ms);
@@ -105,7 +107,7 @@ pub fn plan_retry_delays(
     seed: u64,
     budget: Duration,
 ) -> Result<Vec<Duration>, &'static str> {
-    if attempts > 33 {
+    if attempts > MAX_RETRY_ATTEMPTS {
         return Err("retry count exceeds supported attempt range");
     }
     // Validate settings even if the caller requests no retries.
