@@ -4,6 +4,8 @@ import json
 import math
 from pathlib import Path
 
+from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
+
 CASES = ("count_even", "sum_even")
 
 
@@ -20,6 +22,8 @@ def compare(baseline, candidate, *, max_slowdown_percent=10):
     rows = baseline.get("rows_written_and_verified")
     if type(rows) is not int or rows < 1 or candidate.get("rows_written_and_verified") != rows:
         raise ValueError("reports must cover the same positive physical row count")
+    count, total = even_reference(rows)
+    expected = {"count_even": (COUNT_SQL, count), "sum_even": (SUM_SQL, total)}
     cases = []
     for name in CASES:
         a, b = baseline.get(name), candidate.get(name)
@@ -29,6 +33,12 @@ def compare(baseline, candidate, *, max_slowdown_percent=10):
             raise ValueError(f"{name} must have verified reference output in both reports")
         if a.get("query") != b.get("query") or a.get("expected") != b.get("expected"):
             raise ValueError(f"{name} is not the same query and oracle")
+        sql, oracle = expected[name]
+        if (a.get("query") != sql or b.get("query") != sql
+                or type(a.get("expected")) is not int
+                or type(b.get("expected")) is not int
+                or a["expected"] != oracle or b["expected"] != oracle):
+            raise ValueError(f"{name}: incorrect physical SQL or independent oracle")
         old, new = a.get("median_seconds"), b.get("median_seconds")
         if not all(type(x) in (int, float) and math.isfinite(x) and x > 0 for x in (old, new)):
             raise ValueError(f"{name} has invalid median timings")
