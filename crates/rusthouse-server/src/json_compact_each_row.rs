@@ -4,13 +4,17 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+fn field_count(line: &[u8]) -> usize {
+    line.split(|&byte| byte == b'\t').count()
+}
+
 fn write_compact_row_into<W: Write>(
     output: &mut W,
     line: &[u8],
     columns: usize,
     row: &mut Vec<u8>,
 ) -> io::Result<()> {
-    let width = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
+    let width = field_count(line);
     if width != columns {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -72,7 +76,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
         let Some(columns) = self.columns else {
             std::str::from_utf8(&self.line)
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid TSV header"))?;
-            let columns = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
+            let columns = field_count(&self.line);
             if columns > 128 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
