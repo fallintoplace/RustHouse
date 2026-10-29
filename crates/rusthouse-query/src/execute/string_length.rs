@@ -91,10 +91,10 @@ pub(super) fn execute<W: Write>(
     let mut written = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
-    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let is_unfiltered = query.predicates.is_empty() && query.or_predicates.is_empty();
     // Reuse typed mark skipping: LENGTH only needs rows after OFFSET when
     // neither filtering, sorting nor deduplication changes row positions.
-    if no_filters && query.order_by.is_none() && query.order_by_extra.is_empty() && !query.distinct
+    if is_unfiltered && query.order_by.is_none() && query.order_by_extra.is_empty() && !query.distinct
     {
         skipped = reader.skip_prefix_rows(offset)?;
     }
@@ -107,7 +107,7 @@ pub(super) fn execute<W: Write>(
             .get(indices[column])
             .ok_or_else(|| ExecutionError::Invalid("missing LENGTH input column".into()))?;
         for row in 0..rows {
-            if !no_filters && !typed::passes(&batch, row, &conditions) {
+            if !is_unfiltered && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             if skipped < offset {
