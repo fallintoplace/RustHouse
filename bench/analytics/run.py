@@ -91,7 +91,7 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
             start = time.perf_counter_ns() if iteration >= 0 else None
             try:
                 output = execute(sql, timeout)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired, urllib.error.URLError) as error:
+            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired, urllib.error.URLError) as error:
                 status, failure = "error", str(error)[:2000]
                 break
             # Reference file I/O and comparisons are outside the timed query.
