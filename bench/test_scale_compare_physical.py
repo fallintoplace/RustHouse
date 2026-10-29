@@ -44,6 +44,29 @@ class ComparePhysicalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "verified"):
             compare(report(), candidate)
 
+    def test_tail_budget_is_independent_and_requires_p90(self):
+        base, candidate = report(), report(1.05)
+        with self.assertRaisesRegex(ValueError, "p90"):
+            compare(base, candidate, max_tail_slowdown_percent=5)
+        for key in ("count_even", "sum_even"):
+            base[key]["p90_seconds"] = 1.10
+            candidate[key]["p90_seconds"] = 1.20
+        result = compare(base, candidate, max_slowdown_percent=10,
+                         max_tail_slowdown_percent=5)
+        self.assertFalse(result["all_within_budget"])
+        loose = compare(base, candidate, max_slowdown_percent=10,
+                        max_tail_slowdown_percent=10)
+        self.assertTrue(loose["all_within_budget"])
+
+    def test_tail_regression_fails_even_when_median_is_fast(self):
+        baseline, candidate = report(), report(0.95)
+        for item in ("count_even", "sum_even"):
+            baseline[item]["p90_seconds"] = 1.1
+            candidate[item]["p90_seconds"] = 2.0
+        result = compare(baseline, candidate, max_slowdown_percent=10)
+        self.assertFalse(result["all_within_budget"])
+        self.assertGreater(result["cases"][0]["p90_slowdown_percent"], 50)
+
 
 if __name__ == "__main__":
     unittest.main()

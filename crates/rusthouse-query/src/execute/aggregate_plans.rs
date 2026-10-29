@@ -1,4 +1,5 @@
 use super::*;
+use super::predicates::CompiledPredicate;
 
 struct DenseGroupChunk {
     counts: Vec<u64>,
@@ -120,6 +121,195 @@ fn parallel_dense_grouped_count(
 }
 
 
+/// Retry rare high-cardinality unordered GROUP BY scans using an exact
+/// external key sorter. Small groups keep the in-memory hash fast path.
+/// The retry rescans an immutable snapshot rather than attempting to recover
+/// partial in-memory counts or double-count the final batch.
+fn spill_unordered_groups<W: Write>(
+    query: &Select,
+    part: &Path,
+    column: &str,
+    kind: &str,
+    scan_columns: &[String],
+    comparisons: &[Vec<CompiledPredicate>],
+    metadata: &rusthouse_storage::PartMetadata,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let signed = matches!(kind, "Int32" | "Int64");
+    let mut sorter = ExternalGroupCount64::new(signed, false);
+    let mut reader = NumericQueryReader::open_with_metadata(
+        part, scan_columns, metadata,
+    )?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    while let Some(batch) = reader.next_batch()? {
+        for index in 0..batch[0].len() {
+            if !no_filters && !batch_matches(&batch, index, comparisons) {
+                continue;
+            }
+            let key = match &batch[0] {
+                NumericColumn::UInt32(values) => u64::from(values[index]),
+                NumericColumn::Int32(values) => values[index] as i64 as u64,
+                NumericColumn::UInt64(values) => values[index],
+                NumericColumn::Int64(values) => values[index] as u64,
+                _ => return Err(ExecutionError::Invalid(
+                    "external grouped scan requires 32/64-bit integer key".into(),
+                )),
+            };
+            sorter.insert(key)?;
+        }
+    }
+    writeln!(output, "{column}\t{}",
+        query.alias.as_deref().unwrap_or("count"))?;
+    let mut skipped = 0usize;
+    let mut emitted = 0usize;
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(usize::MAX);
+    sorter.finish_until(|key, count| {
+        if let Some(having) = &query.having {
+            if !number_matches(
+                Number::Unsigned(u128::from(count)),
+                Number::Unsigned(u128::from(having.value)),
+                having.operator,
+            ) {
+                return Ok(true);
+            }
+        }
+        if skipped >= offset && emitted < limit {
+            if signed {
+                writeln!(output, "{}\t{count}", key as i64)?;
+            } else {
+                writeln!(output, "{key}\t{count}")?;
+            }
+            emitted += 1;
+        }
+        skipped = skipped.checked_add(1)
+            .ok_or_else(|| ExecutionError::Invalid("GROUP BY offset overflow".into()))?;
+        Ok(emitted < limit)
+    })
+}
+
+/// Parallel hash GROUP BY over Int32/UInt32 dimensions. Worker group counts
+/// share a global budget; excessive cardinality returns None so the serial
+/// path can adapt to external spill instead of failing on worker memory.
+fn parallel_integer_grouped_count(
+    part: &Path,
+    column: &str,
+    kind: &str,
+) -> Result<Option<GroupedCounts>, ExecutionError> {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    const MAX_PARTIAL_KEYS: usize = 100_000;
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get()).min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let names = [column.to_owned()];
+    let chunk_size = parts.len().div_ceil(workers);
+    let retained = AtomicUsize::new(0);
+    let chunks = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|paths| {
+            let names = &names;
+            let retained = &retained;
+            scope.spawn(move || -> Result<Option<Vec<(u64, u64)>>, ExecutionError> {
+                let mut keys = HashMap::<u64, usize>::new();
+                let mut counts = Vec::<(u64, u64)>::new();
+                for path in paths {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(path, names)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        let index = &batch[0];
+                        let mut visit = |key: u64| -> Result<bool, ExecutionError> {
+                            match keys.entry(key) {
+                                std::collections::hash_map::Entry::Occupied(entry) => {
+                                    let count = &mut counts[*entry.get()].1;
+                                    *count = count.checked_add(1).ok_or_else(|| {
+                                        ExecutionError::Invalid("parallel GROUP BY count overflow".into())
+                                    })?;
+                                }
+                                std::collections::hash_map::Entry::Vacant(entry) => {
+                                    if retained.fetch_update(
+                                        AtomicOrdering::AcqRel, AtomicOrdering::Acquire,
+                                        |current| current.checked_add(1)
+                                            .filter(|&total| total <= MAX_PARTIAL_KEYS),
+                                    ).is_err() {
+                                        return Ok(false);
+                                    }
+                                    entry.insert(counts.len());
+                                    counts.push((key, 1));
+                                }
+                            }
+                            Ok(true)
+                        };
+                        match (index, kind) {
+                            (NumericColumn::UInt32(values), "UInt32") => {
+                                for &value in values {
+                                    if !visit(u64::from(value))? { return Ok(None); }
+                                }
+                            }
+                            (NumericColumn::Int32(values), "Int32") => {
+                                for &value in values {
+                                    if !visit(value as i64 as u64)? { return Ok(None); }
+                                }
+                            }
+                            (NumericColumn::UInt64(values), "UInt64") => {
+                                for &value in values {
+                                    if !visit(value)? { return Ok(None); }
+                                }
+                            }
+                            (NumericColumn::Int64(values), "Int64") => {
+                                for &value in values {
+                                    if !visit(value as u64)? { return Ok(None); }
+                                }
+                            }
+                            _ => return Err(ExecutionError::Invalid(
+                                "parallel integer grouping encountered unexpected column".into(),
+                            )),
+                        }
+                    }
+                }
+                Ok(Some(counts))
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel grouped worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut keys = HashMap::<u64, usize>::new();
+    let mut counts = Vec::<(u64, u64)>::new();
+    for chunk in chunks {
+        let Some(chunk) = chunk? else { return Ok(None); };
+        for (key, count) in chunk {
+            match keys.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let total = &mut counts[*entry.get()].1;
+                    *total = total.checked_add(count)
+                        .ok_or_else(|| ExecutionError::Invalid(
+                            "parallel GROUP BY count overflow".into()
+                        ))?;
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    if counts.len() >= MAX_PARTIAL_KEYS {
+                        return Ok(None);
+                    }
+                    entry.insert(counts.len());
+                    counts.push((key, count));
+                }
+            }
+        }
+    }
+    let mut result = GroupedCounts::default();
+    for (key, count) in counts {
+        let value = if matches!(kind, "Int32" | "Int64") {
+            Number::Signed(i128::from(key as i64))
+        } else {
+            Number::Unsigned(u128::from(key))
+        };
+        result.rows.push((value, count));
+    }
+    Ok(Some(result))
+}
+
 pub(super) fn execute_grouped_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -144,20 +334,22 @@ pub(super) fn execute_grouped_part<W: Write>(
         return groups.write(query, column, output);
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    // High-cardinality 64-bit GROUP BY with ORDER BY key is exact even when
+    // High-cardinality 32/64-bit GROUP BY with ORDER BY key is exact even when
     // the distinct group set cannot fit in memory. Sorted spill runs avoid
     // the fixed 200k-group HashMap ceiling and preserve ORDER BY semantics.
     let kind = metadata.columns.iter().find(|c| c.name == column)
         .map(|c| c.data_type.as_str());
     let ordering = query.order_by.as_ref().filter(|order|
         order.column == column && query.order_by_extra.is_empty());
-    if let (Some(kind @ ("UInt64" | "Int64")), Some(order)) = (kind, ordering) {
-        let signed = kind == "Int64";
+    if let (Some(kind @ ("UInt32" | "Int32" | "UInt64" | "Int64")), Some(order)) = (kind, ordering) {
+        let signed = matches!(kind, "Int32" | "Int64");
         let mut sorter = ExternalGroupCount64::new(signed, order.descending);
         while let Some(batch) = reader.next_batch()? {
             for row in 0..batch[0].len() {
                 if !no_filters && !batch_matches(&batch, row, &comparisons) { continue; }
                 let value = match &batch[0] {
+                    NumericColumn::UInt32(values) => u64::from(values[row]),
+                    NumericColumn::Int32(values) => values[row] as i64 as u64,
                     NumericColumn::UInt64(values) => values[row],
                     NumericColumn::Int64(values) => values[row] as u64,
                     _ => return Err(ExecutionError::Invalid(
@@ -289,6 +481,15 @@ pub(super) fn execute_grouped_part<W: Write>(
         }
         return groups.write(query, column, output);
     }
+    if no_filters
+        && matches!(narrow, Some("UInt32" | "Int32" | "UInt64" | "Int64"))
+    {
+        if let Some(result) = parallel_integer_grouped_count(
+            part, column, narrow.expect("integer group kind was validated"),
+        )? {
+            return result.write(query, column, output);
+        }
+    }
     // Keep 32-bit group hash keys compact instead of widening each input
     // number into a NumberKey. Retain the first-seen group order.
     if matches!(narrow, Some("UInt32" | "Int32")) {
@@ -316,6 +517,15 @@ pub(super) fn execute_grouped_part<W: Write>(
                     }
                     Entry::Vacant(entry) => {
                         if groups.rows.len() >= MAX_GROUPS {
+                            // GROUP BY without ORDER BY has no stable row-order
+                            // contract. Spill and globally merge exact counts
+                            // only when unique keys exceed the hash ceiling.
+                            if query.order_by.is_none() {
+                                return spill_unordered_groups(
+                                    query, part, column, narrow.expect("validated 32/64-bit key"),
+                                    &scan_columns, &comparisons, &metadata, output,
+                                );
+                            }
                             return Err(ExecutionError::Invalid(
                                 "GROUP BY supports at most 200000 groups".into(),
                             ));
@@ -360,6 +570,15 @@ pub(super) fn execute_grouped_part<W: Write>(
                     }
                     Entry::Vacant(entry) => {
                         if groups.rows.len() >= MAX_GROUPS {
+                            // GROUP BY without ORDER BY has no stable row-order
+                            // contract. Spill and globally merge exact counts
+                            // only when unique keys exceed the hash ceiling.
+                            if query.order_by.is_none() {
+                                return spill_unordered_groups(
+                                    query, part, column, narrow.expect("validated 32/64-bit key"),
+                                    &scan_columns, &comparisons, &metadata, output,
+                                );
+                            }
                             return Err(ExecutionError::Invalid(
                                 "GROUP BY supports at most 200000 groups".into(),
                             ));
@@ -405,6 +624,40 @@ pub(super) fn execute_grouped_numbers<W: Write>(
     if query.limit == Some(0) {
         return groups.write(query, column, output);
     }
+    // Group keys generated with a positive step are already sorted.
+    // ORDER BY number can address any bounded ASC/DESC page without
+    // constructing or sorting a group map, even at billion-row scale.
+    if query.having.is_none() && query.order_by_extra.is_empty() {
+        if let (Some(order), Some(limit)) = (query.order_by.as_ref(), query.limit) {
+            if order.column == "number" {
+                let range = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                    Some((0, rows))
+                } else {
+                    monotonic_range_indices(&comparisons, start, rows, step)
+                };
+                if let Some((lower, upper)) = range {
+                    let available = upper - lower;
+                    let skip = (query.offset.unwrap_or(0) as u64).min(available);
+                    let length = (limit as u64).min(available - skip);
+                    writeln!(
+                        output,
+                        "{column}\t{}",
+                        query.alias.as_deref().unwrap_or("count")
+                    )?;
+                    for position in skip..skip + length {
+                        let index = if order.descending {
+                            upper - 1 - position
+                        } else {
+                            lower + position
+                        };
+                        let number = u128::from(start) + u128::from(index) * u128::from(step);
+                        writeln!(output, "{number}\t1")?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
     // GROUP BY number contains exactly one row per generated key. If the
     // client requests a bounded unordered page, jump directly to its keys.
     if query.predicates.is_empty()
@@ -422,6 +675,30 @@ pub(super) fn execute_grouped_numbers<W: Write>(
                 query.alias.as_deref().unwrap_or("count")
             )?;
             for index in begin..begin + length {
+                let number = u128::from(start) + u128::from(index) * u128::from(step);
+                writeln!(output, "{number}\t1")?;
+            }
+            return Ok(());
+        }
+    }
+    if query.limit.is_none()
+        && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+        && query.having.is_none() && query.order_by.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some((lower, upper)) =
+            monotonic_range_indices(&comparisons, start, rows, step)
+        {
+            if upper - lower > MAX_GROUPS as u64 {
+                return Err(ExecutionError::Invalid(
+                    "GROUP BY supports at most 200000 groups".into(),
+                ));
+            }
+            writeln!(
+                output, "{column}\t{}", query.alias.as_deref().unwrap_or("count")
+            )?;
+            let begin = lower.saturating_add(query.offset.unwrap_or(0) as u64).min(upper);
+            for index in begin..upper {
                 let number = u128::from(start) + u128::from(index) * u128::from(step);
                 writeln!(output, "{number}\t1")?;
             }
@@ -488,6 +765,38 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    if query.limit.is_none() && query.having.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some(order) = query.order_by.as_ref().filter(|order| order.column == "number") {
+            let bounds = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                Some((0, rows))
+            } else {
+                monotonic_range_indices(&comparisons, start, rows, step)
+            };
+            if let Some((lower, upper)) = bounds {
+                let selected = upper - lower;
+                if selected > MAX_GROUPS as u64 {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 100000 groups".into(),
+                    ));
+                }
+                let begin = (query.offset.unwrap_or(0) as u64).min(selected);
+                for position in begin..selected {
+                    let index = if order.descending {
+                        upper - 1 - position
+                    } else {
+                        lower + position
+                    };
+                    let value = u128::from(start) + u128::from(index) * u128::from(step);
+                    let mut state = AggregateState::new(*function);
+                    state.update(Number::Unsigned(value))?;
+                    writeln!(output, "{value}\t{}", state.render())?;
+                }
+                return Ok(());
+            }
+        }
+    }
     // A generated number is a unique group key. Each unfiltered group
     // contains one row, so a bounded page needs only its requested keys.
     if query.predicates.is_empty()
@@ -500,6 +809,29 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
             let begin = (query.offset.unwrap_or(0) as u64).min(rows);
             let length = (limit as u64).min(rows - begin);
             for index in begin..begin + length {
+                let number = u128::from(start) + u128::from(index) * u128::from(step);
+                let mut state = AggregateState::new(*function);
+                state.update(Number::Unsigned(number))?;
+                writeln!(output, "{number}\t{}", state.render())?;
+            }
+            return Ok(());
+        }
+    }
+    if query.limit.is_none()
+        && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+        && query.having.is_none() && query.order_by.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some((lower, upper)) =
+            monotonic_range_indices(&comparisons, start, rows, step)
+        {
+            if upper - lower > MAX_GROUPS as u64 {
+                return Err(ExecutionError::Invalid(
+                    "GROUP BY supports at most 100000 groups".into(),
+                ));
+            }
+            let begin = lower.saturating_add(query.offset.unwrap_or(0) as u64).min(upper);
+            for index in begin..upper {
                 let number = u128::from(start) + u128::from(index) * u128::from(step);
                 let mut state = AggregateState::new(*function);
                 state.update(Number::Unsigned(number))?;

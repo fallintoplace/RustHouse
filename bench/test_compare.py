@@ -17,6 +17,19 @@ class BenchmarkComparisonTests(unittest.TestCase):
         self.assertEqual([x["query"] for x in report["regressions"]], [1])
         self.assertEqual([x["query"] for x in report["improvements"]], [2])
 
+    def test_geometric_mean_speedup_is_symmetric(self):
+        baseline = {"results": [result(1, "passed", 2.0),
+                                result(2, "passed", 2.0)]}
+        candidate = {"results": [result(1, "passed", 1.0),
+                                 result(2, "passed", 4.0)]}
+        report = compare(baseline, candidate)
+        self.assertAlmostEqual(report["geomean_speedup"], 1.0)
+        candidate["results"][1]["latency"]["median_seconds"] = 1.0
+        self.assertAlmostEqual(compare(baseline, candidate)["geomean_speedup"], 2.0)
+        candidate["results"][1]["status"] = "unverified"
+        self.assertEqual(compare(baseline, candidate)["compared_queries"], 1)
+        self.assertAlmostEqual(compare(baseline, candidate)["geomean_speedup"], 2.0)
+
     def test_correctness_downgrade_is_always_reported(self):
         before = {"results": [result(6, "passed", 0.01)]}
         after = {"results": [result(6, "unverified", 0.001)]}
@@ -60,6 +73,50 @@ class BenchmarkComparisonTests(unittest.TestCase):
                          {"results": [result(1, "passed", 1)]})
         self.assertEqual(report["compared_queries"], 0)
         self.assertEqual(report["incomparable"][0]["reason"], "missing_positive_median")
+
+
+    def test_rejects_nonobject_reports(self):
+        valid = {"results": [result(1, "passed", 0.1)]}
+        for malformed in ([], [valid], 2, None, "JSON"):
+            with self.subTest(malformed=malformed):
+                with self.assertRaisesRegex(ValueError, "JSON objects"):
+                    compare(malformed, valid)
+                with self.assertRaisesRegex(ValueError, "JSON objects"):
+                    compare(valid, malformed)
+
+    def test_rejects_mixed_metadata_types(self):
+        before = {"rows": 1, "results": [result(1, "passed", 0.01)]}
+        after = {"rows": True, "results": [result(1, "passed", 0.01)]}
+        with self.assertRaisesRegex(ValueError, "rows"):
+            compare(before, after)
+
+    def test_disallows_mismatched_reference_and_distribution(self):
+        before = {"results": [result(1, "passed", 0.01)],
+                  "reference_checked": True, "distribution": "uniform"}
+        after = {"results": [result(1, "passed", 0.01)],
+                 "reference_checked": False, "distribution": "uniform"}
+        with self.assertRaisesRegex(ValueError, "reference_checked"):
+            compare(before, after)
+        after["reference_checked"] = True
+        after["distribution"] = "skewed"
+        with self.assertRaisesRegex(ValueError, "distribution"):
+            compare(before, after)
+
+    def test_overflowing_integer_latency_is_not_measurable(self):
+        immense = 10 ** 400
+        self.assertIsNone(elapsed(result(1, "passed", immense)))
+        report = compare({"results": [result(1, "passed", immense)]},
+                         {"results": [result(1, "passed", 1.0)]})
+        self.assertEqual(report["compared_queries"], 0)
+
+    def test_extreme_latency_ratios_remain_valid_json(self):
+        import json
+        before = {"results": [result(1, "passed", 1e-300)]}
+        after = {"results": [result(1, "passed", 1e300)]}
+        report = compare(before, after)
+        self.assertEqual(report["regression_count"], 1)
+        self.assertIsNone(report["regressions"][0]["change_percent"])
+        json.dumps(report, allow_nan=False)
 
 
 if __name__ == "__main__":

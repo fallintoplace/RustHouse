@@ -45,6 +45,29 @@ class InputProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "require 2"):
                 profile(path, min_rows=2)
 
+    def test_rejects_raw_nul_but_allows_tsv_null_escape(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "data.tsv"
+            path.write_bytes(b"bad\x00value\n")
+            with self.assertRaisesRegex(ValueError, "NUL"):
+                profile(path)
+            path.write_bytes(b"\\N\n")
+            self.assertEqual(profile(path)["rows"], 1)
+
+
+    def test_optional_sorted_uint64_verification(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "keys.tsv"
+            path.write_bytes(b"id\n0\n3\n18446744073709551615\n")
+            result = profile(path, header=True, verify_sorted_uint64=True)
+            self.assertEqual(result["rows"], 3)
+            path.write_bytes(b"id\n3\n3\n")
+            with self.assertRaisesRegex(ValueError, "strictly increasing"):
+                profile(path, header=True, verify_sorted_uint64=True)
+            path.write_bytes(b"18446744073709551616\n")
+            with self.assertRaisesRegex(ValueError, "overflow"):
+                profile(path, verify_sorted_uint64=True)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,8 @@
 use super::{ParseError, Parser, Token, tokenize};
 use std::collections::HashSet;
 
+const MAX_COPY_COLUMNS: usize = 128;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyFormat {
     Csv,
@@ -18,14 +20,14 @@ pub struct CopyFrom {
     pub format: CopyFormat,
 }
 
-fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
+fn parse_copy_column_list(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
     if !parser.take(Token::LParen) {
         return Ok(None);
     }
     let mut columns = Vec::new();
     let mut seen = HashSet::new();
     loop {
-        if columns.len() >= 128 {
+        if columns.len() >= MAX_COPY_COLUMNS {
             return Err(ParseError("COPY supports at most 128 columns".into()));
         }
         let column = parser.bounded_word()?;
@@ -43,7 +45,7 @@ fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseE
     Ok(Some(columns))
 }
 
-fn parse_copy_format(parser: &mut Parser) -> Result<CopyFormat, ParseError> {
+fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseError> {
     if parser.keyword("CSV") {
         Ok(CopyFormat::Csv)
     } else if parser.keyword("TSV") {
@@ -86,7 +88,7 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
                 "COPY supports WITH (FORMAT CSV|TSV|SSV[, HEADER TRUE])".into(),
             ));
         }
-        options.format = parse_copy_format(parser)?;
+        options.format = parse_copy_format_option(parser)?;
         if parser.take(Token::Comma) {
             options.header = parse_copy_header(parser)?;
         }
@@ -116,7 +118,7 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
         return Ok(None);
     }
     let table = parser.bounded_word()?;
-    let columns = parse_copy_columns(&mut parser)?;
+    let columns = parse_copy_column_list(&mut parser)?;
     if !parser.keyword("FROM") {
         return Err(ParseError("COPY requires FROM 'path'".into()));
     }

@@ -42,6 +42,11 @@ class ResourceProfileTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 profile("unused", ".", "x", max_rss_mib=0)
 
+    def test_kernel_high_water_rss_wins_over_instantaneous_sample(self):
+        self.assertEqual(parse_rss("VmRSS:\t128 kB\nVmHWM:\t2048 kB\n"),
+                         2048 * 1024)
+        self.assertEqual(parse_rss("VmHWM:\t3 kB\nVmRSS:\t4 kB\n"), 4096)
+
 
 if __name__ == "__main__":
     unittest.main()
