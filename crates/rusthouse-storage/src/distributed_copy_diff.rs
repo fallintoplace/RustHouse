@@ -87,7 +87,20 @@ pub fn plan_replica_copy_batch(
     if max_objects > 65_536 {
         return Err("replica copy batch exceeds object limit");
     }
-    let needed = plan_replica_copies(source, destination)?;
+    // Validate all inventory entries before planning any copies.
+    // Sort borrowed metadata, then clone only the objects admitted by
+    // the bounded batch rather than the entire changed inventory.
+    let source_index = index(source)?;
+    let destination_index = index(destination)?;
+    let mut needed = source_index
+        .into_values()
+        .filter(|meta| {
+            destination_index
+                .get(meta.key.as_str())
+                .is_none_or(|existing| !meta.same_contents(existing))
+        })
+        .collect::<Vec<_>>();
+    needed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
     let mut remaining = max_bytes;
     let mut selected = Vec::with_capacity(needed.len().min(max_objects));
     for object in needed {
@@ -96,7 +109,7 @@ pub fn plan_replica_copy_batch(
         }
         if object.bytes <= remaining {
             remaining -= object.bytes;
-            selected.push(object);
+            selected.push(object.clone());
         }
     }
     Ok(selected)
@@ -214,6 +227,30 @@ mod tests {
 #[cfg(test)]
 mod copy_batch_tests {
     use super::*;
+
+    #[test]
+    fn bounded_batch_matches_full_plan_for_many_objects() {
+        let source = (0..500)
+            .rev()
+            .map(|index| ObjectMetadata {
+                key: format!("part/{index:04}.bin"),
+                bytes: if index % 7 == 0 { 500 } else { 1 },
+                crc32c: index,
+            })
+            .collect::<Vec<_>>();
+        let expected = plan_replica_copies(&source, &[]).unwrap();
+        let mut remaining = 12u64;
+        let selected = expected
+            .into_iter()
+            .filter(|object| {
+                if object.bytes > remaining { return false; }
+                remaining -= object.bytes;
+                true
+            })
+            .take(12)
+            .collect::<Vec<_>>();
+        assert_eq!(plan_replica_copy_batch(&source, &[], 12, 12).unwrap(), selected);
+    }
 
     #[test]
     fn selects_bounded_copies_without_deleting_destination_only_objects() {
