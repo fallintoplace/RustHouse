@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
-fn field_count(line: &[u8]) -> usize {
+fn tsv_field_count(line: &[u8]) -> usize {
     1 + line.iter().filter(|&&byte| byte == b'\t').count()
 }
 
@@ -39,7 +39,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
     fn record_header(&mut self) -> io::Result<()> {
         std::str::from_utf8(&self.line)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 header"))?;
-        let width = field_count(&self.line);
+        let width = tsv_field_count(&self.line);
         if width > 128 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -51,7 +51,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
     }
 
     fn write_row(&mut self, columns: usize) -> io::Result<()> {
-        if field_count(&self.line) != columns {
+        if tsv_field_count(&self.line) != columns {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "JSON row width differs from header",
