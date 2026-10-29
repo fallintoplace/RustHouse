@@ -15,6 +15,12 @@ fn validate_range(offset: u64, length: usize, file_length: u64) -> io::Result<()
     Ok(())
 }
 
+#[cfg(unix)]
+fn same_object_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.dev() == after.dev() && before.ino() == after.ino()
+}
+
 fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() {
@@ -24,6 +30,10 @@ fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
     let opened = file.metadata()?;
     if !opened.file_type().is_file() || opened.len() != meta.len() {
         return Err(io::Error::other("object changed before range read"));
+    }
+    #[cfg(unix)]
+    if !same_object_identity(&meta, &opened) {
+        return Err(io::Error::other("object inode changed before range read"));
     }
     Ok((file, opened.len()))
 }
@@ -171,5 +181,28 @@ mod multi_range_tests {
         assert!(read_object_ranges(&path, &[(9, 2)], 8).is_err());
         assert!(read_object_ranges(&path, &[(u64::MAX, 2)], 8).is_err());
         fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod immutable_object_identity_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_an_unrelated_equal_length_inode() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-range-identity-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let a = root.join("a");
+        let b = root.join("b");
+        let link = root.join("hardlink");
+        fs::write(&a, b"same").unwrap();
+        fs::write(&b, b"size").unwrap();
+        fs::hard_link(&a, &link).unwrap();
+        assert!(same_object_identity(&fs::metadata(&a).unwrap(), &fs::metadata(&link).unwrap()));
+        assert!(!same_object_identity(&fs::metadata(&a).unwrap(), &fs::metadata(&b).unwrap()));
+        fs::remove_dir_all(root).unwrap();
     }
 }
