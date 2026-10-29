@@ -36,11 +36,9 @@ pub fn plan_chunks(
     max_chunks: usize,
 ) -> Result<Vec<Chunk>, &'static str> {
     let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
-    let mut chunks = Vec::with_capacity(count);
-    for index in 0..count {
-        chunks.push(chunk_at_index(total_bytes, chunk_bytes, index));
-    }
-    Ok(chunks)
+    Ok((0..count)
+        .map(|index| chunk_at_index(total_bytes, chunk_bytes, index))
+        .collect())
 }
 
 /// A pending byte range plus its stable index in the complete transfer
