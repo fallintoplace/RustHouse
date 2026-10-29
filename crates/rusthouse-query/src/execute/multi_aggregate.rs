@@ -90,6 +90,7 @@ enum BoundExpr {
     Column(usize),
     TextLength(usize),
     Integer(i64),
+    Float(f64),
     // Fast path for the affine expression family in ClickBench Q30.
     AffineColumn {
         index: usize,
@@ -118,6 +119,15 @@ impl BoundExpr {
             ScalarExpr::Column(name) => Self::Column(index(name)?),
             ScalarExpr::TextLength(name) => Self::TextLength(index(name)?),
             ScalarExpr::Integer(number) => Self::Integer(*number),
+            ScalarExpr::Decimal(number) => {
+                let value = number.parse::<f64>().map_err(|_| {
+                    ExecutionError::Invalid("invalid decimal expression literal".into())
+                })?;
+                if !value.is_finite() {
+                    return Err(ExecutionError::Invalid("non-finite decimal literal".into()));
+                }
+                Self::Float(value)
+            },
             ScalarExpr::Add(left, right) => {
                 if let (ScalarExpr::Column(name), ScalarExpr::Integer(constant)) =
                     (left.as_ref(), right.as_ref())
@@ -212,6 +222,7 @@ fn eval_number(
             Ok(Some(Number::Unsigned(u128::from(matched))))
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
+        BoundExpr::Float(value) => Ok(Some(Number::Float(*value))),
         BoundExpr::AffineColumn {
             index,
             constant,
@@ -874,6 +885,20 @@ mod distinct_key_tests {
             Some(typed::Key::Text(value)) if value == b"abc"
         ));
         assert!(distinct_argument(&expression, &batch, 1).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod tpch_decimal_literal_tests {
+    use super::*;
+
+    #[test]
+    fn binds_and_evaluates_decimal_constant_once() {
+        let bound = BoundExpr::bind(
+            &ScalarExpr::Decimal("0.05".to_owned()), &HashMap::new()
+        ).unwrap();
+        let value = eval_number(&bound, &[], 0).unwrap();
+        assert!(matches!(value, Some(Number::Float(f)) if (f - 0.05).abs() < 1e-15));
     }
 }
 

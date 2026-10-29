@@ -11,6 +11,8 @@ pub enum ScalarExpr {
     Column(String),
     TextLength(String),
     Integer(i64),
+    /// Parsed exact lexeme for a decimal literal; converted once when bound.
+    Decimal(String),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -31,7 +33,7 @@ impl ScalarExpr {
                     out.push(name.clone());
                 }
             }
-            Self::Integer(_) => {}
+            Self::Integer(_) | Self::Decimal(_) => {}
             Self::Add(left, right)
             | Self::Subtract(left, right)
             | Self::Multiply(left, right)
