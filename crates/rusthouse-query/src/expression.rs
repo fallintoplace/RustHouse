@@ -15,6 +15,7 @@ pub enum ScalarExpr {
     IsNull(Box<ScalarExpr>, bool),
     Not(Box<ScalarExpr>),
     Between(Box<ScalarExpr>, Box<ScalarExpr>, Box<ScalarExpr>, bool),
+    In(Box<ScalarExpr>, Vec<ScalarExpr>, bool),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -41,6 +42,12 @@ impl ScalarExpr {
             Self::Integer(_) | Self::Null => {}
             Self::IsNull(value, _) | Self::Not(value) =>
                 value.collect_referenced_columns(out, seen),
+            Self::In(value, candidates, _) => {
+                value.collect_referenced_columns(out, seen);
+                for candidate in candidates {
+                    candidate.collect_referenced_columns(out, seen);
+                }
+            }
             Self::Between(value, low, high, _) => {
                 value.collect_referenced_columns(out, seen);
                 low.collect_referenced_columns(out, seen);
@@ -101,6 +108,31 @@ fn parse_comparison_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError
 
 fn parse_comparison_core(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     let left = parse_arithmetic_tokens(parser)?;
+    let in_negated = matches!(
+        (parser.tokens.get(parser.index), parser.tokens.get(parser.index + 1)),
+        (Some(Token::Word(not)), Some(Token::Word(keyword)))
+            if not.eq_ignore_ascii_case("NOT") && keyword.eq_ignore_ascii_case("IN")
+    );
+    if in_negated {
+        parser.index += 1;
+    }
+    if parser.keyword("IN") {
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("IN requires '('".into()));
+        }
+        let mut candidates = Vec::new();
+        loop {
+            if candidates.len() == 64 {
+                return Err(ParseError("aggregate IN lists support at most 64 values".into()));
+            }
+            candidates.push(parse_arithmetic_tokens(parser)?);
+            if !parser.take(Token::Comma) { break; }
+        }
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("IN requires ')'".into()));
+        }
+        return Ok(ScalarExpr::In(Box::new(left), candidates, in_negated));
+    }
     let between_negated = parser.keyword("NOT");
     if between_negated || parser.keyword("BETWEEN") {
         if between_negated && !parser.keyword("BETWEEN") {
@@ -309,6 +341,19 @@ mod tests {
         assert!(matches!(parse_scalar_expression("amount BETWEEN 1 AND 2 OR other = 1").unwrap(),
             ScalarExpr::Or(..)));
         assert!(parse_scalar_expression("amount BETWEEN 1").is_err());
+    }
+
+    #[test]
+    fn parses_in_membership_with_boolean_precedence_and_budgets() {
+        assert!(matches!(parse_scalar_expression("amount IN (1, 3, 5)").unwrap(),
+            ScalarExpr::In(_, members, false) if members.len() == 3));
+        assert!(matches!(parse_scalar_expression("amount NOT IN (1, 3)").unwrap(),
+            ScalarExpr::In(_, _, true)));
+        assert!(matches!(parse_scalar_expression("a IN (1, 2) AND b > 4").unwrap(),
+            ScalarExpr::And(..)));
+        assert!(parse_scalar_expression("a IN ()").is_err());
+        assert!(parse_scalar_expression(&format!("a IN ({})",
+            vec!["1"; 65].join(", "))).is_err());
     }
 
     #[test]
