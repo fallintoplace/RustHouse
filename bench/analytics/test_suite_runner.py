@@ -25,6 +25,17 @@ class AnalyticsSuiteTests(unittest.TestCase):
             self.assertEqual(sqlite_reference(oracle, "SELECT COUNT(coupon) FROM events"), b"5\n")
             oracle.close()
 
+    def test_duplicate_workload_json_fields_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "workload.json"
+            path.write_text(
+                '{"name":"duplicate","queries":[{"name":"q",'
+                '"sql":"SELECT 1","sql":"SELECT 2"}]}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate workload field"):
+                load_workload(path)
+
     def test_invalid_rows_and_workloads_are_rejected(self):
         for rows in (0, 200_001):
             with self.assertRaises(ValueError):

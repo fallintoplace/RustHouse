@@ -32,7 +32,16 @@ ACCOUNTS_ROWS = 997
 
 
 def load_workload(path):
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    def unique_fields(pairs):
+        fields = {}
+        for name, value in pairs:
+            if name in fields:
+                raise ValueError(f"duplicate workload field: {name}")
+            fields[name] = value
+        return fields
+
+    data = json.loads(Path(path).read_text(encoding="utf-8"),
+                      object_pairs_hook=unique_fields)
     if not isinstance(data, dict) or not isinstance(data.get("name"), str) or not data["name"].strip():
         raise ValueError("workload must have a nonempty name")
     max_rows = data.get("max_rows", 200_000)
