@@ -25,7 +25,8 @@ def sql_for(table, first, count):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", table):
         raise ValueError("unsafe table name")
     expected(first, count)
-    upper = (f"id < {first + count}" if first + count < 2**64
+    stop = first + count
+    upper = (f"id < {stop}" if stop < 2**64
              else f"id <= {2**64 - 1}")
     return (f"SELECT count(*), sum(id) FROM {table} WHERE "
             f"id >= {first} AND {upper}")
@@ -55,8 +56,9 @@ def verify(binary, database, table, start, rows, window_rows=10_000_000,
     seconds = []
     count_total = 0
     sum_total = 0
-    for position in range(start, start + rows, window_rows):
-        count = min(window_rows, start + rows - position)
+    stop = start + rows
+    for position in range(start, stop, window_rows):
+        count = min(window_rows, stop - position)
         query = sql_for(table, position, count)
         begun = time.perf_counter()
         data = execute(query)
