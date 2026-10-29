@@ -46,18 +46,40 @@ fn render_key(key: u128, bits: usize, signed: bool) -> String {
     (extended as i128).to_string()
 }
 
-fn key_as_f64(key: u128, bits: usize, signed: bool) -> f64 {
+/// Average two integer order statistics without converting the full values
+/// to Float64. This preserves every Int128/UInt128 bit and half-integers.
+fn exact_middle_average(low: u128, high: u128, bits: usize, signed: bool) -> String {
     if !signed {
-        return key as f64;
+        let remainders = low % 2 + high % 2;
+        let integer = low / 2 + high / 2 + remainders / 2;
+        return if remainders % 2 == 0 {
+            integer.to_string()
+        } else {
+            format!("{integer}.5")
+        };
     }
-    let sign_bit = 1_u128 << (bits - 1);
-    let original = key ^ sign_bit;
-    let extended = if original & sign_bit != 0 {
-        original | !low_mask(bits)
-    } else {
-        original
+    let decode = |key: u128| {
+        let sign_bit = 1_u128 << (bits - 1);
+        let original = key ^ sign_bit;
+        let extended = if original & sign_bit != 0 {
+            original | !low_mask(bits)
+        } else {
+            original
+        };
+        extended as i128
     };
-    (extended as i128) as f64
+    let low = decode(low);
+    let high = decode(high);
+    // Euclidean halves avoid overflow when the sum requires 129 bits.
+    let remainders = low.rem_euclid(2) + high.rem_euclid(2);
+    let integer = low.div_euclid(2) + high.div_euclid(2) + remainders / 2;
+    if remainders % 2 == 0 {
+        integer.to_string()
+    } else if integer < 0 {
+        format!("-{}.5", integer.unsigned_abs() - 1)
+    } else {
+        format!("{integer}.5")
+    }
 }
 
 /// Add the native integer batch directly to two radix histograms. Nullable
@@ -204,9 +226,7 @@ fn median_inner(
     if n % 2 == 1 {
         Ok(Some(render_key(keys[1], bits, signed)))
     } else {
-        let low = key_as_f64(keys[0], bits, signed);
-        let high = key_as_f64(keys[1], bits, signed);
-        Ok(Some((low / 2.0 + high / 2.0).to_string()))
+        Ok(Some(exact_middle_average(keys[0], keys[1], bits, signed)))
     }
 }
 
@@ -286,6 +306,30 @@ pub(super) fn median_filtered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn even_medians_keep_full_u128_precision() {
+        assert_eq!(exact_middle_average(u128::MAX, u128::MAX, 128, false), u128::MAX.to_string());
+        assert_eq!(exact_middle_average(u128::MAX - 1, u128::MAX, 128, false),
+            format!("{}.5", u128::MAX - 1));
+        assert_eq!(exact_middle_average(0, 1, 128, false), "0.5");
+    }
+
+    #[test]
+    fn signed_even_medians_preserve_half_values_and_extremes() {
+        let encoded = |value| sorted_key_signed(value, 128);
+        for (a, b, expected) in [
+            (i128::MIN, i128::MIN, i128::MIN.to_string()),
+            (i128::MAX, i128::MAX, i128::MAX.to_string()),
+            (-1, 0, "-0.5".into()),
+            (-3, -2, "-2.5".into()),
+            (0, 1, "0.5".into()),
+            (i128::MIN, i128::MAX, "-0.5".into()),
+        ] {
+            assert_eq!(exact_middle_average(encoded(a), encoded(b), 128, true),
+                expected, "values {a} and {b}");
+        }
+    }
 
     #[test]
     fn signed_integer_key_order_matches_numeric_order() {
