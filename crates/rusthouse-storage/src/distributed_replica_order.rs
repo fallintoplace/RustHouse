@@ -1,6 +1,9 @@
 //! Rank candidate storage replicas for reads without claiming consistency.
 use std::collections::HashSet;
 
+const MAX_READ_REPLICAS: usize = 64;
+const MAX_NODE_ID_BYTES: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicaStatus {
     pub node: String,
@@ -11,7 +14,7 @@ pub struct ReplicaStatus {
 
 fn valid_node(node: &str) -> bool {
     !node.is_empty()
-        && node.len() <= 64
+        && node.len() <= MAX_NODE_ID_BYTES
         && node
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
@@ -42,7 +45,7 @@ fn validate_replica_nodes(replicas: &[ReplicaStatus]) -> Result<(), &'static str
 /// Return healthy node IDs, newest advertised version first.
 /// A caller must still validate returned data and enforce its consistency model.
 pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'static str> {
-    if replicas.is_empty() || replicas.len() > 64 {
+    if replicas.is_empty() || replicas.len() > MAX_READ_REPLICAS {
         return Err("invalid replica status set");
     }
     validate_replica_nodes(replicas)?;
