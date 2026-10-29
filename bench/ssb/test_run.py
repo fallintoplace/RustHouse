@@ -90,5 +90,15 @@ class StarJoinBenchmarkTests(unittest.TestCase):
             benchmark("fake", rows=1_000_001)
 
 
+class SSBParameterValidationTests(unittest.TestCase):
+    def test_bad_controls_do_not_generate_large_fixtures(self):
+        for options in ({"rows": True}, {"rows": 5.5},
+                        {"runs": True}, {"warmups": False},
+                        {"timeout": float("nan")}, {"timeout": float("inf")},
+                        {"query": []}):
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(ValueError, "invalid row count"):
+                    benchmark("unused", **options)
+
 if __name__ == "__main__":
     unittest.main()
