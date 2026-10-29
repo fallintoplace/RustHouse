@@ -7,6 +7,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(unix)]
+fn same_source_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.dev() == after.dev() && before.ino() == after.ino()
+}
+
 fn stream_bounded_copy(
     input: &mut File,
     output: &mut File,
@@ -65,6 +71,10 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
     let opened = input.metadata()?;
     if !opened.file_type().is_file() || opened.len() != source_meta.len() {
         return Err(io::Error::other("source changed before immutable copy"));
+    }
+    #[cfg(unix)]
+    if !same_source_identity(&source_meta, &opened) {
+        return Err(io::Error::other("source inode changed before immutable copy"));
     }
     let mut output = OpenOptions::new()
         .write(true)
@@ -186,5 +196,28 @@ mod checked_copy_tests {
         assert_eq!(fs::read(&target).unwrap(), b"verified");
         assert!(copy_immutable_file_checked(&source, &target, 100, checksum).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod copy_identity_tests {
+    use super::*;
+
+    #[test]
+    fn identical_sizes_do_not_make_different_inodes_equivalent() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-source-id-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first");
+        let second = root.join("second");
+        let link = root.join("link");
+        fs::write(&first, b"one").unwrap();
+        fs::write(&second, b"two").unwrap();
+        fs::hard_link(&first, &link).unwrap();
+        assert!(same_source_identity(&fs::metadata(&first).unwrap(), &fs::metadata(&link).unwrap()));
+        assert!(!same_source_identity(&fs::metadata(&first).unwrap(), &fs::metadata(&second).unwrap()));
+        fs::remove_dir_all(root).unwrap();
     }
 }
