@@ -132,9 +132,13 @@ fn term(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 .checked_div(factor(parser, depth)?)
                 .ok_or(ParseError("scalar division by zero or overflow".into()))?;
         } else if parser.take(Token::Percent) {
-            value = value
-                .checked_rem(factor(parser, depth)?)
-                .ok_or(ParseError("scalar modulo by zero or overflow".into()))?;
+            let divisor = factor(parser, depth)?;
+            value = if divisor == -1 {
+                0
+            } else {
+                value.checked_rem(divisor)
+                    .ok_or(ParseError("scalar modulo by zero or overflow".into()))?
+            };
         } else {
             break;
         }
@@ -544,6 +548,8 @@ fn parse_euclidean_division(
     require_token(parser, Token::RParen, "Euclidean division requires ')'")?;
     let result = if quotient {
         left.checked_div_euclid(right)
+    } else if right == -1 {
+        Some(0) // The Euclidean remainder is representable for Int64::MIN.
     } else {
         left.checked_rem_euclid(right)
     };
