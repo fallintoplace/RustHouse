@@ -15,8 +15,8 @@ pub(super) fn handle(
     let Some(database) = config.database.as_deref() else {
         return Response::text("400 Bad Request", "JOIN requires a database\n");
     };
-    let cap = config.max_rows.min(250_000);
-    query.limit = Some(query.limit.map_or(cap, |limit| limit.min(cap)));
+    let join_row_cap = config.max_rows.min(250_000);
+    query.limit = Some(query.limit.map_or(join_row_cap, |limit| limit.min(join_row_cap)));
     if explain {
         return Response::text(
             "200 OK",
