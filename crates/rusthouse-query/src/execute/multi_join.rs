@@ -168,7 +168,7 @@ fn step_keys(
         let (left, right) = using_column_pair(relations, name)?;
         let left_type = column_type(relations, left);
         let right_type = column_type(relations, right);
-        if base_type(left_type) != base_type(right_type) {
+        if !super::join::compatible_join_types(left_type, right_type) {
             return Err(invalid(format!(
                 "JOIN key types differ: {left_type} and {right_type}"
             )));
@@ -194,7 +194,7 @@ fn step_keys(
         };
         let left_type = column_type(relations, left);
         let right_type = column_type(relations, right);
-        if base_type(left_type) != base_type(right_type) {
+        if !super::join::compatible_join_types(left_type, right_type) {
             return Err(invalid(format!(
                 "JOIN key types differ: {left_type} and {right_type}"
             )));
