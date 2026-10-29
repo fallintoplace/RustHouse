@@ -148,7 +148,14 @@ impl ObjectKey {
             return Err("noncanonical distributed generation");
         }
         let key = Self::new(fields[0], fields[1], generation, fields[3], fields[4])?;
-        if path.as_os_str() != key.relative_path().as_os_str() {
+        let original = path.to_str().ok_or("invalid distributed object key path")?;
+        let canonical = key.relative_path();
+        let canonical = canonical.to_str().ok_or("invalid distributed object key path")?;
+        // Windows accepts both slash spellings; compare only after normalizing
+        // separators, without removing dot or duplicate path components.
+        if original.replace(std::path::MAIN_SEPARATOR, "/")
+            != canonical.replace(std::path::MAIN_SEPARATOR, "/")
+        {
             return Err("noncanonical distributed object key path");
         }
         Ok(key)
