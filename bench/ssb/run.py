@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run a reference-checked, bounded star-schema join end to end."""
 import argparse
+import math
 import sqlite3
 from contextlib import closing
 import subprocess
@@ -38,8 +39,12 @@ def expected_rows(reference, statement=SQL):
 
 def benchmark(binary, rows=2000, seed=42, runs=3, warmups=1,
               timeout=120, execute=None, query="sorted-topk"):
-    if (not 1 <= rows <= MAX_FACTS or runs < 1 or warmups < 0
-            or timeout <= 0 or query not in QUERY_SQL):
+    if (type(rows) is not int or not 1 <= rows <= MAX_FACTS
+            or type(runs) is not int or runs < 1
+            or type(warmups) is not int or warmups < 0
+            or type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0
+            or not isinstance(query, str) or query not in QUERY_SQL):
         raise ValueError("invalid row count or timing parameters")
     with tempfile.TemporaryDirectory(prefix="rusthouse-star-bench-") as dirname:
         root = Path(dirname)
