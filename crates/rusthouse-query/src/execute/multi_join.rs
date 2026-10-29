@@ -466,7 +466,7 @@ pub fn execute_multi_join<W: Write>(
             }
         }
         if final_count {
-            output.write_all(b"count\\n")?;
+            output.write_all(b"count\n")?;
             if query.offset == 0 {
                 writeln!(output, "{count}")?;
             }
