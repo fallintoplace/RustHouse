@@ -1,9 +1,9 @@
+use crate::fixed_width::MAX_BATCH_BYTES;
 use std::error::Error;
 use std::fmt;
 use std::io::{self, Read};
 
 const MAX_BATCH_ROWS: usize = 1_000_000;
-const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 const SIZE_ENTRY_BYTES: usize = size_of::<u64>();
 
 #[derive(Debug, PartialEq, Eq)]
