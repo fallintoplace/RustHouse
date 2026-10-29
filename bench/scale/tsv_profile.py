@@ -21,7 +21,10 @@ def profile(path, *, columns=1, header=False, min_rows=1,
     digest = hashlib.sha256()
     records = 0
     bytes_read = 0
-    with Path(path).open("rb") as stream:
+    source = Path(path)
+    if not source.is_file() or source.is_symlink():
+        raise ValueError("expected a regular, non-symlinked TSV file")
+    with source.open("rb") as stream:
         while True:
             raw = stream.readline(MAX_RECORD_BYTES + 1)
             if not raw:
