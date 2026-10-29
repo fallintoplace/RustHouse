@@ -72,19 +72,22 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
         .open(&staging)?;
     let copied = stream_bounded_copy(&mut input, &mut output, source_meta.len(), max_bytes);
     drop(output);
-    let total = match copied {
-        Ok(total) => total,
+    // hard_link fails if the destination already exists, unlike an overwriting rename.
+    let published = copied.and_then(|total| {
+        fs::hard_link(&staging, destination)?;
+        Ok(total)
+    });
+    let cleanup = fs::remove_file(&staging);
+    let total = match published {
+        Ok(total) => {
+            cleanup?;
+            total
+        }
         Err(error) => {
-            let _ = fs::remove_file(&staging);
+            let _ = cleanup;
             return Err(error);
         }
     };
-    // hard_link fails if the destination already exists, unlike an overwriting rename.
-    if let Err(error) = fs::hard_link(&staging, destination) {
-        let _ = fs::remove_file(&staging);
-        return Err(error);
-    }
-    fs::remove_file(&staging)?;
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
     Ok(total)
