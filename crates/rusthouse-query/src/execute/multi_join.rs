@@ -427,10 +427,18 @@ fn stream_selected_inner_chain<W: Write>(
 ) -> Result<(), ExecutionError> {
     let selected = output_columns(query, relations, initial_step)?;
     let fact_width = relations[0].names.len();
-    let extra = selected.iter().filter_map(|(index, _, fallback)| {
+    let mut extra = selected.iter().filter_map(|(index, _, fallback)| {
         let key = if *index < fact_width { Some(*index) } else { None };
         key.or_else(|| fallback.filter(|&index| index < fact_width))
     }).collect::<Vec<_>>();
+    let filter = query.where_null.as_ref().map(|(column, not_null)| {
+        column_index(relations, column).map(|index| (index, *not_null))
+    }).transpose()?;
+    if let Some((index, _)) = filter {
+        if index < fact_width {
+            extra.push(index);
+        }
+    }
     let (steps, indices) = prepare_stream_probe_steps(
         paths, relations, initial_step, &query.steps, &extra
     )?;
@@ -447,6 +455,11 @@ fn stream_selected_inner_chain<W: Write>(
                 row[index] = typed::cell(&batch[read_index], row_index);
             }
             let mut emit = |joined: &[typed::Cell]| -> Result<bool, ExecutionError> {
+                if let Some((column, not_null)) = filter {
+                    if matches!(&joined[column], typed::Cell::Null) == not_null {
+                        return Ok(true);
+                    }
+                }
                 if matched >= query.offset && matched < end {
                     for (position, (index, _, fallback)) in selected.iter().enumerate() {
                         if position != 0 {
@@ -554,7 +567,6 @@ pub fn execute_multi_join<W: Write>(
     }
     if query.limit.is_some_and(|limit| limit <= MAX_RESULT_ROWS)
         && query.order_by.is_empty()
-        && query.where_null.is_none()
         && query.kind == JoinType::Inner
         && query.steps.iter().all(|step| step.kind == JoinType::Inner)
     {
