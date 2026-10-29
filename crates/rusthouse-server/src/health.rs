@@ -5,7 +5,7 @@ use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use std::fmt::Write as _;
 
-fn peer_is_healthy(peer: Peer) -> bool {
+fn is_peer_healthy(peer: Peer) -> bool {
     matches!(
         remote::ping(peer),
         Ok(reply) if reply.status == 200 && reply.body == b"Ok.\n"
@@ -18,7 +18,7 @@ fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
         let handles = cluster
             .peers()
             .iter()
-            .map(|&peer| scope.spawn(move || peer_is_healthy(peer)))
+            .map(|&peer| scope.spawn(move || is_peer_healthy(peer)))
             .collect::<Vec<_>>();
         handles
             .into_iter()
