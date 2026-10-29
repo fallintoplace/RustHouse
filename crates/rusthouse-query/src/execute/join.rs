@@ -956,6 +956,7 @@ fn probe_right<F>(
     left_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Bucket>,
     options: ProbeOptions,
+    projection: Option<&[usize]>,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -965,10 +966,12 @@ where
         return Ok(0);
     }
     let mut retained = if options.materialize_rows {
-        (0..right_names.len()).collect::<Vec<_>>()
+        projection.map_or_else(|| (0..right_names.len()).collect::<Vec<_>>(),
+            |indices| indices.to_vec())
     } else {
-        right_keys.to_vec()
+        Vec::new()
     };
+    retained.extend_from_slice(right_keys);
     let left_width = left_rows.first().map_or(0, Vec::len);
     if let Some((column, _)) = options.null_filter {
         if let Some(local) = column.checked_sub(left_width)
@@ -1037,10 +1040,9 @@ where
                             if options.materialize_rows && matches >= options.materialize_after {
                                 right_row
                                     .get_or_insert_with(|| {
-                                        batch
-                                            .iter()
-                                            .map(|column| typed::cell(column, index))
-                                            .collect()
+                                        materialize_join_probe_row(
+                                            &batch, &retained, index, right_names.len(),
+                                        )
                                     })
                                     .as_slice()
                             } else {
@@ -1112,7 +1114,7 @@ fn execute_streaming_right<W: Write>(
             any: query.any,
             null_filter,
         },
-        |_, _| Ok(()),
+        None, |_, _| Ok(()),
     )?;
     let header = selected
         .iter()
@@ -1129,6 +1131,9 @@ fn execute_streaming_right<W: Write>(
         .offset
         .saturating_add(query.limit.unwrap_or(usize::MAX));
     let mut position = 0usize;
+    let probe_columns = join_probe_projection(
+        selected, left_names.len(), right_names.len(),
+    );
     probe_right(
         right_path,
         right_names,
@@ -1136,13 +1141,13 @@ fn execute_streaming_right<W: Write>(
         &left_rows,
         &hash,
         ProbeOptions {
-            materialize_rows: selected.iter().any(|(column, _, _)| *column >= left_width),
+            materialize_rows: !probe_columns.is_empty(),
             materialize_after: query.offset,
             stop_after,
             any: query.any,
             null_filter,
         },
-        |left, right| {
+        Some(&probe_columns), |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
                     if index != 0 {
@@ -1399,7 +1404,7 @@ fn execute_streaming_inner_count<W: Write>(
             ProbeOptions {
                 materialize_rows: false, materialize_after: 0,
                 stop_after: Some(usize::MAX), any: query.any, null_filter,
-            }, |_, _| Ok(())
+            }, None, |_, _| Ok(())
         )?
     };
     write!(output, "count\n{count}\n")?;
