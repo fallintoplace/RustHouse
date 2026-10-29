@@ -7,6 +7,7 @@ use std::collections::HashMap;
 const WORDS_PER_BLOCK: usize = 1024;
 const MAX_BLOCKS: usize = 32_768; // Limit occupied prefixes independently of representation.
 const MAX_SPARSE_KEYS: usize = 131_072; // Bound HashSet memory across all prefixes.
+const MAX_DENSE_BLOCKS: usize = 8_192; // 64 MiB of 8 KiB bitmaps.
 
 enum Block {
     Sparse(std::collections::HashSet<u16>),
@@ -29,6 +30,7 @@ pub(super) struct BitmapDistinct32 {
     blocks: HashMap<u16, Block>,
     count: u64,
     sparse_keys: usize,
+    dense_blocks: usize,
 }
 
 impl BitmapDistinct32 {
@@ -44,6 +46,15 @@ impl BitmapDistinct32 {
             ));
         }
         let suffix = (key & 0xffff) as u16;
+        if self.dense_blocks >= MAX_DENSE_BLOCKS
+            && matches!(self.blocks.get(&prefix),
+                Some(Block::Sparse(values))
+                    if values.len() + 1 == DENSE_THRESHOLD && !values.contains(&suffix))
+        {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) exceeded its dense-bitmap memory budget".into(),
+            ));
+        }
         // Do not admit new sparse entries once the global memory budget is
         // exhausted. Dense bitmap inserts and duplicate keys remain valid.
         if self.sparse_keys >= MAX_SPARSE_KEYS {
@@ -66,6 +77,7 @@ impl BitmapDistinct32 {
                 }
                 if fresh && values.len() == DENSE_THRESHOLD {
                     self.sparse_keys -= DENSE_THRESHOLD;
+                    self.dense_blocks += 1;
                     let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
                     for &value in values.iter() {
                         insert_bitmap_bit(bitmap.as_mut(), value);
@@ -150,6 +162,19 @@ mod adaptive_large_keyspace_tests {
         assert!(state.insert(0).is_ok());
         assert!(state.insert((42 << 16) | 7).is_err());
         assert_eq!(state.len(), super::MAX_SPARSE_KEYS as u64);
+    }
+
+    #[test]
+    fn dense_bitmap_budget_rejects_new_allocations_without_mutation() {
+        let mut state = BitmapDistinct32::new();
+        for key in 0..4095u32 {
+            state.insert(key).unwrap();
+        }
+        state.dense_blocks = super::MAX_DENSE_BLOCKS;
+        assert!(state.insert(4095).is_err());
+        assert_eq!(state.len(), 4095);
+        assert!(state.insert(1).is_ok());
+        assert_eq!(state.len(), 4095);
     }
 
     #[test]
