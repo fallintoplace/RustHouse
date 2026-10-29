@@ -65,5 +65,16 @@ class SnapshotFingerprintTests(unittest.TestCase):
                     fingerprint(root)
 
 
+    def test_rejects_noninteger_hashing_bounds(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "a.bin").write_bytes(b"abc")
+            for kwargs in (
+                {"max_files": True}, {"max_files": 2.5},
+                {"block_size": True}, {"block_size": 4096.5},
+            ):
+                with self.subTest(kwargs=kwargs), self.assertRaisesRegex(
+                        ValueError, "max_files or block_size"):
+                    fingerprint(root, **kwargs)
+
 if __name__ == "__main__":
     unittest.main()
