@@ -329,7 +329,7 @@ impl TypedExternalSort {
         }
         self.sort_buffer();
         let path = self.next_path()?;
-        let mut output = BufWriter::new(File::create(&path)?);
+        let mut output = BufWriter::with_capacity(64 * 1024, File::create(&path)?);
         for entry in &self.buffer {
             write_entry(&mut output, entry)?;
         }
@@ -397,7 +397,7 @@ impl TypedExternalSort {
                 }
                 let merged = self.next_path()?;
                 {
-                    let mut writer = BufWriter::new(File::create(&merged)?);
+                    let mut writer = BufWriter::with_capacity(64 * 1024, File::create(&merged)?);
                     self.merge_group(chunk, |entry| {
                         write_entry(&mut writer, &entry)?;
                         Ok(true)
