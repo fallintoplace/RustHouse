@@ -50,16 +50,16 @@ fn encode_values_row_into(line: &[u8], columns: usize, values: &mut Vec<u8>) -> 
             .saturating_add(columns.saturating_mul(3))
             .saturating_add(2),
     );
-    let mut count = 0;
+    let mut encoded_field_count = 0;
     values.push(b'(');
     for field in line.split(|&byte| byte == b'\t') {
-        if count > 0 {
+        if encoded_field_count > 0 {
             values.extend_from_slice(b", ");
         }
         append_literal(values, field)?;
-        count += 1;
+        encoded_field_count += 1;
     }
-    if count != columns {
+    if encoded_field_count != columns {
         return Err(invalid("SQL VALUES row width differs from the header"));
     }
     values.push(b')');
