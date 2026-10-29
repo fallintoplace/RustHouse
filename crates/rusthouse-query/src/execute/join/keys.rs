@@ -61,7 +61,16 @@ pub(super) fn row_key_into(
     if indices.iter().any(|&index| !key_eligible(&row[index])) {
         return false;
     }
-    result.extend(indices.iter().map(|&index| join_key(&row[index])));
+    // Preserve heap buffers for text components across multi-join probes.
+    // This path is used by materialized intermediate rows, where rebuilding
+    // owned String keys for every lookup amplifies allocations.
+    for (position, &index) in indices.iter().enumerate() {
+        match &row[index] {
+            typed::Cell::Text(bytes) => put_text_key(result, position, bytes),
+            other => put_key(result, position, join_key(other)),
+        }
+    }
+    result.truncate(indices.len());
     true
 }
 
@@ -171,6 +180,29 @@ mod tests {
         let invalid = [typed::Cell::Null, typed::Cell::Text(b"abc".to_vec())];
         assert!(!row_key_into(&invalid, &[0, 1], &mut probe));
         assert!(probe.is_empty());
+    }
+
+    #[test]
+    fn multi_join_text_probes_reuse_string_buffers() {
+        let row = [typed::Cell::Text(b"long-string-key".to_vec())];
+        let mut key = Vec::new();
+        assert!(row_key_into(&row, &[0], &mut key));
+        let (pointer, capacity) = match &key[0] {
+            typed::Key::Text(bytes) => (bytes.as_ptr(), bytes.capacity()),
+            _ => panic!("expected a text key"),
+        };
+        for payload in [b"short".as_slice(), b"long-string-key".as_slice()] {
+            let row = [typed::Cell::Text(payload.to_vec())];
+            assert!(row_key_into(&row, &[0], &mut key));
+            match &key[0] {
+                typed::Key::Text(bytes) => {
+                    assert_eq!(bytes.as_slice(), payload);
+                    assert_eq!(bytes.as_ptr(), pointer);
+                    assert_eq!(bytes.capacity(), capacity);
+                }
+                _ => panic!("expected a text key"),
+            }
+        }
     }
 
     #[test]
