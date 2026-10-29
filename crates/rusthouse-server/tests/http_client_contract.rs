@@ -405,3 +405,33 @@ fn clickhouse_client_connection_options_reject_impersonation_and_writes() {
     );
     assert_eq!(forbidden.status, "400 Bad Request");
 }
+#[test]
+fn sql_database_discovery_uses_only_validated_catalog() {
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT_DB: AtomicUsize = AtomicUsize::new(0);
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-http-exists-{}-{}",
+        std::process::id(),
+        NEXT_DB.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir(&db).unwrap();
+    fs::write(db.join("events.schema"), "rusthouse-schema-v1\nid\tUInt64\n").unwrap();
+    fs::create_dir(db.join("events.parts")).unwrap();
+    fs::write(db.join("broken.schema"), "not-a-schema").unwrap();
+    fs::create_dir(db.join("broken.parts")).unwrap();
+    let config = Config { database: Some(db.clone()), max_rows: 100, ..config() };
+    for (sql, expected) in [
+        ("EXISTS TABLE events", b"result\n1\n".as_slice()),
+        ("EXISTS TABLE missing", b"result\n0\n".as_slice()),
+        ("EXISTS TABLE broken", b"result\n0\n".as_slice()),
+        ("SHOW DATABASES", b"name\ndefault\n".as_slice()),
+    ] {
+        let res = handle_request("POST", "/", sql.as_bytes(), &config);
+        assert_eq!(res.status, "200 OK", "{sql}");
+        assert_eq!(res.body, expected, "{sql}");
+    }
+    let json = handle_request("POST", "/?format=json", b"EXISTS TABLE events", &config);
+    assert_eq!(json.body, b"[{\"result\":\"1\"}]\n");
+    fs::remove_dir_all(db).unwrap();
+}

@@ -48,8 +48,9 @@ fn like_matches(name: &str, pattern: &str) -> Result<bool, &'static str> {
     Ok(states[bytes.len()])
 }
 
-fn write_rows<W: Write>(output: &mut W, names: &[String]) -> io::Result<()> {
-    output.write_all(b"name\n")?;
+fn write_rows<W: Write>(output: &mut W, heading: &str, names: &[String]) -> io::Result<()> {
+    output.write_all(heading.as_bytes())?;
+    output.write_all(b"\n")?;
     for name in names {
         // Catalog identifiers are validated ASCII, without tabs or newlines.
         output.write_all(name.as_bytes())?;
@@ -58,22 +59,22 @@ fn write_rows<W: Write>(output: &mut W, names: &[String]) -> io::Result<()> {
     Ok(())
 }
 
-fn respond_with_format(format: QueryFormat, names: &[String]) -> Response {
+fn respond_with_format(format: QueryFormat, heading: &str, names: &[String]) -> Response {
     let mut output = LimitedWriter::new();
     let write: io::Result<()> = match format {
-        QueryFormat::Tsv => write_rows(&mut output, names),
+        QueryFormat::Tsv => write_rows(&mut output, heading, names),
         QueryFormat::TsvNoHeader => {
             let mut without_header = WithoutHeader::new(&mut output);
-            write_rows(&mut without_header, names)
+            write_rows(&mut without_header, heading, names)
         }
-        QueryFormat::Csv => write_rows(&mut CsvWriter::new(&mut output), names),
+        QueryFormat::Csv => write_rows(&mut CsvWriter::new(&mut output), heading, names),
         QueryFormat::CsvNoHeader => {
-            write_rows(&mut CsvWriter::new(WithoutHeader::new(&mut output)), names)
+            write_rows(&mut CsvWriter::new(WithoutHeader::new(&mut output)), heading, names)
         }
-        QueryFormat::Jsonl => write_rows(&mut JsonlWriter::new(&mut output), names),
+        QueryFormat::Jsonl => write_rows(&mut JsonlWriter::new(&mut output), heading, names),
         QueryFormat::JsonCompactEachRow => {
             let mut compact = JsonCompactEachRowWriter::new(&mut output);
-            write_rows(&mut compact, names).and_then(|()| compact.finish().map(|_| ()))
+            write_rows(&mut compact, heading, names).and_then(|()| compact.finish().map(|_| ()))
         }
         QueryFormat::Json | QueryFormat::JsonPretty => {
             let mut array = if matches!(format, QueryFormat::JsonPretty) {
@@ -81,14 +82,14 @@ fn respond_with_format(format: QueryFormat, names: &[String]) -> Response {
             } else {
                 JsonArraySink::new(&mut output)
             };
-            write_rows(&mut JsonlWriter::new(&mut array), names)
+            write_rows(&mut JsonlWriter::new(&mut array), heading, names)
                 .and_then(|()| array.finish().map(|_| ()))
         }
         QueryFormat::SqlValues => {
             let mut values = SqlValuesWriter::new(&mut output);
-            write_rows(&mut values, names).and_then(|()| values.finish())
+            write_rows(&mut values, heading, names).and_then(|()| values.finish())
         }
-        QueryFormat::Markdown => write_rows(&mut MarkdownWriter::new(&mut output), names),
+        QueryFormat::Markdown => write_rows(&mut MarkdownWriter::new(&mut output), heading, names),
     };
     match write {
         Ok(()) => Response {
@@ -134,7 +135,7 @@ pub(super) fn show_tables(ddl: Ddl, format: QueryFormat, config: &Config) -> Res
         _ => return Response::text("400 Bad Request", "unsupported read-only SHOW query\n"),
     }
     names.truncate(config.max_rows.min(250_000));
-    respond_with_format(format, &names)
+    respond_with_format(format, "name", &names)
 }
 
 #[cfg(test)]
@@ -159,15 +160,15 @@ mod tests {
     fn formats_rows_without_escaping_valid_catalog_identifiers() {
         let names = vec!["events".into(), "users".into()];
         assert_eq!(
-            respond_with_format(QueryFormat::Tsv, &names).body,
+            respond_with_format(QueryFormat::Tsv, "name", &names).body,
             b"name\nevents\nusers\n"
         );
         assert_eq!(
-            respond_with_format(QueryFormat::TsvNoHeader, &names).body,
+            respond_with_format(QueryFormat::TsvNoHeader, "name", &names).body,
             b"events\nusers\n"
         );
         assert_eq!(
-            respond_with_format(QueryFormat::Jsonl, &names).body,
+            respond_with_format(QueryFormat::Jsonl, "name", &names).body,
             b"{\"name\":\"events\"}\n{\"name\":\"users\"}\n"
         );
     }
@@ -299,5 +300,107 @@ mod describe_tests {
             data_type: "String".into(),
         }];
         assert!(write_description_rows(&mut Vec::new(), &bad, 1).is_err());
+    }
+}
+
+/// Accept SQL metadata statements with no uncontrolled SQL suffix or identifiers.
+fn statement_words(sql: &str) -> Vec<&str> {
+    let sql = sql.trim();
+    let sql = sql.strip_suffix(';').unwrap_or(sql).trim_end();
+    sql.split_ascii_whitespace().collect()
+}
+
+/// Single-database mapping for standard read-only ClickHouse clients.
+/// No physical database listing or user-defined databases exist in RustHouse.
+pub(super) fn show_databases(sql: &str, format: QueryFormat, config: &Config) -> Response {
+    let words = statement_words(sql);
+    if words.len() != 2
+        || !words[0].eq_ignore_ascii_case("SHOW")
+        || !words[1].eq_ignore_ascii_case("DATABASES")
+    {
+        return Response::text("400 Bad Request", "unsupported SHOW DATABASES syntax\n");
+    }
+    if config.database.is_none() || config.part.is_some() {
+        return Response::text("400 Bad Request", "SHOW DATABASES requires --database only\n");
+    }
+    let names = if config.max_rows == 0 {
+        Vec::new()
+    } else {
+        vec!["default".to_owned()]
+    };
+    respond_with_format(format, "name", &names)
+}
+
+/// Return a 0/1 table existence probe from validated catalog entries.
+/// This does not follow symlinks or infer names from raw directory entries.
+pub(super) fn exists_table(sql: &str, format: QueryFormat, config: &Config) -> Response {
+    let words = statement_words(sql);
+    if words.len() != 3
+        || !words[0].eq_ignore_ascii_case("EXISTS")
+        || !words[1].eq_ignore_ascii_case("TABLE")
+        || !valid_sql_identifier(words[2])
+    {
+        return Response::text("400 Bad Request", "EXISTS TABLE requires a table identifier\n");
+    }
+    if config.part.is_some() {
+        return Response::text("400 Bad Request", "EXISTS TABLE requires --database only\n");
+    }
+    let Some(database) = config.database.as_deref() else {
+        return Response::text("400 Bad Request", "EXISTS TABLE requires --database\n");
+    };
+    let _lock = match acquire_database_lock(database, false) {
+        Ok(lock) => lock,
+        Err(error) => return Response::text("409 Conflict", &format!("{error}\n")),
+    };
+    let names = match tables::table_names(database) {
+        Ok(names) => names,
+        Err(message) => return Response::text("400 Bad Request", &message),
+    };
+    let exists = names.binary_search_by(|name| name.as_str().cmp(words[2])).is_ok();
+    let rows = if config.max_rows == 0 {
+        Vec::new()
+    } else {
+        vec![if exists { "1".into() } else { "0".into() }]
+    };
+    respond_with_format(format, "result", &rows)
+}
+
+fn valid_sql_identifier(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    name.len() <= 128
+        && matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    #[test]
+    fn only_whole_single_statements_and_safe_identifiers_are_accepted() {
+        assert_eq!(statement_words(" EXISTS TABLE events; "), vec!["EXISTS", "TABLE", "events"]);
+        assert_eq!(statement_words("SHOW DATABASES;"), vec!["SHOW", "DATABASES"]);
+        assert!(valid_sql_identifier("events_2"));
+        for invalid in ["events;DROP", "other.name", "a-b", "0bad", ""] {
+            assert!(!valid_sql_identifier(invalid));
+        }
+    }
+    #[test]
+    fn database_discovery_requires_configured_catalog() {
+        assert_eq!(
+            show_databases("SHOW DATABASES", QueryFormat::Tsv, &Config::default()).status,
+            "400 Bad Request"
+        );
+        assert_eq!(
+            show_databases(
+                "SHOW DATABASES",
+                QueryFormat::Tsv,
+                &Config { database: Some("unused".into()), max_rows: 10, ..Config::default() }
+            ).body,
+            b"name\ndefault\n"
+        );
+        assert_eq!(
+            show_databases("SHOW DATABASES; DROP TABLE x", QueryFormat::Tsv, &Config::default()).status,
+            "400 Bad Request"
+        );
     }
 }

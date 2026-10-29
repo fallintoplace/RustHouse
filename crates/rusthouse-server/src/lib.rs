@@ -569,8 +569,22 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if sql
         .split_ascii_whitespace()
         .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case("EXISTS"))
+    {
+        return sql_discovery::exists_table(sql, format, config);
+    }
+    if sql
+        .split_ascii_whitespace()
+        .next()
         .is_some_and(|first| first.eq_ignore_ascii_case("SHOW"))
     {
+        if sql
+            .split_ascii_whitespace()
+            .nth(1)
+            .is_some_and(|second| second.eq_ignore_ascii_case("DATABASES"))
+        {
+            return sql_discovery::show_databases(sql, format, config);
+        }
         return match parse_ddl(sql) {
             Ok(Some(ddl @ Ddl::ShowTables))
             | Ok(Some(ddl @ Ddl::ShowTablesLike { .. }))

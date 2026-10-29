@@ -111,6 +111,12 @@ ClickHouse engine, primary/sort key, and partition settings that are not
 available in RustHouse's catalog. It cannot be used to reproduce physical
 ClickHouse storage layouts.
 
+Read-only metadata clients can query `SHOW DATABASES`, which reports
+the single logical `default` catalog, and `EXISTS TABLE events`, which
+returns a bounded `result` value of 1 or 0 based on validated catalog
+entries. Both require `--database`. No additional database namespaces or
+mutating SQL statements are implied.
+
 Read-only SQL discovery supports `SHOW TABLES`, `SHOW TABLES LIKE 'event%'`,
 and `SHOW TABLES NOT LIKE 'event%'` in database mode. Discovery uses the same
 catalog validation and read lock as `GET /tables`. Results respect the HTTP
