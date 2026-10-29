@@ -82,20 +82,25 @@ fn entry_bytes(row: &Row) -> Result<usize, ExecutionError> {
     )
 }
 
+fn write_number_cell(
+    output: &mut impl Write,
+    tag: u8,
+    payload: &[u8],
+) -> Result<(), ExecutionError> {
+    let mut packed = [0u8; 17];
+    packed[0] = tag;
+    packed[1..payload.len() + 1].copy_from_slice(payload);
+    output.write_all(&packed[..payload.len() + 1])?;
+    Ok(())
+}
+
 fn write_cell(output: &mut impl Write, value: &Cell) -> Result<(), ExecutionError> {
     match value {
         Cell::Null => output.write_all(&[0])?,
-        Cell::Numeric(Number::Unsigned(v)) => {
-            output.write_all(&[1])?;
-            output.write_all(&v.to_le_bytes())?;
-        }
-        Cell::Numeric(Number::Signed(v)) => {
-            output.write_all(&[2])?;
-            output.write_all(&v.to_le_bytes())?;
-        }
+        Cell::Numeric(Number::Unsigned(v)) => write_number_cell(output, 1, &v.to_le_bytes())?,
+        Cell::Numeric(Number::Signed(v)) => write_number_cell(output, 2, &v.to_le_bytes())?,
         Cell::Numeric(Number::Float(v)) => {
-            output.write_all(&[3])?;
-            output.write_all(&v.to_bits().to_le_bytes())?;
+            write_number_cell(output, 3, &v.to_bits().to_le_bytes())?;
         }
         Cell::Text(value) => {
             output.write_all(&[4])?;
