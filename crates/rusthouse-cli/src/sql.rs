@@ -1,4 +1,5 @@
 mod input;
+mod format_clause;
 
 use self::input::*;
 
@@ -233,6 +234,17 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             return Err("EXPLAIN requires a SELECT statement".into());
         }
         explain = true;
+    }
+    let (statement, sql_format) = format_clause::split_select_format(&query);
+    if let Some(name) = sql_format {
+        if format.is_some() {
+            return Err("do not combine SQL FORMAT with --format".into());
+        }
+        if explain {
+            return Err("SQL FORMAT cannot be combined with EXPLAIN".into());
+        }
+        format = Some(SqlOutputFormat::from_arg(Some(OsString::from(name)))?);
+        query = statement.to_owned();
     }
     if database.is_some() && catalog.is_some() {
         return Err("--catalog and --database cannot be combined".into());
