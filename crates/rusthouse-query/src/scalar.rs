@@ -118,6 +118,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("PMOD")
         || name.eq_ignore_ascii_case("TRAILING_ONES")
         || name.eq_ignore_ascii_case("ISSQUARE")
+        || name.eq_ignore_ascii_case("BITFLOOR")
         || name.eq_ignore_ascii_case("TOINT8")
 }
 
@@ -1102,6 +1103,19 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         )
     ) {
         return parse_bit_scans(parser, depth);
+    }
+    if parser.keyword("BITFLOOR") {
+        require_token(parser, Token::LParen, "BITFLOOR requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "BITFLOOR requires ')'")?;
+        if value < 0 {
+            return Err(ParseError("bitFloor requires a nonnegative integer".into()));
+        }
+        return Ok(if value == 0 {
+            0
+        } else {
+            1_i64 << (63 - value.leading_zeros())
+        });
     }
     if parser.keyword("ISSQUARE") {
         require_token(parser, Token::LParen, "ISSQUARE requires '('")?;
