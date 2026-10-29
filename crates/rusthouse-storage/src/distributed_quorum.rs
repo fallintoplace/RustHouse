@@ -64,6 +64,7 @@ impl QuorumPolicy {
         members: &[&str],
         acknowledgements: &[&str],
     ) -> Result<QuorumObservation, &'static str> {
+        Self::new(self.replicas, self.reads, self.writes)?;
         if members.len() != self.replicas || acknowledgements.len() > 256 {
             return Err("quorum membership or acknowledgement count mismatch");
         }
@@ -84,11 +85,15 @@ impl QuorumPolicy {
     }
 
     pub fn can_read(self, unique_acks: usize) -> bool {
-        unique_acks >= self.reads && unique_acks <= self.replicas
+        Self::new(self.replicas, self.reads, self.writes).is_ok()
+            && unique_acks >= self.reads
+            && unique_acks <= self.replicas
     }
 
     pub fn can_write(self, unique_acks: usize) -> bool {
-        unique_acks >= self.writes && unique_acks <= self.replicas
+        Self::new(self.replicas, self.reads, self.writes).is_ok()
+            && unique_acks >= self.writes
+            && unique_acks <= self.replicas
     }
 }
 
@@ -190,5 +195,22 @@ mod quorum_deficit_tests {
         );
         assert_eq!(policy.deficits(&members, &["a", "b"]).unwrap().missing_writes, 0);
         assert!(policy.deficits(&members, &["unknown"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod direct_policy_validation_tests {
+    use super::*;
+
+    #[test]
+    fn publicly_constructed_invalid_policy_cannot_report_quorum() {
+        let unsafe_policy = QuorumPolicy {
+            replicas: 3,
+            reads: 0,
+            writes: 1,
+        };
+        assert!(unsafe_policy.observe(&["a", "b", "c"], &["a"]).is_err());
+        assert!(!unsafe_policy.can_read(3));
+        assert!(!unsafe_policy.can_write(3));
     }
 }
