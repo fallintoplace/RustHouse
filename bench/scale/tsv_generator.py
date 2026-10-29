@@ -12,16 +12,18 @@ MAX_UINT64 = (1 << 64) - 1
 
 
 def emit_rows(stream, rows, *, start=0, step=1, batch_rows=8192, header=False):
-    if not isinstance(rows, int) or rows < 1:
+    if type(rows) is not int or rows < 1:
         raise ValueError("rows must be positive")
-    if not isinstance(start, int) or not 0 <= start <= MAX_UINT64:
+    if type(start) is not int or not 0 <= start <= MAX_UINT64:
         raise ValueError("start must be UInt64")
     if type(step) is not int or step < 1:
         raise ValueError("step must be a positive integer")
     if rows - 1 > (MAX_UINT64 - start) // step:
         raise ValueError("UInt64 sequence would overflow")
-    if not 1 <= batch_rows <= 1_000_000:
+    if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("batch_rows must be in 1..1000000")
+    if type(header) is not bool:
+        raise ValueError("header must be a boolean")
     if header:
         stream.write("id\n")
     if step == 1:
