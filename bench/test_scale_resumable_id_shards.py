@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,7 @@ class ResumableShardsTests(unittest.TestCase):
                 create(temp, 0, 5, 5)
             self.assertEqual(path.read_bytes(), b"0\n1\n3\n")
 
+    @unittest.skipIf(sys.platform == "win32", "Windows CI cannot create symlinks")
     def test_refuses_existing_symlink_even_with_correct_rows(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
