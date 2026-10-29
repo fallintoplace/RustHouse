@@ -12,6 +12,8 @@ from pathlib import Path
 from run import load_queries
 from canonical_integrity import verify as verify_canonical_sql
 
+MAX_REFERENCE_BYTES = 16 * 1024 * 1024
+
 
 def generate(duckdb_binary, database, queries_dir, output_dir,
              timeout=300, overwrite=False, execute=None, jobs=1, require_canonical=False):
@@ -45,6 +47,8 @@ def generate(duckdb_binary, database, queries_dir, output_dir,
             raise ValueError(f"q{number:02d}: DuckDB query failed: {stderr}")
         if not isinstance(result.stdout, bytes):
             raise ValueError("DuckDB output must be raw bytes")
+        if len(result.stdout) > MAX_REFERENCE_BYTES:
+            raise ValueError(f"q{number:02d}: DuckDB reference exceeds 16 MiB")
         return number, sql, result.stdout
 
     # Separate readonly DuckDB processes can execute independent queries.
