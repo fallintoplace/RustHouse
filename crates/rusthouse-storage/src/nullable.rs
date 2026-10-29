@@ -39,6 +39,7 @@ impl<T> NullableColumn<T> {
 pub enum NullableReadError {
     Io(io::Error),
     TooManyRows(usize),
+    InvalidNullFlag { row: usize, value: u8 },
     InvalidType(String),
     Numeric(NumericReadError),
     FixedString(FixedStringReadError),
@@ -51,6 +52,9 @@ impl fmt::Display for NullableReadError {
             Self::Io(error) => write!(f, "unable to read Nullable null map: {error}"),
             Self::TooManyRows(rows) => {
                 write!(f, "Nullable batch exceeds the row limit: {rows}")
+            }
+            Self::InvalidNullFlag { row, value } => {
+                write!(f, "invalid Nullable map flag at row {row}: {value}")
             }
             Self::InvalidType(data_type) => {
                 write!(f, "invalid Nullable type: {data_type}")
@@ -82,6 +86,9 @@ pub fn read_null_map<R: Read>(reader: &mut R, rows: usize) -> Result<Vec<u8>, Nu
     reader
         .read_exact(&mut null_map)
         .map_err(NullableReadError::Io)?;
+    if let Some((row, &value)) = null_map.iter().enumerate().find(|(_, &byte)| byte > 1) {
+        return Err(NullableReadError::InvalidNullFlag { row, value });
+    }
     Ok(null_map)
 }
 
@@ -487,5 +494,34 @@ mod tests {
         assert_eq!(trailing, [99]);
         data.read_exact(&mut trailing).unwrap();
         assert_eq!(trailing, [88]);
+    }
+}
+
+#[cfg(test)]
+mod canonical_null_map_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_zero_and_one_for_nullable_streams() {
+        assert_eq!(read_null_map(&mut &[0, 1, 0][..], 3).unwrap(), vec![0, 1, 0]);
+        assert!(matches!(
+            read_null_map(&mut &[0, 2, 1][..], 3),
+            Err(NullableReadError::InvalidNullFlag { row: 1, value: 2 })
+        ));
+        assert!(matches!(
+            read_null_map(&mut &[255][..], 1),
+            Err(NullableReadError::InvalidNullFlag { row: 0, value: 255 })
+        ));
+    }
+
+    #[test]
+    fn corrupt_flags_do_not_consume_nested_values() {
+        let mut null_map = &[2u8][..];
+        let mut data = &[42u8][..];
+        assert!(matches!(
+            read_nullable_numeric_column(&mut null_map, &mut data, "Nullable(UInt8)", 1),
+            Err(NullableReadError::InvalidNullFlag { row: 0, .. })
+        ));
+        assert_eq!(data, &[42]);
     }
 }
