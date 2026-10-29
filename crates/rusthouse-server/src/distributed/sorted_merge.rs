@@ -76,6 +76,7 @@ pub(super) fn merge_sorted_integer_page(
     max_rows: usize,
 ) -> Result<Vec<u8>, MergeError> {
     let header = format!("{column}\n");
+    let header_len = header.len();
     let unsigned = kind.starts_with("UInt");
     let prefix = offset.checked_add(limit).ok_or(MergeError::CoordinatorLimit)?;
     let mut first_keys = Vec::with_capacity(shards.len());
@@ -83,7 +84,7 @@ pub(super) fn merge_sorted_integer_page(
         if *cap <= prefix || !body.ends_with(b"\n") || !body.starts_with(header.as_bytes()) {
             return Err(MergeError::InvalidSortedScan);
         }
-        let data = &body[header.len()..];
+        let data = &body[header_len..];
         let mut cursor = 0usize;
         let mut rows = 0usize;
         let mut previous = None;
@@ -119,7 +120,7 @@ pub(super) fn merge_sorted_integer_page(
     let mut seen = 0usize;
     let mut returned = 0usize;
     while let Some(cursor) = heap.pop() {
-        let body = &shards[cursor.shard].1[output_header_len(column)..];
+        let body = &shards[cursor.shard].1[header_len..];
         // The complete peer stream was already validated before heap merging.
         let end = cursor.next_position;
         if seen >= offset && returned < limit {
@@ -149,10 +150,6 @@ pub(super) fn merge_sorted_integer_page(
     Ok(output)
 }
 
-// The header is a validated single integer column and one newline.
-fn output_header_len(column: &str) -> usize {
-    column.len() + 1
-}
 
 #[cfg(test)]
 mod tests {
