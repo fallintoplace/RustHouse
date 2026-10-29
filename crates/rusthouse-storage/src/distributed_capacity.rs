@@ -42,14 +42,14 @@ impl Capacity {
 
     /// Convert reserved bytes into committed usage.
     pub fn commit(self, bytes: u64) -> Result<Self, &'static str> {
-        let reserved = self.remaining_reservation(bytes, "cannot commit unreserved bytes")?;
+        let remaining_reserved_bytes = self.remaining_reservation(bytes, "cannot commit unreserved bytes")?;
         self.available()?;
         Ok(Self {
             used: self
                 .used
                 .checked_add(bytes)
                 .ok_or("replica usage overflow")?,
-            reserved,
+            reserved: remaining_reserved_bytes,
             ..self
         })
     }
