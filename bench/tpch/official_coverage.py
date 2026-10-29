@@ -5,6 +5,7 @@ A successful query without a trusted reference is UNVERIFIED. This does not
 calculate a TPC-H Power, Throughput, or QphH score.
 """
 import argparse
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -21,7 +22,10 @@ def clean_sql(path):
 
 def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
              timeout=120, execute=None):
-    if runs < 1 or warmups < 0 or timeout <= 0:
+    if (type(runs) is not int or type(warmups) is not int
+            or runs < 1 or warmups < 0
+            or type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("invalid timing parameters")
     if execute is None:
         execute = lambda sql: cli_sql(binary, database, sql, timeout)
