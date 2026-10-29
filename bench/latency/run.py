@@ -2,6 +2,7 @@
 """Measure verified end-to-end RustHouse CLI latency over 20 generated SQL queries."""
 
 import argparse
+import math
 import os
 import platform
 import subprocess
@@ -163,7 +164,8 @@ def main(argv=None):
     parser.add_argument("--only", help="Query IDs, for example 1,4,10-13")
     parser.add_argument("--output", type=Path, help="Save full JSON results")
     args = parser.parse_args(argv)
-    if args.runs < 1 or args.warmups < 0 or args.timeout <= 0:
+    if (args.runs < 1 or args.warmups < 0
+            or not math.isfinite(args.timeout) or args.timeout <= 0):
         parser.error("--runs and --timeout must be positive; --warmups cannot be negative")
     try:
         cases = select_cases(make_cases(args.rows), args.only)

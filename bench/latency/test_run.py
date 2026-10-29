@@ -98,6 +98,13 @@ class GeneratedQueryTests(unittest.TestCase):
                 self.assertEqual(result["status"], status)
                 self.assertIsNone(result["latency"])
 
+    def test_main_rejects_nonfinite_timeout(self):
+        for timeout in ("nan", "inf"):
+            with self.subTest(timeout=timeout):
+                with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+                    runner.main(["--binary", "dummy", "--timeout", timeout])
+                self.assertEqual(failure.exception.code, 2)
+
     def test_main_reports_machine_context_and_writes_identical_json(self):
         reference = runner.make_cases(512)[0].expected
         with tempfile.TemporaryDirectory() as folder, \
