@@ -17,7 +17,7 @@ MAX_SHARDS = 16_384
 def split_tsv(source, output_dir, *, rows_per_chunk=65536,
               max_bytes_per_chunk=None):
     source, output_dir = Path(source), Path(output_dir)
-    if not 1 <= rows_per_chunk <= 1_000_000:
+    if type(rows_per_chunk) is not int or not 1 <= rows_per_chunk <= 1_000_000:
         raise ValueError("rows_per_chunk must be in 1..1000000")
     if max_bytes_per_chunk is not None and (
             type(max_bytes_per_chunk) is not int or max_bytes_per_chunk < 1):
