@@ -1,0 +1,6 @@
+{
+  "id": "sum-central-eighty",
+  "kind": "sum_range",
+  "lo": "p10",
+  "hi": "p90"
+}
