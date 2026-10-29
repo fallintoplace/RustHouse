@@ -60,6 +60,18 @@ class ChunkCopyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "headerless"):
                 load_chunks("rusthouse", "db", "events", root)
 
+    def test_rejects_excess_shards_before_copy(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / "manifest.json").write_text(json.dumps({
+                "format": "rusthouse-tsv-shards-v1", "header": False,
+                "shards": [{"path": "a"}, {"path": "b"}],
+            }))
+            with patch("bench.scale.chunk_copy.MAX_SHARDS", 1):
+                with self.assertRaisesRegex(ValueError, "shard limit"):
+                    load_chunks("rusthouse", "db", "events", path)
+
 
 if __name__ == "__main__":
     unittest.main()
