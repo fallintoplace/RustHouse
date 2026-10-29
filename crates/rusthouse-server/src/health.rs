@@ -5,7 +5,7 @@ use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use std::fmt::Write as _;
 
-fn peer_is_healthy(peer: Peer) -> bool {
+fn is_peer_healthy(peer: Peer) -> bool {
     matches!(
         remote::ping(peer),
         Ok(reply) if reply.status == 200 && reply.body == b"Ok.\n"
@@ -18,7 +18,7 @@ fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
         let handles = cluster
             .peers()
             .iter()
-            .map(|&peer| scope.spawn(move || peer_is_healthy(peer)))
+            .map(|&peer| scope.spawn(move || is_peer_healthy(peer)))
             .collect::<Vec<_>>();
         handles
             .into_iter()
@@ -27,7 +27,7 @@ fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
     })
 }
 
-fn render_peer_health(cluster: &Cluster, healthy: &[bool]) -> String {
+fn render_peer_health_entries(cluster: &Cluster, healthy: &[bool]) -> String {
     let mut details = String::new();
     for (index, (peer, &alive)) in cluster.peers().iter().zip(healthy).enumerate() {
         if index != 0 {
@@ -45,7 +45,7 @@ fn render_peer_health(cluster: &Cluster, healthy: &[bool]) -> String {
 
 fn render_health_response(cluster: &Cluster, healthy: &[bool]) -> Response {
     let count = healthy.iter().filter(|&&alive| alive).count();
-    let details = render_peer_health(cluster, healthy);
+    let details = render_peer_health_entries(cluster, healthy);
     let status = if count == healthy.len() {
         "200 OK"
     } else {
