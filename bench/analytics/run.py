@@ -54,7 +54,10 @@ def execute_http(endpoint, sql, timeout):
     request = urllib.request.Request(http_target(endpoint), sql.encode("utf-8"), method="POST")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
+            payload = response.read(16_777_217)
+            if len(payload) > 16_777_216:
+                raise ValueError("HTTP benchmark result exceeds 16 MiB")
+            return payload
     except urllib.error.HTTPError as error:
         raise RuntimeError("HTTP %d: %s" % (error.code, error.read(2000).decode("utf-8", "replace"))) from error
 
