@@ -119,6 +119,10 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
             Number::Float(number) => Number::Float(number.trunc()),
             integer => integer,
         },
+        "ROUND" => match value {
+            Number::Float(number) => Number::Float(number.round_ties_even()),
+            integer => integer,
+        },
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -246,6 +250,24 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("trunc(amount)").is_ok());
         assert!(crate::parse_scalar_expression("trunc(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn round_uses_ties_to_even_without_rounding_integers() {
+        assert!(matches!(
+            apply_unary_math("ROUND", Number::Float(2.5)),
+            Ok(Number::Float(value)) if value == 2.0
+        ));
+        assert!(matches!(
+            apply_unary_math("ROUND", Number::Float(3.5)),
+            Ok(Number::Float(value)) if value == 4.0
+        ));
+        assert!(matches!(
+            apply_unary_math("ROUND", Number::Unsigned(u128::MAX)),
+            Ok(Number::Unsigned(u128::MAX))
+        ));
+        assert!(crate::parse_scalar_expression("round(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("round(amount, 2)").is_err());
     }
 
 }
