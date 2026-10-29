@@ -21,17 +21,13 @@ pub fn compare_snapshots(local: SnapshotVersion, remote: SnapshotVersion) -> Ver
     if local.epoch != remote.epoch {
         return VersionRelation::Diverged;
     }
-    if local.generation == remote.generation {
-        return if local.fingerprint == remote.fingerprint {
+    match local.generation.cmp(&remote.generation) {
+        std::cmp::Ordering::Less => VersionRelation::LocalBehind,
+        std::cmp::Ordering::Greater => VersionRelation::LocalAhead,
+        std::cmp::Ordering::Equal if local.fingerprint == remote.fingerprint => {
             VersionRelation::Identical
-        } else {
-            VersionRelation::Diverged
-        };
-    }
-    if local.generation < remote.generation {
-        VersionRelation::LocalBehind
-    } else {
-        VersionRelation::LocalAhead
+        }
+        std::cmp::Ordering::Equal => VersionRelation::Diverged,
     }
 }
 
