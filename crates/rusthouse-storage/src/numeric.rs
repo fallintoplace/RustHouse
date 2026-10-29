@@ -1,8 +1,8 @@
+use crate::fixed_width::MAX_BATCH_BYTES;
 use std::error::Error;
 use std::fmt;
 use std::io::{self, Read};
 
-const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq)]
