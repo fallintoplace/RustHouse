@@ -81,6 +81,10 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("CASE") => {
             parse_case_when(parser)
         }
+        Some(Token::Word(name)) if name.eq_ignore_ascii_case("NULL") => {
+            parser.index += 1;
+            Ok(ScalarExpr::Null)
+        }
         Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
             let number = number.parse::<i64>().map_err(|_| {
