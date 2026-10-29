@@ -59,6 +59,18 @@ fn parse_case_when(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     }))
 }
 
+fn parse_abs(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    parser.index += 1;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("abs requires '('".into()));
+    }
+    let inner = parse_expression_tokens(parser)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("abs requires exactly one argument".into()));
+    }
+    Ok(ScalarExpr::Abs(Box::new(inner)))
+}
+
 fn parse_if(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     parser.index += 1;
     if !parser.take(Token::LParen) {
@@ -146,6 +158,8 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
             parse_nullif(parser),
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("IF") =>
             parse_if(parser),
+        Some(Token::Word(name)) if name.eq_ignore_ascii_case("ABS") =>
+            parse_abs(parser),
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("NULL") => {
             parser.index += 1;
             Ok(ScalarExpr::Null)
