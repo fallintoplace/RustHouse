@@ -16,6 +16,10 @@ pub enum ScalarExpr {
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
     Divide(Box<ScalarExpr>, Box<ScalarExpr>),
     Compare(Box<ScalarExpr>, Operator, Box<ScalarExpr>),
+    Case {
+        branches: Vec<(ScalarExpr, ScalarExpr)>,
+        else_expr: Option<Box<ScalarExpr>>,
+    },
 }
 
 impl ScalarExpr {
@@ -32,6 +36,15 @@ impl ScalarExpr {
                 }
             }
             Self::Integer(_) => {}
+            Self::Case { branches, else_expr } => {
+                for (condition, value) in branches {
+                    condition.collect_referenced_columns(out, &mut seen);
+                    value.collect_referenced_columns(out, &mut seen);
+                }
+                if let Some(value) = else_expr {
+                    value.collect_referenced_columns(out, &mut seen);
+                }
+            }
             Self::Add(left, right)
             | Self::Subtract(left, right)
             | Self::Multiply(left, right)
@@ -208,6 +221,37 @@ mod tests {
     #[test]
     fn rejects_invalid_expressions() {
         for value in ["width +", "width,", "(width + 1", "9223372036854775808"] {
+            assert!(parse_scalar_expression(value).is_err(), "{value}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod case_when_parser_tests {
+    use super::*;
+
+    #[test]
+    fn parses_multi_branch_case_with_optional_else() {
+        let expr = parse_scalar_expression(
+            "CASE WHEN amount > 0 THEN amount WHEN amount < 0 THEN 0 ELSE 1 END",
+        )
+        .unwrap();
+        let ScalarExpr::Case { branches, else_expr } = expr else {
+            panic!("expected CASE expression");
+        };
+        assert_eq!(branches.len(), 2);
+        assert!(else_expr.is_some());
+        let nullable = parse_scalar_expression("CASE WHEN flag > 0 THEN 1 END").unwrap();
+        assert!(matches!(
+            nullable,
+            ScalarExpr::Case { branches, else_expr: None } if branches.len() == 1
+        ));
+        for value in [
+            "CASE WHEN flag > 0 THEN 1",
+            "CASE WHEN flag > 0 END",
+            "CASE WHEN flag > 0 THEN 1 ELSE END",
+            "CASE WHEN flag > 0 THEN 1 WHEN flag > 2 END",
+        ] {
             assert!(parse_scalar_expression(value).is_err(), "{value}");
         }
     }
