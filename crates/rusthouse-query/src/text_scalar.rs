@@ -169,6 +169,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOSTRINGCUTTOZERO"
             | "REPEAT"
             | "BASE64_DECODE"
+            | "BASE64URLDECODE"
             | "TRYBASE64DECODE"
             | "BASE64DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
@@ -3443,7 +3444,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "BASE64_DECODE" | "BASE64DECODE" | "TRYBASE64DECODE" => {
+        "BASE64_DECODE" | "BASE64DECODE" | "TRYBASE64DECODE" | "BASE64URLDECODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
             match input {
@@ -3459,10 +3460,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             _ => None,
                         }
                     }
-                    if value.len() % 4 != 0 {
+                    let mut normalized = Vec::new();
+                    let source: &[u8] = if name == "BASE64URLDECODE" {
+                        normalized.reserve(value.len().saturating_add(3));
+                        for byte in value.bytes() {
+                            normalized.push(match byte {
+                                b'-' => b'+',
+                                b'_' => b'/',
+                                b'+' | b'/' => {
+                                    return Err(ParseError("invalid BASE64URLDECODE alphabet".into()));
+                                }
+                                byte => byte,
+                            });
+                        }
+                        match normalized.len() % 4 {
+                            0 => {}
+                            2 => normalized.extend_from_slice(b"=="),
+                            3 => normalized.push(b'='),
+                            _ => return Err(ParseError("invalid BASE64URLDECODE length".into())),
+                        }
+                        normalized.as_slice()
+                    } else {
+                        value.as_bytes()
+                    };
+                    if source.len() % 4 != 0 {
                         return Err(ParseError("BASE64_DECODE requires four-byte groups".into()));
                     }
-                    let source = value.as_bytes();
                     let mut bytes = Vec::with_capacity(source.len() / 4 * 3);
                     for (index, group) in source.chunks_exact(4).enumerate() {
                         let last = index + 1 == source.len() / 4;
