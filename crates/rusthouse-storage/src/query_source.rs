@@ -4,7 +4,7 @@
 use crate::{Column, NumericColumn, NumericPartReader, PartError, PartMetadata, inspect_part};
 use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 const MAX_TABLE_PARTS: usize = 16_384;
@@ -17,9 +17,13 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
 }
 
 fn valid_generation_label(label: &str) -> bool {
-    label.starts_with('g')
-        && label.len() >= 2
-        && label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    let Some(digits) = label.strip_prefix('g') else {
+        return false;
+    };
+    let Ok(generation) = digits.parse::<u64>() else {
+        return false;
+    };
+    generation != 0 && digits == generation.to_string()
 }
 
 fn require_snapshot_directory(path: &Path, message: &'static str) -> Result<(), PartError> {
@@ -44,7 +48,25 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
             "invalid database snapshot pointer".into(),
         ));
     }
-    let label = fs::read_to_string(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
+    if !opened.file_type().is_file() || opened.len() > 64 {
+        return Err(PartError::InvalidScan("active pointer changed before read".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
+            return Err(PartError::InvalidScan("active pointer replaced before read".into()));
+        }
+    }
+    let mut label = String::new();
+    file.take(65)
+        .read_to_string(&mut label)
+        .map_err(|error| io_error(&pointer, error))?;
+    if label.len() > 64 {
+        return Err(PartError::InvalidScan("active pointer exceeds size limit".into()));
+    }
     let label = label
         .strip_suffix('\n')
         .ok_or_else(|| PartError::InvalidScan("invalid snapshot pointer format".into()))?;
@@ -643,5 +665,31 @@ mod tests {
 
         let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (4, 5)])]);
         validate_block_ranges(&mut ranges).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod canonical_active_pointer_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_zero_padded_or_unbounded_snapshot_labels() {
+        assert!(valid_generation_label("g1"));
+        assert!(valid_generation_label(&format!("g{}", u64::MAX)));
+        for invalid in ["", "g", "g0", "g01", "g+1", "g18446744073709551616"] {
+            assert!(!valid_generation_label(invalid), "{invalid}");
+        }
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-canonical-pointer-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        for label in ["g0\n", "g01\n", "g+1\n", "g18446744073709551616\n"] {
+            fs::write(&pointer, label).unwrap();
+            assert!(resolve_active_snapshot(&root).is_err(), "{label:?}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }
