@@ -21,44 +21,7 @@ impl<W: Write> HtmlWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        let text = std::str::from_utf8(&self.line).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
-        })?;
-        let count = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
-        let header = self.columns.is_none();
-        if let Some(columns) = self.columns {
-            if columns != count {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "HTML row does not match header column count",
-                ));
-            }
-        }
-
-        // Headers are literal and unescaped data can be emitted directly.
-        // Decode the whole row first only when it actually contains TSV escapes.
-        let decoded = if header || !text.as_bytes().contains(&b'\\') {
-            None
-        } else {
-            Some(decode_html_fields(text, header)?)
-        };
-
-        if header {
-            self.output.write_all(b"<table>\n<thead><tr>")?;
-        } else {
-            self.output.write_all(b"<tr>")?;
-        }
-        if let Some(fields) = decoded {
-            write_cells(&mut self.output, &fields, header)?;
-        } else {
-            write_plain_cells(&mut self.output, text, header)?;
-        }
-        if header {
-            self.output.write_all(b"</tr></thead>\n<tbody>\n")?;
-            self.columns = Some(count);
-        } else {
-            self.output.write_all(b"</tr>\n")?;
-        }
+        render_complete_row(&mut self.output, &mut self.columns, &self.line)?;
         self.line.clear();
         Ok(())
     }
@@ -76,7 +39,49 @@ impl<W: Write> HtmlWriter<W> {
     }
 }
 
-fn decode_html_field(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
+fn render_complete_row<W: Write>(
+    output: &mut W,
+    columns: &mut Option<usize>,
+    line: &[u8],
+) -> io::Result<()> {
+    let text = std::str::from_utf8(line).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
+    })?;
+    let field_count = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
+    let header = columns.is_none();
+    if let Some(expected) = *columns {
+        if expected != field_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTML row does not match header column count",
+            ));
+        }
+    }
+    let decoded = if header || !text.as_bytes().contains(&b'\\') {
+        None
+    } else {
+        Some(decode_html_fields(text, header)?)
+    };
+    if header {
+        output.write_all(b"<table>\n<thead><tr>")?;
+    } else {
+        output.write_all(b"<tr>")?;
+    }
+    if let Some(fields) = decoded {
+        write_cells(output, &fields, header)?;
+    } else {
+        write_plain_cells(output, text, header)?;
+    }
+    if header {
+        output.write_all(b"</tr></thead>\n<tbody>\n")?;
+        *columns = Some(field_count);
+    } else {
+        output.write_all(b"</tr>\n")?;
+    }
+    Ok(())
+}
+
+fn decode_tsv_field_for_html(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
     if header || field == "\\N" || !field.as_bytes().contains(&b'\\') {
         return Ok(Cow::Borrowed(field));
     }
@@ -87,16 +92,20 @@ fn decode_html_field(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
 
 fn decode_html_fields(line: &str, header: bool) -> io::Result<Vec<Cow<'_, str>>> {
     line.split('\t')
-        .map(|field| decode_html_field(field, header))
+        .map(|field| decode_tsv_field_for_html(field, header))
         .collect()
 }
 
-fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) -> io::Result<()> {
-    let (open, close) = if header {
-        (b"<th>".as_slice(), b"</th>".as_slice())
+fn cell_tags(header: bool) -> (&'static [u8], &'static [u8]) {
+    if header {
+        (b"<th>", b"</th>")
     } else {
-        (b"<td>".as_slice(), b"</td>".as_slice())
-    };
+        (b"<td>", b"</td>")
+    }
+}
+
+fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) -> io::Result<()> {
+    let (open, close) = cell_tags(header);
     for field in fields {
         output.write_all(open)?;
         write_cell(output, field)?;
@@ -106,20 +115,33 @@ fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) 
 }
 
 fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::Result<()> {
-    let (open, close) = if header {
-        (b"<th>".as_slice(), b"</th>".as_slice())
-    } else {
-        (b"<td>".as_slice(), b"</td>".as_slice())
-    };
+    let (open, close) = cell_tags(header);
     for field in line.split('\t') {
-        output.write_all(open)?;
-        write_cell(output, field)?;
-        output.write_all(close)?;
+        // Most tabular cells are short ASCII without HTML metacharacters.
+        // Emit the whole cell in one write instead of three separate writes.
+        if field.len() <= 256
+            && field.bytes().all(|byte| {
+                byte.is_ascii()
+                    && !byte.is_ascii_control()
+                    && !matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
+            })
+        {
+            let mut framed = [0u8; 265];
+            framed[..open.len()].copy_from_slice(open);
+            let body_end = open.len() + field.len();
+            framed[open.len()..body_end].copy_from_slice(field.as_bytes());
+            framed[body_end..body_end + close.len()].copy_from_slice(close);
+            output.write_all(&framed[..body_end + close.len()])?;
+        } else {
+            output.write_all(open)?;
+            write_cell(output, field)?;
+            output.write_all(close)?;
+        }
     }
     Ok(())
 }
 
-fn html_entity(ch: char) -> Option<&'static [u8]> {
+fn html_escape_entity(ch: char) -> Option<&'static [u8]> {
     match ch {
         '&' => Some(b"&amp;"),
         '<' => Some(b"&lt;"),
@@ -141,7 +163,7 @@ fn write_cell<W: Write>(output: &mut W, field: &str) -> io::Result<()> {
             start = index + ch.len_utf8();
             continue;
         }
-        if let Some(escape) = html_entity(ch) {
+        if let Some(escape) = html_escape_entity(ch) {
             if start < index {
                 output.write_all(&field.as_bytes()[start..index])?;
             }
@@ -170,6 +192,10 @@ impl<W: Write> Write for HtmlWriter<W> {
                     "HTML row exceeds 1 MiB",
                 ));
             }
+            if complete && self.line.is_empty() {
+                render_complete_row(&mut self.output, &mut self.columns, fragment)?;
+                continue;
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -186,6 +212,54 @@ impl<W: Write> Write for HtmlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_html_rows_bypass_input_staging() {
+        let mut writer = HtmlWriter::new(Vec::new());
+        writer.write_all(b"name\n").unwrap();
+        assert_eq!(writer.line.capacity(), 0);
+        let text = "café".repeat(4096);
+        writer.write_all(format!("{text}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), 0);
+        let html = writer.finish().unwrap();
+        assert!(html.windows(text.len()).any(|span| span == text.as_bytes()));
+    }
+
+    #[test]
+    fn short_ascii_html_cells_use_one_write_each() {
+        struct Counting {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Counting {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let mut output = Counting { writes: 0, bytes: Vec::new() };
+        write_plain_cells(&mut output, "first name\t42\t", false).unwrap();
+        assert_eq!(output.writes, 3);
+        assert_eq!(output.bytes, b"<td>first name</td><td>42</td><td></td>");
+
+        let mut header = Counting { writes: 0, bytes: Vec::new() };
+        write_plain_cells(&mut header, &"x".repeat(256), true).unwrap();
+        assert_eq!(header.writes, 1);
+        assert!(header.bytes.starts_with(b"<th>"));
+        assert!(header.bytes.ends_with(b"</th>"));
+    }
+
+    #[test]
+    fn special_html_cells_keep_escaping_and_unicode() {
+        let mut output = Vec::new();
+        write_plain_cells(&mut output, "Tom & Sue\t<svg>\tcafé\tline\rbreak", false).unwrap();
+        assert_eq!(
+            output,
+            "<td>Tom &amp; Sue</td><td>&lt;svg&gt;</td><td>café</td><td>line&#13;break</td>".as_bytes()
+        );
+    }
 
     #[test]
     fn plain_cells_keep_utf8_and_escape_html_without_field_collection() {
@@ -207,19 +281,19 @@ mod tests {
     #[test]
     fn field_decoder_borrows_plain_headers_and_null_markers() {
         assert!(matches!(
-            decode_html_field("plain", false).unwrap(),
+            decode_tsv_field_for_html("plain", false).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_html_field("\\N", false).unwrap(),
+            decode_tsv_field_for_html("\\N", false).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_html_field("a\\tb", true).unwrap(),
+            decode_tsv_field_for_html("a\\tb", true).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_html_field("a\\tb", false).unwrap(),
+            decode_tsv_field_for_html("a\\tb", false).unwrap(),
             Cow::Owned(_)
         ));
     }
