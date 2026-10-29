@@ -105,3 +105,8 @@ fn less_uses_exact_comparison_semantics() {
 fn less_or_equals_includes_equal_rows() {
     assert_eq!(evaluate("lessOrEquals(x, y)"), "2");
 }
+
+#[test]
+fn greater_compares_signed_numeric_inputs() {
+    assert_eq!(evaluate("greater(x, y)"), "1");
+}
