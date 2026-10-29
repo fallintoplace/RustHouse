@@ -1,6 +1,7 @@
 //! In-memory, bounded equi-join over validated immutable typed snapshots.
 
 mod keys;
+mod aggregate;
 
 use self::keys::*;
 
@@ -1211,6 +1212,22 @@ pub fn execute_join<W: Write>(
         }
         left_keys.push(left_index);
         right_keys.push(right_index);
+    }
+
+    if let Some(JoinAggregate::Numeric { function, column }) = &query.aggregate {
+        return aggregate::execute_numeric(
+            query,
+            left_path,
+            right_path,
+            &left_names,
+            &right_names,
+            &left_keys,
+            &right_keys,
+            null_filter,
+            *function,
+            column,
+            output,
+        );
     }
 
     if query.aggregate == Some(JoinAggregate::CountStar) {
