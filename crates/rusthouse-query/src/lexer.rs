@@ -4,6 +4,11 @@ use self::scanning::*;
 
 use crate::{Operator, ParseError};
 
+const MAX_SQL_BYTES: usize = 64 * 1024;
+const MAX_INSERT_SQL_BYTES: usize = 1024 * 1024;
+const MAX_SQL_TOKENS: usize = 32_768;
+const MAX_INSERT_SQL_TOKENS: usize = 262_144;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Token {
     Word(String),
@@ -23,11 +28,11 @@ pub(super) enum Token {
 }
 
 pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
-    tokenize_with_limit(sql, 64 * 1024)
+    tokenize_with_limit(sql, MAX_SQL_BYTES)
 }
 
 pub(super) fn tokenize_insert(sql: &str) -> Result<Vec<Token>, ParseError> {
-    tokenize_with_limit(sql, 1024 * 1024)
+    tokenize_with_limit(sql, MAX_INSERT_SQL_BYTES)
 }
 
 fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseError> {
@@ -38,7 +43,7 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
     }
     // A one-megabyte INSERT full of one-byte punctuation can otherwise
     // allocate a million 24-byte enum tokens before parsing rejects it.
-    let max_tokens = if max_bytes > 64 * 1024 { 262_144 } else { 32_768 };
+    let max_tokens = if max_bytes > MAX_SQL_BYTES { MAX_INSERT_SQL_TOKENS } else { MAX_SQL_TOKENS };
     let bytes = sql.as_bytes();
     // Avoid repeated vector growth on common SELECT statements and large INSERTs.
     let mut tokens = Vec::with_capacity((sql.len() / 8).min(2048));
