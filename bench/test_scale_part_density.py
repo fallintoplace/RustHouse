@@ -23,7 +23,7 @@ class PartDensityTests(unittest.TestCase):
             for index, size in enumerate((10, 10, 10, 10)):
                 part = Path(root) / f"all_{index}_{index}_0"
                 part.mkdir()
-                (part / "count.txt").write_text(f"{size}\\n")
+                (part / "count.txt").write_text(f"{size}\n")
             result = part_density(root, target_part_rows=25)
             self.assertEqual(result["optimistic_parts_after_compaction"], 2)
             self.assertEqual(result["optimistic_reclaimable_parts"], 2)
