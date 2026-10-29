@@ -188,6 +188,33 @@ fn numeric_argument_at(
     }
 }
 
+/// Compare a UInt128 against an IEEE Float64 without rounding the integer
+/// through Float64 first. Conversions below are exact for in-range whole
+/// Float64 values; fractional portions are resolved after integer comparison.
+fn compare_unsigned_float(integer: u128, float: f64) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    if float.is_nan() { return None; }
+    if float < 0.0 { return Some(Ordering::Greater); }
+    if float.is_infinite() || float >= 2.0_f64.powi(128) {
+        return Some(Ordering::Less);
+    }
+    let whole = float.trunc() as u128;
+    Some(integer.cmp(&whole).then_with(|| {
+        if float.fract() > 0.0 { Ordering::Less } else { Ordering::Equal }
+    }))
+}
+
+fn compare_signed_float(integer: i128, float: f64) -> Option<std::cmp::Ordering> {
+    if integer >= 0 {
+        compare_unsigned_float(integer as u128, float)
+    } else if float >= 0.0 {
+        Some(std::cmp::Ordering::Less)
+    } else {
+        compare_unsigned_float(integer.unsigned_abs(), -float)
+            .map(std::cmp::Ordering::reverse)
+    }
+}
+
 /// SQL expression comparisons must compare numeric values, not the
 /// internal Number enum variant order used by mixed-type sort keys.
 fn compare_expression_numbers(left: Number, right: Number) -> Option<std::cmp::Ordering> {
@@ -205,6 +232,12 @@ fn compare_expression_numbers(left: Number, right: Number) -> Option<std::cmp::O
             }
         ),
         (Number::Float(left), Number::Float(right)) => left.partial_cmp(&right),
+        (Number::Unsigned(left), Number::Float(right)) => compare_unsigned_float(left, right),
+        (Number::Signed(left), Number::Float(right)) => compare_signed_float(left, right),
+        (Number::Float(left), Number::Unsigned(right)) => compare_unsigned_float(right, left)
+            .map(std::cmp::Ordering::reverse),
+        (Number::Float(left), Number::Signed(right)) => compare_signed_float(right, left)
+            .map(std::cmp::Ordering::reverse),
         _ => Some(super::compare_numbers(left, right)),
     }
 }
@@ -977,6 +1010,44 @@ mod ieee_comparison_tests {
                 Box::new(BoundExpr::Column(1)),
             );
             assert!(matches!(eval_number(&expression, &batch, row).unwrap(),
+                Some(Number::Unsigned(actual)) if actual == expected));
+        }
+    }
+}
+
+#[cfg(test)]
+mod exact_mixed_float_integer_comparison_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn integer_float_comparisons_keep_u128_precision() {
+        let border = 9_007_199_254_740_992u128;
+        assert_eq!(compare_unsigned_float(border + 1, border as f64), Some(Ordering::Greater));
+        assert_eq!(compare_unsigned_float(u128::MAX, 2.0_f64.powi(128)), Some(Ordering::Less));
+        assert_eq!(compare_unsigned_float(u128::MAX, f64::INFINITY), Some(Ordering::Less));
+        assert_eq!(compare_unsigned_float(0, -0.0), Some(Ordering::Equal));
+        assert_eq!(compare_signed_float(-1, -1.5), Some(Ordering::Greater));
+        assert_eq!(compare_signed_float(i128::MIN, -2.0_f64.powi(127)), Some(Ordering::Equal));
+        assert_eq!(compare_signed_float(-1, f64::NEG_INFINITY), Some(Ordering::Greater));
+        assert_eq!(compare_unsigned_float(1, f64::NAN), None);
+        assert_eq!(compare_expression_numbers(
+            Number::Float(-1.5), Number::Signed(-1)), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn float_columns_compare_against_signed_constant_literals() {
+        let batch = [TypedColumn::Numeric(NumericColumn::Float64(
+            vec![-1.0, 3.0, 4.5, f64::NAN]
+        ))];
+        let comparison = BoundExpr::Compare(
+            Box::new(BoundExpr::Column(0)),
+            crate::Operator::Gt,
+            Box::new(BoundExpr::Integer(3)),
+        );
+        for (index, expected) in [0u128, 0, 1, 0].into_iter().enumerate() {
+            assert!(matches!(eval_number(&comparison, &batch, index).unwrap(),
                 Some(Number::Unsigned(actual)) if actual == expected));
         }
     }
