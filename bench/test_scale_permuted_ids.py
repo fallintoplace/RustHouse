@@ -50,5 +50,13 @@ class PermutedFixturesTests(unittest.TestCase):
             self.assertEqual(list(Path(root).iterdir()), [])
 
 
+    def test_modular_recurrence_wraps_and_preserves_exact_ids(self):
+        for seed in (0, MASK, MASK - MULTIPLIER + 1):
+            output = io.StringIO()
+            emit(output, 11, seed=seed, batch_rows=2)
+            self.assertEqual(output.getvalue(),
+                             "".join(f"{permuted(i, seed)}\\n" for i in range(11)))
+
+
 if __name__ == "__main__":
     unittest.main()
