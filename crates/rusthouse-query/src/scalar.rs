@@ -102,6 +102,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("TOINT64")
         || name.eq_ignore_ascii_case("INTEXP2")
         || name.eq_ignore_ascii_case("INTEXP10")
+        || name.eq_ignore_ascii_case("BITTESTALL")
         || name.eq_ignore_ascii_case("TOINT8")
         || name.eq_ignore_ascii_case("TOINT16")
 }
@@ -963,6 +964,16 @@ fn parse_reverse_digits(parser: &mut Parser, depth: usize) -> Result<i64, ParseE
     i64::try_from(signed).map_err(|_| overflow())
 }
 
+/// ClickHouse-compatible test whether every bit in a mask is set for constant Int64 expressions.
+fn parse_compat_bittestall(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "bitTestAll requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "bitTestAll requires two arguments")?;
+    let mask = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "bitTestAll requires ')'")?;
+    Ok(i64::from(value & mask == mask))
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -1127,6 +1138,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("REVERSE_DIGITS") {
         return parse_reverse_digits(parser, depth);
+    }
+    if parser.keyword("BITTESTALL") {
+        return parse_compat_bittestall(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_function(name)) {
         let name = parser.word()?;
@@ -1304,6 +1318,25 @@ mod ch_intexp10_tests {
             assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
         }
         for sql in ["SELECT intExp10(-1)", "SELECT intExp10(19)", "SELECT intExp10()", "SELECT intExp10(2,3)"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_bittestall_tests {
+    use crate::{parse_select, Projection};
+    #[test]
+    fn accepts_checked_binary_inputs() {
+        for (sql, expected) in [
+            ("SELECT bitTestAll(5, 1)", 1),
+            ("SELECT bitTestAll(5, 3)", 0),
+            ("SELECT bitTestAll(-1, 3)", 1),
+            ("SELECT bitTestAll(0, 0)", 1),
+        ] {
+            assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        }
+        for sql in ["SELECT bitTestAll(1)", "SELECT bitTestAll(1,2,3)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
