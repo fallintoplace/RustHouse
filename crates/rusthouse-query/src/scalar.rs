@@ -47,6 +47,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("GREATEROREQUALS")
         || name.eq_ignore_ascii_case("NOT")
         || name.eq_ignore_ascii_case("AND")
+        || name.eq_ignore_ascii_case("OR")
         || is_saturating(name)
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
@@ -1223,6 +1224,21 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             }
             if arguments < 2 {
                 return Err(ParseError("and requires at least two values".into()));
+            }
+            i64::from(result)
+        } else if name.eq_ignore_ascii_case("OR") {
+            let mut result = first != 0;
+            let mut arguments = 1usize;
+            while parser.take(Token::Comma) {
+                if arguments >= 16 {
+                    return Err(ParseError("or accepts at most 16 values".into()));
+                }
+                let next = expression(parser, depth + 1)?;
+                result = result || next != 0;
+                arguments += 1;
+            }
+            if arguments < 2 {
+                return Err(ParseError("or requires at least two values".into()));
             }
             i64::from(result)
         } else if name.eq_ignore_ascii_case("ABS") {
