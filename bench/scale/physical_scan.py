@@ -63,10 +63,11 @@ def invoke(binary, database, sql, *, timeout, no_header=False):
 
 
 def scan(binary, database, sql, expected, runs, warmups, timeout):
+    expected_output = f"{expected}\n".encode("ascii")
     samples = []
     for index in range(runs + warmups):
         actual, elapsed = invoke(binary, database, sql, timeout=timeout, no_header=True)
-        if actual != f"{expected}\n".encode("ascii"):
+        if actual != expected_output:
             raise ValueError(f"{sql}: expected {expected}, received {actual!r}")
         if index >= warmups:
             samples.append(elapsed)
