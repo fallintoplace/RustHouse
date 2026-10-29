@@ -764,13 +764,9 @@ pub(super) fn execute<W: Write>(
 /// Compute exact arithmetic-series metrics in O(number of aggregates) instead
 /// of iterating a billion generated rows. Predicated or DISTINCT inputs keep the
 /// existing streaming path.
-fn generated_series_metrics(
-    start: u64,
-    rows: u64,
-    step: u64,
-    items: &[AggregateItem],
-) -> Option<Result<Vec<String>, ExecutionError>> {
-    if !items.iter().all(|item| {
+/// Only these generated metrics have a constant-time arithmetic result.
+pub(super) fn supports_generated_series_metrics(items: &[AggregateItem]) -> bool {
+    items.iter().all(|item| {
         !item.distinct
             && item.argument.as_ref().is_none_or(|expression| {
                 matches!(expression, ScalarExpr::Column(name) if name == "number")
@@ -778,7 +774,16 @@ fn generated_series_metrics(
             && matches!(item.function, None | Some(crate::AggregateFunction::Count
                 | crate::AggregateFunction::Sum | crate::AggregateFunction::Min
                 | crate::AggregateFunction::Max | crate::AggregateFunction::Avg))
-    }) {
+    })
+}
+
+fn generated_series_metrics(
+    start: u64,
+    rows: u64,
+    step: u64,
+    items: &[AggregateItem],
+) -> Option<Result<Vec<String>, ExecutionError>> {
+    if !supports_generated_series_metrics(items) {
         return None;
     }
     let first = u128::from(start);
