@@ -16,6 +16,8 @@ pub(super) fn is_function(name: &str) -> bool {
             | "FROMDAYSSINCEYEARZERO32"
             | "FROMDAYSSINCEYEARZERO"
             | "FROM_DAYS"
+            | "TODAYSSINCEYEARZERO"
+            | "TO_DAYS"
             | "TOISOYEAR"
             | "TOISOWEEK"
             | "TOUNIXTIMESTAMP64NANO"
@@ -277,6 +279,10 @@ pub(super) fn parse_after_open(
                 }
             }
         },
+        "TODAYSSINCEYEARZERO" | "TO_DAYS" => unary_date(parser, depth, |value| {
+            let unix_days = value.seconds.div_euclid(DAY_SECONDS);
+            Ok(ConstantValue::Integer(unix_days + 719_528))
+        }),
         "TIMEDIFF" => time_difference(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
