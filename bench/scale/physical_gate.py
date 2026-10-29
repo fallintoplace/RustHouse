@@ -13,6 +13,10 @@ from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
 QUERIES = ("count_even", "sum_even")
 
 
+def valid_timing(value):
+    return type(value) in (float, int) and math.isfinite(value) and value > 0
+
+
 def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
              max_p90_seconds=None):
     if min_rows < 1:
@@ -38,15 +42,14 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
                 or result["expected"] != expected_value):
             raise ValueError(f"{query}: query or expected oracle mismatch")
         median, p90 = result.get("median_seconds"), result.get("p90_seconds")
-        if not all(type(t) in (float, int) and math.isfinite(t) and t > 0 for t in (median, p90)):
+        if not all(valid_timing(t) for t in (median, p90)):
             raise ValueError(f"{query}: invalid timings")
         if p90 < median:
             raise ValueError(f"{query}: p90 must not be below median")
         samples = result.get("samples_seconds")
         if samples is not None:
             if (not isinstance(samples, list) or not samples
-                    or any(type(t) not in (int, float) or not math.isfinite(t) or t <= 0
-                           for t in samples)):
+                    or any(not valid_timing(t) for t in samples)):
                 raise ValueError(f"{query}: invalid timing samples")
             if "runs" in report and (type(report["runs"]) is not int
                                      or len(samples) != report["runs"]):
