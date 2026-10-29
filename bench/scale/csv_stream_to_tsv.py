@@ -35,8 +35,8 @@ def convert(source, destination, *, header=False, empty_as_null=False,
         raise ValueError("input and output must be different files")
     if skip_header and not header:
         raise ValueError("skip_header requires header=True")
-    if max_field_bytes < 1:
-        raise ValueError("max_field_bytes must be positive")
+    if type(max_field_bytes) is not int or max_field_bytes < 1:
+        raise ValueError("max_field_bytes must be a positive integer")
     old_limit = csv.field_size_limit()
     csv.field_size_limit(max_field_bytes)
     count = 0

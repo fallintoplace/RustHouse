@@ -68,6 +68,9 @@ pub fn rank_read_replicas_at_least(
         return Err("invalid replica status set");
     }
     validate_replica_nodes(replicas)?;
+    if minimum_epoch == 0 || minimum_generation == 0 {
+        return Err("invalid replica freshness floor");
+    }
     let mut eligible: Vec<_> = replicas
         .iter()
         .filter(|replica| {
@@ -115,6 +118,9 @@ pub fn best_read_replica_at_least(
         return Err("invalid replica status set");
     }
     validate_replica_nodes(replicas)?;
+    if minimum_epoch == 0 || minimum_generation == 0 {
+        return Err("invalid replica freshness floor");
+    }
     replicas
         .iter()
         .filter(|replica| {
@@ -286,5 +292,32 @@ mod zero_version_replica_tests {
         assert!(rank_read_replicas(&[base.clone()]).is_ok());
         assert!(rank_read_replicas(&[ReplicaStatus { epoch: 0, ..base.clone() }]).is_err());
         assert!(rank_read_replicas(&[ReplicaStatus { generation: 0, ..base }]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod freshness_floor_validation_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_zero_version_read_floors_for_both_selection_paths() {
+        let candidates = [ReplicaStatus {
+            node: "node_a".into(),
+            epoch: 1,
+            generation: 2,
+            healthy: true,
+        }];
+        for (epoch, generation) in [(0, 1), (1, 0), (0, 0)] {
+            assert!(rank_read_replicas_at_least(&candidates, epoch, generation).is_err());
+            assert!(best_read_replica_at_least(&candidates, epoch, generation).is_err());
+        }
+        assert_eq!(
+            rank_read_replicas_at_least(&candidates, 1, 1).unwrap(),
+            vec!["node_a"]
+        );
+        assert_eq!(
+            best_read_replica_at_least(&candidates, 1, 1).unwrap(),
+            "node_a"
+        );
     }
 }

@@ -44,6 +44,8 @@ def audit(report):
     if coverage.get("failed_queries") != 0 or coverage.get("unverified_queries") != 0:
         raise ValueError("coverage summary contains failures or unverified results")
     inventory = report.get("official_22_coverage")
+    if inventory is not None and not isinstance(inventory, dict):
+        raise ValueError("SQL corpus inventory must be an object")
     if inventory is not None and (
         inventory.get("available_queries") != 22
         or inventory.get("missing_query_ids")

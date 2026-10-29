@@ -125,6 +125,18 @@ def assert_unordered_rows(actual, expected_rows):
         if actual_counts != expected_counts:
             raise ValueError("result multiset differs from SQLite")
         return
+    if all(all(value is None or isinstance(value, str) for value in row)
+           for row in expected_rows):
+        expected_counts = Counter(tuple(row) for row in expected_rows)
+        try:
+            actual_counts = Counter(
+                tuple(decode_tsv_value(value) for value in row) for row in actual
+            )
+        except (UnicodeError, ValueError, TypeError) as error:
+            raise ValueError("result multiset differs from SQLite") from error
+        if actual_counts != expected_counts:
+            raise ValueError("result multiset differs from SQLite")
+        return
     unmatched = list(actual)
     for expected in expected_rows:
         position = next((i for i, row in enumerate(unmatched) if row_equal(row, expected)), None)
