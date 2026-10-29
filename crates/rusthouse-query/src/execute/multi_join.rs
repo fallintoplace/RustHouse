@@ -1,4 +1,6 @@
 //! Bounded left-deep execution for chained joins over persistent tables.
+
+mod streaming;
 use super::{ExecutionError, typed};
 use crate::{JoinColumn, JoinSelect, JoinStep, JoinType};
 use rusthouse_storage::inspect_query_source;
@@ -341,6 +343,16 @@ pub fn execute_multi_join<W: Write>(
             write_join_header(output, &selected)?;
         }
         return Ok(());
+    }
+
+    // A left-deep INNER chain can stream its large fact side when each
+    // right-hand build table fits the shared chain memory budget.
+    if query.kind == JoinType::Inner
+        && query.steps.iter().all(|step| step.kind == JoinType::Inner)
+        && query.order_by.is_empty()
+        && query.aggregate.is_none()
+    {
+        return streaming::execute(query, paths, &relations, &initial_step, output);
     }
 
     let mut rows = read_rows(
