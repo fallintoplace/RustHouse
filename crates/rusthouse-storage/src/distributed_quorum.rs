@@ -69,14 +69,14 @@ impl QuorumPolicy {
             return Err("quorum membership or acknowledgement count mismatch");
         }
         let membership = member_index(members)?;
-        let mut received = 0u16;
+        let mut acknowledgement_mask = 0u16;
         for &replica in acknowledgements {
             let Some(&index) = membership.get(replica) else {
                 return Err("acknowledgement from unknown replica");
             };
-            received |= 1u16 << index;
+            acknowledgement_mask |= 1u16 << index;
         }
-        let distinct_acks = received.count_ones() as usize;
+        let distinct_acks = acknowledgement_mask.count_ones() as usize;
         Ok(QuorumObservation {
             distinct_acks,
             can_read: self.can_read(distinct_acks),
