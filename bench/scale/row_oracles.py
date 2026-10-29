@@ -6,17 +6,18 @@ import argparse
 import json
 
 MAX_UINT64 = (1 << 64) - 1
+MAX_ROW_COUNT = MAX_UINT64 + 1
 
 
 def sum_range(start, stop):
-    if type(start) is not int or type(stop) is not int or not 0 <= start <= stop <= MAX_UINT64 + 1:
+    if type(start) is not int or type(stop) is not int or not 0 <= start <= stop <= MAX_ROW_COUNT:
         raise ValueError("expected an ordered UInt64 half-open range")
     count = stop - start
     return count * (start + stop - 1) // 2 if count else 0
 
 
 def modulo_reference(rows, modulus, residue):
-    if type(rows) is not int or not 0 <= rows <= MAX_UINT64 + 1:
+    if type(rows) is not int or not 0 <= rows <= MAX_ROW_COUNT:
         raise ValueError("invalid UInt64 row count")
     if (type(modulus) is not int or type(residue) is not int
             or not 1 <= modulus <= MAX_UINT64 or not 0 <= residue < modulus):
@@ -29,7 +30,7 @@ def modulo_reference(rows, modulus, residue):
 def modulo_interval_reference(start, stop, modulus, residue):
     """Exact count and sum of integers matching a residue in [start, stop)."""
     if (type(start) is not int or type(stop) is not int
-            or not 0 <= start <= stop <= MAX_UINT64 + 1):
+            or not 0 <= start <= stop <= MAX_ROW_COUNT):
         raise ValueError("invalid UInt64 interval")
     before = modulo_reference(start, modulus, residue)
     after = modulo_reference(stop, modulus, residue)
@@ -38,7 +39,7 @@ def modulo_interval_reference(start, stop, modulus, residue):
 
 
 def make_oracles(rows):
-    if type(rows) is not int or not 1 <= rows <= MAX_UINT64 + 1:
+    if type(rows) is not int or not 1 <= rows <= MAX_ROW_COUNT:
         raise ValueError("rows must be in 1..2^64")
     even = modulo_reference(rows, 2, 0)
     odd = modulo_reference(rows, 2, 1)
