@@ -208,7 +208,7 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
         {
             parse_unary_math(parser)
         }
-        Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?))),
+        Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
             let number = number.parse::<i64>().map_err(|_| {
                 ParseError("integer expression literal is out of Int64 range".into())
