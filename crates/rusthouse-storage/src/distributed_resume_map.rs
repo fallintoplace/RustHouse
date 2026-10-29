@@ -256,3 +256,59 @@ mod merge_checkpoint_tests {
         assert!(ResumeMap::new(0).unwrap().merge_verified(&ResumeMap::new(0).unwrap()).is_ok());
     }
 }
+
+impl ResumeMap {
+    /// Serialize the exact chunk count and completion bitmap.
+    /// Four little-endian count bytes are followed by the packed flags.
+    pub fn encode_binary(&self) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(4 + self.completed.len());
+        encoded.extend_from_slice(&(self.chunks as u32).to_le_bytes());
+        encoded.extend_from_slice(&self.completed);
+        encoded
+    }
+
+    /// Reject truncated, oversized and noncanonical checkpoint bitmaps.
+    pub fn decode_binary(bytes: &[u8]) -> Result<Self, &'static str> {
+        let count = bytes.get(..4).ok_or("truncated resume checkpoint")?;
+        let chunks = u32::from_le_bytes(
+            count.try_into().map_err(|_| "invalid resume checkpoint header")?,
+        ) as usize;
+        let mut map = Self::new(chunks)?;
+        if bytes.len() != 4 + map.completed.len() {
+            return Err("invalid resume checkpoint length");
+        }
+        map.completed.copy_from_slice(&bytes[4..]);
+        let tail = chunks % 8;
+        if tail != 0 && map.completed.last().is_some_and(|flags| *flags >> tail != 0) {
+            return Err("resume checkpoint has invalid tail bits");
+        }
+        Ok(map)
+    }
+}
+
+#[cfg(test)]
+mod binary_checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn compact_checkpoints_round_trip_at_boundary_sizes() {
+        for count in [0, 1, 7, 8, 9, 16, 65_536] {
+            let mut map = ResumeMap::new(count).unwrap();
+            for index in (0..count).step_by(3) {
+                map.mark_complete(index).unwrap();
+            }
+            let encoded = map.encode_binary();
+            assert_eq!(encoded.len(), 4 + count.div_ceil(8));
+            assert_eq!(ResumeMap::decode_binary(&encoded).unwrap(), map);
+        }
+    }
+
+    #[test]
+    fn refuses_incorrect_lengths_counts_and_unused_tail_bits() {
+        assert!(ResumeMap::decode_binary(&[1, 0, 0]).is_err());
+        assert!(ResumeMap::decode_binary(&[1, 0, 0, 0]).is_err());
+        assert!(ResumeMap::decode_binary(&[1, 0, 0, 0, 0x80]).is_err());
+        assert!(ResumeMap::decode_binary(&[1, 0, 0, 0, 1, 0]).is_err());
+        assert!(ResumeMap::decode_binary(&[1, 0, 1, 0]).is_err());
+    }
+}
