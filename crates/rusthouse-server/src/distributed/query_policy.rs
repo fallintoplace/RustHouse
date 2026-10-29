@@ -117,11 +117,14 @@ pub(super) fn is_safe_extremum(select: &Select) -> bool {
     })
 }
 
-pub(super) fn integer_type(kind: &str) -> bool {
-    let base = kind
-        .strip_prefix("Nullable(")
+fn base_type(kind: &str) -> &str {
+    kind.strip_prefix("Nullable(")
         .and_then(|inner| inner.strip_suffix(')'))
-        .unwrap_or(kind);
+        .unwrap_or(kind)
+}
+
+pub(super) fn integer_type(kind: &str) -> bool {
+    let base = base_type(kind);
     matches!(
         base,
         "UInt8"
@@ -170,10 +173,7 @@ pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
 }
 
 pub(super) fn group_key_type(kind: &str) -> bool {
-    let base = kind
-        .strip_prefix("Nullable(")
-        .and_then(|inner| inner.strip_suffix(')'))
-        .unwrap_or(kind);
+    let base = base_type(kind);
     integer_type(kind) || matches!(base, "String" | "UUID")
 }
 
