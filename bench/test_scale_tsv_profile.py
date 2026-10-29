@@ -58,13 +58,13 @@ class InputProfileTests(unittest.TestCase):
     def test_optional_sorted_uint64_verification(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "keys.tsv"
-            path.write_bytes(b"id\\n0\\n3\\n18446744073709551615\\n")
+            path.write_bytes(b"id\n0\n3\n18446744073709551615\n")
             result = profile(path, header=True, verify_sorted_uint64=True)
             self.assertEqual(result["rows"], 3)
-            path.write_bytes(b"id\\n3\\n3\\n")
+            path.write_bytes(b"id\n3\n3\n")
             with self.assertRaisesRegex(ValueError, "strictly increasing"):
                 profile(path, header=True, verify_sorted_uint64=True)
-            path.write_bytes(b"18446744073709551616\\n")
+            path.write_bytes(b"18446744073709551616\n")
             with self.assertRaisesRegex(ValueError, "overflow"):
                 profile(path, verify_sorted_uint64=True)
 
