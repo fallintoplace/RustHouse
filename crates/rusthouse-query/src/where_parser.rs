@@ -107,32 +107,34 @@ fn negate(branches: Branches) -> Result<Branches, ParseError> {
     Ok(inverted)
 }
 
+fn parse_group(
+    parser: &mut Parser,
+    conditions: &mut usize,
+    depth: usize,
+    closing_error: &'static str,
+) -> Result<Branches, ParseError> {
+    if depth >= MAX_DEPTH {
+        return Err(ParseError("WHERE has too many nested parentheses".into()));
+    }
+    let branches = parse_or(parser, conditions, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError(closing_error.into()));
+    }
+    Ok(branches)
+}
+
 fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Result<Branches, ParseError> {
     // Parenthesized negations are different from NOT applied to one predicate:
     // invert every AND/OR branch using De Morgan's laws before execution.
     if parser.keyword("NOT") {
         if parser.take(Token::LParen) {
-            if depth >= MAX_DEPTH {
-                return Err(ParseError("WHERE has too many nested parentheses".into()));
-            }
-            let expression = parse_or(parser, conditions, depth + 1)?;
-            if !parser.take(Token::RParen) {
-                return Err(ParseError("NOT group requires closing ')'".into()));
-            }
-            return negate(expression);
+            return negate(parse_group(parser, conditions, depth, "NOT group requires closing ')'")?);
         }
         // Reuse existing NOT IN, NOT BETWEEN, NOT LIKE and comparison parsing.
         parser.index -= 1;
     }
     if parser.take(Token::LParen) {
-        if depth >= MAX_DEPTH {
-            return Err(ParseError("WHERE has too many nested parentheses".into()));
-        }
-        let branches = parse_or(parser, conditions, depth + 1)?;
-        if !parser.take(Token::RParen) {
-            return Err(ParseError("WHERE requires closing ')'".into()));
-        }
-        return Ok(branches);
+        return parse_group(parser, conditions, depth, "WHERE requires closing ')'");
     }
     let mut predicates = Vec::new();
     let prefix_not = parser.keyword("NOT");
