@@ -1,6 +1,8 @@
 //! Deterministic experimental shard-to-replica placement.
 use std::collections::HashSet;
 
+const MAX_PLACEMENT_NODES: usize = 64;
+
 fn valid_node(node: &str) -> bool {
     !node.is_empty()
         && node.len() <= 64
@@ -49,7 +51,7 @@ pub fn replicas_for(
     if !valid_shard(shard) {
         return Err("invalid shard identifier");
     }
-    if nodes.is_empty() || nodes.len() > 64 || replicas == 0 || replicas > nodes.len() {
+    if nodes.is_empty() || nodes.len() > MAX_PLACEMENT_NODES || replicas == 0 || replicas > nodes.len() {
         return Err("invalid replica placement configuration");
     }
     let mut unique = HashSet::with_capacity(nodes.len());
@@ -103,7 +105,7 @@ pub fn weighted_replicas_for(
 ) -> Result<Vec<String>, &'static str> {
     if !valid_shard(shard)
         || nodes.is_empty()
-        || nodes.len() > 64
+        || nodes.len() > MAX_PLACEMENT_NODES
         || replicas == 0
         || replicas > nodes.len()
     {
