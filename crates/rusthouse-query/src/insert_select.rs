@@ -2,6 +2,8 @@
 use super::{ParseError, Parser, Select, Token, parse_select_tokens, tokenize};
 use std::collections::HashSet;
 
+const MAX_INSERT_SELECT_COLUMNS: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertSelect {
     pub table: String,
@@ -16,7 +18,7 @@ fn parse_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError>
     let mut columns = Vec::new();
     let mut seen = HashSet::new();
     loop {
-        if columns.len() >= 64 {
+        if columns.len() >= MAX_INSERT_SELECT_COLUMNS {
             return Err(ParseError("INSERT supports at most 64 columns".into()));
         }
         let name = parser.bounded_word()?;
