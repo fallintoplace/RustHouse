@@ -222,9 +222,12 @@ fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: u
     };
     let min = value(0);
     let max = value(count - 1);
-    let mut selected = Vec::with_capacity(bins);
+    if min == max {
+        return vec![Bin { min, max, count }];
+    }
+    let mut counts = vec![0u64; bins];
     let mut start_row = 0u64;
-    for bin in 0..bins {
+    for (bin, slot) in counts.iter_mut().enumerate() {
         if start_row == count {
             break;
         }
@@ -238,16 +241,12 @@ fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: u
                 hi = middle;
             }
         }
-        if lo > start_row {
-            selected.push(Bin {
-                min: value(start_row),
-                max: value(lo - 1),
-                count: lo - start_row,
-            });
-        }
+        *slot = lo - start_row;
         start_row = lo;
     }
-    selected
+    // Match the stored-part executor: return equal-width boundaries and
+    // retain empty buckets rather than replacing them with observed extrema.
+    to_bins(min, max, &counts)
 }
 
 pub(super) fn execute_numbers<W: Write>(
@@ -345,19 +344,29 @@ mod generated_histogram_boundary_regression_tests {
     fn fast_path_agrees_with_two_pass_bucket_assignment_for_uneven_ranges() {
         for count in 1..128u64 {
             for bins in 1..12usize {
-                let expected = {
-                    let mut counts = vec![0u64; bins];
-                    for value in 0..count {
-                        counts[bucket(value as f64, 0.0, (count - 1) as f64, bins)] += 1;
-                    }
-                    counts.into_iter().filter(|&count| count != 0).collect::<Vec<_>>()
-                };
+                let mut expected = vec![0u64; bins];
+                for value in 0..count {
+                    expected[bucket(value as f64, 0.0, (count - 1) as f64, bins)] += 1;
+                }
                 let computed = uniform_generated_bins(0, 0, count, 1, bins);
-                assert_eq!(computed.iter().map(|bin| bin.count).collect::<Vec<_>>(),
-                    expected, "rows={count} bins={bins}");
+                let expected = to_bins(0.0, (count - 1) as f64, &expected);
+                assert_eq!(computed.iter().map(|bin| (bin.min, bin.max, bin.count))
+                    .collect::<Vec<_>>(),
+                    expected.iter().map(|bin| (bin.min, bin.max, bin.count))
+                        .collect::<Vec<_>>(), "rows={count} bins={bins}");
                 assert_eq!(computed.iter().map(|bin| bin.count).sum::<u64>(), count);
             }
         }
+    }
+
+    #[test]
+    fn empty_bins_still_have_fixed_interval_boundaries() {
+        let bins = uniform_generated_bins(10, 0, 2, 100, 8);
+        assert_eq!(bins.len(), 8);
+        assert_eq!(bins.iter().map(|b| b.count).sum::<u64>(), 2);
+        assert_eq!(bins[0].min, 10.0);
+        assert_eq!(bins[7].max, 110.0);
+        assert!(bins.iter().any(|b| b.count == 0));
     }
 
     #[test]
@@ -374,7 +383,8 @@ mod generated_histogram_boundary_regression_tests {
             expected[bucket(value, low, high, bins)] += 1;
         }
         let actual = uniform_generated_bins(start, 0, count, step, bins);
-        assert_eq!(actual.iter().map(|bin| bin.count).collect::<Vec<_>>(),
-            expected.into_iter().filter(|&count| count != 0).collect::<Vec<_>>());
+        let expected = to_bins(low, high, &expected);
+        assert_eq!(actual.iter().map(|bin| (bin.min, bin.max, bin.count)).collect::<Vec<_>>(),
+            expected.iter().map(|bin| (bin.min, bin.max, bin.count)).collect::<Vec<_>>());
     }
 }
