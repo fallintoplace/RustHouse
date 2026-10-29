@@ -121,8 +121,8 @@ impl<W: Write> VerticalWriter<W> {
 impl<W: Write> Write for VerticalWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
-            let complete = chunk.last() == Some(&b'\n');
-            let fragment = if complete {
+            let has_newline = chunk.last() == Some(&b'\n');
+            let fragment = if has_newline {
                 &chunk[..chunk.len() - 1]
             } else {
                 chunk
@@ -134,7 +134,7 @@ impl<W: Write> Write for VerticalWriter<W> {
                 ));
             }
             self.line.extend_from_slice(fragment);
-            if complete {
+            if has_newline {
                 self.finish_line()?;
             }
         }
