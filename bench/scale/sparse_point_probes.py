@@ -18,6 +18,8 @@ def choose_ids(start, rows, count, seed):
         raise ValueError("invalid row domain")
     if start + rows > 2**64 or type(count) is not int or not 1 <= count <= min(rows, 10_000):
         raise ValueError("invalid sample size or UInt64 overflow")
+    if type(seed) is not int or not 0 <= seed <= (1 << 64) - 1:
+        raise ValueError("seed must be UInt64")
     rng = random.Random(seed)
     chosen = set()
     sampled = []
@@ -31,7 +33,8 @@ def choose_ids(start, rows, count, seed):
 
 
 def percentile(samples, percent):
-    if not samples or not 0 < percent <= 100:
+    if (not samples or type(percent) not in (int, float)
+            or not math.isfinite(percent) or not 0 < percent <= 100):
         raise ValueError("invalid percentile")
     return sorted(samples)[math.ceil(percent * len(samples) / 100) - 1]
 
