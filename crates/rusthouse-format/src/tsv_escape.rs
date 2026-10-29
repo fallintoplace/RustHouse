@@ -23,7 +23,7 @@ fn decode_hex_byte(field: &[u8], index: usize) -> io::Result<u8> {
     Ok((high << 4) | low)
 }
 
-fn decode_simple_escape(value: u8) -> Option<u8> {
+fn decode_simple_tsv_escape(value: u8) -> Option<u8> {
     match value {
         b'\\' => Some(b'\\'),
         b't' => Some(b'\t'),
@@ -48,7 +48,7 @@ fn decode_escape(field: &[u8], index: &mut usize) -> io::Result<u8> {
         Ok(decoded)
     } else {
         let decoded =
-            decode_simple_escape(escaped).ok_or_else(|| invalid_escape("unknown TSV escape"))?;
+            decode_simple_tsv_escape(escaped).ok_or_else(|| invalid_escape("unknown TSV escape"))?;
         *index += 1;
         Ok(decoded)
     }
