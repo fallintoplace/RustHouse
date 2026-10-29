@@ -48,7 +48,7 @@ pub(crate) fn json_string(value: &str) -> String {
         }
     }
     escaped_json.push('"');
-    escaped
+    escaped_json
 }
 
 #[cfg(test)]
