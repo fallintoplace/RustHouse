@@ -133,6 +133,22 @@ fn push_row(
     Ok(())
 }
 
+/// Drop filtered final-stage rows before charging the bounded intermediate.
+/// An anti-join can otherwise reject a large valid result before WHERE runs.
+fn push_visible_row(
+    rows: &mut Vec<Vec<typed::Cell>>,
+    row: Vec<typed::Cell>,
+    retained: &mut usize,
+    filter: Option<(usize, bool)>,
+) -> Result<(), ExecutionError> {
+    if filter.is_some_and(|(index, not_null)| {
+        matches!(row[index], typed::Cell::Null) == not_null
+    }) {
+        return Ok(());
+    }
+    push_row(rows, row, retained)
+}
+
 /// Resolve USING only when exactly one existing input supplies that key.
 /// Ambiguous names must use qualified ON instead.
 fn using_column_pair(relations: &[Relation], name: &str) -> Result<(usize, usize), ExecutionError> {
@@ -339,6 +355,13 @@ pub fn execute_multi_join<W: Write>(
         return Ok(());
     }
 
+    // Apply WHERE only at the final join stage, once every referenced
+    // relation exists. Earlier pushdown would change OUTER JOIN semantics.
+    let output_filter = query.where_null.as_ref()
+        .map(|(column, not_null)| {
+            column_index(&relations, column).map(|index| (index, *not_null))
+        })
+        .transpose()?;
     let mut rows = read_rows(
         &paths[0],
         &relations[0].names,
@@ -383,6 +406,9 @@ pub fn execute_multi_join<W: Write>(
         let mut retained = 0usize;
         let mut matched_right = matches!(step.kind, JoinType::Right | JoinType::Full)
             .then(|| vec![false; right_rows.len()]);
+        let filter = (step_index == query.steps.len())
+            .then_some(output_filter)
+            .flatten();
         for row in &rows {
             let mut matched = false;
             if let Some(key) = row_key(row, &left_keys) {
@@ -412,7 +438,7 @@ pub fn execute_multi_join<W: Write>(
                             Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
                         joined.extend_from_slice(&right_rows[match_index]);
-                        push_row(&mut next, joined, &mut retained)?;
+                        push_visible_row(&mut next, joined, &mut retained, filter)?;
                     }
                 }
             }
@@ -420,7 +446,7 @@ pub fn execute_multi_join<W: Write>(
                 let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
                 joined.extend_from_slice(row);
                 joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
-                push_row(&mut next, joined, &mut retained)?;
+                push_visible_row(&mut next, joined, &mut retained, filter)?;
             }
         }
         if let Some(matched_right) = matched_right {
@@ -428,17 +454,13 @@ pub fn execute_multi_join<W: Write>(
                 if !matched {
                     let mut joined = vec![typed::Cell::Null; left_width];
                     joined.extend_from_slice(&right_rows[right_index]);
-                    push_row(&mut next, joined, &mut retained)?;
+                    push_visible_row(&mut next, joined, &mut retained, filter)?;
                 }
             }
         }
         rows = next;
     }
 
-    if let Some((column, not_null)) = &query.where_null {
-        let index = column_index(&relations, column)?;
-        rows.retain(|row| matches!(row[index], typed::Cell::Null) != *not_null);
-    }
     if !query.order_by.is_empty() {
         let ordering_columns = query
             .order_by
