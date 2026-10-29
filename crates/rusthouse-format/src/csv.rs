@@ -50,8 +50,10 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
     }
     // Short quote-free fields dominate tabular output. Emit both quotes and
     // the payload in a single write without a heap allocation.
-    if field.len() <= 256 && !field.contains(&b'"') {
-        let mut buffer = [0u8; 258];
+    if field.len() <= 2048 && !field.contains(&b'"') {
+        // Medium-size quote-free strings are frequent in JSON and text
+        // exports. Keep quote + payload + quote in one buffered write.
+        let mut buffer = [0u8; 2050];
         buffer[0] = b'"';
         buffer[1..field.len() + 1].copy_from_slice(field);
         buffer[field.len() + 1] = b'"';
@@ -124,6 +126,29 @@ mod tests {
         write_quoted_csv_field(&mut sink, b"hello").unwrap();
         assert_eq!(sink.count, 1);
         assert_eq!(sink.data, b"\"hello\"");
+    }
+
+    #[test]
+    fn two_kibibyte_quote_free_fields_use_one_write() {
+        struct Counting {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Counting {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        for length in [257usize, 1024, 2048] {
+            let mut writer = Counting { calls: 0, bytes: Vec::new() };
+            write_quoted_csv_field(&mut writer, &vec![b'x'; length]).unwrap();
+            assert_eq!(writer.calls, 1);
+            assert_eq!(writer.bytes.len(), length + 2);
+            assert!(writer.bytes[1..length + 1].iter().all(|byte| *byte == b'x'));
+        }
     }
 
     #[test]
