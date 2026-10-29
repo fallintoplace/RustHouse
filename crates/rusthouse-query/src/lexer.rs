@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn tokenizes_backtick_and_double_quoted_identifiers_without_keywords() {
         assert_eq!(
-            tokenize("SELECT \`order\`, \"select\" FROM \`events\`").unwrap(),
+            tokenize("SELECT `order`, \"select\" FROM `events`").unwrap(),
             vec![
                 Token::Word("SELECT".into()),
                 Token::QuotedWord("order".into()),
@@ -149,14 +149,14 @@ mod tests {
             ]
         );
         for sql in [
-            "SELECT \`unterminated",
+            "SELECT `unterminated",
             "SELECT \"unterminated",
-            "SELECT \`\`",
+            "SELECT ``",
             "SELECT \"a b\"",
-            "SELECT \`../db\`",
-            "SELECT \`some\`\`thing\`",
-            "SELECT \`1bad\`",
-            "SELECT \`xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\`",
+            "SELECT `../db`",
+            "SELECT `some``thing`",
+            "SELECT `1bad`",
+            "SELECT `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`",
         ] {
             assert!(tokenize(sql).is_err(), "{sql}");
         }
