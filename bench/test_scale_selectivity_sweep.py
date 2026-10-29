@@ -9,6 +9,12 @@ class SelectivitySweepTests(unittest.TestCase):
         self.assertEqual(thresholds(8), [0, 2, 4, 6, 8])
         self.assertEqual(thresholds(1), [0, 1])
 
+    def test_rejects_noninteger_and_out_of_range_rows(self):
+        for rows in (True, 1.5, 0, -1, 2**64):
+            with self.subTest(rows=rows):
+                with self.assertRaisesRegex(ValueError, "UInt64"):
+                    thresholds(rows)
+
     def test_verifies_each_predicate(self):
         def execute(command, **kwargs):
             threshold = int(command[2].rsplit(" ", 1)[-1])
