@@ -3,9 +3,10 @@ mod arithmetic;
 use self::arithmetic::*;
 
 use super::typed::{self, Cell};
+use super::BitmapDistinct32;
 use super::{AggregateState, ExecutionError, Number, NumberKey, number_at};
 use crate::{AggregateItem, ScalarExpr, Select};
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
@@ -17,11 +18,13 @@ struct DistinctValues {
     other: HashSet<typed::Key>,
     text: HashSet<Vec<u8>>,
     uuids: HashSet<[u8; 16]>,
+    numeric32: Option<BitmapDistinct32>,
 }
 
 impl DistinctValues {
     fn len(&self) -> usize {
         self.other.len() + self.text.len() + self.uuids.len()
+            + self.numeric32.as_ref().map_or(0, |state| usize::try_from(state.len()).unwrap_or(usize::MAX))
     }
 
     fn insert_key(&mut self, key: typed::Key) -> Result<(), ExecutionError> {
@@ -58,8 +61,24 @@ impl DistinctValues {
         Ok(())
     }
 
+    fn insert_u32(&mut self, value: u32) -> Result<(), ExecutionError> {
+        self.numeric32.get_or_insert_with(BitmapDistinct32::new).insert(value)
+    }
+
     fn insert_column(&mut self, column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
         match column {
+            TypedColumn::Numeric(NumericColumn::UInt32(values)) => {
+                self.insert_u32(values[row])?;
+            }
+            TypedColumn::Numeric(NumericColumn::Int32(values)) => {
+                self.insert_u32(values[row] as u32)?;
+            }
+            TypedColumn::NullableNumeric { values: NumericColumn::UInt32(values), nulls } => {
+                if nulls[row] == 0 { self.insert_u32(values[row])?; }
+            }
+            TypedColumn::NullableNumeric { values: NumericColumn::Int32(values), nulls } => {
+                if nulls[row] == 0 { self.insert_u32(values[row] as u32)?; }
+            }
             TypedColumn::Text(values) => {
                 if let Some(value) = values.get(row) {
                     self.insert_text(value)?;
@@ -898,5 +917,36 @@ mod direct_numeric_argument_tests {
         assert!(eval_number(&BoundExpr::Column(1), &batch, 1).unwrap().is_none());
         let affine = BoundExpr::AffineColumn { index: 0, constant: 5, subtract: false };
         assert!(matches!(eval_number(&affine, &batch, 0).unwrap(), Some(Number::Unsigned(105)) | Some(Number::Signed(105))));
+    }
+}
+
+#[cfg(test)]
+mod exact_numeric_distinct_large_tests {
+    use super::*;
+    #[test]
+    fn multiple_aggregate_uint32_distinct_exceeds_generic_100k_limit() {
+        let values = TypedColumn::Numeric(NumericColumn::UInt32((0..125_000).collect()));
+        let mut state = DistinctValues::default();
+        for index in 0..125_000 {
+            assert!(state.insert_column(&values, index).unwrap());
+        }
+        assert_eq!(state.len(), 125_000);
+        for index in 0..125_000 {
+            state.insert_column(&values, index).unwrap();
+        }
+        assert_eq!(state.len(), 125_000);
+    }
+
+    #[test]
+    fn nullable_signed_uint32_distinct_skips_nulls_and_preserves_bits() {
+        let values = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int32(vec![-1, i32::MIN, 0, -1]),
+            nulls: vec![0, 0, 1, 0],
+        };
+        let mut state = DistinctValues::default();
+        for index in 0..4 {
+            state.insert_column(&values, index).unwrap();
+        }
+        assert_eq!(state.len(), 2);
     }
 }
