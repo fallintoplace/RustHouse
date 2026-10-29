@@ -10,6 +10,8 @@ from pathlib import Path
 
 def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-header"):
     """Execute SQL via the CLI and return exact output bytes for verification."""
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
     # --format is a SELECT-only option. DDL, COPY, and INSERT reject it.
     command = [str(binary), "sql", statement, "--database", str(database)]
     keyword = statement.split(maxsplit=1)[0].upper() if statement.strip() else ""
