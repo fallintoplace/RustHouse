@@ -55,7 +55,8 @@ impl ResumeMap {
             .iter()
             .enumerate()
             .map(|(byte_index, &bits)| {
-                let valid = (self.chunks - byte_index * BITS_PER_COMPLETION_BYTE).min(BITS_PER_COMPLETION_BYTE);
+                let valid = (self.chunks - byte_index * BITS_PER_COMPLETION_BYTE)
+                    .min(BITS_PER_COMPLETION_BYTE);
                 let mask = if valid == BITS_PER_COMPLETION_BYTE {
                     u8::MAX
                 } else {
@@ -67,11 +68,15 @@ impl ResumeMap {
         let mut missing = Vec::with_capacity(self.chunks - completed_count);
         for (byte_index, &completed) in self.completed.iter().enumerate() {
             let mut bits = !completed;
-            if byte_index == self.completed.len() - 1 && self.chunks % BITS_PER_COMPLETION_BYTE != 0 {
+            if byte_index == self.completed.len() - 1
+                && self.chunks % BITS_PER_COMPLETION_BYTE != 0
+            {
                 bits &= ((1u16 << (self.chunks % BITS_PER_COMPLETION_BYTE)) - 1) as u8;
             }
             while bits != 0 {
-                missing.push(byte_index * BITS_PER_COMPLETION_BYTE + bits.trailing_zeros() as usize);
+                missing.push(
+                    byte_index * BITS_PER_COMPLETION_BYTE + bits.trailing_zeros() as usize,
+                );
                 bits &= bits - 1;
             }
         }
@@ -95,7 +100,8 @@ impl ResumeMap {
     pub fn encode(&self) -> String {
         let mut encoded = String::with_capacity(self.chunks);
         for (byte_index, &bits) in self.completed.iter().enumerate() {
-            let count = (self.chunks - byte_index * BITS_PER_COMPLETION_BYTE).min(BITS_PER_COMPLETION_BYTE);
+            let count = (self.chunks - byte_index * BITS_PER_COMPLETION_BYTE)
+                .min(BITS_PER_COMPLETION_BYTE);
             for index in 0..count {
                 encoded.push(if bits & (1 << index) != 0 { '1' } else { '0' });
             }
