@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_ROW_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SPOOLED_COLUMNS: usize = 128;
 static NEXT_SPOOL: AtomicUsize = AtomicUsize::new(0);
 
 struct Spool(PathBuf);
@@ -110,7 +111,7 @@ fn decode_row(record: &[u8]) -> Result<Vec<Option<String>>, String> {
         .strip_suffix(b"\n")
         .ok_or("incomplete SELECT result record")?;
     let record = std::str::from_utf8(record).map_err(|_| "invalid UTF-8 in SELECT result")?;
-    if record.split('\t').count() > 128 {
+    if record.split('\t').count() > MAX_SPOOLED_COLUMNS {
         return Err("INSERT SELECT supports at most 128 columns".into());
     }
     record
