@@ -96,6 +96,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("PMOD")
         || name.eq_ignore_ascii_case("TRAILING_ONES")
         || name.eq_ignore_ascii_case("TOINT8")
+        || name.eq_ignore_ascii_case("NOT")
         || name.eq_ignore_ascii_case("XOR")
         || name.eq_ignore_ascii_case("OR")
         || name.eq_ignore_ascii_case("AND")
@@ -1026,6 +1027,12 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         let right = expression(parser, depth + 1)?;
         require_token(parser, Token::RParen, "xor requires two arguments")?;
         return Ok(i64::from((left != 0) != (right != 0)));
+    }
+    if parser.keyword("NOT") {
+        require_token(parser, Token::LParen, "not requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "not requires one argument")?;
+        return Ok(i64::from(value == 0));
     }
     if parser.keyword("TOBOOL") {
         require_token(parser, Token::LParen, "toBool requires '('")?;
