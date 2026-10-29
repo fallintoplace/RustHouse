@@ -2407,8 +2407,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("RIGHT count must be nonnegative".into()));
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    let skip = value.chars().count().saturating_sub(count);
-                    ConstantValue::Text(value.chars().skip(skip).collect())
+                    if count >= value.len() {
+                        ConstantValue::Text(value)
+                    } else {
+                        let start = value.len() - count;
+                        if value.as_bytes()[start..].is_ascii() {
+                            let mut result = value;
+                            result.replace_range(..start, "");
+                            ConstantValue::Text(result)
+                        } else {
+                            let skip = value.chars().count().saturating_sub(count);
+                            ConstantValue::Text(value.chars().skip(skip).collect())
+                        }
+                    }
                 }
                 _ => ConstantValue::Null,
             }
