@@ -66,6 +66,19 @@ impl CompressedBlockReader<File> {
                 source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular file"),
             });
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if entry.dev() != metadata.dev() || entry.ino() != metadata.ino() {
+                return Err(PartError::Io {
+                    path: path.to_path_buf(),
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "compressed stream replaced before open",
+                    ),
+                });
+            }
+        }
         // File::open starts at offset zero. Reuse the validated metadata size
         // instead of stat-ing and seeking the file a second time.
         Ok(Self {
@@ -742,5 +755,30 @@ mod tests {
                 ..
             }))
         ));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod compressed_stream_identity_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn inode_identity_detects_same_size_replacement_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-block-inode-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("one.bin");
+        let second = root.join("two.bin");
+        std::fs::write(&first, [0u8; 25]).unwrap();
+        std::fs::write(&second, [1u8; 25]).unwrap();
+        let old = std::fs::symlink_metadata(&first).unwrap();
+        let replacement = File::open(&second).unwrap().metadata().unwrap();
+        assert_eq!(old.len(), replacement.len());
+        assert_ne!(old.ino(), replacement.ino());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
