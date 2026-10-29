@@ -14,6 +14,18 @@ class SourceProbeTests(unittest.TestCase):
             probe("http://127.0.0.1:8123", "database")
 
     @patch("source_probe.read_json")
+    def test_expected_server_version_guards_deployments(self, read):
+        read.return_value = {"source": "generated", "read_only": True,
+                             "version": "0.6.0"}
+        result = probe("http://127.0.0.1:8123", "generated",
+                       expected_version="0.6.0")
+        self.assertEqual(result["version"], "0.6.0")
+        with self.assertRaisesRegex(ValueError, "expected RustHouse version"):
+            probe("http://127.0.0.1:8123", "generated", expected_version="0.5.0")
+        with self.assertRaisesRegex(ValueError, "expected_version"):
+            probe("http://127.0.0.1:8123", "generated", expected_version="")
+
+    @patch("source_probe.read_json")
     def test_database_schema_required(self, read):
         read.side_effect = [
             {"source": "database", "read_only": True},
