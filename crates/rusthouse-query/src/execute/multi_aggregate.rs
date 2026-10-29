@@ -93,6 +93,7 @@ enum BoundExpr {
     Null,
     IsNull(Box<Self>, bool),
     Not(Box<Self>),
+    Between(Box<Self>, Box<Self>, Box<Self>, bool),
     // Fast path for the affine expression family in ClickBench Q30.
     AffineColumn {
         index: usize,
@@ -129,6 +130,12 @@ impl BoundExpr {
                 Self::IsNull(Box::new(Self::bind(inner, indices)?), *negated),
             ScalarExpr::Not(inner) =>
                 Self::Not(Box::new(Self::bind(inner, indices)?)),
+            ScalarExpr::Between(value, lower, upper, negated) => Self::Between(
+                Box::new(Self::bind(value, indices)?),
+                Box::new(Self::bind(lower, indices)?),
+                Box::new(Self::bind(upper, indices)?),
+                *negated,
+            ),
             ScalarExpr::Add(left, right) => {
                 if let (ScalarExpr::Column(name), ScalarExpr::Integer(constant)) =
                     (left.as_ref(), right.as_ref())
@@ -271,6 +278,14 @@ fn eval_number(
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::Null => Ok(None),
+        BoundExpr::Between(value, lower, upper, negated) => {
+            let Some(value) = eval_number(value, batch, row)? else { return Ok(None); };
+            let Some(lower) = eval_number(lower, batch, row)? else { return Ok(None); };
+            let Some(upper) = eval_number(upper, batch, row)? else { return Ok(None); };
+            let valid = super::compare_numbers(value, lower).is_ge()
+                && super::compare_numbers(value, upper).is_le();
+            Ok(Some(Number::Unsigned(u128::from(valid != *negated))))
+        },
         BoundExpr::Not(inner) => Ok(numeric_truth(eval_number(inner, batch, row)?)
             .map(|value| Number::Unsigned(u128::from(!value)))),
         BoundExpr::IsNull(inner, negated) => {
