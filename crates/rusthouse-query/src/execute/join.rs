@@ -263,6 +263,24 @@ impl Bucket {
     }
 }
 
+/// Reuse key probes across build rows, moving only new keys into the map.
+fn build_join_hash(
+    rows: &[Vec<typed::Cell>], keys: &[usize], any_first: bool,
+) -> HashMap<Vec<typed::Key>, Bucket> {
+    let mut hash = HashMap::with_capacity(initial_join_hash_capacity(rows.len()));
+    let mut probe = Vec::<typed::Key>::with_capacity(keys.len());
+    for (index, row) in rows.iter().enumerate() {
+        if !row_key_into(row, keys, &mut probe) { continue; }
+        if let Some(bucket) = hash.get_mut(probe.as_slice()) {
+            if !any_first { bucket.push(index); }
+        } else {
+            hash.insert(std::mem::take(&mut probe), Bucket::One(index));
+            probe = Vec::with_capacity(keys.len());
+        }
+    }
+    hash
+}
+
 struct ProbeOptions {
     materialize_rows: bool,
     materialize_after: usize,
@@ -574,17 +592,7 @@ fn execute_streaming_right_outer<W: Write>(
         left_path, left_names, &keep, left_meta.rows,
         MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_join_hash_capacity(left_rows.len()));
-    for (index, row) in left_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, left_keys) {
-            if query.any {
-                hash.entry(key).or_insert(Bucket::One(index));
-            } else {
-                hash.entry(key).and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
-            }
-        }
-    }
+    let hash = build_join_hash(&left_rows, left_keys, query.any);
     let stop_after = query.limit.filter(|&limit| limit <= MAX_RESULT_ROWS)
         .and_then(|limit| query.offset.checked_add(limit));
     let mut preflight_left_matched =
@@ -748,20 +756,7 @@ fn execute_streaming_inner<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_join_hash_capacity(right_rows.len()));
-    for (index, row) in right_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, right_keys) {
-            // ANY keeps the first right match only, so duplicate indexes
-            // never need to be retained in the hash table.
-            if query.any {
-                hash.entry(key).or_insert(Bucket::One(index));
-            } else {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
-            }
-        }
-    }
+    let hash = build_join_hash(&right_rows, right_keys, query.any);
     if hash.is_empty() && query.kind == JoinType::Inner {
         let header = selected
             .iter()
@@ -1041,14 +1036,7 @@ fn execute_streaming_right<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_join_hash_capacity(left_rows.len()));
-    for (index, row) in left_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, left_keys) {
-            hash.entry(key)
-                .and_modify(|bucket| bucket.push(index))
-                .or_insert(Bucket::One(index));
-        }
-    }
+    let hash = build_join_hash(&left_rows, left_keys, false);
     if hash.is_empty() {
         let header = selected
             .iter()
@@ -1198,18 +1186,7 @@ fn execute_streaming_ordered_inner<W: Write>(
         right_path, right_names, &keep, right_metadata.rows,
         MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_join_hash_capacity(right_rows.len()));
-    for (index, row) in right_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, right_keys) {
-            if query.any {
-                hash.entry(key).or_insert(Bucket::One(index));
-            } else {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
-            }
-        }
-    }
+    let hash = build_join_hash(&right_rows, right_keys, query.any);
     let mut heap = BinaryHeap::<OrderedJoinRow>::with_capacity(requested.min(1024));
     let directions: Arc<[(bool, Option<bool>)]> =
         order.iter().map(|(_, desc, nulls)| (*desc, *nulls)).collect::<Vec<_>>().into();
@@ -1311,13 +1288,7 @@ fn execute_streaming_inner_count<W: Write>(
             left_path, left_names, &keep, left_count,
             MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_join_hash_capacity(left_rows.len()));
-        for (index, row) in left_rows.iter().enumerate() {
-            if let Some(key) = row_key(row, left_keys) {
-                hash.entry(key).and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
-            }
-        }
+        let hash = build_join_hash(&left_rows, left_keys, query.any);
         probe_right_outer(
             right_path, right_names, right_keys,
             &left_rows, left_names.len(), &hash,
@@ -1337,18 +1308,7 @@ fn execute_streaming_inner_count<W: Write>(
             right_path, right_names, &keep, right_count,
             MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_join_hash_capacity(right_rows.len()));
-        for (index, row) in right_rows.iter().enumerate() {
-            if let Some(key) = row_key(row, right_keys) {
-                if query.any {
-                    hash.entry(key).or_insert(Bucket::One(index));
-                } else {
-                    hash.entry(key)
-                        .and_modify(|bucket| bucket.push(index))
-                        .or_insert(Bucket::One(index));
-                }
-            }
-        }
+        let hash = build_join_hash(&right_rows, right_keys, query.any);
         let mut matched_right = (query.kind == JoinType::Full)
             .then(|| vec![false; right_rows.len()]);
         let left_matches = probe_inner(
@@ -1380,14 +1340,7 @@ fn execute_streaming_inner_count<W: Write>(
             left_path, left_names, &keep, left_count,
             MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_join_hash_capacity(left_rows.len()));
-        for (index, row) in left_rows.iter().enumerate() {
-            if let Some(key) = row_key(row, left_keys) {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
-            }
-        }
+        let hash = build_join_hash(&left_rows, left_keys, false);
         probe_right(
             right_path, right_names, right_keys, &left_rows, &hash,
             ProbeOptions {
@@ -1650,14 +1603,7 @@ pub fn execute_join<W: Write>(
         right_path, &right_names, &right_columns, right_meta.rows,
         MAX_INPUT_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_join_hash_capacity(right_rows.len()));
-    for (index, row) in right_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, &right_keys) {
-            hash.entry(key)
-                .and_modify(|bucket| bucket.push(index))
-                .or_insert(Bucket::One(index));
-        }
-    }
+    let hash = build_join_hash(&right_rows, &right_keys, false);
     let keep = |pair: &Pair| {
         null_filter.is_none_or(|(index, not_null)| {
             let is_null = cell_at(&left_rows, &right_rows, pair, index, width)
@@ -1765,6 +1711,22 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn build_hash_retains_duplicate_rows_except_for_any() {
+        let rows = vec![
+            vec![typed::Cell::Text(b"key".to_vec())],
+            vec![typed::Cell::Text(b"key".to_vec())],
+            vec![typed::Cell::Text(b"other".to_vec())],
+        ];
+        let all = build_join_hash(&rows, &[0], false);
+        let any = build_join_hash(&rows, &[0], true);
+        let key = [typed::Key::Text(b"key".to_vec())];
+        assert_eq!(all.len(), 2);
+        assert_eq!(any.len(), 2);
+        assert_eq!(all.get(key.as_slice()).unwrap().iter().copied().collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(any.get(key.as_slice()).unwrap().iter().copied().collect::<Vec<_>>(), vec![0]);
+    }
 
     #[test]
     fn join_hash_reserve_does_not_scale_with_duplicate_build_rows() {
