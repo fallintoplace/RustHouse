@@ -98,6 +98,7 @@ enum BoundExpr {
     Coalesce(Vec<Self>),
     NullIf(Box<Self>, Box<Self>),
     Abs(Box<Self>),
+    Sign(Box<Self>),
     Extremum(Vec<Self>, bool),
     Clamp(Box<Self>, Box<Self>, Box<Self>),
     // Fast path for the affine expression family in ClickBench Q30.
@@ -147,6 +148,8 @@ impl BoundExpr {
                 Box::new(Self::bind(lower, indices)?),
                 Box::new(Self::bind(upper, indices)?),
             ),
+            ScalarExpr::Sign(inner) =>
+                Self::Sign(Box::new(Self::bind(inner, indices)?)),
             ScalarExpr::Abs(inner) =>
                 Self::Abs(Box::new(Self::bind(inner, indices)?)),
             ScalarExpr::NullIf(left, right) => Self::NullIf(
@@ -381,6 +384,11 @@ fn eval_number(
             }
             Ok(best)
         },
+        BoundExpr::Sign(inner) => Ok(eval_number(inner, batch, row)?.map(|value| match value {
+            Number::Unsigned(value) => Number::Unsigned(u128::from(value != 0)),
+            Number::Signed(value) => Number::Signed(value.signum()),
+            Number::Float(value) => Number::Float(value.signum()),
+        })),
         BoundExpr::Abs(inner) => Ok(eval_number(inner, batch, row)?.map(|value| match value {
             Number::Unsigned(value) => Number::Unsigned(value),
             Number::Signed(value) => Number::Unsigned(value.unsigned_abs()),

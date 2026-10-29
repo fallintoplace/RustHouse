@@ -19,6 +19,7 @@ pub enum ScalarExpr {
     Coalesce(Vec<ScalarExpr>),
     NullIf(Box<ScalarExpr>, Box<ScalarExpr>),
     Abs(Box<ScalarExpr>),
+    Sign(Box<ScalarExpr>),
     Extremum(Vec<ScalarExpr>, bool),
     Clamp(Box<ScalarExpr>, Box<ScalarExpr>, Box<ScalarExpr>),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -46,7 +47,7 @@ impl ScalarExpr {
                 }
             }
             Self::Integer(_) | Self::Null => {}
-            Self::IsNull(value, _) | Self::Not(value) | Self::Abs(value) =>
+            Self::IsNull(value, _) | Self::Not(value) | Self::Abs(value) | Self::Sign(value) =>
                 value.collect_referenced_columns(out, seen),
             Self::Coalesce(values) | Self::Extremum(values, _) => {
                 for value in values {

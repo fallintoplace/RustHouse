@@ -155,3 +155,8 @@ fn zeroifnull_replaces_null_numeric_values_with_zero() {
 fn clamp_limits_nullable_numeric_inputs() {
     assert_eq!(evaluate("clamp(x, -1, 3)"), "2");
 }
+
+#[test]
+fn sign_preserves_negative_zero_positive_and_null_values() {
+    assert_eq!(evaluate("sign(x)"), "0");
+}
