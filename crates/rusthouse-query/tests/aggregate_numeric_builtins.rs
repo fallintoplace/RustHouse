@@ -60,3 +60,8 @@ fn plus_preserves_signed_numeric_arithmetic() {
 fn minus_preserves_signed_numeric_arithmetic() {
     assert_eq!(evaluate("minus(x, y)"), "1");
 }
+
+#[test]
+fn multiply_handles_negative_numeric_inputs() {
+    assert_eq!(evaluate("multiply(x, y)"), "-11");
+}
