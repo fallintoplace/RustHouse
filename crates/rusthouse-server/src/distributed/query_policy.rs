@@ -13,20 +13,28 @@ fn is_safe_unpaged_select(select: &Select) -> bool {
     is_safe_table_select(select) && select.limit.is_none() && select.offset.is_none()
 }
 
+fn is_safe_unpaged_projection(
+    select: &Select,
+    predicate: impl FnOnce(&Projection) -> bool,
+) -> bool {
+    is_safe_unpaged_select(select) && predicate(&select.projection)
+}
+
 pub(super) fn is_safe_scan(select: &Select) -> bool {
     matches!(select.projection, Projection::All | Projection::Columns(_))
         && is_safe_table_select(select)
 }
 
 pub(super) fn is_safe_count(select: &Select) -> bool {
-    matches!(
-        select.projection,
-        Projection::Count | Projection::CountColumn { .. }
-    ) && is_safe_unpaged_select(select)
+    is_safe_unpaged_projection(select, |projection| {
+        matches!(projection, Projection::Count | Projection::CountColumn { .. })
+    })
 }
 
 pub(super) fn is_safe_uniq(select: &Select) -> bool {
-    matches!(select.projection, Projection::ApproxDistinct { .. }) && is_safe_unpaged_select(select)
+    is_safe_unpaged_projection(select, |projection| {
+        matches!(projection, Projection::ApproxDistinct { .. })
+    })
 }
 
 /// Build a shard-local HLL state, not a shard-local estimate. Merging local
@@ -48,7 +56,9 @@ pub(super) fn uniq_state_shard_sql(sql: &str, select: &Select) -> Option<String>
 }
 
 pub(super) fn is_safe_count_distinct(select: &Select) -> bool {
-    matches!(select.projection, Projection::CountDistinct { .. }) && is_safe_unpaged_select(select)
+    is_safe_unpaged_projection(select, |projection| {
+        matches!(projection, Projection::CountDistinct { .. })
+    })
 }
 
 /// Rebuild only the projection while keeping an exactly verified WHERE clause.
@@ -72,33 +82,39 @@ pub(super) fn distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
 }
 
 pub(super) fn is_safe_sum(select: &Select) -> bool {
-    matches!(
-        select.projection,
-        Projection::Aggregate {
-            function: AggregateFunction::Sum,
-            ..
-        }
-    ) && is_safe_unpaged_select(select)
+    is_safe_unpaged_projection(select, |projection| {
+        matches!(
+            projection,
+            Projection::Aggregate {
+                function: AggregateFunction::Sum,
+                ..
+            }
+        )
+    })
 }
 
 pub(super) fn is_safe_count_if(select: &Select) -> bool {
-    matches!(
-        select.projection,
-        Projection::Aggregate {
-            function: AggregateFunction::CountIf,
-            ..
-        }
-    ) && is_safe_unpaged_select(select)
+    is_safe_unpaged_projection(select, |projection| {
+        matches!(
+            projection,
+            Projection::Aggregate {
+                function: AggregateFunction::CountIf,
+                ..
+            }
+        )
+    })
 }
 
 pub(super) fn is_safe_extremum(select: &Select) -> bool {
-    matches!(
-        select.projection,
-        Projection::Aggregate {
-            function: AggregateFunction::Min | AggregateFunction::Max,
-            ..
-        }
-    ) && is_safe_unpaged_select(select)
+    is_safe_unpaged_projection(select, |projection| {
+        matches!(
+            projection,
+            Projection::Aggregate {
+                function: AggregateFunction::Min | AggregateFunction::Max,
+                ..
+            }
+        )
+    })
 }
 
 pub(super) fn integer_type(kind: &str) -> bool {
