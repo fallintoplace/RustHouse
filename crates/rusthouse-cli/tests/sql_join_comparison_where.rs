@@ -14,7 +14,7 @@ fn streamed_inner_joins_filter_typed_fact_and_dimension_columns() {
             .unwrap()
     };
     for statement in [
-        "CREATE TABLE facts (id UInt64, amount Nullable(Int64))",
+        "CREATE TABLE facts (id UInt64)",
         "CREATE TABLE dims (id UInt64, label String)",
         "INSERT INTO facts SELECT number FROM numbers(40000)",
         "INSERT INTO dims VALUES (39998, 'EU'), (39999, 'US')",
