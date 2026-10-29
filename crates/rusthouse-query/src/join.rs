@@ -54,6 +54,8 @@ pub struct JoinSelect {
     /// None projects every column from both tables.
     pub columns: Option<Vec<JoinColumn>>,
     pub aggregate: Option<JoinAggregate>,
+    /// GROUP BY qualified_column with COUNT(*) projected last.
+    pub grouped_count: Option<JoinColumn>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
@@ -99,6 +101,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         None
     };
+    let mut grouped_count_projection = false;
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
     } else {
@@ -111,6 +114,16 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             }
             columns.push(projected(&mut parser)?);
             if !parser.take(Token::Comma) {
+                break;
+            }
+            if parser.keyword("COUNT") {
+                if !parser.take(Token::LParen)
+                    || !parser.take(Token::Star)
+                    || !parser.take(Token::RParen)
+                {
+                    return Err(ParseError("grouped JOIN requires COUNT(*)".into()));
+                }
+                grouped_count_projection = true;
                 break;
             }
         }
@@ -381,6 +394,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         None
     };
+    let group_by = if parser.keyword("GROUP") {
+        if !parser.keyword("BY") {
+            return Err(ParseError("JOIN GROUP requires BY".into()));
+        }
+        Some(qualified(&mut parser)?)
+    } else {
+        None
+    };
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
@@ -442,6 +463,13 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             )));
         }
     }
+    if let Some(column) = &group_by {
+        if !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}", column.relation
+            )));
+        }
+    }
     for (column, _, _) in &order_by {
         if !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
@@ -473,6 +501,27 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
+    let grouped_count = if grouped_count_projection {
+        let projected_key = columns
+            .as_ref()
+            .and_then(|columns| (columns.len() == 1).then_some(&columns[0]))
+            .ok_or_else(|| ParseError("grouped JOIN projects one key and COUNT(*)".into()))?;
+        if group_by.as_ref() != Some(projected_key) {
+            return Err(ParseError("GROUP BY must match the selected JOIN key".into()));
+        }
+        if kind != JoinType::Inner || !steps.is_empty() {
+            return Err(ParseError("grouped JOIN COUNT requires two-table INNER JOIN".into()));
+        }
+        if order_by.iter().any(|(column, _, _)| column != projected_key) {
+            return Err(ParseError("grouped JOIN ORDER BY must use the group key".into()));
+        }
+        group_by
+    } else {
+        if group_by.is_some() {
+            return Err(ParseError("JOIN GROUP BY requires projected COUNT(*)".into()));
+        }
+        None
+    };
     if aggregate.is_some() &&
         (kind != JoinType::Inner || !steps.is_empty() || !order_by.is_empty()) {
         return Err(ParseError(
@@ -488,6 +537,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         any,
         columns,
         aggregate,
+        grouped_count,
         keys,
         using_keys,
         where_null,
@@ -608,6 +658,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         plan.push_str(&format!("\nOrder: {terms}"));
+    }
+    if let Some(column) = &query.grouped_count {
+        plan.push_str(&format!(
+            "\nAggregate: GROUP BY {}.{} with COUNT(*)",
+            column.relation, column.name
+        ));
     }
     if query.offset > 0 {
         plan.push_str(&format!("\nOffset: {}", query.offset));
