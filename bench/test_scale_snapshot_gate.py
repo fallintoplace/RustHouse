@@ -41,6 +41,18 @@ class SnapshotGateTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "overlapping"):
             inspect_snapshot("rusthouse", "parts", run=run)
 
+    def test_rejects_invalid_snapshot_part_and_row_domains(self):
+        from types import SimpleNamespace
+        from bench.scale.snapshot_gate import inspect_snapshot
+        import json
+        for rows, parts in ((1, 16385), (1 << 64, 1), (True, 1)):
+            payload = {"rows": rows, "parts": parts,
+                       "columns": [{"name": "id", "type": "UInt64"}]}
+            def mocked(*args, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=json.dumps(payload).encode(), stderr=b"")
+            with self.assertRaisesRegex(ValueError, "invalid rows or parts"):
+                inspect_snapshot("rusthouse", ".", min_rows=1, run=mocked)
+
 
 if __name__ == "__main__":
     unittest.main()
