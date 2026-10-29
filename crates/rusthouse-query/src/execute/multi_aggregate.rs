@@ -92,6 +92,7 @@ enum BoundExpr {
     Integer(i64),
     Null,
     IsNull(Box<Self>, bool),
+    Not(Box<Self>),
     // Fast path for the affine expression family in ClickBench Q30.
     AffineColumn {
         index: usize,
@@ -126,6 +127,8 @@ impl BoundExpr {
             ScalarExpr::Null => Self::Null,
             ScalarExpr::IsNull(inner, negated) =>
                 Self::IsNull(Box::new(Self::bind(inner, indices)?), *negated),
+            ScalarExpr::Not(inner) =>
+                Self::Not(Box::new(Self::bind(inner, indices)?)),
             ScalarExpr::Add(left, right) => {
                 if let (ScalarExpr::Column(name), ScalarExpr::Integer(constant)) =
                     (left.as_ref(), right.as_ref())
@@ -268,6 +271,8 @@ fn eval_number(
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::Null => Ok(None),
+        BoundExpr::Not(inner) => Ok(numeric_truth(eval_number(inner, batch, row)?)
+            .map(|value| Number::Unsigned(u128::from(!value)))),
         BoundExpr::IsNull(inner, negated) => {
             let is_null = if let BoundExpr::Column(index) = inner.as_ref() {
                 typed::is_null_at(&batch[*index], row)
