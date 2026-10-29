@@ -10,6 +10,13 @@ fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
+fn validate_calendar_date(date: &str) -> Result<(), ParseError> {
+    if rusthouse_storage::parse_date(date).is_none() {
+        return Err(ParseError("invalid DATE constant".into()));
+    }
+    Ok(())
+}
+
 fn rescale_decimal(
     value: i128,
     current_scale: usize,
@@ -42,9 +49,7 @@ pub(super) fn arithmetic(left: &str, right: &str, subtract: bool) -> Result<Stri
 
 /// Add calendar years while preserving month/day, clamping Feb 29 to Feb 28.
 pub(super) fn add_date_years(date: &str, years: i64) -> Result<String, ParseError> {
-    if rusthouse_storage::parse_date(date).is_none() {
-        return Err(ParseError("invalid DATE constant".into()));
-    }
+    validate_calendar_date(date)?;
     let year = date[..4]
         .parse::<i64>()
         .map_err(|_| ParseError("invalid DATE year".into()))?;
@@ -82,9 +87,7 @@ pub(super) fn add_date_days(date: &str, days: i64) -> Result<String, ParseError>
 
 /// Add whole calendar months, clamping a month-end date when necessary.
 pub(super) fn add_date_months(date: &str, months: i64) -> Result<String, ParseError> {
-    if rusthouse_storage::parse_date(date).is_none() {
-        return Err(ParseError("invalid DATE constant".into()));
-    }
+    validate_calendar_date(date)?;
     let year = date[..4]
         .parse::<i64>()
         .map_err(|_| ParseError("invalid DATE year".into()))?;
