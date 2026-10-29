@@ -11,6 +11,12 @@ enum IntegerKey {
 
 fn parse_key(bytes: &[u8], unsigned: bool) -> Result<IntegerKey, MergeError> {
     let text = std::str::from_utf8(bytes).map_err(|_| MergeError::InvalidSortedScan)?;
+    if text.starts_with('+')
+        || (text.len() > 1 && text.starts_with('0'))
+        || text.starts_with("-0")
+    {
+        return Err(MergeError::InvalidSortedScan);
+    }
     if unsigned {
         text.parse::<u128>()
             .map(IntegerKey::Unsigned)
@@ -184,6 +190,21 @@ mod tests {
         );
         assert_eq!(
             merge_sorted_integer_page(&[shard(2, "id\n1\n2\n")], "id", "UInt64", false, 0, 2, 10),
+            Err(MergeError::InvalidSortedScan)
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_peer_integer_keys() {
+        for invalid in ["id\n+1\n", "id\n01\n", "id\n-0\n", "id\n-01\n"] {
+            assert_eq!(
+                merge_sorted_integer_page(&[shard(5, invalid)], "id", "Int64", false, 0, 1, 1),
+                Err(MergeError::InvalidSortedScan),
+                "{invalid:?}"
+            );
+        }
+        assert_eq!(
+            merge_sorted_integer_page(&[shard(5, "id\n01\n")], "id", "UInt64", false, 0, 1, 1),
             Err(MergeError::InvalidSortedScan)
         );
     }
