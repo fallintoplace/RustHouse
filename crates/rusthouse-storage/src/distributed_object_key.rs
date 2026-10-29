@@ -57,7 +57,7 @@ impl ObjectKey {
         part: &str,
         file: &str,
     ) -> Result<Self, &'static str> {
-        if !component(cluster) || !component(shard) || !component(part) || !component(file) {
+        if ![cluster, shard, part, file].into_iter().all(component) {
             return Err("invalid distributed object key component");
         }
         if generation == 0 {
