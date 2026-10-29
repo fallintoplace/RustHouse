@@ -31,6 +31,16 @@ class PermutedFixturesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "UInt64"):
             emit(io.StringIO(), 1, seed=-1)
 
+    def test_rejects_noninteger_controls_before_emitting_rows(self):
+        for args in ((True, 0, 1), (2, True, 1), (2, 0, 1.5)):
+            output = io.StringIO()
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                emit(output, args[0], seed=args[1], batch_rows=args[2])
+            self.assertEqual(output.getvalue(), "")
+        for index, seed in ((True, 0), (0, False), (1.5, 0)):
+            with self.subTest(index=index, seed=seed), self.assertRaises(ValueError):
+                permuted(index, seed)
+
     def test_writes_new_file(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "ids.tsv"
