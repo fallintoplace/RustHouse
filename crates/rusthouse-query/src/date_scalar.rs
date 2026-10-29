@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOMONDAY"
             | "TOSTARTOFWEEK"
             | "TOSTARTOFHOUR"
             | "TOSTARTOFDAY"
@@ -57,6 +58,11 @@ pub(super) fn parse_after_open(
             let days = value.seconds.div_euclid(DAY_SECONDS);
             let sunday = days - (days + 4).rem_euclid(7);
             Ok(ConstantValue::Text(Temporal::render(sunday * DAY_SECONDS, false)?))
+        }),
+        "TOMONDAY" => unary_date(parser, depth, |value| {
+            let days = value.seconds.div_euclid(DAY_SECONDS);
+            let monday = days - (days + 3).rem_euclid(7);
+            Ok(ConstantValue::Text(Temporal::render(monday * DAY_SECONDS, false)?))
         }),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
@@ -544,6 +550,24 @@ mod utc_compat_tests {
             "SELECT toStartOfWeek()",
             "SELECT toStartOfWeek('2023-02-29')",
             "SELECT toStartOfWeek('2024-03-06', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn to_monday_preserves_calendar_boundaries() {
+        for (sql, expected) in [
+            ("SELECT toMonday('2024-03-06')", "2024-03-04"),
+            ("SELECT toMonday('2024-03-03')", "2024-02-26"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT toMonday(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toMonday()",
+            "SELECT toMonday('2023-02-29')",
+            "SELECT toMonday('2024-03-06', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
