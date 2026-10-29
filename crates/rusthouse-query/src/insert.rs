@@ -166,6 +166,16 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
 pub struct InsertFormatHeader {
     pub table: String,
     pub columns: Option<Vec<String>>,
+    pub format: InsertStreamFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertStreamFormat {
+    JsonEachRow,
+    Csv,
+    CsvWithNames,
+    TabSeparated,
+    TabSeparatedWithNames,
 }
 
 pub fn parse_insert_format_header(sql: &str) -> Result<Option<InsertFormatHeader>, ParseError> {
@@ -184,14 +194,24 @@ pub fn parse_insert_format_header(sql: &str) -> Result<Option<InsertFormatHeader
     if !parser.keyword("FORMAT") {
         return Ok(None);
     }
-    if !parser.keyword("JSONEACHROW") {
-        return Err(ParseError("streaming INSERT supports only FORMAT JSONEachRow".into()));
-    }
+    let format = if parser.keyword("JSONEACHROW") {
+        InsertStreamFormat::JsonEachRow
+    } else if parser.keyword("CSVWITHNAMES") {
+        InsertStreamFormat::CsvWithNames
+    } else if parser.keyword("CSV") {
+        InsertStreamFormat::Csv
+    } else if parser.keyword("TABSEPARATEDWITHNAMES") {
+        InsertStreamFormat::TabSeparatedWithNames
+    } else if parser.keyword("TABSEPARATED") {
+        InsertStreamFormat::TabSeparated
+    } else {
+        return Err(ParseError("unsupported streaming INSERT format".into()));
+    };
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
         return Err(ParseError("unexpected tokens after INSERT FORMAT".into()));
     }
-    Ok(Some(InsertFormatHeader { table, columns }))
+    Ok(Some(InsertFormatHeader { table, columns, format }))
 }
 
 #[cfg(test)]

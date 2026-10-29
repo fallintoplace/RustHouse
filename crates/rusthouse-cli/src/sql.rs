@@ -292,7 +292,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                 println!("{header:#?}");
                 return Ok(());
             }
-            return crate::copy_from::run_insert_json_each_row(database_dir, &header);
+            return crate::copy_from::run_insert_format(database_dir, &header);
         }
         if let Some(insert) = parse_insert(&query).map_err(|error| error.to_string())? {
             if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {

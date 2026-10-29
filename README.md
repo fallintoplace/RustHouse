@@ -73,10 +73,14 @@ Native ClickHouse-style JSON ingestion can also stream from stdin:
 
 ```sh
 rusthouse sql "INSERT INTO events FORMAT JSONEachRow" --database ./mydb < events.jsonl
+rusthouse sql "INSERT INTO events FORMAT CSVWithNames" --database ./mydb < events.csv
+rusthouse sql "INSERT INTO events FORMAT TabSeparated" --database ./mydb < events.tsv
 ```
 
-The SQL header is parsed separately from the input stream. Every row uses the
-same strict JSON parser and atomic storage path as COPY imports.
+The SQL header is parsed separately from the input stream. Supported formats
+are `JSONEachRow`, `CSV`, `CSVWithNames`, `TabSeparated`, and
+`TabSeparatedWithNames`. Streaming imports use the existing bounded CSV, TSV,
+or strict JSON reader and one atomic storage publication.
 
 COPY FROM JSONEachRow imports ClickHouse newline-delimited JSON objects with schema-aware field mapping, nullable missing fields, strict JSON escaping, and atomic failure on malformed input. Use `COPY events FROM '/path/to/events.jsonl' WITH (FORMAT JSONEachRow)`. Records are bounded to 1 MiB each, and CSV-style headers are not allowed.
 

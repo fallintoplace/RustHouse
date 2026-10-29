@@ -470,16 +470,24 @@ fn run_json_each_row(database: &Path, statement: &CopyFrom) -> Result<(), String
 /// Stream a native ClickHouse INSERT ... FORMAT JSONEachRow from stdin.
 /// This shares the atomic snapshot writer and schema-aware row mapping used
 /// by JSONEachRow COPY without reading the entire body into memory.
-pub(super) fn run_insert_json_each_row(
+pub(super) fn run_insert_format(
     database: &Path,
     header: &rusthouse_query::InsertFormatHeader,
 ) -> Result<(), String> {
-    run_json_each_row(database, &CopyFrom {
+    use rusthouse_query::InsertStreamFormat;
+    let (format, with_names) = match header.format {
+        InsertStreamFormat::JsonEachRow => (CopyFormat::JsonEachRow, false),
+        InsertStreamFormat::Csv => (CopyFormat::Csv, false),
+        InsertStreamFormat::CsvWithNames => (CopyFormat::Csv, true),
+        InsertStreamFormat::TabSeparated => (CopyFormat::Tsv, false),
+        InsertStreamFormat::TabSeparatedWithNames => (CopyFormat::Tsv, true),
+    };
+    run(database, &CopyFrom {
         table: header.table.clone(),
         columns: header.columns.clone(),
         path: "-".into(),
-        header: false,
-        format: CopyFormat::JsonEachRow,
+        header: with_names,
+        format,
     })
 }
 
