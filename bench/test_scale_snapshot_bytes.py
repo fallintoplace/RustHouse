@@ -43,6 +43,14 @@ class SnapshotBytesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "max_files"):
                 inventory(root, max_files=0)
 
+    def test_rejects_nonnumeric_inventory_file_limits(self):
+        with tempfile.TemporaryDirectory() as root:
+            for max_files in (True, 1.5, "10", None):
+                with self.subTest(max_files=max_files), self.assertRaisesRegex(ValueError, "max_files"):
+                    inventory(root, max_files=max_files)
+            (Path(root) / "a.bin").write_bytes(b"a")
+            self.assertEqual(inventory(root, max_files=1)["file_count"], 1)
+
     def test_rejects_unreadable_subdirectories(self):
         with tempfile.TemporaryDirectory() as root:
             (Path(root) / "data.bin").write_bytes(b"123")
