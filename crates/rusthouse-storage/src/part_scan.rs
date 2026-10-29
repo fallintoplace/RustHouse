@@ -12,6 +12,10 @@ use crate::{
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+const PARALLEL_COLUMN_THRESHOLD: usize = 8;
+const PARALLEL_ROW_THRESHOLD: u64 = 4096;
+const MAX_OPEN_WORKERS: usize = 4;
+
 struct ColumnStream {
     data_type: String,
     marks: Vec<WideMark>,
@@ -102,8 +106,6 @@ impl NumericPartReader {
 
         let mut streams = Vec::with_capacity(columns.len());
         if metadata.rows != 0 {
-            const PARALLEL_COLUMN_THRESHOLD: usize = 8;
-            const MAX_OPEN_WORKERS: usize = 4;
             let workers = std::thread::available_parallelism()
                 .map_or(1, |parallelism| parallelism.get())
                 .min(MAX_OPEN_WORKERS);
@@ -226,10 +228,10 @@ impl NumericPartReader {
         }
         // Small or legacy marks remain serial: worker setup is worthwhile only
         // for large adaptive analytical projections.
-        let workers = if row_count.is_some_and(|rows| rows >= 4096)
-            && self.streams.len() >= 8
+        let workers = if row_count.is_some_and(|rows| rows >= PARALLEL_ROW_THRESHOLD)
+            && self.streams.len() >= PARALLEL_COLUMN_THRESHOLD
         {
-            std::thread::available_parallelism().map_or(1, |n| n.get()).min(4)
+            std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAX_OPEN_WORKERS)
         } else {
             1
         };
