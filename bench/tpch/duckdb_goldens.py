@@ -8,12 +8,15 @@ import tempfile
 from pathlib import Path
 
 from run import load_queries
+from canonical_integrity import verify as verify_canonical_sql
 
 
 def generate(duckdb_binary, database, queries_dir, output_dir,
-             timeout=300, overwrite=False, execute=None):
+             timeout=300, overwrite=False, execute=None, require_canonical=False):
     if timeout <= 0:
         raise ValueError("timeout must be positive")
+    if require_canonical:
+        verify_canonical_sql(queries_dir)
     queries = load_queries(Path(queries_dir))
     if [number for number, _ in queries] != list(range(1, 23)):
         raise ValueError("full canonical Q1-Q22 SQL corpus required")
@@ -63,10 +66,13 @@ def main(argv=None):
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=300)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--require-canonical", action="store_true",
+                        help="Generate references only from pinned full Q1-Q22 SQL")
     args = parser.parse_args(argv)
     try:
         report = generate(args.duckdb, args.database, args.queries_dir,
-                          args.output_dir, args.timeout, args.overwrite)
+                          args.output_dir, args.timeout, args.overwrite,
+                          require_canonical=args.require_canonical)
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         parser.exit(1, f"TPC-H DuckDB golden generation failed: {error}\n")
     print(json.dumps(report, indent=2))
