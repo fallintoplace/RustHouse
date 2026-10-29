@@ -413,7 +413,7 @@ impl JsonEachRowRecords {
             }
             let text = std::str::from_utf8(&self.buffer)
                 .map_err(|_| "JSONEachRow input must be UTF-8")?
-                .trim_end_matches(['\n', '\r']);
+                .trim_end_matches(|ch| ch == '\n' || ch == '\r');
             let text = if self.first {
                 text.strip_prefix('\u{feff}').unwrap_or(text)
             } else {
