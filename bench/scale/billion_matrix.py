@@ -18,7 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from bench.scale.row_oracles import modulo_reference, sum_range
+from bench.scale.row_oracles import modulo_interval_reference, sum_range
 
 MAX_ROWS = 4_000_000_000  # SUM(id) stays within UInt64 for this range.
 CASE_DIRECTORY = Path(__file__).with_name("billion_matrix")
@@ -49,9 +49,8 @@ def _modulo(case):
 
 
 def _mod_interval(start, stop, modulus, residue):
-    high = modulo_reference(stop, modulus, residue)
-    low = modulo_reference(start, modulus, residue)
-    return high["count"] - low["count"], high["sum"] - low["sum"]
+    oracle = modulo_interval_reference(start, stop, modulus, residue)
+    return oracle["count"], oracle["sum"]
 
 
 def compile_case(case, rows):
