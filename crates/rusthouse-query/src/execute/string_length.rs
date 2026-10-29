@@ -153,7 +153,7 @@ mod tests {
             append_length_line(&mut bytes, value).unwrap();
         }
         assert_eq!(String::from_utf8(bytes).unwrap(),
-            format!("0\\n\\\\N\\n17\\n{}\\n", usize::MAX));
+            format!("0\n\\N\n17\n{}\n", usize::MAX));
     }
 
     #[test]
