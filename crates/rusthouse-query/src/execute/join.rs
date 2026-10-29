@@ -146,7 +146,9 @@ fn read_projected_build_rows(
     }
     let projected = indices.iter().map(|&i| names[i].clone()).collect::<Vec<_>>();
     let mut reader = TypedQueryReader::open(path, &projected)?;
-    let mut rows = Vec::with_capacity(expected_rows as usize);
+    // The retained byte budget decides how many rows fit. Avoid reserving
+    // hundreds of thousands of slots before checking wide String payloads.
+    let mut rows = Vec::with_capacity(expected_rows.min(4096) as usize);
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
