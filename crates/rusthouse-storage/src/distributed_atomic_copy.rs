@@ -66,6 +66,10 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
     if !opened.file_type().is_file() || opened.len() != source_meta.len() {
         return Err(io::Error::other("source changed before immutable copy"));
     }
+    #[cfg(unix)]
+    if !same_file_identity(&source_meta, &opened) {
+        return Err(io::Error::other("source replaced before immutable copy"));
+    }
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -186,5 +190,37 @@ mod checked_copy_tests {
         assert_eq!(fs::read(&target).unwrap(), b"verified");
         assert!(copy_immutable_file_checked(&source, &target, 100, checksum).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(unix)]
+fn same_file_identity(path_metadata: &fs::Metadata, opened_metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    path_metadata.dev() == opened_metadata.dev()
+        && path_metadata.ino() == opened_metadata.ino()
+}
+
+#[cfg(all(test, unix))]
+mod immutable_identity_tests {
+    use super::*;
+
+    #[test]
+    fn same_length_different_inodes_are_not_the_same_object() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-distributed_atomic_copy-identity-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("one");
+        let second = root.join("two");
+        fs::write(&first, b"abcd").unwrap();
+        fs::write(&second, b"wxyz").unwrap();
+        let before = fs::symlink_metadata(&first).unwrap();
+        let opened = File::open(&second).unwrap().metadata().unwrap();
+        assert_eq!(before.len(), opened.len());
+        assert!(!same_file_identity(&before, &opened));
+        assert!(same_file_identity(&before, &File::open(&first).unwrap().metadata().unwrap()));
+        fs::remove_dir_all(root).unwrap();
     }
 }
