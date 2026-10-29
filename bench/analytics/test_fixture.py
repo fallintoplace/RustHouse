@@ -19,6 +19,20 @@ class ClickBenchFixtureTests(unittest.TestCase):
                 self.assertGreater(db.execute("SELECT COUNT(DISTINCT UserID) FROM hits").fetchone()[0], 0)
             self.assertIn("COPY hits", (path / "copy.sql").read_text())
 
+    def test_fixture_bytes_and_sqlite_rows_cross_multiple_batches(self):
+        with tempfile.TemporaryDirectory() as root:
+            generate(root, rows=1025, seed=17)
+            path = Path(root)
+            actual = (path / "hits.tsv").read_text(encoding="utf-8")
+            expected = "\t".join(name for name, _, _ in FIELDS) + "\n"
+            expected += "".join("\t".join(map(str, record)) + "\n"
+                                for record in records(1025, 17))
+            self.assertEqual(actual, expected)
+            with closing(sqlite3.connect(path / "hits.sqlite")) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT count(*) FROM hits").fetchone()[0], 1025
+                )
+
     def test_seed_is_repeatable_and_empty_fixture_rejected(self):
         self.assertEqual(list(records(10, 7)), list(records(10, 7)))
         with tempfile.TemporaryDirectory() as root:
