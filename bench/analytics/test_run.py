@@ -153,5 +153,14 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(results[1]["seconds"].__len__(), 3)
 
 
+    def test_validation_error_is_scoped_to_failing_query(self):
+        def execute(sql, timeout):
+            if sql == "invalid":
+                raise ValueError("invalid HTTP benchmark URL")
+            return b"ok\n"
+        rows = runner.run_benchmark(["invalid", "SELECT 1"], [0, 1], 1, 3, execute)
+        self.assertEqual([row["status"] for row in rows], ["error", "unverified"])
+        self.assertIn("invalid HTTP", rows[0]["error"])
+
 if __name__ == "__main__":
     unittest.main()
