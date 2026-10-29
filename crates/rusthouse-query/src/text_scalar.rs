@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "JSONEXTRACTBOOL"
             | "REGEXPQUOTEMETA"
             | "CUTWWW"
             | "DOMAINWITHOUTWWW"
@@ -2697,6 +2698,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "JSONEXTRACTBOOL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSONExtractBool requires a path")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "JSONExtractBool requires two arguments")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    ConstantValue::Integer(i64::from(
+                        json.at_path(&path).is_some_and(|value| value.raw() == "true")
+                    ))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "JSONEXTRACTINT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "JSONExtractInt requires a path")?;
@@ -3085,5 +3102,32 @@ mod ch_regexp_quote_meta_tests {
             }
         }
         assert!(parse_select("SELECT regexpQuoteMeta()").is_err());
+    }
+}
+
+#[cfg(test)]
+mod ch_json_extract_bool_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn json_types_and_defaults() {
+        for (sql, expected) in [
+            ("SELECT JSONExtractBool('{\"flag\":true}', 'flag')", ConstantValue::Integer(1)),
+            ("SELECT JSONExtractBool('{\"flag\":false}', 'flag')", ConstantValue::Integer(0)),
+            ("SELECT JSONExtractBool('{\"n\":1}', 'n')", ConstantValue::Integer(0)),
+            ("SELECT JSONExtractBool('{\"n\":1}', 'missing')", ConstantValue::Integer(0)),
+            ("SELECT JSONExtractBool(NULL, 'x')", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT JSONExtractBool('{}')", "SELECT JSONExtractBool('{x}', 'x')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
