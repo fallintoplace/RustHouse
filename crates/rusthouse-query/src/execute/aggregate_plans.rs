@@ -819,6 +819,36 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // Generated GROUP BY keys are unique and monotone, so paging by the
+    // grouping key needs no hash table or full sort.
+    if query.having.is_none() && query.order_by_extra.is_empty() && step != 0 {
+        if let (Some(order), Some(limit)) = (query.order_by.as_ref(), query.limit) {
+            if order.column == "number" {
+                let range = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                    Some((0, rows))
+                } else {
+                    monotonic_range_indices(&comparisons, start, rows, step)
+                };
+                if let Some((lower, upper)) = range {
+                    let available = upper - lower;
+                    let skip = (query.offset.unwrap_or(0) as u64).min(available);
+                    let length = (limit as u64).min(available - skip);
+                    for position in skip..skip + length {
+                        let index = if order.descending {
+                            upper - 1 - position
+                        } else {
+                            lower + position
+                        };
+                        let number = u128::from(start) + u128::from(index) * u128::from(step);
+                        let mut state = AggregateState::new(*function);
+                        state.update(Number::Unsigned(number))?;
+                        writeln!(output, "{number}\t{}", state.render())?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
     // Unique generated keys do not need per-key hash entries when the
     // result is emitted in source order. Reject oversized groups up front.
     if query.limit.is_none() && query.predicates.is_empty()
