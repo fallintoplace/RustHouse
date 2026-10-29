@@ -474,9 +474,10 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         ));
     }
     if aggregate.is_some() &&
-        (kind != JoinType::Inner || !steps.is_empty() || !order_by.is_empty()) {
+        (!matches!(kind, JoinType::Inner | JoinType::Left)
+            || !steps.is_empty() || !order_by.is_empty()) {
         return Err(ParseError(
-            "streamed JOIN COUNT requires a two-table INNER JOIN without ORDER BY".into()
+            "streamed JOIN COUNT requires a two-table INNER or LEFT JOIN without ORDER BY".into()
         ));
     }
     Ok(Some(JoinSelect {
