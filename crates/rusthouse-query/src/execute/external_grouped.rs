@@ -308,6 +308,17 @@ impl ExternalGroupCount64 {
         self.compact_runs()?;
         let signed = self.signed;
         let descending = self.descending;
+        // Most GROUP BY spills finish with one sorted run. Skip heap setup
+        // and stream the already-reduced key/count pairs directly.
+        if let [path] = self.runs.as_slice() {
+            let mut reader = BufReader::new(File::open(path)?);
+            while let Some((encoded, count)) = read_group(&mut reader)? {
+                let key = if descending { !encoded } else { encoded };
+                let key = if signed { key ^ (1 << 63) } else { key };
+                if !emit(key, count)? { break; }
+            }
+            return Ok(());
+        }
         merge_until(&self.runs, |encoded, count| {
             let key = if descending { !encoded } else { encoded };
             let key = if signed { key ^ (1 << 63) } else { key };
@@ -399,6 +410,24 @@ mod tests {
         let mut total = 0_u64;
         groups.finish(|_, count| { total += count; Ok(()) }).unwrap();
         assert_eq!(total, RUN_KEYS as u64);
+    }
+
+
+    #[test]
+    fn single_run_fast_path_preserves_sort_and_early_stop() {
+        let mut group = ExternalGroupCount64::new(true, true);
+        for value in (0..RUN_KEYS).rev() {
+            group.insert((value % 499) as u64).unwrap();
+        }
+        assert_eq!(group.runs.len(), 1);
+        let mut output = Vec::new();
+        group.finish_until(|key, count| {
+            output.push((key, count));
+            Ok(output.len() < 17)
+        }).unwrap();
+        assert_eq!(output.len(), 17);
+        assert!(output.windows(2).all(|w| w[0].0 > w[1].0));
+        assert_eq!(output[0].0, 498);
     }
 
     #[test]
