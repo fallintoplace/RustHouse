@@ -280,90 +280,9 @@ pub(super) fn execute<W: Write>(
 }
 
 #[cfg(test)]
-mod stream_output_limit_tests {
-    use super::*;
-    use super::super::super::Number;
-
-    #[test]
-    fn streaming_inner_joins_can_emit_more_than_the_materialized_row_cap() {
-        let fact = typed::Cell::Numeric(Number::Unsigned(7));
-        let dimension = typed::Cell::Numeric(Number::Unsigned(7));
-        let right_rows = vec![vec![dimension]];
-        let mut hash = HashMap::new();
-        hash.insert(row_key(&right_rows[0], &[0]).unwrap(), Bucket::One(0));
-        let stages = [Stage {
-            rows: right_rows,
-            hash,
-            left_keys: vec![0],
-            any: false,
-        }];
-        let selected = [(0, "fact.id".to_owned(), None)];
-        let spec = OutputSpec {
-            selected: &selected,
-            null_filter: None,
-            offset: 0,
-            limit: None,
-        };
-        let mut output = std::io::sink();
-        let mut state = OutputState::default();
-        let mut row = vec![fact];
-        for _ in 0..131_100 {
-            visit(0, &mut row, &stages, &spec, &mut state, &mut output).unwrap();
-        }
-        assert_eq!(state.seen, 131_100);
-        assert_eq!(state.emitted, 131_100);
-        assert_eq!(row.len(), 1);
-    }
-
-    #[test]
-    fn streaming_inner_join_still_respects_explicit_limit() {
-        let fact = typed::Cell::Numeric(Number::Unsigned(7));
-        let dimension = typed::Cell::Numeric(Number::Unsigned(7));
-        let right_rows = vec![vec![dimension]];
-        let mut hash = HashMap::new();
-        hash.insert(row_key(&right_rows[0], &[0]).unwrap(), Bucket::One(0));
-        let stages = [Stage {
-            rows: right_rows,
-            hash,
-            left_keys: vec![0],
-            any: false,
-        }];
-        let selected = [(0, "fact.id".to_owned(), None)];
-        let spec = OutputSpec {
-            selected: &selected,
-            null_filter: None,
-            offset: 0,
-            limit: Some(2),
-        };
-        let mut state = OutputState::default();
-        let mut row = vec![fact];
-        let mut output = std::io::sink();
-        for _ in 0..100 {
-            visit(0, &mut row, &stages, &spec, &mut state, &mut output).unwrap();
-        }
-        assert_eq!(state.emitted, 2);
-    }
-}
+#[path = "streaming/stream_output_limit_tests.rs"]
+mod stream_output_limit_tests;
 
 #[cfg(test)]
-mod streaming_hash_budget_tests {
-    use super::*;
-
-    #[test]
-    fn large_string_keys_are_charged_in_addition_to_dimension_rows() {
-        let key = [typed::Key::Text(vec![b'x'; 2048])];
-        assert!(hash_key_bytes(&key).unwrap() > 2048);
-        let mut used = MAX_CHAIN_BYTES - 100;
-        assert!(charge_hash_build(&mut used, hash_key_bytes(&key).unwrap()).is_err());
-        assert_eq!(used, MAX_CHAIN_BYTES - 100);
-    }
-
-    #[test]
-    fn hash_accounting_rejects_overflow_before_allocation() {
-        let mut used = 0usize;
-        assert!(charge_hash_build(&mut used, usize::MAX).is_err());
-        assert_eq!(used, 0);
-        charge_hash_build(&mut used, 128).unwrap();
-        assert_eq!(used, 128);
-    }
-}
+#[path = "streaming/streaming_hash_budget_tests.rs"]
+mod streaming_hash_budget_tests;
