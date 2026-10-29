@@ -289,6 +289,7 @@ enum Test {
     UuidInSet(HashSet<[u8; 16]>, bool),
     TextInSet(HashSet<Vec<u8>>, bool),
     NumericInSet(HashSet<NumberKey>, bool),
+    ShortInSet(Box<[u64; 1024]>, bool),
     NotBetween(Cell, Cell),
     UuidNotBetween([u8; 16], [u8; 16]),
     IsNull(bool),
@@ -363,6 +364,24 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
     }
     if targets.len() < HASHED_TYPED_IN_MIN_VALUES {
         return Ok(Test::In(targets, negated));
+    }
+    if matches!(base_type(kind), "Int16" | "UInt16") {
+        let mut bitmap = Box::new([0u64; 1024]);
+        for target in &targets {
+            let index = match (base_type(kind), target) {
+                ("UInt16", Cell::Numeric(Number::Unsigned(value))) => {
+                    u16::try_from(*value).ok().map(usize::from)
+                }
+                ("Int16", Cell::Numeric(Number::Signed(value))) => {
+                    i16::try_from(*value).ok().map(|number| usize::from(number as u16))
+                }
+                _ => None,
+            };
+            if let Some(index) = index {
+                bitmap[index / 64] |= 1u64 << (index % 64);
+            }
+        }
+        return Ok(Test::ShortInSet(bitmap, negated));
     }
     if base_type(kind) == "String" {
         return Ok(Test::TextInSet(
@@ -684,6 +703,21 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                         let found = !matches!(value, Number::Float(n) if n.is_nan())
                             && targets.contains(&NumberKey::from(value));
                         found != *negated
+                    })
+                }
+                Test::ShortInSet(bitmap, negated) => {
+                    let number = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt16(values)) => Some(values[row]),
+                        TypedColumn::Numeric(NumericColumn::Int16(values)) => Some(values[row] as u16),
+                        TypedColumn::NullableNumeric { values: NumericColumn::UInt16(values), nulls }
+                            if nulls[row] == 0 => Some(values[row]),
+                        TypedColumn::NullableNumeric { values: NumericColumn::Int16(values), nulls }
+                            if nulls[row] == 0 => Some(values[row] as u16),
+                        _ => None,
+                    };
+                    number.is_some_and(|number| {
+                        let index = usize::from(number);
+                        ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
                     })
                 }
                 Test::UuidNotBetween(lower, upper) => match column {
@@ -2269,6 +2303,38 @@ mod single_uuid_membership_tests {
                 _ => panic!("single UUID IN should use fixed-width comparison"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod short_in_predicate_perf_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_short_bitmap_preserves_negative_values_and_nulls() {
+        let values = (-20..0).map(|value| value.to_string()).collect::<Vec<_>>();
+        let includes = [vec![Condition {
+            index: 0,
+            test: compile_in("Nullable(Int16)", &values, false).unwrap(),
+        }]];
+        assert!(matches!(&includes[0][0].test, Test::ShortInSet(_, false)));
+        let batch = [TypedColumn::NullableNumeric {
+            values: NumericColumn::Int16(vec![-20, -1, 100, -5]),
+            nulls: vec![0, 0, 0, 1],
+        }];
+        assert!(passes(&batch, 0, &includes));
+        assert!(passes(&batch, 1, &includes));
+        assert!(!passes(&batch, 2, &includes));
+        assert!(!passes(&batch, 3, &includes));
+        let unsigned = (0..100).map(|value| value.to_string()).collect::<Vec<_>>();
+        let excludes = [vec![Condition {
+            index: 0,
+            test: compile_in("UInt16", &unsigned, true).unwrap(),
+        }]];
+        let batch = [TypedColumn::Numeric(NumericColumn::UInt16(vec![0, 99, 65535]))];
+        assert!(!passes(&batch, 0, &excludes));
+        assert!(!passes(&batch, 1, &excludes));
+        assert!(passes(&batch, 2, &excludes));
     }
 }
 
