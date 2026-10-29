@@ -34,6 +34,18 @@ class SharedWorkloadTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=5,
         )
 
+    def test_cli_json_oracle_mode_is_explicit_and_read_only(self):
+        with mock.patch(
+            "bench.common.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, b'{"x":"1"}\\n', b""),
+        ) as run:
+            cli_sql("rusthouse", "db", "SELECT 1", 5, select_format="jsonl")
+        self.assertEqual(run.call_args.args[0][-2:], ["--format", "jsonl"])
+        with self.assertRaisesRegex(ValueError, "only with SELECT"):
+            cli_sql("rusthouse", "db", "DROP TABLE t", 5, select_format="jsonl")
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            cli_sql("rusthouse", "db", "SELECT 1", 5, select_format="unsafe")
+
     def test_cli_mutations_omit_select_only_format(self):
         for statement in (
             "CREATE TABLE events (id UInt64)",

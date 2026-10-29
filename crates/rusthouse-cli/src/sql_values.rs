@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_SQL_VALUES_COLUMNS: usize = 64;
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -50,16 +51,16 @@ fn encode_values_row_into(line: &[u8], columns: usize, values: &mut Vec<u8>) -> 
             .saturating_add(columns.saturating_mul(3))
             .saturating_add(2),
     );
-    let mut count = 0;
+    let mut encoded_field_count = 0;
     values.push(b'(');
     for field in line.split(|&byte| byte == b'\t') {
-        if count > 0 {
+        if encoded_field_count > 0 {
             values.extend_from_slice(b", ");
         }
         append_literal(values, field)?;
-        count += 1;
+        encoded_field_count += 1;
     }
-    if count != columns {
+    if encoded_field_count != columns {
         return Err(invalid("SQL VALUES row width differs from the header"));
     }
     values.push(b')');
@@ -97,7 +98,7 @@ impl<W: Write> SqlValuesWriter<W> {
     fn finish_line(&mut self) -> io::Result<()> {
         let Some(columns) = self.columns else {
             let columns = self.line.split(|&byte| byte == b'\t').count();
-            if columns == 0 || columns > 64 {
+            if columns == 0 || columns > MAX_SQL_VALUES_COLUMNS {
                 return Err(invalid("SQL VALUES supports 1 to 64 columns"));
             }
             self.columns = Some(columns);

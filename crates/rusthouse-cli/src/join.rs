@@ -19,7 +19,7 @@ fn execute_selected_join<W: std::io::Write>(
     }
 }
 
-fn finish_join<T>(
+fn finish_join_output<T>(
     result: Result<(), rusthouse_query::ExecutionError>,
     finish: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<(), rusthouse_query::ExecutionError> {
@@ -58,7 +58,7 @@ fn execute_formatted_join(
         ),
         SqlOutputFormat::Html => {
             let mut writer = html::HtmlWriter::new(&mut output);
-            finish_join(execute_selected_join(query, paths, &mut writer), || {
+            finish_join_output(execute_selected_join(query, paths, &mut writer), || {
                 writer.finish()
             })
         }
@@ -69,7 +69,7 @@ fn execute_formatted_join(
         ),
         SqlOutputFormat::SqlValues => {
             let mut writer = sql_values::SqlValuesWriter::new(&mut output);
-            finish_join(execute_selected_join(query, paths, &mut writer), || {
+            finish_join_output(execute_selected_join(query, paths, &mut writer), || {
                 writer.finish()
             })
         }
@@ -81,19 +81,19 @@ fn execute_formatted_join(
         }
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);
-            finish_join(execute_selected_join(query, paths, &mut writer), || {
+            finish_join_output(execute_selected_join(query, paths, &mut writer), || {
                 writer.finish()
             })
         }
         SqlOutputFormat::JsonCompactEachRow => {
             let mut writer = json_compact_each_row::JsonCompactEachRowWriter::new(&mut output);
-            finish_join(execute_selected_join(query, paths, &mut writer), || {
+            finish_join_output(execute_selected_join(query, paths, &mut writer), || {
                 writer.finish()
             })
         }
         SqlOutputFormat::JsonPretty => {
             let mut writer = json_array::JsonArrayWriter::new_pretty(&mut output);
-            finish_join(execute_selected_join(query, paths, &mut writer), || {
+            finish_join_output(execute_selected_join(query, paths, &mut writer), || {
                 writer.finish()
             })
         }
@@ -135,10 +135,10 @@ pub(super) fn run(
         paths.push(crate::database::select_source(database, &step.table)?);
     }
     let mut output = open_output(output_path.as_deref())?;
-    let start = std::time::Instant::now();
+    let query_started_at = std::time::Instant::now();
     let result = execute_formatted_join(query, &paths, format, output.as_mut());
     if time {
-        eprintln!("Elapsed: {:.3} ms", start.elapsed().as_secs_f64() * 1000.0);
+        eprintln!("Elapsed: {:.3} ms", query_started_at.elapsed().as_secs_f64() * 1000.0);
     }
     if result.is_err() {
         drop(output);

@@ -1,8 +1,12 @@
 use super::*;
 
+const MAX_DDL_IDENTIFIER_BYTES: usize = 128;
+const MAX_DDL_COLUMNS: usize = 128;
+const MAX_DDL_TYPE_DEPTH: usize = 4;
+
 pub(super) fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
     let value = parser.word()?;
-    if value.len() > 128 {
+    if value.len() > MAX_DDL_IDENTIFIER_BYTES {
         return Err(ParseError("DDL identifiers cannot exceed 128 bytes".into()));
     }
     Ok(value)
@@ -49,7 +53,7 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
     let canonical = canonical_type(&name)
         .ok_or_else(|| ParseError(format!("unsupported DDL column type: {name}")))?;
     if matches!(canonical, "Nullable" | "Array" | "Map") {
-        if nesting >= 4 {
+        if nesting >= MAX_DDL_TYPE_DEPTH {
             return Err(ParseError("DDL type nesting exceeds 4 levels".into()));
         }
         if !parser.take(Token::LParen) {
@@ -124,7 +128,7 @@ pub(super) fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<Column
     let mut columns = Vec::new();
     let mut names = HashSet::new();
     loop {
-        if columns.len() == 128 {
+        if columns.len() == MAX_DDL_COLUMNS {
             return Err(ParseError("DDL supports at most 128 columns".into()));
         }
         let column_name = identifier(parser)?;
