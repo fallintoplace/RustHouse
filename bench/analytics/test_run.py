@@ -153,5 +153,12 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(results[1]["seconds"].__len__(), 3)
 
 
+    def test_http_benchmark_format_overrides_existing_parameter(self):
+        from urllib.parse import parse_qs, urlsplit
+        target = runner.http_target("http://127.0.0.1:8123/?query_id=q1&format=csv&format=json")
+        params = parse_qs(urlsplit(target).query)
+        self.assertEqual(params["format"], ["tsv-no-header"])
+        self.assertEqual(params["query_id"], ["q1"])
+
 if __name__ == "__main__":
     unittest.main()
