@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH"
+        "IPV4NUMTOSTRING"
+            | "LENGTH"
             | "TOYEAR"
             | "LENGTHUTF8"
             | "TOSTARTOFFIVEMINUTES"
@@ -302,6 +303,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "IPV4NUMTOSTRING" => {
+            let value = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4NumToString requires one argument",
+            )?;
+            match value {
+                Some(value) => {
+                    let value = u32::try_from(value).map_err(|_| {
+                        ParseError("IPv4NumToString requires a UInt32 integer".into())
+                    })?;
+                    ConstantValue::Text(std::net::Ipv4Addr::from(value).to_string())
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "PORT" => {
             let input = text_arg(parser, depth + 1)?;
             let fallback = if parser.take(Token::Comma) {
@@ -3573,6 +3591,34 @@ mod ch_position_byte_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_num_to_string_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn formats_network_order_ipv4_integers() {
+        for (sql, expected) in [
+            ("SELECT IPv4NumToString(0)", "0.0.0.0"),
+            ("SELECT IPv4NumToString(3232235521)", "192.168.0.1"),
+            ("SELECT IPv4NumToString(4294967295)", "255.255.255.255"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4NumToString(-1)",
+            "SELECT IPv4NumToString(4294967296)",
+            "SELECT IPv4NumToString(1, 2)",
+        ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
