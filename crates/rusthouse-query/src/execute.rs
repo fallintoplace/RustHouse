@@ -1865,6 +1865,34 @@ fn execute_numbers<W: Write>(
     Ok(())
 }
 
+/// Compare the integer median to a HAVING UInt64 threshold using exact
+/// integral half-sums. The even median may be N + 0.5, so equal floors
+/// are still greater than the threshold.
+fn compare_median_integer_threshold(
+    upper: Number,
+    lower: Option<Number>,
+    threshold: u64,
+) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    match (lower.unwrap_or(upper), upper) {
+        (Number::Unsigned(a), Number::Unsigned(b)) => {
+            let carry = a % 2 + b % 2;
+            let floor = a / 2 + b / 2 + carry / 2;
+            Some(floor.cmp(&u128::from(threshold)).then_with(|| {
+                if carry % 2 == 1 { Ordering::Greater } else { Ordering::Equal }
+            }))
+        }
+        (Number::Signed(a), Number::Signed(b)) => {
+            let carry = a.rem_euclid(2) + b.rem_euclid(2);
+            let floor = a.div_euclid(2) + b.div_euclid(2) + carry / 2;
+            Some(floor.cmp(&i128::from(threshold)).then_with(|| {
+                if carry % 2 == 1 { Ordering::Greater } else { Ordering::Equal }
+            }))
+        }
+        _ => None,
+    }
+}
+
 /// Render the mean of two integral median ranks exactly, including
 /// half-integers and sums outside the representable 128-bit integer range.
 fn exact_median_pair(low: Number, high: Number) -> Option<String> {
@@ -2129,6 +2157,25 @@ impl AggregateState {
 
     /// Compare numeric aggregates without rounding through their TSV rendering.
     fn passes_having(&self, having: &crate::Having) -> bool {
+        if self.function == AggregateFunction::Median
+            && matches!(having.operator, crate::Operator::Eq | crate::Operator::Ne
+                | crate::Operator::Lt | crate::Operator::Le
+                | crate::Operator::Gt | crate::Operator::Ge)
+        {
+            if let Some((upper, lower)) = self.median_middle_pair() {
+                if let Some(order) = compare_median_integer_threshold(upper, lower, having.value) {
+                    return match having.operator {
+                        crate::Operator::Eq => order.is_eq(),
+                        crate::Operator::Ne => order.is_ne(),
+                        crate::Operator::Lt => order.is_lt(),
+                        crate::Operator::Le => order.is_le(),
+                        crate::Operator::Gt => order.is_gt(),
+                        crate::Operator::Ge => order.is_ge(),
+                        _ => unreachable!("comparison operators only"),
+                    };
+                }
+            }
+        }
         let typed::Cell::Numeric(value) = self.sort_cell() else {
             // SQL HAVING removes groups whose aggregate is NULL.
             return false;
@@ -2446,5 +2493,34 @@ mod exact_grouped_median_text_tests {
             state.update(higher).unwrap();
             assert_eq!(state.render(), expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod exact_integer_median_having_tests {
+    use super::*;
+    #[test]
+    fn large_integer_median_comparisons_keep_half_bit() {
+        let threshold = u64::MAX;
+        let mut state = AggregateState::new(AggregateFunction::Median);
+        state.update(Number::Unsigned(u128::from(threshold - 1))).unwrap();
+        state.update(Number::Unsigned(u128::from(threshold))).unwrap();
+        let matches = |operator| state.passes_having(&crate::Having {
+            operator, value: threshold, aggregate_index: None,
+        });
+        assert!(matches(crate::Operator::Lt));
+        assert!(matches(crate::Operator::Le));
+        assert!(!matches(crate::Operator::Eq));
+        assert!(!matches(crate::Operator::Ge));
+        assert!(matches(crate::Operator::Ne));
+    }
+    #[test]
+    fn half_integer_above_zero_is_not_equal_to_zero() {
+        let mut state = AggregateState::new(AggregateFunction::Median);
+        state.update(Number::Signed(0)).unwrap();
+        state.update(Number::Signed(1)).unwrap();
+        assert!(state.passes_having(&crate::Having {
+            operator: crate::Operator::Gt, value: 0, aggregate_index: None
+        }));
     }
 }
