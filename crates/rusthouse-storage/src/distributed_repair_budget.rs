@@ -188,7 +188,6 @@ mod in_flight_repair_tests {
     use super::*;
 
     #[test]
-    #[test]
     fn borrowed_plan_matches_full_plan_when_nothing_is_in_flight() {
         let jobs = (0..1024)
             .map(|index| RepairJob {
@@ -210,6 +209,7 @@ mod in_flight_repair_tests {
         assert!(plan_repairs_excluding(&jobs, &[], 100, MAX_REPAIR_JOBS + 1).is_err());
     }
 
+    #[test]
     fn avoids_duplicate_urgent_repairs() {
         let jobs = [
             RepairJob { shard: "urgent".into(), bytes: 20, missing_replicas: 3 },
