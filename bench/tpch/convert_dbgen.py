@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Stream dbgen .tbl files to RustHouse TSV using explicit fixed-point scales."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime
 import re
 from decimal import Decimal, InvalidOperation
@@ -98,18 +99,26 @@ def convert_table(source, target, table):
     return rows
 
 
-def convert_directory(source_dir, target_dir, selected=None):
+def convert_directory(source_dir, target_dir, selected=None, jobs=1):
     selected = tuple(TABLES if selected is None else selected)
     if not selected or len(set(selected)) != len(selected) or any(
         table not in TABLES for table in selected
     ):
         raise ValueError("select a nonempty unique set of known TPC-H tables")
-    counts = {}
-    for table in selected:
+    if type(jobs) is not int or not 1 <= jobs <= len(TABLES):
+        raise ValueError("jobs must be an integer between 1 and 8")
+
+    def convert_one(table):
         src = Path(source_dir) / (table + ".tbl")
         dst = Path(target_dir) / (table + ".tsv")
-        counts[table] = convert_table(src, dst, table)
-    return counts
+        return table, convert_table(src, dst, table)
+
+    # Table files are independent and can be converted on separate workers.
+    # Maintain deterministic table-order reporting regardless of completion order.
+    if jobs == 1:
+        return dict(map(convert_one, selected))
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        return dict(pool.map(convert_one, selected))
 
 
 def main(argv=None):
@@ -117,9 +126,12 @@ def main(argv=None):
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--table", action="append", choices=tuple(TABLES))
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="Parallel dbgen table converters (1 to 8)")
     args = parser.parse_args(argv)
     try:
-        counts = convert_directory(args.input_dir, args.output_dir, args.table)
+        counts = convert_directory(args.input_dir, args.output_dir, args.table,
+                                   jobs=args.jobs)
     except (OSError, ValueError) as error:
         parser.exit(1, f"conversion failed: {error}\n")
     for table, rows in counts.items():
