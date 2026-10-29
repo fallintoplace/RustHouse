@@ -109,16 +109,12 @@ pub(super) fn batch_key_into(
     indices: &[usize],
     result: &mut Vec<typed::Key>,
 ) -> bool {
-    // Reject all NULL components before changing existing buffers.
-    if indices
-        .iter()
-        .any(|&index| typed::is_null_at(&batch[index], row))
-    {
-        result.clear();
-        return false;
-    }
     result.reserve(indices.len().saturating_sub(result.len()));
     for (position, &index) in indices.iter().enumerate() {
+        if typed::is_null_at(&batch[index], row) {
+            result.clear();
+            return false;
+        }
         match &batch[index] {
             TypedColumn::Uuid(values) => {
                 put_key(result, position, typed::Key::UuidBytes(*values[row].as_bytes()));
