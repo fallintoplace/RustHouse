@@ -17,7 +17,7 @@ fn square_handles_signed_inputs_and_errors() {
         ("0", 0),
         ("3", 9),
         ("-4", 16),
-        ("3037000499", 9223372030926249000),
+        ("3037000499", 9223372030926249001),
     ] {
         let sql = format!("SELECT square({input})");
         assert_eq!(scalar(&sql), expected, "{sql}");
