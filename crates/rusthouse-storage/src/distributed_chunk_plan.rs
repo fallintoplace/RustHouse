@@ -116,9 +116,49 @@ pub fn plan_chunk_window(
     Ok(page)
 }
 
+/// Return up to requested chunks, stopping at the end of the transfer.
+///
+/// The strict plan_chunk_window keeps its original out-of-bounds semantics.
+/// This variant is useful for callers that page through a transfer with a
+/// fixed page size and cannot predict the final partial page.
+pub fn plan_chunk_window_clamped(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    start_index: usize,
+    requested: usize,
+) -> Result<Vec<IndexedChunk>, &'static str> {
+    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    if start_index > count {
+        return Err("transfer chunk window exceeds bounds");
+    }
+    plan_chunk_window(
+        total_bytes,
+        chunk_bytes,
+        max_chunks,
+        start_index,
+        requested.min(count - start_index),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamped_windows_return_partial_final_pages() {
+        let all = plan_chunks(10, 3, 4).unwrap();
+        let first = plan_chunk_window_clamped(10, 3, 4, 0, 3).unwrap();
+        let tail = plan_chunk_window_clamped(10, 3, 4, 3, 3).unwrap();
+        assert_eq!(first.len(), 3);
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].chunk, all[3]);
+        assert!(plan_chunk_window_clamped(10, 3, 4, 4, usize::MAX)
+            .unwrap()
+            .is_empty());
+        assert!(plan_chunk_window_clamped(10, 3, 4, 5, 1).is_err());
+        assert!(plan_chunk_window(10, 3, 4, 3, 2).is_err());
+    }
 
     #[test]
     fn partitions_without_gaps_or_overlaps() {
