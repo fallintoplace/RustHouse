@@ -15,6 +15,20 @@ import time
 from pathlib import Path
 
 
+def hash_bounded_stream(stream, max_output_bytes):
+    digest = hashlib.sha256()
+    size = 0
+    while True:
+        block = stream.read(1024 * 1024)
+        if not block:
+            break
+        size += len(block)
+        if size > max_output_bytes:
+            raise ValueError("SQL output exceeds max_output_bytes")
+        digest.update(block)
+    return digest.hexdigest(), size
+
+
 def query_digest(binary, part, sql, *, expected_sha256=None,
                  max_rows=10000, max_output_bytes=100_000_000,
                  timeout=600, run=None):
@@ -51,17 +65,7 @@ def query_digest(binary, part, sql, *, expected_sha256=None,
             raise RuntimeError(f"query failed: {result.stderr.decode('utf-8', 'replace')[-500:]}")
         output.flush()
         output.seek(0)
-        digest = hashlib.sha256()
-        size = 0
-        while True:
-            block = output.read(1024 * 1024)
-            if not block:
-                break
-            size += len(block)
-            if size > max_output_bytes:
-                raise ValueError("SQL output exceeds max_output_bytes")
-            digest.update(block)
-    sha = digest.hexdigest()
+        sha, size = hash_bounded_stream(output, max_output_bytes)
     if expected_sha256 is not None and sha != expected_sha256:
         raise ValueError("SQL output SHA256 differs from reference")
     return {"workload": "sql-output-digest", "seconds": elapsed,
