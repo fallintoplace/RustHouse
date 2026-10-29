@@ -147,7 +147,18 @@ impl ObjectKey {
         if generation_text != generation.to_string() {
             return Err("noncanonical distributed generation");
         }
-        Self::new(fields[0], fields[1], generation, fields[3], fields[4])
+        let key = Self::new(fields[0], fields[1], generation, fields[3], fields[4])?;
+        let original = path.to_str().ok_or("invalid distributed object key path")?;
+        let canonical = key.relative_path();
+        let canonical = canonical.to_str().ok_or("invalid distributed object key path")?;
+        // Windows accepts both slash spellings; compare only after normalizing
+        // separators, without removing dot or duplicate path components.
+        if original.replace(std::path::MAIN_SEPARATOR, "/")
+            != canonical.replace(std::path::MAIN_SEPARATOR, "/")
+        {
+            return Err("noncanonical distributed object key path");
+        }
+        Ok(key)
     }
 }
 
@@ -169,6 +180,9 @@ mod parse_relative_tests {
             "cluster/s1/g01/part/file",
             "cluster/s1/gX/part/file",
             "cluster/s1/g1/../file",
+            "cluster/s1/g1/./part/file",
+            "cluster//s1/g1/part/file",
+            "cluster/s1/g1/part/file/",
             "cluster/s1/g1/.hidden/file",
             "cluster/s1/g1/part",
             "cluster/s1/g1/part/file/extra",
