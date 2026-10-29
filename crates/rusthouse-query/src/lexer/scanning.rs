@@ -43,9 +43,12 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
         }
     }
     advance_ascii_digits(bytes, index);
+    let has_whole_digits = *index > start + usize::from(bytes[start] == b'-');
     if bytes.get(*index) == Some(&b'.') {
         *index += 1;
-        require_digit(bytes, *index, "expected digits after decimal point")?;
+        if !has_whole_digits {
+            require_digit(bytes, *index, "expected digits after decimal point")?;
+        }
         advance_ascii_digits(bytes, index);
     }
     scan_exponent(bytes, index)?;
@@ -80,6 +83,79 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
     Err(ParseError("unterminated string literal".into()))
 }
 
+/// Parse quoted identifiers without treating reserved words as SQL keywords.
+/// Database identifiers must keep the same bounded ASCII rules as unquoted
+/// names so quoted DDL cannot bypass storage path validation.
+pub(super) fn scan_quoted_identifier(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
+    let bytes = sql.as_bytes();
+    let delimiter = bytes[*index];
+    let start = *index + 1;
+    // The common case has no quoted-identifier escapes. Validate directly
+    // from the SQL slice and allocate only the returned identifier String.
+    if let Some(offset) = bytes[start..]
+        .iter()
+        .position(|&byte| byte == delimiter || byte == b'\\')
+    {
+        let end = start + offset;
+        if bytes[end] == delimiter && bytes.get(end + 1) != Some(&delimiter) {
+            let candidate = &bytes[start..end];
+            if candidate.len() > 128 {
+                return Err(ParseError("quoted identifier exceeds 128 bytes".into()));
+            }
+            let mut characters = candidate.iter().copied();
+            let valid = matches!(
+                characters.next(),
+                Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')
+            ) && characters.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+            if !valid {
+                return Err(ParseError(
+                    "quoted identifiers require a simple ASCII identifier".into(),
+                ));
+            }
+            *index = end + 1;
+            return Ok(Token::QuotedWord(sql[start..end].into()));
+        }
+    }
+    let mut cursor = start;
+    let mut decoded = Vec::new();
+    loop {
+        let Some(&byte) = bytes.get(cursor) else {
+            return Err(ParseError("unterminated quoted identifier".into()));
+        };
+        if byte == delimiter && bytes.get(cursor + 1) != Some(&delimiter) {
+            *index = cursor + 1;
+            break;
+        }
+        // Both doubled quotes and backslash-escaped delimiters are accepted,
+        // then validated against the safe identifier grammar below.
+        if (byte == delimiter || byte == b'\\')
+            && bytes.get(cursor + 1) == Some(&delimiter)
+        {
+            decoded.push(delimiter);
+            cursor += 2;
+        } else {
+            decoded.push(byte);
+            cursor += 1;
+        }
+        if decoded.len() > 128 {
+            return Err(ParseError("quoted identifier exceeds 128 bytes".into()));
+        }
+    }
+    let mut characters = decoded.iter().copied();
+    let valid = matches!(
+        characters.next(),
+        Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')
+    ) && characters.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if !valid {
+        return Err(ParseError(
+            "quoted identifiers require a simple ASCII identifier".into(),
+        ));
+    }
+    Ok(Token::QuotedWord(
+        String::from_utf8(decoded).expect("validated ASCII quoted identifier"),
+    ))
+}
+
 pub(super) fn scan_word(sql: &str, index: &mut usize) -> Token {
     let bytes = sql.as_bytes();
     let start = *index;
@@ -110,6 +186,7 @@ pub(super) fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
 pub(super) fn follows_binary_minus_context(tokens: &[Token]) -> bool {
     match tokens.last() {
         Some(Token::Number(_) | Token::RParen) => true,
+        Some(Token::QuotedWord(_)) => true,
         Some(Token::Word(word)) => !["SELECT", "BETWEEN", "AND", "OR", "WHERE", "NOT", "IN"]
             .iter()
             .any(|keyword| word.eq_ignore_ascii_case(keyword)),
@@ -137,6 +214,20 @@ mod exponent_tests {
     use super::*;
 
     #[test]
+    fn accepts_trailing_dot_decimal_literals_without_accepting_bare_dot() {
+        for (input, expected) in [
+            ("1.", "1."), ("-12.", "-12."), ("1.e2", "1.e2"),
+            (".5", ".5"), ("-.5", "-.5"),
+        ] {
+            let mut index = 0;
+            assert_eq!(scan_number(input, &mut index).unwrap(),
+                Token::Number(expected.into()));
+            assert_eq!(index, input.len());
+        }
+        assert!(scan_number("-.",&mut 0).is_err());
+    }
+
+    #[test]
     fn scans_signed_exponents_without_splitting_the_number() {
         let mut index = 0;
         assert_eq!(
@@ -147,5 +238,36 @@ mod exponent_tests {
         for invalid in ["2e", "2e+", "2e-"] {
             assert!(scan_number(invalid, &mut 0).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod quoted_identifier_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn reads_long_plain_identifier_without_changing_offsets() {
+        for delimiter in ['`', '"'] {
+            let source = format!("{delimiter}a{}{delimiter} SELECT", "_9".repeat(60));
+            let mut cursor = 0;
+            assert_eq!(
+                scan_quoted_identifier(&source, &mut cursor).unwrap(),
+                Token::QuotedWord(format!("a{}", "_9".repeat(60)))
+            );
+            assert_eq!(cursor, source.len() - " SELECT".len());
+        }
+    }
+
+    #[test]
+    fn escaped_and_invalid_identifiers_keep_existing_validation() {
+        for source in ["`bad-name`", "`a``b`", "`a\\`b`", "`1bad`", "`café`", "`unterminated"] {
+            assert!(scan_quoted_identifier(source, &mut 0).is_err(), "{source}");
+        }
+        let long = format!("`{}`", "x".repeat(129));
+        assert!(scan_quoted_identifier(&long, &mut 0).is_err());
+        assert_eq!(
+            scan_quoted_identifier("`ok_42`", &mut 0).unwrap(),
+            Token::QuotedWord("ok_42".into())
+        );
     }
 }

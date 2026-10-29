@@ -15,6 +15,16 @@ import urllib.request
 from pathlib import Path
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not follow HTTP redirects to an unverified parity server."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+NO_REDIRECT_OPENER = urllib.request.build_opener(NoRedirect())
+
+
 QUERIES = (
     "SELECT id, name FROM events ORDER BY id",
     "SELECT count(*) FROM events",
@@ -46,10 +56,27 @@ def unused_loopback_port():
 def request(port, statement):
     url = f"http://127.0.0.1:{port}/?format=tsv"
     req = urllib.request.Request(url, data=statement.encode("utf-8"), method="POST")
-    with urllib.request.urlopen(req, timeout=10) as response:
+    with NO_REDIRECT_OPENER.open(req, timeout=10) as response:
         if response.status != 200:
             raise RuntimeError(f"HTTP SQL returned {response.status}")
-        return response.read()
+        # A parity failure should not consume unbounded memory.
+        payload = response.read(4 * 1024 * 1024 + 1)
+        if len(payload) > 4 * 1024 * 1024:
+            raise ValueError("HTTP parity SQL response exceeds 4 MiB")
+        return payload
+
+
+def verify_server_identity(port):
+    """Require the intended RustHouse database-mode read-only endpoint."""
+    with NO_REDIRECT_OPENER.open(f"http://127.0.0.1:{port}/capabilities", timeout=5) as response:
+        body = response.read(1_048_577)
+    if len(body) > 1_048_576:
+        raise ValueError("HTTP parity capabilities response exceeds 1 MiB")
+    data = json.loads(body)
+    if (not isinstance(data, dict) or data.get("name") != "RustHouse"
+            or data.get("source") != "database" or data.get("read_only") is not True):
+        raise ValueError("HTTP parity server capabilities do not match RustHouse database mode")
+    return data
 
 
 def wait_ready(process, port):
@@ -58,7 +85,7 @@ def wait_ready(process, port):
         if process.poll() is not None:
             raise RuntimeError("HTTP server exited before becoming ready")
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/ping", timeout=0.4) as response:
+            with NO_REDIRECT_OPENER.open(f"http://127.0.0.1:{port}/ping", timeout=0.4) as response:
                 if response.status == 200:
                     return
         except (OSError, urllib.error.URLError):
@@ -80,8 +107,9 @@ def check_parity(binary, server):
         )
         try:
             wait_ready(process, port)
+            verify_server_identity(port)
             schema_url = f"http://127.0.0.1:{port}/schema?table=events"
-            with urllib.request.urlopen(schema_url, timeout=10) as response:
+            with NO_REDIRECT_OPENER.open(schema_url, timeout=10) as response:
                 schema = json.load(response)
             if schema.get("rows") != 3:
                 raise ValueError(f"unexpected HTTP schema row count: {schema!r}")

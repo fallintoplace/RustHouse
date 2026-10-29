@@ -24,11 +24,13 @@ def accurate(observed, expected):
     )
 
 
-def summarize(report, min_queries=1, min_geomean=None):
+def summarize(report, min_queries=1, min_geomean=None, min_worst_p90=None):
     if type(min_queries) is not int or min_queries < 1:
         raise ValueError("min queries must be a positive integer")
     if min_geomean is not None and not finite_positive(min_geomean):
         raise ValueError("min geomean must be finite and positive")
+    if min_worst_p90 is not None and not finite_positive(min_worst_p90):
+        raise ValueError("min worst p90 must be finite and positive")
     if not isinstance(report, dict):
         raise ValueError("benchmark report must be an object")
     if report.get("workload") != "paired-clickhouse-cli-sql-latency":
@@ -96,7 +98,10 @@ def summarize(report, min_queries=1, min_geomean=None):
         "required_queries": min_queries,
         "geomean_clickhouse_over_rusthouse": geomean,
         "min_geomean": min_geomean,
-        "meets_speedup_target": min_geomean is None or geomean >= min_geomean,
+        "min_worst_p90": min_worst_p90,
+        "meets_speedup_target": ((min_geomean is None or geomean >= min_geomean)
+                                 and (min_worst_p90 is None
+                                      or min(tail_ratios) >= min_worst_p90)),
         "worst_p90_clickhouse_over_rusthouse": min(tail_ratios),
         "interpretation": "Ratios above 1 mean RustHouse was faster in this paired CLI scope",
     }
@@ -107,6 +112,7 @@ def main(argv=None):
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--min-queries", type=int, default=1)
     parser.add_argument("--min-geomean", type=float)
+    parser.add_argument("--min-worst-p90", type=float)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
@@ -114,6 +120,7 @@ def main(argv=None):
             json.loads(args.input.read_text(encoding="utf-8")),
             min_queries=args.min_queries,
             min_geomean=args.min_geomean,
+            min_worst_p90=args.min_worst_p90,
         )
     except (OSError, ValueError, TypeError, OverflowError) as error:
         parser.exit(1, f"paired ClickHouse audit failed: {error}\n")

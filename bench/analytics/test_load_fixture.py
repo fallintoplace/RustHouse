@@ -53,5 +53,13 @@ class ClickBenchLoadTests(unittest.TestCase):
                              execute=lambda sql: b"1\n")
 
 
+class ClickBenchLoadTimeoutTests(unittest.TestCase):
+    def test_rejects_invalid_timeouts_before_file_access(self):
+        for timeout in (float("nan"), float("inf"), 0, True, "30"):
+            with self.subTest(timeout=timeout):
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    load_fixture("unused", "db", "no-such-fixture",
+                                 timeout=timeout, execute=lambda sql: b"")
+
 if __name__ == "__main__":
     unittest.main()

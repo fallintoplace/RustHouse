@@ -11,9 +11,13 @@ import time
 from pathlib import Path
 
 
-def probe(binary, part, rows, *, column="id", limit=10, timeout=600, execute=None):
+def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
+          execute=None, start=0):
     if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive")
+    if (type(start) is not int or start < 0
+            or start + rows > (1 << 64)):
+        raise ValueError("invalid UInt64 start or range overflow")
     if type(limit) is not int or not 1 <= limit <= min(4096, rows):
         raise ValueError("limit must be in 1..min(4096, rows)")
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column):
@@ -25,13 +29,14 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600, execute=Non
     for descending in (False, True):
         direction = "DESC" if descending else "ASC"
         sql = f"SELECT {column} FROM part ORDER BY {column} {direction} LIMIT {limit}"
-        expected_values = range(rows - 1, rows - 1 - limit, -1) if descending else range(limit)
+        expected_values = (range(start + rows - 1, start + rows - 1 - limit, -1)
+                           if descending else range(start, start + limit))
         expected = "".join(f"{value}\n" for value in expected_values).encode()
-        start = time.perf_counter()
+        begun = time.perf_counter()
         completed = run([str(binary), "sql", sql, "--part", str(part),
                          "--format", "tsv-no-header"],
                         capture_output=True, check=False, timeout=timeout)
-        elapsed = time.perf_counter() - start
+        elapsed = time.perf_counter() - begun
         if completed.returncode:
             raise RuntimeError(f"{direction} top-K failed: {completed.stderr!r}")
         if completed.stdout != expected:
@@ -39,7 +44,8 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600, execute=Non
         results.append({"direction": direction, "limit": limit,
                         "seconds": elapsed, "verified": True})
     return {"workload": "physical-topk-probe", "rows_assumed": rows,
-            "assumption": "unique sequential ids 0..rows-1", "results": results}
+            "assumption": f"unique sequential ids {start}..{start + rows - 1}",
+            "start": start, "results": results}
 
 
 def main(argv=None):
@@ -47,13 +53,15 @@ def main(argv=None):
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--rows", type=int, required=True)
+    parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--column", default="id")
     parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         report = probe(args.binary, args.part, args.rows, column=args.column,
-                       limit=args.limit)
+                       limit=args.limit, timeout=args.timeout, start=args.start)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

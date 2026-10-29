@@ -40,8 +40,8 @@ pub fn inventory_snapshot(
     let parts = query_parts(&active)?;
     // A typical wide part has several streams plus its metadata files.
     // Cap the estimate to avoid excessive allocations for sparse inventories.
-    let capacity = parts.len().saturating_mul(8).min(max_files).min(1024);
-    let mut files = Vec::with_capacity(capacity);
+    let estimated_file_capacity = parts.len().saturating_mul(8).min(max_files).min(1024);
+    let mut files = Vec::with_capacity(estimated_file_capacity);
     let mut total_bytes = 0u64;
     for part in parts {
         let name = part
@@ -67,6 +67,146 @@ pub fn inventory_snapshot(
     }
     files.sort_unstable_by(|a, b| a.relative_path.cmp(&b.relative_path));
     Ok(files)
+}
+
+/// Stored-byte checksum of one frozen snapshot file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedInventoryEntry {
+    pub relative_path: PathBuf,
+    pub bytes: u64,
+    pub crc32c: u32,
+}
+
+/// Build a bounded, content-checksummed inventory for replica reconciliation.
+/// CRC32C is an accidental corruption check, not authentication.
+fn checksum_inventory_entry(
+    active: &Path,
+    entry: &InventoryEntry,
+) -> Result<CheckedInventoryEntry, PartError> {
+    let path = active.join(&entry.relative_path);
+    let metadata = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
+    if !metadata.file_type().is_file() || metadata.len() != entry.bytes {
+        return Err(PartError::InvalidScan(
+            "snapshot inventory file changed before hashing".into(),
+        ));
+    }
+    let mut file = fs::File::open(&path).map_err(|error| io_error(&path, error))?;
+    let opened = file.metadata().map_err(|error| io_error(&path, error))?;
+    if !opened.file_type().is_file() || opened.len() != entry.bytes {
+        return Err(PartError::InvalidScan(
+            "snapshot inventory file changed before hashing".into(),
+        ));
+    }
+    #[cfg(unix)]
+    if !same_file_identity(&metadata, &opened) {
+        return Err(PartError::InvalidScan(
+            "snapshot inventory file replaced before hashing".into(),
+        ));
+    }
+    let (bytes, crc32c) = crate::distributed_crc32c::crc32c_reader(&mut file, entry.bytes)
+        .map_err(|error| io_error(&path, error))?;
+    if bytes != entry.bytes {
+        return Err(PartError::InvalidScan(
+            "snapshot inventory file changed during hashing".into(),
+        ));
+    }
+    Ok(CheckedInventoryEntry {
+        relative_path: entry.relative_path.clone(),
+        bytes,
+        crc32c,
+    })
+}
+
+pub fn inventory_snapshot_crc32c(
+    root: &Path,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<Vec<CheckedInventoryEntry>, PartError> {
+    let active = resolve_active_snapshot(root)?;
+    let entries = inventory_snapshot(&active, max_files, max_bytes)?;
+    const PARALLEL_THRESHOLD: usize = 64;
+    const MAX_HASH_WORKERS: usize = 4;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(MAX_HASH_WORKERS);
+    if entries.len() < PARALLEL_THRESHOLD || workers == 1 {
+        return entries
+            .iter()
+            .map(|entry| checksum_inventory_entry(&active, entry))
+            .collect();
+    }
+
+    // Hash each file independently with bounded concurrency. Keep original
+    // inventory order, including deterministic first-error reporting.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let cursor = AtomicUsize::new(0);
+    let mut slots: Vec<Option<Result<CheckedInventoryEntry, PartError>>> =
+        (0..entries.len()).map(|_| None).collect();
+    std::thread::scope(|scope| -> Result<(), PartError> {
+        let handles = (0..workers)
+            .map(|_| {
+                let cursor = &cursor;
+                let entries = &entries;
+                let active = &active;
+                scope.spawn(move || {
+                    let mut completed = Vec::new();
+                    loop {
+                        let index = cursor.fetch_add(1, Ordering::Relaxed);
+                        if index >= entries.len() {
+                            break;
+                        }
+                        completed.push((index, checksum_inventory_entry(active, &entries[index])));
+                    }
+                    completed
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            let completed = handle.join().map_err(|_| {
+                PartError::InvalidScan("snapshot checksum worker panicked".into())
+            })?;
+            for (index, item) in completed {
+                slots[index] = Some(item);
+            }
+        }
+        Ok(())
+    })?;
+    slots
+        .into_iter()
+        .map(|slot| slot.expect("every claimed file has one result"))
+        .collect()
+}
+
+#[cfg(unix)]
+fn same_file_identity(path_metadata: &fs::Metadata, opened_metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    path_metadata.dev() == opened_metadata.dev()
+        && path_metadata.ino() == opened_metadata.ino()
+}
+
+#[cfg(all(test, unix))]
+mod immutable_identity_tests {
+    use super::*;
+
+    #[test]
+    fn same_length_different_inodes_are_not_the_same_object() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-distributed_inventory-identity-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("one");
+        let second = root.join("two");
+        fs::write(&first, b"abcd").unwrap();
+        fs::write(&second, b"wxyz").unwrap();
+        let before = fs::symlink_metadata(&first).unwrap();
+        let opened = File::open(&second).unwrap().metadata().unwrap();
+        assert_eq!(before.len(), opened.len());
+        assert!(!same_file_identity(&before, &opened));
+        assert!(same_file_identity(&before, &File::open(&first).unwrap().metadata().unwrap()));
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -148,109 +288,6 @@ mod tests {
         assert!(inventory_snapshot(&root, 32, 1_000_000).is_err());
         fs::remove_dir_all(root).unwrap();
     }
-}
-
-/// Stored-byte checksum of one frozen snapshot file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CheckedInventoryEntry {
-    pub relative_path: PathBuf,
-    pub bytes: u64,
-    pub crc32c: u32,
-}
-
-/// Build a bounded, content-checksummed inventory for replica reconciliation.
-/// CRC32C is an accidental corruption check, not authentication.
-fn checksum_inventory_entry(
-    active: &Path,
-    entry: &InventoryEntry,
-) -> Result<CheckedInventoryEntry, PartError> {
-    let path = active.join(&entry.relative_path);
-    let metadata = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
-    if !metadata.file_type().is_file() || metadata.len() != entry.bytes {
-        return Err(PartError::InvalidScan(
-            "snapshot inventory file changed before hashing".into(),
-        ));
-    }
-    let mut file = fs::File::open(&path).map_err(|error| io_error(&path, error))?;
-    let opened = file.metadata().map_err(|error| io_error(&path, error))?;
-    if !opened.file_type().is_file() || opened.len() != entry.bytes {
-        return Err(PartError::InvalidScan(
-            "snapshot inventory file changed before hashing".into(),
-        ));
-    }
-    let (bytes, crc32c) = crate::distributed_crc32c::crc32c_reader(&mut file, entry.bytes)
-        .map_err(|error| io_error(&path, error))?;
-    if bytes != entry.bytes {
-        return Err(PartError::InvalidScan(
-            "snapshot inventory file changed during hashing".into(),
-        ));
-    }
-    Ok(CheckedInventoryEntry {
-        relative_path: entry.relative_path.clone(),
-        bytes,
-        crc32c,
-    })
-}
-
-pub fn inventory_snapshot_crc32c(
-    root: &Path,
-    max_files: usize,
-    max_bytes: u64,
-) -> Result<Vec<CheckedInventoryEntry>, PartError> {
-    // Bind enumeration and hashing to the same frozen generation path.
-    let active = resolve_active_snapshot(root)?;
-    let entries = inventory_snapshot(&active, max_files, max_bytes)?;
-    const PARALLEL_THRESHOLD: usize = 64;
-    const MAX_HASH_WORKERS: usize = 4;
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |parallelism| parallelism.get())
-        .min(MAX_HASH_WORKERS);
-    if entries.len() < PARALLEL_THRESHOLD || workers == 1 {
-        return entries
-            .iter()
-            .map(|entry| checksum_inventory_entry(&active, entry))
-            .collect();
-    }
-
-    // Hash each file independently with bounded concurrency. Keep original
-    // inventory order, including deterministic first-error reporting.
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let cursor = AtomicUsize::new(0);
-    let mut slots: Vec<Option<Result<CheckedInventoryEntry, PartError>>> =
-        (0..entries.len()).map(|_| None).collect();
-    std::thread::scope(|scope| -> Result<(), PartError> {
-        let handles = (0..workers)
-            .map(|_| {
-                let cursor = &cursor;
-                let entries = &entries;
-                let active = &active;
-                scope.spawn(move || {
-                    let mut completed = Vec::new();
-                    loop {
-                        let index = cursor.fetch_add(1, Ordering::Relaxed);
-                        if index >= entries.len() {
-                            break;
-                        }
-                        completed.push((index, checksum_inventory_entry(active, &entries[index])));
-                    }
-                    completed
-                })
-            })
-            .collect::<Vec<_>>();
-        for handle in handles {
-            let completed = handle.join().map_err(|_| {
-                PartError::InvalidScan("snapshot checksum worker panicked".into())
-            })?;
-            for (index, item) in completed {
-                slots[index] = Some(item);
-            }
-        }
-        Ok(())
-    })?;
-    slots
-        .into_iter()
-        .map(|slot| slot.expect("every claimed file has one result"))
-        .collect()
 }
 
 #[cfg(test)]
