@@ -38,6 +38,11 @@ class PhysicalRangeOracleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sql_for("x;delete", 0, 1)
 
+    def test_rejects_unbounded_billion_row_query_count(self):
+        with self.assertRaisesRegex(ValueError, "10000 query windows"):
+            verify("rusthouse", "db", "events", 0, 1_000_000_000,
+                   window_rows=1, execute=lambda _: b"")
+
 
 if __name__ == "__main__":
     unittest.main()
