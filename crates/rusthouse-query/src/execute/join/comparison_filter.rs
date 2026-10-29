@@ -38,6 +38,18 @@ fn scan<W: Write>(
     };
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
+            // INNER JOIN predicates referencing only the fact side are safe
+            // to evaluate before hashing, including for ANY joins.
+            if filter.column < width {
+                let candidate = typed::cell(&batch[filter.column], row_index);
+                if !typed::matches_comparison(
+                    &candidate,
+                    &filter.literal,
+                    filter.operator,
+                ) {
+                    continue;
+                }
+            }
             if !batch_key_into(&batch, row_index, left_keys, &mut key) {
                 continue;
             }
@@ -45,13 +57,17 @@ fn scan<W: Write>(
                 continue;
             };
             for &right_index in matches.iter().take(if any { 1 } else { usize::MAX }) {
-                let candidate = if filter.column < width {
-                    typed::cell(&batch[filter.column], row_index)
-                } else {
-                    right_rows[right_index][filter.column - width].clone()
-                };
-                if !typed::matches_comparison(&candidate, &filter.literal, filter.operator) {
-                    continue;
+                // Dimension predicates must stay after ANY match selection.
+                // Filtering build rows first would change first-match semantics.
+                if filter.column >= width {
+                    let candidate = &right_rows[right_index][filter.column - width];
+                    if !typed::matches_comparison(
+                        candidate,
+                        &filter.literal,
+                        filter.operator,
+                    ) {
+                        continue;
+                    }
                 }
                 matched = matched
                     .checked_add(1)
