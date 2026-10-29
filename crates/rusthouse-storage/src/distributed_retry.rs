@@ -95,3 +95,47 @@ mod retry_deadline_tests {
         assert!(retry_delay_with_deadline(33, 100, 1_000, 7, delay).is_err());
     }
 }
+
+/// Precompute up to 33 bounded retry delays without exceeding the total budget.
+/// This only schedules delays and never starts network transfers.
+pub fn plan_retry_delays(
+    attempts: u32,
+    base_ms: u64,
+    max_ms: u64,
+    seed: u64,
+    budget: Duration,
+) -> Result<Vec<Duration>, &'static str> {
+    if attempts > 33 {
+        return Err("retry count exceeds supported attempt range");
+    }
+    // Validate settings even if the caller requests no retries.
+    retry_delay(0, base_ms, max_ms, seed)?;
+    let mut elapsed = Duration::ZERO;
+    let mut delays = Vec::with_capacity(attempts as usize);
+    for attempt in 0..attempts {
+        let delay = retry_delay(attempt, base_ms, max_ms, seed.wrapping_add(u64::from(attempt)))?;
+        if delay > budget.saturating_sub(elapsed) {
+            break;
+        }
+        elapsed += delay;
+        delays.push(delay);
+    }
+    Ok(delays)
+}
+
+#[cfg(test)]
+mod total_retry_budget_tests {
+    use super::*;
+
+    #[test]
+    fn caps_cumulative_retry_delay_and_is_deterministic() {
+        let budget = Duration::from_millis(250);
+        let scheduled = plan_retry_delays(33, 100, 1000, 2, budget).unwrap();
+        assert!(!scheduled.is_empty());
+        assert!(scheduled.iter().copied().sum::<Duration>() <= budget);
+        assert_eq!(scheduled, plan_retry_delays(33, 100, 1000, 2, budget).unwrap());
+        assert!(plan_retry_delays(34, 1, 10, 0, budget).is_err());
+        assert!(plan_retry_delays(0, 0, 10, 0, budget).is_err());
+        assert!(plan_retry_delays(5, 100, 1000, 1, Duration::ZERO).unwrap().is_empty());
+    }
+}
