@@ -150,6 +150,33 @@ fn parse_coalesce(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     Ok(ScalarExpr::Coalesce(arguments))
 }
 
+
+fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    let name = parser.word()?.to_ascii_uppercase();
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("aggregate function requires '('".into()));
+    }
+    let mut args = Vec::new();
+    if !parser.take(Token::RParen) {
+        loop {
+            if args.len() == 16 {
+                return Err(ParseError("aggregate scalar function supports at most 16 arguments".into()));
+            }
+            args.push(parse_expression_tokens(parser)?);
+            if parser.take(Token::RParen) {
+                break;
+            }
+            if !parser.take(Token::Comma) {
+                return Err(ParseError("expected ',' or ')' in aggregate scalar function".into()));
+            }
+        }
+    }
+    match (name.as_str(), args.len()) {
+        ("IFNULL", 2) => Ok(ScalarExpr::Coalesce(args)),
+        _ => Err(ParseError(format!("unsupported aggregate scalar function or arity: {name}"))),
+    }
+}
+
 pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::Plus) => {
@@ -186,6 +213,8 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
             parser.index += 1;
             Ok(ScalarExpr::Null)
         }
+        Some(Token::Word(_)) if parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+            parse_aggregate_builtin(parser),
         Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
             let number = number.parse::<i64>().map_err(|_| {
