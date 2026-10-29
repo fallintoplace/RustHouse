@@ -108,5 +108,24 @@ class PairedDuckDbTests(unittest.TestCase):
         self.assertEqual(report["results"][0]["status"], "error")
 
 
+
+class PairedDuckDBReferenceSymlinkTests(unittest.TestCase):
+    def test_symlink_reference_is_rejected_without_running_queries(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.tsv"
+            source.write_bytes(b"1\\n")
+            link = root / "q01.tsv"
+            try:
+                link.symlink_to(source)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            with mock.patch("bench.tpch.paired_duckdb.invoke", side_effect=AssertionError("executed")):
+                result = compare("rusthouse", "db", "duckdb", "db",
+                                 [(1, "SELECT 1")], root, 1, 0, 10)
+            self.assertFalse(result["all_queries_verified"])
+            self.assertIn("unsafe", result["results"][0]["error"])
+
 if __name__ == "__main__":
     unittest.main()

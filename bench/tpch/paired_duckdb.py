@@ -117,6 +117,10 @@ def compare(binary, database, duckdb_binary, duckdb_database,
             record["error"] = f"missing reference: {ref_path}"
             results.append(record)
             continue
+        if ref_path.is_symlink():
+            record["error"] = "unsafe symlink reference TSV"
+            results.append(record)
+            continue
         with ref_path.open("rb") as source:
             reference = source.read(MAX_OUTPUT_BYTES + 1)
         if len(reference) > MAX_OUTPUT_BYTES:
