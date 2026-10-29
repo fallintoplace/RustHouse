@@ -26,6 +26,18 @@ class VerifyShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "incorrect"):
                 verify(manifest)
 
+    def test_multi_block_verification_and_corruption(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "large.tsv"
+            start, count, step = 100, 8193, 3
+            data = "".join(f"{start + i * step}\n" for i in range(count)).encode("ascii")
+            path.write_bytes(data)
+            self.assertEqual(verify_file(path, start, count, step),
+                             hashlib.sha256(data).hexdigest())
+            path.write_bytes(data[:-1])
+            with self.assertRaisesRegex(ValueError, "incorrect|missing"):
+                verify_file(path, start, count, step)
+
     def test_rejects_overlap_and_incomplete_coverage(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -65,6 +77,30 @@ class VerifyShardsTests(unittest.TestCase):
             path.write_bytes(b"1\n2\n3\n")
             with self.assertRaisesRegex(ValueError, "additional"):
                 verify_file(path, 1, 2)
+
+
+    def test_validates_strided_shard_manifest(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            first = folder / "a.tsv"
+            second = folder / "b.tsv"
+            first.write_bytes(b"10\n13\n")
+            second.write_bytes(b"16\n")
+            shards = [
+                {"path": "a.tsv", "start": 10, "rows": 2,
+                 "sha256": hashlib.sha256(first.read_bytes()).hexdigest()},
+                {"path": "b.tsv", "start": 16, "rows": 1,
+                 "sha256": hashlib.sha256(second.read_bytes()).hexdigest()},
+            ]
+            manifest = folder / "manifest.json"
+            payload = {"schema_version": 1, "start": 10,
+                       "rows": 3, "step": 3, "shards": shards}
+            manifest.write_text(json.dumps(payload))
+            self.assertEqual(verify(manifest)["step"], 3)
+            payload["shards"][1]["start"] = 17
+            manifest.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "gap"):
+                verify(manifest)
 
 
 if __name__ == "__main__":

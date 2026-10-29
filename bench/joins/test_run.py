@@ -23,6 +23,17 @@ class JoinWorkloadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             query_for_strictness("full")
 
+    def test_fixture_batch_boundaries_preserve_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            write_fixture(directory, 4097, 4096)
+            lines = (Path(directory) / "facts.tsv").read_text().splitlines()
+            self.assertEqual(len(lines), 4098)
+            self.assertEqual(lines[4096], "4095\t95")
+            self.assertEqual(lines[4097], "4096\t96")
+            build = (Path(directory) / "dimensions.tsv").read_text().splitlines()
+            self.assertEqual(len(build), 4097)
+            self.assertEqual(build[-1], "4095\tgroup-5")
+
     def test_small_fixture_and_matches(self):
         with tempfile.TemporaryDirectory() as directory:
             expected = write_fixture(Path(directory), 20, 5)
@@ -88,6 +99,17 @@ class JoinWorkloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 write_fixture(directory, 20, 32769)
+
+class JoinThroughputInputValidationTests(unittest.TestCase):
+    def test_invalid_probes_and_timing_types_cannot_be_reported(self):
+        for rows in (True, 0, -5, 2.5):
+            with self.subTest(rows=rows):
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    logical_probe_throughput(rows, 1.0)
+        for duration in (True, "1", [], float("nan")):
+            with self.subTest(duration=duration):
+                with self.assertRaises(ValueError):
+                    logical_probe_throughput(10, duration)
 
 if __name__ == "__main__":
     unittest.main()

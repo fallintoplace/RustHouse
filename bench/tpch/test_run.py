@@ -5,9 +5,22 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from run import benchmark_one, compare_reference, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
+from run import require_canonical_corpus, benchmark_one, compare_reference, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
 
 class RunnerTests(unittest.TestCase):
+    def test_real_canonical_sql_passes_and_simplified_sql_fails(self):
+        canonical = Path(__file__).resolve().parent / "queries"
+        report = require_canonical_corpus(canonical)
+        self.assertTrue(report["canonical_sql_verified"])
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            for number in range(1, 23):
+                (path / f"q{number:02d}.sql").write_text(
+                    f"SELECT {number};", encoding="utf-8"
+                )
+            with self.assertRaisesRegex(ValueError, "provenance"):
+                require_canonical_corpus(path)
+
     def test_query_discovery_is_numeric(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
@@ -143,6 +156,15 @@ class RunnerTests(unittest.TestCase):
         result = benchmark_one(1, "SELECT 1", lambda _: b"ok\n", 2, 0)
         self.assertEqual(result["status"], "unverified")
         self.assertEqual(summary([1, 4, 2, 3, 5])["p90_seconds"], 5)
+
+class QueryFileBudgetTests(unittest.TestCase):
+    def test_excessively_large_sql_file_is_rejected_before_decoding(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "q01.sql"
+            path.write_bytes(b"SELECT 1\n" * 20)
+            with mock.patch("run.MAX_QUERY_FILE_BYTES", 32):
+                with self.assertRaisesRegex(ValueError, "exceeds 64 KiB"):
+                    load_queries(Path(root))
 
 if __name__ == "__main__":
     unittest.main()

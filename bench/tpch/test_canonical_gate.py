@@ -1,11 +1,11 @@
 import unittest
 from copy import deepcopy
 
-from canonical_gate import audit
+from canonical_gate import audit, trusted_fingerprint
 
 
 def complete():
-    return {"reference_checked": True,
+    return {"reference_checked": True, "query_sha256": trusted_fingerprint(),
             "results": [{"query": i, "status": "passed"} for i in range(1, 23)],
             "coverage": {"verified_queries": 22, "failed_queries": 0,
                          "unverified_queries": 0},
@@ -17,6 +17,16 @@ def complete():
 class CanonicalGateTests(unittest.TestCase):
     def test_full_verified_set_passes(self):
         self.assertEqual(audit(complete())["reference_verified_queries"], 22)
+
+    def test_simplified_sql_cannot_pass_as_canonical(self):
+        bad = complete()
+        bad["query_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "pinned full canonical"):
+            audit(bad)
+        bad = complete()
+        del bad["query_sha256"]
+        with self.assertRaisesRegex(ValueError, "pinned full canonical"):
+            audit(bad)
 
     def test_unverified_execution_is_never_a_pass(self):
         for kind in ("unverified", "error", "mismatch", "timeout", "missing_reference"):
@@ -46,6 +56,15 @@ class CanonicalGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "independent"):
             audit(bad)
 
+
+class CanonicalInventoryShapeTests(unittest.TestCase):
+    def test_rejects_nonobject_query_inventory(self):
+        for value in ([], 1, True, "22"):
+            with self.subTest(inventory=value):
+                report = complete()
+                report["official_22_coverage"] = value
+                with self.assertRaisesRegex(ValueError, "inventory must be an object"):
+                    audit(report)
 
 if __name__ == "__main__":
     unittest.main()

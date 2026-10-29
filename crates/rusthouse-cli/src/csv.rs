@@ -37,7 +37,14 @@ impl<W: Write> CsvWriter<W> {
     }
 
     fn push_field_byte(&mut self, byte: u8) -> io::Result<()> {
-        self.push_field_bytes(&[byte])
+        if self.field.len() >= MAX_FIELD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CSV field exceeds 1 MiB",
+            ));
+        }
+        self.field.push(byte);
+        Ok(())
     }
 
     /// Returns true when an LF has completed a previous CRLF row boundary.
@@ -75,7 +82,7 @@ impl<W: Write> CsvWriter<W> {
     }
 }
 
-fn needs_csv_quotes(value: &[u8]) -> bool {
+fn requires_csv_quoting(value: &[u8]) -> bool {
     value == b"\\N"
         || value
             .iter()
@@ -92,7 +99,7 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
         Cow::Borrowed(field)
     };
     let value = decoded.as_ref();
-    if !needs_csv_quotes(value) {
+    if !requires_csv_quoting(value) {
         return output.write_all(value);
     }
     write_quoted_field(output, value)

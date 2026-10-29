@@ -11,6 +11,7 @@ fn div_mod_handle_signed_values_and_nested_expressions() {
         ("SELECT mod(9, 4) + DIV(7, 3)", 3),
         ("SELECT DIV(-9223372036854775808, 1)", i64::MIN),
         ("SELECT MOD(-9223372036854775808, 3)", -2),
+        ("SELECT MOD(-9223372036854775808, -1)", 0),
     ] {
         assert_eq!(
             parse_select(sql).unwrap().projection,
@@ -26,7 +27,6 @@ fn div_mod_reject_zero_overflow_bad_arity_and_table_inputs() {
         "SELECT DIV(1, 0)",
         "SELECT MOD(1, 0)",
         "SELECT DIV(-9223372036854775808, -1)",
-        "SELECT MOD(-9223372036854775808, -1)",
         "SELECT DIV()",
         "SELECT MOD(1)",
         "SELECT MOD(1, 2, 3)",

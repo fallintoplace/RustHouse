@@ -15,6 +15,12 @@ fn validate_range(offset: u64, length: usize, file_length: u64) -> io::Result<()
     Ok(())
 }
 
+#[cfg(unix)]
+fn same_object_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.dev() == after.dev() && before.ino() == after.ino()
+}
+
 fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() {
@@ -24,6 +30,10 @@ fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
     let opened = file.metadata()?;
     if !opened.file_type().is_file() || opened.len() != meta.len() {
         return Err(io::Error::other("object changed before range read"));
+    }
+    #[cfg(unix)]
+    if !same_object_identity(&meta, &opened) {
+        return Err(io::Error::other("object inode changed before range read"));
     }
     Ok((file, opened.len()))
 }
@@ -46,9 +56,127 @@ pub fn read_object_range(
     Ok(bytes)
 }
 
+/// Read several exact byte ranges using one file handle and a single memory budget.
+/// All range bounds are checked before any bytes are returned.
+pub fn read_object_ranges(
+    path: &Path,
+    ranges: &[(u64, usize)],
+    max_total_bytes: usize,
+) -> io::Result<Vec<Vec<u8>>> {
+    if ranges.len() > 1024 {
+        return Err(io::Error::other("too many object ranges"));
+    }
+    let mut total = 0usize;
+    for &(_, length) in ranges {
+        total = total
+            .checked_add(length)
+            .ok_or_else(|| io::Error::other("object range size overflow"))?;
+        if total > max_total_bytes || total > ABSOLUTE_MAX_RANGE {
+            return Err(io::Error::other("object ranges exceed byte limit"));
+        }
+    }
+    let (mut file, file_length) = open_verified_object(path)?;
+    for &(offset, length) in ranges {
+        validate_range(offset, length, file_length)?;
+    }
+    if let [(offset, length)] = ranges {
+        // A single range needs neither interval sorting nor a second copy.
+        let mut data = vec![0u8; *length];
+        file.seek(SeekFrom::Start(*offset))?;
+        file.read_exact(&mut data)?;
+        return Ok(vec![data]);
+    }
+    // Adjacent or overlapping logical ranges share one physical read.
+    // This reduces seeks and small I/O operations for mark-driven scans.
+    // Preserve the request order and return independent byte buffers.
+    let mut ordered: Vec<(usize, u64, u64)> = ranges
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &(offset, length))| {
+            (length > 0).then_some((index, offset, offset + length as u64))
+        })
+        .collect();
+    ordered.sort_unstable_by_key(|(_, start, _)| *start);
+    let mut output = vec![Vec::new(); ranges.len()];
+    let mut cursor = 0;
+    while cursor < ordered.len() {
+        let start = ordered[cursor].1;
+        let mut end = ordered[cursor].2;
+        let mut tail = cursor + 1;
+        while tail < ordered.len() && ordered[tail].1 <= end {
+            end = end.max(ordered[tail].2);
+            tail += 1;
+        }
+        let bytes = usize::try_from(end - start)
+            .map_err(|_| io::Error::other("coalesced object range too large"))?;
+        // Every merged interval is covered by the sum of requested lengths,
+        // which was checked against the 8 MiB request budget above.
+        if tail == cursor + 1 {
+            // For an isolated interval the final output can own the read
+            // buffer. There is no reason to copy it through a temporary.
+            let index = ordered[cursor].0;
+            let mut range = vec![0u8; bytes];
+            file.seek(SeekFrom::Start(start))?;
+            file.read_exact(&mut range)?;
+            output[index] = range;
+        } else {
+            let mut chunk = vec![0u8; bytes];
+            file.seek(SeekFrom::Start(start))?;
+            file.read_exact(&mut chunk)?;
+            for &(index, offset, item_end) in &ordered[cursor..tail] {
+                let from = (offset - start) as usize;
+                let to = (item_end - start) as usize;
+                output[index] = chunk[from..to].to_vec();
+            }
+        }
+        cursor = tail;
+    }
+    Ok(output)
+}
+
+#[cfg(all(test, unix))]
+mod immutable_object_identity_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_an_unrelated_equal_length_inode() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-range-identity-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let a = root.join("a");
+        let b = root.join("b");
+        let link = root.join("hardlink");
+        fs::write(&a, b"same").unwrap();
+        fs::write(&b, b"size").unwrap();
+        fs::hard_link(&a, &link).unwrap();
+        assert!(same_object_identity(&fs::metadata(&a).unwrap(), &fs::metadata(&link).unwrap()));
+        assert!(!same_object_identity(&fs::metadata(&a).unwrap(), &fs::metadata(&b).unwrap()));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn singleton_multi_range_reader_returns_exact_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-single-range-{}", std::process::id()
+        ));
+        fs::write(&path, b"abcdefgh").unwrap();
+        assert_eq!(
+            read_object_ranges(&path, &[(2, 4)], 4).unwrap(),
+            vec![b"cdef".to_vec()]
+        );
+        assert_eq!(
+            read_object_ranges(&path, &[(8, 0)], 0).unwrap(),
+            vec![Vec::new()]
+        );
+        fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn reads_exact_intervals_and_rejects_bad_ranges() {
@@ -77,67 +205,6 @@ mod tests {
     }
 }
 
-/// Read several exact byte ranges using one file handle and a single memory budget.
-/// All range bounds are checked before any bytes are returned.
-pub fn read_object_ranges(
-    path: &Path,
-    ranges: &[(u64, usize)],
-    max_total_bytes: usize,
-) -> io::Result<Vec<Vec<u8>>> {
-    if ranges.len() > 1024 {
-        return Err(io::Error::other("too many object ranges"));
-    }
-    let mut total = 0usize;
-    for &(_, length) in ranges {
-        total = total
-            .checked_add(length)
-            .ok_or_else(|| io::Error::other("object range size overflow"))?;
-        if total > max_total_bytes || total > ABSOLUTE_MAX_RANGE {
-            return Err(io::Error::other("object ranges exceed byte limit"));
-        }
-    }
-    let (mut file, file_length) = open_verified_object(path)?;
-    for &(offset, length) in ranges {
-        validate_range(offset, length, file_length)?;
-    }
-    // Adjacent or overlapping logical ranges share one physical read.
-    // This reduces seeks and small I/O operations for mark-driven scans.
-    // Preserve the request order and return independent byte buffers.
-    let mut ordered: Vec<(usize, u64, u64)> = ranges
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &(offset, length))| {
-            (length > 0).then_some((index, offset, offset + length as u64))
-        })
-        .collect();
-    ordered.sort_unstable_by_key(|(_, start, _)| *start);
-    let mut output = vec![Vec::new(); ranges.len()];
-    let mut cursor = 0;
-    while cursor < ordered.len() {
-        let start = ordered[cursor].1;
-        let mut end = ordered[cursor].2;
-        let mut tail = cursor + 1;
-        while tail < ordered.len() && ordered[tail].1 <= end {
-            end = end.max(ordered[tail].2);
-            tail += 1;
-        }
-        let bytes = usize::try_from(end - start)
-            .map_err(|_| io::Error::other("coalesced object range too large"))?;
-        // Every merged interval is covered by the sum of requested lengths,
-        // which was checked against the 8 MiB request budget above.
-        let mut chunk = vec![0u8; bytes];
-        file.seek(SeekFrom::Start(start))?;
-        file.read_exact(&mut chunk)?;
-        for &(index, offset, item_end) in &ordered[cursor..tail] {
-            let from = (offset - start) as usize;
-            let to = (item_end - start) as usize;
-            output[index] = chunk[from..to].to_vec();
-        }
-        cursor = tail;
-    }
-    Ok(output)
-}
-
 #[cfg(test)]
 mod multi_range_tests {
     use super::*;
@@ -154,6 +221,23 @@ mod multi_range_tests {
             b"ijkl".to_vec(), b"abcd".to_vec(), b"cdefg".to_vec(),
             b"h".to_vec(), Vec::new(), b"op".to_vec(),
         ]);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn disjoint_large_ranges_return_exact_data_in_request_order() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-disjoint-ranges-{}", std::process::id()
+        ));
+        let bytes = (0..256 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&path, &bytes).unwrap();
+        let ranges = [(128 * 1024, 64 * 1024), (0, 32 * 1024), (224 * 1024, 16 * 1024)];
+        let result = read_object_ranges(&path, &ranges, 112 * 1024).unwrap();
+        for (index, &(start, len)) in ranges.iter().enumerate() {
+            assert_eq!(&result[index], &bytes[start as usize..start as usize + len]);
+        }
         fs::remove_file(path).unwrap();
     }
 
