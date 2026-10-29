@@ -248,7 +248,7 @@ mod quoted_identifier_fast_path_tests {
     #[test]
     fn reads_long_plain_identifier_without_changing_offsets() {
         for delimiter in ['`', '"'] {
-            let source = format!("{delimiter}{}{} SELECT", "a", "_9".repeat(60), delimiter);
+            let source = format!("{delimiter}a{}{delimiter} SELECT", "_9".repeat(60));
             let mut cursor = 0;
             assert_eq!(
                 scan_quoted_identifier(&source, &mut cursor).unwrap(),
