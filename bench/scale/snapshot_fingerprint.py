@@ -35,10 +35,17 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024):
                 raise ValueError("snapshot contains a nonregular file")
             digest = hashlib.sha256()
             with path.open("rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    raise ValueError(f"snapshot file replaced while opening: {path}")
                 for block in iter(lambda: stream.read(block_size), b""):
                     digest.update(block)
+                finished = os.fstat(stream.fileno())
+                if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+                    raise ValueError(f"snapshot file changed during hashing: {path}")
             after = path.lstat()
-            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
                 raise ValueError(f"snapshot file changed while hashing: {path}")
             rel = path.relative_to(root).as_posix()
             aggregate.update(rel.encode("utf-8") + b"\0"
