@@ -164,6 +164,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "INTDIVORNULL"
             | "MODULOORNULL"
             | "ENCODEURLFORMCOMPONENT"
+            | "ISIPV4PRIVATE"
             | "ISIPV4LOOPBACK"
             | "ISIPV4MULTICAST"
             | "ISIPV4LINKLOCAL"
@@ -369,6 +370,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let address = value.parse::<std::net::Ipv4Addr>()
                         .map_err(|_| ParseError("invalid IPv4 address".into()))?;
                     ConstantValue::Integer(i64::from(address.is_loopback()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV4PRIVATE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4Private requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_private()))
                 }
                 None => ConstantValue::Null,
             }
