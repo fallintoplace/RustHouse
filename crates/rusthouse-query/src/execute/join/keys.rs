@@ -57,11 +57,19 @@ pub(super) fn row_key_into(
     indices: &[usize],
     result: &mut Vec<typed::Key>,
 ) -> bool {
-    result.clear();
     if indices.iter().any(|&index| !key_eligible(&row[index])) {
+        result.clear();
         return false;
     }
-    result.extend(indices.iter().map(|&index| join_key(&row[index])));
+    // Reuse String allocations when probing repeated dimension keys.
+    // Clearing the entire vector would discard the inner Vec<u8> capacities.
+    for (position, &index) in indices.iter().enumerate() {
+        match &row[index] {
+            typed::Cell::Text(bytes) => put_text_key(result, position, bytes),
+            value => put_key(result, position, join_key(value)),
+        }
+    }
+    result.truncate(indices.len());
     true
 }
 
@@ -171,6 +179,27 @@ mod tests {
         let invalid = [typed::Cell::Null, typed::Cell::Text(b"abc".to_vec())];
         assert!(!row_key_into(&invalid, &[0, 1], &mut probe));
         assert!(probe.is_empty());
+    }
+
+    #[test]
+    fn repeated_text_build_probes_retain_inner_allocation() {
+        let values = [
+            typed::Cell::Text(b"shared".to_vec()),
+            typed::Cell::Text(b"repeat".to_vec()),
+        ];
+        let mut probe = Vec::new();
+        assert!(row_key_into(&values, &[0], &mut probe));
+        let (address, capacity) = match &probe[0] {
+            typed::Key::Text(bytes) => (bytes.as_ptr(), bytes.capacity()),
+            _ => panic!("expected text key"),
+        };
+        for _ in 0..4 {
+            assert!(row_key_into(&values, &[0], &mut probe));
+            assert!(matches!(&probe[0], typed::Key::Text(bytes)
+                if bytes.as_ptr() == address && bytes.capacity() == capacity));
+        }
+        assert!(row_key_into(&values, &[1], &mut probe));
+        assert!(matches!(&probe[0], typed::Key::Text(bytes) if bytes == b"repeat"));
     }
 
     #[test]
