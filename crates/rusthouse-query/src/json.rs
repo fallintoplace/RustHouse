@@ -110,6 +110,16 @@ impl<'a> Parser<'a> {
 
     fn string(&mut self) -> Result<String, &'static str> {
         self.expect(b'"')?;
+        // Parse the common escape-free string without byte-by-byte dispatch.
+        if let Some(end) = self.bytes()[self.offset..]
+            .iter().position(|&byte| byte == b'"' || byte == b'\\' || byte < 0x20)
+        {
+            if self.bytes()[self.offset + end] == b'"' {
+                let begin = self.offset;
+                self.offset += end + 1;
+                return Ok(self.text[begin..begin + end].to_owned());
+            }
+        }
         let mut output = String::new();
         let mut start = self.offset;
         loop {
@@ -283,6 +293,15 @@ pub(crate) fn parse_json(text: &str) -> Result<JsonValue<'_>, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::parse_json;
+
+    #[test]
+    fn plain_json_string_fast_path_preserves_utf8_and_escaped_fallback() {
+        let parsed = parse_json(r#"{"café":"zażółć","escaped":"a\nb"}"#).unwrap();
+        assert_eq!(parsed.at_path("café").and_then(|v| v.as_string()), Some("zażółć"));
+        assert_eq!(parsed.at_path("escaped").and_then(|v| v.as_string()), Some("a\nb"));
+        assert!(parse_json("{\"bad\":\"unterminated").is_err());
+        assert!(parse_json("{\"bad\":\"unescaped\ncontrol\"}").is_err());
+    }
 
     #[test]
     fn parses_nested_objects_arrays_and_escapes() {

@@ -351,6 +351,14 @@ impl TypedExternalSort {
     ) -> Result<(), ExecutionError>
     where F: FnMut(SortEntry) -> Result<bool, ExecutionError>,
     {
+        if let [path] = paths {
+            // A single pre-sorted run does not need a heap or comparisons.
+            let mut source = BufReader::with_capacity(64 * 1024, File::open(path)?);
+            while let Some(entry) = read_entry(&mut source)? {
+                if !emit(entry)? { break; }
+            }
+            return Ok(());
+        }
         let mut sources = paths.iter().map(|path| {
             File::open(path)
                 .map(|file| BufReader::with_capacity(64 * 1024, file))
@@ -459,6 +467,20 @@ mod tests {
             values: vec![Cell::Text(text.as_bytes().to_vec()), Cell::Numeric(Number::Unsigned(value as u128))],
             sort_keys: vec![Cell::Numeric(Number::Unsigned(value as u128))],
         }
+    }
+
+    #[test]
+    fn single_spill_run_preserves_offset_limit_and_order() {
+        let mut sorter = TypedExternalSort::new(0, 0, 0);
+        for value in (0..32).rev() {
+            sorter.push(row("single-run", value)).unwrap();
+        }
+        sorter.flush().unwrap();
+        assert_eq!(sorter.runs.len(), 1);
+        let mut result = Vec::new();
+        sorter.write(&mut result, &["String", "UInt64"], 19, 3).unwrap();
+        assert_eq!(String::from_utf8(result).unwrap(),
+            "single-run\t19\nsingle-run\t20\nsingle-run\t21\n");
     }
 
     #[test]
