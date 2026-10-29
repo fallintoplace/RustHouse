@@ -48,11 +48,8 @@ fn key_eligible(value: &typed::Cell) -> bool {
 }
 
 pub(super) fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
-    // Reject invalid later components before cloning any variable-width keys.
-    if indices.iter().any(|&index| !key_eligible(&row[index])) {
-        return None;
-    }
-    Some(indices.iter().map(|&index| join_key(&row[index])).collect())
+    let mut key = Vec::with_capacity(indices.len());
+    row_key_into(row, indices, &mut key).then_some(key)
 }
 
 pub(super) fn row_key_into(
