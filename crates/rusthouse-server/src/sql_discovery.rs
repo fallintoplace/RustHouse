@@ -115,10 +115,10 @@ pub(super) fn show_tables(ddl: Ddl, format: QueryFormat, config: &Config) -> Res
         Ok(names) => names,
         Err(message) => return Response::text("400 Bad Request", &message),
     };
+    let negated = matches!(&ddl, Ddl::ShowTablesNotLike { .. });
     match ddl {
         Ddl::ShowTables => {}
         Ddl::ShowTablesLike { pattern } | Ddl::ShowTablesNotLike { pattern } => {
-            let negated = matches!(ddl, Ddl::ShowTablesNotLike { .. });
             let mut filtered = Vec::new();
             for name in names {
                 let matched = match like_matches(&name, &pattern) {
