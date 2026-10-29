@@ -145,6 +145,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RPAD"
             | "NOTEMPTY"
             | "SPACE"
+            | "INTDIVORNULL"
             | "MODULOORNULL"
             | "ENCODEURLFORMCOMPONENT"
     )
@@ -177,13 +178,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "INTDIVORNULL" => {
+            let dividend = integer_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "intDivOrNull requires two arguments")?;
+            let divisor = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "intDivOrNull requires two arguments")?;
+            match (dividend, divisor) {
+                (Some(left), Some(right)) => left
+                    .checked_div(right)
+                    .map_or(ConstantValue::Null, ConstantValue::Integer),
+                _ => ConstantValue::Null,
+            }
+        }
         "LENGTHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "lengthUTF8 requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Integer(
-                    i64::try_from(value.chars().count())
-                        .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
+                    i64::try_from(if value.is_ascii() {
+                        value.len()
+                    } else {
+                        value.chars().count()
+                    })
+                    .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
                 None => ConstantValue::Null,
             }
@@ -559,6 +576,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "UPPERUTF8 requires one argument")?;
             match input {
+                Some(mut input) if input.is_ascii() => {
+                    input.make_ascii_uppercase();
+                    ConstantValue::Text(input)
+                }
                 Some(input) => {
                     let output = input.to_uppercase();
                     if output.len() > MAX_TEXT_BYTES {
@@ -676,6 +697,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "REVERSE requires one argument")?;
             match input {
+                Some(value) if value.is_ascii() => {
+                    let mut bytes = value.into_bytes();
+                    bytes.reverse();
+                    ConstantValue::Text(
+                        String::from_utf8(bytes).expect("reversed ASCII bytes remain valid UTF-8"),
+                    )
+                }
                 Some(value) => ConstantValue::Text(value.chars().rev().collect()),
                 None => ConstantValue::Null,
             }
@@ -2147,7 +2175,15 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("LEFT count must be nonnegative".into()));
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    ConstantValue::Text(value.chars().take(count).collect())
+                    if count >= value.len() {
+                        ConstantValue::Text(value)
+                    } else if value.as_bytes()[..count].is_ascii() {
+                        let mut result = value;
+                        result.truncate(count);
+                        ConstantValue::Text(result)
+                    } else {
+                        ConstantValue::Text(value.chars().take(count).collect())
+                    }
                 }
                 _ => ConstantValue::Null,
             }
@@ -2384,8 +2420,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("RIGHT count must be nonnegative".into()));
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    let skip = value.chars().count().saturating_sub(count);
-                    ConstantValue::Text(value.chars().skip(skip).collect())
+                    if count >= value.len() {
+                        ConstantValue::Text(value)
+                    } else {
+                        let start = value.len() - count;
+                        if value.as_bytes()[start..].is_ascii() {
+                            let mut result = value;
+                            result.replace_range(..start, "");
+                            ConstantValue::Text(result)
+                        } else {
+                            let skip = value.chars().count().saturating_sub(count);
+                            ConstantValue::Text(value.chars().skip(skip).collect())
+                        }
+                    }
                 }
                 _ => ConstantValue::Null,
             }
@@ -2724,6 +2771,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "lowerUTF8 requires one argument")?;
             match input {
+                Some(mut value) if value.is_ascii() => {
+                    value.make_ascii_lowercase();
+                    ConstantValue::Text(value)
+                }
                 Some(value) => {
                     let result = value.to_lowercase();
                     if result.len() > MAX_TEXT_BYTES {

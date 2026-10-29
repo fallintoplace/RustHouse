@@ -2,6 +2,8 @@ use crate::expression::parse_expression_tokens;
 use crate::lexer::Token;
 use crate::{AggregateFunction, ParseError, Parser, ScalarExpr};
 
+const MAX_AGGREGATE_ITEMS: usize = 128;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregateItem {
     pub function: Option<AggregateFunction>,
@@ -154,7 +156,7 @@ pub(crate) fn parse_multiple(
             distinct,
             alias,
         });
-        if items.len() >= 128
+        if items.len() >= MAX_AGGREGATE_ITEMS
             && parser.tokens.get(parser.index) == Some(&Token::Comma)
         {
             return Err(ParseError("SELECT supports at most 128 aggregates".into()));

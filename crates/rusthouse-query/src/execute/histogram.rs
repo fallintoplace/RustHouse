@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
+const MAX_GENERATED_HISTOGRAM_ROWS: u64 = 10_000_000;
+
 #[derive(Clone, Copy)]
 struct Bin {
     min: f64,
@@ -19,7 +21,7 @@ struct Bin {
     count: u64,
 }
 
-fn number_as_float(value: Number) -> Result<f64, ExecutionError> {
+fn finite_number_as_f64(value: Number) -> Result<f64, ExecutionError> {
     let value = match value {
         Number::Unsigned(value) => value as f64,
         Number::Signed(value) => value as f64,
@@ -114,10 +116,10 @@ fn visit_part(
             }
             match &batch[selected] {
                 TypedColumn::Numeric(values) => {
-                    observe(number_as_float(number_at(values, row))?)?
+                    observe(finite_number_as_f64(number_at(values, row))?)?
                 }
                 TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
-                    observe(number_as_float(number_at(values, row))?)?
+                    observe(finite_number_as_f64(number_at(values, row))?)?
                 }
                 TypedColumn::NullableNumeric { .. } => {}
                 _ => return Err(ExecutionError::Invalid(
@@ -283,7 +285,7 @@ pub(super) fn execute_numbers<W: Write>(
         let result = uniform_generated_bins(start, lower, count, step, *bins);
         return output_bins(query, output, column, *bins, &result);
     }
-    if rows > 10_000_000 {
+    if rows > MAX_GENERATED_HISTOGRAM_ROWS {
         return Err(ExecutionError::Invalid(
             "large generated histogram requires monotonic WHERE predicates".into(),
         ));
@@ -331,8 +333,8 @@ mod tests {
 
     #[test]
     fn numerically_invalid_inputs_rejected() {
-        assert!(number_as_float(Number::Float(f64::NAN)).is_err());
-        assert!(number_as_float(Number::Float(f64::INFINITY)).is_err());
+        assert!(finite_number_as_f64(Number::Float(f64::NAN)).is_err());
+        assert!(finite_number_as_f64(Number::Float(f64::INFINITY)).is_err());
     }
 }
 

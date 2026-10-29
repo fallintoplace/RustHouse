@@ -8,13 +8,17 @@ import sys
 from pathlib import Path
 
 
-def cli_sql(binary, database, statement, timeout):
+def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-header"):
     """Execute SQL via the CLI and return exact output bytes for verification."""
     # --format is a SELECT-only option. DDL, COPY, and INSERT reject it.
     command = [str(binary), "sql", statement, "--database", str(database)]
     keyword = statement.split(maxsplit=1)[0].upper() if statement.strip() else ""
     if keyword == "SELECT":
-        command.extend(["--format", "tsv-no-header"])
+        if select_format not in ("tsv-no-header", "jsonl"):
+            raise ValueError("unsupported verification SELECT format")
+        command.extend(["--format", select_format])
+    elif select_format != "tsv-no-header":
+        raise ValueError("a verification format can be used only with SELECT")
     completed = subprocess.run(
         command,
         stdout=subprocess.PIPE,
