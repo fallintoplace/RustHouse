@@ -15,6 +15,26 @@ use std::io::Write;
 use std::path::Path;
 
 const MAX_BUFFERED_ROWS: usize = 200_000;
+const MAX_GROUPED_TEXT_BYTES: usize = 64 * 1024 * 1024;
+
+/// A String GROUP BY key is owned twice: by the hash lookup and the output
+/// row. Charge it before cloning large or adversarial group keys.
+fn charge_grouped_text(used: &mut usize, key_bytes: usize) -> Result<(), ExecutionError> {
+    let increment = key_bytes.checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(
+            std::mem::size_of::<(Vec<u8>, usize)>() + std::mem::size_of::<(Cell, u64)>()
+        ))
+        .ok_or_else(|| ExecutionError::Invalid("grouped String key memory overflow".into()))?;
+    let next = used.checked_add(increment)
+        .ok_or_else(|| ExecutionError::Invalid("grouped String key memory overflow".into()))?;
+    if next > MAX_GROUPED_TEXT_BYTES {
+        return Err(ExecutionError::Invalid(
+            "GROUP BY String keys exceed 64 MiB retained budget".into(),
+        ));
+    }
+    *used = next;
+    Ok(())
+}
 
 fn remember_distinct_text(seen: &mut HashSet<Vec<u8>>, value: &[u8]) -> Result<(), ExecutionError> {
     if seen.contains(value) {
@@ -1113,6 +1133,7 @@ pub(super) fn execute_typed<W: Write>(
     };
     // String group probes can borrow the decoded input instead of cloning it.
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
+    let mut grouped_text_bytes = 0usize;
     let mut uuid_group_indices = HashMap::<[u8; 16], usize>::new();
     let mut grouped_rows = Vec::<(Cell, u64)>::new();
     let mut ordered = Vec::<Row>::new();
@@ -1237,6 +1258,7 @@ pub(super) fn execute_typed<W: Write>(
                                 "GROUP BY supports at most 200000 groups".into(),
                             ));
                         }
+                        charge_grouped_text(&mut grouped_text_bytes, key.len())?;
                         let group = grouped_rows.len();
                         text_group_indices.insert(key.to_vec(), group);
                         grouped_rows.push((Cell::Text(key.to_vec()), 1));
@@ -2287,5 +2309,21 @@ mod narrow_group_bucket_tests {
             [Some(0), None, Some(65535), Some(1)]);
         let wide = TypedColumn::Numeric(NumericColumn::UInt32(vec![1]));
         assert_eq!(dense_group_bucket(&wide, 0), None);
+    }
+}
+
+#[cfg(test)]
+mod grouped_text_retention_budget_tests {
+    use super::*;
+
+    #[test]
+    fn charges_both_owned_copies_before_insert() {
+        let mut charged = 0;
+        charge_grouped_text(&mut charged, 1024).unwrap();
+        assert!(charged >= 2048);
+        let previous = charged;
+        assert!(charge_grouped_text(&mut charged, MAX_GROUPED_TEXT_BYTES).is_err());
+        assert_eq!(charged, previous);
+        assert!(charge_grouped_text(&mut charged, usize::MAX).is_err());
     }
 }
