@@ -1,10 +1,22 @@
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from throughput import run_throughput
+from throughput import MAX_REFERENCE_BYTES, read_reference, run_throughput
 
 
 class ThroughputTests(unittest.TestCase):
+    def test_reference_reads_are_bounded(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "q01.tsv"
+            path.write_bytes(b"1\n")
+            self.assertEqual(read_reference(path), b"1\n")
+            with path.open("wb") as output:
+                output.truncate(MAX_REFERENCE_BYTES + 1)
+            with self.assertRaisesRegex(ValueError, "16 MiB"):
+                read_reference(path)
+
     def test_verified_concurrent_results(self):
         report = run_throughput(
             [(1, "SELECT 1"), (2, "SELECT 2")],
@@ -15,6 +27,17 @@ class ThroughputTests(unittest.TestCase):
         self.assertEqual(report["verified_executions"], 6)
         self.assertGreater(report["successful_queries_per_second"], 0)
         self.assertFalse(report["official_tpch_score"])
+
+    def test_only_byte_results_count_as_success(self):
+        report = run_throughput(
+            [(1, "SELECT 1")], lambda _: "1\n", rounds=1
+        )
+        self.assertEqual(report["successful_executions"], 0)
+        self.assertEqual(report["results"][0]["status"], "error")
+        self.assertIn("bytes", report["results"][0]["error"])
+        with self.assertRaisesRegex(ValueError, "references"):
+            run_throughput([(1, "SELECT 1")], lambda _: b"1\n",
+                           rounds=1, references={1: "1\n"})
 
     def test_mismatch_does_not_count_as_success(self):
         report = run_throughput(
@@ -31,15 +54,15 @@ class ThroughputTests(unittest.TestCase):
 
     def test_verified_mode_rejects_missing_or_partial_goldens(self):
         with self.assertRaisesRegex(ValueError, "reference"):
-            run_throughput([(1, "SELECT 1")], lambda _: b"1\\n",
+            run_throughput([(1, "SELECT 1")], lambda _: b"1\n",
                            require_verified=True)
         with self.assertRaisesRegex(ValueError, "reference"):
             run_throughput([(1, "SELECT 1"), (2, "SELECT 2")],
-                           lambda _: b"1\\n", references={1: b"1\\n"},
+                           lambda _: b"1\n", references={1: b"1\n"},
                            require_verified=True)
         report = run_throughput(
-            [(1, "SELECT 1")], lambda _: b"1\\n",
-            rounds=1, references={1: b"1\\n"}, require_verified=True,
+            [(1, "SELECT 1")], lambda _: b"1\n",
+            rounds=1, references={1: b"1\n"}, require_verified=True,
         )
         self.assertTrue(report["all_executions_verified"])
         self.assertTrue(report["verification_required"])
@@ -51,6 +74,14 @@ class ThroughputTests(unittest.TestCase):
             run_throughput([(i, "sql") for i in range(23)], lambda _: b"",
                            clients=2, rounds=100)
 
+
+class ThroughputQueryIdentityTests(unittest.TestCase):
+    def test_rejects_reused_query_id_for_different_sql(self):
+        with self.assertRaisesRegex(ValueError, "distinct positive"):
+            run_throughput([(1, "SELECT 1"), (1, "SELECT 2")],
+                           lambda _: b"1\n", rounds=1, references={1: b"1\n"})
+        with self.assertRaisesRegex(ValueError, "nonempty SQL"):
+            run_throughput([(1, "  ")], lambda _: b"", rounds=1)
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,8 +34,14 @@ def write_table(root, name, records):
     path = root / (name + ".tsv")
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write("\t".join(names) + "\n")
+        pending = []
         for record in records:
-            handle.write("\t".join(map(str, record)) + "\n")
+            pending.append("\t".join(map(str, record)) + "\n")
+            if len(pending) == 4096:
+                handle.write("".join(pending))
+                pending.clear()
+        if pending:
+            handle.write("".join(pending))
     return path
 
 

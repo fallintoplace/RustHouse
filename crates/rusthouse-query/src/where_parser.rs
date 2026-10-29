@@ -25,7 +25,7 @@ fn check_expansion(branches: &Branches) -> Result<(), ParseError> {
     Ok(())
 }
 
-fn combine_and(left: Branches, right: Branches) -> Result<Branches, ParseError> {
+pub(super) fn combine_and(left: Branches, right: Branches) -> Result<Branches, ParseError> {
     if left.len().checked_mul(right.len()).is_none_or(|n| n > MAX_BRANCHES) {
         return Err(bad_expansion());
     }
