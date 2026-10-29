@@ -164,6 +164,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "INTDIVORNULL"
             | "MODULOORNULL"
             | "ENCODEURLFORMCOMPONENT"
+            | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
             | "NORMALIZEIPV6"
@@ -317,6 +318,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let address = value.parse::<std::net::Ipv6Addr>()
                         .map_err(|_| ParseError("invalid IPv6 address".into()))?;
                     ConstantValue::Integer(i64::from(address.is_loopback()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV6UNIQUELOCAL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6UniqueLocal requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_unique_local()))
                 }
                 None => ConstantValue::Null,
             }
