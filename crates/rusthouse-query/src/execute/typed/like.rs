@@ -14,6 +14,28 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
     if !pattern.bytes().any(|byte| matches!(byte, b'%' | b'_' | b'\\')) {
         return Ok(LikePattern::Exact(pattern.as_bytes().to_vec()));
     }
+    // Pure prefix/suffix/contains patterns need no wildcard token vector.
+    // Escapes and '_' still use the full SQL LIKE compiler below.
+    if !pattern.bytes().any(|byte| matches!(byte, b'_' | b'\\')) {
+        if let Some(literal) = pattern
+            .strip_prefix('%')
+            .and_then(|remaining| remaining.strip_suffix('%'))
+        {
+            if !literal.contains('%') {
+                return Ok(LikePattern::Contains(literal.as_bytes().to_vec()));
+            }
+        }
+        if let Some(literal) = pattern.strip_suffix('%') {
+            if !literal.contains('%') {
+                return Ok(LikePattern::Prefix(literal.as_bytes().to_vec()));
+            }
+        }
+        if let Some(literal) = pattern.strip_prefix('%') {
+            if !literal.contains('%') {
+                return Ok(LikePattern::Suffix(literal.as_bytes().to_vec()));
+            }
+        }
+    }
     // Token count cannot exceed the pattern's byte length.
     let mut tokens = Vec::with_capacity(pattern.len());
     let mut bytes = pattern.bytes();
@@ -458,6 +480,28 @@ mod ascii_single_byte_contains_tests {
         assert!(!like_matches(b"missing", &pattern, false));
         assert!(like_matches("préfiX".as_bytes(), &pattern, true));
         assert!(!like_matches("café".as_bytes(), &pattern, true));
+    }
+}
+
+#[cfg(test)]
+mod simple_like_compile_tests {
+    use super::*;
+
+    #[test]
+    fn common_literal_patterns_skip_wildcard_tokenization() {
+        assert!(matches!(compile_like("hello%").unwrap(),
+            LikePattern::Prefix(bytes) if bytes == b"hello"));
+        assert!(matches!(compile_like("%world").unwrap(),
+            LikePattern::Suffix(bytes) if bytes == b"world"));
+        assert!(matches!(compile_like("%middle%").unwrap(),
+            LikePattern::Contains(bytes) if bytes == b"middle"));
+        assert!(matches!(compile_like("%").unwrap(),
+            LikePattern::Prefix(bytes) if bytes.is_empty()));
+        assert!(matches!(compile_like("h_llo%").unwrap(),
+            LikePattern::Wildcard { .. }));
+        assert!(like_matches(b"hello WORLD", &compile_like("%world").unwrap(), true));
+        assert!(!like_matches(b"hello WORLD", &compile_like("%world").unwrap(), false));
+        assert!(like_matches(b"hello WORLD", &compile_like("hello%").unwrap(), true));
     }
 }
 
