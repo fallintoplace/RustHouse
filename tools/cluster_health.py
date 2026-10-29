@@ -4,8 +4,18 @@ import argparse
 import json
 import sys
 from urllib.parse import urlsplit
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, build_opener
 from urllib.error import HTTPError
+
+
+class NoRedirect(HTTPRedirectHandler):
+    """A loopback endpoint must not redirect requests to other hosts."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+NO_REDIRECT_OPENER = build_opener(NoRedirect())
 
 
 def validate(payload):
@@ -34,7 +44,7 @@ def inspect(origin, timeout=5):
             or url.username or url.password):
         raise ValueError("only loopback HTTP origins are accepted")
     try:
-        with urlopen(origin.rstrip("/") + "/cluster/health", timeout=timeout) as response:
+        with NO_REDIRECT_OPENER.open(origin.rstrip("/") + "/cluster/health", timeout=timeout) as response:
             raw = response.read(1_048_577)
     except HTTPError as exc:
         if exc.code != 503:
