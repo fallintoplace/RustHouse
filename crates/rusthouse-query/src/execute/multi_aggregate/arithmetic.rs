@@ -127,6 +127,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "LN" => Number::Float(number_as_float(value).ln()),
         "LOG2" => Number::Float(number_as_float(value).log2()),
         "LOG10" => Number::Float(number_as_float(value).log10()),
+        "SIN" => Number::Float(number_as_float(value).sin()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -317,6 +318,20 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("LOG10", Number::Signed(-10)).is_err());
         assert!(crate::parse_scalar_expression("log10(amount)").is_ok());
         assert!(crate::parse_scalar_expression("log10(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn sin_supports_zero_and_negative_angles() {
+        assert!(matches!(
+            apply_unary_math("SIN", Number::Signed(0)),
+            Ok(Number::Float(value)) if value == 0.0
+        ));
+        assert!(matches!(
+            apply_unary_math("SIN", Number::Float(-std::f64::consts::FRAC_PI_2)),
+            Ok(Number::Float(value)) if (value + 1.0).abs() < 1e-12
+        ));
+        assert!(crate::parse_scalar_expression("sin(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("sin(amount, 2)").is_err());
     }
 
 }
