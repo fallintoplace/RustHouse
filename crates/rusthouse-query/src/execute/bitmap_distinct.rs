@@ -26,6 +26,14 @@ fn insert_bitmap_bit(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
     fresh
 }
 
+fn dense_from_sparse(values: &std::collections::HashSet<u16>) -> Box<[u64; WORDS_PER_BLOCK]> {
+    let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
+    for &suffix in values {
+        insert_bitmap_bit(bitmap.as_mut(), suffix);
+    }
+    bitmap
+}
+
 #[derive(Default, Clone)]
 pub(super) struct BitmapDistinct32 {
     blocks: HashMap<u16, Block>,
@@ -79,11 +87,7 @@ impl BitmapDistinct32 {
                 if fresh && values.len() == DENSE_THRESHOLD {
                     self.sparse_keys -= DENSE_THRESHOLD;
                     self.dense_blocks += 1;
-                    let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
-                    for &value in values.iter() {
-                        insert_bitmap_bit(bitmap.as_mut(), value);
-                    }
-                    *block = Block::Dense(bitmap);
+                    *block = Block::Dense(dense_from_sparse(values));
                 }
                 fresh
             }
@@ -141,11 +145,7 @@ impl BitmapDistinct32 {
         // destination once allows 1024 word-wise ORs, not thousands of probes.
         if matches!(incoming, Block::Dense(_)) && matches!(current, Block::Sparse(_)) {
             let Block::Sparse(values) = current else { unreachable!() };
-            let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
-            for &suffix in values.iter() {
-                insert_bitmap_bit(bitmap.as_mut(), suffix);
-            }
-            *current = Block::Dense(bitmap);
+            *current = Block::Dense(dense_from_sparse(values));
         }
         let additions = match (&mut *current, incoming) {
             (Block::Dense(left), Block::Dense(right)) => {
@@ -170,11 +170,7 @@ impl BitmapDistinct32 {
         };
         if let Block::Sparse(values) = current {
             if values.len() >= DENSE_THRESHOLD {
-                let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
-                for &suffix in values.iter() {
-                    insert_bitmap_bit(bitmap.as_mut(), suffix);
-                }
-                *current = Block::Dense(bitmap);
+                *current = Block::Dense(dense_from_sparse(values));
             }
         }
         additions
