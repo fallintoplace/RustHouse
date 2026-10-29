@@ -187,3 +187,33 @@ mod in_flight_repair_tests {
         assert!(plan_repairs_excluding(&jobs, &["../bad"], 20, 2).is_err());
     }
 }
+
+/// Plan repairs with an explicit replication factor. Reject impossible deficits.
+pub fn plan_repairs_for_replication_factor(
+    jobs: &[RepairJob],
+    replication_factor: u8,
+    byte_budget: u64,
+    job_limit: usize,
+) -> Result<Vec<RepairJob>, &'static str> {
+    if replication_factor == 0 || replication_factor > 16 {
+        return Err("invalid replica count for repair planning");
+    }
+    if jobs.iter().any(|job| job.missing_replicas > replication_factor) {
+        return Err("repair deficit exceeds replication factor");
+    }
+    plan_repairs(jobs, byte_budget, job_limit)
+}
+
+#[cfg(test)]
+mod replication_factor_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_impossible_replica_deficits_before_scheduling() {
+        let jobs = [RepairJob { shard: "a".into(), bytes: 10, missing_replicas: 3 }];
+        assert!(plan_repairs_for_replication_factor(&jobs, 2, 10, 1).is_err());
+        assert!(plan_repairs_for_replication_factor(&jobs, 0, 10, 1).is_err());
+        assert!(plan_repairs_for_replication_factor(&jobs, 17, 10, 1).is_err());
+        assert_eq!(plan_repairs_for_replication_factor(&jobs, 3, 10, 1).unwrap(), jobs.to_vec());
+    }
+}
