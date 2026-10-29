@@ -1741,7 +1741,7 @@ mod tests {
             &right, &["id".into()], &[0], &left_rows, 1, &hash,
             ProbeOptions { materialize_rows: true, materialize_after: 0,
                 stop_after: None, any: false, null_filter: None },
-            |left, right| {
+            None, |left, right| {
                 let id = match &right[0] {
                     typed::Cell::Numeric(Number::Unsigned(id)) => *id,
                     _ => panic!("expected right id"),
