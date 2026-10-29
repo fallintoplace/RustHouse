@@ -33,6 +33,7 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::IsNull(inner, negated) =>
             format!("({}) IS {}NULL", render_expr(inner), if *negated { "NOT " } else { "" }),
         ScalarExpr::Not(inner) => format!("NOT ({})", render_expr(inner)),
+        ScalarExpr::Abs(inner) => format!("abs({})", render_expr(inner)),
         ScalarExpr::NullIf(left, right) =>
             format!("nullIf({}, {})", render_expr(left), render_expr(right)),
         ScalarExpr::Coalesce(values) =>
