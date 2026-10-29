@@ -167,6 +167,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
             Number::Float(number) => Number::Float(number * number * number),
         },
         "EXP2" => Number::Float(number_as_float(value).exp2()),
+        "LOG1P" => Number::Float(number_as_float(value).ln_1p()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -545,6 +546,18 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("EXP2", Number::Unsigned(1024)).is_err());
         assert!(crate::parse_scalar_expression("exp2(amount)").is_ok());
         assert!(crate::parse_scalar_expression("exp2(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn log1p_handles_zero_and_rejects_negative_domain() {
+        assert!(matches!(
+            apply_unary_math("LOG1P", Number::Signed(0)),
+            Ok(Number::Float(value)) if value == 0.0
+        ));
+        assert!(apply_unary_math("LOG1P", Number::Signed(-1)).is_err());
+        assert!(apply_unary_math("LOG1P", Number::Signed(-2)).is_err());
+        assert!(crate::parse_scalar_expression("log1p(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("log1p(amount, 2)").is_err());
     }
 
 }
