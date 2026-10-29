@@ -40,6 +40,40 @@ fn validate_repair_jobs(jobs: &[RepairJob]) -> Result<(), &'static str> {
     Ok(())
 }
 
+// Work with borrowed jobs until the scheduler knows which ones fit.
+// This avoids cloning every pending job when only a small batch is selected.
+fn plan_ranked_repairs<'a>(
+    jobs: impl Iterator<Item = &'a RepairJob>,
+    byte_budget: u64,
+    job_limit: usize,
+) -> Vec<RepairJob> {
+    if job_limit == 0 {
+        return Vec::new();
+    }
+    let eligible = jobs.filter(|job| job.bytes <= byte_budget);
+    if job_limit == 1 {
+        return eligible
+            .min_by(|left, right| repair_priority(left, right))
+            .cloned()
+            .into_iter()
+            .collect();
+    }
+    let mut ranked: Vec<&RepairJob> = eligible.collect();
+    ranked.sort_unstable_by(|left, right| repair_priority(left, right));
+    let mut selected = Vec::with_capacity(ranked.len().min(job_limit));
+    let mut remaining = byte_budget;
+    for job in ranked {
+        if selected.len() == job_limit {
+            break;
+        }
+        if job.bytes <= remaining {
+            remaining -= job.bytes;
+            selected.push(job.clone());
+        }
+    }
+    selected
+}
+
 /// Prioritize severe under-replication, then smaller objects, then shard ID.
 /// The result is a schedule only; a transfer engine must execute it.
 pub fn plan_repairs(
@@ -51,32 +85,7 @@ pub fn plan_repairs(
         return Err("repair job count exceeds bound");
     }
     validate_repair_jobs(jobs)?;
-    if job_limit == 0 {
-        return Ok(Vec::new());
-    }
-    if job_limit == 1 {
-        return Ok(jobs
-            .iter()
-            .filter(|job| job.bytes <= byte_budget)
-            .min_by(|left, right| repair_priority(left, right))
-            .cloned()
-            .into_iter()
-            .collect());
-    }
-    let mut ranked: Vec<&RepairJob> = jobs.iter().collect();
-    ranked.sort_unstable_by(|left, right| repair_priority(left, right));
-    let mut selected = Vec::with_capacity(jobs.len().min(job_limit));
-    let mut remaining = byte_budget;
-    for job in ranked {
-        if selected.len() == job_limit {
-            break;
-        }
-        if job.bytes <= remaining {
-            remaining -= job.bytes;
-            selected.push((*job).clone());
-        }
-    }
-    Ok(selected)
+    Ok(plan_ranked_repairs(jobs.iter(), byte_budget, job_limit))
 }
 
 #[cfg(test)]
@@ -154,6 +163,9 @@ pub fn plan_repairs_excluding(
     byte_budget: u64,
     job_limit: usize,
 ) -> Result<Vec<RepairJob>, &'static str> {
+    if jobs.len() > MAX_REPAIR_JOBS || job_limit > MAX_REPAIR_JOBS {
+        return Err("repair job count exceeds bound");
+    }
     if in_flight.len() > MAX_REPAIR_JOBS {
         return Err("too many in-flight repair shards");
     }
@@ -164,12 +176,11 @@ pub fn plan_repairs_excluding(
             return Err("invalid or duplicate in-flight repair shard");
         }
     }
-    let pending = jobs
-        .iter()
-        .filter(|job| !excluded.contains(job.shard.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    plan_repairs(&pending, byte_budget, job_limit)
+    Ok(plan_ranked_repairs(
+        jobs.iter().filter(|job| !excluded.contains(job.shard.as_str())),
+        byte_budget,
+        job_limit,
+    ))
 }
 
 #[cfg(test)]
@@ -177,6 +188,28 @@ mod in_flight_repair_tests {
     use super::*;
 
     #[test]
+    #[test]
+    fn borrowed_plan_matches_full_plan_when_nothing_is_in_flight() {
+        let jobs = (0..1024)
+            .map(|index| RepairJob {
+                shard: format!("shard_{index:04}"),
+                bytes: 1 + index % 17,
+                missing_replicas: 1 + (index % 3) as u8,
+            })
+            .collect::<Vec<_>>();
+        for limit in [0, 1, 2, 8, 100, 1024] {
+            for budget in [0, 1, 13, 128, 1024] {
+                assert_eq!(
+                    plan_repairs_excluding(&jobs, &[], budget, limit).unwrap(),
+                    plan_repairs(&jobs, budget, limit).unwrap(),
+                );
+            }
+        }
+        let selected = plan_repairs_excluding(&jobs, &["shard_0001"], 256, 3).unwrap();
+        assert!(selected.iter().all(|job| job.shard != "shard_0001"));
+        assert!(plan_repairs_excluding(&jobs, &[], 100, MAX_REPAIR_JOBS + 1).is_err());
+    }
+
     fn avoids_duplicate_urgent_repairs() {
         let jobs = [
             RepairJob { shard: "urgent".into(), bytes: 20, missing_replicas: 3 },
