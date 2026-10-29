@@ -5,6 +5,7 @@ Uses a trusted reference file; this is not an official database benchmark.
 import argparse
 import concurrent.futures
 import json
+import math
 import statistics
 import subprocess
 import time
@@ -13,10 +14,12 @@ from pathlib import Path
 
 def run_readers(binary, part, sql, expected, *, clients=4, rounds=3,
                 timeout=120, execute=None):
-    if not 1 <= clients <= 64 or not 1 <= rounds <= 100 or clients * rounds > 256:
+    if (type(clients) is not int or type(rounds) is not int
+            or not 1 <= clients <= 64 or not 1 <= rounds <= 100
+            or clients * rounds > 256):
         raise ValueError("clients*rounds must be within 1..256 and clients within 1..64")
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
     if not isinstance(expected, bytes) or len(expected) > 1024 * 1024:
         raise ValueError("expected result must be at most 1 MiB")
     if not sql.strip() or len(sql.encode("utf-8")) > 65536:
