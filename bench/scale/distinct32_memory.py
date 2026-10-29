@@ -50,8 +50,15 @@ def write_tsv(path, rows, layout, duplicates):
 
 def benchmark(binary, rows=32768, layout="sparse", duplicates=2,
               runs=3, timeout=120, max_rss_mib=None, sample_ms=25):
-    if runs < 1 or not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("runs must be positive and timeout finite")
+    if type(runs) is not int or not 1 <= runs <= 100:
+        raise ValueError("runs must be in 1..100")
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    if (type(sample_ms) is not int or not 1 <= sample_ms <= 1000
+            or (max_rss_mib is not None
+                and (type(max_rss_mib) not in (int, float)
+                     or not math.isfinite(max_rss_mib) or max_rss_mib <= 0))):
+        raise ValueError("invalid process sampling budget")
     with tempfile.TemporaryDirectory(prefix="rusthouse-distinct32-memory-") as temp:
         root = Path(temp)
         fixture = root / "events.tsv"

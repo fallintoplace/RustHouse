@@ -45,6 +45,18 @@ class ExactDistinctMemoryFixtureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             list(distinct_values(5, "bad"))
 
+    def test_invalid_memory_benchmark_budgets_fail_before_loading_fixture(self):
+        from bench.scale.distinct32_memory import benchmark
+        for kwargs in (
+            {"runs": True}, {"runs": 101}, {"runs": 0},
+            {"timeout": float("nan")}, {"timeout": float("inf")},
+            {"sample_ms": True}, {"sample_ms": 0},
+            {"max_rss_mib": -1}, {"max_rss_mib": float("inf")},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    benchmark("no-binary", **kwargs)
+
     def test_buffer_flush_boundaries_preserve_all_duplicates(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "distinct.tsv"
