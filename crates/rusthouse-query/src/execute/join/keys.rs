@@ -35,9 +35,20 @@ pub(super) fn resolve(
         })
 }
 
+fn numeric_join_key(number: Number) -> super::super::NumberKey {
+    // Integer JOIN comparison is by numeric value, not source signedness.
+    match number {
+        Number::Signed(value) if value >= 0 =>
+            super::super::NumberKey::Unsigned(value as u128),
+        other => super::super::NumberKey::from(other),
+    }
+}
+
 fn join_key(value: &typed::Cell) -> typed::Key {
     match value {
         typed::Cell::Uuid(text) => typed::Key::UuidBytes(typed::uuid_key(text)),
+        typed::Cell::Numeric(number) =>
+            typed::Key::Numeric(numeric_join_key(*number)),
         _ => value.key(),
     }
 }
@@ -128,7 +139,7 @@ pub(super) fn batch_key_into(
                 put_key(
                     result,
                     position,
-                    typed::Key::Numeric(super::super::NumberKey::from(value)),
+                    typed::Key::Numeric(numeric_join_key(value)),
                 );
             }
         }
