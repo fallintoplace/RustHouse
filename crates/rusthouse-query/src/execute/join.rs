@@ -1151,12 +1151,39 @@ fn execute_streaming_inner_count<W: Write>(
         output.write_all(b"count\n")?;
         return Ok(());
     }
-    if (left_count == 0 && query.kind != JoinType::Full)
-        || (right_count == 0 && query.kind == JoinType::Inner) {
+    if (left_count == 0 && matches!(query.kind, JoinType::Inner | JoinType::Left))
+        || (right_count == 0 && matches!(query.kind, JoinType::Inner | JoinType::Right)) {
         output.write_all(b"count\n0\n")?;
         return Ok(());
     }
-    let count = if right_count <= MAX_STREAM_BUILD_ROWS &&
+    let count = if query.kind == JoinType::Right {
+        if left_count > MAX_STREAM_BUILD_ROWS {
+            return Err(invalid("RIGHT JOIN COUNT exceeds bounded left build capacity"));
+        }
+        let keep = count_build_columns(
+            left_keys, null_filter, 0, left_names.len(),
+        );
+        let left_rows = read_projected_build_rows(
+            left_path, left_names, &keep, left_count,
+            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
+        )?;
+        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+        for (index, row) in left_rows.iter().enumerate() {
+            if let Some(key) = row_key(row, left_keys) {
+                hash.entry(key).and_modify(|bucket| bucket.push(index))
+                    .or_insert(Bucket::One(index));
+            }
+        }
+        probe_right_outer(
+            right_path, right_names, right_keys,
+            &left_rows, left_names.len(), &hash,
+            ProbeOptions {
+                materialize_rows: false, materialize_after: 0,
+                stop_after: Some(usize::MAX), any: query.any, null_filter,
+            },
+            |_, _| Ok(()),
+        )?
+    } else if right_count <= MAX_STREAM_BUILD_ROWS &&
         (matches!(query.kind, JoinType::Left | JoinType::Full)
             || right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
         let keep = count_build_columns(
