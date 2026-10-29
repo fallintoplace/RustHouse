@@ -30,6 +30,14 @@ class GroupedBenchmarkComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing grouped"):
             parse_benchmark(output().replace("max             6.000          7.000             10.92\n", ""))
 
+    def test_rejects_impossible_tail_and_throughput(self):
+        with self.assertRaisesRegex(ValueError, "p90"):
+            parse_benchmark(output().replace("min             4.000          5.000",
+                                              "min             4.000          3.000"))
+        with self.assertRaisesRegex(ValueError, "positive"):
+            parse_benchmark(output().replace("5.000             16.38",
+                                              "5.000             0.00"))
+
     def test_rejects_zero_and_incompatible_samples(self):
         with self.assertRaisesRegex(ValueError, "positive"):
             parse_benchmark(output(min_ms=0.0))
