@@ -129,6 +129,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "LOG10" => Number::Float(number_as_float(value).log10()),
         "SIN" => Number::Float(number_as_float(value).sin()),
         "COS" => Number::Float(number_as_float(value).cos()),
+        "TAN" => Number::Float(number_as_float(value).tan()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -347,6 +348,20 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("cos(amount)").is_ok());
         assert!(crate::parse_scalar_expression("cos(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn tan_supports_zero_and_quarter_turns() {
+        assert!(matches!(
+            apply_unary_math("TAN", Number::Signed(0)),
+            Ok(Number::Float(value)) if value == 0.0
+        ));
+        assert!(matches!(
+            apply_unary_math("TAN", Number::Float(std::f64::consts::FRAC_PI_4)),
+            Ok(Number::Float(value)) if (value - 1.0).abs() < 1e-12
+        ));
+        assert!(crate::parse_scalar_expression("tan(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("tan(amount, 2)").is_err());
     }
 
 }
