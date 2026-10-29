@@ -68,7 +68,7 @@ fn scan<W: Write>(
                             output.write_all(b"\t")?;
                         }
                         let mut left_cell = None;
-                        let value = if *index < width {
+                        let value: &typed::Cell = if *index < width {
                             left_cell.get_or_insert_with(|| typed::cell(&batch[*index], row_index))
                         } else {
                             &right_rows[right_index][*index - width]
