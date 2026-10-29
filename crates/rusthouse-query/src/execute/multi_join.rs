@@ -1,7 +1,7 @@
 //! Bounded left-deep execution for chained joins over persistent tables.
 use super::{ExecutionError, typed};
 use crate::{JoinColumn, JoinSelect, JoinStep, JoinType};
-use rusthouse_storage::inspect_query_source;
+use rusthouse_storage::{inspect_query_source, TypedQueryReader};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -267,6 +267,102 @@ fn output_columns(
     Ok(selected)
 }
 
+/// Small-dimensional INNER join state for streaming COUNT(*). The fact side
+/// is read in batches and never retained, so neither fact cardinality nor
+/// intermediate match multiplicity is subject to the row buffer cap.
+struct CountBuild {
+    left_keys: Vec<usize>,
+    rows: Vec<Vec<typed::Cell>>,
+    hash: HashMap<Vec<typed::Key>, Bucket>,
+    any: bool,
+}
+
+fn count_join_combinations(
+    row: &mut Vec<typed::Cell>,
+    builds: &[CountBuild],
+    index: usize,
+    null_filter: Option<(usize, bool)>,
+    total: &mut u64,
+) -> Result<(), ExecutionError> {
+    if index == builds.len() {
+        if null_filter.is_none_or(|(column, not_null)| {
+            matches!(row[column], typed::Cell::Null) != not_null
+        }) {
+            *total = total.checked_add(1)
+                .ok_or_else(|| invalid("JOIN COUNT overflow"))?;
+        }
+        return Ok(());
+    }
+    let build = &builds[index];
+    let Some(key) = row_key(row, &build.left_keys) else { return Ok(()); };
+    let Some(matches) = build.hash.get(&key) else { return Ok(()); };
+    let old_len = row.len();
+    for &position in matches.iter().take(if build.any { 1 } else { usize::MAX }) {
+        row.extend_from_slice(&build.rows[position]);
+        count_join_combinations(row, builds, index + 1, null_filter, total)?;
+        row.truncate(old_len);
+    }
+    Ok(())
+}
+
+fn stream_inner_join_count<W: Write>(
+    query: &JoinSelect,
+    relations: &[Relation],
+    paths: &[PathBuf],
+    initial_step: &JoinStep,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let mut builds = Vec::with_capacity(paths.len() - 1);
+    let mut retained = 0usize;
+    for (step_index, step) in std::iter::once(initial_step)
+        .chain(query.steps.iter())
+        .enumerate()
+    {
+        let right = &relations[step_index + 1];
+        let left_width = right.start;
+        let (left_keys, right_keys) =
+            step_keys(step, &relations[..=step_index + 1], left_width)?;
+        let rows = read_rows(
+            &paths[step_index + 1], &right.names, right.rows,
+            MAX_INPUT_ROWS, MAX_STREAM_BUILD_BYTES,
+        )?;
+        for row in &rows {
+            retained = retained.checked_add(retained_row_bytes(row)?)
+                .ok_or_else(|| invalid("JOIN COUNT build size overflow"))?;
+            if retained > MAX_CHAIN_BYTES {
+                return Err(invalid("JOIN COUNT exceeds 64 MiB dimension memory budget"));
+            }
+        }
+        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::new();
+        for (position, row) in rows.iter().enumerate() {
+            if let Some(key) = row_key(row, &right_keys) {
+                hash.entry(key)
+                    .and_modify(|bucket| bucket.push(position))
+                    .or_insert(Bucket::One(position));
+            }
+        }
+        builds.push(CountBuild { left_keys, rows, hash, any: step.any });
+    }
+    let null_filter = query.where_null.as_ref()
+        .map(|(column, not_null)| {
+            column_index(relations, column).map(|index| (index, *not_null))
+        }).transpose()?;
+    let mut reader = TypedQueryReader::open(&paths[0], &relations[0].names)?;
+    let mut total = 0u64;
+    while let Some(batch) = reader.next_batch()? {
+        for index in 0..batch[0].len() {
+            let mut row = batch.iter().map(|column| typed::cell(column, index))
+                .collect::<Vec<_>>();
+            count_join_combinations(&mut row, &builds, 0, null_filter, &mut total)?;
+        }
+    }
+    output.write_all(b"count\\n")?;
+    if query.offset == 0 {
+        writeln!(output, "{total}")?;
+    }
+    Ok(())
+}
+
 /// Execute a chain of three or more bounded joins. No output is written before
 /// all input validation, row-limit checks, and final ordering have succeeded.
 pub fn execute_multi_join<W: Write>(
@@ -341,6 +437,15 @@ pub fn execute_multi_join<W: Write>(
             write_join_header(output, &selected)?;
         }
         return Ok(());
+    }
+
+    // COUNT(*) does not need retained join rows. Stream an arbitrarily large
+    // fact side while probing bounded dimensions, including duplicate keys.
+    if query.aggregate == Some(crate::JoinAggregate::CountStar)
+        && std::iter::once(&initial_step).chain(query.steps.iter())
+            .all(|step| step.kind == JoinType::Inner)
+    {
+        return stream_inner_join_count(query, &relations, paths, &initial_step, output);
     }
 
     let mut rows = read_rows(
@@ -507,5 +612,47 @@ mod bucket_tests {
         bucket.push(7);
         bucket.push(9);
         assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![3, 7, 9]);
+    }
+}
+
+#[cfg(test)]
+mod streamed_count_tests {
+    use super::*;
+    use super::super::Number;
+
+    #[test]
+    fn counts_duplicate_dimension_keys_without_retaining_match_rows() {
+        let make = |value: u128| typed::Cell::Numeric(Number::Unsigned(value));
+        let rows = vec![vec![make(7)], vec![make(7)], vec![make(8)]];
+        let mut hash = HashMap::new();
+        for (index, row) in rows.iter().enumerate() {
+            let key = row_key(row, &[0]).unwrap();
+            hash.entry(key)
+                .and_modify(|entry: &mut Bucket| entry.push(index))
+                .or_insert(Bucket::One(index));
+        }
+        let build = CountBuild { left_keys: vec![0], rows, hash, any: false };
+        let mut fact = vec![make(7)];
+        let mut total = 0;
+        count_join_combinations(&mut fact, &[build], 0, None, &mut total).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(fact.len(), 1);
+    }
+
+    #[test]
+    fn skips_null_join_keys_and_obeys_any_cardinality() {
+        let make = |value: u128| typed::Cell::Numeric(Number::Unsigned(value));
+        let rows = vec![vec![make(7)], vec![make(7)]];
+        let mut hash = HashMap::new();
+        for (index, row) in rows.iter().enumerate() {
+            let key = row_key(row, &[0]).unwrap();
+            hash.entry(key)
+                .and_modify(|entry: &mut Bucket| entry.push(index))
+                .or_insert(Bucket::One(index));
+        }
+        let build = CountBuild { left_keys: vec![0], rows, hash, any: true };
+        let mut total = 0;
+        count_join_combinations(&mut vec![make(7)], &[build], 0, None, &mut total).unwrap();
+        assert_eq!(total, 1);
     }
 }
