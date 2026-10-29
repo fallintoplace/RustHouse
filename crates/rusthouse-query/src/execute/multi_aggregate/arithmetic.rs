@@ -168,6 +168,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         },
         "EXP2" => Number::Float(number_as_float(value).exp2()),
         "LOG1P" => Number::Float(number_as_float(value).ln_1p()),
+        "EXPM1" => Number::Float(number_as_float(value).exp_m1()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -558,6 +559,21 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("LOG1P", Number::Signed(-2)).is_err());
         assert!(crate::parse_scalar_expression("log1p(amount)").is_ok());
         assert!(crate::parse_scalar_expression("log1p(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn expm1_handles_zero_and_rejects_exponential_overflow() {
+        assert!(matches!(
+            apply_unary_math("EXPM1", Number::Signed(0)),
+            Ok(Number::Float(value)) if value == 0.0
+        ));
+        assert!(matches!(
+            apply_unary_math("EXPM1", Number::Float(1e-12)),
+            Ok(Number::Float(value)) if (value - 1e-12).abs() < 1e-20
+        ));
+        assert!(apply_unary_math("EXPM1", Number::Signed(1000)).is_err());
+        assert!(crate::parse_scalar_expression("expm1(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("expm1(amount, 2)").is_err());
     }
 
 }
