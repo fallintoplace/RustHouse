@@ -28,7 +28,7 @@ use json_array::JsonArraySink;
 use json_compact_each_row::JsonCompactEachRowWriter;
 use jsonl::JsonlWriter;
 use markdown::MarkdownWriter;
-use rusthouse_query::{Ddl, Source, execute, explain_select, parse_ddl, parse_join, parse_select};
+use rusthouse_query::{Ddl, Source, execute, explain_join, explain_select, parse_ddl, parse_join, parse_select};
 use rusthouse_storage::{inspect_query_source, resolve_database_table};
 use sql_values::SqlValuesWriter;
 use std::io::{self, Write};
@@ -283,6 +283,38 @@ fn query_parameters(
     ))
 }
 
+/// Split a SQL EXPLAIN PLAN prefix on word boundaries. Do not accept
+/// arbitrary EXPLAIN modes because they require distinct planner output.
+fn extract_explain_sql(sql: &str) -> Result<(&str, bool), &'static str> {
+    let trimmed = sql.trim_start();
+    let mut words = trimmed.splitn(2, char::is_whitespace);
+    let Some(first) = words.next() else {
+        return Ok((sql, false));
+    };
+    if !first.eq_ignore_ascii_case("EXPLAIN") {
+        return Ok((sql, false));
+    }
+    let remaining = words.next().unwrap_or("").trim_start();
+    if remaining.is_empty() {
+        return Err("EXPLAIN requires a SELECT statement");
+    }
+    let mut mode_words = remaining.splitn(2, char::is_whitespace);
+    let mode_or_query = mode_words.next().unwrap_or("");
+    let inner = if mode_or_query.eq_ignore_ascii_case("PLAN") {
+        mode_words.next().unwrap_or("").trim_start()
+    } else {
+        remaining
+    };
+    if !inner
+        .split_ascii_whitespace()
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case("SELECT"))
+    {
+        return Err("only EXPLAIN PLAN SELECT is supported");
+    }
+    Ok((inner, true))
+}
+
 /// Discover the server's read-only mode and resource limits without opening files.
 fn capabilities_response(config: &Config) -> Response {
     let source = match (config.part.is_some(), config.database.is_some()) {
@@ -428,6 +460,44 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         return Response::text("400 Bad Request", "format is unsupported for EXPLAIN");
     }
     let format = sql_format.unwrap_or(format);
+
+    // ClickHouse accepts EXPLAIN as a SQL statement, not only through the
+    // separate RustHouse /explain endpoint. Only the default PLAN mode can
+    // use the existing read-only logical planner. Other modes are rejected
+    // instead of presenting a misleading physical/AST plan.
+    let (sql, explain_sql) = match extract_explain_sql(sql) {
+        Ok(result) => result,
+        Err(message) => return Response::text("400 Bad Request", message),
+    };
+    if explain_sql && path == "/explain" {
+        return Response::text("400 Bad Request", "nested EXPLAIN is unsupported");
+    }
+    if explain_sql && sql_format.is_some() {
+        return Response::text("400 Bad Request", "SQL FORMAT is unsupported for EXPLAIN");
+    }
+    if explain_sql {
+        let mut select = match parse_join(sql) {
+            Ok(Some(join)) => {
+                return Response::text(
+                    "200 OK",
+                    &format!("Logical plan (no data read):\n{}\n", explain_join(&join)),
+                );
+            }
+            Ok(None) => match parse_select(sql) {
+                Ok(select) => select,
+                Err(error) => {
+                    return Response::text("400 Bad Request", &format!("{error}\n"));
+                }
+            },
+            Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+        };
+        let cap = config.max_rows.min(250_000);
+        select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
+        return Response::text(
+            "200 OK",
+            &format!("Logical plan (no data read):\n{}\n", explain_select(&select)),
+        );
+    }
     if sql
         .split_ascii_whitespace()
         .next()

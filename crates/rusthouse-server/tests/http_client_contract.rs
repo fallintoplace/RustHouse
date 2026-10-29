@@ -308,3 +308,54 @@ fn clickhouse_http_max_result_rows_validates_strict_numeric_values() {
         assert_eq!(response.status, "400 Bad Request", "{target}");
     }
 }
+#[test]
+fn clickhouse_explain_plan_sql_works_over_get_and_post() {
+    let explicit = handle_request(
+        "POST",
+        "/",
+        b"EXPLAIN PLAN SELECT number FROM numbers(100) WHERE number >= 10 LIMIT 5",
+        &config(),
+    );
+    assert_eq!(explicit.status, "200 OK");
+    assert_eq!(explicit.content_type, "text/plain; charset=utf-8");
+    let plan = String::from_utf8(explicit.body).unwrap();
+    assert!(plan.contains("Logical plan (no data read)"));
+    assert!(plan.contains("Source: numbers(100)"));
+    assert!(plan.contains("Filter:"));
+
+    let implicit = handle_request(
+        "GET",
+        "/?query=explain+select+number+from+numbers%282%29",
+        b"",
+        &config(),
+    );
+    assert_eq!(implicit.status, "200 OK");
+    assert!(String::from_utf8(implicit.body).unwrap().contains("Source: numbers(2)"));
+
+    let capped = handle_request(
+        "POST",
+        "/?max_result_rows=2",
+        b"EXPLAIN SELECT number FROM numbers(10)",
+        &config(),
+    );
+    assert_eq!(capped.status, "200 OK");
+    assert!(String::from_utf8(capped.body).unwrap().contains("Limit: 2"));
+}
+
+#[test]
+fn clickhouse_explain_sql_rejects_mutations_and_unsupported_modes() {
+    for sql in [
+        "EXPLAIN",
+        "EXPLAIN PLAN",
+        "EXPLAIN AST SELECT 1",
+        "EXPLAIN PIPELINE SELECT 1",
+        "EXPLAIN INSERT INTO t VALUES (1)",
+        "EXPLAIN PLAN DROP TABLE t",
+        "EXPLAIN SELECT 1 FORMAT CSV",
+    ] {
+        let response = handle_request("POST", "/", sql.as_bytes(), &config());
+        assert_eq!(response.status, "400 Bad Request", "{sql}");
+    }
+    let nested = handle_request("POST", "/explain", b"EXPLAIN SELECT 1", &config());
+    assert_eq!(nested.status, "400 Bad Request");
+}

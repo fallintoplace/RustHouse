@@ -78,6 +78,11 @@ Database schema reads use the same shared lock and validation as SQL queries.
 Only one URL-encoded `table` parameter is accepted. Schema responses share
 the server's 16 MiB response limit.
 
+ClickHouse-style `EXPLAIN SELECT ...` and `EXPLAIN PLAN SELECT ...` are
+also accepted through the ordinary HTTP SQL endpoint. They return RustHouse's
+logical plan without reading data, not ClickHouse's physical pipeline.
+Unsupported EXPLAIN AST, SYNTAX, PIPELINE, and mutation plans are rejected.
+
 `GET /explain?query=...` and `POST /explain` with a raw SELECT body
 return the bounded logical plan as plain text. The endpoint parses SQL but does
 not inspect parts or read rows. It uses the same 65536-byte input limit and
