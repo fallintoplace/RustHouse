@@ -16,6 +16,8 @@ pub enum ScalarExpr {
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
     Divide(Box<ScalarExpr>, Box<ScalarExpr>),
+    And(Box<ScalarExpr>, Box<ScalarExpr>),
+    Or(Box<ScalarExpr>, Box<ScalarExpr>),
     Compare(Box<ScalarExpr>, Operator, Box<ScalarExpr>),
     CaseWhen(Box<ScalarExpr>, Box<ScalarExpr>, Box<ScalarExpr>),
 }
@@ -43,6 +45,8 @@ impl ScalarExpr {
             | Self::Subtract(left, right)
             | Self::Multiply(left, right)
             | Self::Divide(left, right)
+            | Self::And(left, right)
+            | Self::Or(left, right)
             | Self::Compare(left, _, right) => {
                 left.collect_referenced_columns(out, seen);
                 right.collect_referenced_columns(out, seen);
@@ -71,8 +75,9 @@ fn parse_arithmetic_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError
     Ok(expr)
 }
 
-/// Comparison has lower precedence than addition and multiplication.
-pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+/// Arithmetic binds before comparisons, comparisons before AND, and
+/// AND before OR. CASE WHEN conditions use the same expression parser.
+fn parse_comparison_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     let left = parse_arithmetic_tokens(parser)?;
     if let Some(Token::Operator(operator)) = parser.tokens.get(parser.index) {
         let operator = *operator;
@@ -86,6 +91,24 @@ pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr,
     } else {
         Ok(left)
     }
+}
+
+fn parse_and_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    let mut left = parse_comparison_tokens(parser)?;
+    while parser.keyword("AND") {
+        let right = parse_comparison_tokens(parser)?;
+        left = ScalarExpr::And(Box::new(left), Box::new(right));
+    }
+    Ok(left)
+}
+
+pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    let mut left = parse_and_tokens(parser)?;
+    while parser.keyword("OR") {
+        let right = parse_and_tokens(parser)?;
+        left = ScalarExpr::Or(Box::new(left), Box::new(right));
+    }
+    Ok(left)
 }
 
 pub fn parse_scalar_expression(sql: &str) -> Result<ScalarExpr, ParseError> {
