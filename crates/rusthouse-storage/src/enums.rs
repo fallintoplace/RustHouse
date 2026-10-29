@@ -98,7 +98,7 @@ pub fn read_enum_column<R: Read>(
     Ok(EnumColumn { codes, variants })
 }
 
-fn skip_space(bytes: &[u8], position: &mut usize) {
+fn skip_enum_type_whitespace(bytes: &[u8], position: &mut usize) {
     while bytes.get(*position).is_some_and(u8::is_ascii_whitespace) {
         *position += 1;
     }
@@ -192,16 +192,16 @@ fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
     let mut position = 0;
     let mut variants = BTreeMap::new();
     let mut names = HashSet::new();
-    skip_space(bytes, &mut position);
+    skip_enum_type_whitespace(bytes, &mut position);
 
     while position < bytes.len() {
         let name = parse_enum_label(bytes, &mut position)?;
-        skip_space(bytes, &mut position);
+        skip_enum_type_whitespace(bytes, &mut position);
         if bytes.get(position) != Some(&b'=') {
             return None;
         }
         position += 1;
-        skip_space(bytes, &mut position);
+        skip_enum_type_whitespace(bytes, &mut position);
 
         let code = parse_enum_code(inner, bytes, &mut position)?;
         if width == 8 && !(-128..=127).contains(&code) {
@@ -215,7 +215,7 @@ fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
             return None;
         }
 
-        skip_space(bytes, &mut position);
+        skip_enum_type_whitespace(bytes, &mut position);
         if position == bytes.len() {
             break;
         }
@@ -223,7 +223,7 @@ fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
             return None;
         }
         position += 1;
-        skip_space(bytes, &mut position);
+        skip_enum_type_whitespace(bytes, &mut position);
         if position == bytes.len() {
             return None;
         }
