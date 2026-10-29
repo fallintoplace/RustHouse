@@ -16,14 +16,30 @@ use std::path::Path;
 
 const MAX_BUFFERED_ROWS: usize = 200_000;
 
-fn remember_distinct_text(seen: &mut HashSet<Vec<u8>>, value: &[u8]) -> Result<(), ExecutionError> {
+const MAX_TEXT_DISTINCT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Account for retained String identity bytes and per-entry storage rather
+/// than relying on a cardinality bound for potentially very wide values.
+fn remember_distinct_text(
+    seen: &mut HashSet<Vec<u8>>,
+    retained_bytes: &mut usize,
+    value: &[u8],
+) -> Result<(), ExecutionError> {
     if seen.contains(value) {
         return Ok(());
     }
     if seen.len() >= MAX_BUFFERED_ROWS {
         return Err(ExecutionError::Invalid("too many distinct rows".into()));
     }
+    let bytes = value.len()
+        .checked_add(std::mem::size_of::<Vec<u8>>() + 32)
+        .and_then(|size| retained_bytes.checked_add(size))
+        .filter(|&size| size <= MAX_TEXT_DISTINCT_BYTES)
+        .ok_or_else(|| ExecutionError::Invalid(
+            "COUNT DISTINCT String exceeds 64 MiB retained memory budget".into()
+        ))?;
     seen.insert(value.to_vec());
+    *retained_bytes = bytes;
     Ok(())
 }
 
@@ -1094,6 +1110,7 @@ pub(super) fn execute_typed<W: Write>(
     };
     // Borrow decoded strings on duplicate probes. Own only new distinct values.
     let mut count_distinct_text = HashSet::<Vec<u8>>::new();
+    let mut count_distinct_text_bytes = 0usize;
     // UUIDs have a fixed-size identity. Hash their bytes rather than allocating
     // a formatted String for each scanned row.
     let mut count_distinct_uuids = HashSet::<[u8; 16]>::new();
@@ -1373,14 +1390,14 @@ pub(super) fn execute_typed<W: Write>(
                         let value = strings.get(index).ok_or_else(|| {
                             ExecutionError::Invalid("invalid String row index".into())
                         })?;
-                        remember_distinct_text(&mut count_distinct_text, value)?;
+                        remember_distinct_text(&mut count_distinct_text, &mut count_distinct_text_bytes, value)?;
                     }
                     TypedColumn::NullableText { values, nulls } => {
                         if nulls[index] == 0 {
                             let value = values.get(index).ok_or_else(|| {
                                 ExecutionError::Invalid("invalid String row index".into())
                             })?;
-                            remember_distinct_text(&mut count_distinct_text, value)?;
+                            remember_distinct_text(&mut count_distinct_text, &mut count_distinct_text_bytes, value)?;
                         }
                     }
                     TypedColumn::Uuid(values) => {
@@ -2287,5 +2304,31 @@ mod narrow_group_bucket_tests {
             [Some(0), None, Some(65535), Some(1)]);
         let wide = TypedColumn::Numeric(NumericColumn::UInt32(vec![1]));
         assert_eq!(dense_group_bucket(&wide, 0), None);
+    }
+}
+
+#[cfg(test)]
+mod count_distinct_text_budget_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_strings_do_not_charge_memory_twice() {
+        let mut seen = HashSet::new();
+        let mut retained = 0usize;
+        remember_distinct_text(&mut seen, &mut retained, b"same").unwrap();
+        let charged = retained;
+        remember_distinct_text(&mut seen, &mut retained, b"same").unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(retained, charged);
+    }
+
+    #[test]
+    fn rejects_oversized_new_text_before_allocating_hash_entry() {
+        let mut seen = HashSet::new();
+        let mut retained = 0usize;
+        let value = vec![b'x'; MAX_TEXT_DISTINCT_BYTES];
+        assert!(remember_distinct_text(&mut seen, &mut retained, &value).is_err());
+        assert_eq!(retained, 0);
+        assert!(seen.is_empty());
     }
 }
