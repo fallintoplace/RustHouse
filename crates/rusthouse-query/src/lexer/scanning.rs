@@ -43,9 +43,12 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
         }
     }
     advance_ascii_digits(bytes, index);
+    let has_whole_digits = *index > start + usize::from(bytes[start] == b'-');
     if bytes.get(*index) == Some(&b'.') {
         *index += 1;
-        require_digit(bytes, *index, "expected digits after decimal point")?;
+        if !has_whole_digits {
+            require_digit(bytes, *index, "expected digits after decimal point")?;
+        }
         advance_ascii_digits(bytes, index);
     }
     scan_exponent(bytes, index)?;
@@ -135,6 +138,20 @@ pub(super) fn punctuation_token(byte: u8) -> Token {
 #[cfg(test)]
 mod exponent_tests {
     use super::*;
+
+    #[test]
+    fn accepts_trailing_dot_decimal_literals_without_accepting_bare_dot() {
+        for (input, expected) in [
+            ("1.", "1."), ("-12.", "-12."), ("1.e2", "1.e2"),
+            (".5", ".5"), ("-.5", "-.5"),
+        ] {
+            let mut index = 0;
+            assert_eq!(scan_number(input, &mut index).unwrap(),
+                Token::Number(expected.into()));
+            assert_eq!(index, input.len());
+        }
+        assert!(scan_number("-.",&mut 0).is_err());
+    }
 
     #[test]
     fn scans_signed_exponents_without_splitting_the_number() {
