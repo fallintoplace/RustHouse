@@ -91,12 +91,16 @@ fn decode_html_fields(line: &str, header: bool) -> io::Result<Vec<Cow<'_, str>>>
         .collect()
 }
 
-fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) -> io::Result<()> {
-    let (open, close) = if header {
-        (b"<th>".as_slice(), b"</th>".as_slice())
+fn cell_tags(header: bool) -> (&'static [u8], &'static [u8]) {
+    if header {
+        (b"<th>", b"</th>")
     } else {
-        (b"<td>".as_slice(), b"</td>".as_slice())
-    };
+        (b"<td>", b"</td>")
+    }
+}
+
+fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) -> io::Result<()> {
+    let (open, close) = cell_tags(header);
     for field in fields {
         output.write_all(open)?;
         write_cell(output, field)?;
@@ -106,11 +110,7 @@ fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) 
 }
 
 fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::Result<()> {
-    let (open, close) = if header {
-        (b"<th>".as_slice(), b"</th>".as_slice())
-    } else {
-        (b"<td>".as_slice(), b"</td>".as_slice())
-    };
+    let (open, close) = cell_tags(header);
     for field in line.split('\t') {
         output.write_all(open)?;
         write_cell(output, field)?;
