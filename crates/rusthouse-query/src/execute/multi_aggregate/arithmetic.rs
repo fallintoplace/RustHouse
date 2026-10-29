@@ -128,6 +128,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "LOG2" => Number::Float(number_as_float(value).log2()),
         "LOG10" => Number::Float(number_as_float(value).log10()),
         "SIN" => Number::Float(number_as_float(value).sin()),
+        "COS" => Number::Float(number_as_float(value).cos()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -332,6 +333,20 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("sin(amount)").is_ok());
         assert!(crate::parse_scalar_expression("sin(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn cos_supports_zero_and_half_turns() {
+        assert!(matches!(
+            apply_unary_math("COS", Number::Signed(0)),
+            Ok(Number::Float(value)) if value == 1.0
+        ));
+        assert!(matches!(
+            apply_unary_math("COS", Number::Float(std::f64::consts::PI)),
+            Ok(Number::Float(value)) if (value + 1.0).abs() < 1e-12
+        ));
+        assert!(crate::parse_scalar_expression("cos(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("cos(amount, 2)").is_err());
     }
 
 }
