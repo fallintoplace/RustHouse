@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Generate independent TSV references for all 22 full queries with DuckDB CLI."""
+import argparse
+import hashlib
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+
+from run import load_queries
+
+
+def generate(duckdb_binary, database, queries_dir, output_dir,
+             timeout=300, overwrite=False, execute=None):
+    if timeout <= 0:
+        raise ValueError("timeout must be positive")
+    queries = load_queries(Path(queries_dir))
+    if [number for number, _ in queries] != list(range(1, 23)):
+        raise ValueError("full canonical Q1-Q22 SQL corpus required")
+    output_dir = Path(output_dir)
+    destinations = [output_dir / f"q{n:02d}.tsv" for n, _ in queries]
+    if not overwrite and any(path.exists() for path in destinations):
+        raise ValueError("refusing to overwrite existing golden output")
+    if execute is None:
+        execute = lambda cmd: subprocess.run(
+            cmd, capture_output=True, timeout=timeout, check=False
+        )
+    generated = []
+    # Execute every query before publishing any output. A failed query cannot
+    # leave partial reference files that might be mistaken for verified goldens.
+    with tempfile.TemporaryDirectory(prefix="tpch-full-reference-") as work:
+        staging = Path(work)
+        for number, sql in queries:
+            cmd = [str(duckdb_binary), "-no-init", "-readonly", "-batch", "-list",
+                   "-noheader", "-separator", "\t", "-nullvalue", r"\N",
+                   str(database), "-c", sql]
+            result = execute(cmd)
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="replace")[-600:]
+                raise ValueError(f"q{number:02d}: DuckDB query failed: {stderr}")
+            if not isinstance(result.stdout, bytes):
+                raise ValueError("DuckDB output must be raw bytes")
+            output = result.stdout
+            (staging / f"q{number:02d}.tsv").write_bytes(output)
+            generated.append({"query": number,
+                              "sql_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
+                              "reference_sha256": hashlib.sha256(output).hexdigest(),
+                              "bytes": len(output)})
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for number, _ in queries:
+            (staging / f"q{number:02d}.tsv").replace(output_dir / f"q{number:02d}.tsv")
+    return {"engine": "duckdb", "queries": generated, "reference_checked": True,
+            "logical_input_equivalence_established": False,
+            "official_tpch_score": False}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--duckdb", default="duckdb")
+    parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--queries-dir", type=Path,
+                        default=Path(__file__).resolve().parent / "queries")
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--timeout", type=float, default=300)
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        report = generate(args.duckdb, args.database, args.queries_dir,
+                          args.output_dir, args.timeout, args.overwrite)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        parser.exit(1, f"TPC-H DuckDB golden generation failed: {error}\n")
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
