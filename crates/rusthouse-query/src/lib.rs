@@ -1427,37 +1427,33 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after GROUP".into()));
         }
-        let first_column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
-            let position = parser
-                .number()?
-                .parse::<usize>()
-                .map_err(|_| ParseError("GROUP BY position is too large".into()))?;
-            match &projection {
-                Projection::GroupedCount { column }
-                | Projection::GroupedDistinctCount { column, .. }
-                | Projection::GroupedAggregate { column, .. }
-                | Projection::GroupedAggregates { column, .. }
-                    if position == 1 =>
-                {
-                    column.clone()
-                }
-                Projection::GroupedMultiAggregates { columns, .. }
-                | Projection::GroupedMultiDistinctCount { columns, .. } => position
-                    .checked_sub(1)
-                    .and_then(|index| columns.get(index))
-                    .cloned()
-                    .ok_or_else(|| ParseError("GROUP BY position is out of range".into()))?,
-                _ => return Err(ParseError("GROUP BY position is out of range".into())),
-            }
-        } else {
-            parser.word()?
-        };
-        let mut group_columns = vec![first_column];
-        while parser.take(Token::Comma) {
+        let mut group_columns = Vec::new();
+        loop {
             if group_columns.len() >= 8 {
                 return Err(ParseError("GROUP BY supports at most 8 keys".into()));
             }
-            group_columns.push(parser.word()?);
+            let column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+                let position = parser.number()?.parse::<usize>()
+                    .map_err(|_| ParseError("GROUP BY position is too large".into()))?;
+                match &projection {
+                    Projection::GroupedCount { column }
+                    | Projection::GroupedDistinctCount { column, .. }
+                    | Projection::GroupedAggregate { column, .. }
+                    | Projection::GroupedAggregates { column, .. } if position == 1 => column.clone(),
+                    Projection::GroupedMultiCount { columns }
+                    | Projection::GroupedMultiAggregates { columns, .. }
+                    | Projection::GroupedMultiDistinctCount { columns, .. } => position
+                        .checked_sub(1).and_then(|index| columns.get(index)).cloned()
+                        .ok_or_else(|| ParseError("GROUP BY position is out of range".into()))?,
+                    _ => return Err(ParseError("GROUP BY position is out of range".into())),
+                }
+            } else {
+                parser.word()?
+            };
+            group_columns.push(column);
+            if !parser.take(Token::Comma) {
+                break;
+            }
         }
         match &projection {
             Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
