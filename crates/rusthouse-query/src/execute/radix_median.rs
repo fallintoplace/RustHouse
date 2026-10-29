@@ -81,17 +81,23 @@ fn count_column(
     prefixes: &[u128; 2],
     histogram: &mut [[u64; 256]; 2],
 ) -> Result<(), ExecutionError> {
+    let shared_prefix = prefixes[0] & prefix_mask == prefixes[1] & prefix_mask;
     let mut visit = |value: u128, row: usize| {
         if nulls.is_some_and(|map| map[row] != 0)
             || included.is_some_and(|mask| !mask[row])
         {
             return;
         }
-        for side in 0..2 {
-            if value & prefix_mask != prefixes[side] & prefix_mask {
-                continue;
+        if shared_prefix {
+            if value & prefix_mask == prefixes[0] & prefix_mask {
+                histogram[0][((value >> shift) & 255) as usize] += 1;
             }
-            histogram[side][((value >> shift) & 255) as usize] += 1;
+        } else {
+            for side in 0..2 {
+                if value & prefix_mask == prefixes[side] & prefix_mask {
+                    histogram[side][((value >> shift) & 255) as usize] += 1;
+                }
+            }
         }
     };
     macro_rules! unsigned {
@@ -123,7 +129,36 @@ fn count_column(
             "radix median requires a native integer column".into()
         )),
     }
+    if shared_prefix {
+        histogram[1] = histogram[0];
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod shared_histogram_tests {
+    use super::*;
+
+    #[test]
+    fn shared_prefixes_count_both_median_ranks_exactly() {
+        let values = NumericColumn::UInt16(vec![1, 2, 257, 258]);
+        let mut result = [[0u64; 256]; 2];
+        count_column(&values, None, None, 16, 8, 0, &[0, 0], &mut result).unwrap();
+        assert_eq!(result[0], result[1]);
+        assert_eq!(result[0][0], 2);
+        assert_eq!(result[0][1], 2);
+    }
+
+    #[test]
+    fn divergent_prefixes_keep_independent_counts() {
+        let values = NumericColumn::UInt16(vec![1, 2, 257, 258]);
+        let mut result = [[0u64; 256]; 2];
+        count_column(&values, None, None, 16, 0, u128::MAX << 8, &[0, 256], &mut result).unwrap();
+        assert_eq!(result[0][1], 1);
+        assert_eq!(result[0][2], 1);
+        assert_eq!(result[1][1], 1);
+        assert_eq!(result[1][2], 1);
+    }
 }
 
 /// Exact order statistics from bounded 256-bucket histograms. Each pass reads

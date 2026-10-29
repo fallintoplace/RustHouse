@@ -30,7 +30,8 @@ def region_at(index, groups):
 
 
 def emit(stream, rows, groups, batch_rows=8192):
-    if not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536:
+    if (type(rows) is not int or type(groups) is not int
+            or not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536):
         raise ValueError("unsupported row count or UInt16 group domain")
     if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("batch_rows must be in 1..1000000")
@@ -48,7 +49,8 @@ def reference(rows, groups):
     Cold bucket b appears at block b-1 + k*(groups-1). Its amount is
     1 + (10*block + 9) % 97. Evaluate only one residue cycle per bucket.
     """
-    if not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536:
+    if (type(rows) is not int or type(groups) is not int
+            or not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536):
         raise ValueError("unsupported row count or UInt16 group domain")
     counts = [0] * groups
     sums = [0] * groups
@@ -101,6 +103,12 @@ def scan(binary, directory, sql, golden, *, runs, warmups, timeout):
 
 
 def benchmark(binary, rows, groups, runs, warmups, timeout, scratch_dir=None):
+    if (type(runs) is not int or type(warmups) is not int
+            or runs < 1 or warmups < 0 or runs + warmups > 1000):
+        raise ValueError("grouped scan executions must total 1..1000")
+    if (type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
+        raise ValueError("grouped scan timeout must be finite and positive")
     counts, amounts = reference(rows, groups)
     with tempfile.TemporaryDirectory(prefix="rusthouse-grouped-analytics-", dir=scratch_dir) as root:
         directory = Path(root) / "db"
