@@ -11,6 +11,9 @@ pub(super) fn literal_bytes(tokens: &[LikeToken]) -> Option<Vec<u8>> {
 }
 
 pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError> {
+    if !pattern.bytes().any(|byte| matches!(byte, b'%' | b'_' | b'\\')) {
+        return Ok(LikePattern::Exact(pattern.as_bytes().to_vec()));
+    }
     // Token count cannot exceed the pattern's byte length.
     let mut tokens = Vec::with_capacity(pattern.len());
     let mut bytes = pattern.bytes();
