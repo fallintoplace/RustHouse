@@ -95,3 +95,8 @@ fn equals_returns_nullable_integer_truth() {
 fn not_equals_preserves_three_valued_logic() {
     assert_eq!(evaluate("notEquals(x, y)"), "2");
 }
+
+#[test]
+fn less_uses_exact_comparison_semantics() {
+    assert_eq!(evaluate("less(x, y)"), "1");
+}
