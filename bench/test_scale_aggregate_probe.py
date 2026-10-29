@@ -30,6 +30,12 @@ class AggregateProbeTests(unittest.TestCase):
             verify("rusthouse", "parts", 5, execute=lambda *a, **kw:
                    SimpleNamespace(returncode=0, stdout=b"wrong\n", stderr=b""))
 
+    def test_rejects_nonfinite_query_timeout(self):
+        from bench.scale.aggregate_probe import verify
+        for timeout in (float("nan"), float("inf"), float("-inf"), True):
+            with self.assertRaisesRegex(ValueError, "timeout"):
+                verify("rusthouse", "part", 1, timeout=timeout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ column contains each integer in [0, rows) exactly once.
 """
 import argparse
 import json
+import math
 import re
 import subprocess
 import time
@@ -19,8 +20,8 @@ def aggregates(rows):
 
 
 def verify(binary, part, rows, *, timeout=600, execute=None):
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
     run = execute or subprocess.run
     result = []
     for expression, expected in aggregates(rows):
