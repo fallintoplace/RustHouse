@@ -163,6 +163,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "INTDIVORNULL"
             | "MODULOORNULL"
             | "ENCODEURLFORMCOMPONENT"
+            | "ISIPV6MULTICAST"
     )
 }
 
@@ -252,6 +253,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(number.unwrap_or(fallback)))
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "ISIPV6MULTICAST" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6Multicast requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_multicast()))
+                }
+                None => ConstantValue::Null,
             }
         }
         "MODULOORNULL" => {
