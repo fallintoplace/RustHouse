@@ -197,6 +197,10 @@ pub fn plan_replica_copy_batch(
         return Err("replica copy batch exceeds object limit");
     }
     let needed = plan_replica_copies(source, destination)?;
+    let existing = index(destination)?;
+    if needed.iter().any(|object| existing.contains_key(object.key.as_str())) {
+        return Err("replica copy conflicts with an existing immutable object");
+    }
     let mut remaining = max_bytes;
     let mut selected = Vec::with_capacity(needed.len().min(max_objects));
     for object in needed {
@@ -229,5 +233,19 @@ mod copy_batch_tests {
         );
         assert_eq!(plan_replica_copy_batch(&objects, &[], 6, 1).unwrap().len(), 1);
         assert!(plan_replica_copy_batch(&objects, &[], 6, 65_537).is_err());
+    }
+}
+
+#[cfg(test)]
+mod immutable_collision_tests {
+    use super::*;
+
+    #[test]
+    fn batch_refuses_same_key_with_different_contents() {
+        let source = [ObjectMetadata { key: "p/g1/id.bin".into(), bytes: 10, crc32c: 1 }];
+        let conflicting = [ObjectMetadata { key: "p/g1/id.bin".into(), bytes: 10, crc32c: 2 }];
+        assert!(plan_replica_copy_batch(&source, &conflicting, 100, 10).is_err());
+        assert!(plan_replica_copy_batch(&source, &source, 100, 10).unwrap().is_empty());
+        assert_eq!(plan_replica_copy_batch(&source, &[], 100, 10).unwrap(), source);
     }
 }
