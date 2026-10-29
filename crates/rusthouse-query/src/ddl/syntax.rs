@@ -1,8 +1,11 @@
 use super::*;
 
+const MAX_DDL_IDENTIFIER_BYTES: usize = 128;
+const MAX_DDL_COLUMNS: usize = 128;
+
 pub(super) fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
     let value = parser.word()?;
-    if value.len() > 128 {
+    if value.len() > MAX_DDL_IDENTIFIER_BYTES {
         return Err(ParseError("DDL identifiers cannot exceed 128 bytes".into()));
     }
     Ok(value)
@@ -124,7 +127,7 @@ pub(super) fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<Column
     let mut columns = Vec::new();
     let mut names = HashSet::new();
     loop {
-        if columns.len() == 128 {
+        if columns.len() == MAX_DDL_COLUMNS {
             return Err(ParseError("DDL supports at most 128 columns".into()));
         }
         let column_name = identifier(parser)?;
