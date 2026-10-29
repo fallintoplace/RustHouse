@@ -17,6 +17,7 @@ from common import cli_sql, emit_json, latency_summary
 DEFAULT_QUERIES = Path(__file__).with_name("queries.sql")
 MAX_BENCHMARK_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_REFERENCE_BYTES = 16 * 1024 * 1024
+MAX_QUERY_FILE_BYTES = 4 * 1024 * 1024
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -30,8 +31,12 @@ HTTP_OPENER = urllib.request.build_opener(NoRedirect())
 
 
 def load_queries(path):
+    with Path(path).open("rb") as source:
+        payload = source.read(MAX_QUERY_FILE_BYTES + 1)
+    if len(payload) > MAX_QUERY_FILE_BYTES:
+        raise ValueError("analytics workload file exceeds 4 MiB")
     queries = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in payload.decode("utf-8").splitlines():
         statement = line.strip()
         if not statement or statement.startswith("--"):
             continue
