@@ -37,9 +37,13 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
             max_read_mib=None):
     if sys.platform != "linux":
         raise RuntimeError("process resource sampling requires Linux /proc")
-    if not math.isfinite(timeout) or timeout <= 0 or not 1 <= sample_ms <= 1000:
+    if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or timeout <= 0 or type(sample_ms) is not int
+            or not 1 <= sample_ms <= 1000):
         raise ValueError("invalid timeout or sample interval")
-    if max_rss_mib is not None and (not math.isfinite(max_rss_mib) or max_rss_mib <= 0):
+    if max_rss_mib is not None and (
+            type(max_rss_mib) not in (int, float)
+            or not math.isfinite(max_rss_mib) or max_rss_mib <= 0):
         raise ValueError("max RSS budget must be positive")
     if max_read_mib is not None and (
             type(max_read_mib) not in (int, float)
