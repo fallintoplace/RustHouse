@@ -23,6 +23,17 @@ class JoinWorkloadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             query_for_strictness("full")
 
+    def test_fixture_batch_boundaries_preserve_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            write_fixture(directory, 4097, 4096)
+            lines = (Path(directory) / "facts.tsv").read_text().splitlines()
+            self.assertEqual(len(lines), 4098)
+            self.assertEqual(lines[4096], "4095\t95")
+            self.assertEqual(lines[4097], "4096\t96")
+            build = (Path(directory) / "dimensions.tsv").read_text().splitlines()
+            self.assertEqual(len(build), 4097)
+            self.assertEqual(build[-1], "4095\tgroup-5")
+
     def test_small_fixture_and_matches(self):
         with tempfile.TemporaryDirectory() as directory:
             expected = write_fixture(Path(directory), 20, 5)
