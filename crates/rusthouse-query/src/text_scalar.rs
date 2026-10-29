@@ -139,6 +139,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOSTRINGCUTTOZERO"
             | "REPEAT"
             | "BASE64_DECODE"
+            | "TRYBASE64DECODE"
             | "BASE64DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "ADDMONTHS"
@@ -2531,11 +2532,12 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "BASE64_DECODE" | "BASE64DECODE" => {
+        "BASE64_DECODE" | "BASE64DECODE" | "TRYBASE64DECODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
             match input {
                 Some(value) => {
+                    let decoded = (|| -> Result<ConstantValue, ParseError> {
                     fn digit(value: u8) -> Option<u8> {
                         match value {
                             b'A'..=b'Z' => Some(value - b'A'),
@@ -2591,10 +2593,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             bytes.push(bits as u8);
                         }
                     }
-                    ConstantValue::Text(
+                    Ok(ConstantValue::Text(
                         String::from_utf8(bytes)
                             .map_err(|_| ParseError("BASE64_DECODE result is not UTF-8".into()))?,
-                    )
+                    ))
+                    })();
+                    match decoded {
+                        Ok(value) => value,
+                        Err(_) if name == "TRYBASE64DECODE" => {
+                            ConstantValue::Text(String::new())
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 None => ConstantValue::Null,
             }
