@@ -86,16 +86,22 @@ fn write_cell(output: &mut impl Write, value: &Cell) -> Result<(), ExecutionErro
     match value {
         Cell::Null => output.write_all(&[0])?,
         Cell::Numeric(Number::Unsigned(v)) => {
-            output.write_all(&[1])?;
-            output.write_all(&v.to_le_bytes())?;
+            let mut encoded = [0u8; 17];
+            encoded[0] = 1;
+            encoded[1..].copy_from_slice(&v.to_le_bytes());
+            output.write_all(&encoded)?;
         }
         Cell::Numeric(Number::Signed(v)) => {
-            output.write_all(&[2])?;
-            output.write_all(&v.to_le_bytes())?;
+            let mut encoded = [0u8; 17];
+            encoded[0] = 2;
+            encoded[1..].copy_from_slice(&v.to_le_bytes());
+            output.write_all(&encoded)?;
         }
         Cell::Numeric(Number::Float(v)) => {
-            output.write_all(&[3])?;
-            output.write_all(&v.to_bits().to_le_bytes())?;
+            let mut encoded = [0u8; 9];
+            encoded[0] = 3;
+            encoded[1..].copy_from_slice(&v.to_bits().to_le_bytes());
+            output.write_all(&encoded)?;
         }
         Cell::Text(value) => {
             output.write_all(&[4])?;
@@ -166,9 +172,11 @@ fn write_entry(output: &mut impl Write, entry: &SortEntry) -> Result<(), Executi
         .map_err(|_| invalid("too many typed sort projection columns"))?;
     let sort_keys = u16::try_from(entry.row.sort_keys.len())
         .map_err(|_| invalid("too many typed sort keys"))?;
-    output.write_all(&ordinal.to_le_bytes())?;
-    output.write_all(&values.to_le_bytes())?;
-    output.write_all(&sort_keys.to_le_bytes())?;
+    let mut header = [0u8; 12];
+    header[..8].copy_from_slice(&ordinal.to_le_bytes());
+    header[8..10].copy_from_slice(&values.to_le_bytes());
+    header[10..12].copy_from_slice(&sort_keys.to_le_bytes());
+    output.write_all(&header)?;
     for value in entry.row.values.iter().chain(entry.row.sort_keys.iter()) {
         write_cell(output, value)?;
     }
@@ -514,5 +522,63 @@ mod tests {
         let mut malformed = data;
         malformed[12] = 99;
         assert!(read_entry(&mut malformed.as_slice()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod packed_typed_sort_io_tests {
+    use super::*;
+
+    struct Counter {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
+    impl Write for Counter {
+        fn write(&mut self, value: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(value);
+            Ok(value.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn numeric_spill_cells_write_one_complete_record() {
+        let mut writer = Counter { calls: 0, bytes: Vec::new() };
+        let cells = [
+            Cell::Numeric(Number::Unsigned(u128::MAX)),
+            Cell::Numeric(Number::Signed(i128::MIN)),
+            Cell::Numeric(Number::Float(-0.0)),
+        ];
+        for cell in &cells {
+            write_cell(&mut writer, cell).unwrap();
+        }
+        assert_eq!(writer.calls, cells.len());
+        assert_eq!(writer.bytes.len(), 17 + 17 + 9);
+        let mut input = writer.bytes.as_slice();
+        assert!(matches!(read_cell(&mut input).unwrap(), Cell::Numeric(Number::Unsigned(u128::MAX))));
+        assert!(matches!(read_cell(&mut input).unwrap(), Cell::Numeric(Number::Signed(i128::MIN))));
+        let Cell::Numeric(Number::Float(value)) = read_cell(&mut input).unwrap() else {
+            panic!("wrong spill cell type");
+        };
+        assert_eq!(value.to_bits(), (-0.0f64).to_bits());
+    }
+
+    #[test]
+    fn typed_spill_row_header_is_written_in_one_chunk() {
+        let mut writer = Counter { calls: 0, bytes: Vec::new() };
+        let entry = SortEntry {
+            ordinal: 42,
+            row: Row {
+                values: vec![Cell::Null],
+                sort_keys: vec![],
+            },
+        };
+        write_entry(&mut writer, &entry).unwrap();
+        assert_eq!(writer.calls, 2);
+        assert_eq!(writer.bytes.len(), 13);
+        let decoded = read_entry(&mut writer.bytes.as_slice()).unwrap().unwrap();
+        assert_eq!(decoded.ordinal, 42);
+        assert_eq!(decoded.row.values.len(), 1);
     }
 }
