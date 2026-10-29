@@ -173,6 +173,10 @@ def load_cases(directory):
     names = set()
     cases = []
     for path in paths:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"unsafe benchmark case file: {path}")
+        if path.stat().st_size > 64 * 1024:
+            raise ValueError(f"benchmark case JSON exceeds 64 KiB: {path}")
         case = json.loads(path.read_text(encoding="utf-8"))
         if (not isinstance(case, dict) or not isinstance(case.get("name"), str)
                 or case["name"] in names):
@@ -185,6 +189,14 @@ def load_cases(directory):
 def benchmark(binary, database, rows, directory=CASE_DIRECTORY, *, runs=3,
               warmups=1, timeout=600, max_p90_seconds=None, execute=None):
     _integer(rows, "rows", 100_000, MAX_ROWS)
+    _integer(runs, "runs", 1, 100)
+    _integer(warmups, "warmups", 0, 100)
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    if max_p90_seconds is not None and (
+            type(max_p90_seconds) not in (int, float)
+            or not math.isfinite(max_p90_seconds) or max_p90_seconds <= 0):
+        raise ValueError("max_p90_seconds must be finite and positive")
     cases = load_cases(directory)
     # Fail on malformed cases before contacting the database or spending hours scanning.
     for case in cases:

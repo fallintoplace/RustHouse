@@ -96,12 +96,17 @@ impl ObjectKey {
         let generation_text = fields[2]
             .strip_prefix('g')
             .ok_or("missing distributed generation prefix")?;
+        // Reject alternate integer spellings without allocating an owned
+        // decimal string for every scanned immutable-object key.
+        if generation_text.is_empty()
+            || generation_text.starts_with('0')
+            || !generation_text.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err("noncanonical distributed generation");
+        }
         let generation = generation_text
             .parse::<u64>()
             .map_err(|_| "invalid distributed generation")?;
-        if generation_text != generation.to_string() {
-            return Err("noncanonical distributed generation");
-        }
         let key = Self::new(fields[0], fields[1], generation, fields[3], fields[4])?;
         let original = path.to_str().ok_or("invalid distributed object key path")?;
         let canonical = key.relative_path();
@@ -231,5 +236,31 @@ mod trailing_dot_key_tests {
             assert!(ObjectKey::new("cluster", "s1", 1, "part", component).is_err());
         }
         assert!(ObjectKey::new("cluster", "s1", 1, "part", "data.bin").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod canonical_generation_digits_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_aliases_without_formatting_numeric_generations() {
+        for invalid in [
+            "prod/s1/g+1/part/data.bin",
+            "prod/s1/g001/part/data.bin",
+            "prod/s1/g0/part/data.bin",
+            "prod/s1/g18446744073709551616/part/data.bin",
+        ] {
+            assert!(ObjectKey::parse_relative(std::path::Path::new(invalid)).is_err());
+        }
+        for number in [1, 7, 10, 100, u64::MAX] {
+            let path = format!("prod/s1/g{number}/part/data.bin");
+            assert_eq!(
+                ObjectKey::parse_relative(std::path::Path::new(&path))
+                    .unwrap()
+                    .generation(),
+                number
+            );
+        }
     }
 }

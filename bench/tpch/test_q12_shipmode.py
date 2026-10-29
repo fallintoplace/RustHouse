@@ -24,5 +24,17 @@ class Q12ShipmodeTests(unittest.TestCase):
             self.assertEqual(oracle(path), b"")
 
 
+class Q12InputShapeTests(unittest.TestCase):
+    def test_rejects_corrupt_reference_records(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "lineitem.tsv"
+            for payload in ("l_receiptdate\n1994-01-01\n",
+                            "l_receiptdate\tl_shipmode\n1994-01-01\n",
+                            "l_receiptdate\tl_shipmode\n1994-01-01\tAIR\tEXTRA\n"):
+                path.write_text(payload)
+                with self.subTest(payload=payload):
+                    with self.assertRaisesRegex(ValueError, "columns|data fields"):
+                        oracle(path)
+
 if __name__ == "__main__":
     unittest.main()

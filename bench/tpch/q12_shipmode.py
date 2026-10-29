@@ -19,7 +19,14 @@ SQL = ("SELECT l_shipmode, COUNT(*) AS shipments FROM lineitem "
 def oracle(path):
     counts = {}
     with Path(path).open(encoding="utf-8", newline="") as stream:
-        for row in csv.DictReader(stream, delimiter="\t"):
+        reader = csv.DictReader(stream, delimiter="\t")
+        fields = reader.fieldnames or []
+        required = ("l_receiptdate", "l_shipmode")
+        if len(fields) != len(set(fields)) or any(name not in fields for name in required):
+            raise ValueError("Q12 input has missing or duplicate columns")
+        for row in reader:
+            if None in row or any(row.get(name) is None for name in fields):
+                raise ValueError("Q12 input has missing or extra data fields")
             if "1994-01-01" <= row["l_receiptdate"] < "1995-01-01":
                 mode = row["l_shipmode"]
                 counts[mode] = counts.get(mode, 0) + 1
