@@ -22,6 +22,7 @@ from bench.analytics.suite_runner import (
 )
 from bench.common import cli_sql, emit_json
 
+MAX_CLICKHOUSE_OUTPUT_BYTES = 4_000_000
 INTEGER = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
 FLOAT = re.compile(r"^-?(?:(?:[0-9]+\.[0-9]*)|(?:\.[0-9]+)|(?:[0-9]+[eE][+-]?[0-9]+))(?:[eE][+-]?[0-9]+)?$")
 
@@ -132,18 +133,21 @@ def cli_clickhouse(client, host, port, query, timeout, database=None, data=None)
     command = [str(client), "--host", host, "--port", str(port), "--query", query]
     if database:
         command.extend(["--database", database])
-    result = subprocess.run(
-        command, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=timeout, check=False,
-    )
+    with tempfile.TemporaryFile() as output:
+        result = subprocess.run(
+            command, input=data, stdout=output, stderr=subprocess.PIPE,
+            timeout=timeout, check=False,
+        )
+        output.seek(0)
+        payload = output.read(MAX_CLICKHOUSE_OUTPUT_BYTES + 1)
     if result.returncode:
         raise RuntimeError(
             f"ClickHouse exit {result.returncode}: "
             + result.stderr.decode("utf-8", "replace")[:1000]
         )
-    if len(result.stdout) > 4_000_000:
+    if len(payload) > MAX_CLICKHOUSE_OUTPUT_BYTES:
         raise ValueError("ClickHouse result exceeds 4 MB comparison limit")
-    return result.stdout
+    return payload
 
 
 
