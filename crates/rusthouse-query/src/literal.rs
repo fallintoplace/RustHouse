@@ -10,7 +10,7 @@ fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
-fn rescale_decimal(
+fn rescale_decimal_mantissa(
     value: i128,
     current_scale: usize,
     target_scale: usize,
@@ -28,8 +28,8 @@ pub(super) fn arithmetic(left: &str, right: &str, subtract: bool) -> Result<Stri
     let (left, left_scale) = fixed_decimal(left)?;
     let (right, right_scale) = fixed_decimal(right)?;
     let scale = left_scale.max(right_scale);
-    let left = rescale_decimal(left, left_scale, scale)?;
-    let right = rescale_decimal(right, right_scale, scale)?;
+    let left = rescale_decimal_mantissa(left, left_scale, scale)?;
+    let right = rescale_decimal_mantissa(right, right_scale, scale)?;
     let value = if subtract {
         left.checked_sub(right)
     } else {
