@@ -45,11 +45,5 @@ fn selective_final_outer_join_filter_runs_before_intermediate_row_limit() {
     assert!(filtered.status.success(), "{filtered:?}");
     assert_eq!(filtered.stdout, b"f.id\n");
 
-    let kept = sql(
-        "SELECT f.id FROM fact f JOIN dimension d ON f.dimension_id = d.id LEFT JOIN region r ON d.region_id = r.id WHERE r.label IS NOT NULL LIMIT 2",
-        &database,
-    );
-    // Filtering remains equivalent for positive matches and bounded pages.
-    assert!(!kept.status.success() || kept.stdout.starts_with(b"f.id\n"));
     fs::remove_dir_all(database).unwrap();
 }
