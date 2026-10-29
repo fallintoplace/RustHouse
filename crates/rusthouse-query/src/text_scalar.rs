@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "TOFIXEDSTRING"
             | "CUTWWW"
             | "DOMAINWITHOUTWWW"
             | "ZEROIFNULL"
@@ -242,6 +243,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(output)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "TOFIXEDSTRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "toFixedString requires a byte length")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toFixedString requires two arguments")?;
+            match (input, count) {
+                (Some(input), Some(count)) => {
+                    let count = usize::try_from(count)
+                        .map_err(|_| ParseError("toFixedString length must be positive".into()))?;
+                    if count == 0 || count > MAX_TEXT_BYTES || input.len() > count {
+                        return Err(ParseError("invalid toFixedString byte length".into()));
+                    }
+                    let mut output = String::with_capacity(count);
+                    output.push_str(&input);
+                    output.extend(std::iter::repeat_n('\0', count - input.len()));
+                    ConstantValue::Text(output)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "LENGTHUTF8" => {
