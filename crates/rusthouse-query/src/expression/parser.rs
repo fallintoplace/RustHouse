@@ -18,6 +18,27 @@ fn parse_parenthesized(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     Ok(result)
 }
 
+/// Searched CASE is an expression, not a SELECT-level projection special case.
+/// All branches are parsed once, then the bound executor evaluates one branch per row.
+fn parse_case_when(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    if !parser.keyword("CASE") || !parser.keyword("WHEN") {
+        return Err(ParseError("CASE requires WHEN".into()));
+    }
+    let condition = parse_expression_tokens(parser)?;
+    if !parser.keyword("THEN") {
+        return Err(ParseError("CASE WHEN requires THEN".into()));
+    }
+    let yes = parse_expression_tokens(parser)?;
+    if !parser.keyword("ELSE") {
+        return Err(ParseError("CASE WHEN requires ELSE".into()));
+    }
+    let no = parse_expression_tokens(parser)?;
+    if !parser.keyword("END") {
+        return Err(ParseError("CASE WHEN requires END".into()));
+    }
+    Ok(ScalarExpr::CaseWhen(Box::new(condition), Box::new(yes), Box::new(no)))
+}
+
 pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::Plus) => {
@@ -36,6 +57,9 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
         {
             parse_length_column(parser)
+        }
+        Some(Token::Word(name)) if name.eq_ignore_ascii_case("CASE") => {
+            parse_case_when(parser)
         }
         Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
