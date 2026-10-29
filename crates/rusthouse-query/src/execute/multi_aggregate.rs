@@ -335,11 +335,18 @@ fn eval_number(
         },
         BoundExpr::Between(value, lower, upper, negated) => {
             let Some(value) = eval_number(value, batch, row)? else { return Ok(None); };
-            let Some(lower) = eval_number(lower, batch, row)? else { return Ok(None); };
-            let Some(upper) = eval_number(upper, batch, row)? else { return Ok(None); };
-            let valid = super::compare_numbers(value, lower).is_ge()
-                && super::compare_numbers(value, upper).is_le();
-            Ok(Some(Number::Unsigned(u128::from(valid != *negated))))
+            let lower = eval_number(lower, batch, row)?
+                .map(|bound| super::compare_numbers(value, bound).is_ge());
+            let upper = eval_number(upper, batch, row)?
+                .map(|bound| super::compare_numbers(value, bound).is_le());
+            // BETWEEN is >= AND <= under SQL three-valued logic: false
+            // wins over UNKNOWN, and only two true bounds produce true.
+            let result = match (lower, upper) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            };
+            Ok(result.map(|value| Number::Unsigned(u128::from(value != *negated))))
         },
         BoundExpr::Not(inner) => Ok(numeric_truth(eval_number(inner, batch, row)?)
             .map(|value| Number::Unsigned(u128::from(!value)))),
@@ -1075,5 +1082,38 @@ mod null_predicate_expression_tests {
             assert!(matches!(eval_number(&present, &batch, 0), Ok(Some(Number::Unsigned(1)))));
             assert!(matches!(eval_number(&present, &batch, 1), Ok(Some(Number::Unsigned(0)))));
         }
+    }
+}
+
+#[cfg(test)]
+mod aggregate_between_null_semantics_tests {
+    use super::*;
+
+    #[test]
+    fn known_false_between_bound_outweighs_null_bound() {
+        let check = |value, low, high, negated| BoundExpr::Between(
+            Box::new(BoundExpr::Integer(value)),
+            Box::new(low),
+            Box::new(high),
+            negated,
+        );
+        let low = BoundExpr::Integer(2);
+        let high = BoundExpr::Null;
+        assert!(matches!(
+            eval_number(&check(1, low, high, false), &[], 0),
+            Ok(Some(Number::Unsigned(0))),
+        ));
+        assert!(matches!(
+            eval_number(&check(1, BoundExpr::Integer(2), BoundExpr::Null, true), &[], 0),
+            Ok(Some(Number::Unsigned(1))),
+        ));
+        assert!(matches!(
+            eval_number(&check(3, BoundExpr::Integer(2), BoundExpr::Null, false), &[], 0),
+            Ok(None),
+        ));
+        assert!(matches!(
+            eval_number(&check(1, BoundExpr::Null, BoundExpr::Integer(0), false), &[], 0),
+            Ok(Some(Number::Unsigned(0))),
+        ));
     }
 }
