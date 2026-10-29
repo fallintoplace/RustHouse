@@ -59,16 +59,16 @@ fn write_json_row_into<W: Write>(
     let mut fields = line.split(|byte| *byte == b'\t');
     row.clear();
     row.reserve(line.len() + headers.len() * 8 + 3);
-    row.write_all(b"{")?;
+    row.push(b'{');
     for (index, header) in headers.iter().enumerate() {
         let field = fields
             .next()
             .ok_or_else(row_width_error)?;
         if index != 0 {
-            row.write_all(b",")?;
+            row.push(b',');
         }
-        row.write_all(header)?;
-        row.write_all(b":")?;
+        row.extend_from_slice(header);
+        row.push(b':');
         if field == b"\\N" {
             row.write_all(b"null")?;
         } else {
@@ -79,7 +79,7 @@ fn write_json_row_into<W: Write>(
     if fields.next().is_some() {
         return Err(row_width_error());
     }
-    row.write_all(b"}\n")?;
+    row.extend_from_slice(b"}\n");
     output.write_all(row)
 }
 
