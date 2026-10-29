@@ -282,6 +282,7 @@ enum LikePattern {
     Wildcard {
         tokens: Vec<LikeToken>,
         folded_percent: Option<Vec<LikeToken>>,
+        unicode_tokens: Option<Vec<UnicodeLikeToken>>,
     },
 }
 
