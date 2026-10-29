@@ -158,7 +158,9 @@ pub fn copy_immutable_file_checked(
         Ok(())
     })();
     let cleanup = fs::remove_file(&staging);
-    verified?;
+    if let Err(error) = verified {
+        return Err(error);
+    }
     cleanup?;
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
@@ -186,5 +188,31 @@ mod checked_copy_tests {
         assert_eq!(fs::read(&target).unwrap(), b"verified");
         assert!(copy_immutable_file_checked(&source, &target, 100, checksum).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod checked_copy_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn failed_checksum_removes_temporary_copy() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-replica-cleanup-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::write(&source, b"immutable").unwrap();
+        assert!(copy_immutable_file_checked(&source, &destination, 100, 0).is_err());
+        assert!(!destination.exists());
+        let names = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["source"]);
+        fs::remove_dir_all(root).unwrap();
     }
 }
