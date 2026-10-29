@@ -398,7 +398,7 @@ pub fn execute_multi_join<W: Write>(
                     }
                 }
             }
-            write!(output, "count\\n{count}\\n")?;
+            write!(output, "count\n{count}\n")?;
             return Ok(());
         }
         // Most fact-to-dimension joins preserve the incoming row count.
@@ -460,7 +460,7 @@ pub fn execute_multi_join<W: Write>(
 
     // An empty intermediate on an all-INNER chain yields a zero count.
     if query.aggregate.is_some() {
-        output.write_all(b"count\\n0\\n")?;
+        output.write_all(b"count\n0\n")?;
         return Ok(());
     }
 
