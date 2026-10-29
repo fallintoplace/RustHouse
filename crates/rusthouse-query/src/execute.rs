@@ -156,23 +156,36 @@ impl From<Number> for NumberKey {
 }
 
 const MAX_DISTINCT_ROWS: usize = 200_000;
+const MAX_DISTINCT_KEY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MEDIAN_ROWS: usize = 100_000;
 
 fn remember_distinct(
     seen: &mut HashSet<Vec<NumberKey>>,
+    retained_bytes: &mut usize,
     values: &[Number],
 ) -> Result<bool, ExecutionError> {
-    let key = values.iter().copied().map(NumberKey::from).collect();
-    // At capacity, duplicates are still valid but new unique rows are not.
+    let key: Vec<NumberKey> = values.iter().copied().map(NumberKey::from).collect();
+    // Duplicate rows do not allocate persistent state, even at the limits.
+    if seen.contains(&key) {
+        return Ok(false);
+    }
     if seen.len() >= MAX_DISTINCT_ROWS {
-        if seen.contains(&key) {
-            return Ok(false);
-        }
         return Err(ExecutionError::Invalid(
             "DISTINCT supports at most 200000 unique rows".into(),
         ));
     }
-    Ok(seen.insert(key))
+    let added = values.len()
+        .checked_mul(std::mem::size_of::<NumberKey>())
+        .and_then(|size| size.checked_add(std::mem::size_of::<Vec<NumberKey>>() + 32))
+        .ok_or_else(|| ExecutionError::Invalid("DISTINCT retained size overflow".into()))?;
+    let next = retained_bytes.checked_add(added)
+        .filter(|&bytes| bytes <= MAX_DISTINCT_KEY_BYTES)
+        .ok_or_else(|| ExecutionError::Invalid(
+            "DISTINCT exceeds 64 MiB retained key budget".into()
+        ))?;
+    seen.insert(key);
+    *retained_bytes = next;
+    Ok(true)
 }
 
 fn write_header<W: Write>(
@@ -1157,6 +1170,7 @@ fn execute_into<W: Write>(
     let mut reader = NumericQueryReader::open_with_metadata(part, &scan_columns, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut distinct: Option<HashSet<Vec<NumberKey>>> = query.distinct.then(HashSet::new);
+    let mut distinct_retained_bytes = 0usize;
 
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
         let mut sorted =
@@ -1194,7 +1208,7 @@ fn execute_into<W: Write>(
                     .map(|projected_index| number_at(&batch[*projected_index], row))
                     .collect();
                 if let Some(seen) = distinct.as_mut() {
-                    if !remember_distinct(seen, &values)? {
+                    if !remember_distinct(seen, &mut distinct_retained_bytes, &values)? {
                         continue;
                     }
                 }
@@ -1247,7 +1261,7 @@ fn execute_into<W: Write>(
                         .iter()
                         .map(|index| number_at(&batch[*index], row))
                         .collect::<Vec<_>>();
-                    if !remember_distinct(seen, &values)? {
+                    if !remember_distinct(seen, &mut distinct_retained_bytes, &values)? {
                         continue;
                     }
                     Some(values)
@@ -1493,9 +1507,26 @@ fn execute_numbers<W: Write>(
             &query.projection,
             Projection::GroupedAggregate { column, value_column, .. }
                 if column == "number" && value_column == "number"
+        ) || matches!(
+            &query.projection,
+            Projection::GroupedAggregates { column, items, filters, .. }
+                if column == "number" && items.iter().all(|(_, key)| key == "number")
+                    && filters.iter().all(Option::is_none)
         )) && query.limit.is_some_and(|limit| limit <= MAX_SORTED_ROWS)
-            && query.order_by.is_none()
-            && simple_result
+            && ((query.order_by.is_none() && simple_result)
+                || (query.order_by.as_ref().is_some_and(|order| order.column == "number")
+                    && query.having.is_none() && !query.distinct
+                    && query.order_by_extra.is_empty()
+                    && (matches!(&query.projection,
+                        Projection::GroupedCount { column } if column == "number"
+                    ) || matches!(&query.projection,
+                        Projection::GroupedAggregate { column, value_column, .. }
+                            if column == "number" && value_column == "number"
+                    ) || matches!(&query.projection,
+                        Projection::GroupedAggregates { column, items, filters, .. }
+                            if column == "number" && items.iter().all(|(_, key)| key == "number")
+                                && filters.iter().all(Option::is_none)
+                    ))))
             && ((query.predicates.is_empty() && query.or_predicates.is_empty())
                 || monotonic_range_indices(&compile_numbers_predicates(query)?, start, rows, step)
                     .is_some());
@@ -1520,10 +1551,18 @@ fn execute_numbers<W: Write>(
         } else {
             false
         };
+        let formula_multi_aggregate = matches!(
+            &query.projection,
+            Projection::MultipleAggregates(items)
+                if multi_aggregate::supports_generated_series_metrics(items)
+        ) && query.predicates.is_empty()
+            && query.or_predicates.is_empty()
+            && simple_result;
         if !(scalar_count && simple_result && arithmetic_count)
             && !bounded_page
             && !grouped_page
             && !direct_aggregate
+            && !formula_multi_aggregate
         {
             return Err(ExecutionError::Invalid(
                 "virtual inputs over 10000000 rows require an exact aggregate or bounded page query".into(),
@@ -2305,12 +2344,13 @@ mod numeric_distinct_capacity_tests {
     #[test]
     fn accepts_more_than_old_distinct_limit_and_rejects_new_excess() {
         let mut seen = HashSet::new();
+        let mut retained_bytes = 0usize;
         for value in 0..MAX_DISTINCT_ROWS {
-            assert!(remember_distinct(&mut seen, &[Number::Unsigned(value as u128)]).unwrap());
+            assert!(remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(value as u128)]).unwrap());
         }
-        assert!(!remember_distinct(&mut seen, &[Number::Unsigned(0)]).unwrap());
+        assert!(!remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(0)]).unwrap());
         assert!(
-            remember_distinct(&mut seen, &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]).is_err()
+            remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]).is_err()
         );
     }
 }
@@ -2376,5 +2416,30 @@ mod median_selection_tests {
             }
             assert_eq!(state.median_number().unwrap().to_string(), reference(values).to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod numeric_distinct_budget_tests {
+    use super::*;
+
+    #[test]
+    fn composite_numeric_distinct_keys_are_charged_and_duplicates_free() {
+        let mut seen = HashSet::new();
+        let mut bytes = 0usize;
+        let values = [Number::Unsigned(3), Number::Signed(-4)];
+        assert!(remember_distinct(&mut seen, &mut bytes, &values).unwrap());
+        let charged = bytes;
+        assert!(!remember_distinct(&mut seen, &mut bytes, &values).unwrap());
+        assert_eq!(bytes, charged);
+    }
+
+    #[test]
+    fn wide_numeric_distinct_key_is_rejected_before_hash_insertion() {
+        let mut seen = HashSet::new();
+        let mut bytes = MAX_DISTINCT_KEY_BYTES - 1;
+        assert!(remember_distinct(&mut seen, &mut bytes, &[Number::Unsigned(5)]).is_err());
+        assert!(seen.is_empty());
+        assert_eq!(bytes, MAX_DISTINCT_KEY_BYTES - 1);
     }
 }

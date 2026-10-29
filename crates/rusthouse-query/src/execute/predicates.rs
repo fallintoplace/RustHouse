@@ -65,6 +65,12 @@ impl CompiledTest {
                 .iter()
                 .all(|target| !number_matches(value, *target, Operator::Eq)),
             Self::NotBetween { lower, upper } => {
+                if matches!(value, Number::Float(n) if n.is_nan())
+                    || matches!(*lower, Number::Float(n) if n.is_nan())
+                    || matches!(*upper, Number::Float(n) if n.is_nan())
+                {
+                    return false;
+                }
                 !number_matches(value, *lower, Operator::Ge)
                     || !number_matches(value, *upper, Operator::Le)
             }
@@ -191,12 +197,46 @@ pub(super) fn count_batch_matches(
                             .filter(|&&value| matches[value as u8 as usize] != *negated)
                             .count();
                     }
-                    NumericColumn::UInt16(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt16(values) => {
+                        if values.len() >= 2048 {
+                            let mut bitmap = [0u64; 1024];
+                            for target in targets {
+                                if let NumberKey::Unsigned(value) = target {
+                                    if let Ok(slot) = u16::try_from(*value) {
+                                        let index = usize::from(slot);
+                                        bitmap[index / 64] |= 1u64 << (index % 64);
+                                    }
+                                }
+                            }
+                            return values.iter().filter(|&&value| {
+                                let index = usize::from(value);
+                                ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
+                            }).count();
+                        }
+                        count_hashed_in!(values, Unsigned, u128)
+                    },
                     NumericColumn::UInt32(v) => count_hashed_in!(v, Unsigned, u128),
                     NumericColumn::UInt64(v) => count_hashed_in!(v, Unsigned, u128),
                     NumericColumn::UInt128(v) => count_hashed_in!(v, Unsigned, u128),
 
-                    NumericColumn::Int16(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int16(values) => {
+                        if values.len() >= 2048 {
+                            let mut bitmap = [0u64; 1024];
+                            for target in targets {
+                                if let NumberKey::Signed(value) = target {
+                                    if let Ok(slot) = i16::try_from(*value) {
+                                        let index = usize::from(slot as u16);
+                                        bitmap[index / 64] |= 1u64 << (index % 64);
+                                    }
+                                }
+                            }
+                            return values.iter().filter(|&&value| {
+                                let index = usize::from(value as u16);
+                                ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
+                            }).count();
+                        }
+                        count_hashed_in!(values, Signed, i128)
+                    },
                     NumericColumn::Int32(v) => count_hashed_in!(v, Signed, i128),
                     NumericColumn::Int64(v) => count_hashed_in!(v, Signed, i128),
                     NumericColumn::Int128(v) => count_hashed_in!(v, Signed, i128),
@@ -210,7 +250,9 @@ pub(super) fn count_batch_matches(
                             .iter()
                             .filter(|&&value| {
                                 let value = <$wide>::from(value);
-                                !(value >= $lower && value <= $upper)
+                                value.partial_cmp(&$lower).is_some()
+                                    && value.partial_cmp(&$upper).is_some()
+                                    && !(value >= $lower && value <= $upper)
                             })
                             .count();
                     }};
@@ -1102,6 +1144,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn signed_int16_bitmap_in_preserves_negative_values_and_negation() {
+        let values = (-2048..2048).map(|value| value as i16).collect::<Vec<_>>();
+        let targets = (-150..150).map(|value| Number::Signed(i128::from(value))).collect::<Vec<_>>();
+        for negated in [false, true] {
+            let predicate = CompiledPredicate {
+                index: 0,
+                test: compile_in_test(targets.clone(), negated),
+            };
+            let expected = values.iter().filter(|&&value| {
+                (-150..150).contains(&i32::from(value)) != negated
+            }).count();
+            assert_eq!(
+                count_batch_matches(&[NumericColumn::Int16(values.clone())], &[vec![predicate]]),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn large_unsigned_sixteen_in_matches_hash_membership() {
+        let values = (0..4096).map(|value| value as u16).collect::<Vec<_>>();
+        let targets = (0..100).map(|value| Number::Unsigned(value * 2)).collect::<Vec<_>>();
+        for negated in [false, true] {
+            let predicate = CompiledPredicate {
+                index: 0,
+                test: compile_in_test(targets.clone(), negated),
+            };
+            let expected = values.iter().filter(|&&value| {
+                (value < 200 && value % 2 == 0) != negated
+            }).count();
+            assert_eq!(
+                count_batch_matches(&[NumericColumn::UInt16(values.clone())], &[vec![predicate]]),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn compiles_fast_numeric_predicates_ahead_of_modulo() {
         let query = crate::parse_select(
             "SELECT number FROM numbers(100) WHERE number % 10 = 0 AND number < 50",
@@ -1580,5 +1660,38 @@ mod byte_in_dense_lookup_tests {
                 assert_eq!(count_batch_matches(&batch, &[vec![predicate]]), expected);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod nan_not_between_semantics_tests {
+    use super::*;
+
+    #[test]
+    fn nan_is_unordered_not_outside_an_interval() {
+        let range = CompiledTest::NotBetween {
+            lower: Number::Float(-1.0), upper: Number::Float(1.0),
+        };
+        assert!(!range.matches(Number::Float(f64::NAN)));
+        assert!(!range.matches(Number::Float(0.0)));
+        assert!(range.matches(Number::Float(3.0)));
+        let invalid = CompiledTest::NotBetween {
+            lower: Number::Float(f64::NAN), upper: Number::Float(3.0),
+        };
+        assert!(!invalid.matches(Number::Float(7.0)));
+    }
+
+    #[test]
+    fn vectorized_not_between_agrees_with_unordered_rowwise_semantics() {
+        let column = NumericColumn::Float64(vec![f64::NAN, -2.0, 0.0, 2.0]);
+        let branches = vec![vec![CompiledPredicate {
+            index: 0, test: CompiledTest::NotBetween {
+                lower: Number::Float(-1.0), upper: Number::Float(1.0)
+            }
+        }]];
+        assert_eq!(count_batch_matches(std::slice::from_ref(&column), &branches), 2);
+        assert_eq!((0..column.len()).filter(|&i| {
+            batch_matches(std::slice::from_ref(&column), i, &branches)
+        }).count(), 2);
     }
 }

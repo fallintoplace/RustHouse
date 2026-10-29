@@ -1,0 +1,8 @@
+{
+  "name": "topk-desc-front",
+  "description": "First descending sorted page from billion rows",
+  "kind": "page",
+  "direction": "DESC",
+  "limit": 16,
+  "offset": 0
+}

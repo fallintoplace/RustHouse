@@ -29,6 +29,7 @@ fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), Part
                 .strip_prefix('g')
                 .and_then(|text| text.strip_suffix('\n'))
                 .and_then(|text| text.parse::<u64>().ok())
+                .filter(|&value| value > 0 && current == format!("g{value}\n"))
                 .ok_or_else(|| PartError::InvalidScan("invalid active generation".into()))?;
             if generation <= prior {
                 return Err(PartError::InvalidScan(
@@ -96,6 +97,42 @@ pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), 
     Ok(())
 }
 
+use std::io::Read;
+
+/// Read the canonical active-generation pointer without opening snapshot parts.
+/// A missing pointer is reported as None. This does not validate part contents.
+pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
+    let pointer = root.join(".rusthouse-active");
+    match fs::symlink_metadata(&pointer) {
+        Ok(meta) if !meta.file_type().is_file() || meta.len() > 64 => {
+            return Err(PartError::InvalidScan("invalid active generation pointer".into()));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error(&pointer, error)),
+    }
+    let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
+    if !opened.file_type().is_file() || opened.len() > 64 {
+        return Err(PartError::InvalidScan("active generation pointer changed".into()));
+    }
+    let mut bytes = Vec::new();
+    file.take(65)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error(&pointer, error))?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| PartError::InvalidScan("active generation pointer is not UTF8".into()))?;
+    let generation = text
+        .strip_prefix('g')
+        .and_then(|value| value.strip_suffix('\n'))
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| PartError::InvalidScan("invalid active generation pointer".into()))?;
+    if generation == 0 || text != format!("g{generation}\n") {
+        return Err(PartError::InvalidScan("noncanonical active generation pointer".into()));
+    }
+    Ok(Some(generation))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,42 +188,6 @@ mod tests {
     }
 }
 
-use std::io::Read;
-
-/// Read the canonical active-generation pointer without opening snapshot parts.
-/// A missing pointer is reported as None. This does not validate part contents.
-pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
-    let pointer = root.join(".rusthouse-active");
-    match fs::symlink_metadata(&pointer) {
-        Ok(meta) if !meta.file_type().is_file() || meta.len() > 64 => {
-            return Err(PartError::InvalidScan("invalid active generation pointer".into()));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(io_error(&pointer, error)),
-    }
-    let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
-    let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
-    if !opened.file_type().is_file() || opened.len() > 64 {
-        return Err(PartError::InvalidScan("active generation pointer changed".into()));
-    }
-    let mut bytes = Vec::new();
-    file.take(65)
-        .read_to_end(&mut bytes)
-        .map_err(|error| io_error(&pointer, error))?;
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| PartError::InvalidScan("active generation pointer is not UTF8".into()))?;
-    let generation = text
-        .strip_prefix('g')
-        .and_then(|value| value.strip_suffix('\n'))
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| PartError::InvalidScan("invalid active generation pointer".into()))?;
-    if generation == 0 || text != format!("g{generation}\n") {
-        return Err(PartError::InvalidScan("noncanonical active generation pointer".into()));
-    }
-    Ok(Some(generation))
-}
-
 #[cfg(test)]
 mod active_generation_read_tests {
     use super::*;
@@ -222,6 +223,29 @@ mod active_generation_read_tests {
         fs::write(root.join("real"), "g1\n").unwrap();
         symlink("real", root.join(".rusthouse-active")).unwrap();
         assert!(read_active_generation(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod promotion_pointer_canonical_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_noncanonical_active_generation_before_promotion() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-promotion-pointer-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        for malformed in ["g01\n", "g0\n", "g+1\n", "g1\r\n"] {
+            fs::write(&pointer, malformed).unwrap();
+            assert!(validate_fresh_generation(&pointer, 2).is_err(), "{malformed:?}");
+        }
+        fs::write(&pointer, "g1\n").unwrap();
+        assert!(validate_fresh_generation(&pointer, 2).is_ok());
+        assert!(validate_fresh_generation(&pointer, 1).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
