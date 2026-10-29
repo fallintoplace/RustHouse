@@ -30,6 +30,7 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Column(name) => name.clone(),
         ScalarExpr::TextLength(name) => format!("length({name})"),
         ScalarExpr::Integer(number) => number.to_string(),
+        ScalarExpr::Decimal(number) => number.clone(),
         ScalarExpr::Add(left, right) => format!("{} + {}", render_expr(left), render_expr(right)),
         ScalarExpr::Subtract(left, right) => {
             let right = if matches!(
@@ -226,6 +227,19 @@ mod tests {
         assert!(!items[1].distinct);
         assert_eq!(items[0].header(), "count(DISTINCT customer)");
         assert!(parse_select("SELECT sum(DISTINCT amount), count(*) FROM part").is_err());
+    }
+
+    #[test]
+    fn tpch_decimal_literals_in_computed_aggregates() {
+        let query = parse_select(
+            "SELECT sum(l_extendedprice * (1 - l_discount)), sum(l_quantity * 0.05) FROM lineitem"
+        ).unwrap();
+        let Projection::MultipleAggregates(items) = query.projection else {
+            panic!("expected computed aggregates");
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].header(), "sum(l_quantity * 0.05)");
+        assert!(parse_select("SELECT sum(l_quantity * 0.05) FROM lineitem").is_ok());
     }
 
     #[test]
