@@ -35,6 +35,7 @@ pub(super) fn is_function(name: &str) -> bool {
     name.eq_ignore_ascii_case("TOINT16")
         || name.eq_ignore_ascii_case("POSITIVE")
         || name.eq_ignore_ascii_case("ISZERO")
+        || name.eq_ignore_ascii_case("MODULOORZERO")
         || is_saturating(name)
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
@@ -1158,6 +1159,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 (current, next) = (next, current + next);
             }
             i64::try_from(current).map_err(|_| overflow())?
+        } else if name.eq_ignore_ascii_case("MODULOORZERO") {
+            require_token(parser, Token::Comma, "moduloOrZero requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            first.checked_rem(second).unwrap_or(0)
         } else if name.eq_ignore_ascii_case("ABS") {
             first.checked_abs().ok_or_else(overflow)?
         } else if name.eq_ignore_ascii_case("DIGIT_SUM") {
