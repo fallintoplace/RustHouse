@@ -147,6 +147,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SPACE"
             | "INTDIVORNULL"
             | "MODULOORNULL"
+            | "FIRSTLINE"
             | "ENCODEURLFORMCOMPONENT"
     )
 }
@@ -166,6 +167,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "FIRSTLINE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "firstLine requires one argument")?;
+            match input {
+                Some(input) => {
+                    let end = input.find(['\r', '\n']).unwrap_or(input.len());
+                    ConstantValue::Text(input[..end].to_owned())
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "MODULOORNULL" => {
             let dividend = integer_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "moduloOrNull requires two arguments")?;
