@@ -5,6 +5,7 @@ only the per-run test database is created and dropped. No production tables are
 modified. Results, not just execution success, determine parity.
 """
 import argparse
+from collections import Counter
 import json
 import math
 import re
@@ -115,6 +116,15 @@ def assert_clickhouse_json_parity(rusthouse_output, clickhouse_output, unordered
     if unordered:
         if len(actual) > 4096:
             raise ValueError("unordered JSON parity is limited to 4096 result rows")
+        if (all(all(value is None or isinstance(value, str) for value in row.values())
+                for row in expected)
+                and all(all(value is None or isinstance(value, str) for value in row.values())
+                        for row in actual)):
+            actual_counts = Counter(tuple(row.items()) for row in actual)
+            expected_counts = Counter(tuple(row.items()) for row in expected)
+            if actual_counts != expected_counts:
+                raise ValueError("JSON result multiset differs from ClickHouse")
+            return len(expected)
         unmatched = list(actual)
         for reference in expected:
             index = next((i for i, row in enumerate(unmatched) if equal(row, reference)), None)
@@ -132,18 +142,21 @@ def cli_clickhouse(client, host, port, query, timeout, database=None, data=None)
     command = [str(client), "--host", host, "--port", str(port), "--query", query]
     if database:
         command.extend(["--database", database])
-    result = subprocess.run(
-        command, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=timeout, check=False,
-    )
+    with tempfile.TemporaryFile() as output:
+        result = subprocess.run(
+            command, input=data, stdout=output, stderr=subprocess.PIPE,
+            timeout=timeout, check=False,
+        )
+        output.seek(0)
+        payload = output.read(4_000_001)
     if result.returncode:
         raise RuntimeError(
             f"ClickHouse exit {result.returncode}: "
             + result.stderr.decode("utf-8", "replace")[:1000]
         )
-    if len(result.stdout) > 4_000_000:
+    if len(payload) > 4_000_000:
         raise ValueError("ClickHouse result exceeds 4 MB comparison limit")
-    return result.stdout
+    return payload
 
 
 

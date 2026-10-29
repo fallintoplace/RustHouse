@@ -71,12 +71,14 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
     Ok(members)
 }
 
-/// Stable on-disk representation of an already validated member set.
-pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
+/// Validate membership and its exact serialized length without allocating
+/// the manifest. Used by placement and capacity calculations.
+pub(crate) fn validate_membership(members: &[Member]) -> Result<(), &'static str> {
     if members.is_empty() || members.len() > MAX_MEMBER_RECORDS {
         return Err("invalid membership record count");
     }
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::with_capacity(members.len());
+    let mut bytes = 0usize;
     for member in members {
         if !identifier(&member.node)
             || !identifier(&member.zone)
@@ -85,7 +87,19 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
         {
             return Err("invalid or duplicate membership record");
         }
+        // Two spaces and one newline. Weight is always a positive u16.
+        bytes += member.node.len() + member.zone.len()
+            + member.weight.ilog10() as usize + 1 + 3;
+        if bytes > MAX_MANIFEST_BYTES {
+            return Err("membership manifest too large");
+        }
     }
+    Ok(())
+}
+
+/// Stable on-disk representation of an already validated member set.
+pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
+    validate_membership(members)?;
     let mut text = String::with_capacity((members.len() * 64).min(MAX_MANIFEST_BYTES));
     for member in members {
         writeln!(
@@ -94,9 +108,6 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
             member.node, member.zone, member.weight
         )
         .expect("writing to String is infallible");
-        if text.len() > MAX_MANIFEST_BYTES {
-            return Err("membership manifest too large");
-        }
     }
     Ok(text)
 }
@@ -113,7 +124,7 @@ pub struct ZoneCapacity {
 pub fn membership_capacity_by_zone(
     members: &[Member],
 ) -> Result<Vec<ZoneCapacity>, &'static str> {
-    format_membership(members)?;
+    validate_membership(members)?;
     let mut zones = std::collections::BTreeMap::<&str, (usize, u64)>::new();
     for member in members {
         let entry = zones.entry(&member.zone).or_insert((0, 0));
@@ -156,6 +167,22 @@ mod tests {
             assert!(parse_membership(input).is_err(), "{input}");
         }
     }
+    #[test]
+    fn validation_matches_serialized_manifest_limits() {
+        let members = (0..64)
+            .map(|index| Member {
+                node: format!("{}{:04}", "n".repeat(60), index),
+                zone: "z".repeat(64),
+                weight: 1000,
+            })
+            .collect::<Vec<_>>();
+        assert!(validate_membership(&members).is_err());
+        assert!(format_membership(&members).is_err());
+        let small = parse_membership("a zone1 42\nb zone2 2\n").unwrap();
+        assert!(validate_membership(&small).is_ok());
+        assert_eq!(format_membership(&small).unwrap(), "a zone1 42\nb zone2 2\n");
+    }
+
     #[test]
     fn formatting_rejects_oversized_and_duplicate_records() {
         let huge = Member {

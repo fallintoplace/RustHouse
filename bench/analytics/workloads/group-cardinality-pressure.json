@@ -1,0 +1,22 @@
+{
+  "name": "group-cardinality-pressure",
+  "description": "Capture group-count pressure with region, category and user dimensions",
+  "queries": [
+    {
+      "name": "region-groups",
+      "sql": "SELECT region, COUNT(*) FROM events GROUP BY region ORDER BY region"
+    },
+    {
+      "name": "category-groups",
+      "sql": "SELECT category, COUNT(*) FROM events GROUP BY category ORDER BY category"
+    },
+    {
+      "name": "user-groups",
+      "sql": "SELECT user_id, COUNT(*) FROM events GROUP BY user_id ORDER BY user_id"
+    },
+    {
+      "name": "user-topk",
+      "sql": "SELECT user_id, COUNT(*) FROM events GROUP BY user_id ORDER BY 2 DESC, user_id ASC LIMIT 25"
+    }
+  ]
+}
