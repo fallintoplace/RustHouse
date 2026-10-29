@@ -215,6 +215,11 @@ fn query_parameters(
     let mut default_format = None;
     let mut parameters = Vec::new();
     let mut max_result_rows = None;
+    let mut database = false;
+    let mut user = false;
+    let mut password = false;
+    let mut readonly = false;
+    let mut wait_end_of_query = false;
     for parameter in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = parameter
             .split_once('=')
@@ -240,6 +245,55 @@ fn query_parameters(
                     return Err("duplicate default_format parameter");
                 }
                 default_format = Some(QueryFormat::parse(&decode_url(value)?)?);
+            }
+            // The server exposes only one local catalog, mapped to the
+            // ClickHouse default database. These options are intentionally
+            // stricter than ClickHouse settings: no alternate databases,
+            // principals, passwords, or write modes are supported.
+            "database" => {
+                if database {
+                    return Err("duplicate database setting");
+                }
+                database = true;
+                if decode_url(value)? != "default" {
+                    return Err("only the default database is supported");
+                }
+            }
+            "user" => {
+                if user {
+                    return Err("duplicate user setting");
+                }
+                user = true;
+                if decode_url(value)? != "default" {
+                    return Err("the HTTP server has no user authentication");
+                }
+            }
+            "password" => {
+                if password {
+                    return Err("duplicate password setting");
+                }
+                password = true;
+                if !decode_url(value)?.is_empty() {
+                    return Err("the HTTP server does not authenticate passwords");
+                }
+            }
+            "readonly" => {
+                if readonly {
+                    return Err("duplicate readonly setting");
+                }
+                readonly = true;
+                if !matches!(value, "1" | "2") {
+                    return Err("only read-only HTTP settings are supported");
+                }
+            }
+            "wait_end_of_query" => {
+                if wait_end_of_query {
+                    return Err("duplicate wait_end_of_query setting");
+                }
+                wait_end_of_query = true;
+                if value != "1" {
+                    return Err("only fully buffered HTTP queries are supported");
+                }
             }
             "max_result_rows" => {
                 if max_result_rows.is_some() {

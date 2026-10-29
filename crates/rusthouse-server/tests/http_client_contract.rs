@@ -359,3 +359,49 @@ fn clickhouse_explain_sql_rejects_mutations_and_unsupported_modes() {
     let nested = handle_request("POST", "/explain", b"EXPLAIN SELECT 1", &config());
     assert_eq!(nested.status, "400 Bad Request");
 }
+#[test]
+fn clickhouse_client_connection_options_accept_local_read_only_mode() {
+    let target = "/?database=default&user=default&password=&readonly=1&wait_end_of_query=1";
+    let response = handle_request("POST", target, b"SELECT 1", &config());
+    assert_eq!(response.status, "200 OK");
+    assert_eq!(response.body, b"1\n1\n");
+
+    let duplicate_safe = handle_request(
+        "GET",
+        "/?query=SELECT+7&database=default&readonly=2&default_format=TSV",
+        b"",
+        &config(),
+    );
+    assert_eq!(duplicate_safe.status, "200 OK");
+    assert_eq!(duplicate_safe.body, b"7\n");
+}
+
+#[test]
+fn clickhouse_client_connection_options_reject_impersonation_and_writes() {
+    for target in [
+        "/?database=other",
+        "/?database=default&database=default",
+        "/?user=admin",
+        "/?user=default&user=default",
+        "/?password=secret",
+        "/?password=%00",
+        "/?password=&password=",
+        "/?readonly=0",
+        "/?readonly=true",
+        "/?readonly=1&readonly=1",
+        "/?wait_end_of_query=0",
+        "/?wait_end_of_query=1&wait_end_of_query=1",
+        "/?max_threads=128",
+    ] {
+        let result = handle_request("POST", target, b"SELECT 1", &config());
+        assert_eq!(result.status, "400 Bad Request", "{target}");
+    }
+
+    let forbidden = handle_request(
+        "POST",
+        "/?user=default&password=&readonly=1",
+        b"CREATE TABLE nope (n UInt64)",
+        &config(),
+    );
+    assert_eq!(forbidden.status, "400 Bad Request");
+}

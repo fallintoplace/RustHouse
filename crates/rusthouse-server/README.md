@@ -55,6 +55,15 @@ requests. It applies to generated queries, persistent tables, JOINs and SQL
 metadata discovery. A value of zero means no additional request limit.
 Per-request settings never relax the server's configured `--max-rows` cap.
 
+For standard ClickHouse HTTP clients, safe connection parameters are accepted:
+`database=default`, `user=default`, an empty `password`, `readonly=1`
+(or `2`), and `wait_end_of_query=1`. RustHouse has no user accounts or
+authentication, so these values do not log in a user; they only make an
+otherwise valid local read-only request compatible with client defaults.
+Other databases, principals, nonempty passwords, write modes, and streaming
+options are rejected rather than silently ignored. Do not expose the server
+outside trusted private networks.
+
 Inputs are limited to 65536-byte statements and 8192-byte HTTP headers.
 Responses are capped at 16 MiB, concurrent requests at 16, and result rows
 at 10000 by default (up to 250000 with --max-rows).
