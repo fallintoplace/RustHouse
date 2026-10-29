@@ -7,8 +7,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use super::join::{
-    MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key,
-    read_rows,
+    MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES,
+    multi_join_row_key as row_key, multi_join_row_key_into as row_key_into, read_rows,
 };
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
@@ -383,10 +383,11 @@ pub fn execute_multi_join<W: Write>(
         let mut retained = 0usize;
         let mut matched_right = matches!(step.kind, JoinType::Right | JoinType::Full)
             .then(|| vec![false; right_rows.len()]);
+        let mut probe_key = Vec::with_capacity(left_keys.len());
         for row in &rows {
             let mut matched = false;
-            if let Some(key) = row_key(row, &left_keys) {
-                if let Some(matches) = hash.get(&key) {
+            if row_key_into(row, &left_keys, &mut probe_key) {
+                if let Some(matches) = hash.get(probe_key.as_slice()) {
                     for &match_index in
                         matches
                             .iter()
@@ -496,5 +497,27 @@ mod bucket_tests {
         bucket.push(7);
         bucket.push(9);
         assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![3, 7, 9]);
+    }
+}
+
+#[cfg(test)]
+mod chained_join_reusable_probe_tests {
+    use super::*;
+    #[test]
+    fn composite_probe_keeps_vector_capacity_and_rejects_null_keys() {
+        let mut probe = Vec::with_capacity(2);
+        let original_capacity = probe.capacity();
+        let row = [
+            typed::Cell::Numeric(super::super::Number::Unsigned(7)),
+            typed::Cell::Text(b"region".to_vec()),
+        ];
+        for _ in 0..100 {
+            assert!(row_key_into(&row, &[0, 1], &mut probe));
+            assert_eq!(probe, row_key(&row, &[0, 1]).unwrap());
+            assert_eq!(probe.capacity(), original_capacity);
+        }
+        let null = [typed::Cell::Null, typed::Cell::Text(b"region".to_vec())];
+        assert!(!row_key_into(&null, &[0, 1], &mut probe));
+        assert!(probe.is_empty());
     }
 }
