@@ -316,7 +316,7 @@ pub(super) fn append_parts(
     if existing
         .len()
         .checked_add(count)
-        .is_none_or(|parts| parts > 16_384)
+        .is_none_or(|parts| parts > MAX_REWRITE_PARTS as usize)
     {
         return Err("database table would exceed its 16384-part limit".into());
     }
@@ -422,7 +422,7 @@ pub(super) fn append_parts_stream(
             if existing
                 .len()
                 .checked_add(part_index)
-                .is_none_or(|total| total > 16_384)
+                .is_none_or(|total| total > MAX_REWRITE_PARTS as usize)
             {
                 return Err("database table would exceed its 16384-part limit".into());
             }
