@@ -39,11 +39,22 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
         }
         Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
-            let number = number.parse::<i64>().map_err(|_| {
-                ParseError("integer expression literal is out of Int64 range".into())
-            })?;
+            let literal = if number.contains('.') {
+                let value = number.parse::<f64>().map_err(|_| {
+                    ParseError("invalid decimal expression literal".into())
+                })?;
+                if !value.is_finite() {
+                    return Err(ParseError("decimal expression literal must be finite".into()));
+                }
+                ScalarExpr::Decimal(number.clone())
+            } else {
+                let value = number.parse::<i64>().map_err(|_| {
+                    ParseError("integer expression literal is out of Int64 range".into())
+                })?;
+                ScalarExpr::Integer(value)
+            };
             parser.index += 1;
-            Ok(ScalarExpr::Integer(number))
+            Ok(literal)
         }
         Some(Token::LParen) => parse_parenthesized(parser),
         _ => Err(ParseError(
