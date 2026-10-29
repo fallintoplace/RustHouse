@@ -40,6 +40,14 @@ fn score_with_seed(seed: u64, node: &str) -> u64 {
     hash_bytes(hash_bytes(seed, &length), node.as_bytes())
 }
 
+fn compare_unweighted(left: &(u64, &str), right: &(u64, &str)) -> std::cmp::Ordering {
+    right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
+}
+
+fn compare_weighted(left: &(f64, &str), right: &(f64, &str)) -> std::cmp::Ordering {
+    left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
+}
+
 /// Rank up to 64 distinct nodes for one shard. This is placement, not membership consensus.
 pub fn replicas_for(
     shard: &str,
@@ -78,12 +86,10 @@ pub fn replicas_for(
         .collect();
     if replicas < ranked.len() {
         // Partition the ranking when only a prefix is requested.
-        ranked.select_nth_unstable_by(replicas, |left, right| {
-            right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
-        });
+        ranked.select_nth_unstable_by(replicas, compare_unweighted);
         ranked.truncate(replicas);
     }
-    ranked.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
+    ranked.sort_unstable_by(compare_unweighted);
     Ok(ranked
         .into_iter()
         .take(replicas)
@@ -139,14 +145,10 @@ pub fn weighted_replicas_for(
     }
     if replicas < ranked.len() {
         // Partition first; sorting just the selected replica prefix is enough.
-        ranked.select_nth_unstable_by(replicas, |left, right| {
-            left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
-        });
+        ranked.select_nth_unstable_by(replicas, compare_weighted);
         ranked.truncate(replicas);
     }
-    ranked.sort_unstable_by(|left, right| {
-        left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
-    });
+    ranked.sort_unstable_by(compare_weighted);
     Ok(ranked
         .into_iter()
         .take(replicas)
