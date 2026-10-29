@@ -50,6 +50,7 @@ const MAX_EXPRESSION_DEPTH: usize = 64;
 
 fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     let mut expr = product(parser, depth)?;
+    let mut operators = 0usize;
     loop {
         let addition = if parser.take(Token::Plus) {
             true
@@ -58,6 +59,10 @@ fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarEx
         } else {
             break;
         };
+        operators += 1;
+        if operators > 128 {
+            return Err(ParseError("arithmetic operator chain exceeds 128 terms".into()));
+        }
         let right = product(parser, depth)?;
         expr = if addition {
             ScalarExpr::Add(Box::new(expr), Box::new(right))
@@ -70,7 +75,34 @@ fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarEx
 
 /// Comparison has lower precedence than addition and multiplication.
 pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
-    parse_expression_tokens_at_depth(parser, 0)
+    let expr = parse_expression_tokens_at_depth(parser, 0)?;
+    check_expression_budget(&expr)?;
+    Ok(expr)
+}
+
+/// Reject extremely long left-associative chains before execution or planning
+/// recursively visits the AST. Parentheses depth alone does not bound tree depth.
+fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
+    let mut pending = vec![(root, 0usize)];
+    let mut total = 0usize;
+    while let Some((expr, depth)) = pending.pop() {
+        total += 1;
+        if depth >= 256 || total > 4096 {
+            return Err(ParseError("numeric expression exceeds complexity budget".into()));
+        }
+        match expr {
+            ScalarExpr::Add(left, right)
+            | ScalarExpr::Subtract(left, right)
+            | ScalarExpr::Multiply(left, right)
+            | ScalarExpr::Divide(left, right)
+            | ScalarExpr::Compare(left, _, right) => {
+                pending.push((right, depth + 1));
+                pending.push((left, depth + 1));
+            }
+            ScalarExpr::Column(_) | ScalarExpr::TextLength(_) | ScalarExpr::Integer(_) => {}
+        }
+    }
+    Ok(())
 }
 
 fn parse_expression_tokens_at_depth(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
@@ -223,6 +255,23 @@ mod tests {
             assert!(parse_scalar_expression(&expression).is_err());
         }
         assert!(parse_scalar_expression(&format!("{}1{}", "(".repeat(16), ")".repeat(16))).is_ok());
+    }
+
+    #[test]
+    fn rejects_long_flat_chains_before_execution() {
+        let long_chain = format!("1{}", " + 1".repeat(512));
+        assert!(parse_scalar_expression(&long_chain).is_err());
+        let short_chain = format!("1{}", " + 1".repeat(20));
+        assert!(parse_scalar_expression(&short_chain).is_ok());
+    }
+
+    #[test]
+    fn stops_long_operator_chains_before_building_the_full_ast() {
+        for operator in [" + 1", " * 1", " / 1", " - 1"] {
+            let expr = format!("1{}", operator.repeat(4096));
+            assert!(parse_scalar_expression(&expr).is_err(), "{operator}");
+        }
+        assert!(parse_scalar_expression(&format!("1{}", " + 1".repeat(128))).is_ok());
     }
 
     #[test]
