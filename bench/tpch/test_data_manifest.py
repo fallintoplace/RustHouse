@@ -24,6 +24,14 @@ class DataManifestTests(unittest.TestCase):
             self.assertNotEqual(build_manifest(root, ["region"])["tables"][0]["sha256"],
                                 table["sha256"])
 
+    def test_oversized_unterminated_tsv_record_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            header = "\t".join(names("region")).encode() + b"\n"
+            path.write_bytes(header + b"x" * (8 * 1024 * 1024 + 100))
+            with self.assertRaisesRegex(ValueError, "oversized TSV record"):
+                build_manifest(root, ["region"])
+
     def test_rejects_malformed_rows_and_missing_line_terminators(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "region.tsv"

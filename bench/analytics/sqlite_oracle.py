@@ -5,6 +5,8 @@ Only SQLite floating results receive relative/absolute tolerance.
 """
 import math
 import sqlite3
+from collections import Counter
+from pathlib import Path
 from contextlib import closing
 
 
@@ -52,7 +54,7 @@ def decode_tsv_value(raw):
 
 def cell_equal(actual, expected, rel_tol=1e-12, abs_tol=1e-12):
     if expected is None:
-        return actual in ("NULL", r"\N")
+        return actual == r"\N"
     try:
         actual = decode_tsv_value(actual)
     except (UnicodeError, ValueError, AttributeError):
@@ -103,6 +105,38 @@ def assert_ordered_rows(actual, expected_rows):
 def assert_unordered_rows(actual, expected_rows):
     if len(actual) > 4096:
         raise ValueError("unordered comparison is limited to 4096 result rows")
+    if all(all(type(value) in (int, bool) for value in row) for row in expected_rows):
+        expected_counts = Counter(tuple(int(value) for value in row) for row in expected_rows)
+        try:
+            actual_counts = Counter()
+            for row in actual:
+                converted = []
+                for value in row:
+                    decoded = decode_tsv_value(value)
+                    if decoded is None:
+                        raise ValueError("NULL is not a numeric result")
+                    number = int(decoded)
+                    if decoded.strip() != str(number):
+                        raise ValueError("invalid integer result")
+                    converted.append(number)
+                actual_counts[tuple(converted)] += 1
+        except (UnicodeError, ValueError, TypeError) as error:
+            raise ValueError("result multiset differs from SQLite") from error
+        if actual_counts != expected_counts:
+            raise ValueError("result multiset differs from SQLite")
+        return
+    if all(all(value is None or isinstance(value, str) for value in row)
+           for row in expected_rows):
+        expected_counts = Counter(tuple(row) for row in expected_rows)
+        try:
+            actual_counts = Counter(
+                tuple(decode_tsv_value(value) for value in row) for row in actual
+            )
+        except (UnicodeError, ValueError, TypeError) as error:
+            raise ValueError("result multiset differs from SQLite") from error
+        if actual_counts != expected_counts:
+            raise ValueError("result multiset differs from SQLite")
+        return
     unmatched = list(actual)
     for expected in expected_rows:
         position = next((i for i, row in enumerate(unmatched) if row_equal(row, expected)), None)
@@ -123,5 +157,9 @@ def assert_matches(output, expected_rows, unordered=False):
 
 
 def sqlite_query(path, sql):
-    with closing(sqlite3.connect(path)) as connection:
-        return connection.execute(sql).fetchall()
+    database_uri = Path(path).resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(database_uri, uri=True)) as connection:
+        rows = connection.execute(sql).fetchmany(100_001)
+        if len(rows) > 100_000:
+            raise ValueError("SQLite reference exceeds 100000 rows")
+        return rows

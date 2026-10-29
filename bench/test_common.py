@@ -71,6 +71,11 @@ class SharedWorkloadTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 cli_sql("rusthouse", "db", "slow", 1)
 
+    def test_json_report_rejects_nonfinite_measurements(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                emit_json({"latency_seconds": value})
+
     def test_json_output_matches_saved_file(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "nested" / "reports" / "report.json"
@@ -80,6 +85,22 @@ class SharedWorkloadTests(unittest.TestCase):
             self.assertEqual(target.read_text(), buffer.getvalue())
             self.assertEqual(json.loads(buffer.getvalue()), {"verified": True})
 
+
+    def test_failed_report_publish_preserves_existing_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "result.json"
+            destination.write_text('{"previous": true}\n')
+            with mock.patch("bench.common.os.replace", side_effect=OSError("rename failed")):
+                with self.assertRaisesRegex(OSError, "rename failed"):
+                    emit_json({"next": True}, destination)
+            self.assertEqual(destination.read_text(), '{"previous": true}\n')
+            self.assertEqual(list(Path(directory).glob(".result.json.*.tmp")), [])
+
+    def test_latency_summary_rejects_wrong_types_and_huge_integers(self):
+        for value in ("1", True, None, 10 ** 400, float("inf")):
+            with self.subTest(value=repr(value)):
+                with self.assertRaisesRegex(ValueError, "timing samples"):
+                    latency_summary([value])
 
 if __name__ == "__main__":
     unittest.main()

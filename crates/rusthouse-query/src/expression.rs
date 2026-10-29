@@ -99,7 +99,7 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
                 pending.push((right, depth + 1));
                 pending.push((left, depth + 1));
             }
-            ScalarExpr::Column(_) | ScalarExpr::TextLength(_) | ScalarExpr::Integer(_) => {}
+            ScalarExpr::Column(_) | ScalarExpr::TextLength(_) | ScalarExpr::Integer(_) | ScalarExpr::Decimal(_) => {}
         }
     }
     Ok(())

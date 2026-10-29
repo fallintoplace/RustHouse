@@ -97,6 +97,10 @@ pub fn retention_candidates_with_pins(
         return Err("too many pinned generations");
     }
     let (candidates, known) = planned_retention(generations, active, keep_latest)?;
+    if pinned.is_empty() {
+        // Do not hash every candidate when no snapshot has a reader pin.
+        return Ok(candidates);
+    }
     let mut pins = std::collections::HashSet::with_capacity(pinned.len());
     for &generation in pinned {
         if !pins.insert(generation) || known.binary_search(&generation).is_err() {
@@ -123,6 +127,19 @@ mod pinned_retention_tests {
             retention_candidates_with_pins(&[1, 2, 3], 1, 1, &[2]).unwrap(),
             Vec::<u64>::new()
         );
+    }
+
+    #[test]
+    fn no_pins_use_the_same_retention_plan_as_unpinned_reads() {
+        let generations = (1..=16_384_u64).rev().collect::<Vec<_>>();
+        for active in [1u64, 8_192, 16_384] {
+            let expected = retention_candidates(&generations, active, 128).unwrap();
+            assert_eq!(
+                retention_candidates_with_pins(&generations, active, 128, &[]).unwrap(),
+                expected,
+            );
+        }
+        assert!(retention_candidates_with_pins(&[1, 1], 1, 1, &[]).is_err());
     }
 
     #[test]

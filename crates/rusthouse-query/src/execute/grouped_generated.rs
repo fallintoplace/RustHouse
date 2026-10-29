@@ -88,6 +88,90 @@ pub(super) fn execute<W: Write>(
             return Ok(());
         }
     }
+    if query.limit.is_none() && query.having.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some(order) = query.order_by.as_ref().filter(|order| order.column == "number") {
+            let bounds = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                Some((0, rows))
+            } else {
+                super::monotonic_range_indices(&comparisons, start, rows, step)
+            };
+            if let Some((lower, upper)) = bounds {
+                let selected = upper - lower;
+                if selected > MAX_GROUPS as u64 {
+                    return Err(ExecutionError::Invalid(
+                        "generated GROUP BY supports at most 200000 groups".into(),
+                    ));
+                }
+                let mut per_group = 0usize;
+                charge_group_states(&mut per_group, items)?;
+                if (selected as usize).checked_mul(per_group)
+                    .is_none_or(|total| total > MAX_GENERATED_GROUP_BYTES)
+                {
+                    return Err(ExecutionError::Invalid(
+                        "generated GROUP BY exceeds 64 MiB state budget".into(),
+                    ));
+                }
+                let begin = (query.offset.unwrap_or(0) as u64).min(selected);
+                for position in begin..selected {
+                    let index = if order.descending {
+                        upper - 1 - position
+                    } else {
+                        lower + position
+                    };
+                    let value = u128::from(start) + u128::from(index) * u128::from(step);
+                    write!(output, "{value}")?;
+                    for (function, _) in items {
+                        let mut state = AggregateState::new(*function);
+                        state.update(if *function == AggregateFunction::Count {
+                            Number::Unsigned(1)
+                        } else {
+                            Number::Unsigned(value)
+                        })?;
+                        write!(output, "\t{}", state.render())?;
+                    }
+                    writeln!(output)?;
+                }
+                return Ok(());
+            }
+        }
+    }
+    if query.limit.is_none() && query.predicates.is_empty()
+        && query.or_predicates.is_empty() && query.having.is_none()
+        && query.order_by.is_none() && query.order_by_extra.is_empty()
+        && step != 0
+    {
+        if rows > MAX_GROUPS as u64 {
+            return Err(ExecutionError::Invalid(
+                "generated GROUP BY supports at most 200000 groups".into(),
+            ));
+        }
+        let mut per_group = 0usize;
+        charge_group_states(&mut per_group, items)?;
+        if (rows as usize).checked_mul(per_group)
+            .is_none_or(|total| total > MAX_GENERATED_GROUP_BYTES)
+        {
+            return Err(ExecutionError::Invalid(
+                "generated GROUP BY exceeds 64 MiB state budget".into(),
+            ));
+        }
+        for index in query.offset.unwrap_or(0) as u64..rows {
+            let value = u128::from(start) + u128::from(index) * u128::from(step);
+            write!(output, "{value}")?;
+            for (function, _) in items {
+                let mut state = AggregateState::new(*function);
+                state.update(if *function == AggregateFunction::Count {
+                    Number::Unsigned(1)
+                } else {
+                    Number::Unsigned(value)
+                })?;
+                write!(output, "\t{}", state.render())?;
+            }
+            writeln!(output)?;
+        }
+        return Ok(());
+    }
     if query.limit.is_none()
         && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
         && query.having.is_none() && query.order_by.is_none()
@@ -161,13 +245,15 @@ pub(super) fn execute<W: Write>(
         groups.retain(|(_, states)| states.get(index)
             .is_some_and(|state| state.passes_having(having)));
     }
+    let mut bounded_order = None;
     if query.order_by.is_some() {
         let terms=query.order_terms().map(|order|{
             let metric=order.column.strip_prefix("#aggregate")
                 .and_then(|name|name.parse::<usize>().ok());
             (metric,order.descending,order.nulls_first)
         }).collect::<Vec<_>>();
-        groups.sort_by(|left,right|{
+        let compare = |left: &(u128, Vec<AggregateState>),
+                       right: &(u128, Vec<AggregateState>)| {
             for &(metric,descending,nulls_first) in &terms {
                 let order=if let Some(index)=metric {
                     typed::compare_order_cells(&left.1[index].sort_cell(),
@@ -180,16 +266,37 @@ pub(super) fn execute<W: Write>(
                 if order!=Ordering::Equal {return order;}
             }
             left.0.cmp(&right.0)
-        });
+        };
+        if let Some(end) = query.limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit))
+            .filter(|&end| end < groups.len())
+        {
+            // O(groups + page*log(page)) instead of sorting all groups.
+            // The original index resolves ties in the same stable order.
+            bounded_order = Some(super::sorted_group_positions(&groups, end, compare));
+        } else {
+            groups.sort_by(compare);
+        }
     }
-    for (value,states) in groups.iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX)) {
+    let mut write_group = |(value, states): &(u128, Vec<AggregateState>)| {
         write!(output,"{value}")?;
         for state in states {
             write!(output,"\t{}",state.render())?;
         }
         writeln!(output)?;
+        Ok::<(), ExecutionError>(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index])?;
+        }
+    } else {
+        for group in groups.iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(group)?;
+        }
     }
     Ok(())
 }
@@ -202,6 +309,13 @@ mod generated_multi_group_having_tests {
         let mut bytes = Vec::new();
         execute(&parse_select(sql).unwrap(), None, &mut bytes).unwrap();
         String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn descending_ordered_group_page_selects_without_full_sort() {
+        assert_eq!(run(
+            "SELECT number, sum(number), max(number) FROM numbers(15)              GROUP BY number ORDER BY number DESC LIMIT 3 OFFSET 2"
+        ), "number\tsum(number)\tmax(number)\n12\t12\t12\n11\t11\t11\n10\t10\t10\n");
     }
 
     #[test]
