@@ -31,6 +31,8 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
             not isinstance(expected_sha256, str)
             or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
         raise ValueError("expected_sha256 must be lowercase SHA256 hex")
+    if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
+        raise ValueError("SQL must be nonempty and at most 64 KiB")
     execute = run or subprocess.run
     started = time.perf_counter()
     with tempfile.TemporaryFile(mode="w+b") as output:
