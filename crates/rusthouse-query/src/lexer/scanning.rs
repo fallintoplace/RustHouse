@@ -83,6 +83,52 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
     Err(ParseError("unterminated string literal".into()))
 }
 
+/// Parse quoted identifiers without treating reserved words as SQL keywords.
+/// Database identifiers must keep the same bounded ASCII rules as unquoted
+/// names so quoted DDL cannot bypass storage path validation.
+pub(super) fn scan_quoted_identifier(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
+    let bytes = sql.as_bytes();
+    let delimiter = bytes[*index];
+    let mut cursor = *index + 1;
+    let mut decoded = Vec::new();
+    loop {
+        let Some(&byte) = bytes.get(cursor) else {
+            return Err(ParseError("unterminated quoted identifier".into()));
+        };
+        if byte == delimiter && bytes.get(cursor + 1) != Some(&delimiter) {
+            *index = cursor + 1;
+            break;
+        }
+        // Both doubled quotes and backslash-escaped delimiters are accepted,
+        // then validated against the safe identifier grammar below.
+        if (byte == delimiter || byte == b'\\')
+            && bytes.get(cursor + 1) == Some(&delimiter)
+        {
+            decoded.push(delimiter);
+            cursor += 2;
+        } else {
+            decoded.push(byte);
+            cursor += 1;
+        }
+        if decoded.len() > 128 {
+            return Err(ParseError("quoted identifier exceeds 128 bytes".into()));
+        }
+    }
+    let mut characters = decoded.iter().copied();
+    let valid = matches!(
+        characters.next(),
+        Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')
+    ) && characters.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if !valid {
+        return Err(ParseError(
+            "quoted identifiers require a simple ASCII identifier".into(),
+        ));
+    }
+    Ok(Token::QuotedWord(
+        String::from_utf8(decoded).expect("validated ASCII quoted identifier"),
+    ))
+}
+
 pub(super) fn scan_word(sql: &str, index: &mut usize) -> Token {
     let bytes = sql.as_bytes();
     let start = *index;
@@ -113,6 +159,7 @@ pub(super) fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
 pub(super) fn follows_binary_minus_context(tokens: &[Token]) -> bool {
     match tokens.last() {
         Some(Token::Number(_) | Token::RParen) => true,
+        Some(Token::QuotedWord(_)) => true,
         Some(Token::Word(word)) => !["SELECT", "BETWEEN", "AND", "OR", "WHERE", "NOT", "IN"]
             .iter()
             .any(|keyword| word.eq_ignore_ascii_case(keyword)),

@@ -12,6 +12,14 @@ const MAX_GROUPS: usize = 200_000;
 
 const MAX_RETAINED_GROUP_BYTES: usize = 64 * 1024 * 1024;
 
+fn group_limit_error() -> ExecutionError {
+    ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into())
+}
+
+fn numeric_column_error() -> ExecutionError {
+    ExecutionError::Invalid("numeric aggregates require numeric columns".into())
+}
+
 fn charge_median_value(used: &mut usize) -> Result<(), ExecutionError> {
     let next = used.checked_add(std::mem::size_of::<Number>())
         .ok_or_else(|| ExecutionError::Invalid("composite group median memory overflow".into()))?;
@@ -72,9 +80,7 @@ fn numeric_value_at(column: &TypedColumn, row: usize) -> Result<Option<Number>, 
                 Ok(Some(super::number_at(values, row)))
             }
         }
-        _ => Err(ExecutionError::Invalid(
-            "numeric aggregates require numeric columns".into(),
-        )),
+        _ => Err(numeric_column_error()),
     }
 }
 
@@ -156,9 +162,7 @@ pub(super) fn execute<W: Write>(
         if *function != AggregateFunction::Count
             && matches!(typed::base_type(kind), "String" | "UUID")
         {
-            return Err(ExecutionError::Invalid(
-                "numeric aggregates require numeric columns".into(),
-            ));
+            return Err(numeric_column_error());
         }
         if !names.contains(column) {
             names.push(column.clone());
@@ -287,9 +291,7 @@ pub(super) fn execute<W: Write>(
                     index
                 } else {
                     if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 200000 groups".into(),
-                        ));
+                        return Err(group_limit_error());
                     }
                     let index = groups.len();
                     let keys = group_indices
@@ -320,9 +322,7 @@ pub(super) fn execute<W: Write>(
                     index
                 } else {
                     if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 200000 groups".into(),
-                        ));
+                        return Err(group_limit_error());
                     }
                     let index = groups.len();
                     let keys = group_indices
