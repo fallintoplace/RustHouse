@@ -42,6 +42,8 @@ def emit_rows(stream, rows, *, start=0, step=1, batch_rows=8192, header=False):
 
 def generate(path, rows, *, start=0, step=1, batch_rows=8192, header=False, force=False):
     path = Path(path)
+    if type(force) is not bool:
+        raise ValueError("force must be a boolean")
     if (path.exists() or path.is_symlink()) and not force:
         raise FileExistsError(f"refusing to overwrite {path} without --force")
     path.parent.mkdir(parents=True, exist_ok=True)
