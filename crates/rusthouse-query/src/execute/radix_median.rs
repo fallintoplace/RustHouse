@@ -6,6 +6,8 @@ use super::predicates::CompiledPredicate;
 use rusthouse_storage::{NumericColumn, NumericQueryReader, PartMetadata, TypedColumn, TypedQueryReader};
 use std::path::Path;
 
+const RADIX_BUCKETS: usize = 256;
+
 fn width_and_sign(kind: &str) -> Option<(usize, bool)> {
     Some(match kind {
         "UInt8" => (1, false), "UInt16" => (2, false),
@@ -85,7 +87,7 @@ fn count_column(
     shift: usize,
     prefix_mask: u128,
     prefixes: &[u128; 2],
-    histogram: &mut [[u64; 256]; 2],
+    histogram: &mut [[u64; RADIX_BUCKETS]; 2],
 ) -> Result<(), ExecutionError> {
     let mut visit = |value: u128, row: usize| {
         if nulls.is_some_and(|map| map[row] != 0)
@@ -166,7 +168,7 @@ fn median_inner(
         } else {
             u128::MAX << (shift + 8)
         };
-        let mut histogram = [[0_u64; 256]; 2];
+        let mut histogram = [[0_u64; RADIX_BUCKETS]; 2];
         if nullable {
             let columns = typed_filtered.map_or(names.as_slice(), |(columns, _)| columns);
             let mut reader = TypedQueryReader::open_with_metadata(part, columns, metadata)?;
