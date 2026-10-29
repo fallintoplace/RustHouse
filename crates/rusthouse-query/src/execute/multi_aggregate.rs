@@ -11,12 +11,14 @@ use std::io::Write;
 use std::path::Path;
 
 const MAX_DISTINCT_VALUES: usize = 100_000;
+const MAX_DISTINCT_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Default)]
 struct DistinctValues {
     other: HashSet<typed::Key>,
     text: HashSet<Vec<u8>>,
     uuids: HashSet<[u8; 16]>,
+    retained_text_bytes: usize,
 }
 
 impl DistinctValues {
@@ -44,7 +46,22 @@ impl DistinctValues {
                 "COUNT(DISTINCT) supports at most 100000 values".into(),
             ));
         }
+        let additional = value.len().checked_add(
+            std::mem::size_of::<Vec<u8>>() + 2 * std::mem::size_of::<usize>()
+        ).ok_or_else(|| ExecutionError::Invalid(
+            "multi-aggregate DISTINCT String memory overflow".into(),
+        ))?;
+        let next = self.retained_text_bytes.checked_add(additional)
+            .ok_or_else(|| ExecutionError::Invalid(
+                "multi-aggregate DISTINCT String memory overflow".into(),
+            ))?;
+        if next > MAX_DISTINCT_TEXT_BYTES {
+            return Err(ExecutionError::Invalid(
+                "multi-aggregate COUNT(DISTINCT) String keys exceed 64 MiB".into(),
+            ));
+        }
         self.text.insert(value.to_vec());
+        self.retained_text_bytes = next;
         Ok(())
     }
 
@@ -898,5 +915,29 @@ mod direct_numeric_argument_tests {
         assert!(eval_number(&BoundExpr::Column(1), &batch, 1).unwrap().is_none());
         let affine = BoundExpr::AffineColumn { index: 0, constant: 5, subtract: false };
         assert!(matches!(eval_number(&affine, &batch, 0).unwrap(), Some(Number::Unsigned(105)) | Some(Number::Signed(105))));
+    }
+}
+
+#[cfg(test)]
+mod multi_aggregate_distinct_text_budget_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_text_keys_do_not_consume_additional_memory() {
+        let mut distinct = DistinctValues::default();
+        distinct.insert_text(b"long-segment-key").unwrap();
+        let first = distinct.retained_text_bytes;
+        distinct.insert_text(b"long-segment-key").unwrap();
+        assert_eq!(first, distinct.retained_text_bytes);
+        assert_eq!(distinct.len(), 1);
+    }
+
+    #[test]
+    fn text_budget_refuses_new_keys_before_mutating_set() {
+        let mut distinct = DistinctValues::default();
+        distinct.retained_text_bytes = MAX_DISTINCT_TEXT_BYTES - 1;
+        assert!(distinct.insert_text(b"new-key").is_err());
+        assert_eq!(distinct.retained_text_bytes, MAX_DISTINCT_TEXT_BYTES - 1);
+        assert!(distinct.text.is_empty());
     }
 }
