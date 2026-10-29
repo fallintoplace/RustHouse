@@ -10,7 +10,7 @@ fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
-fn ymd(text: &str) -> Option<(i64, i64, i64)> {
+fn parse_ymd_date_parts(text: &str) -> Option<(i64, i64, i64)> {
     let bytes = text.as_bytes();
     if bytes.len() != 10
         || bytes[4] != b'-'
@@ -56,7 +56,7 @@ fn from_days(days: i64) -> (i64, i64, i64) {
 }
 
 fn parse_calendar_day(text: &str) -> Option<i64> {
-    let (year, month, day) = ymd(text)?;
+    let (year, month, day) = parse_ymd_date_parts(text)?;
     Some(to_days(year, month, day))
 }
 
