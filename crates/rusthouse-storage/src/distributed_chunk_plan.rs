@@ -1,5 +1,7 @@
 //! Deterministic byte ranges for resumable immutable-object copies.
 
+const MAX_TRANSFER_CHUNKS: usize = 65_536;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Chunk {
     pub offset: u64,
@@ -11,7 +13,7 @@ fn checked_chunk_count(
     chunk_bytes: u64,
     max_chunks: usize,
 ) -> Result<usize, &'static str> {
-    if chunk_bytes == 0 || max_chunks == 0 || max_chunks > 65_536 {
+    if chunk_bytes == 0 || max_chunks == 0 || max_chunks > MAX_TRANSFER_CHUNKS {
         return Err("invalid transfer chunk limits");
     }
     let count = total_bytes.div_ceil(chunk_bytes);
@@ -61,7 +63,7 @@ pub fn plan_missing_chunks(
     byte_budget: u64,
     max_batch_chunks: usize,
 ) -> Result<Vec<IndexedChunk>, &'static str> {
-    if max_batch_chunks > 65_536 {
+    if max_batch_chunks > MAX_TRANSFER_CHUNKS {
         return Err("transfer batch chunk limit exceeds bound");
     }
     let chunk_count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
