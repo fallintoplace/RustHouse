@@ -37,6 +37,8 @@ def classify_error(message):
 
 def classify(result):
     status = result.get("status", "unknown")
+    if not isinstance(status, str):
+        return "unexpected_status"
     if status in KNOWN_STATUSES:
         return status
     if status != "error":
