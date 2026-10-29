@@ -32,6 +32,11 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
             current["sha256"].update(pending)
             pending.clear()
 
+    def finish_current():
+        flush_pending()
+        current["file"].close()
+        del current["file"]
+
     try:
         with source.open("rb") as stream:
             while True:
@@ -44,9 +49,7 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
                     raise ValueError("empty TSV record")
                 if current is None or current["rows"] == rows_per_chunk:
                     if current is not None:
-                        flush_pending()
-                        current["file"].close()
-                        del current["file"]
+                        finish_current()
                     if len(shards) >= MAX_SHARDS:
                         raise ValueError("shard count exceeds RustHouse's 16384-part limit")
                     filename = f"part-{len(shards):06}.tsv"
@@ -60,9 +63,7 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
                 current["bytes"] += len(record)
                 current["rows"] += 1
         if current is not None:
-            flush_pending()
-            current["file"].close()
-            del current["file"]
+            finish_current()
         if not shards:
             raise ValueError("input TSV has no records")
         for shard in shards:
