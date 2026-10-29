@@ -54,6 +54,7 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25):
     disk = {"read_bytes": 0, "write_bytes": 0}
     failed_budget = False
     timed_out = False
+    rss_budget_bytes = max_rss_mib * 1024 * 1024 if max_rss_mib is not None else None
     try:
         proc = Path("/proc") / str(process.pid)
         while process.poll() is None:
@@ -62,7 +63,7 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25):
                 disk = parse_io((proc / "io").read_text())
             except (OSError, ValueError):
                 pass  # The process may exit between poll() and the /proc reads.
-            if max_rss_mib is not None and peak > max_rss_mib * 1024 * 1024:
+            if rss_budget_bytes is not None and peak > rss_budget_bytes:
                 failed_budget = True
                 process.kill()
                 break
