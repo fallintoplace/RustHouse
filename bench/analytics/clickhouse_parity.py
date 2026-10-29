@@ -5,6 +5,7 @@ only the per-run test database is created and dropped. No production tables are
 modified. Results, not just execution success, determine parity.
 """
 import argparse
+from collections import Counter
 import json
 import math
 import re
@@ -115,6 +116,15 @@ def assert_clickhouse_json_parity(rusthouse_output, clickhouse_output, unordered
     if unordered:
         if len(actual) > 4096:
             raise ValueError("unordered JSON parity is limited to 4096 result rows")
+        if (all(all(value is None or isinstance(value, str) for value in row.values())
+                for row in expected)
+                and all(all(value is None or isinstance(value, str) for value in row.values())
+                        for row in actual)):
+            actual_counts = Counter(tuple(row.items()) for row in actual)
+            expected_counts = Counter(tuple(row.items()) for row in expected)
+            if actual_counts != expected_counts:
+                raise ValueError("JSON result multiset differs from ClickHouse")
+            return len(expected)
         unmatched = list(actual)
         for reference in expected:
             index = next((i for i, row in enumerate(unmatched) if equal(row, reference)), None)
