@@ -1,7 +1,7 @@
 //! Bounded left-deep execution for chained joins over persistent tables.
 use super::{ExecutionError, typed};
 use crate::{JoinColumn, JoinSelect, JoinStep, JoinType};
-use rusthouse_storage::inspect_query_source;
+use rusthouse_storage::{TypedQueryReader, inspect_query_source};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -267,6 +267,109 @@ fn output_columns(
     Ok(selected)
 }
 
+/// Bound only the dimension hash builds. The fact table is scanned in typed
+/// batches so all-inner COUNT chains can run over billions of probe rows.
+struct CountStep {
+    left_keys: Vec<usize>,
+    any: bool,
+    right_rows: Vec<Vec<typed::Cell>>,
+    hash: HashMap<Vec<typed::Key>, Bucket>,
+}
+
+fn count_probe_chain(
+    row: &mut Vec<typed::Cell>,
+    steps: &[CountStep],
+    index: usize,
+) -> Result<u64, ExecutionError> {
+    if index == steps.len() {
+        return Ok(1);
+    }
+    let step = &steps[index];
+    let Some(key) = row_key(row, &step.left_keys) else {
+        return Ok(0);
+    };
+    let Some(matches) = step.hash.get(&key) else {
+        return Ok(0);
+    };
+    let mut total = 0u64;
+    for &right_index in matches.iter()
+        .take(if step.any { 1 } else { usize::MAX })
+    {
+        let previous = row.len();
+        row.extend_from_slice(&step.right_rows[right_index]);
+        let increment = count_probe_chain(row, steps, index + 1)?;
+        row.truncate(previous);
+        total = total.checked_add(increment)
+            .ok_or_else(|| invalid("JOIN COUNT overflow"))?;
+    }
+    Ok(total)
+}
+
+fn count_streaming_inner_chain<W: Write>(
+    query: &JoinSelect,
+    paths: &[PathBuf],
+    relations: &[Relation],
+    initial_step: &JoinStep,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    if query.offset != 0 {
+        output.write_all(b"count\n")?;
+        return Ok(());
+    }
+    let mut steps = Vec::with_capacity(paths.len() - 1);
+    let mut scan_indices = Vec::new();
+    for (index, step) in std::iter::once(initial_step)
+        .chain(query.steps.iter()).enumerate()
+    {
+        let right = &relations[index + 1];
+        let (left_keys, right_keys) = step_keys(
+            step, &relations[..=index + 1], right.start
+        )?;
+        for &key in &left_keys {
+            if key < relations[0].names.len() && !scan_indices.contains(&key) {
+                scan_indices.push(key);
+            }
+        }
+        let right_rows = read_rows(
+            &paths[index + 1], &right.names, right.rows,
+            MAX_INPUT_ROWS, MAX_STREAM_BUILD_BYTES,
+        )?;
+        let mut hash = HashMap::with_capacity(right_rows.len());
+        for (row_index, row) in right_rows.iter().enumerate() {
+            if let Some(key) = row_key(row, &right_keys) {
+                hash.entry(key)
+                    .and_modify(|bucket: &mut Bucket| bucket.push(row_index))
+                    .or_insert(Bucket::One(row_index));
+            }
+        }
+        steps.push(CountStep {
+            left_keys, any: step.any, right_rows, hash,
+        });
+    }
+    if scan_indices.is_empty() {
+        scan_indices.push(0);
+    }
+    scan_indices.sort_unstable();
+    let column_names = scan_indices.iter()
+        .map(|&index| relations[0].names[index].clone())
+        .collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(&paths[0], &column_names)?;
+    let mut count = 0u64;
+    while let Some(batch) = reader.next_batch()? {
+        for slot in 0..batch[0].len() {
+            let mut fact = vec![typed::Cell::Null; relations[0].names.len()];
+            for (read_index, &physical_index) in scan_indices.iter().enumerate() {
+                fact[physical_index] = typed::cell(&batch[read_index], slot);
+            }
+            let increment = count_probe_chain(&mut fact, &steps, 0)?;
+            count = count.checked_add(increment)
+                .ok_or_else(|| invalid("JOIN COUNT overflow"))?;
+        }
+    }
+    write!(output, "count\n{count}\n")?;
+    Ok(())
+}
+
 /// Execute a chain of three or more bounded joins. No output is written before
 /// all input validation, row-limit checks, and final ordering have succeeded.
 pub fn execute_multi_join<W: Write>(
@@ -341,6 +444,10 @@ pub fn execute_multi_join<W: Write>(
             write_join_header(output, &selected)?;
         }
         return Ok(());
+    }
+
+    if query.aggregate.is_some() {
+        return count_streaming_inner_chain(query, paths, &relations, &initial_step, output);
     }
 
     let mut rows = read_rows(
