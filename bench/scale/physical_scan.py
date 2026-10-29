@@ -23,7 +23,7 @@ SUM_SQL = "SELECT sum(id) FROM events WHERE id % 2 = 0"
 
 def even_reference(rows):
     """For input integers 0..rows-1, return even-row count and sum."""
-    if not isinstance(rows, int) or rows < 1:
+    if type(rows) is not int or rows < 1:
         raise ValueError("rows must be positive")
     count = (rows + 1) // 2
     return count, count * (count - 1)
@@ -77,6 +77,12 @@ def scan(binary, database, sql, expected, runs, warmups, timeout):
 
 
 def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None):
+    if type(rows) is not int or not 1 <= rows <= 1_000_000_000:
+        raise ValueError("rows must be in 1..1000000000")
+    if type(runs) is not int or type(warmups) is not int or runs < 1 or warmups < 0:
+        raise ValueError("invalid physical scan run counts")
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
     count, total = even_reference(rows)
     with tempfile.TemporaryDirectory(prefix="rusthouse-physical-scan-", dir=scratch_dir) as root:
         directory = Path(root) / "db"
