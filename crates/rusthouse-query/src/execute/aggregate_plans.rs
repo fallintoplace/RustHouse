@@ -706,6 +706,38 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    if query.limit.is_none() && query.having.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some(order) = query.order_by.as_ref().filter(|order| order.column == "number") {
+            let bounds = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                Some((0, rows))
+            } else {
+                monotonic_range_indices(&comparisons, start, rows, step)
+            };
+            if let Some((lower, upper)) = bounds {
+                let selected = upper - lower;
+                if selected > MAX_GROUPS as u64 {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 100000 groups".into(),
+                    ));
+                }
+                let begin = (query.offset.unwrap_or(0) as u64).min(selected);
+                for position in begin..selected {
+                    let index = if order.descending {
+                        upper - 1 - position
+                    } else {
+                        lower + position
+                    };
+                    let value = u128::from(start) + u128::from(index) * u128::from(step);
+                    let mut state = AggregateState::new(*function);
+                    state.update(Number::Unsigned(value))?;
+                    writeln!(output, "{value}\t{}", state.render())?;
+                }
+                return Ok(());
+            }
+        }
+    }
     // A generated number is a unique group key. Each unfiltered group
     // contains one row, so a bounded page needs only its requested keys.
     if query.predicates.is_empty()
