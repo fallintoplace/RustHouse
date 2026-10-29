@@ -17,10 +17,19 @@ def require_uint(value, name, *, zero=False):
 def verify_file(path, start, rows, step=1):
     digest = hashlib.sha256()
     with Path(path).open("rb") as source:
-        for expected in range(start, start + rows * step, step):
-            actual = source.readline()
-            if actual != f"{expected}\n".encode("ascii"):
-                raise ValueError(f"{path}: incorrect or missing row {expected}")
+        # Read exact bounded blocks rather than one readline and digest update
+        # per UInt64 ID. An oversized/malformed line also fails without an
+        # unbounded readline allocation.
+        for offset in range(0, rows, 4096):
+            count = min(4096, rows - offset)
+            expected = "".join(
+                f"{start + (offset + index) * step}\n" for index in range(count)
+            ).encode("ascii")
+            actual = source.read(len(expected))
+            if actual != expected:
+                raise ValueError(
+                    f"{path}: incorrect or missing row near {start + offset * step}"
+                )
             digest.update(actual)
         if source.read(1):
             raise ValueError(f"{path}: contains additional rows")
