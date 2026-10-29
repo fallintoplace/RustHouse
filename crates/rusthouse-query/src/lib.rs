@@ -1248,15 +1248,35 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         return Err(ParseError("literal SELECT does not support FROM".into()));
     }
 
-    let (predicates, or_predicates) = if parser.keyword("WHERE") {
+    // ClickHouse evaluates PREWHERE as an additional filtering stage. Lowering
+    // PREWHERE AND WHERE into the shared bounded DNF preserves OR precedence
+    // and uses the same typed predicate executor for all table sources.
+    let prewhere = if parser.keyword("PREWHERE") {
+        if source.is_none() {
+            return Err(ParseError("PREWHERE requires a table source".into()));
+        }
+        Some(where_parser::parse_where(&mut parser)?)
+    } else {
+        None
+    };
+    let where_clause = if parser.keyword("WHERE") {
         if source.is_none() {
             return Err(ParseError("WHERE requires a table source".into()));
         }
-        let mut branches = where_parser::parse_where(&mut parser)?.into_iter();
-        (branches.next().unwrap_or_default(), branches.collect())
+        Some(where_parser::parse_where(&mut parser)?)
     } else {
-        (Vec::new(), Vec::new())
+        None
     };
+    let branches = match (prewhere, where_clause) {
+        (Some(prewhere), Some(where_clause)) => {
+            where_parser::combine_and(prewhere, where_clause)?
+        }
+        (Some(branches), None) | (None, Some(branches)) => branches,
+        (None, None) => Vec::new(),
+    };
+    let mut branches = branches.into_iter();
+    let predicates = branches.next().unwrap_or_default();
+    let or_predicates = branches.collect();
 
     if parser.keyword("GROUP") {
         if !parser.keyword("BY") {
