@@ -25,16 +25,16 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     let mut content = Vec::new();
     let file = fs::File::open(&schema)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
-    let opened = file
+    let opened_schema_metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect opened schema for {table}: {error}"))?;
-    if !opened.file_type().is_file() || opened.len() > 32 * 1024 {
+    if !opened_schema_metadata.file_type().is_file() || opened_schema_metadata.len() > 32 * 1024 {
         return Err(format!("database schema changed before read for {table}"));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if schema_metadata.dev() != opened.dev() || schema_metadata.ino() != opened.ino() {
+        if schema_metadata.dev() != opened_schema_metadata.dev() || schema_metadata.ino() != opened_schema_metadata.ino() {
             return Err(format!("database schema replaced before read for {table}"));
         }
     }

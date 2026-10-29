@@ -152,6 +152,35 @@ pub fn copy_frozen_snapshot(
     Ok(report)
 }
 
+/// Check a frozen snapshot and report exact copy requirements without writing files.
+pub fn preview_frozen_snapshot(
+    source: &Path,
+    max_parts: usize,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<SnapshotCopy, PartError> {
+    let active = resolve_active_snapshot(source)?;
+    let parts = query_parts(&active)?;
+    if parts.len() > max_parts || max_parts > 16_384 {
+        return Err(PartError::InvalidScan("snapshot preview exceeds part limit".into()));
+    }
+    inspect_query_source(&active)?;
+    let files = crate::distributed_inventory::inventory_snapshot(source, max_files, max_bytes)?;
+    let bytes = files.iter().try_fold(0u64, |total, file| {
+        total.checked_add(file.bytes)
+            .ok_or_else(|| PartError::InvalidScan("snapshot preview byte overflow".into()))
+    })?;
+    for part in &parts {
+        verify_part_file_hashes(part)?;
+        verify_wide_part(part)?;
+    }
+    Ok(SnapshotCopy {
+        parts: parts.len(),
+        files: files.len(),
+        bytes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,35 +233,6 @@ mod tests {
         assert!(!target.exists());
         fs::remove_dir_all(root).unwrap();
     }
-}
-
-/// Check a frozen snapshot and report exact copy requirements without writing files.
-pub fn preview_frozen_snapshot(
-    source: &Path,
-    max_parts: usize,
-    max_files: usize,
-    max_bytes: u64,
-) -> Result<SnapshotCopy, PartError> {
-    let active = resolve_active_snapshot(source)?;
-    let parts = query_parts(&active)?;
-    if parts.len() > max_parts || max_parts > 16_384 {
-        return Err(PartError::InvalidScan("snapshot preview exceeds part limit".into()));
-    }
-    inspect_query_source(&active)?;
-    let files = crate::distributed_inventory::inventory_snapshot(source, max_files, max_bytes)?;
-    let bytes = files.iter().try_fold(0u64, |total, file| {
-        total.checked_add(file.bytes)
-            .ok_or_else(|| PartError::InvalidScan("snapshot preview byte overflow".into()))
-    })?;
-    for part in &parts {
-        verify_part_file_hashes(part)?;
-        verify_wide_part(part)?;
-    }
-    Ok(SnapshotCopy {
-        parts: parts.len(),
-        files: files.len(),
-        bytes,
-    })
 }
 
 #[cfg(test)]

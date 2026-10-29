@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
+const MAX_COPY_FIELDS: usize = 128;
 const MAX_CSV_RECORD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CSV_DATA_RECORDS: usize = 100_000;
 const MAX_CSV_RECORDS: usize = MAX_CSV_DATA_RECORDS + 1;
@@ -25,7 +26,7 @@ fn push_field(
     field: &mut String,
     quoted: bool,
 ) -> Result<(), String> {
-    if row.len() >= 128 {
+    if row.len() >= MAX_COPY_FIELDS {
         return Err("CSV records support at most 128 columns".into());
     }
     let value = std::mem::take(field);
@@ -54,7 +55,7 @@ fn parse_plain_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     for line in data.split_terminator('\n') {
         let mut row = Vec::with_capacity(width_hint);
         for field in line.split(',') {
-            if row.len() >= 128 {
+            if row.len() >= MAX_COPY_FIELDS {
                 return Err("CSV records support at most 128 columns".into());
             }
             row.push(if field.is_empty() || field == "\\N" {
@@ -162,7 +163,7 @@ fn parse_delimited_record(line: &str, delimiter: char) -> Result<Vec<Option<Stri
     }
     let mut row = Vec::new();
     for field in line.split(delimiter) {
-        if row.len() >= 128 {
+        if row.len() >= MAX_COPY_FIELDS {
             return Err("TSV records support at most 128 columns".into());
         }
         if field == "\\N" {

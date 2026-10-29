@@ -1,5 +1,7 @@
 //! Checked storage-capacity accounting for planned object transfers.
 
+const MAX_RESERVATION_OBJECTS: usize = 65_536;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capacity {
     pub total: u64,
@@ -42,14 +44,14 @@ impl Capacity {
 
     /// Convert reserved bytes into committed usage.
     pub fn commit(self, bytes: u64) -> Result<Self, &'static str> {
-        let reserved = self.remaining_reservation(bytes, "cannot commit unreserved bytes")?;
+        let remaining_reserved_bytes = self.remaining_reservation(bytes, "cannot commit unreserved bytes")?;
         self.available()?;
         Ok(Self {
             used: self
                 .used
                 .checked_add(bytes)
                 .ok_or("replica usage overflow")?,
-            reserved,
+            reserved: remaining_reserved_bytes,
             ..self
         })
     }
@@ -139,7 +141,7 @@ mod tests {
 impl Capacity {
     /// Reserve a whole immutable-object batch or reject it without changing state.
     pub fn reserve_many(self, object_sizes: &[u64]) -> Result<Self, &'static str> {
-        if object_sizes.len() > 65_536 {
+        if object_sizes.len() > MAX_RESERVATION_OBJECTS {
             return Err("replica object batch exceeds limit");
         }
         let bytes = object_sizes.iter().try_fold(0u64, |total, &size| {

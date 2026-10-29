@@ -1,6 +1,8 @@
 //! Bounded under-replication repair planning without network side effects.
 use std::collections::HashSet;
 
+const MAX_REPAIR_JOBS: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepairJob {
     pub shard: String,
@@ -45,7 +47,7 @@ pub fn plan_repairs(
     byte_budget: u64,
     job_limit: usize,
 ) -> Result<Vec<RepairJob>, &'static str> {
-    if jobs.len() > 4096 || job_limit > 4096 {
+    if jobs.len() > MAX_REPAIR_JOBS || job_limit > MAX_REPAIR_JOBS {
         return Err("repair job count exceeds bound");
     }
     validate_repair_jobs(jobs)?;
@@ -152,7 +154,7 @@ pub fn plan_repairs_excluding(
     byte_budget: u64,
     job_limit: usize,
 ) -> Result<Vec<RepairJob>, &'static str> {
-    if in_flight.len() > 4096 {
+    if in_flight.len() > MAX_REPAIR_JOBS {
         return Err("too many in-flight repair shards");
     }
     validate_repair_jobs(jobs)?;
