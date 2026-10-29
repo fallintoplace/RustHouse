@@ -1,10 +1,10 @@
 use super::*;
 
 pub(super) fn parse_http_status(status_line: &str) -> Result<u16, String> {
-    let mut words = status_line.splitn(3, ' ');
-    let version = words.next().ok_or("invalid peer HTTP status")?;
-    let code = words.next().ok_or("invalid peer HTTP status")?;
-    let reason = words.next().ok_or("invalid peer HTTP status")?;
+    let mut status_parts = status_line.splitn(3, ' ');
+    let version = status_parts.next().ok_or("invalid peer HTTP status")?;
+    let code = status_parts.next().ok_or("invalid peer HTTP status")?;
+    let reason = status_parts.next().ok_or("invalid peer HTTP status")?;
     if !matches!(version, "HTTP/1.1" | "HTTP/1.0")
         || code.len() != 3
         || !code.bytes().all(|byte| byte.is_ascii_digit())
