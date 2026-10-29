@@ -188,6 +188,26 @@ fn numeric_argument_at(
     }
 }
 
+/// SQL expression comparisons must compare numeric values, not the
+/// internal Number enum variant order used by mixed-type sort keys.
+fn compare_expression_numbers(left: Number, right: Number) -> std::cmp::Ordering {
+    match (left, right) {
+        (Number::Unsigned(left), Number::Signed(right)) => {
+            match u128::try_from(right) {
+                Ok(right) => left.cmp(&right),
+                Err(_) => std::cmp::Ordering::Greater,
+            }
+        }
+        (Number::Signed(left), Number::Unsigned(right)) => {
+            match u128::try_from(left) {
+                Ok(left) => left.cmp(&right),
+                Err(_) => std::cmp::Ordering::Less,
+            }
+        }
+        _ => super::compare_numbers(left, right),
+    }
+}
+
 fn eval_number(
     expression: &BoundExpr,
     batch: &[TypedColumn],
@@ -198,7 +218,7 @@ fn eval_number(
         BoundExpr::Compare(left, operator, right) => {
             let Some(left) = eval_number(left, batch, row)? else {return Ok(None)};
             let Some(right) = eval_number(right, batch, row)? else {return Ok(None)};
-            let order = super::compare_numbers(left, right);
+            let order = compare_expression_numbers(left, right);
             let matched = match operator {
                 crate::Operator::Eq => order.is_eq(),
                 crate::Operator::Ne => order.is_ne(),
@@ -898,5 +918,31 @@ mod direct_numeric_argument_tests {
         assert!(eval_number(&BoundExpr::Column(1), &batch, 1).unwrap().is_none());
         let affine = BoundExpr::AffineColumn { index: 0, constant: 5, subtract: false };
         assert!(matches!(eval_number(&affine, &batch, 0).unwrap(), Some(Number::Unsigned(105)) | Some(Number::Signed(105))));
+    }
+}
+
+#[cfg(test)]
+mod mixed_integer_expression_comparison_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn unsigned_columns_compare_numerically_against_signed_literals() {
+        let batch = [TypedColumn::Numeric(NumericColumn::UInt64(vec![0, 2, 3]))];
+        let expression = BoundExpr::Compare(
+            Box::new(BoundExpr::Column(0)),
+            crate::Operator::Gt,
+            Box::new(BoundExpr::Integer(2)),
+        );
+        for (row, expected) in [(0, 0u128), (1, 0), (2, 1)] {
+            assert!(matches!(eval_number(&expression, &batch, row).unwrap(),
+                Some(Number::Unsigned(value)) if value == expected));
+        }
+        assert_eq!(compare_expression_numbers(
+            Number::Unsigned(u128::MAX), Number::Signed(-1)
+        ), std::cmp::Ordering::Greater);
+        assert_eq!(compare_expression_numbers(
+            Number::Signed(i128::MIN), Number::Unsigned(0)
+        ), std::cmp::Ordering::Less);
     }
 }
