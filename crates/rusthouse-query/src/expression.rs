@@ -357,6 +357,15 @@ mod tests {
     }
 
     #[test]
+    fn explicit_null_literals_work_in_case_and_in_expressions() {
+        assert_eq!(parse_scalar_expression("NULL").unwrap(), ScalarExpr::Null);
+        assert!(matches!(parse_scalar_expression("a IN (NULL, 1)").unwrap(),
+            ScalarExpr::In(_, members, false) if members[0] == ScalarExpr::Null));
+        assert!(matches!(parse_scalar_expression("CASE WHEN a = 1 THEN NULL ELSE 2 END").unwrap(),
+            ScalarExpr::CaseWhen(_, yes, _) if *yes == ScalarExpr::Null));
+    }
+
+    #[test]
     fn rejects_invalid_expressions() {
         for value in ["width +", "width,", "(width + 1", "9223372036854775808"] {
             assert!(parse_scalar_expression(value).is_err(), "{value}");
