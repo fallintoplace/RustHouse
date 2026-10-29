@@ -23,7 +23,8 @@ def sql_for(table, source):
     path = str(Path(source).resolve())
     if len(path.encode("utf-8")) > 32768:
         raise ValueError("source path is too long")
-    return f"COPY {table} FROM '{path.replace(chr(39), chr(39)*2)}' WITH (FORMAT TSV)"
+    escaped_path = path.replace("'", "''")
+    return f"COPY {table} FROM '{escaped_path}' WITH (FORMAT TSV)"
 
 
 def same_device(database, watch_dir):
