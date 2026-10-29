@@ -120,6 +120,73 @@ fn parallel_dense_grouped_count(
 }
 
 
+/// Retry rare high-cardinality unordered GROUP BY scans using an exact
+/// external key sorter. Small groups keep the in-memory hash fast path.
+/// The retry rescans an immutable snapshot rather than attempting to recover
+/// partial in-memory counts or double-count the final batch.
+fn spill_unordered_groups<W: Write>(
+    query: &Select,
+    part: &Path,
+    column: &str,
+    kind: &str,
+    scan_columns: &[String],
+    comparisons: &[Vec<CompiledPredicate>],
+    metadata: &rusthouse_storage::PartMetadata,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let signed = matches!(kind, "Int32" | "Int64");
+    let mut sorter = ExternalGroupCount64::new(signed, false);
+    let mut reader = NumericQueryReader::open_with_metadata(
+        part, scan_columns, metadata,
+    )?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    while let Some(batch) = reader.next_batch()? {
+        for index in 0..batch[0].len() {
+            if !no_filters && !batch_matches(&batch, index, comparisons) {
+                continue;
+            }
+            let key = match &batch[0] {
+                NumericColumn::UInt32(values) => u64::from(values[index]),
+                NumericColumn::Int32(values) => values[index] as i64 as u64,
+                NumericColumn::UInt64(values) => values[index],
+                NumericColumn::Int64(values) => values[index] as u64,
+                _ => return Err(ExecutionError::Invalid(
+                    "external grouped scan requires 32/64-bit integer key".into(),
+                )),
+            };
+            sorter.insert(key)?;
+        }
+    }
+    writeln!(output, "{column}\t{}",
+        query.alias.as_deref().unwrap_or("count"))?;
+    let mut skipped = 0usize;
+    let mut emitted = 0usize;
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(usize::MAX);
+    sorter.finish_until(|key, count| {
+        if let Some(having) = &query.having {
+            if !number_matches(
+                Number::Unsigned(u128::from(count)),
+                Number::Unsigned(u128::from(having.value)),
+                having.operator,
+            ) {
+                return Ok(true);
+            }
+        }
+        if skipped >= offset && emitted < limit {
+            if signed {
+                writeln!(output, "{}\t{count}", key as i64)?;
+            } else {
+                writeln!(output, "{key}\t{count}")?;
+            }
+            emitted += 1;
+        }
+        skipped = skipped.checked_add(1)
+            .ok_or_else(|| ExecutionError::Invalid("GROUP BY offset overflow".into()))?;
+        Ok(emitted < limit)
+    })
+}
+
 pub(super) fn execute_grouped_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -318,6 +385,15 @@ pub(super) fn execute_grouped_part<W: Write>(
                     }
                     Entry::Vacant(entry) => {
                         if groups.rows.len() >= MAX_GROUPS {
+                            // GROUP BY without ORDER BY has no stable row-order
+                            // contract. Spill and globally merge exact counts
+                            // only when unique keys exceed the hash ceiling.
+                            if query.order_by.is_none() {
+                                return spill_unordered_groups(
+                                    query, part, column, narrow.expect("validated 32/64-bit key"),
+                                    &scan_columns, &comparisons, &metadata, output,
+                                );
+                            }
                             return Err(ExecutionError::Invalid(
                                 "GROUP BY supports at most 200000 groups".into(),
                             ));
@@ -362,6 +438,15 @@ pub(super) fn execute_grouped_part<W: Write>(
                     }
                     Entry::Vacant(entry) => {
                         if groups.rows.len() >= MAX_GROUPS {
+                            // GROUP BY without ORDER BY has no stable row-order
+                            // contract. Spill and globally merge exact counts
+                            // only when unique keys exceed the hash ceiling.
+                            if query.order_by.is_none() {
+                                return spill_unordered_groups(
+                                    query, part, column, narrow.expect("validated 32/64-bit key"),
+                                    &scan_columns, &comparisons, &metadata, output,
+                                );
+                            }
                             return Err(ExecutionError::Invalid(
                                 "GROUP BY supports at most 200000 groups".into(),
                             ));
