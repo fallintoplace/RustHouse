@@ -178,6 +178,12 @@ fn checksum_inventory_entry(
             "snapshot inventory file changed before hashing".into(),
         ));
     }
+    #[cfg(unix)]
+    if !same_file_identity(&metadata, &opened) {
+        return Err(PartError::InvalidScan(
+            "snapshot inventory file replaced before hashing".into(),
+        ));
+    }
     let (bytes, crc32c) = crate::distributed_crc32c::crc32c_reader(&mut file, entry.bytes)
         .map_err(|error| io_error(&path, error))?;
     if bytes != entry.bytes {
@@ -307,6 +313,38 @@ mod checksummed_inventory_tests {
         assert_eq!(count.bytes, expected.len() as u64);
         assert_eq!(count.crc32c, crate::distributed_crc32c::crc32c(&expected));
         assert!(inventory_snapshot_crc32c(&root, 1, 1_000_000).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(unix)]
+fn same_file_identity(path_metadata: &fs::Metadata, opened_metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    path_metadata.dev() == opened_metadata.dev()
+        && path_metadata.ino() == opened_metadata.ino()
+}
+
+#[cfg(all(test, unix))]
+mod immutable_identity_tests {
+    use super::*;
+
+    #[test]
+    fn same_length_different_inodes_are_not_the_same_object() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-distributed_inventory-identity-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("one");
+        let second = root.join("two");
+        fs::write(&first, b"abcd").unwrap();
+        fs::write(&second, b"wxyz").unwrap();
+        let before = fs::symlink_metadata(&first).unwrap();
+        let opened = File::open(&second).unwrap().metadata().unwrap();
+        assert_eq!(before.len(), opened.len());
+        assert!(!same_file_identity(&before, &opened));
+        assert!(same_file_identity(&before, &File::open(&first).unwrap().metadata().unwrap()));
         fs::remove_dir_all(root).unwrap();
     }
 }
