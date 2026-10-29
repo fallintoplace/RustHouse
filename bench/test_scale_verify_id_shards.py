@@ -26,6 +26,35 @@ class VerifyShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "incorrect"):
                 verify(manifest)
 
+    def test_verifies_sparse_strides_across_shard_boundaries(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            first = folder / "a.tsv"
+            second = folder / "b.tsv"
+            first.write_bytes(b"10\n13\n")
+            second.write_bytes(b"16\n")
+            shards = [
+                {"path": "a.tsv", "start": 10, "rows": 2,
+                 "sha256": hashlib.sha256(first.read_bytes()).hexdigest()},
+                {"path": "b.tsv", "start": 16, "rows": 1,
+                 "sha256": hashlib.sha256(second.read_bytes()).hexdigest()},
+            ]
+            manifest = folder / "manifest.json"
+            manifest.write_text(json.dumps({"schema_version": 1, "start": 10,
+                                            "rows": 3, "step": 3, "shards": shards}))
+            self.assertEqual(verify(manifest)["step"], 3)
+            shards[1]["start"] = 17
+            manifest.write_text(json.dumps({"schema_version": 1, "start": 10,
+                                            "rows": 3, "step": 3, "shards": shards}))
+            with self.assertRaisesRegex(ValueError, "gap"):
+                verify(manifest)
+            shards[1]["start"] = 16
+            manifest.write_text(json.dumps({"schema_version": 1,
+                                            "start": (1 << 64) - 2,
+                                            "rows": 3, "step": 2, "shards": shards}))
+            with self.assertRaisesRegex(ValueError, "overflow"):
+                verify(manifest)
+
     def test_rejects_overlap_and_incomplete_coverage(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
