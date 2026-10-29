@@ -98,6 +98,7 @@ enum BoundExpr {
     Coalesce(Vec<Self>),
     NullIf(Box<Self>, Box<Self>),
     Abs(Box<Self>),
+    UnaryMath(String, Box<Self>),
     Extremum(Vec<Self>, bool),
     // Fast path for the affine expression family in ClickBench Q30.
     AffineColumn {
@@ -143,6 +144,10 @@ impl BoundExpr {
             ),
             ScalarExpr::Abs(inner) =>
                 Self::Abs(Box::new(Self::bind(inner, indices)?)),
+            ScalarExpr::UnaryMath(name, inner) => Self::UnaryMath(
+                name.clone(),
+                Box::new(Self::bind(inner, indices)?),
+            ),
             ScalarExpr::NullIf(left, right) => Self::NullIf(
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
@@ -348,6 +353,10 @@ fn eval_number(
                 }
             }
             Ok(best)
+        },
+        BoundExpr::UnaryMath(name, inner) => match eval_number(inner, batch, row)? {
+            Some(value) => apply_unary_math(name, value).map(Some),
+            None => Ok(None),
         },
         BoundExpr::Abs(inner) => Ok(eval_number(inner, batch, row)?.map(|value| match value {
             Number::Unsigned(value) => Number::Unsigned(value),

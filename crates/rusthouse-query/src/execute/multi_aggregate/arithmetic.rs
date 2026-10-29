@@ -74,3 +74,56 @@ pub(super) fn checked_multiply(left: Number, right: Number) -> Result<Number, Ex
         }
     }
 }
+
+/// Checked unary functions for numeric aggregate arguments.
+pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, ExecutionError> {
+    let result = match name {
+        "SIGN" => match value {
+            Number::Signed(number) => Number::Signed(number.signum()),
+            Number::Unsigned(number) => Number::Unsigned(u128::from(number != 0)),
+            Number::Float(number) => Number::Float(number.signum()),
+        },
+        _ => {
+            return Err(ExecutionError::Invalid(format!(
+                "unsupported aggregate numeric function: {name}"
+            )));
+        }
+    };
+    if matches!(result, Number::Float(value) if !value.is_finite()) {
+        return Err(ExecutionError::Invalid(
+            "non-finite result in aggregate numeric function".into(),
+        ));
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod aggregate_unary_math_tests {
+    use super::*;
+
+    #[test]
+    fn sign_preserves_integral_precision_and_nullable_arguments() {
+        assert!(matches!(
+            apply_unary_math("SIGN", Number::Signed(i128::MIN)),
+            Ok(Number::Signed(-1))
+        ));
+        assert!(matches!(
+            apply_unary_math("SIGN", Number::Unsigned(u128::MAX)),
+            Ok(Number::Unsigned(1))
+        ));
+        assert!(matches!(
+            apply_unary_math("SIGN", Number::Float(0.0)),
+            Ok(Number::Float(value)) if value == 0.0
+        ));
+        assert!(matches!(
+            super::eval_number(
+                &BoundExpr::UnaryMath("SIGN".into(), Box::new(BoundExpr::Null)),
+                &[],
+                0,
+            ),
+            Ok(None)
+        ));
+        assert!(crate::parse_scalar_expression("sign(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("sign(amount, 2)").is_err());
+    }
+}

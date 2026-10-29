@@ -150,6 +150,22 @@ fn parse_coalesce(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     Ok(ScalarExpr::Coalesce(arguments))
 }
 
+fn is_unary_math(name: &str) -> bool {
+    matches!(name.to_ascii_uppercase().as_str(), "SIGN")
+}
+
+fn parse_unary_math(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    let name = parser.word()?.to_ascii_uppercase();
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("numeric function requires '('".into()));
+    }
+    let argument = parse_expression_tokens(parser)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("numeric function requires exactly one argument".into()));
+    }
+    Ok(ScalarExpr::UnaryMath(name, Box::new(argument)))
+}
+
 pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::Plus) => {
@@ -186,7 +202,13 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
             parser.index += 1;
             Ok(ScalarExpr::Null)
         }
-        Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
+        Some(Token::Word(name))
+            if is_unary_math(name)
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            parse_unary_math(parser)
+        }
+        Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?))),
         Some(Token::Number(number)) => {
             let number = number.parse::<i64>().map_err(|_| {
                 ParseError("integer expression literal is out of Int64 range".into())
