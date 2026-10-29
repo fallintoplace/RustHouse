@@ -15,6 +15,18 @@ from common import cli_sql, emit_json, latency_summary
 
 
 DEFAULT_QUERIES = Path(__file__).with_name("queries.sql")
+MAX_BENCHMARK_OUTPUT_BYTES = 16 * 1024 * 1024
+MAX_REFERENCE_BYTES = 16 * 1024 * 1024
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not forward benchmark SQL to another HTTP endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+HTTP_OPENER = urllib.request.build_opener(NoRedirect())
 
 
 def load_queries(path):
@@ -53,7 +65,9 @@ def http_target(endpoint):
     parsed = urllib.parse.urlsplit(endpoint)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ValueError("--url requires an HTTP(S) URL")
-    params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    params = [(key, value) for key, value in
+              urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+              if key != "format"]
     params.append(("format", "tsv-no-header"))
     return urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, parsed.path or "/", urllib.parse.urlencode(params), "")
@@ -63,8 +77,11 @@ def http_target(endpoint):
 def execute_http(endpoint, sql, timeout):
     request = urllib.request.Request(http_target(endpoint), sql.encode("utf-8"), method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
+        with HTTP_OPENER.open(request, timeout=timeout) as response:
+            payload = response.read(MAX_BENCHMARK_OUTPUT_BYTES + 1)
+            if len(payload) > MAX_BENCHMARK_OUTPUT_BYTES:
+                raise ValueError("HTTP benchmark result exceeds 16 MiB")
+            return payload
     except urllib.error.HTTPError as error:
         raise RuntimeError("HTTP %d: %s" % (error.code, error.read(2000).decode("utf-8", "replace"))) from error
 
@@ -84,7 +101,11 @@ def summarize_times(timings):
 def reference_failure(expected_path, output):
     if not expected_path.is_file():
         return "missing_reference", str(expected_path)
-    if output != expected_path.read_bytes():
+    with expected_path.open("rb") as source:
+        reference = source.read(MAX_REFERENCE_BYTES + 1)
+    if len(reference) > MAX_REFERENCE_BYTES:
+        return "reference_too_large", str(expected_path)
+    if output != reference:
         return "mismatch", "query output differs from expected TSV"
     return None
 
@@ -94,6 +115,14 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
     for index in indices:
         sql = queries[index]
         expected_path = None if reference_dir is None else reference_dir / ("q%02d.tsv" % (index + 1))
+        if expected_path is not None and not expected_path.is_file():
+            results.append({"query": index + 1, "status": "missing_reference",
+                            "seconds": [], "latency": None, "error": str(expected_path)})
+            continue
+        if expected_path is not None and expected_path.stat().st_size > MAX_REFERENCE_BYTES:
+            results.append({"query": index + 1, "status": "reference_too_large",
+                            "seconds": [], "latency": None, "error": str(expected_path)})
+            continue
         timings = []
         status = "unverified" if expected_path is None else "passed"
         failure = None
@@ -101,7 +130,7 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
             start = time.perf_counter_ns() if iteration >= 0 else None
             try:
                 output = execute(sql, timeout)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired, urllib.error.URLError) as error:
+            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired, urllib.error.URLError) as error:
                 status, failure = "error", str(error)[:2000]
                 break
             # Reference file I/O and comparisons are outside the timed query.
