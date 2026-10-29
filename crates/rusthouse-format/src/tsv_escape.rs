@@ -65,10 +65,10 @@ pub fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
         output.extend_from_slice(&field[start..index]);
         output.push(decode_escape(field, &mut index)?);
         start = index;
-        let Some(relative) = field[index..].iter().position(|&byte| byte == b'\\') else {
+        let Some(next_escape_offset) = field[index..].iter().position(|&byte| byte == b'\\') else {
             break;
         };
-        index += relative;
+        index += next_escape_offset;
     }
     output.extend_from_slice(&field[start..]);
     Ok(output)
