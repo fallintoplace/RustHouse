@@ -130,3 +130,8 @@ fn functional_or_reduces_unknown_when_rhs_is_true() {
 fn functional_logical_not_propagates_null() {
     assert_eq!(evaluate("logicalNot(x)"), "1");
 }
+
+#[test]
+fn max2_selects_maximum_including_nullable_input() {
+    assert_eq!(evaluate("max2(x, y)"), "15");
+}
