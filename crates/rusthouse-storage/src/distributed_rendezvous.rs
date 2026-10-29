@@ -61,16 +61,16 @@ pub fn replicas_for(
     let seed = shard_seed(shard);
     // A single winner does not need sorting all candidate replicas.
     if replicas == 1 {
-        let mut winner = nodes[0].as_str();
-        let mut winner_score = score_with_seed(seed, winner);
+        let mut winning_node = nodes[0].as_str();
+        let mut winning_score = score_with_seed(seed, winning_node);
         for node in nodes.iter().skip(1) {
             let score = score_with_seed(seed, node);
-            if score > winner_score || (score == winner_score && node.as_str() < winner) {
-                winner = node;
-                winner_score = score;
+            if score > winning_score || (score == winning_score && node.as_str() < winning_node) {
+                winning_node = node;
+                winning_score = score;
             }
         }
-        return Ok(vec![winner.to_owned()]);
+        return Ok(vec![winning_node.to_owned()]);
     }
     let mut ranked: Vec<(u64, &str)> = nodes
         .iter()
