@@ -2,7 +2,7 @@ use super::ExecutionError;
 use super::typed;
 use crate::Select;
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
@@ -30,13 +30,14 @@ fn checked_string_length(
 
 fn projection_columns(query: &Select, column: &str) -> Vec<String> {
     let mut names = vec![column.to_owned()];
+    let mut seen = HashSet::from([column]);
     for predicate in query
         .predicates
         .iter()
         .chain(query.or_predicates.iter().flatten())
     {
         let predicate_column = predicate.column();
-        if !names.iter().any(|name| name == predicate_column) {
+        if seen.insert(predicate_column) {
             names.push(predicate_column.to_owned());
         }
     }
