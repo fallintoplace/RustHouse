@@ -90,14 +90,21 @@ impl ResumeMap {
 
     /// Stable ASCII encoding for persisting transfer progress.
     pub fn encode(&self) -> String {
-        let mut encoded = String::with_capacity(self.chunks);
-        for (byte_index, &bits) in self.completed.iter().enumerate() {
-            let count = (self.chunks - byte_index * 8).min(8);
-            for index in 0..count {
-                encoded.push(if bits & (1 << index) != 0 { '1' } else { '0' });
+        // Fill the output once. Only set completion positions, instead of
+        // appending and masking each of the up to 65,536 input bits.
+        let mut encoded = vec![b'0'; self.chunks];
+        for (byte_index, &completed) in self.completed.iter().enumerate() {
+            let mut bits = completed;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                let index = byte_index * 8 + bit;
+                if index < self.chunks {
+                    encoded[index] = b'1';
+                }
+                bits &= bits - 1;
             }
         }
-        encoded
+        String::from_utf8(encoded).expect("binary map contains only ASCII digits")
     }
 
     pub fn decode(text: &str) -> Result<Self, &'static str> {
@@ -217,6 +224,23 @@ mod tests {
             }
             let expected = (0..len).filter(|index| index % 2 == 1).collect::<Vec<_>>();
             assert_eq!(progress.remaining(), expected);
+        }
+    }
+
+    #[test]
+    fn sparse_and_dense_ascii_maps_match_the_bitmap_reference() {
+        for count in [0, 1, 7, 8, 9, 513, 65_536] {
+            for step in [1, 2, 7, 31] {
+                let mut map = ResumeMap::new(count).unwrap();
+                for index in (0..count).step_by(step) {
+                    map.mark_complete(index).unwrap();
+                }
+                let expected = (0..count).map(|index| {
+                    let (byte, mask) = ResumeMap::bit_position(index);
+                    if map.completed[byte] & mask == 0 { '0' } else { '1' }
+                }).collect::<String>();
+                assert_eq!(map.encode(), expected);
+            }
         }
     }
 
