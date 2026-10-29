@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH"
+        "MACNUMTOSTRING"
+            | "LENGTH"
             | "TOYEAR"
             | "LENGTHUTF8"
             | "TOSTARTOFFIVEMINUTES"
@@ -302,6 +303,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "MACNUMTOSTRING" => {
+            let value = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "MACNumToString requires one argument")?;
+            match value {
+                Some(value) => {
+                    let value = u64::try_from(value).map_err(|_| {
+                        ParseError("MACNumToString requires a nonnegative integer".into())
+                    })?;
+                    if value > 0xFFFF_FFFF_FFFF {
+                        return Err(ParseError("MACNumToString exceeds 48-bit MAC range".into()));
+                    }
+                    let octets = value.to_be_bytes();
+                    ConstantValue::Text(format!(
+                        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                        octets[2], octets[3], octets[4], octets[5], octets[6], octets[7],
+                    ))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "PORT" => {
             let input = text_arg(parser, depth + 1)?;
             let fallback = if parser.take(Token::Comma) {
@@ -3575,5 +3596,28 @@ mod ch_position_byte_tests {
         for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_mac_num_to_string_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn uses_big_endian_six_octet_mac_format() {
+        for (sql, expected) in [
+            ("SELECT MACNumToString(1108152157446)", "01:02:03:04:05:06"),
+            ("SELECT MACNumToString(0)", "00:00:00:00:00:00"),
+            ("SELECT MACNumToString(281474976710655)", "FF:FF:FF:FF:FF:FF"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT MACNumToString(-1)").is_err());
+        assert!(parse_select("SELECT MACNumToString(281474976710656)").is_err());
     }
 }
