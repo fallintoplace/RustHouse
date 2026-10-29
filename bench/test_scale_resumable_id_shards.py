@@ -29,6 +29,16 @@ class ResumableShardsTests(unittest.TestCase):
                 create(temp, 0, 5, 5)
             self.assertEqual(path.read_bytes(), b"0\n1\n3\n")
 
+    def test_refuses_existing_symlink_even_with_correct_rows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            outside = root / "external.tsv"
+            outside.write_bytes(b"0\n1\n")
+            shard = root / "id-00000000000000000000-00000000000000000002.tsv"
+            shard.symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                create(root, 0, 2, 2)
+
     def test_rejects_invalid_range(self):
         with tempfile.TemporaryDirectory() as temp:
             for start, rows, shard in [(0, 0, 10), (-1, 1, 1), (0, 1, 0),
