@@ -79,6 +79,13 @@ pub fn read_object_ranges(
     for &(offset, length) in ranges {
         validate_range(offset, length, file_length)?;
     }
+    if let [(offset, length)] = ranges {
+        // A single range needs neither interval sorting nor a second copy.
+        let mut data = vec![0u8; *length];
+        file.seek(SeekFrom::Start(*offset))?;
+        file.read_exact(&mut data)?;
+        return Ok(vec![data]);
+    }
     // Adjacent or overlapping logical ranges share one physical read.
     // This reduces seeks and small I/O operations for mark-driven scans.
     // Preserve the request order and return independent byte buffers.
@@ -143,6 +150,23 @@ mod immutable_object_identity_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn singleton_multi_range_reader_returns_exact_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-single-range-{}", std::process::id()
+        ));
+        fs::write(&path, b"abcdefgh").unwrap();
+        assert_eq!(
+            read_object_ranges(&path, &[(2, 4)], 4).unwrap(),
+            vec![b"cdef".to_vec()]
+        );
+        assert_eq!(
+            read_object_ranges(&path, &[(8, 0)], 0).unwrap(),
+            vec![Vec::new()]
+        );
+        fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn reads_exact_intervals_and_rejects_bad_ranges() {
