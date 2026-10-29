@@ -101,6 +101,8 @@ enum BoundExpr {
     Subtract(Box<Self>, Box<Self>),
     Multiply(Box<Self>, Box<Self>),
     Divide(Box<Self>, Box<Self>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
     CaseWhen(Box<Self>, Box<Self>, Box<Self>),
 }
@@ -161,6 +163,14 @@ impl BoundExpr {
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
             ),
+            ScalarExpr::And(left, right) => Self::And(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
+            ScalarExpr::Or(left, right) => Self::Or(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
             ScalarExpr::Compare(left, operator, right) => Self::Compare(
                 Box::new(Self::bind(left, indices)?),
                 *operator,
@@ -196,6 +206,14 @@ fn numeric_argument_at(
     }
 }
 
+fn numeric_truth(number: Option<Number>) -> Option<bool> {
+    number.map(|value| match value {
+        Number::Unsigned(value) => value != 0,
+        Number::Signed(value) => value != 0,
+        Number::Float(value) => value != 0.0,
+    })
+}
+
 fn eval_number(
     expression: &BoundExpr,
     batch: &[TypedColumn],
@@ -218,6 +236,32 @@ fn eval_number(
                     "unsupported numeric comparison operator".into())),
             };
             Ok(Some(Number::Unsigned(u128::from(matched))))
+        },
+        BoundExpr::And(left, right) => {
+            let lhs = numeric_truth(eval_number(left, batch, row)?);
+            if lhs == Some(false) {
+                return Ok(Some(Number::Unsigned(0)));
+            }
+            let rhs = numeric_truth(eval_number(right, batch, row)?);
+            let result = match (lhs, rhs) {
+                (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            };
+            Ok(result.map(|value| Number::Unsigned(u128::from(value))))
+        },
+        BoundExpr::Or(left, right) => {
+            let lhs = numeric_truth(eval_number(left, batch, row)?);
+            if lhs == Some(true) {
+                return Ok(Some(Number::Unsigned(1)));
+            }
+            let rhs = numeric_truth(eval_number(right, batch, row)?);
+            let result = match (lhs, rhs) {
+                (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            };
+            Ok(result.map(|value| Number::Unsigned(u128::from(value))))
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::Null => Ok(None),
