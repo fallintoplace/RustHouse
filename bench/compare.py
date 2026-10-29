@@ -31,17 +31,24 @@ def elapsed(record):
     if not isinstance(latency, dict):
         return None
     value = latency.get("median_seconds")
-    if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
+    if type(value) not in (float, int) or value <= 0:
+        return None
+    try:
+        if not math.isfinite(value):
+            return None
+    except OverflowError:
         return None
     return value
 
 
 def ensure_compatible_reports(baseline, candidate):
     for field in ("workload", "engine", "rows", "seed", "timing_scope",
-                  "query_sha256", "comparison"):
+                  "query_sha256", "comparison", "reference_checked",
+                  "distribution", "suite", "source", "projection_manifest",
+                  "official_benchmark"):
         old = baseline.get(field)
         new = candidate.get(field)
-        if (old is None) != (new is None) or (old is not None and old != new):
+        if type(old) is not type(new) or (old is not None and old != new):
             raise ValueError(f"cannot compare different {field} values")
 
 
@@ -63,6 +70,12 @@ def classify_query(ident, old, new, slowdown_threshold_percent):
             "query": ident, "reason": "missing_positive_median",
         }, False
     change = 100 * (current / previous - 1)
+    if not math.isfinite(change):
+        return "regression", {
+            "query": ident, "reason": "latency_regression",
+            "baseline_seconds": previous, "candidate_seconds": current,
+            "change_percent": None,
+        }, True
     item = {
         "query": ident,
         "baseline_ms": round(previous * 1000, 6),

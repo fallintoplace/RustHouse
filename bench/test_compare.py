@@ -84,6 +84,40 @@ class BenchmarkComparisonTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "JSON objects"):
                     compare(valid, malformed)
 
+    def test_rejects_mixed_metadata_types(self):
+        before = {"rows": 1, "results": [result(1, "passed", 0.01)]}
+        after = {"rows": True, "results": [result(1, "passed", 0.01)]}
+        with self.assertRaisesRegex(ValueError, "rows"):
+            compare(before, after)
+
+    def test_disallows_mismatched_reference_and_distribution(self):
+        before = {"results": [result(1, "passed", 0.01)],
+                  "reference_checked": True, "distribution": "uniform"}
+        after = {"results": [result(1, "passed", 0.01)],
+                 "reference_checked": False, "distribution": "uniform"}
+        with self.assertRaisesRegex(ValueError, "reference_checked"):
+            compare(before, after)
+        after["reference_checked"] = True
+        after["distribution"] = "skewed"
+        with self.assertRaisesRegex(ValueError, "distribution"):
+            compare(before, after)
+
+    def test_overflowing_integer_latency_is_not_measurable(self):
+        immense = 10 ** 400
+        self.assertIsNone(elapsed(result(1, "passed", immense)))
+        report = compare({"results": [result(1, "passed", immense)]},
+                         {"results": [result(1, "passed", 1.0)]})
+        self.assertEqual(report["compared_queries"], 0)
+
+    def test_extreme_latency_ratios_remain_valid_json(self):
+        import json
+        before = {"results": [result(1, "passed", 1e-300)]}
+        after = {"results": [result(1, "passed", 1e300)]}
+        report = compare(before, after)
+        self.assertEqual(report["regression_count"], 1)
+        self.assertIsNone(report["regressions"][0]["change_percent"])
+        json.dumps(report, allow_nan=False)
+
 
 if __name__ == "__main__":
     unittest.main()
