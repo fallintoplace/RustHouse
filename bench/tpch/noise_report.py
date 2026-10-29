@@ -8,7 +8,9 @@ from pathlib import Path
 
 
 def assess_query(result, min_samples=5, max_cv_percent=10.0):
-    if min_samples < 2 or not math.isfinite(max_cv_percent) or max_cv_percent < 0:
+    if (type(min_samples) is not int or min_samples < 2
+            or type(max_cv_percent) not in (int, float)
+            or not math.isfinite(max_cv_percent) or max_cv_percent < 0):
         raise ValueError("invalid noise analysis thresholds")
     number = result["query"]
     if result.get("status") != "passed":
