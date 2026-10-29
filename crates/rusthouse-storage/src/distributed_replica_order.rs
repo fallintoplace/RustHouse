@@ -28,8 +28,12 @@ fn newest_first(left: &ReplicaStatus, right: &ReplicaStatus) -> std::cmp::Orderi
 fn validate_replica_nodes(replicas: &[ReplicaStatus]) -> Result<(), &'static str> {
     let mut seen = HashSet::with_capacity(replicas.len());
     for replica in replicas {
-        if !valid_node(&replica.node) || !seen.insert(replica.node.as_str()) {
-            return Err("invalid or duplicate replica node");
+        if !valid_node(&replica.node)
+            || replica.epoch == 0
+            || replica.generation == 0
+            || !seen.insert(replica.node.as_str())
+        {
+            return Err("invalid or duplicate replica version or node");
         }
     }
     Ok(())
@@ -184,5 +188,23 @@ mod freshness_floor_tests {
         );
         assert!(rank_read_replicas_at_least(&replicas, 5, 2).is_err());
         assert!(rank_read_replicas_at_least(&replicas, 6, 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod zero_version_replica_tests {
+    use super::*;
+
+    #[test]
+    fn does_not_read_from_uninitialized_replica_versions() {
+        let base = ReplicaStatus {
+            node: "node_a".into(),
+            epoch: 1,
+            generation: 1,
+            healthy: true,
+        };
+        assert!(rank_read_replicas(&[base.clone()]).is_ok());
+        assert!(rank_read_replicas(&[ReplicaStatus { epoch: 0, ..base.clone() }]).is_err());
+        assert!(rank_read_replicas(&[ReplicaStatus { generation: 0, ..base }]).is_err());
     }
 }
