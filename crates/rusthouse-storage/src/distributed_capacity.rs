@@ -1,5 +1,7 @@
 //! Checked storage-capacity accounting for planned object transfers.
 
+const MAX_RESERVATION_OBJECTS: usize = 65_536;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capacity {
     pub total: u64,
@@ -42,14 +44,14 @@ impl Capacity {
 
     /// Convert reserved bytes into committed usage.
     pub fn commit(self, bytes: u64) -> Result<Self, &'static str> {
-        let reserved = self.remaining_reservation(bytes, "cannot commit unreserved bytes")?;
+        let remaining_reserved_bytes = self.remaining_reservation(bytes, "cannot commit unreserved bytes")?;
         self.available()?;
         Ok(Self {
             used: self
                 .used
                 .checked_add(bytes)
                 .ok_or("replica usage overflow")?,
-            reserved,
+            reserved: remaining_reserved_bytes,
             ..self
         })
     }
@@ -139,12 +141,17 @@ mod tests {
 impl Capacity {
     /// Reserve a whole immutable-object batch or reject it without changing state.
     pub fn reserve_many(self, object_sizes: &[u64]) -> Result<Self, &'static str> {
-        if object_sizes.len() > 65_536 {
+        if object_sizes.len() > MAX_RESERVATION_OBJECTS {
             return Err("replica object batch exceeds limit");
         }
-        let bytes = object_sizes.iter().try_fold(0u64, |total, &size| {
-            total.checked_add(size).ok_or("replica batch size overflow")
-        })?;
+        let available = self.available()?;
+        let mut bytes = 0u64;
+        for &size in object_sizes {
+            bytes = bytes.checked_add(size).ok_or("replica batch size overflow")?;
+            if bytes > available {
+                return Err("insufficient replica capacity");
+            }
+        }
         self.reserve(bytes)
     }
 }
@@ -161,6 +168,15 @@ mod batch_reservation_tests {
         assert_eq!(booked.reserved, 90);
         assert!(capacity.reserve_many(&[30, 25, 31]).is_err());
         assert_eq!(capacity.reserved, 5);
+    }
+
+    #[test]
+    fn stops_reserving_when_a_batch_already_exceeds_capacity() {
+        let capacity = Capacity { total: 10, used: 1, reserved: 2 };
+        assert_eq!(capacity.reserve_many(&[3, 4]).unwrap().available().unwrap(), 0);
+        assert!(capacity.reserve_many(&[3, 5, u64::MAX]).is_err());
+        assert_eq!(capacity.reserve_many(&[0, 0, 0]).unwrap(), capacity);
+        assert_eq!(capacity, Capacity { total: 10, used: 1, reserved: 2 });
     }
 
     #[test]

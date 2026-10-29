@@ -14,6 +14,20 @@ class TopKProbeTests(unittest.TestCase):
         self.assertEqual([r["direction"] for r in result["results"]], ["ASC", "DESC"])
         self.assertTrue(all(r["verified"] for r in result["results"]))
 
+    def test_nonzero_start_uses_exact_uint64_endpoints(self):
+        boundary = (1 << 64) - 3
+        expected = [f"{boundary}\n{boundary + 1}\n".encode(),
+                    f"{boundary + 2}\n{boundary + 1}\n".encode()]
+        calls = []
+        def run(command, **kwargs):
+            calls.append(command[2])
+            return SimpleNamespace(returncode=0, stdout=expected[len(calls)-1], stderr=b"")
+        result = probe("rusthouse", "part", 3, start=boundary, limit=2, execute=run)
+        self.assertEqual(result["start"], boundary)
+        self.assertEqual(len(calls), 2)
+        with self.assertRaisesRegex(ValueError, "overflow"):
+            probe("rusthouse", "part", 4, start=boundary)
+
     def test_rejects_bad_identifiers_and_limits(self):
         with self.assertRaisesRegex(ValueError, "identifier"):
             probe("rusthouse", "part", 5, column="id;DROP", limit=2)

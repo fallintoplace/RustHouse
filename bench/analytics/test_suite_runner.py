@@ -111,5 +111,29 @@ class AnalyticsSuiteTests(unittest.TestCase):
             run_suite("rusthouse", workload, rows=17, execute=lambda sql: b"997\n" if sql == "SELECT count(*) FROM accounts" else b"wrong")
 
 
+    def test_sqlite_reference_limits_cursor_fetches(self):
+        from unittest.mock import Mock
+        cursor = Mock()
+        cursor.fetchmany.return_value = [(7,)]
+        oracle = Mock()
+        oracle.execute.return_value = cursor
+        self.assertEqual(sqlite_reference(oracle, "SELECT x"), b"7\n")
+        self.assertEqual(sqlite_typed_reference(oracle, "SELECT x"), [(7,)])
+        self.assertEqual(cursor.fetchmany.call_count, 2)
+        self.assertEqual(cursor.fetchmany.call_args.args, (100_001,))
+        cursor.fetchall.assert_not_called()
+
+    def test_sqlite_reference_rejects_overlimit_without_fetchall(self):
+        from unittest.mock import Mock
+        cursor = Mock()
+        cursor.fetchmany.return_value = [(1,)] * 100_001
+        oracle = Mock()
+        oracle.execute.return_value = cursor
+        for build in (sqlite_reference, sqlite_typed_reference):
+            with self.assertRaisesRegex(ValueError, "100000"):
+                build(oracle, "SELECT x")
+        cursor.fetchall.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
