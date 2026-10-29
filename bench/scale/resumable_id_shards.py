@@ -67,7 +67,11 @@ def create(directory, start, rows, shard_rows):
     if (rows - 1) // shard_rows + 1 > MAX_SHARDS:
         raise ValueError("requested shards exceed RustHouse's 16384-part limit")
     directory = Path(directory)
+    if directory.is_symlink():
+        raise ValueError("refusing symlinked shard directory")
     directory.mkdir(parents=True, exist_ok=True)
+    if directory.is_symlink():
+        raise ValueError("refusing symlinked shard directory")
     shards = []
     for position in range(start, start + rows, shard_rows):
         count = min(shard_rows, start + rows - position)

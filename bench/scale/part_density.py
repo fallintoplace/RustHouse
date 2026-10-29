@@ -5,14 +5,17 @@ for rusthouse inspect-snapshot validation.
 """
 import argparse
 import json
+import math
 import statistics
 from pathlib import Path
 
 
-def part_density(root):
+def part_density(root, *, small_part_rows=8192):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected a frozen snapshot directory")
+    if type(small_part_rows) is not int or small_part_rows < 1:
+        raise ValueError("small_part_rows must be positive")
     rows = []
     for child in root.iterdir():
         if child.is_symlink():
@@ -22,7 +25,11 @@ def part_density(root):
             raise ValueError(f"refusing symlinked count.txt: {child.name}")
         if not child.is_dir() or not count_file.is_file():
             continue
-        raw = count_file.read_text(encoding="ascii")
+        with count_file.open("rb") as source:
+            payload = source.read(23)
+        if len(payload) > 22:
+            raise ValueError(f"invalid oversized count.txt in {child.name}")
+        raw = payload.decode("ascii")
         digits = raw.removesuffix("\n").removesuffix("\r")
         if not digits or not digits.isascii() or not digits.isdecimal():
             raise ValueError(f"invalid count.txt in {child.name}")
@@ -38,11 +45,18 @@ def part_density(root):
     total = sum(rows)
     if total > (1 << 64) - 1:
         raise ValueError("part row totals exceed UInt64")
+    small = [value for value in rows if value < small_part_rows]
+    p90 = rows[math.ceil(len(rows) * 0.90) - 1]
+    p99 = rows[math.ceil(len(rows) * 0.99) - 1]
     return {"workload": "part-density-report", "part_count": len(rows),
             "rows": total, "min_rows_per_part": rows[0],
             "median_rows_per_part": statistics.median(rows),
             "max_rows_per_part": rows[-1],
             "mean_rows_per_part": total / len(rows),
+            "p90_rows_per_part": p90, "p99_rows_per_part": p99,
+            "small_part_rows_threshold": small_part_rows,
+            "small_part_count": len(small),
+            "small_part_row_share": sum(small) / total,
             "parts_below_8192_rows": sum(value < 8192 for value in rows),
             "part_limit_remaining": 16384 - len(rows),
             "validated_active_set": False}
@@ -51,10 +65,11 @@ def part_density(root):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--part-dir", type=Path, required=True)
+    parser.add_argument("--small-part-rows", type=int, default=8192)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = part_density(args.part_dir)
+        report = part_density(args.part_dir, small_part_rows=args.small_part_rows)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

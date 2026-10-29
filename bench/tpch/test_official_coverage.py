@@ -15,12 +15,36 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(report["coverage"]["unverified_queries"], 1)
             self.assertEqual(report["coverage"]["failed_queries"], 21)
             self.assertEqual(report["results"][5]["status"], "unverified")
+            from run import query_fingerprint
+            self.assertEqual(report["query_sha256"],
+                             query_fingerprint([(6, "SELECT 6")]))
             self.assertEqual(clean_sql(queries / "q06.sql"), "SELECT 6")
             refs = queries / "refs"
             refs.mkdir()
             checked = coverage("fake", "db", queries, refs, runs=1, warmups=0,
                                execute=lambda sql: b"6\n")
             self.assertEqual(checked["results"][5]["status"], "missing_reference")
+
+    def test_parallel_inventory_preserves_canonical_query_order(self):
+        with tempfile.TemporaryDirectory() as root:
+            queries = Path(root)
+            for number in (1, 2, 3, 6):
+                (queries / f"q{number:02d}.sql").write_text(
+                    f"SELECT {number};", encoding="utf-8"
+                )
+            report = coverage("fake", "db", queries, runs=1, warmups=0,
+                              jobs=3, execute=lambda sql: b"ok\\n")
+            self.assertEqual([item["query"] for item in report["results"]],
+                             list(range(1, 23)))
+            self.assertEqual(report["concurrent_queries"], 3)
+            self.assertEqual(report["coverage"]["unverified_queries"], 4)
+            self.assertEqual(report["coverage"]["failed_queries"], 18)
+
+    def test_rejects_invalid_parallel_query_counts(self):
+        for jobs in (0, 23, True, 1.5):
+            with self.subTest(jobs=jobs):
+                with self.assertRaisesRegex(ValueError, "timing"):
+                    coverage("fake", "db", "/unused", jobs=jobs)
 
     def test_rejects_nonfinite_timeouts_and_noninteger_run_counts(self):
         for options in ({"timeout": float("nan")}, {"timeout": float("inf")},

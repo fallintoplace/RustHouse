@@ -1,0 +1,8 @@
+{
+  "name": "middle-range-sum",
+  "description": "Centered 10 percent range sum",
+  "kind": "range",
+  "aggregate": "sum",
+  "lower_ppm": 450000,
+  "upper_ppm": 550000
+}

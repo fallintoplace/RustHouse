@@ -1,0 +1,8 @@
+{
+  "name": "decimal-tail-count",
+  "description": "10 percent cyclic selectivity",
+  "kind": "modulo",
+  "aggregate": "count",
+  "modulus": 10,
+  "residue": 9
+}

@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from bench.tpch.run import compare_reference, load_queries, query_fingerprint
+from bench.tpch.canonical_integrity import verify as verify_canonical_sql
 
 ENGINES = ("rusthouse", "duckdb")
 ABBA = ("rusthouse", "duckdb", "duckdb", "rusthouse")
@@ -142,6 +143,12 @@ def compare(binary, database, duckdb_binary, duckdb_database,
     }
 
 
+def load_paired_queries(directory, require_canonical=False):
+    if require_canonical:
+        verify_canonical_sql(directory)
+    return load_queries(directory)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
@@ -149,6 +156,8 @@ def main(argv=None):
     parser.add_argument("--duckdb", default="duckdb")
     parser.add_argument("--duckdb-database", required=True, type=Path)
     parser.add_argument("--queries-dir", required=True, type=Path)
+    parser.add_argument("--require-canonical", action="store_true",
+                        help="Use only exact upstream full Q1-Q22 SQL")
     parser.add_argument("--reference-dir", required=True, type=Path)
     parser.add_argument("--comparison", choices=("exact", "unordered"), default="exact",
                         help="Match ordered rows exactly, or compare unordered row multisets")
@@ -158,7 +167,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        queries = load_queries(args.queries_dir)
+        queries = load_paired_queries(args.queries_dir, args.require_canonical)
         report = compare(
             args.binary, args.database, args.duckdb, args.duckdb_database,
             queries, args.reference_dir, args.runs, args.warmups, args.timeout,

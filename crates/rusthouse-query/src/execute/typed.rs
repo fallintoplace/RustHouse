@@ -2,13 +2,15 @@
 //! Keep the numeric-only executor unchanged for its optimized fast paths.
 
 mod like;
+mod spill;
 
 use self::like::*;
+use self::spill::TypedExternalSort;
 use super::hyperloglog::HyperLogLog;
 
 use super::{BitmapDistinct32, ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
-use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedPartReader, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
@@ -16,14 +18,30 @@ use std::path::Path;
 
 const MAX_BUFFERED_ROWS: usize = 200_000;
 
-fn remember_distinct_text(seen: &mut HashSet<Vec<u8>>, value: &[u8]) -> Result<(), ExecutionError> {
+const MAX_TEXT_DISTINCT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Account for retained String identity bytes and per-entry storage rather
+/// than relying on a cardinality bound for potentially very wide values.
+fn remember_distinct_text(
+    seen: &mut HashSet<Vec<u8>>,
+    retained_bytes: &mut usize,
+    value: &[u8],
+) -> Result<(), ExecutionError> {
     if seen.contains(value) {
         return Ok(());
     }
     if seen.len() >= MAX_BUFFERED_ROWS {
         return Err(ExecutionError::Invalid("too many distinct rows".into()));
     }
+    let bytes = value.len()
+        .checked_add(std::mem::size_of::<Vec<u8>>() + 32)
+        .and_then(|size| retained_bytes.checked_add(size))
+        .filter(|&size| size <= MAX_TEXT_DISTINCT_BYTES)
+        .ok_or_else(|| ExecutionError::Invalid(
+            "COUNT DISTINCT String exceeds 64 MiB retained memory budget".into()
+        ))?;
     seen.insert(value.to_vec());
+    *retained_bytes = bytes;
     Ok(())
 }
 
@@ -112,7 +130,7 @@ pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
 }
 
 fn is_typed(data_type: &str) -> bool {
-    matches!(data_type, "String" | "UUID" | "Date" | "DateTime")
+    matches!(data_type, "String" | "UUID" | "Date" | "Date32" | "DateTime")
         || data_type.starts_with("Nullable(")
         || data_type.starts_with("Array(")
         || data_type.starts_with("Map(")
@@ -171,6 +189,10 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
     let kind = base_type(data_type);
     match kind {
         "String" => Ok(Cell::Text(literal.as_bytes().to_vec())),
+        "Date32" => rusthouse_storage::parse_date32(literal)
+            .or_else(|| literal.parse::<i32>().ok())
+            .map(|days| Cell::Numeric(Number::Signed(i128::from(days))))
+            .ok_or_else(|| ExecutionError::Invalid("invalid Date32 literal".into())),
         "Date" => rusthouse_storage::parse_date(literal)
             .or_else(|| literal.parse::<u16>().ok())
             .map(|days| Cell::Numeric(Number::Unsigned(u128::from(days))))
@@ -257,7 +279,11 @@ enum LikePattern {
     Prefix(Vec<u8>),
     Suffix(Vec<u8>),
     Contains(Vec<u8>),
-    Wildcard(Vec<LikeToken>),
+    Wildcard {
+        tokens: Vec<LikeToken>,
+        folded_percent: Option<Vec<LikeToken>>,
+        unicode_tokens: Option<Vec<UnicodeLikeToken>>,
+    },
 }
 
 enum Test {
@@ -267,6 +293,8 @@ enum Test {
     UuidInSet(HashSet<[u8; 16]>, bool),
     TextInSet(HashSet<Vec<u8>>, bool),
     NumericInSet(HashSet<NumberKey>, bool),
+    ByteInSet([u64; 4], bool),
+    ShortInSet(Box<[u64; 1024]>, bool),
     NotBetween(Cell, Cell),
     UuidNotBetween([u8; 16], [u8; 16]),
     IsNull(bool),
@@ -341,6 +369,42 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
     }
     if targets.len() < HASHED_TYPED_IN_MIN_VALUES {
         return Ok(Test::In(targets, negated));
+    }
+    if matches!(base_type(kind), "Int8" | "UInt8") {
+        let mut bitmap = [0u64; 4];
+        for target in &targets {
+            let index = match (base_type(kind), target) {
+                ("UInt8", Cell::Numeric(Number::Unsigned(value))) => {
+                    u8::try_from(*value).ok().map(usize::from)
+                }
+                ("Int8", Cell::Numeric(Number::Signed(value))) => {
+                    i8::try_from(*value).ok().map(|number| usize::from(number as u8))
+                }
+                _ => None,
+            };
+            if let Some(index) = index {
+                bitmap[index / 64] |= 1u64 << (index % 64);
+            }
+        }
+        return Ok(Test::ByteInSet(bitmap, negated));
+    }
+    if matches!(base_type(kind), "Int16" | "UInt16") {
+        let mut bitmap = Box::new([0u64; 1024]);
+        for target in &targets {
+            let index = match (base_type(kind), target) {
+                ("UInt16", Cell::Numeric(Number::Unsigned(value))) => {
+                    u16::try_from(*value).ok().map(usize::from)
+                }
+                ("Int16", Cell::Numeric(Number::Signed(value))) => {
+                    i16::try_from(*value).ok().map(|number| usize::from(number as u16))
+                }
+                _ => None,
+            };
+            if let Some(index) = index {
+                bitmap[index / 64] |= 1u64 << (index % 64);
+            }
+        }
+        return Ok(Test::ShortInSet(bitmap, negated));
     }
     if base_type(kind) == "String" {
         return Ok(Test::TextInSet(
@@ -664,6 +728,36 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                         found != *negated
                     })
                 }
+                Test::ByteInSet(bitmap, negated) => {
+                    let byte = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt8(values)) => Some(values[row]),
+                        TypedColumn::Numeric(NumericColumn::Int8(values)) => Some(values[row] as u8),
+                        TypedColumn::NullableNumeric { values: NumericColumn::UInt8(values), nulls }
+                            if nulls[row] == 0 => Some(values[row]),
+                        TypedColumn::NullableNumeric { values: NumericColumn::Int8(values), nulls }
+                            if nulls[row] == 0 => Some(values[row] as u8),
+                        _ => None,
+                    };
+                    byte.is_some_and(|byte| {
+                        let index = usize::from(byte);
+                        ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
+                    })
+                }
+                Test::ShortInSet(bitmap, negated) => {
+                    let number = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt16(values)) => Some(values[row]),
+                        TypedColumn::Numeric(NumericColumn::Int16(values)) => Some(values[row] as u16),
+                        TypedColumn::NullableNumeric { values: NumericColumn::UInt16(values), nulls }
+                            if nulls[row] == 0 => Some(values[row]),
+                        TypedColumn::NullableNumeric { values: NumericColumn::Int16(values), nulls }
+                            if nulls[row] == 0 => Some(values[row] as u16),
+                        _ => None,
+                    };
+                    number.is_some_and(|number| {
+                        let index = usize::from(number);
+                        ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
+                    })
+                }
                 Test::UuidNotBetween(lower, upper) => match column {
                     TypedColumn::Uuid(values) => {
                         let value = values[row].as_bytes();
@@ -735,6 +829,12 @@ pub(super) fn write_typed_value<W: Write>(
         ("Date", Cell::Numeric(Number::Unsigned(days))) => {
             if let Ok(days) = u16::try_from(*days) {
                 return write!(output, "{}", rusthouse_storage::format_date(days))
+                    .map_err(ExecutionError::Io);
+            }
+        }
+        ("Date32", Cell::Numeric(Number::Signed(days))) => {
+            if let Ok(days) = i32::try_from(*days) {
+                return write!(output, "{}", rusthouse_storage::format_date32(days))
                     .map_err(ExecutionError::Io);
             }
         }
@@ -861,6 +961,70 @@ fn static_nonnullable_null_filter(
         }
     }
     if unknown_branch { None } else { Some(false) }
+}
+
+/// Merge exact UInt32/Int32 DISTINCT states over independent immutable parts.
+/// The serial path is retained for small part counts and filtered queries.
+fn parallel_exact_u32_distinct(part: &Path, column: &str) -> Result<Option<u64>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let names = [column.to_owned()];
+    let chunk_size = parts.len().div_ceil(workers);
+    let partials = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|chunk| {
+            let names = &names;
+            scope.spawn(move || -> Result<BitmapDistinct32, ExecutionError> {
+                let mut bitmap = BitmapDistinct32::new();
+                for path in chunk {
+                    let mut scan = TypedPartReader::open(path, names)?;
+                    while let Some(batch) = scan.next_batch()? {
+                        let values = &batch[0];
+                        let (numeric, nulls) = match values {
+                            TypedColumn::Numeric(values) => (values, None),
+                            TypedColumn::NullableNumeric { values, nulls } =>
+                                (values, Some(nulls.as_slice())),
+                            _ => return Err(ExecutionError::Invalid(
+                                "parallel DISTINCT expected a numeric column".into()
+                            )),
+                        };
+                        match numeric {
+                            NumericColumn::UInt32(values) => {
+                                for (index, &value) in values.iter().enumerate() {
+                                    if nulls.is_none_or(|bits| bits[index] == 0) {
+                                        bitmap.insert(value)?;
+                                    }
+                                }
+                            }
+                            NumericColumn::Int32(values) => {
+                                for (index, &value) in values.iter().enumerate() {
+                                    if nulls.is_none_or(|bits| bits[index] == 0) {
+                                        bitmap.insert(value as u32)?;
+                                    }
+                                }
+                            }
+                            _ => return Err(ExecutionError::Invalid(
+                                "parallel DISTINCT expected Int32/UInt32".into()
+                            )),
+                        }
+                    }
+                }
+                Ok(bitmap)
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel DISTINCT worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut merged = BitmapDistinct32::new();
+    for partial in partials {
+        merged.merge_from(&partial?)?;
+    }
+    Ok(Some(merged.len()))
 }
 
 /// Map an 8/16-bit dimension directly to its exact dense group bucket.
@@ -1013,7 +1177,9 @@ pub(super) fn execute_typed<W: Write>(
                 .get(column)
                 .is_some_and(|kind| kind.starts_with("Nullable("))
         {
-            let mut reader = TypedQueryReader::open(part, std::slice::from_ref(column))?;
+            let mut reader = TypedQueryReader::open_with_metadata(
+                part, std::slice::from_ref(column), &metadata,
+            )?;
             let mut count = 0u64;
             while let Some(nulls) = reader.next_null_batch()? {
                 count = count
@@ -1044,13 +1210,29 @@ pub(super) fn execute_typed<W: Write>(
             return Ok(());
         }
     }
+    // COUNT(DISTINCT) has one scalar output. Parallel bitmaps avoid a
+    // serial pass over many independent 32-bit MergeTree parts.
+    if let Projection::CountDistinct { column } = &query.projection {
+        if query.predicates.is_empty()
+            && query.or_predicates.is_empty()
+            && matches!(types.get(column).map(|kind| base_type(kind)),
+                Some("UInt32" | "Int32"))
+        {
+            if let Some(count) = parallel_exact_u32_distinct(part, column)? {
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{count}")?;
+                }
+                return Ok(());
+            }
+        }
+    }
     let mut scan = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
     let is_approx_distinct = matches!(query.projection, Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. });
     let is_approx_state = matches!(query.projection, Projection::ApproxDistinctState { .. });
-    let mut sketch = HyperLogLog::default();
+    let mut sketch = is_approx_distinct.then(HyperLogLog::default);
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
@@ -1077,7 +1259,10 @@ pub(super) fn execute_typed<W: Write>(
             Some("UInt8" | "Int8" | "UInt16" | "Int16" | "Nullable(UInt8)" | "Nullable(Int8)" | "Nullable(UInt16)" | "Nullable(Int16)")
         )
     {
-        Some(vec![0u64; 1024])
+        Some(vec![0u64; if matches!(
+            projection_types.first().copied(),
+            Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)")
+        ) { 4 } else { 1024 }])
     } else {
         None
     };
@@ -1094,6 +1279,7 @@ pub(super) fn execute_typed<W: Write>(
     };
     // Borrow decoded strings on duplicate probes. Own only new distinct values.
     let mut count_distinct_text = HashSet::<Vec<u8>>::new();
+    let mut count_distinct_text_bytes = 0usize;
     // UUIDs have a fixed-size identity. Hash their bytes rather than allocating
     // a formatted String for each scanned row.
     let mut count_distinct_uuids = HashSet::<[u8; 16]>::new();
@@ -1115,7 +1301,7 @@ pub(super) fn execute_typed<W: Write>(
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
     let mut uuid_group_indices = HashMap::<[u8; 16], usize>::new();
     let mut grouped_rows = Vec::<(Cell, u64)>::new();
-    let mut ordered = Vec::<Row>::new();
+    // Typed ORDER BY spills sorted runs when the bounded top-k heap cannot be used.
     let mut top = BinaryHeap::<TopRow>::new();
     let mut ordinal = 0usize;
     let mut emitted = 0usize;
@@ -1137,6 +1323,9 @@ pub(super) fn execute_typed<W: Write>(
             None => {}
         }
     }
+    let mut external_sort = TypedExternalSort::new(
+        descending_mask, nulls_first_mask, nulls_last_mask,
+    );
     let top_capacity = if sort_indices.is_empty() {
         None
     } else {
@@ -1193,7 +1382,7 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_approx_distinct {
-                sketch.observe(&batch[projection_indices[0]], index)?;
+                sketch.as_mut().expect("approximate DISTINCT sketch").observe(&batch[projection_indices[0]], index)?;
                 continue;
             }
             if is_grouped {
@@ -1357,7 +1546,7 @@ pub(super) fn execute_typed<W: Write>(
                         | TypedColumn::NullableNumeric {
                             values: NumericColumn::Int8(values),
                             ..
-                        } => values[index] as u16,
+                        } => u16::from(values[index] as u8),
                         _ => {
                             return Err(ExecutionError::Invalid(
                                 "unexpected 8-bit or 16-bit DISTINCT column type".into(),
@@ -1373,14 +1562,14 @@ pub(super) fn execute_typed<W: Write>(
                         let value = strings.get(index).ok_or_else(|| {
                             ExecutionError::Invalid("invalid String row index".into())
                         })?;
-                        remember_distinct_text(&mut count_distinct_text, value)?;
+                        remember_distinct_text(&mut count_distinct_text, &mut count_distinct_text_bytes, value)?;
                     }
                     TypedColumn::NullableText { values, nulls } => {
                         if nulls[index] == 0 {
                             let value = values.get(index).ok_or_else(|| {
                                 ExecutionError::Invalid("invalid String row index".into())
                             })?;
-                            remember_distinct_text(&mut count_distinct_text, value)?;
+                            remember_distinct_text(&mut count_distinct_text, &mut count_distinct_text_bytes, value)?;
                         }
                     }
                     TypedColumn::Uuid(values) => {
@@ -1420,7 +1609,7 @@ pub(super) fn execute_typed<W: Write>(
                                 u16::from(values[index])
                             }
                             TypedColumn::Numeric(NumericColumn::Int8(values)) => {
-                                values[index] as u16
+                                u16::from(values[index] as u8)
                             }
                             TypedColumn::Numeric(NumericColumn::UInt16(values)) => values[index],
                             TypedColumn::Numeric(NumericColumn::Int16(values)) => {
@@ -1504,12 +1693,7 @@ pub(super) fn execute_typed<W: Write>(
                         *top.peek_mut().unwrap() = next;
                     }
                 } else {
-                    if ordered.len() >= MAX_BUFFERED_ROWS {
-                        return Err(ExecutionError::Invalid(
-                            "typed ORDER BY exceeds 100000 matching rows".into(),
-                        ));
-                    }
-                    ordered.push(row);
+                    external_sort.push(row)?;
                 }
                 continue;
             }
@@ -1602,11 +1786,11 @@ pub(super) fn execute_typed<W: Write>(
     if is_count || is_count_column || is_count_distinct || is_approx_distinct {
         if offset == 0 {
             if is_approx_state {
-                writeln!(output, "{}", sketch.encode_state())?;
+                writeln!(output, "{}", sketch.as_ref().expect("HLL state sketch").encode_state())?;
                 return Ok(());
             }
             let result = if is_approx_distinct {
-                sketch.estimate()
+                sketch.as_ref().expect("approximate DISTINCT sketch").estimate()
             } else if is_count || is_count_column {
                 count
             } else {
@@ -1628,18 +1812,7 @@ pub(super) fn execute_typed<W: Write>(
                 write_row(output, &entry.row.values, &projection_types)?;
             }
         } else {
-            ordered.sort_by(|left, right| {
-                compare_sort_keys(
-                    &left.sort_keys,
-                    &right.sort_keys,
-                    descending_mask,
-                    nulls_first_mask,
-                    nulls_last_mask,
-                )
-            });
-            for row in ordered.into_iter().skip(offset).take(limit) {
-                write_row(output, &row.values, &projection_types)?;
-            }
+            external_sort.write(output, &projection_types, offset, limit)?;
         }
     }
     Ok(())
@@ -2177,6 +2350,38 @@ mod single_uuid_membership_tests {
 }
 
 #[cfg(test)]
+mod short_in_predicate_perf_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_short_bitmap_preserves_negative_values_and_nulls() {
+        let values = (-20..0).map(|value| value.to_string()).collect::<Vec<_>>();
+        let includes = [vec![Condition {
+            index: 0,
+            test: compile_in("Nullable(Int16)", &values, false).unwrap(),
+        }]];
+        assert!(matches!(&includes[0][0].test, Test::ShortInSet(_, false)));
+        let batch = [TypedColumn::NullableNumeric {
+            values: NumericColumn::Int16(vec![-20, -1, 100, -5]),
+            nulls: vec![0, 0, 0, 1],
+        }];
+        assert!(passes(&batch, 0, &includes));
+        assert!(passes(&batch, 1, &includes));
+        assert!(!passes(&batch, 2, &includes));
+        assert!(!passes(&batch, 3, &includes));
+        let unsigned = (0..100).map(|value| value.to_string()).collect::<Vec<_>>();
+        let excludes = [vec![Condition {
+            index: 0,
+            test: compile_in("UInt16", &unsigned, true).unwrap(),
+        }]];
+        let batch = [TypedColumn::Numeric(NumericColumn::UInt16(vec![0, 99, 65535]))];
+        assert!(!passes(&batch, 0, &excludes));
+        assert!(!passes(&batch, 1, &excludes));
+        assert!(passes(&batch, 2, &excludes));
+    }
+}
+
+#[cfg(test)]
 mod direct_numeric_set_probe_tests {
     use super::{Condition, Test, passes};
     use super::{Number, NumberKey};
@@ -2289,3 +2494,62 @@ mod narrow_group_bucket_tests {
         assert_eq!(dense_group_bucket(&wide, 0), None);
     }
 }
+
+#[cfg(test)]
+mod count_distinct_text_budget_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_strings_do_not_charge_memory_twice() {
+        let mut seen = HashSet::new();
+        let mut retained = 0usize;
+        remember_distinct_text(&mut seen, &mut retained, b"same").unwrap();
+        let charged = retained;
+        remember_distinct_text(&mut seen, &mut retained, b"same").unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(retained, charged);
+    }
+
+    #[test]
+    fn rejects_oversized_new_text_before_allocating_hash_entry() {
+        let mut seen = HashSet::new();
+        let mut retained = 0usize;
+        let value = vec![b'x'; MAX_TEXT_DISTINCT_BYTES];
+        assert!(remember_distinct_text(&mut seen, &mut retained, &value).is_err());
+        assert_eq!(retained, 0);
+        assert!(seen.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod byte_in_predicate_perf_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_byte_bitmap_respects_nullable_and_signed_membership() {
+        let unsigned = (0..20).map(|value| value.to_string()).collect::<Vec<_>>();
+        let includes = [vec![Condition {
+            index: 0,
+            test: compile_in("Nullable(UInt8)", &unsigned, false).unwrap(),
+        }]];
+        assert!(matches!(&includes[0][0].test, Test::ByteInSet(_, false)));
+        let batch = [TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt8(vec![0, 19, 20, 5]),
+            nulls: vec![0, 0, 0, 1],
+        }];
+        assert!(passes(&batch, 0, &includes));
+        assert!(passes(&batch, 1, &includes));
+        assert!(!passes(&batch, 2, &includes));
+        assert!(!passes(&batch, 3, &includes));
+        let signed = (-20..0).map(|value| value.to_string()).collect::<Vec<_>>();
+        let excludes = [vec![Condition {
+            index: 0,
+            test: compile_in("Int8", &signed, true).unwrap(),
+        }]];
+        let batch = [TypedColumn::Numeric(NumericColumn::Int8(vec![-20, -1, 1]))];
+        assert!(!passes(&batch, 0, &excludes));
+        assert!(!passes(&batch, 1, &excludes));
+        assert!(passes(&batch, 2, &excludes));
+    }
+}
+

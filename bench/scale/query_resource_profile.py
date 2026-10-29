@@ -15,12 +15,13 @@ from pathlib import Path
 
 
 def parse_rss(status):
+    peak = 0
     for line in status.splitlines():
-        if line.startswith("VmRSS:"):
+        if line.startswith(("VmRSS:", "VmHWM:")):
             tokens = line.split()
             if len(tokens) == 3 and tokens[2] == "kB":
-                return int(tokens[1]) * 1024
-    return 0
+                peak = max(peak, int(tokens[1]) * 1024)
+    return peak
 
 
 def parse_io(payload):
@@ -89,7 +90,7 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25):
         raise RuntimeError(f"query exited {process.returncode}: {stderr.decode('utf-8', 'replace')[-500:]}")
     return {"seconds": elapsed, "peak_rss_bytes_sampled": peak, **disk,
             "sample_interval_ms": sample_ms,
-            "note": "RSS peak is sampled; /proc I/O excludes page-cache hits."}
+            "note": "VmHWM gives the kernel RSS high-water mark when present; /proc I/O excludes page-cache hits."}
 
 
 def main(argv=None):

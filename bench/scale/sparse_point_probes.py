@@ -18,7 +18,16 @@ def choose_ids(start, rows, count, seed):
         raise ValueError("invalid row domain")
     if start + rows > 2**64 or type(count) is not int or not 1 <= count <= min(rows, 10_000):
         raise ValueError("invalid sample size or UInt64 overflow")
-    return random.Random(seed).sample(range(start, start + rows), count)
+    rng = random.Random(seed)
+    chosen = set()
+    sampled = []
+    # Floyd's algorithm avoids retrying duplicate draws when the sample is dense.
+    for upper in range(rows - count, rows):
+        candidate = rng.randrange(upper + 1)
+        selected = upper if candidate in chosen else candidate
+        chosen.add(selected)
+        sampled.append(start + selected)
+    return sampled
 
 
 def percentile(samples, percent):

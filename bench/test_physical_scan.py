@@ -36,6 +36,17 @@ class PhysicalScanReferenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             p90([])
 
+    def test_physical_fixture_bounded_batch_tuning(self):
+        from bench.scale.physical_scan import write_fixture
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as root:
+            fixture = Path(root) / "events.tsv"
+            write_fixture(fixture, 5, batch_rows=2)
+            self.assertEqual(fixture.read_bytes(), b"0\n1\n2\n3\n4\n")
+            with self.assertRaisesRegex(ValueError, "batch_rows"):
+                write_fixture(fixture, 5, batch_rows=1_000_000_001)
+
 
 if __name__ == "__main__":
     unittest.main()

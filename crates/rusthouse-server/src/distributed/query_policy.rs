@@ -224,26 +224,8 @@ pub(super) fn bounded_scan_sql(sql: &str, select: &Select) -> Option<String> {
 }
 
 #[cfg(test)]
-mod bounded_scan_rewrite_tests {
-    use super::*;
-
-    #[test]
-    fn pushes_only_verified_prefixes_and_preserves_quoted_keywords() {
-        for (sql, expected) in [
-            ("SELECT id FROM events LIMIT 5", "SELECT id FROM events LIMIT 5"),
-            ("SELECT id FROM events LIMIT 5 OFFSET 7", "SELECT id FROM events LIMIT 12"),
-            ("SELECT name FROM events WHERE name = 'LIMIT 9' LIMIT 2 OFFSET 3",
-             "SELECT name FROM events WHERE name = 'LIMIT 9' LIMIT 5"),
-        ] {
-            let select = parse_select(sql).unwrap();
-            assert_eq!(bounded_scan_sql(sql, &select).as_deref(), Some(expected));
-        }
-        let unbounded = "SELECT id FROM events OFFSET 5";
-        let select = parse_select(unbounded).unwrap();
-        assert_eq!(bounded_scan_sql(unbounded, &select).as_deref(),
-            Some("SELECT id FROM events"));
-    }
-}
+#[path = "query_policy/bounded_scan_rewrite_tests.rs"]
+mod bounded_scan_rewrite_tests;
 
 /// Remove global HAVING, ORDER BY and pagination before per-shard grouping.
 /// Require a full parser round trip to avoid changing WHERE string literals.
@@ -315,20 +297,5 @@ pub(super) fn sorted_scan_sql(sql: &str, select: &Select) -> Option<String> {
 }
 
 #[cfg(test)]
-mod sorted_scan_policy_tests {
-    use super::*;
-
-    #[test]
-    fn rewrites_validated_ordered_global_pagination() {
-        let sql = "SELECT id FROM events WHERE id > 4 ORDER BY id DESC LIMIT 3 OFFSET 2";
-        let parsed = parse_select(sql).unwrap();
-        assert!(is_safe_sorted_scan(&parsed));
-        assert_eq!(
-            sorted_scan_sql(sql, &parsed).as_deref(),
-            Some("SELECT id FROM events WHERE id > 4 ORDER BY id DESC LIMIT 5")
-        );
-        assert!(!is_safe_sorted_scan(
-            &parse_select("SELECT id, name FROM events ORDER BY id LIMIT 3").unwrap()
-        ));
-    }
-}
+#[path = "query_policy/sorted_scan_policy_tests.rs"]
+mod sorted_scan_policy_tests;

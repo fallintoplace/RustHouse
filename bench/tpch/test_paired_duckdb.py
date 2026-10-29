@@ -2,10 +2,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bench.tpch.paired_duckdb import ABBA, BAAB, benchmark_pair, command, compare
+from bench.tpch.paired_duckdb import ABBA, BAAB, benchmark_pair, command, compare, load_paired_queries
 
 
 class PairedDuckDbTests(unittest.TestCase):
+    def test_strict_full_sql_rejects_simplified_queries_duckdb(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            for number in range(1, 23):
+                (path / f"q{number:02d}.sql").write_text(f"SELECT {number};")
+            self.assertEqual(len(load_paired_queries(path)), 22)
+            with self.assertRaises(ValueError):
+                load_paired_queries(path, require_canonical=True)
+
     def test_commands_do_not_use_a_shell_and_keep_sql_as_one_argument(self):
         sql = "SELECT 'a b' AS value"
         rust = command("rusthouse", "rusthouse", "/tmp/rh", sql)
