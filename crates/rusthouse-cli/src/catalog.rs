@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
 const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
+const MAX_CATALOG_IDENTIFIER_BYTES: usize = 128;
+const MAX_CATALOG_COLUMNS: usize = 128;
 
 fn schema_path(catalog: &Path, name: &str) -> PathBuf {
     catalog.join(format!("{name}.schema"))
@@ -142,7 +144,7 @@ fn show_tables(catalog: &Path, pattern: Option<&str>, negated: bool) -> Result<(
             continue;
         };
         let mut bytes = name.bytes();
-        if name.len() > 128
+        if name.len() > MAX_CATALOG_IDENTIFIER_BYTES
             || !matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
             || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         {
@@ -215,7 +217,7 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
             .split_once('\t')
             .ok_or_else(|| format!("corrupt schema for table {name}"))?;
         let sql = format!("CREATE TABLE _check ({column_name} {data_type})");
-        if columns.len() == 128
+        if columns.len() == MAX_CATALOG_COLUMNS
             || !matches!(parse_ddl(&sql), Ok(Some(Ddl::CreateTable { .. })))
             || columns
                 .iter()
@@ -287,7 +289,7 @@ fn add_column(
         }
         return Err(format!("column already exists: {}", column.name));
     }
-    if columns.len() >= 128 {
+    if columns.len() >= MAX_CATALOG_COLUMNS {
         return Err("DDL supports at most 128 columns".into());
     }
     columns.push(column.clone());
