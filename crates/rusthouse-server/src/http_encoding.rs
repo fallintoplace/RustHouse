@@ -1,5 +1,8 @@
 use super::*;
 
+const INVALID_PERCENT_ENCODING: &str = "invalid percent encoding";
+const QUERY_TOO_LONG: &str = "SQL statement exceeds 4096 bytes";
+
 pub(super) fn hex_digit(value: u8) -> Option<u8> {
     match value {
         b'0'..=b'9' => Some(value - b'0'),
@@ -12,9 +15,9 @@ pub(super) fn hex_digit(value: u8) -> Option<u8> {
 fn decode_percent_triplet(bytes: &[u8], index: usize) -> Result<u8, &'static str> {
     let digits = bytes
         .get(index + 1..index + 3)
-        .ok_or("invalid percent encoding")?;
-    let high = hex_digit(digits[0]).ok_or("invalid percent encoding")?;
-    let low = hex_digit(digits[1]).ok_or("invalid percent encoding")?;
+        .ok_or(INVALID_PERCENT_ENCODING)?;
+    let high = hex_digit(digits[0]).ok_or(INVALID_PERCENT_ENCODING)?;
+    let low = hex_digit(digits[1]).ok_or(INVALID_PERCENT_ENCODING)?;
     Ok((high << 4) | low)
 }
 
@@ -25,7 +28,7 @@ pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
     }
     if !bytes.contains(&b'%') {
         if bytes.len() > MAX_QUERY_BYTES {
-            return Err("SQL statement exceeds 4096 bytes");
+            return Err(QUERY_TOO_LONG);
         }
         return Ok(if bytes.contains(&b'+') {
             value.replace('+', " ")
@@ -45,7 +48,7 @@ pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
             index += 1;
         }
         if decoded.len() > MAX_QUERY_BYTES {
-            return Err("SQL statement exceeds 4096 bytes");
+            return Err(QUERY_TOO_LONG);
         }
     }
     String::from_utf8(decoded).map_err(|_| "SQL query must be valid UTF-8")
