@@ -43,9 +43,18 @@ def compare(baseline, candidate, *, max_slowdown_percent=10):
         if not all(type(x) in (int, float) and math.isfinite(x) and x > 0 for x in (old, new)):
             raise ValueError(f"{name} has invalid median timings")
         slowdown = 100 * (new / old - 1)
+        old_p90, new_p90 = a.get("p90_seconds"), b.get("p90_seconds")
+        tail_slowdown = None
+        if old_p90 is not None or new_p90 is not None:
+            if not all(type(x) in (int, float) and math.isfinite(x) and x >= median
+                       for x, median in ((old_p90, old), (new_p90, new))):
+                raise ValueError(f"{name}: invalid p90 benchmark timings")
+            tail_slowdown = 100 * (new_p90 / old_p90 - 1)
+        within = slowdown <= max_slowdown_percent and (
+            tail_slowdown is None or tail_slowdown <= max_slowdown_percent)
         cases.append({"name": name, "baseline_median_seconds": old,
                       "candidate_median_seconds": new, "slowdown_percent": slowdown,
-                      "within_budget": slowdown <= max_slowdown_percent})
+                      "p90_slowdown_percent": tail_slowdown, "within_budget": within})
     return {"workload": "persisted-scan-regression-comparison",
             "rows": rows, "max_slowdown_percent": max_slowdown_percent,
             "all_within_budget": all(case["within_budget"] for case in cases),

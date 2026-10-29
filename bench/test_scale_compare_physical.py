@@ -44,6 +44,15 @@ class ComparePhysicalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "verified"):
             compare(report(), candidate)
 
+    def test_tail_regression_fails_even_when_median_is_fast(self):
+        baseline, candidate = report(), report(0.95)
+        for item in ("count_even", "sum_even"):
+            baseline[item]["p90_seconds"] = 1.1
+            candidate[item]["p90_seconds"] = 2.0
+        result = compare(baseline, candidate, max_slowdown_percent=10)
+        self.assertFalse(result["all_within_budget"])
+        self.assertGreater(result["cases"][0]["p90_slowdown_percent"], 50)
+
 
 if __name__ == "__main__":
     unittest.main()
