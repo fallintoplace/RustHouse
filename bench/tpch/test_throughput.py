@@ -1,10 +1,22 @@
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from throughput import run_throughput
+from throughput import MAX_REFERENCE_BYTES, read_reference, run_throughput
 
 
 class ThroughputTests(unittest.TestCase):
+    def test_reference_reads_are_bounded(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "q01.tsv"
+            path.write_bytes(b"1\n")
+            self.assertEqual(read_reference(path), b"1\n")
+            with path.open("wb") as output:
+                output.truncate(MAX_REFERENCE_BYTES + 1)
+            with self.assertRaisesRegex(ValueError, "16 MiB"):
+                read_reference(path)
+
     def test_verified_concurrent_results(self):
         report = run_throughput(
             [(1, "SELECT 1"), (2, "SELECT 2")],
