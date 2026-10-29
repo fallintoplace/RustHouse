@@ -6,6 +6,8 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+const MAX_SCHEMA_BYTES: usize = 32 * 1024;
+
 /// Resolve only catalog-visible, on-disk tables. Never expose orphaned
 /// data directories or symlinks that the local database would not accept.
 pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, String> {
@@ -19,7 +21,7 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     let schema = database.join(format!("{table}.schema"));
     let schema_metadata = fs::symlink_metadata(&schema)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
-    if !schema_metadata.file_type().is_file() || schema_metadata.len() > 32 * 1024 {
+    if !schema_metadata.file_type().is_file() || schema_metadata.len() > MAX_SCHEMA_BYTES as u64 {
         return Err(format!("invalid database schema for {table}"));
     }
     let mut content = Vec::new();
@@ -28,7 +30,7 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     let opened = file
         .metadata()
         .map_err(|error| format!("cannot inspect opened schema for {table}: {error}"))?;
-    if !opened.file_type().is_file() || opened.len() > 32 * 1024 {
+    if !opened.file_type().is_file() || opened.len() > MAX_SCHEMA_BYTES as u64 {
         return Err(format!("database schema changed before read for {table}"));
     }
     #[cfg(unix)]
@@ -38,10 +40,10 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
             return Err(format!("database schema replaced before read for {table}"));
         }
     }
-    file.take(32 * 1024 + 1)
+    file.take(MAX_SCHEMA_BYTES as u64 + 1)
         .read_to_end(&mut content)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
-    if content.len() > 32 * 1024 {
+    if content.len() > MAX_SCHEMA_BYTES {
         return Err(format!("database schema exceeds size limit for {table}"));
     }
     let content = String::from_utf8(content)
