@@ -31,8 +31,8 @@ def columns(payload):
     if not isinstance(payload, dict):
         raise ValueError("schema response must be an object")
     result = payload.get("columns")
-    if not isinstance(result, list):
-        raise ValueError("response has no columns list")
+    if not isinstance(result, list) or not result:
+        raise ValueError("response has no nonempty columns list")
     output = []
     seen = set()
     for col in result:

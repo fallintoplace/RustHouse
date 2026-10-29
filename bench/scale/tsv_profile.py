@@ -21,7 +21,10 @@ def profile(path, *, columns=1, header=False, min_rows=1,
     digest = hashlib.sha256()
     records = 0
     bytes_read = 0
-    with Path(path).open("rb") as stream:
+    source = Path(path)
+    if not source.is_file() or source.is_symlink():
+        raise ValueError("expected a regular, non-symlinked TSV file")
+    with source.open("rb") as stream:
         while True:
             raw = stream.readline(MAX_RECORD_BYTES + 1)
             if not raw:
@@ -33,9 +36,13 @@ def profile(path, *, columns=1, header=False, min_rows=1,
                 raise ValueError(f"record {records + 1}: invalid column count or empty row")
             if b"\x00" in row:
                 raise ValueError(f"record {records + 1}: raw NUL byte")
-            row.decode("utf-8", errors="strict")
+            # Sorted numeric records are validated as ASCII bytes below.
+            # Skip a redundant Unicode allocation per row in large fixtures.
+            if not (verify_sorted_uint64 and not (header and records == 0)):
+                row.decode("utf-8", errors="strict")
             if verify_sorted_uint64 and not (header and records == 0):
-                if not row.isascii() or not row.isdigit() or len(row) > 20:
+                if (not row.isascii() or not row.isdigit() or len(row) > 20
+                        or (len(row) > 1 and row[0] == b'0'[0])):
                     raise ValueError(f"record {records + 1}: invalid UInt64 key")
                 value = int(row)
                 if value > (1 << 64) - 1:

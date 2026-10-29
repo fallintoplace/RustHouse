@@ -7,6 +7,16 @@ from fixture import DATE_KEYS, MAX_FACTS, TABLES, generate
 
 
 class StarFixtureTests(unittest.TestCase):
+    def test_table_writer_preserves_records_across_batch_boundary(self):
+        from fixture import write_table
+        with tempfile.TemporaryDirectory() as root:
+            path = write_table(Path(root), "date_dim",
+                               ((index, 1993, 1) for index in range(4097)))
+            lines = path.read_text().splitlines()
+            self.assertEqual(len(lines), 4098)
+            self.assertEqual(lines[4096], "4095\t1993\t1")
+            self.assertEqual(lines[4097], "4096\t1993\t1")
+
     def test_dates_and_facts_have_valid_references(self):
         with tempfile.TemporaryDirectory() as root:
             report = generate(root, 123, 7)

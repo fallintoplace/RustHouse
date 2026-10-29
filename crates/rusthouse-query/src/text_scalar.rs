@@ -7,6 +7,14 @@ pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
         "IPV4STRINGTONUMORDEFAULT"
+            | "CUTWWW"
+            | "DOMAINWITHOUTWWW"
+            | "CUTURLPARAMETER"
+            | "JSONEXTRACTBOOL"
+            | "IPV4NUMTOSTRING"
+            | "IPV4STRINGTONUM"
+            | "IPV4STRINGTONUMORNULL"
+            | "DECODEURLFORMCOMPONENT"
             | "LENGTH"
             | "TOYEAR"
             | "LENGTHUTF8"
@@ -303,6 +311,171 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "IPV4STRINGTONUMORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4StringToNumOrNull requires one argument",
+            )?;
+            match input {
+                Some(input) => input
+                    .parse::<std::net::Ipv4Addr>()
+                    .ok()
+                    .map_or(ConstantValue::Null, |address| {
+                        ConstantValue::Integer(i64::from(u32::from(address)))
+                    }),
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4STRINGTONUM" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4StringToNum requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let address = input.parse::<std::net::Ipv4Addr>().map_err(|_| {
+                        ParseError("IPv4StringToNum requires a valid IPv4 address".into())
+                    })?;
+                    ConstantValue::Integer(i64::from(u32::from(address)))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4NUMTOSTRING" => {
+            let value = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4NumToString requires one argument",
+            )?;
+            match value {
+                Some(value) => {
+                    let value = u32::try_from(value).map_err(|_| {
+                        ParseError("IPv4NumToString requires a UInt32 integer".into())
+                    })?;
+                    ConstantValue::Text(std::net::Ipv4Addr::from(value).to_string())
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "JSONEXTRACTBOOL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSONExtractBool requires a path")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "JSONExtractBool requires two arguments",
+            )?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let is_true = json.at_path(&path).is_some_and(|value| value.raw() == "true");
+                    ConstantValue::Integer(i64::from(is_true))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "CUTURLPARAMETER" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "cutURLParameter requires a parameter name",
+            )?;
+            let parameter = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "cutURLParameter requires two arguments",
+            )?;
+            match (input, parameter) {
+                (Some(input), Some(parameter)) => {
+                    let (url, fragment) = input
+                        .split_once('#')
+                        .map_or((input.as_str(), None), |(url, fragment)| {
+                            (url, Some(fragment))
+                        });
+                    if let Some((prefix, query)) = url.split_once('?') {
+                        let kept: Vec<&str> = query
+                            .split('&')
+                            .filter(|pair| pair.split('=').next() != Some(parameter.as_str()))
+                            .collect();
+                        let mut output = String::with_capacity(input.len());
+                        output.push_str(prefix);
+                        if !kept.is_empty() {
+                            output.push('?');
+                            output.push_str(&kept.join("&"));
+                        }
+                        if let Some(fragment) = fragment {
+                            output.push('#');
+                            output.push_str(fragment);
+                        }
+                        ConstantValue::Text(output)
+                    } else {
+                        ConstantValue::Text(input)
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "DOMAINWITHOUTWWW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "domainWithoutWWW requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let authority = input
+                        .split_once("://")
+                        .map_or(input.as_str(), |(_, rest)| rest)
+                        .split(['/', '?', '#'])
+                        .next()
+                        .unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let host = if let Some(bracketed) = host_port.strip_prefix('[') {
+                        bracketed.split_once(']').map_or("", |(host, _)| host)
+                    } else {
+                        host_port.split(':').next().unwrap_or("")
+                    };
+                    ConstantValue::Text(
+                        host.strip_prefix("www.").unwrap_or(host).to_owned(),
+                    )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "CUTWWW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "cutWWW requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority_start = input.find("://").map_or(0, |index| index + 3);
+                    let authority_end = input[authority_start..]
+                        .find(['/', '?', '#'])
+                        .map_or(input.len(), |index| authority_start + index);
+                    let host_start = input[authority_start..authority_end]
+                        .rfind('@')
+                        .map_or(authority_start, |index| authority_start + index + 1);
+                    if input[host_start..authority_end].starts_with("www.") {
+                        let mut output = String::with_capacity(input.len() - 4);
+                        output.push_str(&input[..host_start]);
+                        output.push_str(&input[host_start + 4..]);
+                        ConstantValue::Text(output)
+                    } else {
+                        ConstantValue::Text(input)
+                    }
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "IPV4STRINGTONUMORDEFAULT" => {
             let input = text_arg(parser, depth + 1)?;
             require(
@@ -2796,7 +2969,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "URL_DECODE" | "DECODEURLCOMPONENT" => {
+        "URL_DECODE" | "DECODEURLCOMPONENT" | "DECODEURLFORMCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL_DECODE requires one argument")?;
             match input {
@@ -2820,7 +2993,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.push(byte);
                             index += 3;
                         } else {
-                            result.push(source[index]);
+                            result.push(if source[index] == b'+'
+                                && name == "DECODEURLFORMCOMPONENT"
+                            {
+                                b' '
+                            } else {
+                                source[index]
+                            });
                             index += 1;
                         }
                     }
@@ -3591,6 +3770,224 @@ mod ch_position_byte_tests {
         for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_decode_url_form_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn decodes_plus_and_percent_escaped_form_components() {
+        for (sql, expected) in [
+            ("SELECT decodeURLFormComponent('hello+world')", "hello world"),
+            ("SELECT decodeURLFormComponent('x%2By+z')", "x+y z"),
+            ("SELECT decodeURLFormComponent('a%20b')", "a b"),
+            ("SELECT decodeURLFormComponent('')", ""),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT decodeURLFormComponent('%GG')",
+            "SELECT decodeURLFormComponent('%')",
+            "SELECT decodeURLFormComponent('x', 'y')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_to_num_or_null_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn valid_ipv4_is_numeric_and_invalid_input_is_null() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNumOrNull('192.168.0.1')", 3232235521),
+            ("SELECT IPv4StringToNumOrNull('0.0.0.0')", 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4StringToNumOrNull('invalid')",
+            "SELECT IPv4StringToNumOrNull(NULL)",
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1 && values[0].value == ConstantValue::Null),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT IPv4StringToNumOrNull('x', 'y')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_string_to_num_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn converts_ipv4_to_network_order_integer() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNum('0.0.0.0')", 0),
+            ("SELECT IPv4StringToNum('192.168.0.1')", 3232235521),
+            ("SELECT IPv4StringToNum('255.255.255.255')", 4294967295),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4StringToNum('256.1.2.3')",
+            "SELECT IPv4StringToNum('1.2.3')",
+            "SELECT IPv4StringToNum('1.2.3.4', 'x')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_num_to_string_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn formats_network_order_ipv4_integers() {
+        for (sql, expected) in [
+            ("SELECT IPv4NumToString(0)", "0.0.0.0"),
+            ("SELECT IPv4NumToString(3232235521)", "192.168.0.1"),
+            ("SELECT IPv4NumToString(4294967295)", "255.255.255.255"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4NumToString(-1)",
+            "SELECT IPv4NumToString(4294967296)",
+            "SELECT IPv4NumToString(1, 2)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_json_extract_bool_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn reads_boolean_paths_and_defaults_nonbooleans_to_zero() {
+        for (sql, expected) in [
+            (r#"SELECT JSONExtractBool('{"x":true}', 'x')"#, 1),
+            (r#"SELECT JSONExtractBool('{"x":false}', 'x')"#, 0),
+            (r#"SELECT JSONExtractBool('{"x":1}', 'x')"#, 0),
+            (r#"SELECT JSONExtractBool('{"x":{"y":true}}', 'x.y')"#, 1),
+            (r#"SELECT JSONExtractBool('{"x":true}', 'missing')"#, 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT JSONExtractBool('not-json', 'x')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_cut_url_parameter_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn removes_named_query_parameters_and_preserves_fragments() {
+        for (sql, expected) in [
+            ("SELECT cutURLParameter('https://a/?x=1&y=2', 'x')",
+                "https://a/?y=2"),
+            ("SELECT cutURLParameter('https://a/?x=1&x=2#frag', 'x')",
+                "https://a/#frag"),
+            ("SELECT cutURLParameter('https://a/?x=1', 'missing')",
+                "https://a/?x=1"),
+            ("SELECT cutURLParameter('https://a/path#frag', 'x')",
+                "https://a/path#frag"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT cutURLParameter('x')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_domain_without_www_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn extracts_domain_without_at_most_one_www_prefix() {
+        for (sql, expected) in [
+            ("SELECT domainWithoutWWW('https://www.example.org/p')", "example.org"),
+            ("SELECT domainWithoutWWW('www.example.org:80/p')", "example.org"),
+            ("SELECT domainWithoutWWW('https://www.www.example.org')", "www.example.org"),
+            ("SELECT domainWithoutWWW('https://example.org')", "example.org"),
+            ("SELECT domainWithoutWWW('not-a-url')", "not-a-url"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT domainWithoutWWW('x', 'y')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_cut_www_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn removes_one_www_prefix_without_changing_other_url_components() {
+        for (sql, expected) in [
+            ("SELECT cutWWW('https://www.example.org/a?b=1')",
+                "https://example.org/a?b=1"),
+            ("SELECT cutWWW('www.example.org/path')", "example.org/path"),
+            ("SELECT cutWWW('https://www.www.example.org')",
+                "https://www.example.org"),
+            ("SELECT cutWWW('https://example.org')", "https://example.org"),
+            ("SELECT cutWWW('https://u@www.example.org:80/x')",
+                "https://u@example.org:80/x"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT cutWWW('a', 'b')").is_err());
     }
 }
 
