@@ -30,6 +30,12 @@ pub(super) fn tokenize_insert(sql: &str) -> Result<Vec<Token>, ParseError> {
     tokenize_with_limit(sql, 1024 * 1024)
 }
 
+fn skip_line_comment(bytes: &[u8], index: &mut usize) {
+    while *index < bytes.len() && !matches!(bytes[*index], b'\r' | b'\n') {
+        *index += 1;
+    }
+}
+
 fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseError> {
     if sql.len() > max_bytes {
         return Err(ParseError(format!(
@@ -70,16 +76,12 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             }
             b'#' => {
                 index += 1;
-                while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
-                    index += 1;
-                }
+                skip_line_comment(bytes, &mut index);
                 continue;
             }
             b'-' if bytes.get(index + 1) == Some(&b'-') => {
                 index += 2;
-                while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
-                    index += 1;
-                }
+                skip_line_comment(bytes, &mut index);
                 continue;
             }
             b'-' if follows_binary_minus_context(&tokens) => {
