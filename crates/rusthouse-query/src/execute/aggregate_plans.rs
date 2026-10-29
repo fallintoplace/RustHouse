@@ -211,7 +211,7 @@ fn parallel_integer_grouped_count(
         let handles = parts.chunks(chunk_size).map(|paths| {
             let names = &names;
             let retained = &retained;
-            scope.spawn(move || -> Result<Option<Vec<(u32, u64)>>, ExecutionError> {
+            scope.spawn(move || -> Result<Option<Vec<(u64, u64)>>, ExecutionError> {
                 let mut keys = HashMap::<u64, usize>::new();
                 let mut counts = Vec::<(u64, u64)>::new();
                 for path in paths {
