@@ -64,7 +64,7 @@ fn compare_entries(
 }
 
 fn entry_bytes(row: &Row) -> Result<usize, ExecutionError> {
-    let cells = row.values.iter().chain(row.sort_keys.iter());
+    let mut cells = row.values.iter().chain(row.sort_keys.iter());
     cells.try_fold(
         std::mem::size_of::<SortEntry>()
             .checked_add((row.values.len() + row.sort_keys.len())
