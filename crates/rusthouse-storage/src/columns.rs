@@ -4,14 +4,14 @@ use std::collections::HashSet;
 pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let mut lines = content.lines();
     if lines.next() != Some("columns format version: 1") {
-        return Err(invalid(1, "expected columns format version: 1"));
+        return Err(invalid_columns_format_error(1, "expected columns format version: 1"));
     }
 
     let header = lines
         .next()
-        .ok_or_else(|| invalid(2, "missing column-count header"))?;
+        .ok_or_else(|| invalid_columns_format_error(2, "missing column-count header"))?;
     let expected =
-        parse_column_count(header).ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
+        parse_column_count(header).ok_or_else(|| invalid_columns_format_error(2, "expected '<count> columns:'"))?;
 
     // Keep malformed huge counts from triggering an unbounded allocation.
     let capacity = expected.min(1024);
@@ -21,18 +21,18 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
         let line_number = index + 3;
         let line = lines
             .next()
-            .ok_or_else(|| invalid(line_number, "fewer columns than declared"))?;
+            .ok_or_else(|| invalid_columns_format_error(line_number, "fewer columns than declared"))?;
         let column = parse_column(line, line_number)?;
         if !names.insert(column.name.clone()) {
-            return Err(invalid(line_number, "duplicate column name"));
+            return Err(invalid_columns_format_error(line_number, "duplicate column name"));
         }
         columns.push(column);
     }
     if lines.next().is_some() {
-        return Err(invalid(expected + 3, "more columns than declared"));
+        return Err(invalid_columns_format_error(expected + 3, "more columns than declared"));
     }
     if !content.ends_with('\n') {
-        return Err(invalid(expected + 2, "missing final newline"));
+        return Err(invalid_columns_format_error(expected + 2, "missing final newline"));
     }
 
     Ok(columns)
@@ -45,7 +45,7 @@ fn parse_column_count(header: &str) -> Option<usize> {
         .and_then(|value| value.parse::<usize>().ok())
 }
 
-fn invalid(line: usize, message: &'static str) -> PartError {
+fn invalid_columns_format_error(line: usize, message: &'static str) -> PartError {
     PartError::InvalidColumns { line, message }
 }
 
@@ -56,7 +56,7 @@ fn hex_identifier_digit(
     chars
         .next()
         .and_then(|digit| digit.to_digit(16))
-        .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))
+        .ok_or_else(|| invalid_columns_format_error(line_number, "invalid hex identifier escape"))
 }
 
 fn append_utf8_character(name: &mut Vec<u8>, character: char) {
@@ -71,7 +71,7 @@ fn append_identifier_escape(
 ) -> Result<(), PartError> {
     let escaped = chars
         .next()
-        .ok_or_else(|| invalid(line_number, "trailing identifier escape"))?;
+        .ok_or_else(|| invalid_columns_format_error(line_number, "trailing identifier escape"))?;
     let decoded = match escaped {
         'x' => {
             let high = hex_identifier_digit(chars, line_number)?;
@@ -106,10 +106,10 @@ fn append_identifier_escape(
 
 fn finish_column(name: Vec<u8>, data_type: &str, line_number: usize) -> Result<Column, PartError> {
     if name.is_empty() || data_type.is_empty() || data_type.trim() != data_type {
-        return Err(invalid(line_number, "empty column name or invalid type"));
+        return Err(invalid_columns_format_error(line_number, "empty column name or invalid type"));
     }
     let name = String::from_utf8(name)
-        .map_err(|_| invalid(line_number, "column name is not valid UTF-8"))?;
+        .map_err(|_| invalid_columns_format_error(line_number, "column name is not valid UTF-8"))?;
     Ok(Column {
         name,
         data_type: data_type.to_owned(),
@@ -119,7 +119,7 @@ fn finish_column(name: Vec<u8>, data_type: &str, line_number: usize) -> Result<C
 fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
     let mut chars = line
         .strip_prefix('`')
-        .ok_or_else(|| invalid(line_number, "expected a backtick-quoted column name"))?
+        .ok_or_else(|| invalid_columns_format_error(line_number, "expected a backtick-quoted column name"))?
         .chars();
     let mut name = Vec::new();
 
@@ -133,7 +133,7 @@ fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
                 let data_type = chars
                     .as_str()
                     .strip_prefix(' ')
-                    .ok_or_else(|| invalid(line_number, "expected a space after column name"))?;
+                    .ok_or_else(|| invalid_columns_format_error(line_number, "expected a space after column name"))?;
                 return finish_column(name, data_type, line_number);
             }
             '\\' => append_identifier_escape(&mut chars, &mut name, line_number)?,
@@ -143,7 +143,7 @@ fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
         }
     }
 
-    Err(invalid(line_number, "unterminated column name"))
+    Err(invalid_columns_format_error(line_number, "unterminated column name"))
 }
 
 #[cfg(test)]
