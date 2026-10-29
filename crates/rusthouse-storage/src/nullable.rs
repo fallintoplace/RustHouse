@@ -86,8 +86,8 @@ pub fn read_null_map<R: Read>(reader: &mut R, rows: usize) -> Result<Vec<u8>, Nu
     reader
         .read_exact(&mut null_map)
         .map_err(NullableReadError::Io)?;
-    if let Some((row, &value)) = null_map.iter().enumerate().find(|(_, &byte)| byte > 1) {
-        return Err(NullableReadError::InvalidNullFlag { row, value });
+    if let Some(row) = null_map.iter().position(|&value| value > 1) {
+        return Err(NullableReadError::InvalidNullFlag { row, value: null_map[row] });
     }
     Ok(null_map)
 }
