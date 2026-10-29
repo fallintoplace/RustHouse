@@ -363,7 +363,41 @@ pub(super) fn execute<W: Write>(
         let end = query
             .limit
             .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
-        if let Some(end) = end.filter(|&end| end < groups.len()) {
+        let cached_medians = terms.iter().filter_map(|(metric, _, _)| *metric)
+            .filter(|&metric| items[metric].0 == AggregateFunction::Median)
+            .map(|metric| (metric, groups.iter()
+                .map(|(_, states)| states[metric].sort_cell())
+                .collect::<Vec<_>>()))
+            .collect::<HashMap<_, _>>();
+        if !cached_medians.is_empty() {
+            // Avoid cloning a median's entire input vector in each
+            // comparison, including multi-term ORDER BY and paged top-K.
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_cached = |left: &usize, right: &usize| {
+                for &(metric, descending, nulls_first) in &terms {
+                    let order = if let Some(index) = metric {
+                        let (left_cell, right_cell) = if let Some(keys) = cached_medians.get(&index) {
+                            (keys[*left].clone(), keys[*right].clone())
+                        } else {
+                            (groups[*left].1[index].sort_cell(),
+                             groups[*right].1[index].sort_cell())
+                        };
+                        typed::compare_order_cells(&left_cell, &right_cell, descending, nulls_first)
+                    } else {
+                        typed::compare_order_cells(&groups[*left].0, &groups[*right].0,
+                            descending, nulls_first)
+                    };
+                    if order != std::cmp::Ordering::Equal { return order; }
+                }
+                left.cmp(right)
+            };
+            if let Some(end) = end.filter(|&end| end < indices.len()) {
+                indices.select_nth_unstable_by(end, &compare_cached);
+                indices.truncate(end);
+            }
+            indices.sort_unstable_by(compare_cached);
+            bounded_order = Some(indices);
+        } else if let Some(end) = end.filter(|&end| end < groups.len()) {
             let mut indices = (0..groups.len()).collect::<Vec<_>>();
             let compare_index = |left: &usize, right: &usize| {
                 compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
@@ -455,5 +489,25 @@ mod grouped_multi_median_budget_tests {
         retained = MAX_GROUP_STATE_BYTES - 1;
         assert!(reserve_median_value(&mut retained).is_err());
         assert_eq!(retained, MAX_GROUP_STATE_BYTES - 1);
+    }
+}
+
+#[cfg(test)]
+mod cached_multimetric_median_sort_tests {
+    use super::*;
+    #[test]
+    fn cached_medians_preserve_multi_metric_order() {
+        let groups = [(10u128, 4u128), (4, 2), (7, 3)].map(|(a, b)| {
+            let mut state = AggregateState::new(AggregateFunction::Median);
+            state.update(Number::Unsigned(a)).unwrap();
+            state.update(Number::Unsigned(b)).unwrap();
+            state
+        });
+        let cached = groups.iter().map(AggregateState::sort_cell).collect::<Vec<_>>();
+        let mut order = (0..groups.len()).collect::<Vec<_>>();
+        order.sort_by(|&left, &right| typed::compare_order_cells(
+            &cached[left], &cached[right], false, None
+        ));
+        assert_eq!(order, [1, 2, 0]);
     }
 }
