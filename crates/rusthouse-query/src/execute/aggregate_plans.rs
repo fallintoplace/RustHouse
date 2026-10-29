@@ -681,6 +681,30 @@ pub(super) fn execute_grouped_numbers<W: Write>(
             return Ok(());
         }
     }
+    if query.limit.is_none()
+        && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+        && query.having.is_none() && query.order_by.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some((lower, upper)) =
+            monotonic_range_indices(&comparisons, start, rows, step)
+        {
+            if upper - lower > MAX_GROUPS as u64 {
+                return Err(ExecutionError::Invalid(
+                    "GROUP BY supports at most 200000 groups".into(),
+                ));
+            }
+            writeln!(
+                output, "{column}\t{}", query.alias.as_deref().unwrap_or("count")
+            )?;
+            let begin = lower.saturating_add(query.offset.unwrap_or(0) as u64).min(upper);
+            for index in begin..upper {
+                let number = u128::from(start) + u128::from(index) * u128::from(step);
+                writeln!(output, "{number}\t1")?;
+            }
+            return Ok(());
+        }
+    }
     // For a filtered monotone range, unique groups can be addressed by
     // their source indices. Skip directly to OFFSET and emit LIMIT groups.
     if (!query.predicates.is_empty() || !query.or_predicates.is_empty())
