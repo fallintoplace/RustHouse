@@ -19,7 +19,7 @@ def thresholds(rows):
 
 
 def run_sweep(binary, part, rows, *, samples=3, timeout=600, execute=None):
-    if (type(samples) is not int or samples < 1
+    if (type(samples) is not int or not 1 <= samples <= 128
             or type(timeout) not in (int, float) or not math.isfinite(timeout)
             or timeout <= 0):
         raise ValueError("samples must be positive integers and timeout finite and positive")
