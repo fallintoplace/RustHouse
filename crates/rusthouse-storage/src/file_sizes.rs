@@ -4,6 +4,8 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
+const BLOCK_BYTES: usize = 2048;
+
 /// Counts manifest entries whose stored sizes match the actual local files.
 /// File hashes are not checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +66,6 @@ fn verify_part_files(
 }
 
 fn hash_stored_file(path: &Path, expected_size: u64) -> Result<u128, PartError> {
-    const BLOCK_BYTES: usize = 2048;
     let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     #[cfg(unix)]
     ensure_opened_file_identity(path, &file)?;
@@ -105,7 +106,6 @@ fn verify_stored_hash(
 /// Hash the logical byte stream, not the individual compressed block boundaries.
 /// ClickHouse's HashingWriteBuffer uses a continuous 2048-byte chunk sequence.
 fn verify_uncompressed_hash(path: &Path, expected: &UncompressedChecksum) -> Result<(), PartError> {
-    const BLOCK_BYTES: usize = 2048;
     let mut reader = CompressedBlockReader::open(path)?;
     let mut hash = U128::new(0, 0);
     let mut chunk = [0u8; BLOCK_BYTES];
