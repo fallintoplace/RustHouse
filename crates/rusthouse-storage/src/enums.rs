@@ -113,7 +113,7 @@ fn hex_digit(byte: u8) -> Option<u8> {
     }
 }
 
-fn decode_enum_escape(bytes: &[u8], position: &mut usize) -> Option<u8> {
+fn decode_enum_label_escape(bytes: &[u8], position: &mut usize) -> Option<u8> {
     let escaped = *bytes.get(*position)?;
     *position += 1;
     let decoded = match escaped {
@@ -153,7 +153,7 @@ fn parse_enum_label(bytes: &[u8], position: &mut usize) -> Option<String> {
                 }
             }
             b'\\' => {
-                name.push(decode_enum_escape(bytes, position)?);
+                name.push(decode_enum_label_escape(bytes, position)?);
             }
             _ => name.push(byte),
         }
