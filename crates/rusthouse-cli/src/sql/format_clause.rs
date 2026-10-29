@@ -8,7 +8,7 @@ pub(super) fn split_select_format(sql: &str) -> (&str, Option<&str>) {
     let statement = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
     let bytes = statement.as_bytes();
     if bytes.len() <= 7
-        || !statement[..6].eq_ignore_ascii_case("SELECT")
+        || !statement.get(..6).is_some_and(|word| word.eq_ignore_ascii_case("SELECT"))
         || !bytes[6].is_ascii_whitespace()
     {
         return (sql, None);
@@ -30,7 +30,7 @@ pub(super) fn split_select_format(sql: &str) -> (&str, Option<&str>) {
         keyword_end -= 1;
     }
     if keyword_end < 7
-        || !statement[keyword_end - 6..keyword_end].eq_ignore_ascii_case("FORMAT")
+        || !statement.get(keyword_end - 6..keyword_end).is_some_and(|word| word.eq_ignore_ascii_case("FORMAT"))
         || !bytes[keyword_end - 7].is_ascii_whitespace()
     {
         return (sql, None);
@@ -119,6 +119,7 @@ mod tests {
             "SELECT 1 FORMAT CSVWithNames trailing",
             "INSERT INTO t FORMAT CSV",
             "SELECT 1 /* FORMAT CSV",
+            "ééééFORMAT CSV",
         ] {
             assert_eq!(split_select_format(query), (query, None), "{query}");
         }
