@@ -81,7 +81,7 @@ def verified_part_count(binary, database, rows, timeout):
         capture_output=True, check=False, timeout=timeout,
     )
     output = checked.stdout.decode("utf-8", "replace")
-    matched = re.search(rf"^OK measurements: {rows} rows, ([0-9]+) parts", output, re.M)
+    matched = re.search(rf"^OK measurements: {rows} rows, ([0-9]+) active parts", output, re.M)
     if checked.returncode or matched is None:
         raise RuntimeError("physical part verification failed after ingestion")
     count = int(matched.group(1))
