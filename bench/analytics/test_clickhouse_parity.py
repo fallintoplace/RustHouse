@@ -200,5 +200,24 @@ class ClickHouseDifferentialTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "multiset"):
             assert_clickhouse_json_parity(wrong, reference, unordered=True)
 
+    def test_clickhouse_reference_output_is_bounded_during_capture(self):
+        def fake_run(command, **kwargs):
+            kwargs["stdout"].write(b"abcdef")
+            return mock.Mock(returncode=0, stderr=b"")
+        with mock.patch("bench.analytics.clickhouse_parity.subprocess.run",
+                        side_effect=fake_run):
+            self.assertEqual(
+                cli_clickhouse("clickhouse-client", "localhost", 9000, "SELECT 1", 10),
+                b"abcdef")
+
+        def oversized_run(command, **kwargs):
+            kwargs["stdout"].write(b"x" * 4_000_001)
+            return mock.Mock(returncode=0, stderr=b"")
+        with mock.patch("bench.analytics.clickhouse_parity.subprocess.run",
+                        side_effect=oversized_run):
+            with self.assertRaisesRegex(ValueError, "4 MB"):
+                cli_clickhouse("clickhouse-client", "localhost", 9000, "SELECT 1", 10)
+
+
 if __name__ == "__main__":
     unittest.main()

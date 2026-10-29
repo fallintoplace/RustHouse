@@ -80,5 +80,16 @@ class SqliteOracleTests(unittest.TestCase):
             self.assertEqual(sqlite_query(path, "SELECT x FROM t"), [(3,)])
 
 
+    def test_sqlite_oracle_limits_materialized_reference_rows(self):
+        from unittest import mock
+        with mock.patch("sqlite_oracle.sqlite3.connect") as connect:
+            cursor = connect.return_value.execute.return_value
+            cursor.fetchmany.return_value = [(1,)] * 100_001
+            with self.assertRaisesRegex(ValueError, "100000 rows"):
+                sqlite_query("sample.sqlite", "SELECT id FROM hits")
+            cursor.fetchmany.assert_called_once_with(100_001)
+            cursor.fetchall.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
