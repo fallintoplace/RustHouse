@@ -270,7 +270,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "lengthUTF8 requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Integer(
-                    i64::try_from(value.chars().count())
+                    i64::try_from(if value.is_ascii() { value.len() } else { value.chars().count() })
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
                 None => ConstantValue::Null,
