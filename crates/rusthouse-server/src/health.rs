@@ -44,9 +44,9 @@ fn render_peer_health_entries(cluster: &Cluster, healthy: &[bool]) -> String {
 }
 
 fn render_health_response(cluster: &Cluster, healthy: &[bool]) -> Response {
-    let count = healthy.iter().filter(|&&alive| alive).count();
+    let healthy_peer_count = healthy.iter().filter(|&&alive| alive).count();
     let details = render_peer_health_entries(cluster, healthy);
-    let status = if count == healthy.len() {
+    let status = if healthy_peer_count == healthy.len() {
         "200 OK"
     } else {
         "503 Service Unavailable"
@@ -55,7 +55,7 @@ fn render_health_response(cluster: &Cluster, healthy: &[bool]) -> Response {
         status,
         content_type: "application/json; charset=utf-8",
         body: format!(
-            "{{\"total\":{},\"healthy\":{count},\"peers\":[{details}]}}\n",
+            "{{\"total\":{},\"healthy\":{healthy_peer_count},\"peers\":[{details}]}}\n",
             healthy.len()
         )
         .into_bytes(),

@@ -374,13 +374,17 @@ pub(super) fn execute<W: Write>(
             let compare_cached = |left: &usize, right: &usize| {
                 for &(metric, descending, nulls_first) in &terms {
                     let order = if let Some(index) = metric {
-                        let (left_cell, right_cell) = if let Some(keys) = cached_medians.get(&index) {
-                            (keys[*left].clone(), keys[*right].clone())
+                        if let Some(keys) = cached_medians.get(&index) {
+                            typed::compare_order_cells(
+                                &keys[*left], &keys[*right], descending, nulls_first,
+                            )
                         } else {
-                            (groups[*left].1[index].sort_cell(),
-                             groups[*right].1[index].sort_cell())
-                        };
-                        typed::compare_order_cells(&left_cell, &right_cell, descending, nulls_first)
+                            let left_cell = groups[*left].1[index].sort_cell();
+                            let right_cell = groups[*right].1[index].sort_cell();
+                            typed::compare_order_cells(
+                                &left_cell, &right_cell, descending, nulls_first,
+                            )
+                        }
                     } else {
                         typed::compare_order_cells(&groups[*left].0, &groups[*right].0,
                             descending, nulls_first)
@@ -493,6 +497,21 @@ mod grouped_multi_median_budget_tests {
 #[cfg(test)]
 mod cached_multimetric_median_sort_tests {
     use super::*;
+    #[test]
+    fn borrowed_cached_medians_keep_same_sort_order() {
+        let values = [3u128, 9, 1, 7];
+        let keys = values.map(|value| {
+            let mut median = AggregateState::new(AggregateFunction::Median);
+            median.update(Number::Unsigned(value)).unwrap();
+            median.sort_cell()
+        });
+        let mut positions = (0..keys.len()).collect::<Vec<_>>();
+        positions.sort_unstable_by(|&a, &b| {
+            typed::compare_order_cells(&keys[a], &keys[b], false, false)
+        });
+        assert_eq!(positions, [2, 0, 3, 1]);
+    }
+
     #[test]
     fn cached_medians_preserve_multi_metric_order() {
         let groups = [(10u128, 4u128), (4, 2), (7, 3)].map(|(a, b)| {

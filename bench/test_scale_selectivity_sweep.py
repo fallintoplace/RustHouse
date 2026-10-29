@@ -9,6 +9,20 @@ class SelectivitySweepTests(unittest.TestCase):
         self.assertEqual(thresholds(8), [0, 2, 4, 6, 8])
         self.assertEqual(thresholds(1), [0, 1])
 
+    def test_finer_selectivity_steps_preserve_exact_oracle(self):
+        self.assertEqual(thresholds(10, steps=10), list(range(11)))
+        self.assertEqual(thresholds(2, steps=64), [0, 1, 2])
+        with self.assertRaisesRegex(ValueError, "steps"):
+            thresholds(100, steps=65)
+        def execute(command, **kwargs):
+            threshold = int(command[2].rsplit(" ", 1)[-1])
+            return SimpleNamespace(returncode=0,
+                                   stdout=f"{10 - threshold}\n".encode(), stderr=b"")
+        report = run_sweep("rusthouse", "part", 10, steps=10,
+                           samples=1, execute=execute)
+        self.assertEqual(report["steps"], 10)
+        self.assertEqual(len(report["results"]), 11)
+
     def test_rejects_noninteger_and_out_of_range_rows(self):
         for rows in (True, 1.5, 0, -1, 2**64):
             with self.subTest(rows=rows):
