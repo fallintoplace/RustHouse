@@ -42,10 +42,17 @@ fn validate_part_directory(path: &Path) -> Result<(), PartError> {
     Ok(())
 }
 
-pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
+/// Read only the bounded row-count file for a previously validated part.
+/// OFFSET skipping does not need to reparse the complete columns.txt schema.
+pub fn read_part_row_count(path: impl AsRef<Path>) -> Result<u64, PartError> {
     let path = path.as_ref();
     validate_part_directory(path)?;
-    let rows = parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)?;
+    parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)
+}
+
+pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
+    let path = path.as_ref();
+    let rows = read_part_row_count(path)?;
     let columns = parse_columns(&read_metadata(
         &path.join("columns.txt"),
         MAX_COLUMNS_BYTES,
@@ -145,9 +152,24 @@ mod tests {
         let metadata = inspect_part(&path).unwrap();
         assert_eq!(metadata.path, path);
         assert_eq!(metadata.rows, 42);
+        assert_eq!(read_part_row_count(&path).unwrap(), 42);
         assert_eq!(metadata.columns.len(), 2);
         assert_eq!(metadata.columns[0].name, "id");
         assert_eq!(metadata.columns[1].data_type, "LowCardinality(String)");
+    }
+
+    #[test]
+    fn reads_part_counts_without_parsing_a_wide_schema() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-count-only-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("count.txt"), "4096\n").unwrap();
+        fs::write(root.join("columns.txt"), "not a valid schema\n").unwrap();
+        assert_eq!(read_part_row_count(&root).unwrap(), 4096);
+        assert!(inspect_part(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
