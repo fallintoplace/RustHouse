@@ -96,6 +96,7 @@ enum BoundExpr {
     Between(Box<Self>, Box<Self>, Box<Self>, bool),
     In(Box<Self>, Vec<Self>, bool),
     Coalesce(Vec<Self>),
+    NullIf(Box<Self>, Box<Self>),
     // Fast path for the affine expression family in ClickBench Q30.
     AffineColumn {
         index: usize,
@@ -132,6 +133,10 @@ impl BoundExpr {
                 Self::IsNull(Box::new(Self::bind(inner, indices)?), *negated),
             ScalarExpr::Not(inner) =>
                 Self::Not(Box::new(Self::bind(inner, indices)?)),
+            ScalarExpr::NullIf(left, right) => Self::NullIf(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
             ScalarExpr::Coalesce(values) => Self::Coalesce(
                 values.iter().map(|value| Self::bind(value, indices))
                     .collect::<Result<Vec<_>, _>>()?,
@@ -290,6 +295,15 @@ fn eval_number(
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::Null => Ok(None),
+        BoundExpr::NullIf(left, right) => {
+            let Some(value) = eval_number(left, batch, row)? else { return Ok(None); };
+            let comparison = eval_number(right, batch, row)?;
+            if comparison.is_some_and(|right| super::compare_numbers(value, right).is_eq()) {
+                Ok(None)
+            } else {
+                Ok(Some(value))
+            }
+        },
         BoundExpr::Coalesce(values) => {
             for value in values {
                 if let Some(value) = eval_number(value, batch, row)? {
