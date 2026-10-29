@@ -20,6 +20,19 @@ def copy_sql(table, path):
     return f"COPY {table} FROM '{escaped}' WITH (FORMAT TSV)"
 
 
+def shard_stats(path):
+    digest = hashlib.sha256()
+    size = lines = 0
+    last_byte = None
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            size += len(block)
+            lines += block.count(b"\n")
+            last_byte = block[-1]
+            digest.update(block)
+    return digest.hexdigest(), size, lines, last_byte
+
+
 def verify_shard(path, entry):
     expected_hash = entry.get("sha256")
     expected_bytes = entry.get("bytes")
@@ -30,16 +43,8 @@ def verify_shard(path, entry):
         raise ValueError("shard manifest has invalid byte count")
     if type(expected_rows) is not int or expected_rows < 1:
         raise ValueError("shard manifest has invalid row count")
-    digest = hashlib.sha256()
-    size = lines = 0
-    last_byte = None
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            size += len(block)
-            lines += block.count(b"\n")
-            last_byte = block[-1]
-            digest.update(block)
-    if (digest.hexdigest() != expected_hash or size != expected_bytes
+    actual_hash, size, lines, last_byte = shard_stats(path)
+    if (actual_hash != expected_hash or size != expected_bytes
             or lines != expected_rows or last_byte != 10):
         raise ValueError(f"shard checksum, byte size, or row count mismatch: {path.name}")
 
