@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "DOMAINWITHOUTWWW"
             | "ZEROIFNULL"
             | "NULLIFZERO"
             | "ISNOTNULL"
@@ -201,6 +202,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = integer_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "zeroIfNull requires one argument")?;
             ConstantValue::Integer(input.unwrap_or(0))
+        }
+        "DOMAINWITHOUTWWW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "domainWithoutWWW requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority = input
+                        .split_once("://")
+                        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""))
+                        .unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let host = if let Some(bracketed) = host_port.strip_prefix('[') {
+                        bracketed.split_once(']').map(|(host, _)| host).unwrap_or("")
+                    } else {
+                        host_port.split(':').next().unwrap_or("")
+                    };
+                    ConstantValue::Text(host.strip_prefix("www.").unwrap_or(host).to_owned())
+                }
+                None => ConstantValue::Null,
+            }
         }
         "LENGTHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
