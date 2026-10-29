@@ -31,6 +31,8 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
         return fields
 
     data = json.loads(result.stdout, object_pairs_hook=unique_fields)
+    if not isinstance(data, dict):
+        raise ValueError("snapshot report must be a JSON object")
     rows, parts = data.get("rows"), data.get("parts")
     if (type(rows) is not int or type(parts) is not int or rows < 0
             or rows > (1 << 64) - 1 or not 1 <= parts <= 16_384):

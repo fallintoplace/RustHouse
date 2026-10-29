@@ -80,5 +80,17 @@ class PairedClickHouseTests(unittest.TestCase):
         self.assertEqual(report["results"][0]["status"], "error")
 
 
+class PairedClickHouseReferenceBudgetTests(unittest.TestCase):
+    def test_oversized_reference_never_runs_a_competitive_query(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            reference = Path(root) / "q01.tsv"
+            reference.write_bytes(b"123456789\n")
+            with patch("bench.tpch.paired_clickhouse.MAX_REFERENCE_BYTES", 4):
+                result = compare("unused", "db", "clickhouse", "default",
+                                 [(1, "SELECT 1")], Path(root), 1, 0, 10)
+            self.assertFalse(result["all_queries_verified"])
+            self.assertIn("oversized", result["results"][0]["error"])
+
 if __name__ == "__main__":
     unittest.main()

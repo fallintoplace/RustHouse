@@ -36,6 +36,12 @@ def assess_report(report, min_samples=5, max_cv_percent=10.0):
     if (not isinstance(report, dict) or not isinstance(report.get("results"), list)
             or not report["results"]):
         raise ValueError("invalid TPC-H report")
+    seen = set()
+    for item in report["results"]:
+        if (not isinstance(item, dict) or type(item.get("query")) is not int
+                or item["query"] < 1 or item["query"] in seen):
+            raise ValueError("noise report needs distinct positive query IDs")
+        seen.add(item["query"])
     return {
         "min_samples": min_samples, "max_cv_percent": max_cv_percent,
         "queries": [assess_query(item, min_samples, max_cv_percent)

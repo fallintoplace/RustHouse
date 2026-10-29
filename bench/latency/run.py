@@ -153,9 +153,9 @@ def run_benchmark(cases, execute, runs, warmups):
 def optional_version(command):
     try:
         completed = subprocess.run(
-            command, cwd=ROOT, capture_output=True, text=True, check=False,
+            command, cwd=ROOT, capture_output=True, text=True, check=False, timeout=5,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     return completed.stdout.strip() if completed.returncode == 0 else None
 

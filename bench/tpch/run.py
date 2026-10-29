@@ -15,6 +15,7 @@ from common import cli_sql, emit_json, latency_summary
 from bench.tpch.canonical_integrity import verify as verify_canonical_sql
 
 QUERY_NAME = re.compile(r"q(\d{1,2})\.sql$", re.IGNORECASE)
+MAX_QUERY_FILE_BYTES = 64 * 1024
 
 def require_canonical_corpus(directory):
     """Reject any SQL that differs from pinned upstream full TPC-H Q1-Q22."""
@@ -32,8 +33,12 @@ def load_queries(directory):
         number = int(match.group(1))
         if number < 1:
             raise ValueError(f"query IDs must be positive: {path}")
+        with path.open("rb") as source:
+            payload = source.read(MAX_QUERY_FILE_BYTES + 1)
+        if len(payload) > MAX_QUERY_FILE_BYTES:
+            raise ValueError(f"query file exceeds 64 KiB: {path}")
         sql = "\n".join(
-            line for line in path.read_text(encoding="utf-8").splitlines()
+            line for line in payload.decode("utf-8").splitlines()
             if not line.lstrip().startswith("--")
         ).strip().rstrip(";").strip()
         if not sql:

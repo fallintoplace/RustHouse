@@ -4,6 +4,7 @@ Input must already be a vetted active-parts directory; this is not a substitute
 for rusthouse inspect-snapshot validation.
 """
 import argparse
+from bisect import bisect_left
 import json
 import math
 import statistics
@@ -47,7 +48,8 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
     total = sum(rows)
     if total > (1 << 64) - 1:
         raise ValueError("part row totals exceed UInt64")
-    small = [value for value in rows if value < small_part_rows]
+    small_count = bisect_left(rows, small_part_rows)
+    small_rows = sum(rows[index] for index in range(small_count))
     p90 = rows[math.ceil(len(rows) * 0.90) - 1]
     p99 = rows[math.ceil(len(rows) * 0.99) - 1]
     optimistic_part_floor = (total - 1) // target_part_rows + 1
@@ -61,8 +63,8 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
             "mean_rows_per_part": total / len(rows),
             "p90_rows_per_part": p90, "p99_rows_per_part": p99,
             "small_part_rows_threshold": small_part_rows,
-            "small_part_count": len(small),
-            "small_part_row_share": sum(small) / total,
+            "small_part_count": small_count,
+            "small_part_row_share": small_rows / total,
             "parts_below_8192_rows": sum(value < 8192 for value in rows),
             "part_limit_remaining": 16384 - len(rows),
             "target_rows_per_part": target_part_rows,
