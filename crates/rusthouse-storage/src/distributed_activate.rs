@@ -97,6 +97,42 @@ pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), 
     Ok(())
 }
 
+use std::io::Read;
+
+/// Read the canonical active-generation pointer without opening snapshot parts.
+/// A missing pointer is reported as None. This does not validate part contents.
+pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
+    let pointer = root.join(".rusthouse-active");
+    match fs::symlink_metadata(&pointer) {
+        Ok(meta) if !meta.file_type().is_file() || meta.len() > 64 => {
+            return Err(PartError::InvalidScan("invalid active generation pointer".into()));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error(&pointer, error)),
+    }
+    let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
+    if !opened.file_type().is_file() || opened.len() > 64 {
+        return Err(PartError::InvalidScan("active generation pointer changed".into()));
+    }
+    let mut bytes = Vec::new();
+    file.take(65)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error(&pointer, error))?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| PartError::InvalidScan("active generation pointer is not UTF8".into()))?;
+    let generation = text
+        .strip_prefix('g')
+        .and_then(|value| value.strip_suffix('\n'))
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| PartError::InvalidScan("invalid active generation pointer".into()))?;
+    if generation == 0 || text != format!("g{generation}\n") {
+        return Err(PartError::InvalidScan("noncanonical active generation pointer".into()));
+    }
+    Ok(Some(generation))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,42 +186,6 @@ mod tests {
         assert_eq!(resolve_active_snapshot(&root).unwrap(), generation);
         fs::remove_dir_all(root).unwrap();
     }
-}
-
-use std::io::Read;
-
-/// Read the canonical active-generation pointer without opening snapshot parts.
-/// A missing pointer is reported as None. This does not validate part contents.
-pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
-    let pointer = root.join(".rusthouse-active");
-    match fs::symlink_metadata(&pointer) {
-        Ok(meta) if !meta.file_type().is_file() || meta.len() > 64 => {
-            return Err(PartError::InvalidScan("invalid active generation pointer".into()));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(io_error(&pointer, error)),
-    }
-    let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
-    let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
-    if !opened.file_type().is_file() || opened.len() > 64 {
-        return Err(PartError::InvalidScan("active generation pointer changed".into()));
-    }
-    let mut bytes = Vec::new();
-    file.take(65)
-        .read_to_end(&mut bytes)
-        .map_err(|error| io_error(&pointer, error))?;
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| PartError::InvalidScan("active generation pointer is not UTF8".into()))?;
-    let generation = text
-        .strip_prefix('g')
-        .and_then(|value| value.strip_suffix('\n'))
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| PartError::InvalidScan("invalid active generation pointer".into()))?;
-    if generation == 0 || text != format!("g{generation}\n") {
-        return Err(PartError::InvalidScan("noncanonical active generation pointer".into()));
-    }
-    Ok(Some(generation))
 }
 
 #[cfg(test)]
