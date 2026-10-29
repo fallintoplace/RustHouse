@@ -118,18 +118,25 @@ pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), 
 /// A missing pointer is reported as None. This does not validate part contents.
 pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
     let pointer = root.join(".rusthouse-active");
-    match fs::symlink_metadata(&pointer) {
+    let initial = match fs::symlink_metadata(&pointer) {
         Ok(meta) if !meta.file_type().is_file() || meta.len() > 64 => {
             return Err(PartError::InvalidScan("invalid active generation pointer".into()));
         }
-        Ok(_) => {}
+        Ok(meta) => meta,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(io_error(&pointer, error)),
-    }
+    };
     let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
     let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
     if !opened.file_type().is_file() || opened.len() > 64 {
         return Err(PartError::InvalidScan("active generation pointer changed".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if initial.dev() != opened.dev() || initial.ino() != opened.ino() {
+            return Err(PartError::InvalidScan("active pointer replaced before read".into()));
+        }
     }
     let mut bytes = Vec::new();
     file.take(65)
@@ -285,6 +292,31 @@ mod prior_pointer_validation_tests {
         fs::write(&pointer, "g1\n").unwrap();
         assert!(validate_fresh_generation(&pointer, 2).is_ok());
         assert!(validate_fresh_generation(&pointer, 1).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod active_pointer_inode_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn equal_length_pointers_can_have_different_inodes() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-active-pointer-inode-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::write(&first, "g1\n").unwrap();
+        fs::write(&second, "g2\n").unwrap();
+        let old = fs::symlink_metadata(&first).unwrap();
+        let new = fs::File::open(&second).unwrap().metadata().unwrap();
+        assert_eq!(old.len(), new.len());
+        assert_ne!(old.ino(), new.ino());
         fs::remove_dir_all(root).unwrap();
     }
 }
