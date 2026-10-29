@@ -195,8 +195,8 @@ mod tests {
         let value = "a".repeat(16 * 1024);
         writer.write_all(format!("{value}\n").as_bytes()).unwrap();
         assert_eq!(writer.line.capacity(), before);
-        writer.finish().unwrap();
-        assert!(writer.output.ends_with(format!("('{value}');\n").as_bytes()));
+        let result = writer.finish().unwrap();
+        assert!(result.ends_with(format!("('{value}');\n").as_bytes()));
     }
 
     #[test]
