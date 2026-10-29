@@ -131,6 +131,27 @@ fn retained_build_columns(
     keep.iter().enumerate().filter_map(|(i, &used)| used.then_some(i)).collect()
 }
 
+/// Add ORDER BY keys to the columns required by a buffered JOIN. Everything
+/// else can remain NULL in its original slot without decoding that stream.
+fn buffered_join_columns(
+    names: &[String],
+    keys: &[usize],
+    selected: &[(usize, String, Option<usize>)],
+    null_filter: Option<(usize, bool)>,
+    order: &[(usize, bool, Option<bool>)],
+    base: usize,
+) -> Vec<usize> {
+    let mut keep = retained_build_columns(names, keys, selected, null_filter, base);
+    for &(column, _, _) in order {
+        if let Some(local) = column.checked_sub(base).filter(|&i| i < names.len()) {
+            keep.push(local);
+        }
+    }
+    keep.sort_unstable();
+    keep.dedup();
+    keep
+}
+
 /// Keep full-column positions for existing JOIN key/projection code, but only
 /// decode retained physical streams. This is especially useful for wide
 /// dimensions with many String payload columns.
@@ -1309,19 +1330,19 @@ pub fn execute_join<W: Write>(
         }
     }
 
-    let left_rows = read_rows(
-        left_path,
-        &left_names,
-        left_meta.rows,
-        MAX_INPUT_ROWS,
-        MAX_STREAM_BUILD_BYTES,
+    let left_columns = buffered_join_columns(
+        &left_names, &left_keys, &selected, null_filter, &order, 0,
+    );
+    let right_columns = buffered_join_columns(
+        &right_names, &right_keys, &selected, null_filter, &order, width,
+    );
+    let left_rows = read_projected_build_rows(
+        left_path, &left_names, &left_columns, left_meta.rows,
+        MAX_INPUT_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
-    let right_rows = read_rows(
-        right_path,
-        &right_names,
-        right_meta.rows,
-        MAX_INPUT_ROWS,
-        MAX_STREAM_BUILD_BYTES,
+    let right_rows = read_projected_build_rows(
+        right_path, &right_names, &right_columns, right_meta.rows,
+        MAX_INPUT_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
     let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
     for (index, row) in right_rows.iter().enumerate() {
@@ -1438,6 +1459,21 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn buffered_outer_join_retains_order_keys_without_unused_payloads() {
+        let names = vec!["id".to_owned(), "sort".to_owned(), "unused".to_owned()];
+        let selected = vec![(3, "other.id".to_owned(), Some(0))];
+        let order = vec![(1, false, None), (5, true, None)];
+        assert_eq!(
+            buffered_join_columns(&names, &[0], &selected, None, &order, 0),
+            vec![0, 1],
+        );
+        assert_eq!(
+            buffered_join_columns(&names, &[0], &selected, None, &order, 3),
+            vec![0, 2],
+        );
+    }
 
     #[test]
     fn projected_hash_build_retains_using_fallback_on_either_side() {
