@@ -759,9 +759,16 @@ mod unsupported_codec_early_rejection_tests {
         bytes.push(0xff);
         bytes.extend_from_slice(&19u32.to_le_bytes());
         bytes.extend_from_slice(&10u32.to_le_bytes());
-        // The declared payload is missing on purpose.
+        // A complete but untrusted payload must not be decoded or hashed.
+        bytes.extend_from_slice(&[0u8; 10]);
         let cursor = Cursor::new(bytes);
         let mut reader = CompressedBlockReader::new(cursor, "unknown-codec").unwrap();
-        assert!(reader.next_decoded().unwrap().is_err());
+        assert!(matches!(
+            reader.next_decoded(),
+            Some(Err(PartError::InvalidCompressedBlock {
+                reason: "unsupported compression method",
+                ..
+            }))
+        ));
     }
 }
