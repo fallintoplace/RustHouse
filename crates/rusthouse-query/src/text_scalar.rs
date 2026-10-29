@@ -87,6 +87,9 @@ pub(super) fn is_function(name: &str) -> bool {
             | "FROMUNIXTIMESTAMP64MICRO"
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
+            | "TOUINT8ORNULL"
+            | "TOUINT16ORNULL"
+            | "TOUINT32ORNULL"
             | "TOINT64ORNULL"
             | "LPAD"
             | "LEFTPADUTF8"
@@ -2450,6 +2453,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(" ".repeat(width))
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "TOUINT8ORNULL" | "TOUINT16ORNULL" | "TOUINT32ORNULL" => {
+            let text = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "integer OrNull cast requires one argument")?;
+            match text {
+                None => ConstantValue::Null,
+                Some(text) => {
+                    let parsed = match name.as_str() {
+                    "TOUINT8ORNULL" => text.parse::<u128>().ok().map(|n| i64::from(n as u8)),
+                    "TOUINT16ORNULL" => text.parse::<u128>().ok().map(|n| i64::from(n as u16)),
+                    "TOUINT32ORNULL" => text.parse::<u128>().ok().map(|n| i64::from(n as u32)),
+                        _ => unreachable!("only registered casts reach this branch"),
+                    };
+                    parsed.map_or(ConstantValue::Null, ConstantValue::Integer)
+                }
             }
         }
         "TRY_TO_INT64" | "TOINT64ORNULL" => {
