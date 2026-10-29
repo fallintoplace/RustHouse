@@ -144,9 +144,14 @@ impl Capacity {
         if object_sizes.len() > MAX_RESERVATION_OBJECTS {
             return Err("replica object batch exceeds limit");
         }
-        let bytes = object_sizes.iter().try_fold(0u64, |total, &size| {
-            total.checked_add(size).ok_or("replica batch size overflow")
-        })?;
+        let available = self.available()?;
+        let mut bytes = 0u64;
+        for &size in object_sizes {
+            bytes = bytes.checked_add(size).ok_or("replica batch size overflow")?;
+            if bytes > available {
+                return Err("insufficient replica capacity");
+            }
+        }
         self.reserve(bytes)
     }
 }
@@ -163,6 +168,15 @@ mod batch_reservation_tests {
         assert_eq!(booked.reserved, 90);
         assert!(capacity.reserve_many(&[30, 25, 31]).is_err());
         assert_eq!(capacity.reserved, 5);
+    }
+
+    #[test]
+    fn stops_reserving_when_a_batch_already_exceeds_capacity() {
+        let capacity = Capacity { total: 10, used: 1, reserved: 2 };
+        assert_eq!(capacity.reserve_many(&[3, 4]).unwrap().available().unwrap(), 0);
+        assert!(capacity.reserve_many(&[3, 5, u64::MAX]).is_err());
+        assert_eq!(capacity.reserve_many(&[0, 0, 0]).unwrap(), capacity);
+        assert_eq!(capacity, Capacity { total: 10, used: 1, reserved: 2 });
     }
 
     #[test]

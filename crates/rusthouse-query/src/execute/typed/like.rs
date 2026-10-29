@@ -89,8 +89,14 @@ pub(super) fn equal_like_bytes(left: &[u8], right: &[u8], case_insensitive: bool
     if !case_insensitive {
         return false;
     }
+    // Non-ASCII bytes can stay unchanged while surrounding ASCII letters
+    // differ only in case. Try a borrowed byte comparison before allocating
+    // two Unicode-lowercased Strings.
+    if left.eq_ignore_ascii_case(right) {
+        return true;
+    }
     if left.is_ascii() && right.is_ascii() {
-        return left.eq_ignore_ascii_case(right);
+        return false;
     }
     match (std::str::from_utf8(left), std::str::from_utf8(right)) {
         (Ok(left), Ok(right)) => left.to_lowercase() == right.to_lowercase(),
@@ -423,6 +429,20 @@ pub(super) fn like_matches_wildcards(
         pat += 1;
     }
     pat == pattern.len()
+}
+
+#[cfg(test)]
+mod mixed_case_unicode_equality_tests {
+    use super::*;
+
+    #[test]
+    fn ascii_case_changes_near_accents_do_not_require_unicode_folding() {
+        assert!(equal_like_bytes("Café".as_bytes(), "café".as_bytes(), true));
+        assert!(equal_like_bytes("CAFÉ".as_bytes(), "cafÉ".as_bytes(), true));
+        assert!(!equal_like_bytes("Café".as_bytes(), "café".as_bytes(), false));
+        assert!(equal_like_bytes("MÜNCHEN".as_bytes(), "münchen".as_bytes(), true));
+        assert!(!equal_like_bytes("Café".as_bytes(), "cafè".as_bytes(), true));
+    }
 }
 
 #[cfg(test)]
