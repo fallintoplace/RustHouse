@@ -1513,8 +1513,14 @@ fn execute_numbers<W: Write>(
                 if column == "number" && items.iter().all(|(_, key)| key == "number")
                     && filters.iter().all(Option::is_none)
         )) && query.limit.is_some_and(|limit| limit <= MAX_SORTED_ROWS)
-            && query.order_by.is_none()
-            && simple_result
+            && ((query.order_by.is_none() && simple_result)
+                || (query.order_by.as_ref().is_some_and(|order| order.column == "number")
+                    && query.having.is_none() && !query.distinct
+                    && query.order_by_extra.is_empty()
+                    && matches!(&query.projection,
+                    Projection::GroupedAggregate { column, value_column, .. }
+                        if column == "number" && value_column == "number"
+                )))
             && ((query.predicates.is_empty() && query.or_predicates.is_empty())
                 || monotonic_range_indices(&compile_numbers_predicates(query)?, start, rows, step)
                     .is_some());
