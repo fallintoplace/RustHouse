@@ -8,6 +8,9 @@ from urllib.request import urlopen
 from urllib.error import HTTPError
 
 
+MAX_HEALTH_BYTES = 1_048_576
+
+
 def validate(payload):
     if not isinstance(payload, dict):
         raise ValueError("expected JSON object")
@@ -35,12 +38,12 @@ def inspect(origin, timeout=5):
         raise ValueError("only loopback HTTP origins are accepted")
     try:
         with urlopen(origin.rstrip("/") + "/cluster/health", timeout=timeout) as response:
-            raw = response.read(1_048_577)
+            raw = response.read(MAX_HEALTH_BYTES + 1)
     except HTTPError as exc:
         if exc.code != 503:
             raise
-        raw = exc.read(1_048_577)
-    if len(raw) > 1_048_576:
+        raw = exc.read(MAX_HEALTH_BYTES + 1)
+    if len(raw) > MAX_HEALTH_BYTES:
         raise ValueError("peer-health response too large")
     payload = json.loads(raw)
     return validate(payload), payload
