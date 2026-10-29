@@ -241,16 +241,22 @@ fn inspect_parts_metadata_with_workers(
                 })
                 .collect::<Vec<_>>();
             drop(sender);
-            for _ in 1..paths.len() {
-                let (index, item) = receiver.recv().map_err(|_| {
-                    PartError::InvalidScan("snapshot metadata worker stopped".into())
-                })?;
+            // Drain the channel even if a worker exits early. The scoped
+            // join below converts panics into an error rather than unwinding.
+            let mut received = 0usize;
+            while let Ok((index, item)) = receiver.recv() {
                 record(index, item);
+                received += 1;
             }
             for handle in handles {
                 handle.join().map_err(|_| {
                     PartError::InvalidScan("snapshot metadata worker panicked".into())
                 })?;
+            }
+            if received != paths.len() - 1 {
+                return Err(PartError::InvalidScan(
+                    "snapshot metadata worker stopped".into(),
+                ));
             }
             Ok(())
         })?;
