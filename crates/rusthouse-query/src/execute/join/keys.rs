@@ -57,8 +57,8 @@ pub(super) fn row_key_into(
     indices: &[usize],
     result: &mut Vec<typed::Key>,
 ) -> bool {
-    result.clear();
     if indices.iter().any(|&index| !key_eligible(&row[index])) {
+        result.clear();
         return false;
     }
     // Preserve heap buffers for text components across multi-join probes.
