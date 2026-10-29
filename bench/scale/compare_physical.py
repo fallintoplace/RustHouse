@@ -12,13 +12,17 @@ CASES = ("count_even", "sum_even")
 
 def compare(baseline, candidate, *, max_slowdown_percent=10,
             max_tail_slowdown_percent=None):
-    if not math.isfinite(max_slowdown_percent) or max_slowdown_percent < 0:
+    if (type(max_slowdown_percent) not in (int, float)
+            or not math.isfinite(max_slowdown_percent)
+            or max_slowdown_percent < 0):
         raise ValueError("max_slowdown_percent must be finite and nonnegative")
     if max_tail_slowdown_percent is not None and (
             type(max_tail_slowdown_percent) not in (int, float)
             or not math.isfinite(max_tail_slowdown_percent)
             or max_tail_slowdown_percent < 0):
         raise ValueError("max_tail_slowdown_percent must be finite and nonnegative")
+    if not isinstance(baseline, dict) or not isinstance(candidate, dict):
+        raise ValueError("physical benchmark reports must be objects")
     expected = "rusthouse-persisted-wide-part-full-scans"
     if baseline.get("workload") != expected or candidate.get("workload") != expected:
         raise ValueError("reports must be persisted physical scan workloads")
