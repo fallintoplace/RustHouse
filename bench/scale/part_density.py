@@ -23,9 +23,10 @@ def part_density(root):
         if not child.is_dir() or not count_file.is_file():
             continue
         raw = count_file.read_text(encoding="ascii")
-        if not raw.strip().isdecimal():
+        digits = raw.removesuffix("\n").removesuffix("\r")
+        if not digits or not digits.isascii() or not digits.isdecimal():
             raise ValueError(f"invalid count.txt in {child.name}")
-        count = int(raw.strip())
+        count = int(digits)
         if count <= 0 or count > (1 << 64) - 1:
             raise ValueError(f"out-of-range part rows in {child.name}")
         rows.append(count)
@@ -35,6 +36,8 @@ def part_density(root):
         raise ValueError("no wide parts with count.txt")
     rows.sort()
     total = sum(rows)
+    if total > (1 << 64) - 1:
+        raise ValueError("part row totals exceed UInt64")
     return {"workload": "part-density-report", "part_count": len(rows),
             "rows": total, "min_rows_per_part": rows[0],
             "median_rows_per_part": statistics.median(rows),
