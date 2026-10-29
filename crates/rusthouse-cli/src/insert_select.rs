@@ -17,7 +17,7 @@ impl Drop for Spool {
     }
 }
 
-fn new_spool(database: &Path) -> Result<(Spool, File), String> {
+fn create_insert_spool(database: &Path) -> Result<(Spool, File), String> {
     let path = database.join(format!(
         ".rusthouse-insert-select-{}-{}.tmp",
         std::process::id(),
@@ -131,7 +131,7 @@ pub(super) fn run(database: &Path, statement: &InsertSelect) -> Result<(), Strin
         } else {
             None
         };
-        let (spool, file) = new_spool(database)?;
+        let (spool, file) = create_insert_spool(database)?;
         {
             let mut writer = BufWriter::new(file);
             execute(&query, part.as_deref(), &mut writer).map_err(|error| error.to_string())?;
