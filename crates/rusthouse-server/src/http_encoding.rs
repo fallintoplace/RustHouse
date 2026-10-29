@@ -68,6 +68,13 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
             quoted[bytes.len() + 1] = b'"';
             return writer.write_all(&quoted[..bytes.len() + 2]);
         }
+        if bytes.len() <= 4094 {
+            let mut quoted = [0u8; 4096];
+            quoted[0] = b'"';
+            quoted[1..bytes.len() + 1].copy_from_slice(bytes);
+            quoted[bytes.len() + 1] = b'"';
+            return writer.write_all(&quoted[..bytes.len() + 2]);
+        }
         writer.write_all(b"\"")?;
         writer.write_all(bytes)?;
         return writer.write_all(b"\"");
