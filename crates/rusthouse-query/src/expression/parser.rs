@@ -161,6 +161,7 @@ fn is_unary_math(name: &str) -> bool {
         || name.eq_ignore_ascii_case("ROUND")
         || name.eq_ignore_ascii_case("EXP")
         || name.eq_ignore_ascii_case("LN")
+        || name.eq_ignore_ascii_case("LOG2")
 }
 
 fn parse_unary_math(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {

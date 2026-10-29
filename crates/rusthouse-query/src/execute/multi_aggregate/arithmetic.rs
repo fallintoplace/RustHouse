@@ -125,6 +125,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         },
         "EXP" => Number::Float(number_as_float(value).exp()),
         "LN" => Number::Float(number_as_float(value).ln()),
+        "LOG2" => Number::Float(number_as_float(value).log2()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -293,6 +294,17 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("LN", Number::Signed(-1)).is_err());
         assert!(crate::parse_scalar_expression("ln(amount)").is_ok());
         assert!(crate::parse_scalar_expression("ln(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn log2_supports_powers_of_two_and_rejects_zero() {
+        assert!(matches!(
+            apply_unary_math("LOG2", Number::Unsigned(8)),
+            Ok(Number::Float(value)) if value == 3.0
+        ));
+        assert!(apply_unary_math("LOG2", Number::Signed(0)).is_err());
+        assert!(crate::parse_scalar_expression("log2(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("log2(amount, 2)").is_err());
     }
 
 }
