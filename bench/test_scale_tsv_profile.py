@@ -17,6 +17,22 @@ class InputProfileTests(unittest.TestCase):
             self.assertEqual(result["bytes"], len(raw))
             self.assertEqual(result["sha256"], hashlib.sha256(raw).hexdigest())
 
+    def test_sorted_uint64_keys_with_header_and_sparse_gaps(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "keys.tsv"
+            path.write_bytes(b"id\n0\n3\n18446744073709551615\n")
+            report = profile(path, header=True, verify_sorted_uint64=True)
+            self.assertEqual(report["rows"], 3)
+            path.write_bytes(b"id\n3\n3\n")
+            with self.assertRaisesRegex(ValueError, "strictly increasing"):
+                profile(path, header=True, verify_sorted_uint64=True)
+            path.write_bytes(b"18446744073709551616\n")
+            with self.assertRaisesRegex(ValueError, "overflow"):
+                profile(path, verify_sorted_uint64=True)
+            path.write_bytes(b"-1\n")
+            with self.assertRaisesRegex(ValueError, "UInt64"):
+                profile(path, verify_sorted_uint64=True)
+
     def test_rejects_bad_column_counts(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "events.tsv"
