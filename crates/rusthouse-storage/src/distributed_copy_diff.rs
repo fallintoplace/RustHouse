@@ -23,7 +23,7 @@ fn valid_key(key: &str) -> bool {
     let mut previous_dot = false;
     for &byte in bytes {
         if byte == b'/' {
-            if segment_start {
+            if segment_start || previous_dot {
                 return false;
             }
             segment_start = true;
@@ -39,7 +39,7 @@ fn valid_key(key: &str) -> bool {
         segment_start = false;
         previous_dot = byte == b'.';
     }
-    !segment_start
+    !segment_start && !previous_dot
 }
 
 fn index(objects: &[ObjectMetadata]) -> Result<HashMap<&str, &ObjectMetadata>, &'static str> {
@@ -229,5 +229,28 @@ mod copy_batch_tests {
         );
         assert_eq!(plan_replica_copy_batch(&objects, &[], 6, 1).unwrap().len(), 1);
         assert!(plan_replica_copy_batch(&objects, &[], 6, 65_537).is_err());
+    }
+}
+
+#[cfg(test)]
+mod canonical_inventory_key_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_trailing_dots_in_any_path_segment() {
+        for path in ["part./file", "part/file.", "part./nested/file"] {
+            let object = ObjectMetadata {
+                key: path.into(),
+                bytes: 1,
+                crc32c: 0,
+            };
+            assert!(plan_replica_copies(&[object], &[]).is_err(), "{path}");
+        }
+        let valid = ObjectMetadata {
+            key: "part/data.bin".into(),
+            bytes: 1,
+            crc32c: 0,
+        };
+        assert_eq!(plan_replica_copies(&[valid.clone()], &[]).unwrap(), vec![valid]);
     }
 }
