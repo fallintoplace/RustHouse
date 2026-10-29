@@ -25,6 +25,12 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
+fn sync_directory(path: &Path) -> Result<(), PartError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| io_error(path, error))
+}
+
 /// Copy a complete active generation into a new directory and validate it
 /// before rename. Does not copy catalog schemas or create remote connections.
 pub fn copy_frozen_snapshot(
@@ -115,15 +121,11 @@ pub fn copy_frozen_snapshot(
             }
             verify_part_file_hashes(&copy)?;
             verify_wide_part(&copy)?;
-            File::open(&copy)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|error| io_error(&copy, error))?;
+            sync_directory(&copy)?;
             report.parts += 1;
         }
         inspect_query_source(&staging)?;
-        File::open(&staging)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| io_error(&staging, error))?;
+        sync_directory(&staging)?;
         Ok(report)
     })();
     let report = match copied {
@@ -144,9 +146,7 @@ pub fn copy_frozen_snapshot(
         return Err(io_error(destination, error));
     }
     #[cfg(unix)]
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| io_error(parent, error))?;
+    sync_directory(parent)?;
     Ok(report)
 }
 
