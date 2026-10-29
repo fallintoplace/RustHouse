@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH"
+        "MACSTRINGTOOUI"
+            | "LENGTH"
             | "TOYEAR"
             | "LENGTHUTF8"
             | "TOSTARTOFFIVEMINUTES"
@@ -302,6 +303,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "MACSTRINGTOOUI" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "MACStringToOUI requires one argument")?;
+            match input {
+                Some(input) => {
+                    let octets: Vec<_> = input.split(':').collect();
+                    let oui = if octets.len() == 6
+                        && octets.iter().all(|part| {
+                            part.len() == 2 && part.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        }) {
+                        octets[..3].iter().try_fold(0_u32, |acc, part| {
+                            u8::from_str_radix(part, 16)
+                                .ok().map(|byte| (acc << 8) | u32::from(byte))
+                        }).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    ConstantValue::Integer(i64::from(oui))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "PORT" => {
             let input = text_arg(parser, depth + 1)?;
             let fallback = if parser.take(Token::Comma) {
@@ -3575,5 +3598,28 @@ mod ch_position_byte_tests {
         for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_mac_string_to_oui_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn extracts_vendor_oui_prefix_of_valid_mac() {
+        for (sql, expected) in [
+            ("SELECT MACStringToOUI('01:02:03:AA:BB:CC')", 66051),
+            ("SELECT MACStringToOUI('ff:ff:ff:ff:ff:ff')", 16777215),
+            ("SELECT MACStringToOUI('00:00:00:12:34:56')", 0),
+            ("SELECT MACStringToOUI('invalid')", 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT MACStringToOUI('x', 'y')").is_err());
     }
 }
