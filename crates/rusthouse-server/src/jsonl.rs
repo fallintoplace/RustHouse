@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_JSONL_COLUMNS: usize = 64;
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -24,7 +25,7 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<String>> {
         if name.is_empty() {
             return Err(invalid("JSONL header name must not be empty"));
         }
-        if headers.len() >= 64 {
+        if headers.len() >= MAX_JSONL_COLUMNS {
             return Err(invalid("JSONL supports at most 64 columns"));
         }
         if !seen.insert(name) {
