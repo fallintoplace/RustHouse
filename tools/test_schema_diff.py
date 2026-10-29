@@ -26,5 +26,13 @@ class SchemaTests(unittest.TestCase):
             self.assertEqual(fetch("http://127.0.0.1:8123", "items", 4), [("id", "UInt64")])
             opener.open.assert_called_once_with("http://127.0.0.1:8123/schema?table=items", timeout=4)
 
+    def test_rejects_whitespace_only_schema_fields(self):
+        for malformed in (
+            {"name": " ", "type": "UInt64"},
+            {"name": "id", "type": "  "},
+        ):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                columns({"columns": [malformed]})
+
 if __name__ == "__main__":
     unittest.main()

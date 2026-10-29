@@ -5,7 +5,17 @@ import json
 import re
 import sys
 from urllib.parse import quote, urlsplit
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, build_opener
+
+
+class NoRedirect(HTTPRedirectHandler):
+    """Prevent loopback-only probes from following redirects to remote hosts."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+NO_REDIRECT_OPENER = build_opener(NoRedirect())
 
 
 def verify_origin(value):
@@ -18,7 +28,7 @@ def verify_origin(value):
 
 
 def read_json(url, timeout):
-    with urlopen(url, timeout=timeout) as reply:
+    with NO_REDIRECT_OPENER.open(url, timeout=timeout) as reply:
         payload = reply.read(1_048_577)
     if len(payload) > 1_048_576:
         raise ValueError("response exceeds 1 MiB")
