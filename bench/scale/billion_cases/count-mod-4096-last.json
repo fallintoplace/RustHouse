@@ -1,0 +1,6 @@
+{
+  "id": "count-mod-4096-last",
+  "kind": "count_mod",
+  "modulus": 4096,
+  "residue": 4095
+}
