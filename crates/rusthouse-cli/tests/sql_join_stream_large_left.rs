@@ -64,5 +64,13 @@ fn left_outer_join_streams_large_fact_and_preserves_null_extension() {
         run(&db, "SELECT * FROM facts f FULL JOIN dims d USING (id) WHERE f.id IS NULL LIMIT 2"),
         b"f.id\n35000\n"
     );
+    assert_eq!(
+        run(&db, "SELECT count(*) FROM facts f FULL JOIN dims d ON f.id = d.id"),
+        b"count\n33001\n"
+    );
+    assert_eq!(
+        run(&db, "SELECT count(*) FROM facts f FULL JOIN dims d ON f.id = d.id WHERE f.id IS NULL"),
+        b"count\n1\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

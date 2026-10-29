@@ -1151,12 +1151,13 @@ fn execute_streaming_inner_count<W: Write>(
         output.write_all(b"count\n")?;
         return Ok(());
     }
-    if left_count == 0 || (right_count == 0 && query.kind == JoinType::Inner) {
+    if (left_count == 0 && query.kind != JoinType::Full)
+        || (right_count == 0 && query.kind == JoinType::Inner) {
         output.write_all(b"count\n0\n")?;
         return Ok(());
     }
     let count = if right_count <= MAX_STREAM_BUILD_ROWS &&
-        (query.kind == JoinType::Left
+        (matches!(query.kind, JoinType::Left | JoinType::Full)
             || right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
         let keep = count_build_columns(
             right_keys, null_filter, left_names.len(), right_names.len(),
@@ -1177,16 +1178,29 @@ fn execute_streaming_inner_count<W: Write>(
                 }
             }
         }
-        probe_inner(
+        let mut matched_right = (query.kind == JoinType::Full)
+            .then(|| vec![false; right_rows.len()]);
+        let left_matches = probe_inner(
             left_path, left_names, left_keys, &right_rows, &hash,
             ProbeOptions {
                 materialize_rows: false, materialize_after: 0,
                 stop_after: Some(usize::MAX), any: query.any, null_filter,
-            }, right_names.len(), query.kind == JoinType::Left, None, |_, _| Ok(())
-        )?
+            }, right_names.len(),
+            matches!(query.kind, JoinType::Left | JoinType::Full),
+            matched_right.as_deref_mut(), |_, _| Ok(())
+        )?;
+        if let Some(flags) = matched_right {
+            let unmatched = right_rows.iter().zip(flags).filter(|(row, matched)| {
+                !*matched && keep_unmatched_right(null_filter, left_names.len(), row)
+            }).count();
+            left_matches.checked_add(unmatched)
+                .ok_or_else(|| invalid("FULL JOIN COUNT overflow"))?
+        } else {
+            left_matches
+        }
     } else {
-        if query.kind == JoinType::Left {
-            return Err(invalid("LEFT JOIN COUNT exceeds bounded right build capacity"));
+        if query.kind != JoinType::Inner {
+            return Err(invalid("outer JOIN COUNT exceeds bounded right build capacity"));
         }
         let keep = count_build_columns(
             left_keys, null_filter, 0, left_names.len(),
