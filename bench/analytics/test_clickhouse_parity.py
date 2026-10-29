@@ -85,7 +85,7 @@ class ClickHouseDifferentialTests(unittest.TestCase):
 
     def test_parity_fixture_rejects_corrupt_tsv_and_bad_numeric_types(self):
         for mutation in ("bad_header", "too_many_fields", "missing_row",
-                         "null_in_nonnullable", "uint64_overflow", "unknown_escape"):
+                         "null_in_nonnullable", "uint64_overflow", "unknown_escape", "oversized_row"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 _, oracle = make_fixture(root, 3)
@@ -96,6 +96,8 @@ class ClickHouseDifferentialTests(unittest.TestCase):
                     lines[0] = lines[0].replace("event_id", "bad_id")
                 if mutation == "too_many_fields":
                     lines[1] += "\textra"
+                if mutation == "oversized_row":
+                    lines[1] += "x" * (1024 * 1024)
                 if mutation == "missing_row":
                     lines.pop()
                 if mutation in ("null_in_nonnullable", "uint64_overflow", "unknown_escape"):
