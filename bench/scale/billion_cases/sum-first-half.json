@@ -1,0 +1,6 @@
+{
+  "id": "sum-first-half",
+  "kind": "sum_range",
+  "lo": "start",
+  "hi": "p50"
+}
