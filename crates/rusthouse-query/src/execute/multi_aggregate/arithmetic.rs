@@ -173,6 +173,10 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
             Number::Float(number) => number.is_finite(),
             Number::Signed(_) | Number::Unsigned(_) => true,
         })),
+        "IS_NAN" => Number::Unsigned(u128::from(match value {
+            Number::Float(number) => number.is_nan(),
+            Number::Signed(_) | Number::Unsigned(_) => false,
+        })),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -596,6 +600,24 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("is_finite(amount)").is_ok());
         assert!(crate::parse_scalar_expression("is_finite(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn is_nan_distinguishes_nan_from_infinity_and_integers() {
+        assert!(matches!(
+            apply_unary_math("IS_NAN", Number::Float(f64::NAN)),
+            Ok(Number::Unsigned(1))
+        ));
+        assert!(matches!(
+            apply_unary_math("IS_NAN", Number::Float(f64::INFINITY)),
+            Ok(Number::Unsigned(0))
+        ));
+        assert!(matches!(
+            apply_unary_math("IS_NAN", Number::Signed(i128::MIN)),
+            Ok(Number::Unsigned(0))
+        ));
+        assert!(crate::parse_scalar_expression("is_nan(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("is_nan(amount, 2)").is_err());
     }
 
 }
