@@ -102,6 +102,18 @@ impl<'a> Parser<'a> {
 
     fn string(&mut self) -> Result<String, &'static str> {
         self.expect(b'"')?;
+        // Plain JSON keys and values dominate. Find the closing quote in one
+        // slice scan and allocate only the final string, without byte-by-byte
+        // parser dispatch on every ordinary UTF-8 code unit.
+        if let Some(end) = self.bytes()[self.offset..]
+            .iter().position(|&byte| byte == b'"' || byte == b'\\' || byte < 0x20)
+        {
+            if self.bytes()[self.offset + end] == b'"' {
+                let begin = self.offset;
+                self.offset += end + 1;
+                return Ok(self.text[begin..begin + end].to_owned());
+            }
+        }
         let mut output = String::new();
         let mut start = self.offset;
         loop {
@@ -275,6 +287,14 @@ pub(crate) fn parse_json(text: &str) -> Result<JsonValue<'_>, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::parse_json;
+
+    #[test]
+    fn fast_plain_json_strings_preserve_non_ascii_and_escaped_fallback() {
+        let parsed = parse_json(r#"{"café":"zażółć","escaped":"a\\nb"}"#).unwrap();
+        assert_eq!(parsed.at_path("café").and_then(JsonValue::as_string), Some("zażółć"));
+        assert_eq!(parsed.at_path("escaped").and_then(JsonValue::as_string), Some("a\nb"));
+        assert!(parse_json("{\"bad\":\"unterminated").is_err());
+    }
 
     #[test]
     fn parses_nested_objects_arrays_and_escapes() {
