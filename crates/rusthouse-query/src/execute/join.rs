@@ -4,7 +4,7 @@ mod keys;
 
 use self::keys::*;
 
-use super::{ExecutionError, Number, typed};
+use super::{ExecutionError, Number, NumberKey, number_at, typed};
 use crate::{JoinAggregate, JoinColumn, JoinSelect, JoinType};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
@@ -262,6 +262,67 @@ struct ProbeOptions {
     null_filter: Option<(usize, bool)>,
 }
 
+/// Min/max runtime filter for homogeneous single-column integer build keys.
+/// It never rejects a possible hash match; nonnumeric and composite keys
+/// retain the normal hash lookup path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NumericJoinBounds {
+    Unsigned(u128, u128),
+    Signed(i128, i128),
+}
+
+fn hash_numeric_bounds(hash: &HashMap<Vec<typed::Key>, Bucket>) -> Option<NumericJoinBounds> {
+    let first = hash.keys().next()?;
+    let mut bounds = match first.as_slice() {
+        [typed::Key::Numeric(NumberKey::Unsigned(value))] =>
+            NumericJoinBounds::Unsigned(*value, *value),
+        [typed::Key::Numeric(NumberKey::Signed(value))] =>
+            NumericJoinBounds::Signed(*value, *value),
+        _ => return None,
+    };
+    for key in hash.keys() {
+        match (key.as_slice(), &mut bounds) {
+            ([typed::Key::Numeric(NumberKey::Unsigned(value))],
+             NumericJoinBounds::Unsigned(min, max)) => {
+                *min = (*min).min(*value);
+                *max = (*max).max(*value);
+            }
+            ([typed::Key::Numeric(NumberKey::Signed(value))],
+             NumericJoinBounds::Signed(min, max)) => {
+                *min = (*min).min(*value);
+                *max = (*max).max(*value);
+            }
+            _ => return None,
+        }
+    }
+    Some(bounds)
+}
+
+fn numeric_key_possible(
+    batch: &[TypedColumn],
+    row: usize,
+    indices: &[usize],
+    bounds: Option<NumericJoinBounds>,
+) -> bool {
+    let Some(bounds) = bounds else { return true; };
+    let Some(&index) = indices.first() else { return true; };
+    let value = match &batch[index] {
+        TypedColumn::Numeric(values) => number_at(values, row),
+        TypedColumn::NullableNumeric { values, nulls } => {
+            if nulls[row] != 0 { return false; }
+            number_at(values, row)
+        }
+        _ => return true,
+    };
+    match (bounds, value) {
+        (NumericJoinBounds::Unsigned(min, max), Number::Unsigned(value)) =>
+            (min..=max).contains(&value),
+        (NumericJoinBounds::Signed(min, max), Number::Signed(value)) =>
+            (min..=max).contains(&value),
+        _ => true,
+    }
+}
+
 /// Scan the probe side without retaining its rows or joined result pairs.
 fn probe_inner<F>(
     left_path: &Path,
@@ -305,11 +366,13 @@ where
     let mut reader = TypedQueryReader::open(left_path, &selected)?;
     let mut matches = 0usize;
     let mut probe_key = Vec::with_capacity(left_keys.len());
+    let numeric_bounds = hash_numeric_bounds(hash);
     let null_right = vec![typed::Cell::Null; right_width];
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
             let mut had_match = false;
-            if batch_key_into(&batch, index, &key_indices, &mut probe_key) {
+            if numeric_key_possible(&batch, index, &key_indices, numeric_bounds)
+                && batch_key_into(&batch, index, &key_indices, &mut probe_key) {
                 if let Some(right_indices) = hash.get(probe_key.as_slice()) {
                     had_match = true;
                     // Materialize only after a row survives the join filter.
@@ -1689,6 +1752,27 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn numeric_join_runtime_filter_never_drops_possible_match() {
+        let mut hash = HashMap::new();
+        hash.insert(
+            vec![typed::Key::Numeric(NumberKey::Unsigned(5))],
+            Bucket::One(0),
+        );
+        hash.insert(
+            vec![typed::Key::Numeric(NumberKey::Unsigned(9))],
+            Bucket::One(1),
+        );
+        let bounds = hash_numeric_bounds(&hash);
+        assert_eq!(bounds, Some(NumericJoinBounds::Unsigned(5, 9)));
+        let batch = vec![TypedColumn::Numeric(NumericColumn::UInt64(vec![1, 5, 7, 9, 10]))];
+        assert!(!numeric_key_possible(&batch, 0, &[0], bounds));
+        assert!(numeric_key_possible(&batch, 1, &[0], bounds));
+        assert!(numeric_key_possible(&batch, 2, &[0], bounds));
+        assert!(numeric_key_possible(&batch, 3, &[0], bounds));
+        assert!(!numeric_key_possible(&batch, 4, &[0], bounds));
+    }
 
     #[test]
     fn buffered_outer_join_retains_order_keys_without_unused_payloads() {
