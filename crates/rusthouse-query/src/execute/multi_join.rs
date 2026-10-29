@@ -316,10 +316,40 @@ fn count_streaming_inner_chain<W: Write>(
         output.write_all(b"count\n")?;
         return Ok(());
     }
+    let (steps, scan_indices) = prepare_stream_probe_steps(
+        paths, relations, initial_step, &query.steps, &[],
+    )?;
+    let column_names = scan_indices.iter()
+        .map(|&index| relations[0].names[index].clone())
+        .collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(&paths[0], &column_names)?;
+    let mut count = 0u64;
+    while let Some(batch) = reader.next_batch()? {
+        for slot in 0..batch[0].len() {
+            let mut fact = vec![typed::Cell::Null; relations[0].names.len()];
+            for (read_index, &physical_index) in scan_indices.iter().enumerate() {
+                fact[physical_index] = typed::cell(&batch[read_index], slot);
+            }
+            let increment = count_probe_chain(&mut fact, &steps, 0)?;
+            count = count.checked_add(increment)
+                .ok_or_else(|| invalid("JOIN COUNT overflow"))?;
+        }
+    }
+    write!(output, "count\n{count}\n")?;
+    Ok(())
+}
+
+fn prepare_stream_probe_steps(
+    paths: &[PathBuf],
+    relations: &[Relation],
+    initial_step: &JoinStep,
+    following: &[JoinStep],
+    extra_fact_columns: &[usize],
+) -> Result<(Vec<CountStep>, Vec<usize>), ExecutionError> {
     let mut steps = Vec::with_capacity(paths.len() - 1);
     let mut scan_indices = Vec::new();
     for (index, step) in std::iter::once(initial_step)
-        .chain(query.steps.iter()).enumerate()
+        .chain(following.iter()).enumerate()
     {
         let right = &relations[index + 1];
         let (left_keys, right_keys) = step_keys(
@@ -349,24 +379,97 @@ fn count_streaming_inner_chain<W: Write>(
     if scan_indices.is_empty() {
         scan_indices.push(0);
     }
+    scan_indices.extend_from_slice(extra_fact_columns);
     scan_indices.sort_unstable();
-    let column_names = scan_indices.iter()
-        .map(|&index| relations[0].names[index].clone())
-        .collect::<Vec<_>>();
-    let mut reader = TypedQueryReader::open(&paths[0], &column_names)?;
-    let mut count = 0u64;
-    while let Some(batch) = reader.next_batch()? {
-        for slot in 0..batch[0].len() {
-            let mut fact = vec![typed::Cell::Null; relations[0].names.len()];
-            for (read_index, &physical_index) in scan_indices.iter().enumerate() {
-                fact[physical_index] = typed::cell(&batch[read_index], slot);
-            }
-            let increment = count_probe_chain(&mut fact, &steps, 0)?;
-            count = count.checked_add(increment)
-                .ok_or_else(|| invalid("JOIN COUNT overflow"))?;
+    scan_indices.dedup();
+    Ok((steps, scan_indices))
+}
+
+/// Visit one joined result at a time without building intermediate products.
+/// Return false when the consumer has collected the requested output page.
+fn visit_probe_chain<F>(
+    row: &mut Vec<typed::Cell>,
+    steps: &[CountStep],
+    index: usize,
+    emit: &mut F,
+) -> Result<bool, ExecutionError>
+where
+    F: FnMut(&[typed::Cell]) -> Result<bool, ExecutionError>,
+{
+    if index == steps.len() {
+        return emit(row);
+    }
+    let step = &steps[index];
+    let Some(key) = row_key(row, &step.left_keys) else { return Ok(true); };
+    let Some(matches) = step.hash.get(&key) else { return Ok(true); };
+    for &right_index in matches.iter()
+        .take(if step.any { 1 } else { usize::MAX })
+    {
+        let prior = row.len();
+        row.extend_from_slice(&step.right_rows[right_index]);
+        let keep_going = visit_probe_chain(row, steps, index + 1, emit)?;
+        row.truncate(prior);
+        if !keep_going {
+            return Ok(false);
         }
     }
-    write!(output, "count\n{count}\n")?;
+    Ok(true)
+}
+
+/// Stream an unbounded fact source against bounded dimension hashes,
+/// yielding only the requested unordered output page.
+fn stream_selected_inner_chain<W: Write>(
+    query: &JoinSelect,
+    paths: &[PathBuf],
+    relations: &[Relation],
+    initial_step: &JoinStep,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let selected = output_columns(query, relations, initial_step)?;
+    let fact_width = relations[0].names.len();
+    let extra = selected.iter().filter_map(|(index, _, fallback)| {
+        let key = if *index < fact_width { Some(*index) } else { None };
+        key.or_else(|| fallback.filter(|&index| index < fact_width))
+    }).collect::<Vec<_>>();
+    let (steps, indices) = prepare_stream_probe_steps(
+        paths, relations, initial_step, &query.steps, &extra
+    )?;
+    let names = indices.iter().map(|&index| relations[0].names[index].clone())
+        .collect::<Vec<_>>();
+    let mut scan = TypedQueryReader::open(&paths[0], &names)?;
+    write_join_header(output, &selected)?;
+    let mut matched = 0usize;
+    let end = query.offset.saturating_add(query.limit.unwrap_or(usize::MAX));
+    'scan: while let Some(batch) = scan.next_batch()? {
+        for row_index in 0..batch[0].len() {
+            let mut row = vec![typed::Cell::Null; fact_width];
+            for (read_index, &index) in indices.iter().enumerate() {
+                row[index] = typed::cell(&batch[read_index], row_index);
+            }
+            let mut emit = |joined: &[typed::Cell]| -> Result<bool, ExecutionError> {
+                if matched >= query.offset && matched < end {
+                    for (position, (index, _, fallback)) in selected.iter().enumerate() {
+                        if position != 0 {
+                            output.write_all(b"\t")?;
+                        }
+                        let value = if matches!(joined[*index], typed::Cell::Null) {
+                            fallback.map_or(&joined[*index], |other| &joined[other])
+                        } else {
+                            &joined[*index]
+                        };
+                        typed::write_value(output, value)?;
+                    }
+                    output.write_all(b"\n")?;
+                }
+                matched = matched.checked_add(1)
+                    .ok_or_else(|| invalid("JOIN output row offset overflow"))?;
+                Ok(matched < end)
+            };
+            if !visit_probe_chain(&mut row, &steps, 0, &mut emit)? {
+                break 'scan;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -448,6 +551,16 @@ pub fn execute_multi_join<W: Write>(
 
     if query.aggregate.is_some() {
         return count_streaming_inner_chain(query, paths, &relations, &initial_step, output);
+    }
+    if query.limit.is_some_and(|limit| limit <= MAX_RESULT_ROWS)
+        && query.order_by.is_empty()
+        && query.where_null.is_none()
+        && query.kind == JoinType::Inner
+        && query.steps.iter().all(|step| step.kind == JoinType::Inner)
+    {
+        return stream_selected_inner_chain(
+            query, paths, &relations, &initial_step, output
+        );
     }
 
     let mut rows = read_rows(
