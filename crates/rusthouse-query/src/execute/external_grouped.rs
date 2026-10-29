@@ -255,7 +255,7 @@ impl ExternalGroupCount64 {
         if self.keys.is_empty() { return Ok(()); }
         sort_run_keys(&mut self.keys);
         let path = self.next_path()?;
-        let mut stream = BufWriter::new(OpenOptions::new()
+        let mut stream = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
             .write(true).create_new(true).open(&path)?);
         let mut previous = None;
         let mut count = 0u64;
@@ -286,7 +286,7 @@ impl ExternalGroupCount64 {
                 let mut reduced = Vec::new();
                 for chunk in previous.chunks(FAN_IN) {
                     let path = self.next_path()?;
-                    let mut writer = BufWriter::new(OpenOptions::new()
+                    let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
                         .create_new(true).write(true).open(&path)?);
                     merge(chunk, |key, count| write_group(&mut writer, key, count))?;
                     writer.flush()?;
