@@ -38,7 +38,9 @@ def elapsed(record):
 
 def ensure_compatible_reports(baseline, candidate):
     for field in ("workload", "engine", "rows", "seed", "timing_scope",
-                  "query_sha256", "comparison"):
+                  "query_sha256", "comparison", "reference_checked",
+                  "distribution", "suite", "source", "projection_manifest",
+                  "official_benchmark"):
         old = baseline.get(field)
         new = candidate.get(field)
         if (old is None) != (new is None) or (old is not None and old != new):
