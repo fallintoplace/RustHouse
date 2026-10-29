@@ -11,6 +11,31 @@ pub(super) fn literal_bytes(tokens: &[LikeToken]) -> Option<Vec<u8>> {
 }
 
 pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError> {
+    if !pattern.bytes().any(|byte| matches!(byte, b'%' | b'_' | b'\\')) {
+        return Ok(LikePattern::Exact(pattern.as_bytes().to_vec()));
+    }
+    // Pure prefix/suffix/contains patterns need no wildcard token vector.
+    // Escapes and '_' still use the full SQL LIKE compiler below.
+    if !pattern.bytes().any(|byte| matches!(byte, b'_' | b'\\')) {
+        if let Some(literal) = pattern
+            .strip_prefix('%')
+            .and_then(|remaining| remaining.strip_suffix('%'))
+        {
+            if !literal.contains('%') {
+                return Ok(LikePattern::Contains(literal.as_bytes().to_vec()));
+            }
+        }
+        if let Some(literal) = pattern.strip_suffix('%') {
+            if !literal.contains('%') {
+                return Ok(LikePattern::Prefix(literal.as_bytes().to_vec()));
+            }
+        }
+        if let Some(literal) = pattern.strip_prefix('%') {
+            if !literal.contains('%') {
+                return Ok(LikePattern::Suffix(literal.as_bytes().to_vec()));
+            }
+        }
+    }
     // Token count cannot exceed the pattern's byte length.
     let mut tokens = Vec::with_capacity(pattern.len());
     let mut bytes = pattern.bytes();
@@ -58,7 +83,14 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
         }
     }
     let folded_percent = folded_multisegment_pattern(&tokens);
-    Ok(LikePattern::Wildcard { tokens, folded_percent })
+    // Unicode underscore patterns can be applied to many rows. Compile the
+    // folded literals once instead of rebuilding them for every match.
+    let unicode_tokens = if folded_percent.is_none() {
+        unicode_like_tokens(&tokens)
+    } else {
+        None
+    };
+    Ok(LikePattern::Wildcard { tokens, folded_percent, unicode_tokens })
 }
 
 pub(super) fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
@@ -86,8 +118,14 @@ pub(super) fn equal_like_bytes(left: &[u8], right: &[u8], case_insensitive: bool
     if !case_insensitive {
         return false;
     }
+    // Non-ASCII bytes can stay unchanged while surrounding ASCII letters
+    // differ only in case. Try a borrowed byte comparison before allocating
+    // two Unicode-lowercased Strings.
+    if left.eq_ignore_ascii_case(right) {
+        return true;
+    }
     if left.is_ascii() && right.is_ascii() {
-        return left.eq_ignore_ascii_case(right);
+        return false;
     }
     match (std::str::from_utf8(left), std::str::from_utf8(right)) {
         (Ok(left), Ok(right)) => left.to_lowercase() == right.to_lowercase(),
@@ -197,18 +235,19 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             {
                 return false;
             }
-            // ASCII-only ILIKE can search borrowed bytes directly, without
-            // decoding or allocating a Unicode-folded copy of every row.
-            if case_insensitive && value.is_ascii() && bytes.is_ascii() {
-                return value.windows(bytes.len())
-                    .any(|candidate| candidate.eq_ignore_ascii_case(bytes));
-            }
-            // ILIKE '%x%' on ASCII text is a byte scan. Avoid the
-            // overlapping-window comparator for each candidate byte.
+            // Check the one-byte case before the generic ASCII window scan.
+            // The old ordering made this fast path unreachable for ASCII rows.
             if case_insensitive && bytes.len() == 1 && bytes[0].is_ascii() && value.is_ascii() {
                 return value
                     .iter()
                     .any(|byte| byte.eq_ignore_ascii_case(&bytes[0]));
+            }
+            // ASCII-only ILIKE can search borrowed bytes directly, without
+            // decoding or allocating a Unicode-folded copy of every row.
+            if case_insensitive && value.is_ascii() && bytes.is_ascii() {
+                return value
+                    .windows(bytes.len())
+                    .any(|candidate| candidate.eq_ignore_ascii_case(bytes));
             }
             if case_insensitive
                 && bytes.len() == 1
@@ -237,12 +276,6 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 } else {
                     value.windows(bytes.len()).any(|part| part == bytes)
                 }
-            } else if bytes.len() == 1 && value.is_ascii() && bytes[0].is_ascii() {
-                // The frequent ILIKE '%x%' case needs only a byte scan,
-                // not a one-byte slice and comparison at every position.
-                value
-                    .iter()
-                    .any(|byte| byte.eq_ignore_ascii_case(&bytes[0]))
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
                     .windows(bytes.len())
@@ -253,7 +286,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                     .any(|part| equal_like_bytes(part, bytes, true))
             }
         }
-        LikePattern::Wildcard { tokens, folded_percent } => {
+        LikePattern::Wildcard { tokens, folded_percent, unicode_tokens } => {
             // Multi-segment ILIKE patterns must fold Unicode as a whole.
             // ASCII and '_' patterns keep the allocation-free scan.
             if case_insensitive
@@ -273,6 +306,17 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                     );
                 }
             }
+            if case_insensitive
+                && (!value.is_ascii() || tokens.iter().any(|token| {
+                    matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())
+                }))
+            {
+                if let (Ok(text), Some(cached)) =
+                    (std::str::from_utf8(value), unicode_tokens.as_deref())
+                {
+                    return unicode_like_wildcards(text, cached);
+                }
+            }
             like_matches_wildcards(value, tokens, case_insensitive)
         },
     }
@@ -280,7 +324,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
 
 /// Preserve '_' as exactly one original Unicode codepoint, even when
 /// lowercasing a character expands it into multiple codepoints.
-enum UnicodeLikeToken {
+pub(super) enum UnicodeLikeToken {
     Literal(String),
     Any,
     One,
@@ -425,6 +469,77 @@ pub(super) fn like_matches_wildcards(
         pat += 1;
     }
     pat == pattern.len()
+}
+
+#[cfg(test)]
+mod mixed_case_unicode_equality_tests {
+    use super::*;
+
+    #[test]
+    fn ascii_case_changes_near_accents_do_not_require_unicode_folding() {
+        assert!(equal_like_bytes("Café".as_bytes(), "café".as_bytes(), true));
+        assert!(equal_like_bytes("CAFÉ".as_bytes(), "cafÉ".as_bytes(), true));
+        assert!(!equal_like_bytes("Café".as_bytes(), "café".as_bytes(), false));
+        assert!(equal_like_bytes("MÜNCHEN".as_bytes(), "münchen".as_bytes(), true));
+        assert!(!equal_like_bytes("Café".as_bytes(), "cafè".as_bytes(), true));
+    }
+}
+
+#[cfg(test)]
+mod ascii_single_byte_contains_tests {
+    use super::*;
+
+    #[test]
+    fn case_insensitive_single_byte_contains_handles_ascii_and_unicode() {
+        let pattern = compile_like("%x%").unwrap();
+        assert!(like_matches(b"some XPRESS word", &pattern, true));
+        assert!(like_matches(b"lower x", &pattern, true));
+        assert!(!like_matches(b"missing", &pattern, true));
+        assert!(!like_matches(b"missing", &pattern, false));
+        assert!(like_matches("préfiX".as_bytes(), &pattern, true));
+        assert!(!like_matches("café".as_bytes(), &pattern, true));
+    }
+}
+
+#[cfg(test)]
+mod simple_like_compile_tests {
+    use super::*;
+
+    #[test]
+    fn common_literal_patterns_skip_wildcard_tokenization() {
+        assert!(matches!(compile_like("hello%").unwrap(),
+            LikePattern::Prefix(bytes) if bytes == b"hello"));
+        assert!(matches!(compile_like("%world").unwrap(),
+            LikePattern::Suffix(bytes) if bytes == b"world"));
+        assert!(matches!(compile_like("%middle%").unwrap(),
+            LikePattern::Contains(bytes) if bytes == b"middle"));
+        assert!(matches!(compile_like("%").unwrap(),
+            LikePattern::Prefix(bytes) if bytes.is_empty()));
+        assert!(matches!(compile_like("h_llo%").unwrap(),
+            LikePattern::Wildcard { .. }));
+        assert!(like_matches(b"hello WORLD", &compile_like("%world").unwrap(), true));
+        assert!(!like_matches(b"hello WORLD", &compile_like("%world").unwrap(), false));
+        assert!(like_matches(b"hello WORLD", &compile_like("hello%").unwrap(), true));
+    }
+}
+
+#[cfg(test)]
+mod precompiled_unicode_wildcard_tests {
+    use super::*;
+
+    #[test]
+    fn unicode_underscore_patterns_reuse_their_folded_literal_tokens() {
+        let pattern = compile_like("MÜN_HEN").unwrap();
+        assert!(matches!(&pattern, LikePattern::Wildcard {
+            unicode_tokens: Some(tokens), ..
+        } if !tokens.is_empty()));
+        assert!(like_matches("münchen".as_bytes(), &pattern, true));
+        assert!(!like_matches("münchen".as_bytes(), &pattern, false));
+
+        let one = compile_like("STRA_E").unwrap();
+        assert!(like_matches("straße".as_bytes(), &one, true));
+        assert!(!like_matches("strasse".as_bytes(), &one, true));
+    }
 }
 
 #[cfg(test)]

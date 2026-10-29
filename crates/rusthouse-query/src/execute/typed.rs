@@ -282,6 +282,7 @@ enum LikePattern {
     Wildcard {
         tokens: Vec<LikeToken>,
         folded_percent: Option<Vec<LikeToken>>,
+        unicode_tokens: Option<Vec<UnicodeLikeToken>>,
     },
 }
 
@@ -1176,7 +1177,9 @@ pub(super) fn execute_typed<W: Write>(
                 .get(column)
                 .is_some_and(|kind| kind.starts_with("Nullable("))
         {
-            let mut reader = TypedQueryReader::open(part, std::slice::from_ref(column))?;
+            let mut reader = TypedQueryReader::open_with_metadata(
+                part, std::slice::from_ref(column), &metadata,
+            )?;
             let mut count = 0u64;
             while let Some(nulls) = reader.next_null_batch()? {
                 count = count
@@ -1256,7 +1259,10 @@ pub(super) fn execute_typed<W: Write>(
             Some("UInt8" | "Int8" | "UInt16" | "Int16" | "Nullable(UInt8)" | "Nullable(Int8)" | "Nullable(UInt16)" | "Nullable(Int16)")
         )
     {
-        Some(vec![0u64; 1024])
+        Some(vec![0u64; if matches!(
+            projection_types.first().copied(),
+            Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)")
+        ) { 4 } else { 1024 }])
     } else {
         None
     };
@@ -1540,7 +1546,7 @@ pub(super) fn execute_typed<W: Write>(
                         | TypedColumn::NullableNumeric {
                             values: NumericColumn::Int8(values),
                             ..
-                        } => values[index] as u16,
+                        } => u16::from(values[index] as u8),
                         _ => {
                             return Err(ExecutionError::Invalid(
                                 "unexpected 8-bit or 16-bit DISTINCT column type".into(),
@@ -1603,7 +1609,7 @@ pub(super) fn execute_typed<W: Write>(
                                 u16::from(values[index])
                             }
                             TypedColumn::Numeric(NumericColumn::Int8(values)) => {
-                                values[index] as u16
+                                u16::from(values[index] as u8)
                             }
                             TypedColumn::Numeric(NumericColumn::UInt16(values)) => values[index],
                             TypedColumn::Numeric(NumericColumn::Int16(values)) => {

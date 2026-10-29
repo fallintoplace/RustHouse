@@ -86,16 +86,22 @@ fn write_cell(output: &mut impl Write, value: &Cell) -> Result<(), ExecutionErro
     match value {
         Cell::Null => output.write_all(&[0])?,
         Cell::Numeric(Number::Unsigned(v)) => {
-            output.write_all(&[1])?;
-            output.write_all(&v.to_le_bytes())?;
+            let mut record = [0u8; 17];
+            record[0] = 1;
+            record[1..].copy_from_slice(&v.to_le_bytes());
+            output.write_all(&record)?;
         }
         Cell::Numeric(Number::Signed(v)) => {
-            output.write_all(&[2])?;
-            output.write_all(&v.to_le_bytes())?;
+            let mut record = [0u8; 17];
+            record[0] = 2;
+            record[1..].copy_from_slice(&v.to_le_bytes());
+            output.write_all(&record)?;
         }
         Cell::Numeric(Number::Float(v)) => {
-            output.write_all(&[3])?;
-            output.write_all(&v.to_bits().to_le_bytes())?;
+            let mut record = [0u8; 9];
+            record[0] = 3;
+            record[1..].copy_from_slice(&v.to_bits().to_le_bytes());
+            output.write_all(&record)?;
         }
         Cell::Text(value) => {
             output.write_all(&[4])?;
@@ -114,6 +120,13 @@ fn write_bytes(output: &mut impl Write, value: &[u8]) -> Result<(), ExecutionErr
         .map_err(|_| invalid("typed sort value exceeds 4 GiB"))?;
     if value.len() > MAX_FIELD_BYTES {
         return Err(invalid("typed sort value exceeds 32 MiB field limit"));
+    }
+    if value.len() <= 256 {
+        let mut frame = [0u8; 260];
+        frame[..4].copy_from_slice(&length.to_le_bytes());
+        frame[4..4 + value.len()].copy_from_slice(value);
+        output.write_all(&frame[..4 + value.len()])?;
+        return Ok(());
     }
     output.write_all(&length.to_le_bytes())?;
     output.write_all(value)?;
@@ -166,9 +179,11 @@ fn write_entry(output: &mut impl Write, entry: &SortEntry) -> Result<(), Executi
         .map_err(|_| invalid("too many typed sort projection columns"))?;
     let sort_keys = u16::try_from(entry.row.sort_keys.len())
         .map_err(|_| invalid("too many typed sort keys"))?;
-    output.write_all(&ordinal.to_le_bytes())?;
-    output.write_all(&values.to_le_bytes())?;
-    output.write_all(&sort_keys.to_le_bytes())?;
+    let mut header = [0u8; 12];
+    header[..8].copy_from_slice(&ordinal.to_le_bytes());
+    header[8..10].copy_from_slice(&values.to_le_bytes());
+    header[10..12].copy_from_slice(&sort_keys.to_le_bytes());
+    output.write_all(&header)?;
     for value in entry.row.values.iter().chain(entry.row.sort_keys.iter()) {
         write_cell(output, value)?;
     }
@@ -176,17 +191,14 @@ fn write_entry(output: &mut impl Write, entry: &SortEntry) -> Result<(), Executi
 }
 
 fn read_entry(input: &mut impl Read) -> Result<Option<SortEntry>, ExecutionError> {
-    let mut first = [0u8; 1];
-    if input.read(&mut first)? == 0 {
+    let mut header = [0u8; 12];
+    if input.read(&mut header[..1])? == 0 {
         return Ok(None);
     }
-    let mut ordinal = [0u8; 8];
-    ordinal[0] = first[0];
-    input.read_exact(&mut ordinal[1..])?;
-    let mut counts = [0u8; 4];
-    input.read_exact(&mut counts)?;
-    let values = u16::from_le_bytes([counts[0], counts[1]]) as usize;
-    let keys = u16::from_le_bytes([counts[2], counts[3]]) as usize;
+    input.read_exact(&mut header[1..])?;
+    let ordinal: [u8; 8] = header[..8].try_into().expect("typed sort ordinal width");
+    let values = u16::from_le_bytes([header[8], header[9]]) as usize;
+    let keys = u16::from_le_bytes([header[10], header[11]]) as usize;
     if values > 4096 || keys > 8 {
         return Err(invalid("typed sort run has invalid projection width"));
     }
@@ -319,7 +331,7 @@ impl TypedExternalSort {
         }
         self.sort_buffer();
         let path = self.next_path()?;
-        let mut output = BufWriter::new(File::create(&path)?);
+        let mut output = BufWriter::with_capacity(64 * 1024, File::create(&path)?);
         for entry in &self.buffer {
             write_entry(&mut output, entry)?;
         }
@@ -340,7 +352,9 @@ impl TypedExternalSort {
     where F: FnMut(SortEntry) -> Result<bool, ExecutionError>,
     {
         let mut sources = paths.iter().map(|path| {
-            File::open(path).map(BufReader::new).map_err(ExecutionError::from)
+            File::open(path)
+                .map(|file| BufReader::with_capacity(64 * 1024, file))
+                .map_err(ExecutionError::from)
         }).collect::<Result<Vec<_>, _>>()?;
         let mut heap = BinaryHeap::new();
         for (index, source) in sources.iter_mut().enumerate() {
@@ -387,7 +401,7 @@ impl TypedExternalSort {
                 }
                 let merged = self.next_path()?;
                 {
-                    let mut writer = BufWriter::new(File::create(&merged)?);
+                    let mut writer = BufWriter::with_capacity(64 * 1024, File::create(&merged)?);
                     self.merge_group(chunk, |entry| {
                         write_entry(&mut writer, &entry)?;
                         Ok(true)
@@ -445,6 +459,25 @@ mod tests {
             values: vec![Cell::Text(text.as_bytes().to_vec()), Cell::Numeric(Number::Unsigned(value as u128))],
             sort_keys: vec![Cell::Numeric(Number::Unsigned(value as u128))],
         }
+    }
+
+    #[test]
+    fn short_string_spill_frame_uses_one_write() {
+        struct Calls { count: usize, bytes: Vec<u8> }
+        impl Write for Calls {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.count += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut output = Calls { count: 0, bytes: Vec::new() };
+        write_bytes(&mut output, b"hello").unwrap();
+        let mut expected = 5u32.to_le_bytes().to_vec();
+        expected.extend_from_slice(b"hello");
+        assert_eq!(output.count, 1);
+        assert_eq!(output.bytes, expected);
     }
 
     #[test]

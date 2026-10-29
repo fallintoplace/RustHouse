@@ -65,6 +65,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "DATETRUNC"
             | "JSON_QUOTE"
             | "ISVALIDJSON"
+            | "JSONLENGTH"
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTINT"
@@ -73,6 +74,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRINGUTF8"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
+            | "FORMATREADABLEQUANTITY"
             | "QUERYSTRING"
             | "SPLIT_PART"
             | "SUBSTRING_INDEX"
@@ -122,6 +124,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "IFNULL"
             | "LAST_INDEX_OF"
             | "DATEADD"
+            | "DATESUB"
             | "PATH"
             | "LEFT"
             | "LEFTUTF8"
@@ -136,6 +139,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RIGHT"
             | "RIGHTUTF8"
             | "BASE64_ENCODE"
+            | "BASE64URLENCODE"
             | "BASE64ENCODE"
             | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
@@ -161,6 +165,14 @@ pub(super) fn is_function(name: &str) -> bool {
             | "INTDIVORNULL"
             | "MODULOORNULL"
             | "ENCODEURLFORMCOMPONENT"
+            | "ISIPV4PRIVATE"
+            | "ISIPV4LOOPBACK"
+            | "ISIPV4MULTICAST"
+            | "ISIPV4LINKLOCAL"
+            | "ISIPV6UNIQUELOCAL"
+            | "ISIPV6LOOPBACK"
+            | "ISIPV6MULTICAST"
+            | "NORMALIZEIPV6"
     )
 }
 
@@ -250,6 +262,129 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(number.unwrap_or(fallback)))
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "FORMATREADABLEQUANTITY" => {
+            let value = integer_arg(parser, depth + 1)?;
+            let precision = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(2)
+            };
+            require(parser, Token::RParen, "FORMATREADABLEQUANTITY requires one value")?;
+            match (value, precision) {
+                (Some(value), Some(precision)) => {
+                    let precision = usize::try_from(precision)
+                        .map_err(|_| ParseError("readable number precision must be nonnegative".into()))?;
+                    if precision > 8 {
+                        return Err(ParseError("readable number precision exceeds 8".into()));
+                    }
+                    const UNITS: &[&str] = &["", " thousand", " million", " billion", " trillion", " quadrillion", " quintillion"];
+                    let mut number = value as f64;
+                    let mut index = 0;
+                    while number.abs() >= 1000.0 && index + 1 < UNITS.len() {
+                        number /= 1000.0;
+                        index += 1;
+                    }
+                    ConstantValue::Text(format!("{number:.precision$}{}", UNITS[index]))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "NORMALIZEIPV6" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "normalizeIPv6 requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    ConstantValue::Text(address.to_string())
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV6MULTICAST" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6Multicast requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_multicast()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV6LOOPBACK" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6Loopback requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_loopback()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV6UNIQUELOCAL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6UniqueLocal requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_unique_local()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV4LINKLOCAL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4LinkLocal requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_link_local()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV4MULTICAST" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4Multicast requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_multicast()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV4LOOPBACK" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4Loopback requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_loopback()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV4PRIVATE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4Private requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_private()))
+                }
+                None => ConstantValue::Null,
             }
         }
         "MODULOORNULL" => {
@@ -602,11 +737,15 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             )?;
             match input {
                 Some(value) => {
-                    let mut seen = [false; 256];
+                    // Four machine words replace 256 boolean slots and their
+                    // full-length counting pass for short SQL strings.
+                    let mut bitmap = [0u64; 4];
                     for byte in value.bytes() {
-                        seen[usize::from(byte)] = true;
+                        bitmap[usize::from(byte) / 64] |= 1u64 << (byte % 64);
                     }
-                    ConstantValue::Integer(seen.iter().filter(|&&present| present).count() as i64)
+                    ConstantValue::Integer(
+                        bitmap.iter().map(|word| i64::from(word.count_ones())).sum(),
+                    )
                 }
                 None => ConstantValue::Null,
             }
@@ -1203,7 +1342,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "DATEADD" => {
+        "DATEADD" | "DATESUB" => {
             let unit = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "dateAdd requires an offset")?;
             let amount = integer_arg(parser, depth + 1)?;
@@ -1225,10 +1364,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let offset = amount
                         .checked_mul(step)
                         .ok_or_else(|| ParseError("dateAdd offset overflow".into()))?;
-                    let shifted = i64::from(seconds)
-                        .checked_add(offset)
-                        .and_then(|value| u32::try_from(value).ok())
-                        .ok_or_else(|| ParseError("dateAdd result outside UTC DateTime range".into()))?;
+                    let shifted = if name == "DATESUB" {
+                        i64::from(seconds).checked_sub(offset)
+                    } else {
+                        i64::from(seconds).checked_add(offset)
+                    }
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| ParseError("dateAdd result outside UTC DateTime range".into()))?;
                     ConstantValue::Text(rusthouse_storage::format_datetime(shifted))
                 }
                 _ => ConstantValue::Null,
@@ -2454,7 +2596,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "BASE64_ENCODE" | "BASE64ENCODE" => {
+        "BASE64_ENCODE" | "BASE64ENCODE" | "BASE64URLENCODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
             match input {
@@ -2468,8 +2610,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if output_len > MAX_TEXT_BYTES {
                         return Err(ParseError("BASE64_ENCODE result is too large".into()));
                     }
-                    const ALPHABET: &[u8; 64] =
-                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    let alphabet: &[u8; 64] = if name == "BASE64URLENCODE" {
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                    } else {
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                    };
                     let mut result = String::with_capacity(output_len);
                     for chunk in value.as_bytes().chunks(3) {
                         let mut bits = u32::from(chunk[0]) << 16;
@@ -2479,17 +2624,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         if chunk.len() > 2 {
                             bits |= u32::from(chunk[2]);
                         }
-                        result.push(char::from(ALPHABET[((bits >> 18) & 63) as usize]));
-                        result.push(char::from(ALPHABET[((bits >> 12) & 63) as usize]));
+                        result.push(char::from(alphabet[((bits >> 18) & 63) as usize]));
+                        result.push(char::from(alphabet[((bits >> 12) & 63) as usize]));
                         if chunk.len() > 1 {
-                            result.push(char::from(ALPHABET[((bits >> 6) & 63) as usize]));
+                            result.push(char::from(alphabet[((bits >> 6) & 63) as usize]));
                         } else {
                             result.push('=');
                         }
                         if chunk.len() > 2 {
-                            result.push(char::from(ALPHABET[(bits & 63) as usize]));
+                            result.push(char::from(alphabet[(bits & 63) as usize]));
                         } else {
                             result.push('=');
+                        }
+                    }
+                    if name == "BASE64URLENCODE" {
+                        while result.ends_with('=') {
+                            result.pop();
                         }
                     }
                     ConstantValue::Text(result)
@@ -2909,6 +3059,31 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "JSONLENGTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "JSONLength requires one or two arguments")?;
+            match (input, path) {
+                (None, _) | (_, Some(None)) => ConstantValue::Null,
+                (Some(input), path) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let value = match path {
+                        Some(Some(path)) => json.at_path(&path),
+                        None => Some(&json),
+                        Some(None) => unreachable!(),
+                    };
+                    let length = value.map_or(0, |node| node.container_len());
+                    ConstantValue::Integer(
+                        i64::try_from(length).map_err(|_| ParseError("JSONLength exceeds Int64".into()))?
+                    )
+                }
+            }
+        }
         "JSONEXTRACTINT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "JSONExtractInt requires a path")?;
@@ -3127,5 +3302,32 @@ mod clickhouse_readable_time_delta_tests {
         }
         assert!(parse_select("SELECT formatReadableTimeDelta(60, 'invalid')").is_err());
         assert!(parse_select("SELECT formatReadableTimeDelta(60, 'minutes', 'hours')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod string_bytes_uniq_bitmap_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    #[test]
+    fn counts_distinct_bytes_including_utf8_and_duplicates() {
+        for (sql, expected) in [
+            ("SELECT stringBytesUniq('')", 0),
+            ("SELECT stringBytesUniq('aaaa')", 1),
+            ("SELECT stringBytesUniq('abcabc')", 3),
+            ("SELECT stringBytesUniq('éé')", 2),
+            ("SELECT stringBytesUniq('aé')", 3),
+        ] {
+            let parsed = parse_select(sql).unwrap();
+            assert!(
+                matches!(parsed.projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        let parsed = parse_select("SELECT stringBytesUniq(NULL)").unwrap();
+        assert!(matches!(parsed.projection, Projection::Constants(values)
+            if values[0].value == ConstantValue::Null));
     }
 }
