@@ -7,6 +7,16 @@ use std::io::Write;
 const MAX_GROUPS: usize = 200_000;
 const MAX_GENERATED_GROUP_BYTES: usize = 64 * 1024 * 1024;
 
+fn updated_group_state(function: AggregateFunction, value: u128) -> Result<AggregateState, ExecutionError> {
+    let mut state = AggregateState::new(function);
+    state.update(if function == AggregateFunction::Count {
+        Number::Unsigned(1)
+    } else {
+        Number::Unsigned(value)
+    })?;
+    Ok(state)
+}
+
 /// Each generated group owns one aggregate-state vector. The group-count
 /// ceiling alone cannot bound memory when a query selects many metrics.
 fn charge_group_states(
@@ -75,12 +85,7 @@ pub(super) fn execute<W: Write>(
                 let value = u128::from(start) + u128::from(index) * u128::from(step);
                 write!(output, "{value}")?;
                 for (function, _) in items {
-                    let mut state = AggregateState::new(*function);
-                    state.update(if *function == AggregateFunction::Count {
-                        Number::Unsigned(1)
-                    } else {
-                        Number::Unsigned(value)
-                    })?;
+                    let state = updated_group_state(*function, value)?;
                     write!(output, "\t{}", state.render())?;
                 }
                 writeln!(output)?;
@@ -102,13 +107,7 @@ pub(super) fn execute<W: Write>(
         charge_group_states(&mut retained_state_bytes, items)?;
         let mut states=Vec::with_capacity(items.len());
         for (function,_) in items {
-            let mut state=AggregateState::new(*function);
-            state.update(if *function == AggregateFunction::Count {
-                Number::Unsigned(1)
-            } else {
-                Number::Unsigned(value)
-            })?;
-            states.push(state);
+            states.push(updated_group_state(*function, value)?);
         }
         groups.push((value,states));
     }
