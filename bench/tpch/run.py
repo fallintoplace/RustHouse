@@ -11,8 +11,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json, latency_summary
+from canonical_integrity import verify as verify_canonical_sql
 
 QUERY_NAME = re.compile(r"q(\d{1,2})\.sql$", re.IGNORECASE)
+
+def require_canonical_corpus(directory):
+    """Reject any SQL that differs from pinned upstream full TPC-H Q1-Q22."""
+    return verify_canonical_sql(directory)
+
 
 def load_queries(directory):
     queries = []
@@ -158,6 +164,8 @@ def main(argv=None):
     parser.add_argument("--only", help="Comma-separated query IDs, e.g. 1,6,12")
     parser.add_argument("--require-22", action="store_true",
                         help="Reject query directories missing any of the 22 official IDs")
+    parser.add_argument("--require-canonical", action="store_true",
+                        help="Reject modified, simplified or missing upstream Q1-Q22 SQL")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=120)
@@ -171,6 +179,8 @@ def main(argv=None):
     if args.expected_lineitem_rows is not None and args.expected_lineitem_rows < 0:
         parser.error("expected row count must be non-negative")
     try:
+        if args.require_canonical:
+            require_canonical_corpus(args.queries_dir)
         queries = load_queries(args.queries_dir)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
