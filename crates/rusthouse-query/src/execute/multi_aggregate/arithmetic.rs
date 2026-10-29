@@ -115,6 +115,10 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
             Number::Float(number) => Number::Float(number.ceil()),
             integer => integer,
         },
+        "TRUNC" => match value {
+            Number::Float(number) => Number::Float(number.trunc()),
+            integer => integer,
+        },
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -228,6 +232,20 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("ceil(amount)").is_ok());
         assert!(crate::parse_scalar_expression("ceil(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn trunc_rounds_toward_zero_for_negative_floats() {
+        assert!(matches!(
+            apply_unary_math("TRUNC", Number::Float(-2.9)),
+            Ok(Number::Float(value)) if value == -2.0
+        ));
+        assert!(matches!(
+            apply_unary_math("TRUNC", Number::Unsigned(u128::MAX)),
+            Ok(Number::Unsigned(u128::MAX))
+        ));
+        assert!(crate::parse_scalar_expression("trunc(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("trunc(amount, 2)").is_err());
     }
 
 }
