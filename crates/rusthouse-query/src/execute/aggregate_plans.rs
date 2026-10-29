@@ -187,6 +187,118 @@ fn spill_unordered_groups<W: Write>(
     })
 }
 
+/// Parallel hash GROUP BY over Int32/UInt32 dimensions. Worker group counts
+/// share a global budget; excessive cardinality returns None so the serial
+/// path can adapt to external spill instead of failing on worker memory.
+fn parallel_u32_grouped_count(
+    part: &Path,
+    column: &str,
+    signed: bool,
+) -> Result<Option<GroupedCounts>, ExecutionError> {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    const MAX_PARTIAL_KEYS: usize = 100_000;
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get()).min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let names = [column.to_owned()];
+    let chunk_size = parts.len().div_ceil(workers);
+    let retained = AtomicUsize::new(0);
+    let chunks = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|paths| {
+            let names = &names;
+            let retained = &retained;
+            scope.spawn(move || -> Result<Option<Vec<(u32, u64)>>, ExecutionError> {
+                let mut keys = HashMap::<u32, usize>::new();
+                let mut counts = Vec::<(u32, u64)>::new();
+                for path in paths {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(path, names)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        let index = &batch[0];
+                        let mut visit = |key: u32| -> Result<bool, ExecutionError> {
+                            match keys.entry(key) {
+                                std::collections::hash_map::Entry::Occupied(entry) => {
+                                    let count = &mut counts[*entry.get()].1;
+                                    *count = count.checked_add(1).ok_or_else(|| {
+                                        ExecutionError::Invalid("parallel GROUP BY count overflow".into())
+                                    })?;
+                                }
+                                std::collections::hash_map::Entry::Vacant(entry) => {
+                                    if retained.fetch_update(
+                                        AtomicOrdering::AcqRel, AtomicOrdering::Acquire,
+                                        |current| current.checked_add(1)
+                                            .filter(|&total| total <= MAX_PARTIAL_KEYS),
+                                    ).is_err() {
+                                        return Ok(false);
+                                    }
+                                    entry.insert(counts.len());
+                                    counts.push((key, 1));
+                                }
+                            }
+                            Ok(true)
+                        };
+                        match (index, signed) {
+                            (NumericColumn::UInt32(values), false) => {
+                                for &value in values {
+                                    if !visit(value)? { return Ok(None); }
+                                }
+                            }
+                            (NumericColumn::Int32(values), true) => {
+                                for &value in values {
+                                    if !visit(value as u32)? { return Ok(None); }
+                                }
+                            }
+                            _ => return Err(ExecutionError::Invalid(
+                                "parallel 32-bit grouping encountered unexpected column".into(),
+                            )),
+                        }
+                    }
+                }
+                Ok(Some(counts))
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel grouped worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut keys = HashMap::<u32, usize>::new();
+    let mut counts = Vec::<(u32, u64)>::new();
+    for chunk in chunks {
+        let Some(chunk) = chunk? else { return Ok(None); };
+        for (key, count) in chunk {
+            match keys.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let total = &mut counts[*entry.get()].1;
+                    *total = total.checked_add(count)
+                        .ok_or_else(|| ExecutionError::Invalid(
+                            "parallel GROUP BY count overflow".into()
+                        ))?;
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    if counts.len() >= MAX_PARTIAL_KEYS {
+                        return Ok(None);
+                    }
+                    entry.insert(counts.len());
+                    counts.push((key, count));
+                }
+            }
+        }
+    }
+    let mut result = GroupedCounts::default();
+    for (key, count) in counts {
+        let value = if signed {
+            Number::Signed(i128::from(key as i32))
+        } else {
+            Number::Unsigned(u128::from(key))
+        };
+        result.rows.push((value, count));
+    }
+    Ok(Some(result))
+}
+
 pub(super) fn execute_grouped_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -357,6 +469,13 @@ pub(super) fn execute_grouped_part<W: Write>(
             groups.rows.push((value, counts[usize::from(key)]));
         }
         return groups.write(query, column, output);
+    }
+    if no_filters && matches!(narrow, Some("UInt32" | "Int32")) {
+        if let Some(result) = parallel_u32_grouped_count(
+            part, column, narrow == Some("Int32")
+        )? {
+            return result.write(query, column, output);
+        }
     }
     // Keep 32-bit group hash keys compact instead of widening each input
     // number into a NumberKey. Retain the first-seen group order.
