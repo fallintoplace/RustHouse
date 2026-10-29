@@ -45,6 +45,15 @@ class MassiveTsvGeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "batch_rows"):
             emit_rows(io.StringIO(), 1, batch_rows=0)
 
+    def test_rejects_booleans_and_fractional_controls_before_writing(self):
+        for kwargs in ({"rows": True}, {"rows": 2, "start": False},
+                       {"rows": 2, "batch_rows": 1.5},
+                       {"rows": 2, "header": "yes"}):
+            stream = io.StringIO()
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                emit_rows(stream, **kwargs)
+            self.assertEqual(stream.getvalue(), "")
+
     def test_publish_does_not_overwrite_without_force(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "huge.tsv"
