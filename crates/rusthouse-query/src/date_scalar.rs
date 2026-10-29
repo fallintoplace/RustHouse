@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "ADDHOURS"
             | "SUBTRACTWEEKS"
             | "ADDWEEKS"
             | "SUBTRACTDAYS"
@@ -26,6 +27,7 @@ pub(super) fn parse_after_open(
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
         "ADDWEEKS" => offset_seconds(parser, depth, 7 * DAY_SECONDS, false, false),
         "SUBTRACTWEEKS" => offset_seconds(parser, depth, 7 * DAY_SECONDS, true, false),
+        "ADDHOURS" => offset_seconds(parser, depth, 3_600, false, true),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -167,9 +169,6 @@ fn offset_seconds(
         return Ok(ConstantValue::Null);
     };
     let value = Temporal::parse(&source)?;
-    if needs_time && !value.has_time {
-        return Err(ParseError("this function requires a DateTime value".into()));
-    }
     let signed_amount = if subtract {
         -i128::from(amount)
     } else {
@@ -183,7 +182,6 @@ fn offset_seconds(
         value.has_time || needs_time,
     )?))
 }
-
 
 #[cfg(test)]
 mod utc_compat_tests {
@@ -249,6 +247,26 @@ mod utc_compat_tests {
             "SELECT subtractWeeks('2023-02-29', 1)",
             "SELECT subtractWeeks('1900-01-01', 1)",
             "SELECT subtractWeeks('2024-01-01', 1, 2)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn add_hours_handles_utc_and_bounds() {
+        for (sql, expected) in [
+            ("SELECT addHours('2024-02-29 23:30:00', 1)", "2024-03-01 00:30:00"),
+            ("SELECT addHours('2024-02-29', 1)", "2024-02-29 01:00:00"),
+            ("SELECT addHours('2024-02-29 23:30:00', -1)", "2024-02-29 22:30:00"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT addHours(NULL, 1)"), ConstantValue::Null);
+        for sql in [
+            "SELECT addHours()",
+            "SELECT addHours('2023-02-29', 1)",
+            "SELECT addHours('2299-12-31 23:59:59', 1)",
+            "SELECT addHours('2024-01-01', 1, 2)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
