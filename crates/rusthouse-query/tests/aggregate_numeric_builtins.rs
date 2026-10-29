@@ -45,3 +45,8 @@ fn nvl_matches_ifnull() {
 fn isnull_counts_missing_numeric_values() {
     assert_eq!(evaluate("isNull(x)"), "1");
 }
+
+#[test]
+fn isnotnull_counts_present_numeric_values() {
+    assert_eq!(evaluate("isNotNull(x)"), "3");
+}
