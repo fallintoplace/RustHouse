@@ -3,7 +3,7 @@ use super::ExecutionError;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -45,26 +45,34 @@ impl Drop for Scratch {
 // Temporary sorted runs are private to a query, so use compact canonical
 // unsigned varints instead of 16-byte fixed-size key/count pairs. This cuts
 // disk bandwidth substantially on high-cardinality 32-bit dimensions.
-fn read_varint(input: &mut impl Read, eof_allowed: bool) -> Result<Option<u64>, ExecutionError> {
+fn read_varint(input: &mut impl BufRead, eof_allowed: bool) -> Result<Option<u64>, ExecutionError> {
     let mut result = 0_u64;
-    for index in 0..10 {
-        let mut byte = [0_u8; 1];
-        let read = input.read(&mut byte)?;
-        if read == 0 {
+    let mut index = 0;
+    while index < 10 {
+        let block = input.fill_buf()?;
+        if block.is_empty() {
             if index == 0 && eof_allowed { return Ok(None); }
             return Err(invalid("truncated GROUP BY spill varint"));
         }
-        let value = byte[0] & 0x7f;
-        if index == 9 && value > 1 {
-            return Err(invalid("GROUP BY spill varint overflow"));
-        }
-        result |= u64::from(value) << (index * 7);
-        if byte[0] & 0x80 == 0 {
-            if index > 0 && value == 0 {
-                return Err(invalid("noncanonical GROUP BY spill varint"));
+        let mut used = 0;
+        while used < block.len() && index < 10 {
+            let byte = block[used];
+            used += 1;
+            let value = byte & 0x7f;
+            if index == 9 && value > 1 {
+                return Err(invalid("GROUP BY spill varint overflow"));
             }
-            return Ok(Some(result));
+            result |= u64::from(value) << (index * 7);
+            if byte & 0x80 == 0 {
+                if index > 0 && value == 0 {
+                    return Err(invalid("noncanonical GROUP BY spill varint"));
+                }
+                input.consume(used);
+                return Ok(Some(result));
+            }
+            index += 1;
         }
+        input.consume(used);
     }
     Err(invalid("GROUP BY spill varint too long"))
 }
@@ -333,6 +341,20 @@ mod tests {
         let mut total = 0_u64;
         groups.finish(|_, count| { total += count; Ok(()) }).unwrap();
         assert_eq!(total, RUN_KEYS as u64);
+    }
+
+
+    #[test]
+    fn buffered_varints_survive_single_byte_buffer_boundaries() {
+        let mut encoded = Vec::new();
+        for value in [0, 127, 128, 16_384, u64::MAX] {
+            write_varint(&mut encoded, value).unwrap();
+        }
+        let mut reader = BufReader::with_capacity(1, encoded.as_slice());
+        for expected in [0, 127, 128, 16_384, u64::MAX] {
+            assert_eq!(read_varint(&mut reader, false).unwrap(), Some(expected));
+        }
+        assert_eq!(read_varint(&mut reader, true).unwrap(), None);
     }
 
     #[test]
