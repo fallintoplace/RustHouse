@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "CUTURLPARAMETER"
+        "DOMAINWITHOUTWWW"
+            | "CUTURLPARAMETER"
             | "JSONEXTRACTBOOL"
             | "IPV4NUMTOSTRING"
             | "IPV4STRINGTONUM"
@@ -419,6 +420,34 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "DOMAINWITHOUTWWW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "domainWithoutWWW requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let authority = input
+                        .split_once("://")
+                        .map_or(input.as_str(), |(_, rest)| rest)
+                        .split(['/', '?', '#'])
+                        .next()
+                        .unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let host = if let Some(bracketed) = host_port.strip_prefix('[') {
+                        bracketed.split_once(']').map_or("", |(host, _)| host)
+                    } else {
+                        host_port.split(':').next().unwrap_or("")
+                    };
+                    ConstantValue::Text(
+                        host.strip_prefix("www.").unwrap_or(host).to_owned(),
+                    )
+                }
+                None => ConstantValue::Null,
             }
         }
         "PORT" => {
@@ -3867,5 +3896,29 @@ mod clickhouse_cut_url_parameter_tests {
             );
         }
         assert!(parse_select("SELECT cutURLParameter('x')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_domain_without_www_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn extracts_domain_without_at_most_one_www_prefix() {
+        for (sql, expected) in [
+            ("SELECT domainWithoutWWW('https://www.example.org/p')", "example.org"),
+            ("SELECT domainWithoutWWW('www.example.org:80/p')", "example.org"),
+            ("SELECT domainWithoutWWW('https://www.www.example.org')", "www.example.org"),
+            ("SELECT domainWithoutWWW('https://example.org')", "example.org"),
+            ("SELECT domainWithoutWWW('not-a-url')", "not-a-url"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT domainWithoutWWW('x', 'y')").is_err());
     }
 }
