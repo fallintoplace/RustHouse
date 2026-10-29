@@ -126,4 +126,7 @@ def assert_matches(output, expected_rows, unordered=False):
 def sqlite_query(path, sql):
     database_uri = Path(path).resolve().as_uri() + "?mode=ro"
     with closing(sqlite3.connect(database_uri, uri=True)) as connection:
-        return connection.execute(sql).fetchall()
+        rows = connection.execute(sql).fetchmany(100_001)
+        if len(rows) > 100_000:
+            raise ValueError("SQLite reference exceeds 100000 rows")
+        return rows

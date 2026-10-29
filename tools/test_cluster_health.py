@@ -10,6 +10,20 @@ class ClusterTests(unittest.TestCase):
         self.assertFalse(validate({"total": 1, "healthy": 0,
                                    "peers": [{"address": "127.0.0.1:8124", "healthy": False}]}))
 
+    def test_explicit_healthy_peer_threshold(self):
+        payload = {"total": 3, "healthy": 2, "peers": [
+            {"address": "a", "healthy": True},
+            {"address": "b", "healthy": True},
+            {"address": "c", "healthy": False},
+        ]}
+        self.assertFalse(validate(payload))
+        self.assertTrue(validate(payload, min_healthy=2))
+        self.assertFalse(validate(payload, min_healthy=3))
+        with self.assertRaisesRegex(ValueError, "min_healthy"):
+            validate(payload, min_healthy=4)
+        with self.assertRaisesRegex(ValueError, "min_healthy"):
+            validate(payload, min_healthy=True)
+
     def test_inconsistent_count_rejected(self):
         with self.assertRaises(ValueError):
             validate({"total": 1, "healthy": 1,
@@ -30,6 +44,19 @@ class ClusterTests(unittest.TestCase):
             self.assertTrue(healthy)
             self.assertEqual(info["total"], 0)
             opener.open.assert_called_once_with("http://127.0.0.1:8123/cluster/health", timeout=3)
+
+    def test_duplicate_peer_addresses_cannot_pass_health_check(self):
+        with self.assertRaisesRegex(ValueError, "duplicate peer"):
+            validate({"total": 2, "healthy": 2, "peers": [
+                {"address": "127.0.0.1:9000", "healthy": True},
+                {"address": "127.0.0.1:9000", "healthy": True},
+            ]})
+
+    def test_whitespace_peer_addresses_are_invalid(self):
+        for value in ("", "  "):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "invalid peer"):
+                validate({"total": 1, "healthy": 1,
+                          "peers": [{"address": value, "healthy": True}]})
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@ use super::ExecutionError;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -45,7 +45,28 @@ impl Drop for Scratch {
 // Temporary sorted runs are private to a query, so use compact canonical
 // unsigned varints instead of 16-byte fixed-size key/count pairs. This cuts
 // disk bandwidth substantially on high-cardinality 32-bit dimensions.
-fn read_varint(input: &mut impl Read, eof_allowed: bool) -> Result<Option<u64>, ExecutionError> {
+fn read_varint(input: &mut impl BufRead, eof_allowed: bool) -> Result<Option<u64>, ExecutionError> {
+    // In a buffered run, most varints fit entirely in the current slice.
+    // Avoid a virtual read call for every individual encoded byte.
+    let available = input.fill_buf()?;
+    if available.len() >= 10 {
+        let mut result = 0u64;
+        for (index, &byte) in available[..10].iter().enumerate() {
+            let value = byte & 0x7f;
+            if index == 9 && value > 1 {
+                return Err(invalid("GROUP BY spill varint overflow"));
+            }
+            result |= u64::from(value) << (index * 7);
+            if byte & 0x80 == 0 {
+                if index > 0 && value == 0 {
+                    return Err(invalid("noncanonical GROUP BY spill varint"));
+                }
+                input.consume(index + 1);
+                return Ok(Some(result));
+            }
+        }
+        return Err(invalid("GROUP BY spill varint too long"));
+    }
     let mut result = 0_u64;
     for index in 0..10 {
         let mut byte = [0_u8; 1];
@@ -108,7 +129,7 @@ fn merge_until(
     mut emit: impl FnMut(u64, u64) -> Result<bool, ExecutionError>,
 ) -> Result<(), ExecutionError> {
     let mut streams = files.iter().map(File::open)
-        .map(|reader| reader.map(BufReader::new))
+        .map(|reader| reader.map(|file| BufReader::with_capacity(64 * 1024, file)))
         .collect::<Result<Vec<_>, _>>()?;
     let mut heap = BinaryHeap::<Reverse<(u64, usize, u64)>>::new();
     for (index, stream) in streams.iter_mut().enumerate() {
@@ -234,7 +255,7 @@ impl ExternalGroupCount64 {
         if self.keys.is_empty() { return Ok(()); }
         sort_run_keys(&mut self.keys);
         let path = self.next_path()?;
-        let mut stream = BufWriter::new(OpenOptions::new()
+        let mut stream = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
             .write(true).create_new(true).open(&path)?);
         let mut previous = None;
         let mut count = 0u64;
@@ -265,7 +286,7 @@ impl ExternalGroupCount64 {
                 let mut reduced = Vec::new();
                 for chunk in previous.chunks(FAN_IN) {
                     let path = self.next_path()?;
-                    let mut writer = BufWriter::new(OpenOptions::new()
+                    let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
                         .create_new(true).write(true).open(&path)?);
                     merge(chunk, |key, count| write_group(&mut writer, key, count))?;
                     writer.flush()?;
@@ -287,6 +308,17 @@ impl ExternalGroupCount64 {
         self.compact_runs()?;
         let signed = self.signed;
         let descending = self.descending;
+        // Most GROUP BY spills finish with one sorted run. Skip heap setup
+        // and stream the already-reduced key/count pairs directly.
+        if let [path] = self.runs.as_slice() {
+            let mut reader = BufReader::new(File::open(path)?);
+            while let Some((encoded, count)) = read_group(&mut reader)? {
+                let key = if descending { !encoded } else { encoded };
+                let key = if signed { key ^ (1 << 63) } else { key };
+                if !emit(key, count)? { break; }
+            }
+            return Ok(());
+        }
         merge_until(&self.runs, |encoded, count| {
             let key = if descending { !encoded } else { encoded };
             let key = if signed { key ^ (1 << 63) } else { key };
@@ -310,6 +342,20 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch = Scratch::create().unwrap();
         assert_eq!(fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o077, 0);
+    }
+
+    #[test]
+    fn buffered_varints_round_trip_across_reader_boundaries() {
+        let mut encoded = Vec::new();
+        for value in [0, 1, 127, 128, 16_384, u64::MAX, 5] {
+            write_varint(&mut encoded, value).unwrap();
+        }
+        let reader = encoded.as_slice();
+        let mut buffered = BufReader::with_capacity(11, reader);
+        for value in [0, 1, 127, 128, 16_384, u64::MAX, 5] {
+            assert_eq!(read_varint(&mut buffered, true).unwrap(), Some(value));
+        }
+        assert_eq!(read_varint(&mut buffered, true).unwrap(), None);
     }
 
     #[test]
@@ -364,6 +410,24 @@ mod tests {
         let mut total = 0_u64;
         groups.finish(|_, count| { total += count; Ok(()) }).unwrap();
         assert_eq!(total, RUN_KEYS as u64);
+    }
+
+
+    #[test]
+    fn single_run_fast_path_preserves_sort_and_early_stop() {
+        let mut group = ExternalGroupCount64::new(true, true);
+        for value in (0..RUN_KEYS).rev() {
+            group.insert((value % 499) as u64).unwrap();
+        }
+        assert_eq!(group.runs.len(), 1);
+        let mut output = Vec::new();
+        group.finish_until(|key, count| {
+            output.push((key, count));
+            Ok(output.len() < 17)
+        }).unwrap();
+        assert_eq!(output.len(), 17);
+        assert!(output.windows(2).all(|w| w[0].0 > w[1].0));
+        assert_eq!(output[0].0, 498);
     }
 
     #[test]

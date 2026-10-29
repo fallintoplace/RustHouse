@@ -117,9 +117,26 @@ fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) 
 fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::Result<()> {
     let (open, close) = cell_tags(header);
     for field in line.split('\t') {
-        output.write_all(open)?;
-        write_cell(output, field)?;
-        output.write_all(close)?;
+        // Most tabular cells are short ASCII without HTML metacharacters.
+        // Emit the whole cell in one write instead of three separate writes.
+        if field.len() <= 256
+            && field.bytes().all(|byte| {
+                byte.is_ascii()
+                    && !byte.is_ascii_control()
+                    && !matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
+            })
+        {
+            let mut framed = [0u8; 265];
+            framed[..open.len()].copy_from_slice(open);
+            let body_end = open.len() + field.len();
+            framed[open.len()..body_end].copy_from_slice(field.as_bytes());
+            framed[body_end..body_end + close.len()].copy_from_slice(close);
+            output.write_all(&framed[..body_end + close.len()])?;
+        } else {
+            output.write_all(open)?;
+            write_cell(output, field)?;
+            output.write_all(close)?;
+        }
     }
     Ok(())
 }
@@ -206,6 +223,42 @@ mod tests {
         assert_eq!(writer.line.capacity(), 0);
         let html = writer.finish().unwrap();
         assert!(html.windows(text.len()).any(|span| span == text.as_bytes()));
+    }
+
+    #[test]
+    fn short_ascii_html_cells_use_one_write_each() {
+        struct Counting {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Counting {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let mut output = Counting { writes: 0, bytes: Vec::new() };
+        write_plain_cells(&mut output, "first name\t42\t", false).unwrap();
+        assert_eq!(output.writes, 3);
+        assert_eq!(output.bytes, b"<td>first name</td><td>42</td><td></td>");
+
+        let mut header = Counting { writes: 0, bytes: Vec::new() };
+        write_plain_cells(&mut header, &"x".repeat(256), true).unwrap();
+        assert_eq!(header.writes, 1);
+        assert!(header.bytes.starts_with(b"<th>"));
+        assert!(header.bytes.ends_with(b"</th>"));
+    }
+
+    #[test]
+    fn special_html_cells_keep_escaping_and_unicode() {
+        let mut output = Vec::new();
+        write_plain_cells(&mut output, "Tom & Sue\t<svg>\tcafé\tline\rbreak", false).unwrap();
+        assert_eq!(
+            output,
+            "<td>Tom &amp; Sue</td><td>&lt;svg&gt;</td><td>café</td><td>line&#13;break</td>".as_bytes()
+        );
     }
 
     #[test]
