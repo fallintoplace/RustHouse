@@ -120,3 +120,8 @@ fn greater_or_equals_includes_equal_rows() {
 fn functional_and_preserves_sql_unknown() {
     assert_eq!(evaluate("and(x, y)"), "2");
 }
+
+#[test]
+fn functional_or_reduces_unknown_when_rhs_is_true() {
+    assert_eq!(evaluate("or(x, y)"), "3");
+}
