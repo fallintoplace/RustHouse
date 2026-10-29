@@ -363,7 +363,7 @@ impl Parser {
 
     fn word(&mut self) -> Result<String, ParseError> {
         match self.tokens.get(self.index) {
-            Some(Token::Word(value)) => {
+            Some(Token::Word(value) | Token::QuotedWord(value)) => {
                 self.index += 1;
                 Ok(value.clone())
             }
