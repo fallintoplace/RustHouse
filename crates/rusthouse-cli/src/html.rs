@@ -119,7 +119,7 @@ fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::
     Ok(())
 }
 
-fn html_entity(ch: char) -> Option<&'static [u8]> {
+fn html_escape_entity(ch: char) -> Option<&'static [u8]> {
     match ch {
         '&' => Some(b"&amp;"),
         '<' => Some(b"&lt;"),
@@ -141,7 +141,7 @@ fn write_cell<W: Write>(output: &mut W, field: &str) -> io::Result<()> {
             start = index + ch.len_utf8();
             continue;
         }
-        if let Some(escape) = html_entity(ch) {
+        if let Some(escape) = html_escape_entity(ch) {
             if start < index {
                 output.write_all(&field.as_bytes()[start..index])?;
             }
