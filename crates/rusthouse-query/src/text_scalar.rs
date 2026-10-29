@@ -1842,7 +1842,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 (Some(input), Some(needle)) => {
                     let index = input
                         .find(needle.as_str())
-                        .map(|byte_index| input[..byte_index].chars().count() + 1)
+                        .map(|byte_index| { let prefix = &input[..byte_index]; if prefix.is_ascii() { byte_index + 1 } else { prefix.chars().count() + 1 } })
                         .unwrap_or(0);
                     ConstantValue::Integer(
                         i64::try_from(index)
@@ -3282,6 +3282,29 @@ mod ch_perf_ascii_lengthutf8_tests {
             ("SELECT lengthUTF8('Hello')", ConstantValue::Integer(5)),
             ("SELECT lengthUTF8('aé🙂')", ConstantValue::Integer(3)),
             ("SELECT lengthUTF8(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_perf_ascii_positionutf8_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn ascii_and_unicode_keep_the_same_results() {
+        for (sql, expected) in [
+            ("SELECT positionUTF8('abcde', 'de')", ConstantValue::Integer(4)),
+            ("SELECT positionUTF8('éabc', 'bc')", ConstantValue::Integer(3)),
+            ("SELECT positionUTF8('abc', 'x')", ConstantValue::Integer(0)),
+            ("SELECT positionUTF8(NULL, 'x')", ConstantValue::Null),
         ] {
             assert_eq!(value(sql), expected, "{sql}");
         }
