@@ -125,3 +125,8 @@ fn functional_and_preserves_sql_unknown() {
 fn functional_or_reduces_unknown_when_rhs_is_true() {
     assert_eq!(evaluate("or(x, y)"), "3");
 }
+
+#[test]
+fn functional_logical_not_propagates_null() {
+    assert_eq!(evaluate("logicalNot(x)"), "1");
+}

@@ -250,6 +250,7 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
             let right = Box::new(args.remove(0));
             Ok(ScalarExpr::Or(left, right))
         }
+        ("LOGICALNOT", 1) => Ok(ScalarExpr::Not(Box::new(args.remove(0)))),
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }
