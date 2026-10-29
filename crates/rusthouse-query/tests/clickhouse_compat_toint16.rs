@@ -9,13 +9,21 @@ fn toint16_preserves_clickhouse_integer_narrowing() {
         ("SELECT toInt16(-32769)", 32767),
         ("SELECT 2 + toInt16(65536)", 2),
     ] {
-        assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        assert_eq!(
+            parse_select(sql).unwrap().projection,
+            Projection::Literal(expected),
+            "{sql}"
+        );
     }
 }
 
 #[test]
 fn toint16_rejects_bad_arity_and_non_integer_inputs() {
-    for sql in ["SELECT toInt16()", "SELECT toInt16(1, 2)", "SELECT toInt16('bad')"] {
+    for sql in [
+        "SELECT toInt16()",
+        "SELECT toInt16(1, 2)",
+        "SELECT toInt16('bad')",
+    ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
