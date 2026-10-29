@@ -42,9 +42,9 @@ def load_queries(directory):
 def query_fingerprint(queries):
     digest = hashlib.sha256()
     for number, sql in sorted(queries):
-        digest.update(f"q{number:02d}\\0".encode("ascii"))
+        digest.update(f"q{number:02d}\0".encode("ascii"))
         digest.update(sql.encode("utf-8"))
-        digest.update(b"\\0")
+        digest.update(b"\0")
     return digest.hexdigest()
 
 
