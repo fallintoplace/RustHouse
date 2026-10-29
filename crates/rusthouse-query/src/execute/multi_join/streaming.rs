@@ -3,8 +3,40 @@
 
 use super::*;
 use rusthouse_storage::TypedQueryReader;
+use std::collections::hash_map::Entry;
 
 use super::super::join::read_projected_build_rows;
+
+// Conservatively charge hash buckets, key vectors and owned payloads as
+// well as the already-accounted retained dimension rows.
+fn hash_key_bytes(key: &[typed::Key]) -> Result<usize, ExecutionError> {
+    let base = std::mem::size_of::<Vec<typed::Key>>()
+        .checked_add(96)
+        .and_then(|bytes| {
+            key.len()
+                .checked_mul(std::mem::size_of::<typed::Key>())
+                .and_then(|slots| bytes.checked_add(slots))
+        })
+        .ok_or_else(|| invalid("JOIN hash key memory overflow"))?;
+    key.iter().try_fold(base, |total, part| {
+        let bytes = match part {
+            typed::Key::Text(value) => value.len(),
+            typed::Key::Uuid(value) => value.len(),
+            _ => 0,
+        };
+        total
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("JOIN hash key memory overflow"))
+    })
+}
+
+fn charge_hash_build(retained: &mut usize, bytes: usize) -> Result<(), ExecutionError> {
+    *retained = retained
+        .checked_add(bytes)
+        .filter(|&total| total <= MAX_CHAIN_BYTES)
+        .ok_or_else(|| invalid("JOIN hash-build memory budget exceeded"))?;
+    Ok(())
+}
 
 struct Stage {
     rows: Vec<Vec<typed::Cell>>,
@@ -182,12 +214,27 @@ pub(super) fn execute<W: Write>(
         if retained > MAX_CHAIN_BYTES {
             return Err(invalid("JOIN exceeds its retained-row memory budget"));
         }
-        let mut hash = HashMap::with_capacity(right_rows.len());
+        // A skewed build can contain far fewer distinct keys than input
+        // rows. Reserve a small table, then charge each retained key.
+        let mut hash = HashMap::with_capacity(right_rows.len().min(4096));
         for (index, row) in right_rows.iter().enumerate() {
             if let Some(key) = row_key(row, &right_keys) {
-                hash.entry(key)
-                    .and_modify(|bucket: &mut Bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
+                match hash.entry(key) {
+                    Entry::Vacant(entry) => {
+                        charge_hash_build(&mut retained, hash_key_bytes(entry.key())?)?;
+                        entry.insert(Bucket::One(index));
+                    }
+                    Entry::Occupied(mut entry) if !step.any => {
+                        // Count a duplicate index and conservative Vec growth
+                        // overhead. ANY only needs its first matching index.
+                        charge_hash_build(
+                            &mut retained,
+                            std::mem::size_of::<usize>() * 2,
+                        )?;
+                        entry.get_mut().push(index);
+                    }
+                    Entry::Occupied(_) => {}
+                }
             }
         }
         stages.push(Stage {
@@ -295,5 +342,28 @@ mod stream_output_limit_tests {
             visit(0, &mut row, &stages, &spec, &mut state, &mut output).unwrap();
         }
         assert_eq!(state.emitted, 2);
+    }
+}
+
+#[cfg(test)]
+mod streaming_hash_budget_tests {
+    use super::*;
+
+    #[test]
+    fn large_string_keys_are_charged_in_addition_to_dimension_rows() {
+        let key = [typed::Key::Text(vec![b'x'; 2048])];
+        assert!(hash_key_bytes(&key).unwrap() > 2048);
+        let mut used = MAX_CHAIN_BYTES - 100;
+        assert!(charge_hash_build(&mut used, hash_key_bytes(&key).unwrap()).is_err());
+        assert_eq!(used, MAX_CHAIN_BYTES - 100);
+    }
+
+    #[test]
+    fn hash_accounting_rejects_overflow_before_allocation() {
+        let mut used = 0usize;
+        assert!(charge_hash_build(&mut used, usize::MAX).is_err());
+        assert_eq!(used, 0);
+        charge_hash_build(&mut used, 128).unwrap();
+        assert_eq!(used, 128);
     }
 }
