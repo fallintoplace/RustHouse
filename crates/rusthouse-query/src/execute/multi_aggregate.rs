@@ -190,21 +190,22 @@ fn numeric_argument_at(
 
 /// SQL expression comparisons must compare numeric values, not the
 /// internal Number enum variant order used by mixed-type sort keys.
-fn compare_expression_numbers(left: Number, right: Number) -> std::cmp::Ordering {
+fn compare_expression_numbers(left: Number, right: Number) -> Option<std::cmp::Ordering> {
     match (left, right) {
-        (Number::Unsigned(left), Number::Signed(right)) => {
+        (Number::Unsigned(left), Number::Signed(right)) => Some(
             match u128::try_from(right) {
                 Ok(right) => left.cmp(&right),
                 Err(_) => std::cmp::Ordering::Greater,
             }
-        }
-        (Number::Signed(left), Number::Unsigned(right)) => {
+        ),
+        (Number::Signed(left), Number::Unsigned(right)) => Some(
             match u128::try_from(left) {
                 Ok(left) => left.cmp(&right),
                 Err(_) => std::cmp::Ordering::Less,
             }
-        }
-        _ => super::compare_numbers(left, right),
+        ),
+        (Number::Float(left), Number::Float(right)) => left.partial_cmp(&right),
+        _ => Some(super::compare_numbers(left, right)),
     }
 }
 
@@ -220,12 +221,12 @@ fn eval_number(
             let Some(right) = eval_number(right, batch, row)? else {return Ok(None)};
             let order = compare_expression_numbers(left, right);
             let matched = match operator {
-                crate::Operator::Eq => order.is_eq(),
-                crate::Operator::Ne => order.is_ne(),
-                crate::Operator::Lt => order.is_lt(),
-                crate::Operator::Le => order.is_le(),
-                crate::Operator::Gt => order.is_gt(),
-                crate::Operator::Ge => order.is_ge(),
+                crate::Operator::Eq => order.is_some_and(|order| order.is_eq()),
+                crate::Operator::Ne => order.is_none_or(|order| order.is_ne()),
+                crate::Operator::Lt => order.is_some_and(|order| order.is_lt()),
+                crate::Operator::Le => order.is_some_and(|order| order.is_le()),
+                crate::Operator::Gt => order.is_some_and(|order| order.is_gt()),
+                crate::Operator::Ge => order.is_some_and(|order| order.is_ge()),
                 _ => return Err(ExecutionError::Invalid(
                     "unsupported numeric comparison operator".into())),
             };
@@ -940,9 +941,43 @@ mod mixed_integer_expression_comparison_tests {
         }
         assert_eq!(compare_expression_numbers(
             Number::Unsigned(u128::MAX), Number::Signed(-1)
-        ), std::cmp::Ordering::Greater);
+        ), Some(std::cmp::Ordering::Greater));
         assert_eq!(compare_expression_numbers(
             Number::Signed(i128::MIN), Number::Unsigned(0)
-        ), std::cmp::Ordering::Less);
+        ), Some(std::cmp::Ordering::Less));
+    }
+}
+
+#[cfg(test)]
+mod ieee_comparison_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn compares_float_zero_normally_and_nan_as_unordered() {
+        assert_eq!(compare_expression_numbers(
+            Number::Float(-0.0), Number::Float(0.0)),
+            Some(std::cmp::Ordering::Equal));
+        assert_eq!(compare_expression_numbers(
+            Number::Float(f64::NAN), Number::Float(f64::NAN)), None);
+        let batch = [
+            TypedColumn::Numeric(NumericColumn::Float64(vec![-0.0, f64::NAN])),
+            TypedColumn::Numeric(NumericColumn::Float64(vec![0.0, f64::NAN])),
+        ];
+        for (operator, row, expected) in [
+            (crate::Operator::Eq, 0, 1),
+            (crate::Operator::Ne, 0, 0),
+            (crate::Operator::Eq, 1, 0),
+            (crate::Operator::Ne, 1, 1),
+            (crate::Operator::Lt, 1, 0),
+            (crate::Operator::Ge, 1, 0),
+        ] {
+            let expression = BoundExpr::Compare(
+                Box::new(BoundExpr::Column(0)), operator,
+                Box::new(BoundExpr::Column(1)),
+            );
+            assert!(matches!(eval_number(&expression, &batch, row).unwrap(),
+                Some(Number::Unsigned(actual)) if actual == expected));
+        }
     }
 }
