@@ -91,5 +91,15 @@ class SqliteOracleTests(unittest.TestCase):
             cursor.fetchall.assert_not_called()
 
 
+    def test_large_unordered_integer_rows_use_exact_multiplicity(self):
+        rows = [(index % 23, index % 5) for index in range(3000)]
+        actual = "".join(f"{a}\t{b}\n" for a, b in reversed(rows)).encode()
+        assert_matches(actual, rows, unordered=True)
+        bad = actual.replace(b"0\t0\n", b"999\t0\n", 1)
+        with self.assertRaisesRegex(ValueError, "multiset"):
+            assert_matches(bad, rows, unordered=True)
+        with self.assertRaisesRegex(ValueError, "multiset"):
+            assert_matches(b"01\n", [(1,)], unordered=True)
+
 if __name__ == "__main__":
     unittest.main()
