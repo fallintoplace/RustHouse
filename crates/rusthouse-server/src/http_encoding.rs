@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_ENCODED_QUERY_BYTES: usize = MAX_QUERY_BYTES * 3;
+
 pub(super) fn hex_digit(value: u8) -> Option<u8> {
     match value {
         b'0'..=b'9' => Some(value - b'0'),
@@ -20,7 +22,7 @@ fn decode_percent_triplet(bytes: &[u8], index: usize) -> Result<u8, &'static str
 
 pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
     let bytes = value.as_bytes();
-    if bytes.len() > MAX_QUERY_BYTES * 3 {
+    if bytes.len() > MAX_ENCODED_QUERY_BYTES {
         return Err("URL-encoded SQL statement exceeds 12288 bytes");
     }
     if !bytes.contains(&b'%') {
