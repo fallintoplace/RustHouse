@@ -47,6 +47,11 @@ def progression_reference(start, rows, step=1):
 
 
 def parity_progression(start, rows, step, parity):
+    # This helper is also public to benchmark callers that do not go through
+    # make_oracles(), so reject impossible progressions before emitting sums.
+    progression_reference(start, rows, step)
+    if type(parity) is not int or parity not in (0, 1):
+        raise ValueError("parity must be 0 or 1")
     if step % 2 == 0:
         count = rows if start % 2 == parity else 0
         first = start
