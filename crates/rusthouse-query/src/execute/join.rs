@@ -34,6 +34,12 @@ fn invalid(message: impl Into<String>) -> ExecutionError {
     ExecutionError::Invalid(message.into())
 }
 
+// The byte budget is enforced while reading. A large row estimate must not
+// reserve the entire build input before inspecting its actual row widths.
+fn initial_join_capacity(expected_rows: u64) -> usize {
+    expected_rows.min(4096) as usize
+}
+
 pub(super) fn read_rows(
     path: &Path,
     names: &[String],
@@ -53,7 +59,7 @@ pub(super) fn read_rows(
     // Byte-budget validation, not the uncompressed row-count estimate,
     // should determine retained capacity. Avoid eagerly allocating hundreds
     // of thousands of row slots for wide tables that will fail the byte cap.
-    let mut rows = Vec::with_capacity(expected_rows.min(4096) as usize);
+    let mut rows = Vec::with_capacity(initial_join_capacity(expected_rows));
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
@@ -146,7 +152,7 @@ fn read_projected_build_rows(
     }
     let projected = indices.iter().map(|&i| names[i].clone()).collect::<Vec<_>>();
     let mut reader = TypedQueryReader::open(path, &projected)?;
-    let mut rows = Vec::with_capacity(expected_rows as usize);
+    let mut rows = Vec::with_capacity(initial_join_capacity(expected_rows));
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
@@ -1565,5 +1571,18 @@ mod projected_count_build_tests {
         assert_eq!(count_build_columns(&[0], Some((7, false)), 3, 5), vec![0, 4]);
         assert_eq!(count_build_columns(&[], None, 0, 4), vec![0]);
         assert!(count_build_columns(&[], None, 0, 0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod join_capacity_regressions {
+    use super::initial_join_capacity;
+
+    #[test]
+    fn large_build_inputs_do_not_trigger_eager_full_capacity_reservation() {
+        assert_eq!(initial_join_capacity(0), 0);
+        assert_eq!(initial_join_capacity(42), 42);
+        assert_eq!(initial_join_capacity(262_144), 4096);
+        assert_eq!(initial_join_capacity(u64::MAX), 4096);
     }
 }
