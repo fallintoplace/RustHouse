@@ -23,7 +23,7 @@ fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
     }
 }
 
-fn is_empty_pair(open: u8, close: u8) -> bool {
+fn is_empty_json_container_pair(open: u8, close: u8) -> bool {
     matches!((open, close), (b'{', b'}') | (b'[', b']'))
 }
 
@@ -51,7 +51,7 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
                 depth += 1;
                 let empty = row
                     .get(index + 1)
-                    .is_some_and(|&next| is_empty_pair(byte, next));
+                    .is_some_and(|&next| is_empty_json_container_pair(byte, next));
                 if !empty {
                     write_indent(output, depth)?;
                 }
@@ -60,7 +60,7 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
             b'}' | b']' => {
                 output.write_all(&row[start..index])?;
                 depth = depth.saturating_sub(1);
-                let empty = index > 0 && is_empty_pair(row[index - 1], byte);
+                let empty = index > 0 && is_empty_json_container_pair(row[index - 1], byte);
                 if !empty {
                     write_indent(output, depth)?;
                 }
