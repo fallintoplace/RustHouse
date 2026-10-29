@@ -198,6 +198,13 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                     .iter()
                     .any(|byte| byte.eq_ignore_ascii_case(&bytes[0]));
             }
+            if case_insensitive
+                && bytes.len() == 1
+                && bytes[0].is_ascii()
+                && value.iter().any(|byte| byte.eq_ignore_ascii_case(&bytes[0]))
+            {
+                return true;
+            }
             if case_insensitive {
                 if let Some(matches) =
                     unicode_folded_match(value, bytes, |input, needle| input.contains(needle))
@@ -406,6 +413,21 @@ pub(super) fn like_matches_wildcards(
         pat += 1;
     }
     pat == pattern.len()
+}
+
+#[cfg(test)]
+mod ascii_contains_unicode_tests {
+    use super::*;
+
+    #[test]
+    fn mixed_unicode_ascii_substrings_match_without_changing_folds() {
+        let ascii = compile_like("%x%").unwrap();
+        assert!(like_matches("préfiX café".as_bytes(), &ascii, true));
+        assert!(!like_matches("préfiX café".as_bytes(), &ascii, false));
+        assert!(!like_matches("café".as_bytes(), &ascii, true));
+        let expanding = compile_like("%i%").unwrap();
+        assert!(like_matches("İstanbul".as_bytes(), &expanding, true));
+    }
 }
 
 #[cfg(test)]
