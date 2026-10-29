@@ -28,7 +28,7 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
     validate_stream_pairs(path, metadata.rows, &data_files, &mark_files)?;
 
     let mut report = PartVerification {
-        streams: 0,
+        streams: data_files.len(),
         marks: 0,
         blocks: 0,
         decompressed_bytes: 0,
@@ -53,7 +53,6 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
             .marks
             .checked_add(marks.marks.len())
             .ok_or_else(|| invalid(&data, "mark count overflows"))?;
-        report.streams += 1;
     }
     Ok(report)
 }
