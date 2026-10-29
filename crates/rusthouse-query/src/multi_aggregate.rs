@@ -46,6 +46,12 @@ fn render_expr(expr: &ScalarExpr) -> String {
             if *maximum { "greatest" } else { "least" },
             values.iter().map(render_expr).collect::<Vec<_>>().join(", ")),
         ScalarExpr::Abs(inner) => format!("abs({})", render_expr(inner)),
+        ScalarExpr::Clamp(value, lower, upper) => format!(
+            "clamp({}, {}, {})",
+            render_expr(value),
+            render_expr(lower),
+            render_expr(upper),
+        ),
         ScalarExpr::NullIf(left, right) =>
             format!("nullIf({}, {})", render_expr(left), render_expr(right)),
         ScalarExpr::Coalesce(values) =>

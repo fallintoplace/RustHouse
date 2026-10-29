@@ -20,6 +20,7 @@ pub enum ScalarExpr {
     NullIf(Box<ScalarExpr>, Box<ScalarExpr>),
     Abs(Box<ScalarExpr>),
     Extremum(Vec<ScalarExpr>, bool),
+    Clamp(Box<ScalarExpr>, Box<ScalarExpr>, Box<ScalarExpr>),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -58,7 +59,7 @@ impl ScalarExpr {
                     candidate.collect_referenced_columns(out, seen);
                 }
             }
-            Self::Between(value, low, high, _) => {
+            Self::Between(value, low, high, _) | Self::Clamp(value, low, high) => {
                 value.collect_referenced_columns(out, seen);
                 low.collect_referenced_columns(out, seen);
                 high.collect_referenced_columns(out, seen);

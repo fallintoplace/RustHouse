@@ -150,3 +150,8 @@ fn nullifzero_skips_zero_and_missing_rows() {
 fn zeroifnull_replaces_null_numeric_values_with_zero() {
     assert_eq!(evaluate("zeroIfNull(x)"), "3");
 }
+
+#[test]
+fn clamp_limits_nullable_numeric_inputs() {
+    assert_eq!(evaluate("clamp(x, -1, 3)"), "2");
+}

@@ -99,6 +99,7 @@ enum BoundExpr {
     NullIf(Box<Self>, Box<Self>),
     Abs(Box<Self>),
     Extremum(Vec<Self>, bool),
+    Clamp(Box<Self>, Box<Self>, Box<Self>),
     // Fast path for the affine expression family in ClickBench Q30.
     AffineColumn {
         index: usize,
@@ -140,6 +141,11 @@ impl BoundExpr {
                 values.iter().map(|value| Self::bind(value, indices))
                     .collect::<Result<Vec<_>, _>>()?,
                 *maximum,
+            ),
+            ScalarExpr::Clamp(value, lower, upper) => Self::Clamp(
+                Box::new(Self::bind(value, indices)?),
+                Box::new(Self::bind(lower, indices)?),
+                Box::new(Self::bind(upper, indices)?),
             ),
             ScalarExpr::Abs(inner) =>
                 Self::Abs(Box::new(Self::bind(inner, indices)?)),
@@ -334,6 +340,32 @@ fn eval_number(
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::Null => Ok(None),
+        BoundExpr::Clamp(value, lower, upper) => {
+            let Some(value) = eval_number(value, batch, row)? else {
+                return Ok(None);
+            };
+            let Some(lower) = eval_number(lower, batch, row)? else {
+                return Ok(None);
+            };
+            let Some(upper) = eval_number(upper, batch, row)? else {
+                return Ok(None);
+            };
+            if super::compare_numbers(lower, upper).is_gt() {
+                return Err(ExecutionError::Invalid(
+                    "CLAMP lower bound exceeds upper bound".into(),
+                ));
+            }
+            let bounded = if super::compare_numbers(value, lower).is_lt() {
+                lower
+            } else {
+                value
+            };
+            Ok(Some(if super::compare_numbers(bounded, upper).is_gt() {
+                upper
+            } else {
+                bounded
+            }))
+        },
         BoundExpr::Extremum(values, maximum) => {
             let mut best: Option<Number> = None;
             for value in values {

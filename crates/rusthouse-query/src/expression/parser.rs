@@ -261,6 +261,12 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
             args.remove(0),
             ScalarExpr::Integer(0),
         ])),
+        ("CLAMP", 3) => {
+            let value = Box::new(args.remove(0));
+            let lower = Box::new(args.remove(0));
+            let upper = Box::new(args.remove(0));
+            Ok(ScalarExpr::Clamp(value, lower, upper))
+        }
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }
