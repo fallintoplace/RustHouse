@@ -32,6 +32,16 @@ class SkewedFixtureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "groups"):
             emit(io.StringIO(), 1, groups=0)
 
+    def test_concurrent_create_cannot_clobber_existing_output(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "events.tsv"
+            with patch("bench.scale.skewed_fixture.os.link", side_effect=FileExistsError):
+                with self.assertRaises(FileExistsError):
+                    generate(path, 10)
+            self.assertFalse(path.exists())
+            self.assertEqual(list(Path(root).iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()
