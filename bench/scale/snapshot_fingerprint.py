@@ -10,6 +10,10 @@ import stat
 from pathlib import Path
 
 
+def file_identity(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
 def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
@@ -44,8 +48,7 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024):
                 if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
                     raise ValueError(f"snapshot file changed during hashing: {path}")
             after = path.lstat()
-            if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            if file_identity(before) != file_identity(after):
                 raise ValueError(f"snapshot file changed while hashing: {path}")
             rel = path.relative_to(root).as_posix()
             aggregate.update(rel.encode("utf-8") + b"\0"
