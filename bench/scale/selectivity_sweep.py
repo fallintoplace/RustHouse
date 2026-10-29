@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 def thresholds(rows):
-    if not 1 <= rows <= (1 << 64) - 1:
+    if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive UInt64")
     return sorted(set((0, rows // 4, rows // 2, rows * 3 // 4, rows)))
 
