@@ -70,10 +70,10 @@ class IngestBenchmarkTests(unittest.TestCase):
                 runner.verify(Path("binary"), Path("db"), 3, 2, -1.0, 2.0, 1.0, 5)
 
     def test_ingest_part_inventory_requires_doctor_verification(self):
-        healthy = mock.Mock(returncode=0, stdout=b"OK measurements: 5 rows, 2 parts\n")
+        healthy = mock.Mock(returncode=0, stdout=b"OK measurements: 5 rows, 2 active parts\n")
         with mock.patch.object(runner.subprocess, "run", return_value=healthy):
             self.assertEqual(runner.verified_part_count("rusthouse", ".", 5, 1), 2)
-        corrupt = mock.Mock(returncode=0, stdout=b"OK measurements: 4 rows, 2 parts\n")
+        corrupt = mock.Mock(returncode=0, stdout=b"OK measurements: 4 rows, 2 active parts\n")
         with mock.patch.object(runner.subprocess, "run", return_value=corrupt):
             with self.assertRaisesRegex(RuntimeError, "verification"):
                 runner.verified_part_count("rusthouse", ".", 5, 1)
