@@ -195,5 +195,16 @@ class ClickBenchRunnerTests(unittest.TestCase):
             self.assertEqual(report["coverage"]["executed_queries"], 1)
 
 
+    def test_oversized_reference_does_not_run_query(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "q01.tsv").write_bytes(b"123456")
+            calls = []
+            with mock.patch("run.MAX_REFERENCE_BYTES", 4):
+                results = run([(1, "SELECT 1")], lambda sql: calls.append(sql), 1, 0,
+                              references=root)
+            self.assertEqual(results[0]["status"], "reference_too_large")
+            self.assertEqual(calls, [])
+
 if __name__ == "__main__":
     unittest.main()
