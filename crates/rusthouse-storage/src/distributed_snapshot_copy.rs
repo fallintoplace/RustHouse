@@ -107,16 +107,18 @@ pub fn copy_frozen_snapshot(
                 if report.bytes > max_bytes {
                     return Err(PartError::InvalidScan("copy exceeds byte cap".into()));
                 }
-                let copied_bytes = fs::copy(&source_file, &destination_file)
-                    .map_err(|error| io_error(&destination_file, error))?;
+                let copied_bytes = crate::distributed_atomic_copy::copy_immutable_file(
+                    &source_file,
+                    &destination_file,
+                    bytes,
+                )
+                .map_err(|error| io_error(&destination_file, error))?;
                 if copied_bytes != bytes {
                     return Err(PartError::InvalidScan(
                         "source size changed during snapshot copy".into(),
                     ));
                 }
-                File::open(&destination_file)
-                    .and_then(|file| file.sync_all())
-                    .map_err(|error| io_error(&destination_file, error))?;
+                // The immutable copy helper already syncs each published file.
                 report.files += 1;
             }
             verify_part_file_hashes(&copy)?;
@@ -261,6 +263,38 @@ mod snapshot_preflight_tests {
             preview
         );
         assert!(preview_frozen_snapshot(&source, 0, 32, 1_000_000).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod immutable_snapshot_copy_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn copy_does_not_leave_replica_staging_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-staging-clean-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir_all(&source).unwrap();
+        write_wide_part(
+            &source.join("all_0_0_0"),
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[vec![Some("8".into())]],
+        )
+        .unwrap();
+        copy_frozen_snapshot(&source, &target, 1, 1_000_000).unwrap();
+        for entry in fs::read_dir(target.join("all_0_0_0")).unwrap() {
+            let name = entry.unwrap().file_name();
+            assert!(!name.to_string_lossy().starts_with(".rusthouse-replica-"));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }
