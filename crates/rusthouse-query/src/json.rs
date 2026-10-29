@@ -63,7 +63,7 @@ impl<'a> Parser<'a> {
         self.bytes().get(self.offset).copied()
     }
 
-    fn skip_ws(&mut self) {
+    fn skip_json_whitespace(&mut self) {
         while self.next().is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) {
             self.offset += 1;
         }
@@ -190,38 +190,38 @@ impl<'a> Parser<'a> {
         if depth > MAX_JSON_DEPTH {
             return Err("JSON nesting is too deep");
         }
-        self.skip_ws();
+        self.skip_json_whitespace();
         let begin = self.offset;
         let kind = match self.next() {
             Some(b'"') => JsonKind::Text(self.string()?),
             Some(b'{') => {
                 self.offset += 1;
-                self.skip_ws();
+                self.skip_json_whitespace();
                 let mut fields = Vec::new();
                 if !self.take(b'}') {
                     loop {
                         let key = self.string()?;
-                        self.skip_ws();
+                        self.skip_json_whitespace();
                         self.expect(b':')?;
                         fields.push((key, self.value(depth + 1)?));
-                        self.skip_ws();
+                        self.skip_json_whitespace();
                         if self.take(b'}') {
                             break;
                         }
                         self.expect(b',')?;
-                        self.skip_ws();
+                        self.skip_json_whitespace();
                     }
                 }
                 JsonKind::Object(fields)
             }
             Some(b'[') => {
                 self.offset += 1;
-                self.skip_ws();
+                self.skip_json_whitespace();
                 let mut items = Vec::new();
                 if !self.take(b']') {
                     loop {
                         items.push(self.value(depth + 1)?);
-                        self.skip_ws();
+                        self.skip_json_whitespace();
                         if self.take(b']') {
                             break;
                         }
@@ -263,7 +263,7 @@ pub(crate) fn parse_json(text: &str) -> Result<JsonValue<'_>, &'static str> {
     }
     let mut parser = Parser { text, offset: 0 };
     let value = parser.value(0)?;
-    parser.skip_ws();
+    parser.skip_json_whitespace();
     if parser.offset != text.len() {
         return Err("extra bytes after JSON value");
     }
