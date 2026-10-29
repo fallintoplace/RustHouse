@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOYYYYMMDDHHMMSS"
             | "TOYYYYMMDD"
             | "TOYYYYMM"
             | "TOQUARTER"
@@ -126,6 +127,16 @@ pub(super) fn parse_after_open(
         "TOYYYYMMDD" => unary_date(parser, depth, |value| {
             let (year, month, day) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             let key = year * 10_000 + i64::from(month) * 100 + i64::from(day);
+            Ok(ConstantValue::Integer(key))
+        }),
+        "TOYYYYMMDDHHMMSS" => unary_date(parser, depth, |value| {
+            let (year, month, day) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+            let seconds = value.seconds.rem_euclid(DAY_SECONDS);
+            let ymd = year * 10_000 + i64::from(month) * 100 + i64::from(day);
+            let key = ymd * 1_000_000
+                + (seconds / 3_600) * 10_000
+                + (seconds / 60 % 60) * 100
+                + seconds % 60;
             Ok(ConstantValue::Integer(key))
         }),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
@@ -837,6 +848,25 @@ mod utc_compat_tests {
             "SELECT toYYYYMMDD()",
             "SELECT toYYYYMMDD('2023-02-29')",
             "SELECT toYYYYMMDD('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn to_yyyymmddhhmmss_matches_utc_calendar_examples() {
+        for (sql, expected) in [
+            ("SELECT toYYYYMMDDhhmmss('2024-02-29 23:59:59')", 20240229235959),
+            ("SELECT toYYYYMMDDhhmmss('2024-02-29')", 20240229000000),
+            ("SELECT toYYYYMMDDhhmmss('2299-12-31 23:59:59')", 22991231235959),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT toYYYYMMDDhhmmss(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toYYYYMMDDhhmmss()",
+            "SELECT toYYYYMMDDhhmmss('2023-02-29')",
+            "SELECT toYYYYMMDDhhmmss('2024-01-01', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
