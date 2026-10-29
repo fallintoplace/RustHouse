@@ -43,7 +43,7 @@ fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseE
     Ok(Some(columns))
 }
 
-fn parse_copy_format(parser: &mut Parser) -> Result<CopyFormat, ParseError> {
+fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseError> {
     if parser.keyword("CSV") {
         Ok(CopyFormat::Csv)
     } else if parser.keyword("TSV") {
@@ -86,7 +86,7 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
                 "COPY supports WITH (FORMAT CSV|TSV|SSV[, HEADER TRUE])".into(),
             ));
         }
-        options.format = parse_copy_format(parser)?;
+        options.format = parse_copy_format_option(parser)?;
         if parser.take(Token::Comma) {
             options.header = parse_copy_header(parser)?;
         }
