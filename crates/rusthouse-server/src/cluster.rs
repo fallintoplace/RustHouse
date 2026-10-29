@@ -76,9 +76,9 @@ impl Cluster {
         if peers.len() > MAX_PEERS {
             return Err("too many peers (maximum 32)");
         }
-        let mut seen = HashSet::with_capacity(peers.len());
+        let mut seen_addresses = HashSet::with_capacity(peers.len());
         for peer in &peers {
-            if !seen.insert(peer.address()) {
+            if !seen_addresses.insert(peer.address()) {
                 return Err("duplicate peer");
             }
         }
