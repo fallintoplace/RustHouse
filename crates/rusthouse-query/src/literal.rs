@@ -6,6 +6,14 @@ use self::decimal::*;
 
 use crate::ParseError;
 
+fn validate_calendar_year(year: i64) -> Result<(), ParseError> {
+    if (0..=9999).contains(&year) {
+        Ok(())
+    } else {
+        Err(ParseError("DATE interval is out of range".into()))
+    }
+}
+
 fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
@@ -51,9 +59,7 @@ pub(super) fn add_date_years(date: &str, years: i64) -> Result<String, ParseErro
     let year = year
         .checked_add(years)
         .ok_or_else(|| ParseError("DATE interval overflow".into()))?;
-    if !(0..=9999).contains(&year) {
-        return Err(ParseError("DATE interval is out of range".into()));
-    }
+    validate_calendar_year(year)?;
     let month = &date[5..7];
     let day = if month == "02" && &date[8..10] == "29" {
         if is_leap_year(year) { "29" } else { "28" }
@@ -101,9 +107,7 @@ pub(super) fn add_date_months(date: &str, months: i64) -> Result<String, ParseEr
         .ok_or_else(|| ParseError("DATE interval overflow".into()))?;
     let year = shifted.div_euclid(12);
     let month = shifted.rem_euclid(12) + 1;
-    if !(0..=9999).contains(&year) {
-        return Err(ParseError("DATE interval is out of range".into()));
-    }
+    validate_calendar_year(year)?;
     let leap = is_leap_year(year);
     let last_day = match month {
         2 if leap => 29,
