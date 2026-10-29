@@ -5,6 +5,7 @@ Each shard is a separate database statement. The complete batch is NOT atomic.
 import argparse
 import hashlib
 import json
+import math
 import re
 import subprocess
 import time
@@ -46,8 +47,8 @@ def verify_shard(path, entry):
 
 def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=None,
                 dry_run=False):
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
     manifest = json.loads((Path(source_dir) / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("format") != "rusthouse-tsv-shards-v1" or manifest.get("header") is not False:
         raise ValueError("expected a headerless rusthouse-tsv-shards-v1 manifest")
