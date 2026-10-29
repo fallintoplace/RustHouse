@@ -10,6 +10,9 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOISOWEEK"
+            | "TOYYYYMMDDHHMMSS"
+            | "TOYYYYMMDD"
             | "TOYYYYMM"
             | "TOQUARTER"
             | "TOMONTH"
@@ -121,6 +124,26 @@ pub(super) fn parse_after_open(
         "TOYYYYMM" => unary_date(parser, depth, |value| {
             let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             Ok(ConstantValue::Integer(year * 100 + i64::from(month)))
+        }),
+        "TOYYYYMMDD" => unary_date(parser, depth, |value| {
+            let (year, month, day) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+            let key = year * 10_000 + i64::from(month) * 100 + i64::from(day);
+            Ok(ConstantValue::Integer(key))
+        }),
+        "TOYYYYMMDDHHMMSS" => unary_date(parser, depth, |value| {
+            let (year, month, day) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+            let seconds = value.seconds.rem_euclid(DAY_SECONDS);
+            let ymd = year * 10_000 + i64::from(month) * 100 + i64::from(day);
+            let key = ymd * 1_000_000
+                + (seconds / 3_600) * 10_000
+                + (seconds / 60 % 60) * 100
+                + seconds % 60;
+            Ok(ConstantValue::Integer(key))
+        }),
+        "TOISOWEEK" => unary_date(parser, depth, |value| {
+            let days = value.seconds.div_euclid(DAY_SECONDS);
+            let (_, week) = iso_week_and_year(days);
+            Ok(ConstantValue::Integer(week))
         }),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
@@ -325,6 +348,16 @@ fn unary_date(
         Some(source) => evaluate(Temporal::parse(&source)?),
         None => Ok(ConstantValue::Null),
     }
+}
+
+fn iso_week_and_year(days: i64) -> (i64, i64) {
+    // ISO weeks start on Monday; the week containing Thursday defines the year.
+    let weekday = (days + 3).rem_euclid(7);
+    let thursday = days + 3 - weekday;
+    let (iso_year, _, _) = civil_from_days(thursday);
+    let january_fourth = days_from_civil(iso_year, 1, 4);
+    let week_one_monday = january_fourth - (january_fourth + 3).rem_euclid(7);
+    (iso_year, (days - week_one_monday).div_euclid(7) + 1)
 }
 
 #[cfg(test)]
@@ -813,6 +846,62 @@ mod utc_compat_tests {
             "SELECT toYYYYMM()",
             "SELECT toYYYYMM('2023-02-29')",
             "SELECT toYYYYMM('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn to_yyyymmdd_matches_utc_calendar_examples() {
+        for (sql, expected) in [
+            ("SELECT toYYYYMMDD('2024-02-29')", 20240229),
+            ("SELECT toYYYYMMDD('2299-12-31')", 22991231),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT toYYYYMMDD(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toYYYYMMDD()",
+            "SELECT toYYYYMMDD('2023-02-29')",
+            "SELECT toYYYYMMDD('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn to_yyyymmddhhmmss_matches_utc_calendar_examples() {
+        for (sql, expected) in [
+            ("SELECT toYYYYMMDDhhmmss('2024-02-29 23:59:59')", 20240229235959),
+            ("SELECT toYYYYMMDDhhmmss('2024-02-29')", 20240229000000),
+            ("SELECT toYYYYMMDDhhmmss('2299-12-31 23:59:59')", 22991231235959),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT toYYYYMMDDhhmmss(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toYYYYMMDDhhmmss()",
+            "SELECT toYYYYMMDDhhmmss('2023-02-29')",
+            "SELECT toYYYYMMDDhhmmss('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn iso_week_matches_utc_calendar_examples() {
+        for (sql, expected) in [
+            ("SELECT toISOWeek('2021-01-01')", 53),
+            ("SELECT toISOWeek('2021-01-04')", 1),
+            ("SELECT toISOWeek('2020-12-31')", 53),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT toISOWeek(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toISOWeek()",
+            "SELECT toISOWeek('2023-02-29')",
+            "SELECT toISOWeek('2024-01-01', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
