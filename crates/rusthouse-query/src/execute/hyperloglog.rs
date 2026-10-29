@@ -36,7 +36,10 @@ impl HyperLogLog {
 
     fn add(&mut self, hash: u64) {
         let index = (hash >> (64 - PRECISION)) as usize;
-        let rank = (hash << PRECISION).leading_zeros() as u8 + 1;
+        // A zero suffix has rank 64 - PRECISION + 1, not 65.
+        // Keep every emitted register valid for strict shard-state decoding.
+        let rank = ((hash << PRECISION).leading_zeros() + 1)
+            .min(64 - PRECISION + 1) as u8;
         self.registers[index] = self.registers[index].max(rank);
     }
 
@@ -167,6 +170,15 @@ mod tests {
         let estimate = sketch.estimate();
         assert!(estimate.abs_diff(400_000) < 16_000, "estimate={estimate}");
         assert_eq!(sketch.registers.len(), REGISTERS);
+    }
+
+    #[test]
+    fn all_zero_hash_stays_in_portable_register_range() {
+        let mut sketch = HyperLogLog::default();
+        sketch.add(0);
+        assert_eq!(sketch.registers[0], (64 - PRECISION + 1) as u8);
+        let encoded = sketch.encode_state();
+        assert!(HyperLogLog::decode_state(&encoded).is_ok());
     }
 
     #[test]
