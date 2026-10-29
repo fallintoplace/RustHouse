@@ -33,6 +33,11 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::IsNull(inner, negated) =>
             format!("({}) IS {}NULL", render_expr(inner), if *negated { "NOT " } else { "" }),
         ScalarExpr::Not(inner) => format!("NOT ({})", render_expr(inner)),
+        ScalarExpr::In(value, candidates, negated) => format!(
+            "({}) {}IN ({})",
+            render_expr(value), if *negated { "NOT " } else { "" },
+            candidates.iter().map(render_expr).collect::<Vec<_>>().join(", "),
+        ),
         ScalarExpr::Between(value, lower, upper, negated) => format!(
             "({}) {}BETWEEN ({}) AND ({})",
             render_expr(value), if *negated { "NOT " } else { "" },
