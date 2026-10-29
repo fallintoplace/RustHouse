@@ -148,6 +148,9 @@ pub fn rank_read_replicas_at_least(
     minimum_epoch: u64,
     minimum_generation: u64,
 ) -> Result<Vec<String>, &'static str> {
+    if minimum_epoch == 0 || minimum_generation == 0 {
+        return Err("invalid storage replica freshness floor");
+    }
     let ranked = rank_read_replicas(replicas)?;
     let eligible: HashSet<&str> = replicas
         .iter()
@@ -184,5 +187,18 @@ mod freshness_floor_tests {
         );
         assert!(rank_read_replicas_at_least(&replicas, 5, 2).is_err());
         assert!(rank_read_replicas_at_least(&replicas, 6, 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod required_freshness_floor_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_zero_epoch_and_generation_floors() {
+        let replicas = [ReplicaStatus { node: "a".into(), epoch: 1, generation: 10, healthy: true }];
+        assert!(rank_read_replicas_at_least(&replicas, 0, 1).is_err());
+        assert!(rank_read_replicas_at_least(&replicas, 1, 0).is_err());
+        assert_eq!(rank_read_replicas_at_least(&replicas, 1, 10).unwrap(), vec!["a"]);
     }
 }
