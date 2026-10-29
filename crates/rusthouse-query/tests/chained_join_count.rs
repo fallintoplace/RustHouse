@@ -24,14 +24,14 @@ fn chained_inner_count_scans_last_bucket_without_retaining_join_product() {
     ).unwrap().unwrap();
     let mut result = Vec::new();
     execute_multi_join(&query, &paths, &mut result).unwrap();
-    assert_eq!(String::from_utf8(result).unwrap(), "count\\n20\\n");
+    assert_eq!(String::from_utf8(result).unwrap(), "count\n20\n");
 
     let query = parse_join(
         "SELECT count(*) FROM a JOIN b ON a.id = b.id ANY JOIN c ON b.id = c.id"
     ).unwrap().unwrap();
     let mut result = Vec::new();
     execute_multi_join(&query, &paths, &mut result).unwrap();
-    assert_eq!(String::from_utf8(result).unwrap(), "count\\n4\\n");
+    assert_eq!(String::from_utf8(result).unwrap(), "count\n4\n");
     fs::remove_dir_all(root).unwrap();
 }
 
