@@ -153,8 +153,7 @@ pub(crate) fn parse_multiple(
             distinct,
             alias,
         });
-        if !already_closed
-            && items.len() >= 128
+        if items.len() >= 128
             && parser.tokens.get(parser.index) == Some(&Token::Comma)
         {
             return Err(ParseError("SELECT supports at most 128 aggregates".into()));
@@ -181,6 +180,19 @@ pub(crate) fn parse_multiple(
 #[cfg(test)]
 mod tests {
     use crate::{Projection, parse_select};
+
+    #[test]
+    fn count_empty_parentheses_cannot_bypass_aggregate_list_limit() {
+        let within = format!("SELECT {} FROM numbers(1)",
+            vec!["count()"; 128].join(", "));
+        assert!(parse_select(&within).is_ok());
+        let oversized = format!("SELECT {} FROM numbers(1)",
+            vec!["count()"; 129].join(", "));
+        assert!(parse_select(&oversized).is_err());
+        let mixed = format!("SELECT {} FROM numbers(1)",
+            [vec!["count()"; 128], vec!["sum(number)"]].concat().join(", "));
+        assert!(parse_select(&mixed).is_err());
+    }
 
     #[test]
     fn parses_mixed_aggregates_and_calculated_arguments() {
