@@ -101,6 +101,9 @@ fn supported(kind: &str) -> bool {
     if base == "UUID" {
         return !nullable;
     }
+    if crate::datetime64_scale(base).is_some() {
+        return true;
+    }
     matches!(
         base,
         "String"
@@ -127,6 +130,7 @@ fn fixed_width_bytes_per_row(data_type: &str) -> usize {
         "UInt16" | "Int16" | "Date" => 2,
         "UInt32" | "Int32" | "Float32" | "DateTime" => 4,
         "UInt64" | "Int64" | "Float64" => 8,
+        other if crate::datetime64_scale(other).is_some() => 8,
         "UInt128" | "Int128" | "UUID" => 16,
         _ => 0,
     }
