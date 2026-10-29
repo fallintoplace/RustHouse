@@ -4,6 +4,9 @@ use crate::fixed_width::read_fixed_width;
 use std::fmt;
 use std::io::{self, Read};
 
+const UUID_HALF_BYTES: usize = 8;
+const UUID_GROUP_BOUNDARIES: [usize; 4] = [4, 6, 8, 10];
+
 /// A UUID in canonical byte order, independent of ClickHouse's disk encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UuidValue {
@@ -16,7 +19,7 @@ impl UuidValue {
     }
 
     fn from_disk_bytes(mut bytes: [u8; 16]) -> Self {
-        for half in bytes.chunks_exact_mut(8) {
+        for half in bytes.chunks_exact_mut(UUID_HALF_BYTES) {
             half.reverse();
         }
         Self { bytes }
@@ -29,7 +32,7 @@ impl fmt::Display for UuidValue {
         let mut text = [0u8; 36];
         let mut offset = 0;
         for (index, &byte) in self.bytes.iter().enumerate() {
-            if matches!(index, 4 | 6 | 8 | 10) {
+            if UUID_GROUP_BOUNDARIES.contains(&index) {
                 text[offset] = b'-';
                 offset += 1;
             }
