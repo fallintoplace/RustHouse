@@ -1,0 +1,6 @@
+{
+  "id": "count-center-ninety-eight",
+  "kind": "count_range",
+  "lo": "p01",
+  "hi": "p99"
+}
