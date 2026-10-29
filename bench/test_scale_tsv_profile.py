@@ -45,6 +45,15 @@ class InputProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "require 2"):
                 profile(path, min_rows=2)
 
+    def test_rejects_raw_nul_but_allows_tsv_null_escape(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "data.tsv"
+            path.write_bytes(b"bad\x00value\n")
+            with self.assertRaisesRegex(ValueError, "NUL"):
+                profile(path)
+            path.write_bytes(b"\\N\n")
+            self.assertEqual(profile(path)["rows"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
