@@ -10,6 +10,8 @@ import subprocess
 import time
 from pathlib import Path
 
+MAX_SHARDS = 16_384
+
 
 def copy_sql(table, path):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
@@ -51,6 +53,8 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
     shards = manifest.get("shards")
     if not isinstance(shards, list) or not shards:
         raise ValueError("manifest contains no shards")
+    if len(shards) > MAX_SHARDS:
+        raise ValueError("manifest exceeds RustHouse's 16384-shard limit")
     # Preflight every shard before making the first nontransactional write.
     paths = []
     seen_names = set()
