@@ -180,17 +180,21 @@ pub fn zone_aware_replicas_for(
         .collect();
     let mut zones = HashSet::new();
     let mut selected = Vec::with_capacity(replicas);
-    for node in &ranked {
+    // Track first-pass selections by ranking position. This avoids scanning
+    // selected names repeatedly and lets the second pass move owned Strings.
+    let mut first_pass = [false; MAX_PLACEMENT_NODES];
+    for (index, node) in ranked.iter().enumerate() {
         let zone = zones_by_node[node.as_str()];
         if zones.insert(zone) {
+            first_pass[index] = true;
             selected.push(node.clone());
             if selected.len() == replicas {
                 return Ok(selected);
             }
         }
     }
-    for node in ranked {
-        if !selected.contains(&node) {
+    for (index, node) in ranked.into_iter().enumerate() {
+        if !first_pass[index] {
             selected.push(node);
             if selected.len() == replicas {
                 break;
@@ -345,6 +349,25 @@ mod zone_aware_tests {
             let expected = zone_aware_replicas_for(&name, &members, 8).unwrap();
             assert_eq!(expected, zone_aware_replicas_for(&name, &reversed, 8).unwrap());
             assert_eq!(expected.len(), 8);
+        }
+    }
+
+    #[test]
+    fn single_zone_fallback_matches_weighted_ranking_without_duplicates() {
+        let membership = (0..64)
+            .map(|index| format!("node_{index} same_zone {}\n", 1 + index % 4))
+            .collect::<String>();
+        let members = parse_membership(&membership).unwrap();
+        let weighted = members
+            .iter()
+            .map(|member| (member.node.as_str(), member.weight))
+            .collect::<Vec<_>>();
+        let expected = weighted_replicas_for("fallback", &weighted, 64).unwrap();
+        for replicas in [1, 2, 8, 32, 64] {
+            assert_eq!(
+                zone_aware_replicas_for("fallback", &members, replicas).unwrap(),
+                expected[..replicas]
+            );
         }
     }
 
