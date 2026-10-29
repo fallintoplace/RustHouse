@@ -69,7 +69,8 @@ fn four_kib_plain_json_string_uses_one_write_and_preserves_utf8() {
     let mut sink = Sink { calls: 0, bytes: Vec::new() };
     write_json_string(&mut sink, &input).unwrap();
     assert_eq!(sink.calls, 1);
-    assert_eq!(sink.bytes, format!("\\\"{input}\\\"").as_bytes());
+    let expected = [vec![b'"'], input.as_bytes().to_vec(), vec![b'"']].concat();
+    assert_eq!(sink.bytes, expected);
 }
 
 #[test]
