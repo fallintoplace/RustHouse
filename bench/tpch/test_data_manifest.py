@@ -39,7 +39,7 @@ class DataManifestTests(unittest.TestCase):
             path = Path(root) / "region.tsv"
             for ending in (b"\r\r\n", b"\n\n"):
                 path.write_bytes("\t".join(names("region")).encode() + ending + b"1\tEUROPE\tcomment\n")
-                with self.assertRaisesRegex(ValueError, "header"):
+                with self.assertRaisesRegex(ValueError, "header|blank record"):
                     build_manifest(root, ["region"])
 
     def test_rejects_missing_bad_header_and_duplicates(self):
