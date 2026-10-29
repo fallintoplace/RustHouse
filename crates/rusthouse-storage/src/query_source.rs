@@ -17,9 +17,13 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
 }
 
 fn valid_generation_label(label: &str) -> bool {
-    label.starts_with('g')
-        && label.len() >= 2
-        && label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    let Some(number) = label.strip_prefix('g') else {
+        return false;
+    };
+    !number.is_empty()
+        && !number.starts_with('0')
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && number.parse::<u64>().is_ok()
 }
 
 fn require_snapshot_directory(path: &Path, message: &'static str) -> Result<(), PartError> {
@@ -643,5 +647,23 @@ mod tests {
 
         let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (4, 5)])]);
         validate_block_ranges(&mut ranges).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod active_pointer_canonical_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_positive_canonical_generation_labels() {
+        for label in ["g1", "g42", "g18446744073709551615"] {
+            assert!(valid_generation_label(label), "{label}");
+        }
+        for label in [
+            "", "g", "g0", "g00", "g01", "g+1", "G1", "g1 ",
+            "g18446744073709551616",
+        ] {
+            assert!(!valid_generation_label(label), "{label}");
+        }
     }
 }
