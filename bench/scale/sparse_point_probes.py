@@ -34,8 +34,11 @@ def choose_ids(start, rows, count, seed):
 
 def percentile(samples, percent):
     if (not samples or type(percent) not in (int, float)
-            or not math.isfinite(percent) or not 0 < percent <= 100):
-        raise ValueError("invalid percentile")
+            or not math.isfinite(percent) or not 0 < percent <= 100
+            or any(type(sample) not in (int, float)
+                   or not math.isfinite(sample) or sample < 0
+                   for sample in samples)):
+        raise ValueError("invalid percentile or latency samples")
     return sorted(samples)[math.ceil(percent * len(samples) / 100) - 1]
 
 

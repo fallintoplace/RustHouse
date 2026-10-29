@@ -20,6 +20,12 @@ class SchemaTests(unittest.TestCase):
     def test_invalid_schema(self):
         with self.assertRaises(ValueError):
             columns({"columns": [{"name": "id"}]})
+    def test_empty_schema_cannot_be_reported_as_compatible(self):
+        with self.assertRaisesRegex(ValueError, "columns"):
+            columns({"columns": []})
+        with self.assertRaisesRegex(ValueError, "columns"):
+            columns({"columns": None})
+
     def test_restricts_external_network(self):
         with self.assertRaises(ValueError):
             validate_url("http://example.org:8123")
