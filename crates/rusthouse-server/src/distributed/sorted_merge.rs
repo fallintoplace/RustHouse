@@ -9,7 +9,7 @@ enum IntegerKey {
     Unsigned(u128),
 }
 
-fn parse_key(bytes: &[u8], unsigned: bool) -> Result<IntegerKey, MergeError> {
+fn parse_integer_sort_key(bytes: &[u8], unsigned: bool) -> Result<IntegerKey, MergeError> {
     let text = std::str::from_utf8(bytes).map_err(|_| MergeError::InvalidSortedScan)?;
     if text.starts_with('+')
         || (text.len() > 1 && text.starts_with('0'))
@@ -66,7 +66,7 @@ fn next_row(
     if value.contains(&b'\t') || value == b"NULL" {
         return Err(MergeError::InvalidSortedScan);
     }
-    Ok(Some((parse_key(value, unsigned)?, end)))
+    Ok(Some((parse_integer_sort_key(value, unsigned)?, end)))
 }
 
 /// Validate the full sorted shard streams before returning any rows.
