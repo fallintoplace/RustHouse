@@ -135,5 +135,20 @@ class AnalyticsSuiteTests(unittest.TestCase):
         cursor.fetchall.assert_not_called()
 
 
+class AnalyticsSuiteParameterTests(unittest.TestCase):
+    def test_invalid_fixture_sizes_are_rejected(self):
+        for rows in (True, 17.5, "17"):
+            with self.subTest(rows=rows):
+                with self.assertRaisesRegex(ValueError, "integer"):
+                    make_fixture("unused", rows)
+
+    def test_nonfinite_timing_controls_are_rejected(self):
+        workload = {"name": "test", "queries": [{"name": "q", "sql": "SELECT 1"}]}
+        for options in ({"runs": True}, {"warmups": False},
+                        {"timeout": float("nan")}, {"timeout": float("inf")}):
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(ValueError, "runs and timeout"):
+                    run_suite("unused", workload, rows=17, **options)
+
 if __name__ == "__main__":
     unittest.main()
