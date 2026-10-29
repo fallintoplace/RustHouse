@@ -53,10 +53,7 @@ def query_digest(binary, part, sql, *, expected_sha256=None,
         output.seek(0)
         digest = hashlib.sha256()
         size = 0
-        while True:
-            block = output.read(1024 * 1024)
-            if not block:
-                break
+        for block in iter(lambda: output.read(1024 * 1024), b""):
             size += len(block)
             if size > max_output_bytes:
                 raise ValueError("SQL output exceeds max_output_bytes")
