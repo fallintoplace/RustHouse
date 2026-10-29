@@ -1077,12 +1077,13 @@ fn execute_streaming_inner_count<W: Write>(
         output.write_all(b"count\n")?;
         return Ok(());
     }
-    if left_count == 0 || right_count == 0 {
+    if left_count == 0 || (right_count == 0 && query.kind == JoinType::Inner) {
         output.write_all(b"count\n0\n")?;
         return Ok(());
     }
     let count = if right_count <= MAX_STREAM_BUILD_ROWS &&
-        (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+        (query.kind == JoinType::Left
+            || right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
         let keep = count_build_columns(
             right_keys, null_filter, left_names.len(), right_names.len(),
         );
@@ -1107,9 +1108,12 @@ fn execute_streaming_inner_count<W: Write>(
             ProbeOptions {
                 materialize_rows: false, materialize_after: 0,
                 stop_after: Some(usize::MAX), any: query.any, null_filter,
-            }, right_names.len(), false, |_, _| Ok(())
+            }, right_names.len(), query.kind == JoinType::Left, |_, _| Ok(())
         )?
     } else {
+        if query.kind == JoinType::Left {
+            return Err(invalid("LEFT JOIN COUNT exceeds bounded right build capacity"));
+        }
         let keep = count_build_columns(
             left_keys, null_filter, 0, left_names.len(),
         );
