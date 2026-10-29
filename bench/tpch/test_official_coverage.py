@@ -15,6 +15,9 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(report["coverage"]["unverified_queries"], 1)
             self.assertEqual(report["coverage"]["failed_queries"], 21)
             self.assertEqual(report["results"][5]["status"], "unverified")
+            from run import query_fingerprint
+            self.assertEqual(report["query_sha256"],
+                             query_fingerprint([(6, "SELECT 6")]))
             self.assertEqual(clean_sql(queries / "q06.sql"), "SELECT 6")
             refs = queries / "refs"
             refs.mkdir()
