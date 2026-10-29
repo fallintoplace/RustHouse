@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "ENCODEURLCOMPONENT"
             | "POSITION"
     )
 }
@@ -723,7 +724,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "URL_ENCODE" => {
+        "URL_ENCODE" | "ENCODEURLCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL_ENCODE requires one argument")?;
             match input {
@@ -2868,6 +2869,31 @@ mod ch_position_byte_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_encode_url_component_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn supported_values_and_invalid_arity() {
+        for (sql, expected) in [
+            ("SELECT encodeURLComponent('a b&c')", ConstantValue::Text("a%20b%26c".into())),
+            ("SELECT encodeURLComponent('é')", ConstantValue::Text("%C3%A9".into())),
+            ("SELECT encodeURLComponent(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT encodeURLComponent()", "SELECT encodeURLComponent('a', 'b')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
