@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "ADDMINUTES"
             | "ADDHOURS"
             | "SUBTRACTWEEKS"
             | "ADDWEEKS"
@@ -28,6 +29,7 @@ pub(super) fn parse_after_open(
         "ADDWEEKS" => offset_seconds(parser, depth, 7 * DAY_SECONDS, false, false),
         "SUBTRACTWEEKS" => offset_seconds(parser, depth, 7 * DAY_SECONDS, true, false),
         "ADDHOURS" => offset_seconds(parser, depth, 3_600, false, true),
+        "ADDMINUTES" => offset_seconds(parser, depth, 60, false, true),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -267,6 +269,26 @@ mod utc_compat_tests {
             "SELECT addHours('2023-02-29', 1)",
             "SELECT addHours('2299-12-31 23:59:59', 1)",
             "SELECT addHours('2024-01-01', 1, 2)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn add_minutes_handles_utc_and_bounds() {
+        for (sql, expected) in [
+            ("SELECT addMinutes('2024-02-29 23:59:30', 1)", "2024-03-01 00:00:30"),
+            ("SELECT addMinutes('2024-02-29', 1)", "2024-02-29 00:01:00"),
+            ("SELECT addMinutes('2024-02-29 23:59:30', -1)", "2024-02-29 23:58:30"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT addMinutes(NULL, 1)"), ConstantValue::Null);
+        for sql in [
+            "SELECT addMinutes()",
+            "SELECT addMinutes('2023-02-29', 1)",
+            "SELECT addMinutes('2299-12-31 23:59:59', 1)",
+            "SELECT addMinutes('2024-01-01', 1, 2)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
