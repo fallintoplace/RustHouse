@@ -1078,6 +1078,22 @@ fn execute_streaming_inner_count<W: Write>(
     Ok(())
 }
 
+fn retain_or_count(
+    pairs: &mut Vec<Pair>,
+    count: &mut u64,
+    count_only: bool,
+    pair: Pair,
+) -> Result<(), ExecutionError> {
+    if count_only {
+        *count = (*count)
+            .checked_add(1)
+            .ok_or_else(|| invalid("JOIN count overflow"))?;
+        Ok(())
+    } else {
+        add_pair(pairs, pair)
+    }
+}
+
 /// Evaluate a two-table JOIN using typed values, not serialized TSV.
 pub fn execute_join<W: Write>(
     query: &JoinSelect,
@@ -1374,11 +1390,7 @@ pub fn execute_join<W: Write>(
                     }
                     let pair = (Some(left_index), Some(right_index));
                     if keep(&pair) {
-                        if count_only {
-                            count = count.checked_add(1).ok_or_else(|| invalid("JOIN count overflow"))?;
-                        } else {
-                            add_pair(&mut pairs, pair)?;
-                        }
+                        retain_or_count(&mut pairs, &mut count, count_only, pair)?;
                     }
                 }
             }
@@ -1386,11 +1398,7 @@ pub fn execute_join<W: Write>(
         if !matched && matches!(query.kind, JoinType::Left | JoinType::Full) {
             let pair = (Some(left_index), None);
             if keep(&pair) {
-                if count_only {
-                            count = count.checked_add(1).ok_or_else(|| invalid("JOIN count overflow"))?;
-                        } else {
-                            add_pair(&mut pairs, pair)?;
-                        }
+                retain_or_count(&mut pairs, &mut count, count_only, pair)?;
             }
         }
     }
@@ -1399,11 +1407,7 @@ pub fn execute_join<W: Write>(
             if !matched {
                 let pair = (None, Some(right_index));
                 if keep(&pair) {
-                    if count_only {
-                            count = count.checked_add(1).ok_or_else(|| invalid("JOIN count overflow"))?;
-                        } else {
-                            add_pair(&mut pairs, pair)?;
-                        }
+                    retain_or_count(&mut pairs, &mut count, count_only, pair)?;
                 }
             }
         }
