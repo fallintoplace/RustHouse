@@ -29,23 +29,6 @@ pub enum TypedColumn {
     },
 }
 
-fn numeric_array_element(values: &NumericColumn, index: usize) -> String {
-    match values {
-        NumericColumn::UInt8(values) => values[index].to_string(),
-        NumericColumn::UInt16(values) => values[index].to_string(),
-        NumericColumn::UInt32(values) => values[index].to_string(),
-        NumericColumn::UInt64(values) => values[index].to_string(),
-        NumericColumn::UInt128(values) => values[index].to_string(),
-        NumericColumn::Int8(values) => values[index].to_string(),
-        NumericColumn::Int16(values) => values[index].to_string(),
-        NumericColumn::Int32(values) => values[index].to_string(),
-        NumericColumn::Int64(values) => values[index].to_string(),
-        NumericColumn::Int128(values) => values[index].to_string(),
-        NumericColumn::Float32(values) => values[index].to_string(),
-        NumericColumn::Float64(values) => values[index].to_string(),
-    }
-}
-
 impl TypedColumn {
     pub fn len(&self) -> usize {
         match self {
@@ -525,7 +508,7 @@ fn decode_typed_column(
                     if text.len() != 1 {
                         text.push(',');
                     }
-                    text.push_str(&numeric_array_element(arrays.values(), element));
+                    append_map_numeric(&mut text, arrays.values(), element);
                 }
                 text.push(']');
                 decoded
@@ -1369,6 +1352,22 @@ mod map_row_fast_path_tests {
 #[cfg(test)]
 mod direct_map_numeric_render_tests {
     use super::*;
+
+    #[test]
+    fn renders_large_numeric_array_without_intermediate_strings() {
+        let values = NumericColumn::UInt64((0..10_000u64).collect());
+        let mut row = String::from("[");
+        for index in 0..10_000 {
+            if index != 0 {
+                row.push(',');
+            }
+            append_map_numeric(&mut row, &values, index);
+        }
+        row.push(']');
+        assert!(row.starts_with("[0,1,2,3,4,5,6,7,8,9,"));
+        assert!(row.ends_with(",9997,9998,9999]"));
+        assert_eq!(row.bytes().filter(|&byte| byte == b',').count(), 9_999);
+    }
 
     #[test]
     fn appends_signed_unsigned_and_float_map_values_in_place() {
