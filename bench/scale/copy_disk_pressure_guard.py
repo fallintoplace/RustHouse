@@ -26,6 +26,10 @@ def sql_for(table, source):
     return f"COPY {table} FROM '{path.replace(chr(39), chr(39)*2)}' WITH (FORMAT TSV)"
 
 
+def same_device(database, watch_dir):
+    return os.stat(database).st_dev == os.stat(watch_dir).st_dev
+
+
 def guard(binary, database, table, source, watch_dir, min_free_gib=5,
           timeout=3600, poll_seconds=0.25):
     if not math.isfinite(min_free_gib) or min_free_gib <= 0:
@@ -38,6 +42,8 @@ def guard(binary, database, table, source, watch_dir, min_free_gib=5,
         raise ValueError("source TSV is missing")
     if not Path(watch_dir).is_dir():
         raise ValueError("watch directory is missing")
+    if Path(database).exists() and not same_device(database, watch_dir):
+        raise ValueError("watch directory is not on the database filesystem")
     reserve = int(min_free_gib * (1024**3))
     free_start = shutil.disk_usage(watch_dir).free
     if free_start < reserve:
