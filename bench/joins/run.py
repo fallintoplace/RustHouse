@@ -91,7 +91,10 @@ def verify_result(output, expected_labels, multiplicity=1):
         raise ValueError("join result IDs differ from expected matches")
 
 def logical_probe_throughput(probe_rows, median_seconds):
-    if not math.isfinite(median_seconds) or median_seconds <= 0:
+    if type(probe_rows) is not int or probe_rows < 1:
+        raise ValueError("probe_rows must be a positive integer")
+    if (type(median_seconds) not in (int, float)
+            or not math.isfinite(median_seconds) or median_seconds <= 0):
         raise ValueError("median JOIN latency must be positive and finite")
     return probe_rows / median_seconds
 

@@ -100,5 +100,16 @@ class JoinWorkloadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 write_fixture(directory, 20, 32769)
 
+class JoinThroughputInputValidationTests(unittest.TestCase):
+    def test_invalid_probes_and_timing_types_cannot_be_reported(self):
+        for rows in (True, 0, -5, 2.5):
+            with self.subTest(rows=rows):
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    logical_probe_throughput(rows, 1.0)
+        for duration in (True, "1", [], float("nan")):
+            with self.subTest(duration=duration):
+                with self.assertRaises(ValueError):
+                    logical_probe_throughput(10, duration)
+
 if __name__ == "__main__":
     unittest.main()
