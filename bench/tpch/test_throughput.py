@@ -18,14 +18,14 @@ class ThroughputTests(unittest.TestCase):
 
     def test_only_byte_results_count_as_success(self):
         report = run_throughput(
-            [(1, "SELECT 1")], lambda _: "1\\n", rounds=1
+            [(1, "SELECT 1")], lambda _: "1\n", rounds=1
         )
         self.assertEqual(report["successful_executions"], 0)
         self.assertEqual(report["results"][0]["status"], "error")
         self.assertIn("bytes", report["results"][0]["error"])
         with self.assertRaisesRegex(ValueError, "references"):
-            run_throughput([(1, "SELECT 1")], lambda _: b"1\\n",
-                           rounds=1, references={1: "1\\n"})
+            run_throughput([(1, "SELECT 1")], lambda _: b"1\n",
+                           rounds=1, references={1: "1\n"})
 
     def test_mismatch_does_not_count_as_success(self):
         report = run_throughput(
@@ -42,15 +42,15 @@ class ThroughputTests(unittest.TestCase):
 
     def test_verified_mode_rejects_missing_or_partial_goldens(self):
         with self.assertRaisesRegex(ValueError, "reference"):
-            run_throughput([(1, "SELECT 1")], lambda _: b"1\\n",
+            run_throughput([(1, "SELECT 1")], lambda _: b"1\n",
                            require_verified=True)
         with self.assertRaisesRegex(ValueError, "reference"):
             run_throughput([(1, "SELECT 1"), (2, "SELECT 2")],
-                           lambda _: b"1\\n", references={1: b"1\\n"},
+                           lambda _: b"1\n", references={1: b"1\n"},
                            require_verified=True)
         report = run_throughput(
-            [(1, "SELECT 1")], lambda _: b"1\\n",
-            rounds=1, references={1: b"1\\n"}, require_verified=True,
+            [(1, "SELECT 1")], lambda _: b"1\n",
+            rounds=1, references={1: b"1\n"}, require_verified=True,
         )
         self.assertTrue(report["all_executions_verified"])
         self.assertTrue(report["verification_required"])
