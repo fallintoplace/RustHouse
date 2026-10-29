@@ -47,7 +47,8 @@ def verify_shard(path, entry):
 def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=None):
     if timeout <= 0:
         raise ValueError("timeout must be positive")
-    manifest = json.loads((Path(source_dir) / "manifest.json").read_text(encoding="utf-8"))
+    source_dir = Path(source_dir)
+    manifest = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("format") != "rusthouse-tsv-shards-v1" or manifest.get("header") is not False:
         raise ValueError("expected a headerless rusthouse-tsv-shards-v1 manifest")
     shards = manifest.get("shards")
@@ -67,7 +68,7 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         seen_names.add(name)
         if not isinstance(name, str) or not re.fullmatch(r"part-[0-9]{6}\.tsv", name):
             raise ValueError("invalid shard path")
-        path = Path(source_dir) / name
+        path = source_dir / name
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"missing or unsafe shard: {name}")
         verify_shard(path, entry)
