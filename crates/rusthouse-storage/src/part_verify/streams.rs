@@ -26,16 +26,17 @@ pub(super) fn account_decoded_blocks(
     let mut decoded_size = 0u64;
     while let Some(block) = reader.next_decoded() {
         let block = block?;
+        let decoded_bytes = block.data.len() as u64;
         report.blocks = report
             .blocks
             .checked_add(1)
             .ok_or_else(|| invalid(data, "block count overflows"))?;
         decoded_size = decoded_size
-            .checked_add(block.data.len() as u64)
+            .checked_add(decoded_bytes)
             .ok_or_else(|| invalid(data, "decoded byte count overflows"))?;
         report.decompressed_bytes = report
             .decompressed_bytes
-            .checked_add(block.data.len() as u64)
+            .checked_add(decoded_bytes)
             .ok_or_else(|| invalid(data, "decoded byte count overflows"))?;
     }
     Ok(decoded_size)
