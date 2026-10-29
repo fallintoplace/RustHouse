@@ -58,9 +58,7 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
         })?;
         output.write_all(b"|")?;
         for field in line.split(|&byte| byte == b'\t') {
-            output.write_all(b" ")?;
-            write_cell(output, field)?;
-            output.write_all(b" |")?;
+            write_markdown_field(output, field)?;
         }
         return output.write_all(b"\n");
     }
@@ -72,9 +70,7 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
     }
     output.write_all(b"|")?;
     for field in fields {
-        output.write_all(b" ")?;
-        write_cell(output, field.as_ref())?;
-        output.write_all(b" |")?;
+        write_markdown_field(output, field.as_ref())?;
     }
     output.write_all(b"\n")
 }
@@ -85,6 +81,12 @@ fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Resul
         output.write_all(b" --- |")?;
     }
     output.write_all(b"\n")
+}
+
+fn write_markdown_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+    output.write_all(b" ")?;
+    write_cell(output, field)?;
+    output.write_all(b" |")
 }
 
 fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
