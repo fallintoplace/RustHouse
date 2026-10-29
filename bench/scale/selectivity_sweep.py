@@ -18,6 +18,23 @@ def thresholds(rows):
     return sorted(set((0, rows // 4, rows // 2, rows * 3 // 4, rows)))
 
 
+def measure_threshold(run, binary, part, sql, expected, threshold, samples, timeout):
+    durations = []
+    for _ in range(samples):
+        start = time.perf_counter()
+        completed = run(
+            [str(binary), "sql", sql, "--part", str(part), "--format", "tsv-no-header"],
+            capture_output=True, check=False, timeout=timeout,
+        )
+        elapsed = time.perf_counter() - start
+        if completed.returncode:
+            raise RuntimeError(f"failed predicate threshold {threshold}: {completed.stderr!r}")
+        if completed.stdout != expected:
+            raise ValueError(f"threshold {threshold}: result differs from sequential-id oracle")
+        durations.append(elapsed)
+    return durations
+
+
 def run_sweep(binary, part, rows, *, samples=3, timeout=600, execute=None):
     if (type(samples) is not int or not 1 <= samples <= 128
             or type(timeout) not in (int, float) or not math.isfinite(timeout)
@@ -28,19 +45,8 @@ def run_sweep(binary, part, rows, *, samples=3, timeout=600, execute=None):
     for threshold in thresholds(rows):
         sql = f"SELECT count(*) FROM part WHERE id >= {threshold}"
         expected = f"{rows - threshold}\n".encode()
-        durations = []
-        for _ in range(samples):
-            start = time.perf_counter()
-            completed = run(
-                [str(binary), "sql", sql, "--part", str(part), "--format", "tsv-no-header"],
-                capture_output=True, check=False, timeout=timeout,
-            )
-            elapsed = time.perf_counter() - start
-            if completed.returncode:
-                raise RuntimeError(f"failed predicate threshold {threshold}: {completed.stderr!r}")
-            if completed.stdout != expected:
-                raise ValueError(f"threshold {threshold}: result differs from sequential-id oracle")
-            durations.append(elapsed)
+        durations = measure_threshold(run, binary, part, sql, expected, threshold,
+                                      samples, timeout)
         results.append({"threshold": threshold, "expected_count": rows - threshold,
                         "median_seconds": statistics.median(durations),
                         "samples_seconds": durations, "verified": True})
