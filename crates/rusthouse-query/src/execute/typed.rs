@@ -167,7 +167,7 @@ pub(super) fn base_type(data_type: &str) -> &str {
         .unwrap_or(data_type)
 }
 
-fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError> {
+pub(super) fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError> {
     let kind = base_type(data_type);
     match kind {
         "String" => Ok(Cell::Text(literal.as_bytes().to_vec())),
@@ -472,7 +472,7 @@ pub(super) fn compare_order_cells(
     }
 }
 
-fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
+pub(super) fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
     if matches!(value, Cell::Null) || matches!(target, Cell::Null) {
         return false;
     }
