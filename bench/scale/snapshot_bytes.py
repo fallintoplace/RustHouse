@@ -13,7 +13,7 @@ def classify(path):
     name = Path(path).name
     if name.endswith(".bin"):
         return "data_bytes"
-    if name.endswith((".mrk", ".mrk2", ".mrk3")):
+    if name.endswith((".mrk", ".mrk2", ".mrk3", ".cmrk2", ".cmrk3")):
         return "mark_bytes"
     if name.endswith((".idx", ".cidx")):
         return "index_bytes"

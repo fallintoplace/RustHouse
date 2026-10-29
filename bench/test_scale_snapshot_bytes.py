@@ -41,6 +41,12 @@ class SnapshotBytesTests(unittest.TestCase):
     def test_classifies_unknown_files_as_metadata(self):
         self.assertEqual(classify("columns.txt"), "metadata_bytes")
 
+    def test_compressed_marks_are_mark_overhead(self):
+        from bench.scale.snapshot_bytes import classify
+        self.assertEqual(classify("id.cmrk2"), "mark_bytes")
+        self.assertEqual(classify("id.cmrk3"), "mark_bytes")
+        self.assertEqual(classify("id.bin"), "data_bytes")
+
 
 if __name__ == "__main__":
     unittest.main()
