@@ -9,7 +9,7 @@ pub struct InsertSelect {
     pub select: Select,
 }
 
-fn parse_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
+fn parse_insert_target_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
     if !parser.take(Token::LParen) {
         return Ok(None);
     }
@@ -54,7 +54,7 @@ pub fn parse_insert_select(sql: &str) -> Result<Option<InsertSelect>, ParseError
         return Err(ParseError("expected INTO after INSERT".into()));
     }
     let table = parser.bounded_word()?;
-    let columns = parse_columns(&mut parser)?;
+    let columns = parse_insert_target_columns(&mut parser)?;
     let Some(select) = parse_select_suffix(&mut parser)? else {
         return Ok(None);
     };

@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_JSONL_COLUMNS: usize = 64;
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -24,7 +25,7 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<String>> {
         if name.is_empty() {
             return Err(invalid("JSONL header name must not be empty"));
         }
-        if headers.len() >= 64 {
+        if headers.len() >= MAX_JSONL_COLUMNS {
             return Err(invalid("JSONL supports at most 64 columns"));
         }
         if !seen.insert(name) {
@@ -45,6 +46,10 @@ fn decoded_row_field(field: &[u8]) -> io::Result<Cow<'_, str>> {
     }
 }
 
+fn row_width_error() -> io::Error {
+    invalid("JSONL row does not match header column count")
+}
+
 fn write_json_row_into<W: Write>(
     output: &mut W,
     headers: &[Vec<u8>],
@@ -58,7 +63,7 @@ fn write_json_row_into<W: Write>(
     for (index, header) in headers.iter().enumerate() {
         let field = fields
             .next()
-            .ok_or_else(|| invalid("JSONL row does not match header column count"))?;
+            .ok_or_else(row_width_error)?;
         if index != 0 {
             row.write_all(b",")?;
         }
@@ -72,7 +77,7 @@ fn write_json_row_into<W: Write>(
         }
     }
     if fields.next().is_some() {
-        return Err(invalid("JSONL row does not match header column count"));
+        return Err(row_width_error());
     }
     row.write_all(b"}\n")?;
     output.write_all(row)

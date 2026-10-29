@@ -14,6 +14,14 @@ const MAX_GROUP_VALUE_PAIRS: usize = 200_000;
 const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_GROUP_STATE_BYTES: usize = 64 * 1024 * 1024;
 
+fn group_limit_error() -> ExecutionError {
+    ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into())
+}
+
+fn pair_limit_error() -> ExecutionError {
+    ExecutionError::Invalid("grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into())
+}
+
 fn charge_group_fixed(used: &mut usize) -> Result<(), ExecutionError> {
     // Account for the three HashSet headers, byte-value bitmap, Group row,
     // and the key lookup entry, even when no distinct payloads are present.
@@ -222,9 +230,7 @@ pub(super) fn execute<W: Write>(
                     id
                 } else {
                     if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 200000 groups".into(),
-                        ));
+                        return Err(group_limit_error());
                     }
                     let id = groups.len();
                     uuid_groups.insert(key, id);
@@ -243,9 +249,7 @@ pub(super) fn execute<W: Write>(
                     id
                 } else {
                     if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 200000 groups".into(),
-                        ));
+                        return Err(group_limit_error());
                     }
                     charge_text(&mut retained_text_bytes, text.len(), 2)?;
                     let id = groups.len();
@@ -266,9 +270,7 @@ pub(super) fn execute<W: Write>(
                     Entry::Occupied(entry) => *entry.get(),
                     Entry::Vacant(entry) => {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 200000 groups".into(),
-                            ));
+                            return Err(group_limit_error());
                         }
                         let id = groups.len();
                         entry.insert(id);
@@ -319,9 +321,7 @@ pub(super) fn execute<W: Write>(
                 let key = *values[row].as_bytes();
                 if total_pairs >= MAX_GROUP_VALUE_PAIRS {
                     if !groups[id].distinct_uuids.contains(&key) {
-                        return Err(ExecutionError::Invalid(
-                            "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
-                        ));
+                        return Err(pair_limit_error());
                     }
                 } else if groups[id].distinct_uuids.insert(key) {
                     total_pairs += 1;
@@ -337,9 +337,7 @@ pub(super) fn execute<W: Write>(
                 // Probe decoded bytes. Own them only for new distinct pairs.
                 if !groups[id].distinct_text.contains(text) {
                     if total_pairs >= MAX_GROUP_VALUE_PAIRS {
-                        return Err(ExecutionError::Invalid(
-                            "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
-                        ));
+                        return Err(pair_limit_error());
                     }
                     charge_text(&mut retained_text_bytes, text.len(), 1)?;
                     groups[id].distinct_text.insert(text.to_vec());
@@ -354,9 +352,7 @@ pub(super) fn execute<W: Write>(
             let key = value.key();
             if total_pairs >= MAX_GROUP_VALUE_PAIRS {
                 if !groups[id].distinct.contains(&key) {
-                    return Err(ExecutionError::Invalid(
-                        "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
-                    ));
+                    return Err(pair_limit_error());
                 }
             } else if groups[id].distinct.insert(key) {
                 total_pairs += 1;
