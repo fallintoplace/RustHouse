@@ -72,7 +72,18 @@ fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, PartError> 
     }
     ensure_metadata_size(path, metadata.len(), max_bytes)?;
     let file = fs::File::open(path).map_err(|source| io_error(path, source))?;
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let opened = file.metadata().map_err(|source| io_error(path, source))?;
+    if !opened.file_type().is_file() || opened.len() > max_bytes {
+        return Err(invalid_metadata(path, "metadata changed before read"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
+            return Err(invalid_metadata(path, "metadata file replaced before read"));
+        }
+    }
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
     file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| io_error(path, source))?;
@@ -235,5 +246,30 @@ mod tests {
                 "{input:?}"
             );
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod metadata_identity_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn same_size_file_substitution_changes_inode_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-metadata-identity-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::write(&first, "123").unwrap();
+        fs::write(&second, "456").unwrap();
+        let original = fs::symlink_metadata(&first).unwrap();
+        let replacement = fs::File::open(&second).unwrap().metadata().unwrap();
+        assert_eq!(original.len(), replacement.len());
+        assert_ne!(original.ino(), replacement.ino());
+        fs::remove_dir_all(root).unwrap();
     }
 }
