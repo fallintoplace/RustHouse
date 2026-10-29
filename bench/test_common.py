@@ -81,6 +81,12 @@ class SharedWorkloadTests(unittest.TestCase):
             self.assertEqual(json.loads(buffer.getvalue()), {"verified": True})
 
 
+    def test_latency_summary_rejects_wrong_types_and_huge_integers(self):
+        for value in ("1", True, None, 10 ** 400, float("inf")):
+            with self.subTest(value=repr(value)):
+                with self.assertRaisesRegex(ValueError, "timing samples"):
+                    latency_summary([value])
+
 if __name__ == "__main__":
     unittest.main()
 
