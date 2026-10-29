@@ -53,7 +53,7 @@ def decode_tsv_value(raw):
 
 def cell_equal(actual, expected, rel_tol=1e-12, abs_tol=1e-12):
     if expected is None:
-        return actual in ("NULL", r"\N")
+        return actual == r"\N"
     try:
         actual = decode_tsv_value(actual)
     except (UnicodeError, ValueError, AttributeError):
