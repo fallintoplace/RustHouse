@@ -29,6 +29,17 @@ class IngestBenchmarkTests(unittest.TestCase):
             self.assertTrue(math.isclose(max(temperatures), expected[1]))
             self.assertTrue(math.isclose(sum(temperatures), expected[2], abs_tol=1e-8))
 
+    def test_batched_fixture_writes_match_single_row_reference(self):
+        with tempfile.TemporaryDirectory() as temp:
+            small = Path(temp) / "single.tsv"
+            large = Path(temp) / "batched.tsv"
+            reference = runner.write_input(small, 10003, 17, batch_rows=1)
+            result = runner.write_input(large, 10003, 17, batch_rows=4096)
+            self.assertEqual(reference, result)
+            self.assertEqual(small.read_bytes(), large.read_bytes())
+            with self.assertRaisesRegex(ValueError, "batch_rows"):
+                runner.write_input(large, 1, 1, batch_rows=0)
+
     def test_verification_rejects_changed_sum_with_matching_count_and_extrema(self):
         valid = ["3", "2", "-1", "1", "0"]
         with mock.patch.object(runner, "sql", side_effect=valid):
