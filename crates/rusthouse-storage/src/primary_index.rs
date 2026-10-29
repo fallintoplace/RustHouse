@@ -134,14 +134,13 @@ fn checked_field_offsets(path: &Path, field_widths: &[usize]) -> Result<Vec<usiz
         return Err(invalid(path, "too many primary-key fields"));
     }
     let mut field_offsets = Vec::with_capacity(field_widths.len() + 1);
-    field_offsets.push(0usize);
+    let mut offset = 0usize;
+    field_offsets.push(offset);
     for &width in field_widths {
         if width == 0 {
             return Err(invalid(path, "key field width must be positive"));
         }
-        let offset = field_offsets
-            .last()
-            .unwrap()
+        offset = offset
             .checked_add(width)
             .filter(|size| *size <= MAX_INDEX_BYTES)
             .ok_or_else(|| invalid(path, "key width exceeds the 256 MiB limit"))?;
