@@ -39,6 +39,17 @@ pub fn copy_frozen_snapshot(
     max_parts: usize,
     max_bytes: u64,
 ) -> Result<SnapshotCopy, PartError> {
+    copy_frozen_snapshot_with_file_limit(source, destination, max_parts, usize::MAX, max_bytes)
+}
+
+/// Copy a frozen snapshot with an explicit bound on staged file count.
+pub fn copy_frozen_snapshot_with_file_limit(
+    source: &Path,
+    destination: &Path,
+    max_parts: usize,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<SnapshotCopy, PartError> {
     let active = resolve_active_snapshot(source)?;
     let parts = query_parts(&active)?;
     if parts.len() > max_parts || max_parts > 16_384 {
@@ -106,6 +117,9 @@ pub fn copy_frozen_snapshot(
                     .ok_or_else(|| PartError::InvalidScan("copy size overflow".into()))?;
                 if report.bytes > max_bytes {
                     return Err(PartError::InvalidScan("copy exceeds byte cap".into()));
+                }
+                if report.files >= max_files {
+                    return Err(PartError::InvalidScan("snapshot copy exceeds file limit".into()));
                 }
                 let copied_bytes = fs::copy(&source_file, &destination_file)
                     .map_err(|error| io_error(&destination_file, error))?;
@@ -261,6 +275,34 @@ mod snapshot_preflight_tests {
             preview
         );
         assert!(preview_frozen_snapshot(&source, 0, 32, 1_000_000).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod copy_file_budget_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn refuses_to_publish_a_copy_beyond_its_file_budget() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-file-budget-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        write_wide_part(
+            &source.join("all_0_0_0"),
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("1".into())]],
+        ).unwrap();
+        assert!(copy_frozen_snapshot_with_file_limit(&source, &destination, 1, 1, 1_000_000).is_err());
+        assert!(!destination.exists());
+        let copied = copy_frozen_snapshot_with_file_limit(&source, &destination, 1, 32, 1_000_000).unwrap();
+        assert!(copied.files > 1);
         fs::remove_dir_all(root).unwrap();
     }
 }
