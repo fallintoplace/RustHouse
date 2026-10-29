@@ -18,6 +18,14 @@ impl Capacity {
             .ok_or("replica capacity exceeded")
     }
 
+    fn remaining_reservation(
+        self,
+        bytes: u64,
+        error: &'static str,
+    ) -> Result<u64, &'static str> {
+        self.reserved.checked_sub(bytes).ok_or(error)
+    }
+
     /// Reserve bytes without changing the used-byte count.
     pub fn reserve(self, bytes: u64) -> Result<Self, &'static str> {
         if bytes > self.available()? {
@@ -34,10 +42,7 @@ impl Capacity {
 
     /// Convert reserved bytes into committed usage.
     pub fn commit(self, bytes: u64) -> Result<Self, &'static str> {
-        let reserved = self
-            .reserved
-            .checked_sub(bytes)
-            .ok_or("cannot commit unreserved bytes")?;
+        let reserved = self.remaining_reservation(bytes, "cannot commit unreserved bytes")?;
         self.available()?;
         Ok(Self {
             used: self
@@ -51,10 +56,7 @@ impl Capacity {
 
     pub fn release(self, bytes: u64) -> Result<Self, &'static str> {
         Ok(Self {
-            reserved: self
-                .reserved
-                .checked_sub(bytes)
-                .ok_or("cannot release unreserved bytes")?,
+            reserved: self.remaining_reservation(bytes, "cannot release unreserved bytes")?,
             ..self
         })
     }
