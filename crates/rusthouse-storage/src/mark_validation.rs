@@ -1,6 +1,8 @@
 use crate::{CompressedBlockReader, PartError, WideMark, WideMarks};
 use std::io::{Read, Seek};
 
+const BLOCK_CHECKSUM_BYTES: u64 = 16;
+
 pub fn validate_wide_marks<R: Read + Seek>(
     marks: &WideMarks,
     mut reader: CompressedBlockReader<R>,
@@ -27,7 +29,7 @@ pub(crate) fn validate_wide_marks_reader<R: Read + Seek>(
             if current.offset >= mark.compressed_offset {
                 break;
             }
-            preceding_end = current.offset + 16 + u64::from(current.compressed_size);
+            preceding_end = current.offset + BLOCK_CHECKSUM_BYTES + u64::from(current.compressed_size);
             block = reader.next().transpose()?;
         }
 
