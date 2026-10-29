@@ -64,22 +64,29 @@ pub fn rank_read_replicas_at_least(
     minimum_epoch: u64,
     minimum_generation: u64,
 ) -> Result<Vec<String>, &'static str> {
-    let ranked = rank_read_replicas(replicas)?;
-    let eligible: HashSet<&str> = replicas
+    if replicas.is_empty() || replicas.len() > 64 {
+        return Err("invalid replica status set");
+    }
+    validate_replica_nodes(replicas)?;
+    let mut eligible: Vec<_> = replicas
         .iter()
         .filter(|replica| {
             replica.healthy
                 && replica.epoch == minimum_epoch
                 && replica.generation >= minimum_generation
         })
-        .map(|replica| replica.node.as_str())
         .collect();
     if eligible.is_empty() {
-        return Err("no storage replica meets the freshness floor");
+        return Err(if replicas.iter().any(|replica| replica.healthy) {
+            "no storage replica meets the freshness floor"
+        } else {
+            "no healthy storage replica"
+        });
     }
-    Ok(ranked
+    eligible.sort_unstable_by(|left, right| newest_first(left, right));
+    Ok(eligible
         .into_iter()
-        .filter(|node| eligible.contains(node.as_str()))
+        .map(|replica| replica.node.clone())
         .collect())
 }
 
