@@ -10,6 +10,8 @@ curl http://127.0.0.1:8123/schema
 curl 'http://127.0.0.1:8123/?query=SELECT%201'
 curl 'http://127.0.0.1:8123/explain?query=SELECT%20number%20FROM%20numbers(10)'
 curl http://127.0.0.1:8123/ --data-binary 'SELECT count(*) FROM part'
+curl -X POST 'http://127.0.0.1:8123/?query=SELECT%201&default_format=TabSeparated'
+curl 'http://127.0.0.1:8123/?query=SELECT%201&default_format=CSVWithNames'
 ```
 
 The endpoint supports GET /?query=... and POST / with raw SQL. Responses are TSV by default.
@@ -163,3 +165,14 @@ ORDER BY / LIMIT / OFFSET are not supported. Grouped SUM remains unsupported.
 
 SUM requests require an additional schema lookup per shard. As with COUNT,
 shards must hold **disjoint source rows** or results double-count data.
+
+## ClickHouse HTTP SELECT compatibility
+
+For read-only clients, RustHouse accepts `query` in the URL with GET or an
+empty-body POST. When POST has SQL in its body, `query` must be absent to avoid
+executing an ambiguous request. The `default_format` URL parameter selects
+an already-supported output serializer. An explicit `format` parameter takes
+precedence. Supported ClickHouse-style names are `TabSeparated`,
+`TabSeparatedWithNames`, `CSV`, `CSVWithNames`,
+`JSONStringsEachRow`, and `JSONCompactStringsEachRow`. This does not
+implement the native ClickHouse protocol, typed `JSONEachRow`, or write SQL.

@@ -198,6 +198,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
     }
     let mut statement = None;
     let mut format = None;
+    let mut default_format = None;
     for parameter in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = parameter
             .split_once('=')
@@ -215,16 +216,22 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                 }
                 format = Some(QueryFormat::parse(&decode_url(value)?)?);
             }
+            "default_format" => {
+                if default_format.is_some() {
+                    return Err("duplicate default_format parameter");
+                }
+                default_format = Some(QueryFormat::parse(&decode_url(value)?)?);
+            }
             _ => return Err("unsupported URL query parameter"),
         }
     }
-    if path == "/explain" && format.is_some() {
+    if path == "/explain" && (format.is_some() || default_format.is_some()) {
         return Err("format is unsupported for EXPLAIN");
     }
     Ok((
         path.to_owned(),
         statement,
-        format.unwrap_or(QueryFormat::Tsv),
+        format.or(default_format).unwrap_or(QueryFormat::Tsv),
     ))
 }
 
@@ -319,12 +326,13 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             return Response::text("400 Bad Request", "GET must not contain a request body\n");
         }
         "GET" => query.unwrap_or_default(),
-        "POST" if query.is_some() => {
+        "POST" if query.is_some() && !body.is_empty() => {
             return Response::text(
                 "400 Bad Request",
                 "do not combine query URL and POST body\n",
             );
         }
+        "POST" if query.is_some() => query.expect("checked URL query"),
         "POST" => match std::str::from_utf8(body) {
             Ok(statement) => statement.to_owned(),
             Err(_) => return Response::text("400 Bad Request", "SQL body is not UTF-8\n"),
@@ -641,6 +649,69 @@ mod tests {
         assert_eq!(allowed.status, "200 OK");
         assert_eq!(allowed.body, b"id\n5\n");
         fs::remove_dir_all(database).unwrap();
+    }
+
+
+    #[test]
+    fn clickhouse_http_post_accepts_query_parameter_with_empty_body() {
+        let response = handle_request(
+            "POST",
+            "/?query=SELECT+number+FROM+numbers%282%29",
+            b"",
+            &config(),
+        );
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body, b"number\n0\n1\n");
+
+        for body in [b"SELECT 8".as_slice(), b" ".as_slice()] {
+            let conflict = handle_request(
+                "POST", "/?query=SELECT+7", body, &config(),
+            );
+            assert_eq!(conflict.status, "400 Bad Request");
+        }
+        assert_eq!(
+            handle_request("POST", "/?query=", b"", &config()).status,
+            "400 Bad Request"
+        );
+        assert_eq!(
+            handle_request("POST", "/?query=%FF", b"", &config()).status,
+            "400 Bad Request"
+        );
+    }
+
+    #[test]
+    fn clickhouse_http_default_format_selects_existing_safe_serializers() {
+        let cases: &[(&str, &[u8])] = &[
+            ("TabSeparated", b"0\n1\n"),
+            ("TabSeparatedWithNames", b"number\n0\n1\n"),
+            ("CSV", b"0\r\n1\r\n"),
+            ("CSVWithNames", b"number\r\n0\r\n1\r\n"),
+            ("JSONStringsEachRow", b"{\"number\":\"0\"}\n{\"number\":\"1\"}\n"),
+        ];
+        for (format, expected) in cases {
+            let url = format!("/?query=SELECT+number+FROM+numbers%282%29&default_format={format}");
+            let result = handle_request("GET", &url, b"", &config());
+            assert_eq!(result.status, "200 OK", "{format}");
+            assert_eq!(result.body, *expected, "{format}");
+        }
+        // The explicit format parameter takes precedence over the default.
+        let overridden = handle_request(
+            "POST", "/?default_format=CSV&format=TabSeparated",
+            b"SELECT number FROM numbers(1)", &config(),
+        );
+        assert_eq!(overridden.status, "200 OK");
+        assert_eq!(overridden.body, b"0\n");
+        for url in [
+            "/?default_format=JSONEachRow",
+            "/?default_format=CSV&default_format=CSV",
+            "/explain?default_format=CSV&query=SELECT+1",
+        ] {
+            assert_eq!(
+                handle_request("GET", url, b"", &config()).status,
+                "400 Bad Request",
+                "{url}"
+            );
+        }
     }
 
     #[test]
