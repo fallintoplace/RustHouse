@@ -2,6 +2,8 @@
 use crate::{Operator, ParseError, Parser, Select, Source, Token, parse_select_tokens, tokenize};
 use std::collections::HashSet;
 
+const MAX_UPDATE_ASSIGNMENTS: usize = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Update {
     pub table: String,
@@ -40,7 +42,7 @@ fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)
     let mut assignments = Vec::new();
     let mut seen = HashSet::new();
     loop {
-        if assignments.len() >= 64 {
+        if assignments.len() >= MAX_UPDATE_ASSIGNMENTS {
             return Err(ParseError("UPDATE supports at most 64 columns".into()));
         }
         let column = parser.bounded_word()?;
