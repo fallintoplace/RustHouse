@@ -32,6 +32,36 @@ pub(super) fn execute<W: Write>(
     writeln!(output)?;
     if query.limit == Some(0) {return Ok(());}
     let comparisons=compile_numbers_predicates(query)?;
+    // Generated number keys are unique. For an unordered bounded page, jump
+    // straight to the requested range instead of scanning billions of rows.
+    if query.order_by.is_none() && query.having.is_none()
+        && query.limit.is_some_and(|limit| limit <= MAX_GROUPS)
+    {
+        let range = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+            Some((0, rows))
+        } else {
+            super::monotonic_range_indices(&comparisons, start, rows, step)
+        };
+        if let (Some((low, high)), Some(limit)) = (range, query.limit) {
+            let first = low.saturating_add(query.offset.unwrap_or(0) as u64).min(high);
+            let last = first.saturating_add(limit as u64).min(high);
+            for index in first..last {
+                let value = u128::from(start) + u128::from(index) * u128::from(step);
+                write!(output, "{value}")?;
+                for (function, _) in items {
+                    let mut state = AggregateState::new(*function);
+                    state.update(if *function == AggregateFunction::Count {
+                        Number::Unsigned(1)
+                    } else {
+                        Number::Unsigned(value)
+                    })?;
+                    write!(output, "\t{}", state.render())?;
+                }
+                writeln!(output)?;
+            }
+            return Ok(());
+        }
+    }
     let mut groups=Vec::<(u128,Vec<AggregateState>)>::new();
     for index in 0..rows {
         let value=u128::from(start)+u128::from(index)*u128::from(step);
@@ -111,6 +141,18 @@ mod generated_multi_group_having_tests {
             "SELECT number, sum(number), max(number) FROM numbers(5) \
              GROUP BY number HAVING sum(number) >= 3 ORDER BY number LIMIT 1 OFFSET 1"
         ), "number\tsum(number)\tmax(number)\n4\t4\t4\n");
+    }
+
+    #[test]
+    fn billion_row_grouped_multi_metric_page_is_direct() {
+        assert_eq!(run(
+            "SELECT number, sum(number), max(number) FROM numbers(1000000000) \
+             GROUP BY number LIMIT 2 OFFSET 999999998"
+        ), "number\tsum(number)\tmax(number)\n999999998\t999999998\t999999998\n999999999\t999999999\t999999999\n");
+        assert_eq!(run(
+            "SELECT number, sum(number), max(number) FROM numbers(1000000000) \
+             WHERE number >= 999999996 GROUP BY number LIMIT 2 OFFSET 1"
+        ), "number\tsum(number)\tmax(number)\n999999997\t999999997\t999999997\n999999998\t999999998\t999999998\n");
     }
 
     #[test]
