@@ -116,11 +116,11 @@ fn read_sorted_row(
     }))
 }
 
-fn merge_runs(
+fn merge_runs_until(
     inputs: &[PathBuf],
     descending: bool,
     directions: &Arc<[bool]>,
-    mut output: impl FnMut(&SortedRow) -> Result<(), ExecutionError>,
+    mut output: impl FnMut(&SortedRow) -> Result<bool, ExecutionError>,
 ) -> Result<(), ExecutionError> {
     let mut streams = inputs.iter().map(File::open)
         .map(|source| source.map(BufReader::new))
@@ -132,12 +132,24 @@ fn merge_runs(
         }
     }
     while let Some(Reverse((row, index))) = heap.pop() {
-        output(&row)?;
+        if !output(&row)? { return Ok(()); }
         if let Some(next) = read_sorted_row(&mut streams[index], descending, directions)? {
             heap.push(Reverse((next, index)));
         }
     }
     Ok(())
+}
+
+fn merge_runs(
+    inputs: &[PathBuf],
+    descending: bool,
+    directions: &Arc<[bool]>,
+    mut output: impl FnMut(&SortedRow) -> Result<(), ExecutionError>,
+) -> Result<(), ExecutionError> {
+    merge_runs_until(inputs, descending, directions, |row| {
+        output(row)?;
+        Ok(true)
+    })
 }
 
 
@@ -454,7 +466,7 @@ impl SortedRows {
             let mut scanned = 0usize;
             let mut returned = 0usize;
             let limit = self.requested.saturating_sub(self.offset);
-            merge_runs(&self.run_paths, self.descending, &self.extra_descending, |row| {
+            merge_runs_until(&self.run_paths, self.descending, &self.extra_descending, |row| {
                 if scanned >= self.offset && returned < limit {
                     for (index, value) in row.values.iter().enumerate() {
                         if index != 0 { write!(output, "\t")?; }
@@ -464,7 +476,7 @@ impl SortedRows {
                     returned += 1;
                 }
                 scanned += 1;
-                Ok(())
+                Ok(scanned < self.requested)
             })?;
             return Ok(());
         }
@@ -495,6 +507,32 @@ mod tests {
         }
         encoded[9] = 1;
         assert!(read_number(&mut encoded.as_slice()).is_err());
+    }
+
+    #[test]
+    fn external_spill_merge_stops_before_unneeded_trailing_rows() {
+        let scratch = SortScratch::new().unwrap();
+        let path = scratch.0.join("run-00000000.bin");
+        let directions: Arc<[bool]> = Arc::from(Vec::<bool>::new());
+        let first = SortedRow {
+            key: Number::Unsigned(1),
+            extra_keys: Vec::new(),
+            values: vec![Number::Unsigned(10)],
+            sequence: 0,
+            descending: false,
+            extra_descending: directions.clone(),
+        };
+        let mut file = File::create(&path).unwrap();
+        write_sorted_row(&mut file, &first).unwrap();
+        // A truncated second row would fail if the merge continued scanning.
+        file.write_all(&[0u8; 8]).unwrap();
+        drop(file);
+        let mut seen = 0;
+        merge_runs_until(&[path], false, &directions, |_| {
+            seen += 1;
+            Ok(false)
+        }).unwrap();
+        assert_eq!(seen, 1);
     }
 
     #[test]
