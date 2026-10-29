@@ -43,6 +43,14 @@ impl HyperLogLog {
     fn observe_number(&mut self, value: Number) {
         let hash = match value {
             Number::Unsigned(value) => Self::hash(&value.to_le_bytes()),
+            Number::Signed(value) if value < 0 => {
+                // Signed negative values must not alias unsigned high-bit
+                // values with the same two's-complement bit representation.
+                let mut tagged = [0u8; 17];
+                tagged[0] = 1;
+                tagged[1..].copy_from_slice(&value.to_le_bytes());
+                Self::hash(&tagged)
+            }
             Number::Signed(value) => Self::hash(&value.to_le_bytes()),
             Number::Float(value) => {
                 let bits = if value == 0.0 {
@@ -167,6 +175,17 @@ mod tests {
         let estimate = sketch.estimate();
         assert!(estimate.abs_diff(400_000) < 16_000, "estimate={estimate}");
         assert_eq!(sketch.registers.len(), REGISTERS);
+    }
+
+    #[test]
+    fn negative_signed_keys_do_not_alias_large_unsigned_keys() {
+        let mut sketch = HyperLogLog::default();
+        sketch.observe_number(Number::Signed(-1));
+        sketch.observe_number(Number::Unsigned(u128::MAX));
+        assert_eq!(sketch.estimate(), 2);
+        sketch.observe_number(Number::Signed(7));
+        sketch.observe_number(Number::Unsigned(7));
+        assert_eq!(sketch.estimate(), 3);
     }
 
     #[test]
