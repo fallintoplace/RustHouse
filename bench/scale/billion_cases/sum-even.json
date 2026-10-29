@@ -1,0 +1,6 @@
+{
+  "id": "sum-even",
+  "kind": "sum_mod",
+  "modulus": 2,
+  "residue": 0
+}
