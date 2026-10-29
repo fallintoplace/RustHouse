@@ -31,7 +31,12 @@ def elapsed(record):
     if not isinstance(latency, dict):
         return None
     value = latency.get("median_seconds")
-    if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
+    if type(value) not in (float, int) or value <= 0:
+        return None
+    try:
+        if not math.isfinite(value):
+            return None
+    except OverflowError:
         return None
     return value
 
