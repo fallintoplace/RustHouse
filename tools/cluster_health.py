@@ -27,10 +27,14 @@ def validate(payload, *, min_healthy=None):
             not 0 <= healthy <= total):
         raise ValueError("invalid peer-health metadata")
     actual = 0
+    seen = set()
     for peer in peers:
         if (not isinstance(peer, dict) or not isinstance(peer.get("address"), str) or
-                type(peer.get("healthy")) is not bool):
+                not peer["address"].strip() or type(peer.get("healthy")) is not bool):
             raise ValueError("invalid peer detail")
+        if peer["address"] in seen:
+            raise ValueError("duplicate peer address")
+        seen.add(peer["address"])
         actual += peer["healthy"]
     if actual != healthy:
         raise ValueError("peer count inconsistent with details")
