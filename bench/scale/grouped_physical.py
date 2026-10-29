@@ -29,9 +29,13 @@ def region_at(index, groups):
     return 1 + (index // 10) % (groups - 1)
 
 
-def emit(stream, rows, groups, batch_rows=8192):
+def _validate_fixture_dimensions(rows, groups):
     if not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536:
         raise ValueError("unsupported row count or UInt16 group domain")
+
+
+def emit(stream, rows, groups, batch_rows=8192):
+    _validate_fixture_dimensions(rows, groups)
     if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("batch_rows must be in 1..1000000")
     for start in range(0, rows, batch_rows):
@@ -48,8 +52,7 @@ def reference(rows, groups):
     Cold bucket b appears at block b-1 + k*(groups-1). Its amount is
     1 + (10*block + 9) % 97. Evaluate only one residue cycle per bucket.
     """
-    if not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536:
-        raise ValueError("unsupported row count or UInt16 group domain")
+    _validate_fixture_dimensions(rows, groups)
     counts = [0] * groups
     sums = [0] * groups
     blocks = rows // 10
