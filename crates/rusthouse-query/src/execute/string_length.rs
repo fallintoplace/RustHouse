@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
+#[cfg(test)]
 fn checked_text_length_at_row(
     column: &TypedColumn,
     row: usize,
@@ -117,6 +118,21 @@ pub(super) fn execute<W: Write>(
         let values = batch
             .get(indices[column])
             .ok_or_else(|| ExecutionError::Invalid("missing LENGTH input column".into()))?;
+        let (offsets, nulls) = match values {
+            TypedColumn::Text(values) => (values.offsets(), None),
+            TypedColumn::NullableText { values, nulls } => {
+                (values.offsets(), Some(nulls.as_slice()))
+            }
+            _ => return Err(ExecutionError::Invalid(
+                "LENGTH read unexpected column type".into(),
+            )),
+        };
+        if offsets.len() != rows + 1
+            || nulls.is_some_and(|map| map.len() != rows)
+            || offsets.windows(2).any(|pair| pair[1] < pair[0])
+        {
+            return Err(ExecutionError::Invalid("invalid LENGTH batch boundaries".into()));
+        }
         for row in 0..rows {
             if !is_unfiltered && !typed::passes(&batch, row, &conditions) {
                 continue;
@@ -125,7 +141,12 @@ pub(super) fn execute<W: Write>(
                 skipped += 1;
                 continue;
             }
-            append_length_line(&mut output_batch, checked_text_length_at_row(values, row)?)?;
+            let length = if nulls.is_some_and(|map| map[row] != 0) {
+                None
+            } else {
+                Some(offsets[row + 1] - offsets[row])
+            };
+            append_length_line(&mut output_batch, length)?;
             if output_batch.len() >= OUTPUT_BATCH_BYTES {
                 output.write_all(&output_batch)?;
                 output_batch.clear();
