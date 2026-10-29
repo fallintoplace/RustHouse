@@ -33,7 +33,9 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
         if not isinstance(result, dict) or result.get("verified") is not True:
             raise ValueError(f"{query}: missing verified oracle match")
         expected_sql, expected_value = expected[query]
-        if result.get("query") != expected_sql or result.get("expected") != expected_value:
+        if (result.get("query") != expected_sql
+                or type(result.get("expected")) is not int
+                or result["expected"] != expected_value):
             raise ValueError(f"{query}: query or expected oracle mismatch")
         median, p90 = result.get("median_seconds"), result.get("p90_seconds")
         if not all(type(t) in (float, int) and math.isfinite(t) and t > 0 for t in (median, p90)):
