@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 const WORDS_PER_BLOCK: usize = 1024;
 const MAX_BLOCKS: usize = 32_768; // Limit occupied prefixes independently of representation.
+const MAX_SPARSE_KEYS: usize = 131_072; // Bound HashSet memory across all prefixes.
 
 enum Block {
     Sparse(std::collections::HashSet<u16>),
@@ -27,6 +28,7 @@ fn insert_bitmap_bit(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
 pub(super) struct BitmapDistinct32 {
     blocks: HashMap<u16, Block>,
     count: u64,
+    sparse_keys: usize,
 }
 
 impl BitmapDistinct32 {
@@ -42,12 +44,28 @@ impl BitmapDistinct32 {
             ));
         }
         let suffix = (key & 0xffff) as u16;
+        // Do not admit new sparse entries once the global memory budget is
+        // exhausted. Dense bitmap inserts and duplicate keys remain valid.
+        if self.sparse_keys >= MAX_SPARSE_KEYS {
+            match self.blocks.get(&prefix) {
+                Some(Block::Dense(_)) => {}
+                Some(Block::Sparse(values))
+                    if values.contains(&suffix) || values.len() + 1 == DENSE_THRESHOLD => {}
+                _ => return Err(ExecutionError::Invalid(
+                    "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
+                )),
+            }
+        }
         let block = self.blocks.entry(prefix)
             .or_insert_with(|| Block::Sparse(std::collections::HashSet::new()));
         let inserted = match block {
             Block::Sparse(values) => {
                 let fresh = values.insert(suffix);
+                if fresh {
+                    self.sparse_keys += 1;
+                }
                 if fresh && values.len() == DENSE_THRESHOLD {
+                    self.sparse_keys -= DENSE_THRESHOLD;
                     let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
                     for &value in values.iter() {
                         insert_bitmap_bit(bitmap.as_mut(), value);
@@ -114,6 +132,24 @@ mod adaptive_large_keyspace_tests {
         assert_eq!(state.len(), 32_768);
         assert!(state.insert(0).is_ok());
         assert_eq!(state.len(), 32_768);
+    }
+
+    #[test]
+    fn bounds_sparse_distinct_memory_and_keeps_duplicates_valid() {
+        let mut state = BitmapDistinct32::new();
+        // Use 3200 entries per block to remain below the dense threshold.
+        for prefix in 0..40u32 {
+            for suffix in 0..3200u32 {
+                state.insert((prefix << 16) | suffix).unwrap();
+            }
+        }
+        for suffix in 0..(super::MAX_SPARSE_KEYS - 40 * 3200) as u32 {
+            state.insert((40 << 16) | suffix).unwrap();
+        }
+        assert_eq!(state.sparse_keys, super::MAX_SPARSE_KEYS);
+        assert!(state.insert(0).is_ok());
+        assert!(state.insert((42 << 16) | 7).is_err());
+        assert_eq!(state.len(), super::MAX_SPARSE_KEYS as u64);
     }
 
     #[test]
