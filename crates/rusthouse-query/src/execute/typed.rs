@@ -10,7 +10,7 @@ use super::hyperloglog::HyperLogLog;
 
 use super::{BitmapDistinct32, ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
-use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedPartReader, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
@@ -891,6 +891,70 @@ fn static_nonnullable_null_filter(
     if unknown_branch { None } else { Some(false) }
 }
 
+/// Merge exact UInt32/Int32 DISTINCT states over independent immutable parts.
+/// The serial path is retained for small part counts and filtered queries.
+fn parallel_exact_u32_distinct(part: &Path, column: &str) -> Result<Option<u64>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let names = [column.to_owned()];
+    let chunk_size = parts.len().div_ceil(workers);
+    let partials = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|chunk| {
+            let names = &names;
+            scope.spawn(move || -> Result<BitmapDistinct32, ExecutionError> {
+                let mut bitmap = BitmapDistinct32::new();
+                for path in chunk {
+                    let mut scan = TypedPartReader::open(path, names)?;
+                    while let Some(batch) = scan.next_batch()? {
+                        let values = &batch[0];
+                        let (numeric, nulls) = match values {
+                            TypedColumn::Numeric(values) => (values, None),
+                            TypedColumn::NullableNumeric { values, nulls } =>
+                                (values, Some(nulls.as_slice())),
+                            _ => return Err(ExecutionError::Invalid(
+                                "parallel DISTINCT expected a numeric column".into()
+                            )),
+                        };
+                        match numeric {
+                            NumericColumn::UInt32(values) => {
+                                for (index, &value) in values.iter().enumerate() {
+                                    if nulls.is_none_or(|bits| bits[index] == 0) {
+                                        bitmap.insert(value)?;
+                                    }
+                                }
+                            }
+                            NumericColumn::Int32(values) => {
+                                for (index, &value) in values.iter().enumerate() {
+                                    if nulls.is_none_or(|bits| bits[index] == 0) {
+                                        bitmap.insert(value as u32)?;
+                                    }
+                                }
+                            }
+                            _ => return Err(ExecutionError::Invalid(
+                                "parallel DISTINCT expected Int32/UInt32".into()
+                            )),
+                        }
+                    }
+                }
+                Ok(bitmap)
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel DISTINCT worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut merged = BitmapDistinct32::new();
+    for partial in partials {
+        merged.merge_from(&partial?)?;
+    }
+    Ok(Some(merged.len()))
+}
+
 /// Map an 8/16-bit dimension directly to its exact dense group bucket.
 /// NULLs use the normal sparse key path and never alias integer zero.
 fn dense_group_bucket(column: &TypedColumn, row: usize) -> Option<usize> {
@@ -1070,6 +1134,22 @@ pub(super) fn execute_typed<W: Write>(
                 writeln!(output, "{}", metadata.rows)?;
             }
             return Ok(());
+        }
+    }
+    // COUNT(DISTINCT) has one scalar output. Parallel bitmaps avoid a
+    // serial pass over many independent 32-bit MergeTree parts.
+    if let Projection::CountDistinct { column } = &query.projection {
+        if query.predicates.is_empty()
+            && query.or_predicates.is_empty()
+            && matches!(types.get(column).map(|kind| base_type(kind)),
+                Some("UInt32" | "Int32"))
+        {
+            if let Some(count) = parallel_exact_u32_distinct(part, column)? {
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{count}")?;
+                }
+                return Ok(());
+            }
         }
     }
     let mut scan = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
