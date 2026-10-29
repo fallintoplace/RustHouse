@@ -51,6 +51,30 @@ class PhysicalGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "p90"):
             validate(broken)
 
+    def test_sample_spread_budget_rejects_noisy_measurements(self):
+        report = example()
+        with self.assertRaisesRegex(ValueError, "requires timing samples"):
+            validate(report, max_sample_spread_percent=20)
+        for key in ("count_even", "sum_even"):
+            report[key]["samples_seconds"] = [0.8, 1.1]
+        strict = validate(report, max_sample_spread_percent=20)
+        self.assertFalse(strict["all_passed"])
+        self.assertAlmostEqual(strict["checks"][0]["sample_spread_percent"], 30)
+        relaxed = validate(report, max_sample_spread_percent=35)
+        self.assertTrue(relaxed["all_passed"])
+        with self.assertRaisesRegex(ValueError, "max_sample_spread_percent"):
+            validate(report, max_sample_spread_percent=float("nan"))
+
+    def test_rejects_corrupt_timing_samples(self):
+        broken = example()
+        broken["runs"] = 2
+        broken["count_even"]["samples_seconds"] = [1.0, float("nan")]
+        with self.assertRaisesRegex(ValueError, "samples"):
+            validate(broken)
+        broken["count_even"]["samples_seconds"] = [1.0]
+        with self.assertRaisesRegex(ValueError, "sample count"):
+            validate(broken)
+
 
 if __name__ == "__main__":
     unittest.main()

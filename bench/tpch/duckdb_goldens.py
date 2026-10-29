@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Generate independent TSV references for all 22 full queries with DuckDB CLI."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+import math
 import hashlib
 import json
 import subprocess
@@ -12,9 +14,11 @@ from canonical_integrity import verify as verify_canonical_sql
 
 
 def generate(duckdb_binary, database, queries_dir, output_dir,
-             timeout=300, overwrite=False, execute=None, require_canonical=False):
-    if timeout <= 0:
+             timeout=300, overwrite=False, execute=None, jobs=1, require_canonical=False):
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be positive")
+    if type(jobs) is not int or not 1 <= jobs <= 22:
+        raise ValueError("jobs must be an integer between 1 and 22")
     if require_canonical:
         verify_canonical_sql(queries_dir)
     queries = load_queries(Path(queries_dir))
@@ -29,26 +33,40 @@ def generate(duckdb_binary, database, queries_dir, output_dir,
             cmd, capture_output=True, timeout=timeout, check=False
         )
     generated = []
-    # Execute every query before publishing any output. A failed query cannot
-    # leave partial reference files that might be mistaken for verified goldens.
+
+    def run_one(item):
+        number, sql = item
+        cmd = [str(duckdb_binary), "-no-init", "-readonly", "-batch", "-list",
+               "-noheader", "-separator", "\t", "-nullvalue", r"\N",
+               str(database), "-c", sql]
+        result = execute(cmd)
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace")[-600:]
+            raise ValueError(f"q{number:02d}: DuckDB query failed: {stderr}")
+        if not isinstance(result.stdout, bytes):
+            raise ValueError("DuckDB output must be raw bytes")
+        return number, sql, result.stdout
+
+    # Separate readonly DuckDB processes can execute independent queries.
+    # Publish nothing unless all of the canonical references succeed.
     with tempfile.TemporaryDirectory(prefix="tpch-full-reference-") as work:
         staging = Path(work)
-        for number, sql in queries:
-            cmd = [str(duckdb_binary), "-no-init", "-readonly", "-batch", "-list",
-                   "-noheader", "-separator", "\t", "-nullvalue", r"\N",
-                   str(database), "-c", sql]
-            result = execute(cmd)
-            if result.returncode != 0:
-                stderr = result.stderr.decode("utf-8", errors="replace")[-600:]
-                raise ValueError(f"q{number:02d}: DuckDB query failed: {stderr}")
-            if not isinstance(result.stdout, bytes):
-                raise ValueError("DuckDB output must be raw bytes")
-            output = result.stdout
-            (staging / f"q{number:02d}.tsv").write_bytes(output)
-            generated.append({"query": number,
-                              "sql_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
-                              "reference_sha256": hashlib.sha256(output).hexdigest(),
-                              "bytes": len(output)})
+        if jobs == 1:
+            completed = map(run_one, queries)
+            for number, sql, output in completed:
+                (staging / f"q{number:02d}.tsv").write_bytes(output)
+                generated.append({"query": number,
+                                  "sql_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
+                                  "reference_sha256": hashlib.sha256(output).hexdigest(),
+                                  "bytes": len(output)})
+        else:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                for number, sql, output in pool.map(run_one, queries):
+                    (staging / f"q{number:02d}.tsv").write_bytes(output)
+                    generated.append({"query": number,
+                                      "sql_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
+                                      "reference_sha256": hashlib.sha256(output).hexdigest(),
+                                      "bytes": len(output)})
         output_dir.mkdir(parents=True, exist_ok=True)
         for number, _ in queries:
             (staging / f"q{number:02d}.tsv").replace(output_dir / f"q{number:02d}.tsv")
@@ -68,11 +86,13 @@ def main(argv=None):
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--require-canonical", action="store_true",
                         help="Generate references only from pinned full Q1-Q22 SQL")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="Concurrent readonly DuckDB reference queries")
     args = parser.parse_args(argv)
     try:
         report = generate(args.duckdb, args.database, args.queries_dir,
                           args.output_dir, args.timeout, args.overwrite,
-                          require_canonical=args.require_canonical)
+                          jobs=args.jobs, require_canonical=args.require_canonical)
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         parser.exit(1, f"TPC-H DuckDB golden generation failed: {error}\n")
     print(json.dumps(report, indent=2))

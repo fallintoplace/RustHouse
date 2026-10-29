@@ -35,7 +35,9 @@ def generate(output, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
             temporary = Path(stream.name)
             emit(stream, rows, groups=groups, hot_percent=hot_percent,
                  batch_rows=batch_rows)
-        os.replace(temporary, output)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, output)
     finally:
         if temporary:
             temporary.unlink(missing_ok=True)

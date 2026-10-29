@@ -31,6 +31,7 @@ pub(super) fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseErr
         return parser.word();
     }
     match parser.tokens.get(parser.index) {
+        Some(Token::QuotedWord(_)) => parser.word(),
         Some(Token::Word(word))
             if ![
                 "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "USING", "WHERE",

@@ -123,7 +123,7 @@ def make_fixture(directory, rows, *, distribution="uniform"):
 
 
 def sqlite_reference(oracle, sql):
-    rows = oracle.execute(sql).fetchall()
+    rows = oracle.execute(sql).fetchmany(100_001)
     if len(rows) > 100_000:
         raise ValueError("oracle result exceeds 100000 rows")
     if any(value is None for row in rows for value in row):
@@ -135,7 +135,7 @@ def sqlite_reference(oracle, sql):
 
 
 def sqlite_typed_reference(oracle, sql):
-    rows = oracle.execute(sql).fetchall()
+    rows = oracle.execute(sql).fetchmany(100_001)
     if len(rows) > 100_000:
         raise ValueError("oracle result exceeds 100000 rows")
     return rows

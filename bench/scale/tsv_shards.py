@@ -11,12 +11,17 @@ import tempfile
 from pathlib import Path
 
 MAX_RECORD_BYTES = 8 * 1024 * 1024
+MAX_SHARDS = 16_384
 
 
-def split_tsv(source, output_dir, *, rows_per_chunk=65536):
+def split_tsv(source, output_dir, *, rows_per_chunk=65536,
+              max_bytes_per_chunk=None):
     source, output_dir = Path(source), Path(output_dir)
     if not 1 <= rows_per_chunk <= 1_000_000:
         raise ValueError("rows_per_chunk must be in 1..1000000")
+    if max_bytes_per_chunk is not None and (
+            type(max_bytes_per_chunk) is not int or max_bytes_per_chunk < 1):
+        raise ValueError("max_bytes_per_chunk must be a positive integer")
     if output_dir.exists() or output_dir.is_symlink():
         raise FileExistsError(f"output directory exists: {output_dir}")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -41,11 +46,18 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
                     raise ValueError("truncated or oversized TSV record")
                 if record in (b"\n", b"\r\n"):
                     raise ValueError("empty TSV record")
-                if current is None or current["rows"] == rows_per_chunk:
+                if (max_bytes_per_chunk is not None
+                        and len(record) > max_bytes_per_chunk):
+                    raise ValueError("TSV record exceeds max_bytes_per_chunk")
+                if (current is None or current["rows"] == rows_per_chunk
+                        or (max_bytes_per_chunk is not None and
+                            current["bytes"] + len(record) > max_bytes_per_chunk)):
                     if current is not None:
                         flush_pending()
                         current["file"].close()
                         del current["file"]
+                    if len(shards) >= MAX_SHARDS:
+                        raise ValueError("shard count exceeds RustHouse's 16384-part limit")
                     filename = f"part-{len(shards):06}.tsv"
                     handle = (temporary / filename).open("wb")
                     current = {"path": filename, "rows": 0, "bytes": 0,
@@ -87,9 +99,13 @@ def main(argv=None):
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--rows-per-chunk", type=int, default=65536)
+    parser.add_argument("--max-bytes-per-chunk", type=int,
+                        help="Optional maximum shard file size in bytes")
     args = parser.parse_args(argv)
     try:
-        report = split_tsv(args.input, args.output_dir, rows_per_chunk=args.rows_per_chunk)
+        report = split_tsv(args.input, args.output_dir,
+                           rows_per_chunk=args.rows_per_chunk,
+                           max_bytes_per_chunk=args.max_bytes_per_chunk)
     except (OSError, ValueError) as error:
         parser.exit(1, f"TSV shard split failed: {error}\n")
     print(json.dumps(report, indent=2))

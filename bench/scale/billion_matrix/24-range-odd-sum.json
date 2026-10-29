@@ -1,0 +1,10 @@
+{
+  "name": "range-odd-sum",
+  "description": "Fused middle-range and odd-number sum",
+  "kind": "range-modulo",
+  "aggregate": "sum",
+  "lower_ppm": 200000,
+  "upper_ppm": 800000,
+  "modulus": 2,
+  "residue": 1
+}

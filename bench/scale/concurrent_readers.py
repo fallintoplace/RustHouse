@@ -6,6 +6,7 @@ import argparse
 import concurrent.futures
 import json
 import math
+import re
 import statistics
 import subprocess
 import time
@@ -24,6 +25,11 @@ def run_readers(binary, part, sql, expected, *, clients=4, rounds=3,
         raise ValueError("expected result must be at most 1 MiB")
     if not sql.strip() or len(sql.encode("utf-8")) > 65536:
         raise ValueError("SQL must be nonempty and at most 64 KiB")
+    statement = sql.strip()
+    if statement.endswith(";"):
+        statement = statement[:-1].rstrip()
+    if not re.match(r"^(SELECT|WITH|EXPLAIN)\b", statement, re.IGNORECASE) or ";" in statement:
+        raise ValueError("concurrent readers require one read-only SQL statement")
     run = execute or subprocess.run
     cmd = [str(binary), "sql", sql, "--part", str(part), "--format",
            "tsv-no-header", "--max-rows", "1000"]
