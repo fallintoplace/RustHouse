@@ -2,14 +2,15 @@
 use std::io::{self, Read};
 
 const POLYNOMIAL: u32 = 0x82f6_3b78;
+const BYTE_VALUES: usize = 256;
 
 // Build the Castagnoli lookup table at compile time. Replication verifies every
 // copied byte, so avoid an eight-iteration bit loop for every input byte.
-const TABLE: [u32; 256] = make_table();
-const SLICING_TABLES: [[u32; 256]; 8] = make_slicing_tables();
+const TABLE: [u32; BYTE_VALUES] = make_table();
+const SLICING_TABLES: [[u32; BYTE_VALUES]; 8] = make_slicing_tables();
 
-const fn make_table() -> [u32; 256] {
-    let mut table = [0u32; 256];
+const fn make_table() -> [u32; BYTE_VALUES] {
+    let mut table = [0u32; BYTE_VALUES];
     let mut index = 0;
     while index < table.len() {
         let mut value = index as u32;
@@ -24,13 +25,13 @@ const fn make_table() -> [u32; 256] {
     table
 }
 
-const fn make_slicing_tables() -> [[u32; 256]; 8] {
-    let mut tables = [[0u32; 256]; 8];
+const fn make_slicing_tables() -> [[u32; BYTE_VALUES]; 8] {
+    let mut tables = [[0u32; BYTE_VALUES]; 8];
     tables[0] = TABLE;
     let mut row = 1;
     while row < tables.len() {
         let mut index = 0;
-        while index < 256 {
+        while index < BYTE_VALUES {
             let previous = tables[row - 1][index];
             tables[row][index] = (previous >> 8) ^ TABLE[(previous & 0xff) as usize];
             index += 1;
