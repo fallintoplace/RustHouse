@@ -24,19 +24,39 @@ fn parse_case_when(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     if !parser.keyword("CASE") || !parser.keyword("WHEN") {
         return Err(ParseError("CASE requires WHEN".into()));
     }
-    let condition = parse_expression_tokens(parser)?;
-    if !parser.keyword("THEN") {
-        return Err(ParseError("CASE WHEN requires THEN".into()));
+    let mut arms = Vec::new();
+    loop {
+        if arms.len() >= 32 {
+            return Err(ParseError("CASE has more than 32 WHEN branches".into()));
+        }
+        let condition = parse_expression_tokens(parser)?;
+        if !parser.keyword("THEN") {
+            return Err(ParseError("CASE WHEN requires THEN".into()));
+        }
+        let value = parse_expression_tokens(parser)?;
+        arms.push((condition, value));
+        if !parser.keyword("WHEN") {
+            break;
+        }
     }
-    let yes = parse_expression_tokens(parser)?;
-    if !parser.keyword("ELSE") {
-        return Err(ParseError("CASE WHEN requires ELSE".into()));
-    }
-    let no = parse_expression_tokens(parser)?;
+    let otherwise = if parser.keyword("ELSE") {
+        parse_expression_tokens(parser)?
+    } else {
+        // Searched CASE without ELSE yields NULL for unmatched rows.
+        ScalarExpr::Null
+    };
     if !parser.keyword("END") {
         return Err(ParseError("CASE WHEN requires END".into()));
     }
-    Ok(ScalarExpr::CaseWhen(Box::new(condition), Box::new(yes), Box::new(no)))
+    // Nest from last to first. The first matching WHEN wins and
+    // no later branch is evaluated, including expressions that might fail.
+    Ok(arms.into_iter().rev().fold(otherwise, |tail, (condition, value)| {
+        ScalarExpr::CaseWhen(
+            Box::new(condition),
+            Box::new(value),
+            Box::new(tail),
+        )
+    }))
 }
 
 pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
