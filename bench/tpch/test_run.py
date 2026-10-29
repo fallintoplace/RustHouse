@@ -5,9 +5,22 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from run import benchmark_one, compare_reference, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
+from run import require_canonical_corpus, benchmark_one, compare_reference, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
 
 class RunnerTests(unittest.TestCase):
+    def test_real_canonical_sql_passes_and_simplified_sql_fails(self):
+        canonical = Path(__file__).resolve().parent / "queries"
+        report = require_canonical_corpus(canonical)
+        self.assertTrue(report["canonical_sql_verified"])
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            for number in range(1, 23):
+                (path / f"q{number:02d}.sql").write_text(
+                    f"SELECT {number};", encoding="utf-8"
+                )
+            with self.assertRaisesRegex(ValueError, "provenance"):
+                require_canonical_corpus(path)
+
     def test_query_discovery_is_numeric(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
