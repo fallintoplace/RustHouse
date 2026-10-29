@@ -116,7 +116,6 @@ pub(super) fn add_date_months(date: &str, months: i64) -> Result<String, ParseEr
     Ok(result)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::{add_date_days, add_date_months, add_date_years, arithmetic};
