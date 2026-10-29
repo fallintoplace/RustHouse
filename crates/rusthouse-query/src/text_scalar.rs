@@ -2711,6 +2711,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "lowerUTF8 requires one argument")?;
             match input {
+                Some(mut value) if value.is_ascii() => {
+                    value.make_ascii_lowercase();
+                    ConstantValue::Text(value)
+                }
                 Some(value) => {
                     let result = value.to_lowercase();
                     if result.len() > MAX_TEXT_BYTES {
