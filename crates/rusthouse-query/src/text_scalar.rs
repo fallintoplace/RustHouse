@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "ZEROIFNULL"
             | "NULLIFZERO"
             | "ISNOTNULL"
             | "ISNULL"
@@ -195,6 +196,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 Some(0) | None => ConstantValue::Null,
                 Some(value) => ConstantValue::Integer(value),
             }
+        }
+        "ZEROIFNULL" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "zeroIfNull requires one argument")?;
+            ConstantValue::Integer(input.unwrap_or(0))
         }
         "LENGTHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
