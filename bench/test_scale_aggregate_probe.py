@@ -10,6 +10,12 @@ class AggregateProbeTests(unittest.TestCase):
         self.assertEqual(values["count(*)"], 1_000_000_000)
         self.assertEqual(values["sum(id)"], 499_999_999_500_000_000)
 
+    def test_rejects_boolean_float_and_overflow_rows(self):
+        for rows in (True, 1.0, -1, 0, 2**64):
+            with self.subTest(rows=rows):
+                with self.assertRaisesRegex(ValueError, "UInt64"):
+                    aggregates(rows)
+
     def test_verifies_all_aggregates(self):
         expected = dict(aggregates(5))
         def execute(command, **kwargs):
