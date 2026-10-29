@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 const CHECKSUM_SIZE: u64 = 16;
 const HEADER_SIZE: u32 = 9;
-const PREFIX_SIZE: usize = 25;
+const PREFIX_SIZE: usize = CHECKSUM_SIZE as usize + HEADER_SIZE as usize;
 const MAX_BLOCK_SIZE: u32 = 0x4000_0000;
 const MAX_DECODE_BLOCK_SIZE: u32 = 64 * 1024 * 1024;
 
