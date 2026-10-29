@@ -28,6 +28,14 @@ class PhysicalRangeOracleTests(unittest.TestCase):
             verify("x", "x", "events", 10, 2, 2,
                    execute=lambda _: b"2\t999\n")
 
+    def test_custom_key_column_uses_safe_sql(self):
+        statement = sql_for("events", 20, 3, column="event_id")
+        self.assertIn("sum(event_id)", statement)
+        self.assertIn("event_id >= 20", statement)
+        self.assertIn("event_id < 23", statement)
+        with self.assertRaisesRegex(ValueError, "column"):
+            sql_for("events", 20, 3, column="id;DELETE")
+
     def test_rejects_noncanonical_numeric_wire_values(self):
         for raw in (b"+2\t21\n", b"02\t21\n", b"2\t21", b"2 \t21\n"):
             with self.subTest(raw=raw):
