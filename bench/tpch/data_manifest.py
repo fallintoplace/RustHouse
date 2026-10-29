@@ -18,7 +18,7 @@ def inspect_table(path, table):
     expected_columns = len(TABLES[table])
     with path.open("rb") as source:
         header = source.readline()
-        if header.rstrip(b"\r\n") != expected:
+        if header not in (expected + b"\n", expected + b"\r\n"):
             raise ValueError(f"{table}: unexpected TSV header")
         digest.update(header)
         for record in source:

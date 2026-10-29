@@ -34,6 +34,14 @@ class DataManifestTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "malformed"):
                         build_manifest(root, ["region"])
 
+    def test_rejects_extra_header_line_terminators(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            for ending in (b"\r\r\n", b"\n\n"):
+                path.write_bytes("\t".join(names("region")).encode() + ending + b"1\tEUROPE\tcomment\n")
+                with self.assertRaisesRegex(ValueError, "header|blank record"):
+                    build_manifest(root, ["region"])
+
     def test_rejects_missing_bad_header_and_duplicates(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(ValueError, "does not exist"):
