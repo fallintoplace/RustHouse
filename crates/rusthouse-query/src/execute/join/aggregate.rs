@@ -18,14 +18,14 @@ pub(super) fn execute_numeric<W: Write>(
     column: &JoinColumn,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    let width = left_names.len();
+    let left_column_count = left_names.len();
     let index = resolve(query, column, left_names, right_names)?;
-    let metadata = if index < width {
+    let metadata = if index < left_column_count {
         inspect_query_source(left_path)?
     } else {
         inspect_query_source(right_path)?
     };
-    let source_index = if index < width { index } else { index - width };
+    let source_index = if index < left_column_count { index } else { index - left_column_count };
     let data_type = base_type(&metadata.columns[source_index].data_type);
     if matches!(data_type, "String" | "UUID" | "Date" | "DateTime")
         || data_type.starts_with("Array(")
@@ -41,7 +41,7 @@ pub(super) fn execute_numeric<W: Write>(
 
     let selected = [(index, header.clone(), None)];
     let right_meta = inspect_query_source(right_path)?;
-    let keep = retained_build_columns(right_names, right_keys, &selected, null_filter, width);
+    let keep = retained_build_columns(right_names, right_keys, &selected, null_filter, left_column_count);
     let right_rows = read_projected_build_rows(
         right_path,
         right_names,
@@ -71,17 +71,17 @@ pub(super) fn execute_numeric<W: Write>(
             &right_rows,
             &hash,
             ProbeOptions {
-                materialize_rows: index < width,
+                materialize_rows: index < left_column_count,
                 materialize_after: 0,
                 stop_after: Some(usize::MAX),
                 any: query.any,
                 null_filter,
             },
             |left, right| {
-                let cell = if index < width {
+                let cell = if index < left_column_count {
                     &left[index]
                 } else {
-                    &right[index - width]
+                    &right[index - left_column_count]
                 };
                 match cell {
                     typed::Cell::Numeric(number) => state.update(*number),

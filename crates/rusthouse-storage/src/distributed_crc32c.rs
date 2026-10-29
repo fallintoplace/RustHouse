@@ -123,6 +123,34 @@ pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64,
     Ok((total, checksum.finish()))
 }
 
+/// Incremental CRC32C for an ordered byte stream.
+/// The checksum is only a corruption check, not an authentication mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Crc32cState {
+    state: u32,
+}
+
+impl Crc32cState {
+    pub fn new() -> Self {
+        Self { state: !0u32 }
+    }
+
+    pub fn append(&mut self, bytes: &[u8]) {
+        self.state = update(self.state, bytes);
+    }
+
+    /// Snapshot the current CRC32C without consuming the accumulator.
+    pub fn checksum(&self) -> u32 {
+        self.state ^ !0u32
+    }
+}
+
+impl Default for Crc32cState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,34 +278,6 @@ mod tests {
             crc32c_reader(&mut reader, data.len() as u64).unwrap(),
             (data.len() as u64, crc32c(data))
         );
-    }
-}
-
-/// Incremental CRC32C for an ordered byte stream.
-/// The checksum is only a corruption check, not an authentication mechanism.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Crc32cState {
-    state: u32,
-}
-
-impl Crc32cState {
-    pub fn new() -> Self {
-        Self { state: !0u32 }
-    }
-
-    pub fn append(&mut self, bytes: &[u8]) {
-        self.state = update(self.state, bytes);
-    }
-
-    /// Snapshot the current CRC32C without consuming the accumulator.
-    pub fn checksum(&self) -> u32 {
-        self.state ^ !0u32
-    }
-}
-
-impl Default for Crc32cState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

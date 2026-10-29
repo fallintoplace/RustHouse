@@ -82,7 +82,7 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
             .map_err(|error| format!("cannot create database {}: {error}", database.display()))?;
     }
     let path = database.join(".rusthouse-write.lock");
-    let kind = if exclusive { "write" } else { "read" };
+    let lock_kind = if exclusive { "write" } else { "read" };
 
     #[cfg(unix)]
     let file = OpenOptions::new()
@@ -91,13 +91,13 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         .create(true)
         .truncate(false)
         .open(&path)
-        .map_err(|error| lock_error("open", kind, &path, error))?;
+        .map_err(|error| lock_error("open", lock_kind, &path, error))?;
 
     #[cfg(unix)]
     {
         validate_lock_identity(&path, &file)?;
         advisory::try_lock(&file, exclusive)
-            .map_err(|error| lock_error("acquire", kind, &path, error))?;
+            .map_err(|error| lock_error("acquire", lock_kind, &path, error))?;
     }
 
     #[cfg(not(unix))]
@@ -105,7 +105,7 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         .write(true)
         .create_new(true)
         .open(&path)
-        .map_err(|error| lock_error("acquire", kind, &path, error))?;
+        .map_err(|error| lock_error("acquire", lock_kind, &path, error))?;
 
     Ok(DatabaseLock {
         _file: file,

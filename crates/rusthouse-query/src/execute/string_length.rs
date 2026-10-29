@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
-fn checked_string_length(
+fn checked_text_length_at_row(
     column: &TypedColumn,
     row: usize,
 ) -> Result<Option<usize>, ExecutionError> {
@@ -91,10 +91,10 @@ pub(super) fn execute<W: Write>(
     let mut written = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
-    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let is_unfiltered = query.predicates.is_empty() && query.or_predicates.is_empty();
     // Reuse typed mark skipping: LENGTH only needs rows after OFFSET when
     // neither filtering, sorting nor deduplication changes row positions.
-    if no_filters && query.order_by.is_none() && query.order_by_extra.is_empty() && !query.distinct
+    if is_unfiltered && query.order_by.is_none() && query.order_by_extra.is_empty() && !query.distinct
     {
         skipped = reader.skip_prefix_rows(offset)?;
     }
@@ -107,14 +107,14 @@ pub(super) fn execute<W: Write>(
             .get(indices[column])
             .ok_or_else(|| ExecutionError::Invalid("missing LENGTH input column".into()))?;
         for row in 0..rows {
-            if !no_filters && !typed::passes(&batch, row, &conditions) {
+            if !is_unfiltered && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             if skipped < offset {
                 skipped += 1;
                 continue;
             }
-            match checked_string_length(values, row)? {
+            match checked_text_length_at_row(values, row)? {
                 Some(length) => writeln!(output, "{length}")?,
                 None => writeln!(output, "\\N")?,
             }
@@ -137,9 +137,9 @@ mod tests {
         let mut source = b"\x03abc\x00".as_slice();
         let values = read_legacy_strings(&mut source, 2).unwrap();
         let column = TypedColumn::Text(values);
-        assert_eq!(checked_string_length(&column, 0).unwrap(), Some(3));
-        assert_eq!(checked_string_length(&column, 1).unwrap(), Some(0));
-        assert!(checked_string_length(&column, 2).is_err());
+        assert_eq!(checked_text_length_at_row(&column, 0).unwrap(), Some(3));
+        assert_eq!(checked_text_length_at_row(&column, 1).unwrap(), Some(0));
+        assert!(checked_text_length_at_row(&column, 2).is_err());
 
         let mut source = b"\x01x\x01y".as_slice();
         let values = read_legacy_strings(&mut source, 2).unwrap();
@@ -147,13 +147,13 @@ mod tests {
             values,
             nulls: vec![0, 1],
         };
-        assert_eq!(checked_string_length(&column, 0).unwrap(), Some(1));
-        assert_eq!(checked_string_length(&column, 1).unwrap(), None);
-        assert!(checked_string_length(&column, 2).is_err());
+        assert_eq!(checked_text_length_at_row(&column, 0).unwrap(), Some(1));
+        assert_eq!(checked_text_length_at_row(&column, 1).unwrap(), None);
+        assert!(checked_text_length_at_row(&column, 2).is_err());
     }
 
     #[test]
     fn rejects_unexpected_column_types() {
-        assert!(checked_string_length(&TypedColumn::Uuid(Vec::new()), 0).is_err());
+        assert!(checked_text_length_at_row(&TypedColumn::Uuid(Vec::new()), 0).is_err());
     }
 }

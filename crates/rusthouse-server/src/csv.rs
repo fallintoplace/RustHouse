@@ -2,6 +2,7 @@
 //! Decode TSV escapes before quoting values. NULL is represented as unquoted \\N.
 use super::jsonl::decode_tsv_value;
 use rusthouse_format::write_quoted_csv_field as write_quoted_field;
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -33,7 +34,7 @@ impl<W: Write> CsvWriter<W> {
             if field_count != 0 {
                 self.encoded.write_all(b",")?;
             }
-            write_csv_field(&mut self.encoded, field)?;
+            write_csv_field_from_tsv(&mut self.encoded, field)?;
             field_count += 1;
         }
         if self.columns.is_some_and(|columns| columns != field_count) {
@@ -50,21 +51,19 @@ impl<W: Write> CsvWriter<W> {
     }
 }
 
-fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+fn write_csv_field_from_tsv<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     if field == b"\\N" {
         return output.write_all(b"\\N");
     }
-    let decoded = if field.contains(&b'\\') {
-        Some(decode_tsv_value(field)?)
+    let value: Cow<'_, str> = if field.contains(&b'\\') {
+        Cow::Owned(decode_tsv_value(field)?)
     } else {
-        None
+        Cow::Borrowed(
+            std::str::from_utf8(field)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field"))?,
+        )
     };
-    let value = match decoded.as_deref() {
-        Some(value) => value,
-        None => std::str::from_utf8(field)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field"))?,
-    };
-    let needs_quotes = value == "\\N"
+    let needs_quotes = value.as_ref() == "\\N"
         || value
             .bytes()
             .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\n' | b'\r'));
@@ -153,8 +152,8 @@ mod tests {
     #[test]
     fn writes_null_markers_and_plain_fields() {
         let mut output = Vec::new();
-        write_csv_field(&mut output, b"\\N").unwrap();
-        write_csv_field(&mut output, b"plain").unwrap();
+        write_csv_field_from_tsv(&mut output, b"\\N").unwrap();
+        write_csv_field_from_tsv(&mut output, b"plain").unwrap();
         assert_eq!(output, b"\\Nplain");
     }
 
@@ -179,7 +178,7 @@ mod tests {
             bytes: Vec::new(),
         };
         let field = vec![b'x'; 32 * 1024];
-        write_csv_field(&mut output, &field).unwrap();
+        write_csv_field_from_tsv(&mut output, &field).unwrap();
         assert_eq!(output.calls, 1);
         assert_eq!(output.bytes, field);
     }
@@ -253,13 +252,13 @@ mod literal_null_marker_regressions {
     #[test]
     fn csv_plain_utf8_fields_skip_escape_decoding() {
         let mut output = Vec::new();
-        write_csv_field(&mut output, "café".as_bytes()).unwrap();
+        write_csv_field_from_tsv(&mut output, "café".as_bytes()).unwrap();
         assert_eq!(output, "café".as_bytes());
         output.clear();
-        write_csv_field(&mut output, b"hello,world").unwrap();
+        write_csv_field_from_tsv(&mut output, b"hello,world").unwrap();
         assert_eq!(output, b"\"hello,world\"");
         output.clear();
-        assert!(write_csv_field(&mut output, b"\xff").is_err());
+        assert!(write_csv_field_from_tsv(&mut output, b"\xff").is_err());
     }
 
     #[test]
