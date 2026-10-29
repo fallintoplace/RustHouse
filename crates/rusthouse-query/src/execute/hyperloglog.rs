@@ -126,17 +126,17 @@ impl HyperLogLog {
     }
 
     pub(super) fn estimate(&self) -> u64 {
-        let m = REGISTERS as f64;
-        let zero = self.registers.iter().filter(|&&rank| rank == 0).count();
+        let register_count = REGISTERS as f64;
+        let zero_register_count = self.registers.iter().filter(|&&rank| rank == 0).count();
         let harmonic = self.registers.iter()
             .map(|&rank| 2.0_f64.powi(-i32::from(rank)))
             .sum::<f64>();
-        let alpha = 0.7213 / (1.0 + 1.079 / m);
-        let raw = alpha * m * m / harmonic;
-        let estimate = if raw <= 2.5 * m && zero > 0 {
-            m * (m / zero as f64).ln()
+        let alpha = 0.7213 / (1.0 + 1.079 / register_count);
+        let raw_estimate = alpha * register_count * register_count / harmonic;
+        let estimate = if raw_estimate <= 2.5 * register_count && zero_register_count > 0 {
+            register_count * (register_count / zero_register_count as f64).ln()
         } else {
-            raw
+            raw_estimate
         };
         estimate.round().min(u64::MAX as f64) as u64
     }
