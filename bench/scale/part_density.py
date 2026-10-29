@@ -22,7 +22,11 @@ def part_density(root):
             raise ValueError(f"refusing symlinked count.txt: {child.name}")
         if not child.is_dir() or not count_file.is_file():
             continue
-        raw = count_file.read_text(encoding="ascii")
+        with count_file.open("rb") as source:
+            payload = source.read(23)
+        if len(payload) > 22:
+            raise ValueError(f"invalid oversized count.txt in {child.name}")
+        raw = payload.decode("ascii")
         digits = raw.removesuffix("\n").removesuffix("\r")
         if not digits or not digits.isascii() or not digits.isdecimal():
             raise ValueError(f"invalid count.txt in {child.name}")

@@ -46,6 +46,14 @@ class PartDensityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no wide parts"):
                 part_density(root)
 
+    def test_rejects_oversized_count_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            part = Path(root) / "all_1_1_0"
+            part.mkdir()
+            (part / "count.txt").write_text("9" * 100000 + "\n")
+            with self.assertRaisesRegex(ValueError, "oversized count"):
+                part_density(root)
+
 
 if __name__ == "__main__":
     unittest.main()
