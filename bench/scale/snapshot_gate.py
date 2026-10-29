@@ -8,6 +8,15 @@ import subprocess
 from pathlib import Path
 
 
+def valid_columns(columns):
+    return (isinstance(columns, list) and bool(columns) and all(
+        isinstance(column, dict)
+        and isinstance(column.get("name"), str) and bool(column["name"])
+        and isinstance(column.get("type"), str) and bool(column["type"])
+        for column in columns
+    ))
+
+
 def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None):
     if type(min_rows) is not int or not 1 <= min_rows <= (1 << 64) - 1:
         raise ValueError("min_rows must be a positive UInt64 integer")
@@ -24,12 +33,7 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None):
             or rows > (1 << 64) - 1 or not 1 <= parts <= 16_384):
         raise ValueError("snapshot report has invalid rows or parts")
     columns = data.get("columns")
-    if (not isinstance(columns, list) or not columns or any(
-        not isinstance(column, dict)
-        or not isinstance(column.get("name"), str) or not column["name"]
-        or not isinstance(column.get("type"), str) or not column["type"]
-        for column in columns
-    )):
+    if not valid_columns(columns):
         raise ValueError("snapshot report has invalid columns")
     if len({column["name"] for column in columns}) != len(columns):
         raise ValueError("snapshot report has duplicate columns")
