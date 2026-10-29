@@ -12,7 +12,10 @@ CASES = ("count_even", "sum_even")
 
 def compare(baseline, candidate, *, max_slowdown_percent=10,
             max_tail_slowdown_percent=None):
-    if not math.isfinite(max_slowdown_percent) or max_slowdown_percent < 0:
+    if not isinstance(baseline, dict) or not isinstance(candidate, dict):
+        raise ValueError("physical comparison reports must be objects")
+    if (type(max_slowdown_percent) not in (int, float)
+            or not math.isfinite(max_slowdown_percent) or max_slowdown_percent < 0):
         raise ValueError("max_slowdown_percent must be finite and nonnegative")
     if max_tail_slowdown_percent is not None and (
             type(max_tail_slowdown_percent) not in (int, float)
@@ -27,7 +30,9 @@ def compare(baseline, candidate, *, max_slowdown_percent=10,
         if (old is None) != (new is None) or (old is not None and old != new):
             raise ValueError(f"physical benchmark {field} settings do not match")
     rows = baseline.get("rows_written_and_verified")
-    if type(rows) is not int or rows < 1 or candidate.get("rows_written_and_verified") != rows:
+    candidate_rows = candidate.get("rows_written_and_verified")
+    if (type(rows) is not int or rows < 1
+            or type(candidate_rows) is not int or candidate_rows != rows):
         raise ValueError("reports must cover the same positive physical row count")
     count, total = even_reference(rows)
     expected = {"count_even": (COUNT_SQL, count), "sum_even": (SUM_SQL, total)}

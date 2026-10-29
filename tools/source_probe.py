@@ -37,6 +37,8 @@ def read_json(url, timeout):
 
 def probe(base, expected_source, table=None, timeout=5, expected_version=None):
     data = read_json(base + "/capabilities", timeout)
+    if not isinstance(data, dict):
+        raise ValueError("invalid capabilities response")
     if data.get("read_only") is not True:
         raise ValueError("server is not marked read-only")
     if data.get("source") != expected_source:

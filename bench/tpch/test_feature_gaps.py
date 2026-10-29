@@ -48,5 +48,13 @@ class FeatureGapTests(unittest.TestCase):
             analyze({})
 
 
+class InvalidGapStatusTests(unittest.TestCase):
+    def test_malformed_status_does_not_crash_or_claim_success(self):
+        for status in ([], {}, True, 0):
+            with self.subTest(status=status):
+                self.assertEqual(classify({"status": status}), "unexpected_status")
+                with self.assertRaisesRegex(ValueError, "status"):
+                    analyze({"results": [{"query": 1, "status": status}]})
+
 if __name__ == "__main__":
     unittest.main()

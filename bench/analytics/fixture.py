@@ -42,8 +42,10 @@ def insert_batch(connection, batch):
 
 
 def generate(directory, rows=10000, seed=42):
-    if not 1 <= rows <= 1000000:
-        raise ValueError("rows must be in 1..1000000")
+    if type(rows) is not int or not 1 <= rows <= 1000000:
+        raise ValueError("rows must be an integer in 1..1000000")
+    if type(seed) is not int or not 0 <= seed <= (1 << 64) - 1:
+        raise ValueError("seed must be an unsigned 64-bit integer")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     names = [name for name, _, _ in FIELDS]
@@ -55,13 +57,17 @@ def generate(directory, rows=10000, seed=42):
                            ", ".join(f"{name} {kind}" for name, _, kind in FIELDS) + ")")
         stream.write("\t".join(names) + "\n")
         batch = []
+        tsv_batch = []
         for record in records(rows, seed):
-            stream.write("\t".join(map(str, record)) + "\n")
+            tsv_batch.append("\t".join(map(str, record)) + "\n")
             batch.append(record)
             if len(batch) == 512:
+                stream.write("".join(tsv_batch))
+                tsv_batch.clear()
                 insert_batch(connection, batch)
                 batch.clear()
         if batch:
+            stream.write("".join(tsv_batch))
             insert_batch(connection, batch)
     (directory / "create.sql").write_text(
         "CREATE TABLE hits (" + ", ".join(f"{name} {kind}" for name, kind, _ in FIELDS) + ");\n",
