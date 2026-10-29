@@ -25,6 +25,14 @@ class TopKProbeTests(unittest.TestCase):
             probe("rusthouse", "part", 3, limit=1,
                   execute=lambda *a, **k: SimpleNamespace(returncode=0, stdout=b"9\n", stderr=b""))
 
+    def test_cli_forwards_configured_topk_deadline(self):
+        from unittest.mock import patch
+        from bench.scale.topk_probe import main
+        with patch("bench.scale.topk_probe.probe", return_value={"results": []}) as call:
+            self.assertEqual(main(["--part", "part", "--binary", "rusthouse",
+                                   "--rows", "5", "--timeout", "42"]), 0)
+            self.assertEqual(call.call_args.kwargs["timeout"], 42.0)
+
 
 if __name__ == "__main__":
     unittest.main()

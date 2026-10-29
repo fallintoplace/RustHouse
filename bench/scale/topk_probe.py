@@ -49,11 +49,12 @@ def main(argv=None):
     parser.add_argument("--rows", type=int, required=True)
     parser.add_argument("--column", default="id")
     parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         report = probe(args.binary, args.part, args.rows, column=args.column,
-                       limit=args.limit)
+                       limit=args.limit, timeout=args.timeout)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
