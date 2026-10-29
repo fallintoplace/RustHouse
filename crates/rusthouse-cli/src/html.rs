@@ -76,7 +76,7 @@ impl<W: Write> HtmlWriter<W> {
     }
 }
 
-fn decode_html_field(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
+fn decode_tsv_field_for_html(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
     if header || field == "\\N" || !field.as_bytes().contains(&b'\\') {
         return Ok(Cow::Borrowed(field));
     }
@@ -87,7 +87,7 @@ fn decode_html_field(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
 
 fn decode_html_fields(line: &str, header: bool) -> io::Result<Vec<Cow<'_, str>>> {
     line.split('\t')
-        .map(|field| decode_html_field(field, header))
+        .map(|field| decode_tsv_field_for_html(field, header))
         .collect()
 }
 
@@ -207,19 +207,19 @@ mod tests {
     #[test]
     fn field_decoder_borrows_plain_headers_and_null_markers() {
         assert!(matches!(
-            decode_html_field("plain", false).unwrap(),
+            decode_tsv_field_for_html("plain", false).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_html_field("\\N", false).unwrap(),
+            decode_tsv_field_for_html("\\N", false).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_html_field("a\\tb", true).unwrap(),
+            decode_tsv_field_for_html("a\\tb", true).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_html_field("a\\tb", false).unwrap(),
+            decode_tsv_field_for_html("a\\tb", false).unwrap(),
             Cow::Owned(_)
         ));
     }
