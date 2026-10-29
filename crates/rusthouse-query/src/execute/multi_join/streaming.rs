@@ -62,6 +62,7 @@ fn visit<W: Write>(
     depth: usize,
     row: &mut Vec<typed::Cell>,
     stages: &[Stage],
+    scratch_keys: &mut [Vec<typed::Key>],
     spec: &OutputSpec<'_>,
     state: &mut OutputState,
     output: &mut W,
@@ -103,16 +104,17 @@ fn visit<W: Write>(
     }
 
     let stage = &stages[depth];
-    let Some(key) = row_key(row, &stage.left_keys) else {
+    // Preserve per-stage key buffers across millions of fact rows.
+    if !row_key_into(row, &stage.left_keys, &mut scratch_keys[depth]) {
         return Ok(());
-    };
-    let Some(matches) = stage.hash.get(&key) else {
+    }
+    let Some(matches) = stage.hash.get(scratch_keys[depth].as_slice()) else {
         return Ok(());
     };
     for &matched in matches.iter().take(if stage.any { 1 } else { usize::MAX }) {
         let original_len = row.len();
         row.extend_from_slice(&stage.rows[matched]);
-        let result = visit(depth + 1, row, stages, spec, state, output);
+        let result = visit(depth + 1, row, stages, scratch_keys, spec, state, output);
         row.truncate(original_len);
         result?;
         if spec.limit.is_some_and(|limit| state.emitted >= limit) {
@@ -248,6 +250,9 @@ pub(super) fn execute<W: Write>(
     if stages.iter().any(|stage| stage.rows.is_empty()) {
         return Ok(());
     }
+    let mut scratch_keys = stages.iter()
+        .map(|stage| Vec::with_capacity(stage.left_keys.len()))
+        .collect::<Vec<Vec<typed::Key>>>();
     // Reuse the same dependency projection for the fact scan.
     let fact_width = relations[0].names.len();
     let projected = &projections[0];
@@ -267,7 +272,7 @@ pub(super) fn execute<W: Write>(
             for (position, &column) in projected.iter().enumerate() {
                 row[column] = typed::cell(&batch[position], index);
             }
-            visit(0, &mut row, &stages, &spec, &mut state, output)?;
+            visit(0, &mut row, &stages, &mut scratch_keys, &spec, &mut state, output)?;
             if spec.limit.is_some_and(|limit| state.emitted >= limit) {
                 return Ok(());
             }
