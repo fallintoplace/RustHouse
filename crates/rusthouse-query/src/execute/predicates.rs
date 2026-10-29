@@ -197,7 +197,24 @@ pub(super) fn count_batch_matches(
                             .filter(|&&value| matches[value as u8 as usize] != *negated)
                             .count();
                     }
-                    NumericColumn::UInt16(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt16(values) => {
+                        if values.len() >= 2048 {
+                            let mut bitmap = [0u64; 1024];
+                            for target in targets {
+                                if let NumberKey::Unsigned(value) = target {
+                                    if let Ok(slot) = u16::try_from(*value) {
+                                        let index = usize::from(slot);
+                                        bitmap[index / 64] |= 1u64 << (index % 64);
+                                    }
+                                }
+                            }
+                            return values.iter().filter(|&&value| {
+                                let index = usize::from(value);
+                                ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
+                            }).count();
+                        }
+                        count_hashed_in!(values, Unsigned, u128)
+                    },
                     NumericColumn::UInt32(v) => count_hashed_in!(v, Unsigned, u128),
                     NumericColumn::UInt64(v) => count_hashed_in!(v, Unsigned, u128),
                     NumericColumn::UInt128(v) => count_hashed_in!(v, Unsigned, u128),
@@ -1108,6 +1125,25 @@ pub(super) fn number_matches(value: Number, target: Number, operator: Operator) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_unsigned_sixteen_in_matches_hash_membership() {
+        let values = (0..4096).map(|value| value as u16).collect::<Vec<_>>();
+        let targets = (0..100).map(|value| Number::Unsigned(value * 2)).collect::<Vec<_>>();
+        for negated in [false, true] {
+            let predicate = CompiledPredicate {
+                index: 0,
+                test: compile_in_test(targets.clone(), negated),
+            };
+            let expected = values.iter().filter(|&&value| {
+                targets.contains(&Number::Unsigned(u128::from(value))) != negated
+            }).count();
+            assert_eq!(
+                count_batch_matches(&[NumericColumn::UInt16(values.clone())], &[vec![predicate]]),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn compiles_fast_numeric_predicates_ahead_of_modulo() {
