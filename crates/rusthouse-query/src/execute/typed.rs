@@ -712,35 +712,35 @@ fn write_text_bytes<W: Write>(
     output: &mut W,
     bytes: &[u8],
 ) -> Result<(), ExecutionError> {
-            let mut start = 0;
-            for (index, &byte) in bytes.iter().enumerate() {
-                let escape: Option<&[u8]> = match byte {
-                    b'\\' => Some(b"\\\\"),
-                    b'\t' => Some(b"\\t"),
-                    b'\n' => Some(b"\\n"),
-                    b'\r' => Some(b"\\r"),
-                    0 => Some(b"\\0"),
-                    0x01..=0x08 | 0x0b..=0x0c | 0x0e..=0x1f | 0x7f => {
-                        if start < index {
-                            output.write_all(&bytes[start..index])?;
-                        }
-                        write!(output, "\\x{byte:02X}")?;
-                        start = index + 1;
-                        continue;
-                    }
-                    _ => None,
-                };
-                if let Some(escape) = escape {
-                    if start < index {
-                        output.write_all(&bytes[start..index])?;
-                    }
-                    output.write_all(escape)?;
-                    start = index + 1;
+    let mut start = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        let escape: Option<&[u8]> = match byte {
+            b'\\' => Some(b"\\\\"),
+            b'\t' => Some(b"\\t"),
+            b'\n' => Some(b"\\n"),
+            b'\r' => Some(b"\\r"),
+            0 => Some(b"\\0"),
+            0x01..=0x08 | 0x0b..=0x0c | 0x0e..=0x1f | 0x7f => {
+                if start < index {
+                    output.write_all(&bytes[start..index])?;
                 }
+                write!(output, "\\x{byte:02X}")?;
+                start = index + 1;
+                continue;
             }
-            if start < bytes.len() {
-                output.write_all(&bytes[start..])?;
+            _ => None,
+        };
+        if let Some(escape) = escape {
+            if start < index {
+                output.write_all(&bytes[start..index])?;
             }
+            output.write_all(escape)?;
+            start = index + 1;
+        }
+    }
+    if start < bytes.len() {
+        output.write_all(&bytes[start..])?;
+    }
     Ok(())
 }
 
