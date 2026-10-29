@@ -1,8 +1,10 @@
 use std::io::{self, Write};
 
+const MAX_SHORT_ESCAPED_FIELD_BYTES: usize = 64;
+
 fn write_short_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     // Worst case: every byte is a doubled quote plus two delimiters.
-    let mut buffer = [0u8; 130];
+    let mut buffer = [0u8; MAX_SHORT_ESCAPED_FIELD_BYTES * 2 + 2];
     let mut used = 1;
     buffer[0] = b'"';
     for &byte in field {
@@ -62,7 +64,7 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
         output.write_all(field)?;
         return output.write_all(b"\"");
     }
-    if field.len() <= 64 {
+    if field.len() <= MAX_SHORT_ESCAPED_FIELD_BYTES {
         write_short_escaped_field(output, field)
     } else {
         write_long_escaped_field(output, field)
