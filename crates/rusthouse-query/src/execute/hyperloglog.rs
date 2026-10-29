@@ -8,6 +8,19 @@ const PRECISION: u32 = 14;
 const REGISTERS: usize = 1 << PRECISION;
 const MAX_REGISTER_RANK: u8 = (64 - PRECISION + 1) as u8;
 
+const fn make_harmonic_weights() -> [f64; MAX_REGISTER_RANK as usize + 1] {
+    let mut weights = [0.0; MAX_REGISTER_RANK as usize + 1];
+    weights[0] = 1.0;
+    let mut index = 1;
+    while index < weights.len() {
+        weights[index] = weights[index - 1] * 0.5;
+        index += 1;
+    }
+    weights
+}
+
+const HARMONIC_WEIGHTS: [f64; MAX_REGISTER_RANK as usize + 1] = make_harmonic_weights();
+
 pub(super) struct HyperLogLog {
     registers: Box<[u8; REGISTERS]>,
 }
@@ -130,7 +143,7 @@ impl HyperLogLog {
         let register_count = REGISTERS as f64;
         let zero_register_count = self.registers.iter().filter(|&&rank| rank == 0).count();
         let harmonic = self.registers.iter()
-            .map(|&rank| 2.0_f64.powi(-i32::from(rank)))
+            .map(|&rank| HARMONIC_WEIGHTS[usize::from(rank)])
             .sum::<f64>();
         let alpha = 0.7213 / (1.0 + 1.079 / register_count);
         let raw_estimate = alpha * register_count * register_count / harmonic;
@@ -146,6 +159,16 @@ impl HyperLogLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn harmonic_lookup_matches_exact_powers_of_two() {
+        for rank in 0..=MAX_REGISTER_RANK {
+            assert_eq!(
+                HARMONIC_WEIGHTS[usize::from(rank)],
+                2.0_f64.powi(-i32::from(rank))
+            );
+        }
+    }
 
     #[test]
     fn empty_duplicates_and_small_counts_are_stable() {
