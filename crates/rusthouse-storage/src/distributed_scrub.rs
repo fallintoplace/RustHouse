@@ -34,12 +34,24 @@ impl ScrubReport {
 /// Check the physical structure and stored-byte hashes of every active part.
 /// Stop writers first. This does not repair or mutate replicas.
 pub fn scrub_snapshot(root: &Path, max_parts: usize) -> Result<ScrubReport, PartError> {
+    scrub_snapshot_with_byte_limit(root, max_parts, u64::MAX)
+}
+
+/// Reject oversized snapshots before starting expensive block/hash verification.
+pub fn scrub_snapshot_with_byte_limit(
+    root: &Path,
+    max_parts: usize,
+    max_bytes: u64,
+) -> Result<ScrubReport, PartError> {
     let active = resolve_active_snapshot(root)?;
     let parts = query_parts(&active)?;
     if parts.len() > max_parts || max_parts > 16_384 {
         return Err(PartError::InvalidScan(
             "replica scrub exceeds part limit".into(),
         ));
+    }
+    if max_bytes != u64::MAX {
+        crate::distributed_inventory::inventory_snapshot(root, 1_048_576, max_bytes)?;
     }
     const PARALLEL_THRESHOLD: usize = 16;
     const MAX_SCRUB_WORKERS: usize = 4;
@@ -202,6 +214,34 @@ mod targeted_scrub_tests {
         assert!(report.checked_files > 0);
         fs::write(part.join("count.txt"), "999\n").unwrap();
         assert!(scrub_part(&part).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod byte_budget_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn rejects_oversized_scrubs_without_touching_snapshot_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-scrub-budget-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_wide_part(
+            &root.join("all_0_0_0"),
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("4".into())]],
+        )
+        .unwrap();
+        assert!(scrub_snapshot_with_byte_limit(&root, 1, 1).is_err());
+        let report = scrub_snapshot_with_byte_limit(&root, 1, 1_000_000).unwrap();
+        assert_eq!(report.parts, 1);
+        assert!(report.checked_bytes > 1);
         fs::remove_dir_all(root).unwrap();
     }
 }
