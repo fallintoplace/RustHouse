@@ -666,6 +666,40 @@ impl Parser {
     }
 }
 
+// ClickHouse ORDER BY ALL sorts by each selected output column in order.
+// The current engine supports at most eight sort keys and cannot expand *.
+fn order_by_all_columns(projection: &Projection) -> Result<Vec<String>, ParseError> {
+    let mut columns = match projection {
+        Projection::Columns(columns) => columns.clone(),
+        Projection::GroupedCount { column }
+        | Projection::GroupedDistinctCount { column, .. } => vec![column.clone(), "count".into()],
+        Projection::GroupedMultiCount { columns }
+        | Projection::GroupedMultiDistinctCount { columns, .. } => {
+            let mut result = columns.clone();
+            result.push("count".into());
+            result
+        }
+        Projection::GroupedAggregate { column, .. } => vec![column.clone(), "#aggregate".into()],
+        Projection::GroupedAggregates { column, items, .. } => {
+            let mut result = vec![column.clone()];
+            result.extend((0..items.len()).map(|index| format!("#aggregate{index}")));
+            result
+        }
+        Projection::GroupedMultiAggregates { columns, items, .. } => {
+            let mut result = columns.clone();
+            result.extend((0..items.len()).map(|index| format!("#aggregate{index}")));
+            result
+        }
+        _ => return Err(ParseError(
+            "ORDER BY ALL requires explicit projected or grouped columns".into(),
+        )),
+    };
+    if columns.is_empty() || columns.len() > 8 {
+        return Err(ParseError("ORDER BY ALL supports at most 8 output columns".into()));
+    }
+    Ok(std::mem::take(&mut columns))
+}
+
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     parse_select_tokens(tokenize(sql)?)
 }
@@ -1495,14 +1529,41 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after ORDER".into()));
         }
-        let first = parser.order_term(&projection)?;
-        while parser.take(Token::Comma) {
-            if order_by_extra.len() >= 7 {
-                return Err(ParseError("ORDER BY supports at most 8 columns".into()));
+        if parser.keyword("ALL") {
+            let columns = order_by_all_columns(&projection)?;
+            let descending = if parser.keyword("DESC") {
+                true
+            } else {
+                parser.keyword("ASC");
+                false
+            };
+            let nulls_first = if parser.keyword("NULLS") {
+                if parser.keyword("FIRST") {
+                    Some(true)
+                } else if parser.keyword("LAST") {
+                    Some(false)
+                } else {
+                    return Err(ParseError("NULLS requires FIRST or LAST".into()));
+                }
+            } else {
+                None
+            };
+            let mut terms = columns.into_iter().map(|column| OrderBy {
+                column, descending, nulls_first,
+            });
+            let first = terms.next().expect("ORDER BY ALL has columns");
+            order_by_extra.extend(terms);
+            Some(first)
+        } else {
+            let first = parser.order_term(&projection)?;
+            while parser.take(Token::Comma) {
+                if order_by_extra.len() >= 7 {
+                    return Err(ParseError("ORDER BY supports at most 8 columns".into()));
+                }
+                order_by_extra.push(parser.order_term(&projection)?);
             }
-            order_by_extra.push(parser.order_term(&projection)?);
+            Some(first)
         }
-        Some(first)
     } else {
         None
     };
