@@ -69,6 +69,15 @@ cargo run -p rusthouse-cli -- sql "INSERT INTO generated (id) SELECT number FROM
 cargo run -p rusthouse-cli -- sql "COPY events FROM '/path/to/events.csv' WITH (FORMAT CSV, HEADER TRUE)" --database ./mydb
 ```
 
+Native ClickHouse-style JSON ingestion can also stream from stdin:
+
+```sh
+rusthouse sql "INSERT INTO events FORMAT JSONEachRow" --database ./mydb < events.jsonl
+```
+
+The SQL header is parsed separately from the input stream. Every row uses the
+same strict JSON parser and atomic storage path as COPY imports.
+
 COPY FROM JSONEachRow imports ClickHouse newline-delimited JSON objects with schema-aware field mapping, nullable missing fields, strict JSON escaping, and atomic failure on malformed input. Use `COPY events FROM '/path/to/events.jsonl' WITH (FORMAT JSONEachRow)`. Records are bounded to 1 MiB each, and CSV-style headers are not allowed.
 
 COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. CSV imports are limited to 50,000 data rows and 8 MiB. Large imports publish verified parts by atomically switching the active snapshot. Existing immutable parts are preserved. TSV imports stream UTF-8 records instead of buffering the entire file. They support imports larger than 50,000 rows and 8 MiB of total input, with a per-record 8 MiB bound, a bounded part buffer, and the existing 16,384-part limit. CSV and TSV bulk inserts both publish verified parts atomically.

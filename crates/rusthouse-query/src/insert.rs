@@ -160,6 +160,40 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     }))
 }
 
+/// ClickHouse's streaming INSERT format header. Payload is provided over
+/// stdin separately so large imports are not buffered or SQL-tokenized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InsertFormatHeader {
+    pub table: String,
+    pub columns: Option<Vec<String>>,
+}
+
+pub fn parse_insert_format_header(sql: &str) -> Result<Option<InsertFormatHeader>, ParseError> {
+    let mut parser = Parser {
+        tokens: crate::lexer::tokenize(sql)?,
+        index: 0,
+    };
+    if !parser.keyword("INSERT") {
+        return Ok(None);
+    }
+    if !parser.keyword("INTO") {
+        return Err(ParseError("expected INTO after INSERT".into()));
+    }
+    let table = parse_insert_identifier(&mut parser)?;
+    let columns = parse_insert_columns(&mut parser)?;
+    if !parser.keyword("FORMAT") {
+        return Ok(None);
+    }
+    if !parser.keyword("JSONEACHROW") {
+        return Err(ParseError("streaming INSERT supports only FORMAT JSONEachRow".into()));
+    }
+    parser.take(Token::Semicolon);
+    if parser.index != parser.tokens.len() {
+        return Err(ParseError("unexpected tokens after INSERT FORMAT".into()));
+    }
+    Ok(Some(InsertFormatHeader { table, columns }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -282,6 +282,18 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             }
             return crate::insert_select::run(database_dir, &insert);
         }
+        if let Some(header) = rusthouse_query::parse_insert_format_header(&query)
+            .map_err(|error| error.to_string())?
+        {
+            if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
+                return Err("streaming INSERT cannot use SELECT-only output options".into());
+            }
+            if show_ast {
+                println!("{header:#?}");
+                return Ok(());
+            }
+            return crate::copy_from::run_insert_json_each_row(database_dir, &header);
+        }
         if let Some(insert) = parse_insert(&query).map_err(|error| error.to_string())? {
             if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
                 return Err(
