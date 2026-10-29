@@ -4,6 +4,8 @@
 use super::*;
 use rusthouse_storage::TypedQueryReader;
 
+use super::super::join::read_projected_build_rows;
+
 struct Stage {
     rows: Vec<Vec<typed::Cell>>,
     hash: HashMap<Vec<typed::Key>, Bucket>,
@@ -115,6 +117,48 @@ pub(super) fn execute<W: Write>(
         offset: query.offset,
         limit: query.limit,
     };
+    // Project all dimension columns needed by any later stage, output
+    // expression, or final filter. Preserve the original logical indexes.
+    let width = relations
+        .last()
+        .map(|relation| relation.start + relation.names.len())
+        .unwrap_or(0);
+    let mut referenced = vec![false; width];
+    for (step_index, step) in std::iter::once(initial_step)
+        .chain(query.steps.iter())
+        .enumerate()
+    {
+        let relation = &relations[step_index + 1];
+        let (left, right) = step_keys(step, &relations[..=step_index + 1], relation.start)?;
+        for index in left {
+            referenced[index] = true;
+        }
+        for index in right {
+            referenced[relation.start + index] = true;
+        }
+    }
+    for &(index, _, fallback) in &selected {
+        referenced[index] = true;
+        if let Some(index) = fallback {
+            referenced[index] = true;
+        }
+    }
+    if let Some((index, _)) = null_filter {
+        referenced[index] = true;
+    }
+    let projections = relations
+        .iter()
+        .map(|relation| {
+            let mut positions = (0..relation.names.len())
+                .filter(|&index| referenced[relation.start + index])
+                .collect::<Vec<_>>();
+            if positions.is_empty() && !relation.names.is_empty() {
+                positions.push(0);
+            }
+            positions
+        })
+        .collect::<Vec<_>>();
+
     let mut stages = Vec::with_capacity(relations.len() - 1);
     let mut retained = 0usize;
     for (step_index, step) in std::iter::once(initial_step)
@@ -125,9 +169,10 @@ pub(super) fn execute<W: Write>(
         let (left_keys, right_keys) =
             step_keys(step, &relations[..=step_index + 1], relation.start)?;
         let available = MAX_CHAIN_BYTES.saturating_sub(retained);
-        let right_rows = read_rows(
+        let right_rows = read_projected_build_rows(
             &paths[step_index + 1],
             &relation.names,
+            &projections[step_index + 1],
             relation.rows,
             crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
             available.min(MAX_STREAM_BUILD_BYTES),
@@ -159,40 +204,9 @@ pub(super) fn execute<W: Write>(
     if stages.iter().any(|stage| stage.rows.is_empty()) {
         return Ok(());
     }
-    // Retain the full logical row width so later join stages can address
-    // their original absolute column indexes. Decode only columns actually
-    // used by join keys, output projections, or the final NULL filter.
+    // Reuse the same dependency projection for the fact scan.
     let fact_width = relations[0].names.len();
-    let mut needed = vec![false; fact_width];
-    for stage in &stages {
-        for &index in &stage.left_keys {
-            if index < fact_width {
-                needed[index] = true;
-            }
-        }
-    }
-    for &(index, _, fallback) in &selected {
-        if index < fact_width {
-            needed[index] = true;
-        }
-        if let Some(index) = fallback.filter(|&index| index < fact_width) {
-            needed[index] = true;
-        }
-    }
-    if let Some((index, _)) = null_filter {
-        if index < fact_width {
-            needed[index] = true;
-        }
-    }
-    let mut projected = needed
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &used)| used.then_some(index))
-        .collect::<Vec<_>>();
-    if projected.is_empty() {
-        // The typed reader requires at least one source stream to count rows.
-        projected.push(0);
-    }
+    let projected = &projections[0];
     let projected_names = projected
         .iter()
         .map(|&index| relations[0].names[index].clone())

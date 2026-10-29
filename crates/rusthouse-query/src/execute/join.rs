@@ -130,7 +130,7 @@ fn retained_build_columns(
 /// Keep full-column positions for existing JOIN key/projection code, but only
 /// decode retained physical streams. This is especially useful for wide
 /// dimensions with many String payload columns.
-fn read_projected_build_rows(
+pub(super) fn read_projected_build_rows(
     path: &Path,
     names: &[String],
     indices: &[usize],
