@@ -7,6 +7,12 @@ pub struct SnapshotVersion {
     pub fingerprint: u128,
 }
 
+impl SnapshotVersion {
+    fn is_initialized(self) -> bool {
+        self.epoch != 0 && self.generation != 0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VersionRelation {
     Identical,
@@ -18,11 +24,7 @@ pub enum VersionRelation {
 /// Comparing versions does not establish consensus or authorize writes.
 /// Different epochs or equal generations with different content must be reconciled.
 pub fn compare_snapshots(local: SnapshotVersion, remote: SnapshotVersion) -> VersionRelation {
-    if local.epoch == 0
-        || remote.epoch == 0
-        || local.generation == 0
-        || remote.generation == 0
-        || local.epoch != remote.epoch
+    if !local.is_initialized() || !remote.is_initialized() || local.epoch != remote.epoch
     {
         return VersionRelation::Diverged;
     }
@@ -129,7 +131,7 @@ pub fn newest_consistent_snapshot(
     let mut seen = std::collections::HashMap::with_capacity(versions.len());
     let mut newest = versions[0];
     for &version in versions {
-        if version.epoch == 0 || version.generation == 0 || version.epoch != epoch {
+        if !version.is_initialized() || version.epoch != epoch {
             return Err("invalid or mismatched snapshot epoch");
         }
         if seen
