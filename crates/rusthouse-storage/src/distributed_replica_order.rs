@@ -148,20 +148,23 @@ pub fn rank_read_replicas_at_least(
     minimum_epoch: u64,
     minimum_generation: u64,
 ) -> Result<Vec<String>, &'static str> {
-    rank_read_replicas(replicas)?;
-    let eligible = replicas
+    let ranked = rank_read_replicas(replicas)?;
+    let eligible: HashSet<&str> = replicas
         .iter()
         .filter(|replica| {
             replica.healthy
                 && replica.epoch == minimum_epoch
                 && replica.generation >= minimum_generation
         })
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|replica| replica.node.as_str())
+        .collect();
     if eligible.is_empty() {
         return Err("no storage replica meets the freshness floor");
     }
-    rank_read_replicas(&eligible)
+    Ok(ranked
+        .into_iter()
+        .filter(|node| eligible.contains(node.as_str()))
+        .collect())
 }
 
 #[cfg(test)]
