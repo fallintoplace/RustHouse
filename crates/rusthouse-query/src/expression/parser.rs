@@ -9,7 +9,7 @@ fn parse_length_column(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     Ok(ScalarExpr::TextLength(column))
 }
 
-fn parse_parenthesized(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+fn parse_parenthesized_scalar_expression(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     parser.index += 1;
     let result = parse_expression_tokens_at_depth(parser, depth + 1)?;
     if !parser.take(Token::RParen) {
@@ -59,7 +59,7 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
             parser.index += 1;
             Ok(literal)
         }
-        Some(Token::LParen) => parse_parenthesized(parser, depth),
+        Some(Token::LParen) => parse_parenthesized_scalar_expression(parser, depth),
         _ => Err(ParseError(
             "expected column, integer, or '(' in expression".into(),
         )),
