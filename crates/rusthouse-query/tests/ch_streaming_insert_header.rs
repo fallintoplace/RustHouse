@@ -1,4 +1,4 @@
-use rusthouse_query::{InsertFormatHeader, parse_insert, parse_insert_format_header};
+use rusthouse_query::{InsertFormatHeader, InsertStreamFormat, parse_insert, parse_insert_format_header};
 
 #[test]
 fn parses_clickhouse_streaming_json_insert_header() {
@@ -8,11 +8,12 @@ fn parses_clickhouse_streaming_json_insert_header() {
         Some(InsertFormatHeader {
             table: "events".into(),
             columns: Some(vec!["id".into(), "name".into()]),
+            format: InsertStreamFormat::JsonEachRow,
         })
     );
     assert_eq!(
         parse_insert_format_header("insert into events format jsoneachrow").unwrap(),
-        Some(InsertFormatHeader { table: "events".into(), columns: None })
+        Some(InsertFormatHeader { table: "events".into(), columns: None, format: InsertStreamFormat::JsonEachRow })
     );
     assert!(parse_insert_format_header("INSERT INTO events VALUES (1)").unwrap().is_none());
     assert!(parse_insert("INSERT INTO events VALUES (1)").unwrap().is_some());
@@ -21,7 +22,7 @@ fn parses_clickhouse_streaming_json_insert_header() {
 #[test]
 fn rejects_bad_formats_duplicate_columns_and_trailing_tokens() {
     for sql in [
-        "INSERT INTO events FORMAT CSV",
+        "INSERT INTO events FORMAT RowBinary",
         "INSERT INTO events (id, id) FORMAT JSONEachRow",
         "INSERT INTO events FORMAT JSONEachRow; DROP TABLE events",
         "INSERT INTO events FORMAT JSONEachRow extra",
