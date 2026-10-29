@@ -16,6 +16,10 @@ from bench.scale.query_resource_profile import profile
 MAX_ROWS = 200_000
 
 
+def sparse_key(index):
+    return ((index % 32768) << 16) | (index // 32768)
+
+
 def distinct_values(rows, layout):
     if not 1 <= rows <= MAX_ROWS:
         raise ValueError("rows must be in 1..200000")
@@ -23,11 +27,11 @@ def distinct_values(rows, layout):
         raise ValueError("layout must be sparse, dense or mixed")
     for index in range(rows):
         if layout == "sparse":
-            yield ((index % 32768) << 16) | (index // 32768)
+            yield sparse_key(index)
         elif layout == "dense":
             yield index % 65536
         else:
-            yield ((index % 32768) << 16) | (index // 32768) if index % 2 == 0 else index % 65536
+            yield sparse_key(index) if index % 2 == 0 else index % 65536
 
 
 def write_tsv(path, rows, layout, duplicates):
