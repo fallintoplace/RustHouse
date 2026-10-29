@@ -55,8 +55,10 @@ fn write_number(writer: &mut impl Write, number: Number) -> Result<(), Execution
         Number::Signed(v) => (1u8, v.to_le_bytes()),
         Number::Float(v) => (2u8, (v.to_bits() as u128).to_le_bytes()),
     };
-    writer.write_all(&[tag])?;
-    writer.write_all(&payload)?;
+    let mut encoded = [0u8; 17];
+    encoded[0] = tag;
+    encoded[1..].copy_from_slice(&payload);
+    writer.write_all(&encoded)?;
     Ok(())
 }
 
