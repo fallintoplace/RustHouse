@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "IPV4STRINGTONUM"
             | "JSONTYPE"
             | "JSONEXTRACTBOOL"
             | "REGEXPQUOTEMETA"
@@ -2745,6 +2746,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "IPV4STRINGTONUM" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IPv4StringToNum requires one string")?;
+            match input {
+                Some(input) => {
+                    let address = input.parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    ConstantValue::Integer(i64::from(u32::from(address)))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "JSONEXTRACTINT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "JSONExtractInt requires a path")?;
@@ -3184,6 +3197,31 @@ mod ch_json_type_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT JSONType()", "SELECT JSONType('{x}')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_ipv4_string_to_num_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn ipv4_compatibility_values() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNum('1.2.3.4')", ConstantValue::Integer(16909060)),
+            ("SELECT IPv4StringToNum('255.255.255.255')", ConstantValue::Integer(4294967295)),
+            ("SELECT IPv4StringToNum(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT IPv4StringToNum()", "SELECT IPv4StringToNum('999.0.0.1')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
