@@ -46,5 +46,15 @@ class FullRunnerTests(unittest.TestCase):
             self.assertEqual(result["failed"], [{"query": 17, "status": "error"}])
 
 
+class CanonicalTimingControlsTests(unittest.TestCase):
+    def test_rejects_invalid_controls_before_loading_sql(self):
+        for options in ({"runs": True}, {"runs": 1.5},
+                        {"warmups": False}, {"timeout": float("nan")},
+                        {"timeout": float("inf")}, {"timeout": True}):
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(ValueError, "invalid timing options"):
+                    command("rusthouse", "db", Path("absent-queries"),
+                            "refs", "report.json", **options)
+
 if __name__ == "__main__":
     unittest.main()

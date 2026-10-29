@@ -54,6 +54,17 @@ class DuckDBGoldensTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "jobs"):
                     generate("duckdb", "db", "/unused", "/unused", jobs=jobs)
 
+    def test_strict_reference_generation_rejects_simplified_queries(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            queries = root / "queries"
+            queries.mkdir()
+            self.make_queries(queries)
+            with self.assertRaises(ValueError):
+                generate("duckdb", "db", queries, root / "goldens",
+                         require_canonical=True)
+            self.assertFalse((root / "goldens").exists())
+
     def test_rejects_incomplete_corpus(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
@@ -79,6 +90,22 @@ class DuckDBGoldensTests(unittest.TestCase):
                          execute=fail_on_second)
             self.assertFalse((root / "goldens").exists())
 
+
+class DuckDBGoldenOutputBudgetTests(unittest.TestCase):
+    def test_oversized_output_does_not_publish_partial_goldens(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            queries = root / "queries"
+            queries.mkdir()
+            for number in range(1, 23):
+                (queries / f"q{number:02d}.sql").write_text(f"SELECT {number};")
+            def huge(args):
+                return subprocess.CompletedProcess(args, 0, b"oversized\n", b"")
+            with patch("duckdb_goldens.MAX_REFERENCE_BYTES", 4):
+                with self.assertRaisesRegex(ValueError, "exceeds 16 MiB"):
+                    generate("duckdb", "db", queries, root / "goldens", execute=huge)
+            self.assertFalse((root / "goldens").exists())
 
 if __name__ == "__main__":
     unittest.main()

@@ -75,6 +75,15 @@ class DbgenConversionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "control-character"):
                     convert_value(value, "String", 1)
 
+    def test_oversized_unterminated_dbgen_record_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "region.tbl"
+            target = Path(root) / "region.tsv"
+            source.write_bytes(b"x" * (8 * 1024 * 1024 + 100))
+            with self.assertRaisesRegex(ValueError, "row 1: exceeds 8 MiB"):
+                convert_table(source, target, "region")
+            self.assertFalse(target.exists())
+
     def test_rejects_invalid_utf8_without_publishing(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "region.tbl"
