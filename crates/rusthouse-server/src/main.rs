@@ -13,6 +13,15 @@ use std::time::Duration;
 
 const MAX_CONFIGURED_CONNECTIONS: usize = 64;
 
+/// Releases a concurrency slot even if a query worker unwinds.
+struct WorkerPermit(Arc<AtomicUsize>);
+
+impl Drop for WorkerPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Bound concurrent read-only analytical requests to avoid unbounded
 /// thread, decoded-block and response-buffer amplification.
 fn parse_max_connections(value: &str) -> io::Result<usize> {
@@ -343,8 +352,8 @@ fn main() -> io::Result<()> {
         let cluster = Arc::clone(&cluster);
         let active = Arc::clone(&active);
         std::thread::spawn(move || {
+            let _permit = WorkerPermit(active);
             serve(stream, &config, &cluster);
-            active.fetch_sub(1, Ordering::AcqRel);
         });
     }
     Ok(())
@@ -477,5 +486,30 @@ mod concurrency_capacity_tests {
             assert!(parse_max_connections(invalid).is_err(), "{invalid}");
         }
         assert_eq!(MAX_CONNECTIONS, 16);
+    }
+}
+
+#[cfg(test)]
+mod worker_slot_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn slot_is_released_on_return_and_unwind() {
+        let count = Arc::new(AtomicUsize::new(1));
+        {
+            let _permit = WorkerPermit(Arc::clone(&count));
+        }
+        assert_eq!(count.load(Ordering::Acquire), 0);
+
+        count.store(1, Ordering::Release);
+        let result = std::panic::catch_unwind({
+            let count = Arc::clone(&count);
+            move || {
+                let _permit = WorkerPermit(count);
+                panic!("simulate request worker panic");
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(count.load(Ordering::Acquire), 0);
     }
 }
