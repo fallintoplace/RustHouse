@@ -18,6 +18,15 @@ class NoRedirect(HTTPRedirectHandler):
 NO_REDIRECT_OPENER = build_opener(NoRedirect())
 
 
+def _unique_object_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate source probe JSON field: {key}")
+        result[key] = value
+    return result
+
+
 def verify_origin(value):
     parsed = urlsplit(value)
     if (parsed.scheme != "http" or parsed.hostname not in ("localhost", "127.0.0.1")
@@ -32,7 +41,7 @@ def read_json(url, timeout):
         payload = reply.read(1_048_577)
     if len(payload) > 1_048_576:
         raise ValueError("response exceeds 1 MiB")
-    return json.loads(payload)
+    return json.loads(payload, object_pairs_hook=_unique_object_pairs)
 
 
 def probe(base, expected_source, table=None, timeout=5, expected_version=None):
