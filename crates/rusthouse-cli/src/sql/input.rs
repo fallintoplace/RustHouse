@@ -83,7 +83,7 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             current.push_str(&input[segment..index]);
             current.push(' ');
             index += if bytes[index] == b'#' { 1 } else { 2 };
-            while index < bytes.len() && bytes[index] != b'\n' {
+            while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
                 index += 1;
             }
             segment = index;
@@ -237,5 +237,24 @@ mod script_size_limit_tests {
         let result = read_script(&path);
         fs::remove_file(path).unwrap();
         assert_eq!(result.unwrap().len(), 90);
+    }
+}
+
+#[cfg(test)]
+mod cr_only_script_comments_tests {
+    use super::split_sql_script;
+
+    #[test]
+    fn preserves_statements_after_cr_only_line_comments() {
+        assert_eq!(
+            split_sql_script(
+                "SELECT 1; -- comment\rSELECT 2; # another\rSELECT 3;"
+            ).unwrap(),
+            ["SELECT 1", "SELECT 2", "SELECT 3"],
+        );
+        assert_eq!(
+            split_sql_script("SELECT 1; -- comment\r\nSELECT 2;").unwrap(),
+            ["SELECT 1", "SELECT 2"],
+        );
     }
 }
