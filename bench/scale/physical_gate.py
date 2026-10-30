@@ -12,6 +12,18 @@ from pathlib import Path
 from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
 
 QUERIES = ("count_even", "sum_even")
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+
+
+def read_report(path, *, max_bytes=MAX_REPORT_BYTES):
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+    with Path(path).open("rb") as source:
+        payload = source.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise ValueError("physical scan report exceeds max_bytes")
+    return json.loads(payload)
+
 
 
 def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
@@ -91,7 +103,7 @@ def main(argv=None):
     parser.add_argument("--max-sample-spread-percent", type=float)
     args = parser.parse_args(argv)
     try:
-        report = validate(json.loads(args.report.read_text(encoding="utf-8")),
+        report = validate(read_report(args.report),
                           min_rows=args.min_rows,
                           max_median_seconds=args.max_median_seconds,
                           max_p90_seconds=args.max_p90_seconds,
