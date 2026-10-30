@@ -26,13 +26,28 @@ class SharedWorkloadTests(unittest.TestCase):
             latency_summary([-1])
 
     def test_cli_preserves_raw_bytes_for_exact_comparisons(self):
-        with mock.patch("bench.common.subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"1\n", b"")) as execute:
+        def execute_sql(command, **kwargs):
+            kwargs["stdout"].write(b"1\n")
+            return subprocess.CompletedProcess(command, 0, None, b"")
+        with mock.patch("bench.common.subprocess.run", side_effect=execute_sql) as execute:
             result = cli_sql("rusthouse", "db", "SELECT 1", 5)
         self.assertEqual(result, b"1\n")
-        execute.assert_called_once_with(
+        self.assertEqual(
+            execute.call_args.args[0],
             ["rusthouse", "sql", "SELECT 1", "--database", "db", "--format", "tsv-no-header"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=5,
         )
+        self.assertEqual(execute.call_args.kwargs["stderr"], subprocess.PIPE)
+        self.assertEqual(execute.call_args.kwargs["timeout"], 5)
+        self.assertNotEqual(execute.call_args.kwargs["stdout"], subprocess.PIPE)
+
+    def test_cli_rejects_result_larger_than_64_mib(self):
+        from bench.common import MAX_SQL_STDOUT_BYTES
+        def write_oversized(command, **kwargs):
+            kwargs["stdout"].truncate(MAX_SQL_STDOUT_BYTES + 1)
+            return subprocess.CompletedProcess(command, 0, None, b"")
+        with mock.patch("bench.common.subprocess.run", side_effect=write_oversized):
+            with self.assertRaisesRegex(ValueError, "64 MiB"):
+                cli_sql("rusthouse", "db", "SELECT 1", 5)
 
     def test_cli_json_oracle_mode_is_explicit_and_read_only(self):
         with mock.patch(

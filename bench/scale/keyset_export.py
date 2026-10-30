@@ -104,6 +104,12 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
         if output.exists() or output.is_symlink():
             raise ValueError("refusing to overwrite an existing export")
         os.link(temporary, output)
+        if os.name == "posix":
+            descriptor = os.open(output.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

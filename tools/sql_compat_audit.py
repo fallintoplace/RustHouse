@@ -2,6 +2,7 @@
 """Conservative parser-only SQL compatibility audit. Never executes SELECT."""
 import argparse
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -28,13 +29,15 @@ def parse_lines(content):
     return queries
 
 
-def audit(binary, queries, run=subprocess.run, fail_fast=False):
+def audit(binary, queries, run=subprocess.run, fail_fast=False, timeout=10):
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("audit timeout must be positive and finite")
     results = []
     with tempfile.TemporaryDirectory(prefix="rusthouse-sql-audit-") as database:
         for line, query in queries:
             try:
                 result = run([str(binary), "sql", query, "--database", database, "--explain"],
-                             capture_output=True, text=True, timeout=10, check=False)
+                             capture_output=True, text=True, timeout=timeout, check=False)
                 status = result.returncode == 0
                 reason = "" if status else result.stderr[:500].strip()
             except (OSError, subprocess.TimeoutExpired) as exc:
@@ -59,10 +62,13 @@ def main():
     parser.add_argument("queries", type=Path, help="one SELECT per line")
     parser.add_argument("--binary", default="target/debug/rusthouse")
     parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument("--timeout", type=float, default=10,
+                        help="Maximum seconds for each parser-only query")
     args = parser.parse_args()
     try:
         statements = parse_lines(args.queries.read_text(encoding="utf-8"))
-        result = audit(args.binary, statements, fail_fast=args.fail_fast)
+        result = audit(args.binary, statements, fail_fast=args.fail_fast,
+                       timeout=args.timeout)
     except (OSError, UnicodeError, ValueError) as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 2

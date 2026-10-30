@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from fixture import DATE_KEYS, generate
-from run import COUNT_SQL, GROUPED_SQL, SQL, benchmark, expected_rows
+from run import COUNT_SQL, GROUPED_SQL, SQL, benchmark, expected_rows, read_fixture_sql
 
 
 class StarJoinBenchmarkTests(unittest.TestCase):
@@ -103,6 +103,15 @@ class StarJoinBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["timings_seconds"], [])
         with self.assertRaisesRegex(ValueError, "invalid row"):
             benchmark("fake", rows=1_000_001)
+
+    def test_generated_sql_script_is_bounded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "table.sql"
+            path.write_text("CREATE TABLE example (id UInt64);\n", encoding="utf-8")
+            self.assertEqual(read_fixture_sql(path), "CREATE TABLE example (id UInt64)")
+            path.write_bytes(b"x" * 65_537)
+            with self.assertRaisesRegex(ValueError, "64 KiB"):
+                read_fixture_sql(path)
 
 
 if __name__ == "__main__":
