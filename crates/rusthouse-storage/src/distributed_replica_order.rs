@@ -17,6 +17,10 @@ fn valid_node(node: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+fn valid_replica_version(replica: &ReplicaStatus) -> bool {
+    valid_node(&replica.node) && replica.epoch != 0 && replica.generation != 0
+}
+
 fn newest_first(left: &ReplicaStatus, right: &ReplicaStatus) -> std::cmp::Ordering {
     right
         .epoch
@@ -28,9 +32,7 @@ fn newest_first(left: &ReplicaStatus, right: &ReplicaStatus) -> std::cmp::Orderi
 fn validate_replica_nodes(replicas: &[ReplicaStatus]) -> Result<(), &'static str> {
     if replicas.len() <= 8 {
         for (index, replica) in replicas.iter().enumerate() {
-            if !valid_node(&replica.node)
-                || replica.epoch == 0
-                || replica.generation == 0
+            if !valid_replica_version(replica)
                 || replicas[..index].iter().any(|prior| prior.node == replica.node)
             {
                 return Err("invalid or duplicate replica version or node");
@@ -40,9 +42,7 @@ fn validate_replica_nodes(replicas: &[ReplicaStatus]) -> Result<(), &'static str
     }
     let mut seen = HashSet::with_capacity(replicas.len());
     for replica in replicas {
-        if !valid_node(&replica.node)
-            || replica.epoch == 0
-            || replica.generation == 0
+        if !valid_replica_version(replica)
             || !seen.insert(replica.node.as_str())
         {
             return Err("invalid or duplicate replica version or node");
