@@ -16,7 +16,7 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     // Keep malformed huge counts from triggering an unbounded allocation.
     let capacity = expected.min(1024);
     let mut columns = Vec::with_capacity(capacity);
-    let mut names = HashSet::with_capacity(capacity);
+    let mut names = (expected > 8).then(|| HashSet::with_capacity(capacity));
     for index in 0..expected {
         let line_number = index + 3;
         let line = lines
@@ -25,7 +25,12 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
                 invalid_columns_format_error(line_number, "fewer columns than declared")
             })?;
         let column = parse_column(line, line_number)?;
-        if !names.insert(column.name.clone()) {
+        let duplicated = if let Some(seen) = names.as_mut() {
+            !seen.insert(column.name.clone())
+        } else {
+            columns.iter().any(|existing: &Column| existing.name == column.name)
+        };
+        if duplicated {
             return Err(invalid_columns_format_error(line_number, "duplicate column name"));
         }
         columns.push(column);
@@ -275,6 +280,26 @@ mod tests {
                 ),
                 "{header:?}"
             );
+        }
+    }
+
+    #[test]
+    fn small_and_large_schema_validation_preserves_duplicate_checks() {
+        for count in [1usize, 2, 8, 9, 32] {
+            let entries = (0..count)
+                .map(|index| format!("id_{index} UInt64\n"))
+                .collect::<String>();
+            let document = format!("columns format version: 1\n{count} columns:\n{entries}");
+            assert_eq!(parse_columns(&document).unwrap().len(), count);
+            if count > 1 {
+                let repeated = entries.replacen(
+                    &format!("id_{} UInt64\n", count - 1),
+                    "id_0 UInt64\n",
+                    1,
+                );
+                let duplicate = format!("columns format version: 1\n{count} columns:\n{repeated}");
+                assert!(parse_columns(&duplicate).is_err());
+            }
         }
     }
 
