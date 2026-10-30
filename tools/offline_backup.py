@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cold RustHouse database copy. Stop ALL writers and readers before using."""
 import argparse
+from contextlib import contextmanager
 import math
 import os
 from pathlib import Path
@@ -9,6 +10,34 @@ import stat
 import subprocess
 import sys
 import tempfile
+
+try:
+    import fcntl
+except ImportError:  # Windows continues to use the documented offline requirement.
+    fcntl = None
+
+
+@contextmanager
+def refuse_live_database(source):
+    """Hold the Unix exclusive database lock during a cold backup."""
+    lock = source / ".rusthouse-write.lock"
+    if fcntl is None or not lock.exists():
+        yield
+        return
+    fd = None
+    try:
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(lock, flags)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("database lock is not a regular file")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("database is in use; stop readers and writers") from exc
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def preflight(source, destination, max_bytes=None):
@@ -46,24 +75,25 @@ def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeo
             not math.isfinite(doctor_timeout) or doctor_timeout <= 0):
         raise ValueError("doctor_timeout must be positive and finite")
     source, destination, stage = preflight(source, destination, max_bytes=max_bytes)
-    # Preserve the complete layout, including hidden files and lock inode contents.
-    shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
-    try:
-        with tempfile.TemporaryFile() as errors:
-            result = subprocess.run(
-                [str(binary), "doctor", "--database", str(stage), "--full-hashes"],
-                stdout=subprocess.DEVNULL, stderr=errors,
-                timeout=doctor_timeout, check=False,
-            )
-            errors.seek(max(0, errors.tell() - 2000))
-            diagnostic = errors.read(2000).decode("utf-8", "replace")
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError("backup remains at " + str(stage) + ": " + str(exc)) from exc
-    if result.returncode:
-        raise RuntimeError("doctor rejected staged backup at " + str(stage) +
-                           ": " + diagnostic)
-    stage.rename(destination)
-    return destination
+    with refuse_live_database(source):
+        # Preserve the complete layout, including hidden files and lock inode contents.
+        shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
+        try:
+            with tempfile.TemporaryFile() as errors:
+                result = subprocess.run(
+                    [str(binary), "doctor", "--database", str(stage), "--full-hashes"],
+                    stdout=subprocess.DEVNULL, stderr=errors,
+                    timeout=doctor_timeout, check=False,
+                )
+                errors.seek(max(0, errors.tell() - 2000))
+                diagnostic = errors.read(2000).decode("utf-8", "replace")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("backup remains at " + str(stage) + ": " + str(exc)) from exc
+        if result.returncode:
+            raise RuntimeError("doctor rejected staged backup at " + str(stage) +
+                               ": " + diagnostic)
+        stage.rename(destination)
+        return destination
 
 
 def main():
