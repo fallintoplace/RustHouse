@@ -28,11 +28,7 @@ impl Capacity {
         self.reserved.checked_sub(bytes).ok_or(error)
     }
 
-    /// Reserve bytes without changing the used-byte count.
-    pub fn reserve(self, bytes: u64) -> Result<Self, &'static str> {
-        if bytes > self.available()? {
-            return Err("insufficient replica capacity");
-        }
+    fn add_reservation(self, bytes: u64) -> Result<Self, &'static str> {
         Ok(Self {
             reserved: self
                 .reserved
@@ -40,6 +36,14 @@ impl Capacity {
                 .ok_or("replica reservation overflow")?,
             ..self
         })
+    }
+
+    /// Reserve bytes without changing the used-byte count.
+    pub fn reserve(self, bytes: u64) -> Result<Self, &'static str> {
+        if bytes > self.available()? {
+            return Err("insufficient replica capacity");
+        }
+        self.add_reservation(bytes)
     }
 
     /// Convert reserved bytes into committed usage.
@@ -152,10 +156,7 @@ impl Capacity {
                 return Err("insufficient replica capacity");
             }
         }
-        Ok(Self {
-            reserved: self.reserved.checked_add(bytes).ok_or("replica reservation overflow")?,
-            ..self
-        })
+        self.add_reservation(bytes)
     }
 }
 
