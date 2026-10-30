@@ -9,7 +9,7 @@ class GroupedDoctorOutputTests(unittest.TestCase):
     def test_successful_snapshot_verification(self):
         def run(command, **kwargs):
             self.assertNotIn("capture_output", kwargs)
-            kwargs["stdout"].write(b"OK events: 10 rows, 1 parts\\n")
+            kwargs["stdout"].write(b"OK events: 10 rows, 1 parts\n")
             return subprocess.CompletedProcess(command, 0)
         with patch("bench.scale.grouped_physical.subprocess.run", side_effect=run):
             inspect_persisted_snapshot("rusthouse", "db", 10, 2)
