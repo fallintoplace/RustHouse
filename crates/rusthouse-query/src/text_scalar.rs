@@ -429,19 +429,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "JSONEXTRACTBOOL" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "JSONExtractBool requires a path")?;
-            let path = text_arg(parser, depth + 1)?;
-            require(
-                parser,
-                Token::RParen,
-                "JSONExtractBool requires two arguments",
-            )?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "JSONExtractBool requires one or two arguments")?;
             match (input, path) {
-                (Some(input), Some(path)) => {
+                (Some(input), path) if path != Some(None) => {
                     let json = crate::json::parse_json(&input)
                         .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
-                    let is_true = json.at_path(&path).is_some_and(|value| value.raw() == "true");
-                    ConstantValue::Integer(i64::from(is_true))
+                    let value = match path {
+                        Some(Some(path)) => json.at_path(&path),
+                        None => Some(&json),
+                        Some(None) => unreachable!(),
+                    };
+                    ConstantValue::Integer(i64::from(
+                        value.is_some_and(|node| node.raw() == "true")
+                    ))
                 }
                 _ => ConstantValue::Null,
             }
