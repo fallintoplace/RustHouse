@@ -82,6 +82,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISVALIDJSON"
             | "JSONTYPE"
             | "JSONLENGTH"
+            | "JSON_EXISTS"
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTINT"
@@ -235,6 +236,61 @@ fn crc32_ieee(input: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+// Convert a bounded, unambiguous JSONPath subset to the existing dotted
+// object/array lookup used by the strict JSON parser.
+fn simple_json_path(path: &str) -> Result<Option<String>, ParseError> {
+    if path == "$" {
+        return Ok(None);
+    }
+    if path.len() > 256 || !path.starts_with('$') {
+        return Err(ParseError("JSON_EXISTS requires a bounded root JSONPath".into()));
+    }
+    let bytes = path.as_bytes();
+    let mut cursor = 1;
+    let mut components = String::new();
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'.' => {
+                cursor += 1;
+                let start = cursor;
+                while cursor < bytes.len()
+                    && (bytes[cursor].is_ascii_alphanumeric()
+                        || matches!(bytes[cursor], b'_' | b'-'))
+                {
+                    cursor += 1;
+                }
+                if start == cursor {
+                    return Err(ParseError("unsupported JSON_EXISTS path".into()));
+                }
+                if !components.is_empty() {
+                    components.push('.');
+                }
+                components.push_str(&path[start..cursor]);
+            }
+            b'[' => {
+                cursor += 1;
+                let start = cursor;
+                while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+                    cursor += 1;
+                }
+                if cursor == start || bytes.get(cursor) != Some(&b']') {
+                    return Err(ParseError("unsupported JSON_EXISTS array index".into()));
+                }
+                if !components.is_empty() {
+                    components.push('.');
+                }
+                components.push_str(&path[start..cursor]);
+                cursor += 1;
+            }
+            _ => return Err(ParseError("unsupported JSON_EXISTS path".into())),
+        }
+    }
+    if components.is_empty() {
+        return Err(ParseError("unsupported JSON_EXISTS path".into()));
+    }
+    Ok(Some(components))
 }
 
 fn parse_mac_address(input: &str) -> Option<u64> {
@@ -3858,6 +3914,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         })
                         .unwrap_or("");
                     ConstantValue::Text(value.to_owned())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSON_EXISTS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSON_EXISTS requires a JSONPath")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "JSON_EXISTS requires two arguments")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let components = simple_json_path(&path)?;
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let found = components
+                        .as_deref()
+                        .is_none_or(|path| json.at_path(path).is_some());
+                    ConstantValue::Integer(i64::from(found))
                 }
                 _ => ConstantValue::Null,
             }
