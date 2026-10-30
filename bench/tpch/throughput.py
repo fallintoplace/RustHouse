@@ -32,11 +32,13 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None,
         raise ValueError("clients must be 1..64 and rounds 1..100")
     if not queries:
         raise ValueError("at least one SQL query is required")
-    references = references or {}
+    references = {} if references is None else references
     if not isinstance(references, dict) or any(
             type(number) is not int or type(golden) is not bytes
             for number, golden in references.items()):
         raise ValueError("throughput references must map integer IDs to bytes")
+    if sum(len(golden) for golden in references.values()) > 64 * 1024 * 1024:
+        raise ValueError("throughput references exceed 64 MiB total")
     if require_verified and any(number not in references for number, _ in queries):
         raise ValueError("verified throughput requires a reference for every query")
     # Explicitly cap the planned jobs to avoid runaway CI load.
@@ -59,6 +61,8 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None,
             output = execute(sql)
             if type(output) is not bytes:
                 raise TypeError("SQL execution must return bytes")
+            if len(output) > MAX_REFERENCE_BYTES:
+                raise ValueError("SQL throughput output exceeds 16 MiB")
         except subprocess.TimeoutExpired:
             return {"query": number, "status": "timeout",
                     "seconds": None, "error": "query timed out"}
