@@ -365,8 +365,20 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
         }
         Err(error) => return Err(format!("cannot rename table {from}: {error}")),
     }
+    // Ensure the destination name is on disk before removing the source.
+    // Otherwise a crash between the link and unlink can lose both names.
+    if let Err(error) = sync_catalog_dir(catalog) {
+        let rollback = fs::remove_file(&destination)
+            .and_then(|_| fs::File::open(catalog).and_then(|dir| dir.sync_all()));
+        if let Err(rollback) = rollback {
+            return Err(format!(
+                "cannot sync staged rename {from} to {to}: {error}; rollback failed: {rollback}"
+            ));
+        }
+        return Err(format!("cannot sync staged rename {from} to {to}: {error}"));
+    }
     if let Err(error) = fs::remove_file(&source) {
-        let _ = fs::remove_file(&destination);
+        // Keep the destination alias, which has already been durably linked.
         return Err(format!("cannot finish renaming table {from}: {error}"));
     }
     sync_catalog_dir(catalog).map_err(|error| {
