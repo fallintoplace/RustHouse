@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "STARTSWITHUTF8"
             | "NORMALIZEIPV6"
     )
 }
@@ -2931,7 +2932,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "STARTS_WITH" | "STARTSWITH" => {
+        "STARTS_WITH" | "STARTSWITH" | "STARTSWITHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STARTS_WITH requires a prefix")?;
             let prefix = text_arg(parser, depth + 1)?;
