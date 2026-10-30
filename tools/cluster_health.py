@@ -18,6 +18,15 @@ class NoRedirect(HTTPRedirectHandler):
 NO_REDIRECT_OPENER = build_opener(NoRedirect())
 
 
+def _unique_object_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate peer-health JSON field: {key}")
+        result[key] = value
+    return result
+
+
 def validate(payload, *, min_healthy=None):
     if not isinstance(payload, dict):
         raise ValueError("expected JSON object")
@@ -60,7 +69,7 @@ def inspect(origin, timeout=5, min_healthy=None):
         raw = exc.read(1_048_577)
     if len(raw) > 1_048_576:
         raise ValueError("peer-health response too large")
-    payload = json.loads(raw)
+    payload = json.loads(raw, object_pairs_hook=_unique_object_pairs)
     return validate(payload, min_healthy=min_healthy), payload
 
 
