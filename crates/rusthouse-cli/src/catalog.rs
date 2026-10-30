@@ -195,13 +195,33 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
     if metadata.len() > MAX_SCHEMA_BYTES {
         return Err(format!("schema is too large for table {name}"));
     }
-    // Limit reads even if a schema grows between metadata inspection and open.
+    // Pin the same regular file checked above before trusting catalog metadata.
+    let mut file = fs::File::open(&path)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    let opened = file.metadata()
+        .map_err(|error| format!("cannot inspect opened schema for {name}: {error}"))?;
+    if !opened.file_type().is_file() || opened.len() > MAX_SCHEMA_BYTES {
+        return Err(format!("invalid opened schema for table {name}"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
+            return Err(format!("schema file replaced during open for {name}"));
+        }
+    }
     let mut bytes = Vec::new();
-    fs::File::open(&path)
-        .map_err(|error| format!("cannot read table {name}: {error}"))?
+    (&mut file)
         .take(MAX_SCHEMA_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    let finished = file.metadata()
+        .map_err(|error| format!("cannot inspect schema after read for {name}: {error}"))?;
+    if finished.len() != opened.len() || finished.modified().map_err(|error| error.to_string())?
+        != opened.modified().map_err(|error| error.to_string())?
+    {
+        return Err(format!("schema changed while reading table {name}"));
+    }
     if bytes.len() as u64 > MAX_SCHEMA_BYTES {
         return Err(format!("schema is too large for table {name}"));
     }
@@ -445,5 +465,25 @@ mod show_tables_like_tests {
         assert!(table_matches_like("any", "%"));
         assert!(!table_matches_like("any", "other%"));
         assert!(!table_matches_like("any", r"any\"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod catalog_symlink_schema_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn refuses_to_follow_catalog_schema_symlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-catalog-symlink-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("events.schema"), "rusthouse-schema-v1\nid\tUInt64\n").unwrap();
+        symlink("events.schema", root.join("alias.schema")).unwrap();
+        assert!(read_schema(&root, "events").is_ok());
+        assert!(read_schema(&root, "alias").is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
