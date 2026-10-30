@@ -21,7 +21,11 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
         capture_output=True, check=False, timeout=600,
     )
     if result.returncode:
-        raise RuntimeError(f"snapshot inspection failed: {result.stderr.decode('utf-8', 'replace')[-600:]}")
+        raise RuntimeError(
+            f"snapshot inspection failed: {result.stderr[-600:].decode('utf-8', 'replace')}"
+        )
+    if len(result.stdout) > 1_048_576:
+        raise ValueError("snapshot inspection JSON exceeds 1 MiB")
     def unique_fields(pairs):
         fields = {}
         for name, value in pairs:
