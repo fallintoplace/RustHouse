@@ -342,10 +342,14 @@ fn main() -> io::Result<()> {
         let config = Arc::clone(&config);
         let cluster = Arc::clone(&cluster);
         let active = Arc::clone(&active);
-        std::thread::spawn(move || {
+        let worker_active = Arc::clone(&active);
+        if let Err(error) = std::thread::Builder::new().spawn(move || {
             serve(stream, &config, &cluster);
+            worker_active.fetch_sub(1, Ordering::AcqRel);
+        }) {
             active.fetch_sub(1, Ordering::AcqRel);
-        });
+            eprintln!("cannot spawn request worker: {error}");
+        }
     }
     Ok(())
 }
