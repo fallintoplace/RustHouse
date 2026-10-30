@@ -55,5 +55,27 @@ class InteropParityTests(unittest.TestCase):
             self.assertEqual(req.data, b"SELECT 1")
 
 
+
+
+class BoundedCliParityTests(unittest.TestCase):
+    def test_large_cli_output_is_rejected_without_buffering_pipe(self):
+        from types import SimpleNamespace
+        def run(_command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].truncate(4 * 1024 * 1024 + 1)
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with mock.patch.object(parity.subprocess, "run", side_effect=run):
+            with self.assertRaisesRegex(ValueError, "4 MiB"):
+                parity.cli("binary", "db", "SELECT 1")
+
+    def test_normal_cli_output_survives_spooling(self):
+        from types import SimpleNamespace
+        def run(_command, **kwargs):
+            kwargs["stdout"].write(b"count\n3\n")
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with mock.patch.object(parity.subprocess, "run", side_effect=run):
+            self.assertEqual(parity.cli("binary", "db", "SELECT count(*) FROM events"),
+                             b"count\n3\n")
+
 if __name__ == "__main__":
     unittest.main()
