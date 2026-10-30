@@ -35,6 +35,45 @@ fn reserve_parallel_group(
 }
 
 
+/// Encoded probes reuse one buffer on hits. Charge only the owned text
+/// payload on misses, using the same estimate as the previous Key-based
+/// path. Inline numeric encodings fit inside the fixed per-dimension budget.
+fn reserve_parallel_encoded_group(
+    budget: &std::sync::atomic::AtomicUsize,
+    batch: &[TypedColumn],
+    group_indices: &[usize],
+    row: usize,
+) -> Result<(), ExecutionError> {
+    use std::sync::atomic::Ordering;
+    let fixed = group_indices
+        .len()
+        .checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
+        .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))?;
+    let bytes = group_indices.iter().try_fold(fixed, |total, &index| {
+        let payload = match &batch[index] {
+            TypedColumn::Text(values) => values.get(row).map_or(0, |value| value.len()),
+            TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
+                values.get(row).map_or(0, |value| value.len())
+            }
+            _ => 0,
+        };
+        payload
+            .checked_mul(2)
+            .and_then(|bytes| total.checked_add(bytes))
+            .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))
+    })?;
+    budget
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current
+                .checked_add(bytes)
+                .filter(|&total| total <= MAX_PARALLEL_KEY_BYTES)
+        })
+        .map(|_| ())
+        .map_err(|_| {
+            ExecutionError::Invalid("parallel GROUP BY exceeds 64 MiB worker key budget".into())
+        })
+}
+
 const MAX_GROUP_KEY_BYTES: usize = 64 * 1024 * 1024;
 
 fn charge_group_memory(
@@ -74,6 +113,7 @@ fn parallel_grouped_parts(
     names: &[String],
     group_indices: &[usize],
     conditions: &[Vec<typed::Condition>],
+    has_text_key: bool,
     no_filters: bool,
 ) -> Result<Option<Vec<(Vec<Cell>, u64)>>, ExecutionError> {
     let parts = rusthouse_storage::query_parts(part)?;
@@ -91,6 +131,8 @@ fn parallel_grouped_parts(
             std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Vec<(Vec<Cell>, u64)>, ExecutionError> {
                 let mut rows: Vec<(Vec<Cell>, u64)> = Vec::new();
                 let mut index: HashMap<Vec<Key>, usize> = HashMap::new();
+                let mut encoded_index = HashMap::<Vec<u8>, usize>::new();
+                let mut encoded_probe = Vec::<u8>::new();
                 // Frequent dimension keys should reuse their probe allocation
                 // instead of allocating a Vec for every fact row.
                 let mut probe = Vec::<Key>::with_capacity(group_indices.len());
@@ -99,6 +141,49 @@ fn parallel_grouped_parts(
                     while let Some(batch) = reader.next_batch()? {
                         for row in 0..batch[0].len() {
                             if !no_filters && !typed::passes(&batch, row, conditions) {
+                                continue;
+                            }
+                            if has_text_key {
+                                encoded_probe.clear();
+                                for &column in group_indices {
+                                    super::grouped_numeric_keys::append_group_component(
+                                        &batch[column],
+                                        row,
+                                        &mut encoded_probe,
+                                    );
+                                }
+                                if let Some(&found) = encoded_index.get(encoded_probe.as_slice()) {
+                                    rows[found].1 = rows[found]
+                                        .1
+                                        .checked_add(1)
+                                        .ok_or_else(|| {
+                                            ExecutionError::Invalid("group count overflow".into())
+                                        })?;
+                                } else {
+                                    if rows.len() >= MAX_GROUPS {
+                                        return Err(ExecutionError::Invalid(
+                                            "GROUP BY supports at most 200000 groups".into(),
+                                        ));
+                                    }
+                                    reserve_parallel_encoded_group(
+                                        retained,
+                                        &batch,
+                                        group_indices,
+                                        row,
+                                    )?;
+                                    encoded_index.insert(
+                                        std::mem::take(&mut encoded_probe),
+                                        rows.len(),
+                                    );
+                                    encoded_probe = Vec::with_capacity(group_indices.len() * 24);
+                                    rows.push((
+                                        group_indices
+                                            .iter()
+                                            .map(|&column| typed::cell(&batch[column], row))
+                                            .collect(),
+                                        1,
+                                    ));
+                                }
                                 continue;
                             }
                             probe.clear();
@@ -204,11 +289,17 @@ pub(super) fn execute<W: Write>(
     }
 
     let group_indices = columns.iter().map(|name| indices[name]).collect::<Vec<_>>();
+    // Text dimensions can be compared via a reusable encoded probe, without
+    // allocating a String key for every scanned row.
+    let has_text_key = columns
+        .iter()
+        .any(|column| matches!(typed::base_type(types[column].as_str()), "String"));
     let partial = parallel_grouped_parts(
         part,
         &names,
         &group_indices,
         &conditions,
+        has_text_key,
         query.predicates.is_empty() && query.or_predicates.is_empty(),
     )?;
     // Some(empty) is a completed parallel scan with zero matching rows.
@@ -235,10 +326,6 @@ pub(super) fn execute<W: Write>(
     }
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
     let mut probe_key = Vec::with_capacity(group_indices.len());
-    // Probe repeated String dimensions without cloning their decoded bytes.
-    let has_text_key = columns
-        .iter()
-        .any(|column| matches!(typed::base_type(types[column].as_str()), "String"));
     let mut encoded_groups = HashMap::<Vec<u8>, usize>::new();
     let mut encoded_probe = Vec::new();
     let mut dense_groups = (columns.len() == 2
