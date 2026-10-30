@@ -3921,10 +3921,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "toYear requires one argument")?;
             match input {
                 Some(value) => {
-                    if rusthouse_storage::parse_date(&value).is_none() {
-                        return Err(ParseError("invalid Date argument".into()));
-                    }
-                    ConstantValue::Integer(value[..4].parse::<i64>().unwrap())
+                    let year = if rusthouse_storage::parse_date(&value).is_some() {
+                        &value[..4]
+                    } else {
+                        let seconds = rusthouse_storage::parse_datetime(&value)
+                            .ok_or_else(|| ParseError("invalid UTC Date or DateTime argument".into()))?;
+                        // Normalize timezone offsets before taking the calendar year.
+                        let utc = rusthouse_storage::format_datetime(seconds);
+                        return Ok(ConstantValue::Integer(utc[..4].parse::<i64>().unwrap()));
+                    };
+                    ConstantValue::Integer(year.parse::<i64>().unwrap())
                 }
                 None => ConstantValue::Null,
             }
