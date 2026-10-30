@@ -136,6 +136,18 @@ def compare(baseline, candidate, slowdown_threshold_percent=10):
     }
 
 
+
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+
+
+def _read_bounded_report(path):
+    with path.open("rb") as source:
+        contents = source.read(MAX_REPORT_BYTES + 1)
+    if len(contents) > MAX_REPORT_BYTES:
+        raise ValueError("benchmark JSON report exceeds 16 MiB")
+    return contents.decode("utf-8")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
@@ -146,8 +158,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         result = compare(
-            json.loads(args.baseline.read_text(encoding="utf-8")),
-            json.loads(args.candidate.read_text(encoding="utf-8")),
+            json.loads(_read_bounded_report(args.baseline)),
+            json.loads(_read_bounded_report(args.candidate)),
             args.slowdown_threshold_percent,
         )
     except (OSError, ValueError) as error:
