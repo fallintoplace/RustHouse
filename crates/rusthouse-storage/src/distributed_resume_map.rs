@@ -8,6 +8,10 @@ pub struct ResumeMap {
     completed: Vec<u8>,
 }
 
+fn low_bit_mask(bits: usize) -> u8 {
+    ((1u16 << bits) - 1) as u8
+}
+
 impl ResumeMap {
     pub fn new(chunks: usize) -> Result<Self, &'static str> {
         if chunks > 65_536 {
@@ -43,7 +47,7 @@ impl ResumeMap {
         if remainder == 0 {
             count
         } else {
-            let mask = ((1u16 << remainder) - 1) as u8;
+            let mask = low_bit_mask(remainder);
             count + (self.completed[full_bytes] & mask).count_ones() as usize
         }
     }
@@ -97,7 +101,7 @@ impl ResumeMap {
         for (byte_index, &completed) in self.completed.iter().enumerate() {
             let mut bits = !completed;
             if byte_index == self.completed.len() - 1 && self.chunks % 8 != 0 {
-                bits &= ((1u16 << (self.chunks % 8)) - 1) as u8;
+                bits &= low_bit_mask(self.chunks % 8);
             }
             while bits != 0 {
                 missing.push(byte_index * 8 + bits.trailing_zeros() as usize);
