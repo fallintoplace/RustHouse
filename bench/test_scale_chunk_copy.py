@@ -9,6 +9,21 @@ from bench.scale.chunk_copy import copy_sql, load_chunks
 
 
 class ChunkCopyTests(unittest.TestCase):
+    def test_default_copy_process_spools_stderr(self):
+        import subprocess
+        from unittest.mock import patch
+        from bench.scale.chunk_copy import execute_copy
+        def failing(_cmd, **kwargs):
+            self.assertEqual(kwargs["stdout"], subprocess.DEVNULL)
+            kwargs["stderr"].write(b"x" * 4000 + b"failure")
+            return SimpleNamespace(returncode=1)
+        with patch("bench.scale.chunk_copy.subprocess.run", side_effect=failing):
+            code, diagnostic = execute_copy(["fake"], 5)
+        self.assertEqual(code, 1)
+        self.assertTrue(diagnostic.endswith("failure"))
+        self.assertLessEqual(len(diagnostic), 500)
+
+
     def test_escapes_path_and_rejects_identifier_injection(self):
         self.assertIn("WITH (FORMAT TSV)", copy_sql("events", "events.tsv"))
         with self.assertRaisesRegex(ValueError, "identifier"):
@@ -73,6 +88,49 @@ class ChunkCopyTests(unittest.TestCase):
                 load_chunks("rusthouse", "db", "events", path,
                             execute=lambda *a, **k: calls.append(a))
             self.assertEqual(calls, [])
+
+    def test_rejects_manifest_swapped_for_symlink_during_open(self):
+        import os
+        from unittest.mock import patch
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("O_NOFOLLOW is required")
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            manifest = directory / "manifest.json"
+            manifest.write_text("{}")
+            outside = directory / "outside.json"
+            outside.write_text("{}")
+            original_open = os.open
+            swapped = False
+            def swap_open(path, *args, **kwargs):
+                nonlocal swapped
+                if Path(path) == manifest and not swapped:
+                    swapped = True
+                    manifest.rename(directory / "saved.json")
+                    manifest.symlink_to(outside)
+                return original_open(path, *args, **kwargs)
+            with patch("bench.scale.chunk_copy.os.open", side_effect=swap_open):
+                with self.assertRaises(OSError):
+                    load_chunks("binary", "db", "t", directory, dry_run=True)
+            self.assertTrue(swapped)
+            self.assertTrue(manifest.is_symlink())
+
+    def test_direct_shard_verification_rejects_symlink_sources(self):
+        import os
+        from bench.scale.chunk_copy import verify_shard
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            source = folder / "part-000001.tsv"
+            source.write_bytes(b"42\n")
+            link = folder / "part-000000.tsv"
+            try:
+                os.symlink(source, link)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation unavailable")
+            entry = {"rows": 1, "bytes": 3, "sha256": hashlib.sha256(b"42\n").hexdigest()}
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                verify_shard(link, entry)
+            verify_shard(source, entry)
 
     def test_fails_closed_on_bad_manifest(self):
         with tempfile.TemporaryDirectory() as root:

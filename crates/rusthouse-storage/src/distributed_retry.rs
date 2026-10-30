@@ -44,8 +44,11 @@ pub fn plan_retry_delays(
     if attempts > 33 {
         return Err("retry count exceeds supported attempt range");
     }
-    // Validate settings even if the caller requests no retries.
-    retry_delay(0, base_ms, max_ms, seed)?;
+    // Empty plans still validate their retry configuration.
+    if attempts == 0 {
+        retry_delay(0, base_ms, max_ms, seed)?;
+        return Ok(Vec::new());
+    }
     let mut elapsed = Duration::ZERO;
     let mut delays = Vec::with_capacity(attempts as usize);
     for attempt in 0..attempts {
@@ -137,5 +140,20 @@ mod total_retry_budget_tests {
         assert!(plan_retry_delays(34, 1, 10, 0, budget).is_err());
         assert!(plan_retry_delays(0, 0, 10, 0, budget).is_err());
         assert!(plan_retry_delays(5, 100, 1000, 1, Duration::ZERO).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod retry_plan_single_validation_tests {
+    use super::*;
+
+    #[test]
+    fn planned_first_delay_matches_the_individual_retry_delay() {
+        for seed in [0, 1, 42, u64::MAX] {
+            let expected = retry_delay(0, 100, 5000, seed).unwrap();
+            assert_eq!(plan_retry_delays(1, 100, 5000, seed, Duration::MAX).unwrap(), vec![expected]);
+        }
+        assert!(plan_retry_delays(0, 0, 5000, 0, Duration::MAX).is_err());
+        assert!(plan_retry_delays(0, 100, 5000, 0, Duration::MAX).unwrap().is_empty());
     }
 }

@@ -6,6 +6,15 @@ from bench.scale.query_digest import query_digest
 
 
 class QueryDigestTests(unittest.TestCase):
+    def test_failed_query_reads_only_bounded_stderr_tail(self):
+        def execute(command, **kwargs):
+            self.assertTrue(hasattr(kwargs["stderr"], "write"))
+            kwargs["stderr"].write(b"x" * 10_000 + b"last ERROR")
+            return SimpleNamespace(returncode=1)
+        with self.assertRaisesRegex(RuntimeError, "last ERROR") as caught:
+            query_digest("binary", "part", "SELECT id", run=execute)
+        self.assertLess(len(str(caught.exception)), 600)
+
     def test_spools_and_verifies_query_output(self):
         raw = b"1\n2\n3\n"
         def execute(command, **kwargs):
@@ -60,6 +69,13 @@ class QueryDigestTests(unittest.TestCase):
         with patch("bench.scale.query_digest.subprocess.run", side_effect=execute):
             self.assertEqual(query_digest("binary", "part", "SELECT 1")["bytes"], 3)
 
+
+    def test_refuses_mutations_and_multiple_statements(self):
+        def never_run(*_args, **_kwargs):
+            self.fail("mutating SQL must be rejected before execution")
+        for sql in ("DELETE FROM t", "DROP TABLE t", "SELECT 1; DELETE FROM t", "WITH x AS (SELECT 1) DELETE FROM t"):
+            with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "read-only SELECT"):
+                query_digest("rusthouse", "parts", sql, run=never_run)
 
 if __name__ == "__main__":
     unittest.main()
