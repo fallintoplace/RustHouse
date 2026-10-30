@@ -37,6 +37,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TO_DAYS"
             | "TOISOYEAR"
             | "TOISOWEEK"
+            | "MAKEDATETIME64"
             | "TOUNIXTIMESTAMP64NANO"
             | "TOUNIXTIMESTAMP64MICRO"
             | "TOUNIXTIMESTAMP64MILLI"
@@ -348,6 +349,47 @@ pub(super) fn parse_after_open(
             ];
             Ok(ConstantValue::Text(MONTHS[(month - 1) as usize].to_owned()))
         }),
+        "MAKEDATETIME64" => {
+            let mut fields = [None; 8];
+            for (index, field) in fields.iter_mut().enumerate() {
+                if index != 0 && !parser.take(Token::Comma) {
+                    return Err(ParseError("makeDateTime64 requires eight arguments".into()));
+                }
+                *field = super::text_scalar::integer_arg(parser, depth + 1)?;
+            }
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("makeDateTime64 requires eight arguments".into()));
+            }
+            if fields.iter().any(Option::is_none) {
+                return Ok(ConstantValue::Null);
+            }
+            let [year, month, day, hour, minute, second, fraction, precision] =
+                fields.map(Option::unwrap);
+            let month = u32::try_from(month)
+                .map_err(|_| ParseError("makeDateTime64 month out of range".into()))?;
+            let day = u32::try_from(day)
+                .map_err(|_| ParseError("makeDateTime64 day out of range".into()))?;
+            if !(MIN_YEAR..=MAX_YEAR).contains(&year)
+                || !(1..=12).contains(&month)
+                || day == 0
+                || day > days_in_month(year, month)
+                || !(0..24).contains(&hour)
+                || !(0..60).contains(&minute)
+                || !(0..60).contains(&second)
+                || !(0..=9).contains(&precision)
+                || fraction < 0
+                || fraction >= 10_i64.pow(precision as u32)
+            {
+                return Err(ParseError("invalid makeDateTime64 fields".into()));
+            }
+            let seconds = days_from_civil(year, month, day) * DAY_SECONDS
+                + hour * 3_600 + minute * 60 + second;
+            let mut datetime = Temporal::render(seconds, true)?;
+            if precision > 0 {
+                datetime.push_str(&format!(".{fraction:0width$}", width = precision as usize));
+            }
+            Ok(ConstantValue::Text(datetime))
+        },
         "TOUNIXTIMESTAMP64NANO" => unary_date(parser, depth, |value| {
             let scaled = value
                 .seconds
@@ -1266,5 +1308,38 @@ mod clickhouse_start_of_half_hour_tests {
                 Projection::Constants(values) if values[0].value == ConstantValue::Null)
         );
         assert!(parse_select("SELECT toStartOfHalfHour('2024-01-01', 1)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod make_datetime64_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn prints_fixed_width_fractional_utc_seconds() {
+        for (sql, expected) in [
+            ("SELECT makeDateTime64(2024, 2, 29, 23, 59, 58, 12, 3)", "2024-02-29 23:59:58.012"),
+            ("SELECT makeDateTime64(2024, 1, 1, 0, 0, 0, 0, 0)", "2024-01-01 00:00:00"),
+            ("SELECT makeDateTime64(2024, 1, 1, 0, 0, 0, 123456789, 9)", "2024-01-01 00:00:00.123456789"),
+        ] {
+            assert!(matches!(
+                parse_select(sql).unwrap().projection,
+                Projection::Constants(ref columns)
+                    if columns.len() == 1 && columns[0].value == ConstantValue::Text(expected.into())
+            ), "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_bad_fraction_precision_and_wrong_arity() {
+        for sql in [
+            "SELECT makeDateTime64(2024, 1, 1, 0, 0, 0, 1000, 3)",
+            "SELECT makeDateTime64(2024, 1, 1, 0, 0, 0, 0, 10)",
+            "SELECT makeDateTime64(2024, 1, 1, 0, 0, 0, -1, 3)",
+            "SELECT makeDateTime64(2024, 1, 1, 0, 0, 0, 0)",
+            "SELECT makeDateTime64(2024, 1, 1, 0, 0, 0, 0, 3, 1)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
