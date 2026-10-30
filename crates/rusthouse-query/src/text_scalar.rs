@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "INITCAPUTF8"
             | "NORMALIZEIPV6"
     )
 }
@@ -1446,7 +1447,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "INITCAP" => {
+        "INITCAP" | "INITCAPUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "INITCAP requires one argument")?;
             match input {
