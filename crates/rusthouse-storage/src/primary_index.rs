@@ -179,6 +179,7 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
     if data.len() > MAX_INDEX_BYTES {
         return Err(invalid(path, "index exceeds the 256 MiB limit"));
     }
+    ensure_exact_primary_index_length(path, size, data.len())?;
     Ok(data)
 }
 
@@ -207,6 +208,17 @@ fn invalid(path: &Path, reason: &'static str) -> PartError {
         path: path.to_path_buf(),
         reason,
     }
+}
+
+fn ensure_exact_primary_index_length(
+    path: &Path,
+    opened_size: u64,
+    read_size: usize,
+) -> Result<(), PartError> {
+    if read_size as u64 != opened_size {
+        return Err(invalid(path, "primary index length changed during read"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -643,5 +655,17 @@ mod primary_index_size_boundary_tests {
         fs::write(&path, [43u8; 16]).unwrap();
         assert_eq!(read_raw(&path).unwrap(), vec![43; 16]);
         fs::remove_file(&path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod primary_index_short_read_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_short_indexes_that_remain_row_aligned() {
+        let path = Path::new("synthetic.idx");
+        assert!(ensure_exact_primary_index_length(path, 24, 16).is_err());
+        assert!(ensure_exact_primary_index_length(path, 24, 24).is_ok());
     }
 }
