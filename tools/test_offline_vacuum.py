@@ -1,4 +1,5 @@
 import os
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
@@ -49,7 +50,8 @@ class OfflineVacuumTests(unittest.TestCase):
                 vacuum(root, keep=2, execute=True)
             self.assertEqual(len(plan(root, keep=2)), 2)
 
-    @unittest.skipUnless(os.name == "posix", "safe Unix-only destructive vacuum")
+    @unittest.skipUnless(os.name == "posix" and shutil.rmtree.avoids_symlink_attacks,
+                         "requires symlink-safe POSIX rmtree")
     def test_vacuum_only_deletes_unpinned_obsolete_generations(self):
         with tempfile.TemporaryDirectory() as root:
             parts, versions = self.fixture(root)
