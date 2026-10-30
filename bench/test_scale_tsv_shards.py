@@ -17,9 +17,9 @@ class ShardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             folder = Path(root)
             source = folder / "source.tsv"
-            source.write_bytes(b"1\\n")
+            source.write_bytes(b"1\n")
             evil = folder / "other.tsv"
-            evil.write_bytes(b"2\\n")
+            evil.write_bytes(b"2\n")
             target = folder / "shards"
             original_open = os.open
             swapped = False
