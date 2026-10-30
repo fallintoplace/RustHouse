@@ -105,6 +105,18 @@ class VerifyShardsTests(unittest.TestCase):
 
 
 
+class ShardManifestRootTests(unittest.TestCase):
+    def test_rejects_nonobject_json_roots_cleanly(self):
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = Path(folder) / "manifest.json"
+            for value in ([], None, "hello", True, 5):
+                with self.subTest(value=value):
+                    manifest.write_text(json.dumps(value), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "JSON object"):
+                        verify(manifest)
+
+
+
 class RelativeShardPathConfinementTests(unittest.TestCase):
     def test_rejects_parent_directory_escape(self):
         with tempfile.TemporaryDirectory() as folder:

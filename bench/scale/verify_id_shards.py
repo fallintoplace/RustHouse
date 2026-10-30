@@ -57,6 +57,8 @@ def verify(manifest_path):
         return result
 
     manifest = json.loads(payload, object_pairs_hook=unique_fields)
+    if not isinstance(manifest, dict):
+        raise ValueError("shard manifest must be a JSON object")
     if manifest.get("schema_version") != 1:
         raise ValueError("unsupported shard manifest version")
     start = require_uint(manifest.get("start"), "start", zero=True)
