@@ -21,6 +21,14 @@ class SchemaTests(unittest.TestCase):
         self.assertFalse(compatible_columns(old, [old[1], old[0]],
                                             allow_additive=True))
 
+    def test_rejects_noncanonical_column_names_and_count(self):
+        for name in ("1bad", "has.dot", "name with space", "á", "a" * 129):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "identifier"):
+                columns({"columns": [{"name": name, "type": "UInt64"}]})
+        oversized = [{"name": f"col_{i}", "type": "UInt64"} for i in range(129)]
+        with self.assertRaisesRegex(ValueError, "128-column"):
+            columns({"columns": oversized})
+
     def test_invalid_schema(self):
         with self.assertRaises(ValueError):
             columns({"columns": [{"name": "id"}]})
