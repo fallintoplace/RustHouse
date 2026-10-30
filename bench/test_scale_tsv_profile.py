@@ -17,6 +17,21 @@ class InputProfileTests(unittest.TestCase):
             self.assertEqual(result["bytes"], len(raw))
             self.assertEqual(result["sha256"], hashlib.sha256(raw).hexdigest())
 
+    def test_rejects_symlinked_tsv_input(self):
+        import os
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            original = directory / "original.tsv"
+            original.write_bytes(b"1\n")
+            alias = directory / "alias.tsv"
+            try:
+                os.symlink(original, alias)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink unavailable")
+            with self.assertRaisesRegex(ValueError, "regular"):
+                profile(alias)
+            self.assertEqual(profile(original)["rows"], 1)
+
     def test_rejects_bad_column_counts(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "events.tsv"

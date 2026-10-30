@@ -99,6 +99,18 @@ def compare(baseline, candidate, *, max_slowdown_percent=10,
             "cases": cases, "shared_ci_runners_are_noisy": True}
 
 
+
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+
+
+def _read_bounded_report(path):
+    with path.open("rb") as source:
+        contents = source.read(MAX_REPORT_BYTES + 1)
+    if len(contents) > MAX_REPORT_BYTES:
+        raise ValueError("benchmark JSON report exceeds 16 MiB")
+    return contents.decode("utf-8")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
@@ -108,8 +120,8 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = compare(json.loads(args.baseline.read_text(encoding="utf-8")),
-                         json.loads(args.candidate.read_text(encoding="utf-8")),
+        report = compare(json.loads(_read_bounded_report(args.baseline)),
+                         json.loads(_read_bounded_report(args.candidate)),
                          max_slowdown_percent=args.max_slowdown_percent,
                          max_tail_slowdown_percent=args.max_tail_slowdown_percent)
         rendered = json.dumps(report, indent=2) + "\n"

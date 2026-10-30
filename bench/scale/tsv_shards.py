@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -25,7 +26,8 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536,
     if max_total_rows is not None and (
             type(max_total_rows) is not int or max_total_rows < 1):
         raise ValueError("max_total_rows must be a positive integer")
-    if not source.is_file() or source.is_symlink():
+    source_before = source.lstat()
+    if not stat.S_ISREG(source_before.st_mode):
         raise ValueError("input must be a regular, non-symlinked TSV file")
     if output_dir.exists() or output_dir.is_symlink():
         raise FileExistsError(f"output directory exists: {output_dir}")
@@ -43,7 +45,14 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536,
             pending.clear()
 
     try:
-        with source.open("rb") as stream:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(source, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino) !=
+                       (source_before.st_dev, source_before.st_ino)):
+                raise ValueError("TSV source changed before opening")
             while True:
                 record = stream.readline(MAX_RECORD_BYTES + 1)
                 if not record:
@@ -79,6 +88,15 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536,
                 current["bytes"] += len(record)
                 current["rows"] += 1
                 total_rows += 1
+            finished = os.fstat(stream.fileno())
+            if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+                raise ValueError("TSV source changed while splitting")
+        source_after = source.lstat()
+        if ((source_before.st_dev, source_before.st_ino,
+             source_before.st_size, source_before.st_mtime_ns)
+                != (source_after.st_dev, source_after.st_ino,
+                    source_after.st_size, source_after.st_mtime_ns)):
+            raise ValueError("TSV source changed while splitting")
         if current is not None:
             flush_pending()
             current["file"].flush()

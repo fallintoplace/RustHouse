@@ -5,6 +5,18 @@ from throughput import MAX_REFERENCE_BYTES, read_reference, run_throughput
 
 
 class ThroughputTests(unittest.TestCase):
+    def test_rejects_symlinked_throughput_goldens(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as root:
+            actual = Path(root) / "real.tsv"
+            actual.write_bytes(b"1\n")
+            alias = Path(root) / "q01.tsv"
+            alias.symlink_to(actual)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                read_reference(alias)
+
+
     def test_reference_reads_are_bounded(self):
         import tempfile
         from pathlib import Path
@@ -82,6 +94,17 @@ class ThroughputQueryIdentityTests(unittest.TestCase):
                            lambda _: b"1\n", rounds=1, references={1: b"1\n"})
         with self.assertRaisesRegex(ValueError, "nonempty SQL"):
             run_throughput([(1, "  ")], lambda _: b"", rounds=1)
+
+
+
+class ThroughputDeadlineValidationTests(unittest.TestCase):
+    def test_nonfinite_deadlines_fail_before_reading_queries(self):
+        from throughput import main
+        for deadline in ("nan", "inf", "-inf"):
+            with self.subTest(deadline=deadline), self.assertRaises(SystemExit) as outcome:
+                main(["--binary", "missing", "--database", "missing",
+                      "--queries-dir", "missing", "--timeout", deadline])
+            self.assertEqual(outcome.exception.code, 2)
 
 
 

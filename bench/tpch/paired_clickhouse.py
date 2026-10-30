@@ -13,6 +13,7 @@ import json
 import math
 import statistics
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -39,12 +40,21 @@ def command(engine, binary, database, sql):
 
 def invoke(args, timeout):
     start = time.perf_counter()
-    result = subprocess.run(args, capture_output=True, check=False, timeout=timeout)
-    duration = time.perf_counter() - start
-    if result.returncode:
-        stderr = result.stderr.decode("utf-8", "replace")
-        raise RuntimeError(f"exit {result.returncode}: {stderr[-500:]}")
-    return result.stdout, duration
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        result = subprocess.run(
+            args, stdout=output, stderr=errors, check=False, timeout=timeout,
+        )
+        duration = time.perf_counter() - start
+        errors.seek(0, os.SEEK_END)
+        errors.seek(max(0, errors.tell() - 500))
+        stderr = errors.read().decode("utf-8", "replace")
+        if result.returncode:
+            raise RuntimeError(f"exit {result.returncode}: {stderr}")
+        output.seek(0)
+        data = output.read(MAX_REFERENCE_BYTES + 1)
+    if len(data) > MAX_REFERENCE_BYTES:
+        raise ValueError("paired query output exceeds 16 MiB")
+    return data, duration
 
 
 def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact"):
