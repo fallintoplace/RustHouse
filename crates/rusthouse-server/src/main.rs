@@ -13,6 +13,10 @@ use std::time::Duration;
 
 const MAX_CONFIGURED_CONNECTIONS: usize = 64;
 
+fn retryable_accept_error(kind: io::ErrorKind) -> bool {
+    matches!(kind, io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted)
+}
+
 /// Bound concurrent read-only analytical requests to avoid unbounded
 /// thread, decoded-block and response-buffer amplification.
 fn parse_max_connections(value: &str) -> io::Result<usize> {
@@ -322,7 +326,11 @@ fn main() -> io::Result<()> {
     eprintln!("RustHouse read-only HTTP listening on http://{bind}:{port}");
     let active = Arc::new(AtomicUsize::new(0));
     for accepted in listener.incoming() {
-        let stream = accepted?;
+        let stream = match accepted {
+            Ok(stream) => stream,
+            Err(error) if retryable_accept_error(error.kind()) => continue,
+            Err(error) => return Err(error),
+        };
         let mut count = active.load(Ordering::Relaxed);
         let acquired = loop {
             if count >= max_connections {
@@ -438,6 +446,22 @@ mod request_line_spacing_regressions {
                     .map(|response| response.status),
                 Some("400 Bad Request")
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod accept_error_policy_tests {
+    use super::retryable_accept_error;
+    use std::io;
+
+    #[test]
+    fn only_expected_transient_accept_errors_are_retryable() {
+        for kind in [io::ErrorKind::Interrupted, io::ErrorKind::ConnectionAborted] {
+            assert!(retryable_accept_error(kind));
+        }
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+            assert!(!retryable_accept_error(kind));
         }
     }
 }
