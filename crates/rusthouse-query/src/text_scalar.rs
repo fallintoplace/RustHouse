@@ -208,8 +208,24 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "BIN"
             | "NORMALIZEIPV6"
     )
+}
+
+fn binary_string(bytes: &[u8]) -> Result<String, ParseError> {
+    let len = bytes.len().checked_mul(8)
+        .ok_or_else(|| ParseError("bin result is too large".into()))?;
+    if len > MAX_TEXT_BYTES {
+        return Err(ParseError("bin result is too large".into()));
+    }
+    let mut output = String::with_capacity(len);
+    for &byte in bytes {
+        for shift in (0..8).rev() {
+            output.push(if byte >> shift & 1 == 0 { '0' } else { '1' });
+        }
+    }
+    Ok(output)
 }
 
 fn parse_mac_address(input: &str) -> Option<u64> {
@@ -2913,6 +2929,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(found))
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "BIN" => {
+            let value = constant_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "bin requires one argument")?;
+            match value {
+                ConstantValue::Text(value) => {
+                    ConstantValue::Text(binary_string(value.as_bytes())?)
+                }
+                ConstantValue::Integer(value) => {
+                    let bytes = value.to_be_bytes();
+                    let skip = if value < 0 {
+                        0
+                    } else {
+                        bytes.iter().take_while(|&&byte| byte == 0).count().min(7)
+                    };
+                    ConstantValue::Text(binary_string(&bytes[skip..])?)
+                }
+                ConstantValue::Null => ConstantValue::Null,
             }
         }
         "CONTAINS" => {
