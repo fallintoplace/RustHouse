@@ -102,16 +102,17 @@ def select_cases(cases, only):
 
 
 def invoke(binary, sql, timeout):
-    with tempfile.TemporaryFile() as output:
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         completed = subprocess.run(
             [str(binary), "sql", sql, "--format", "tsv-no-header"],
-            stdout=output, stderr=subprocess.PIPE, check=False, timeout=timeout,
+            stdout=output, stderr=errors, check=False, timeout=timeout,
         )
+        if completed.returncode:
+            errors.seek(0)
+            message = errors.read(2000).decode("utf-8", "replace")
+            raise RuntimeError(f"exit {completed.returncode}: {message}")
         output.seek(0)
         payload = output.read(256 * 1024 + 1)
-    if completed.returncode:
-        message = completed.stderr.decode("utf-8", "replace")[:2000]
-        raise RuntimeError(f"exit {completed.returncode}: {message}")
     if len(payload) > 256 * 1024:
         raise ValueError("generated SQL benchmark output exceeds 256 KiB")
     return payload
