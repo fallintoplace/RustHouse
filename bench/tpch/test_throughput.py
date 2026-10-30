@@ -97,6 +97,17 @@ class ThroughputQueryIdentityTests(unittest.TestCase):
 
 
 
+class ThroughputDeadlineValidationTests(unittest.TestCase):
+    def test_nonfinite_deadlines_fail_before_reading_queries(self):
+        from throughput import main
+        for deadline in ("nan", "inf", "-inf"):
+            with self.subTest(deadline=deadline), self.assertRaises(SystemExit) as outcome:
+                main(["--binary", "missing", "--database", "missing",
+                      "--queries-dir", "missing", "--timeout", deadline])
+            self.assertEqual(outcome.exception.code, 2)
+
+
+
 class ThroughputMemoryBudgetTests(unittest.TestCase):
     def test_oversized_result_cannot_pass_as_unverified(self):
         result = run_throughput([(1, "SELECT 1")],
