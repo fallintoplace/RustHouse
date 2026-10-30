@@ -1,10 +1,13 @@
 //! Read a frozen directory containing active, non-overlapping wide MergeTree parts.
 //! Do not point this at a live upstream table directory: renames during merges
 //! make a filesystem directory scan an inconsistent snapshot.
-use crate::{Column, NumericColumn, NumericPartReader, PartError, PartMetadata, inspect_part};
+use crate::{
+    Column, NumericColumn, NumericPartReader, PartError, PartMetadata, inspect_part,
+    read_part_row_count,
+};
 use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 const MAX_TABLE_PARTS: usize = 16_384;
@@ -17,9 +20,13 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
 }
 
 fn valid_generation_label(label: &str) -> bool {
-    label.starts_with('g')
-        && label.len() >= 2
-        && label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    let Some(number) = label.strip_prefix('g') else {
+        return false;
+    };
+    !number.is_empty()
+        && !number.starts_with('0')
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && number.parse::<u64>().is_ok()
 }
 
 fn require_snapshot_directory(path: &Path, message: &'static str) -> Result<(), PartError> {
@@ -44,7 +51,25 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
             "invalid database snapshot pointer".into(),
         ));
     }
-    let label = fs::read_to_string(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
+    if !opened.file_type().is_file() || opened.len() > 64 {
+        return Err(PartError::InvalidScan("active pointer changed before read".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
+            return Err(PartError::InvalidScan("active pointer replaced before read".into()));
+        }
+    }
+    let mut label = String::new();
+    file.take(65)
+        .read_to_string(&mut label)
+        .map_err(|error| io_error(&pointer, error))?;
+    if label.len() > 64 {
+        return Err(PartError::InvalidScan("active pointer exceeds size limit".into()));
+    }
     let label = label
         .strip_suffix('\n')
         .ok_or_else(|| PartError::InvalidScan("invalid snapshot pointer format".into()))?;
@@ -108,6 +133,7 @@ fn validate_block_ranges(ranges: &mut HashMap<String, Vec<(u64, u64)>>) -> Resul
 /// List complete active wide parts from an offline snapshot.
 /// Refuse overlapping block ranges rather than double-count replaced parts.
 pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
+    require_snapshot_directory(path, "snapshot source must be a real directory")?;
     if path.join("count.txt").exists() || path.join("columns.txt").exists() {
         return Ok(vec![path.to_owned()]);
     }
@@ -164,87 +190,133 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
     Ok(parts)
 }
 
+/// List a snapshot's active parts and validate their combined metadata in one pass.
+/// Callers that need both results should not re-enumerate thousands of parts.
+pub fn query_parts_with_metadata(
+    path: &Path,
+) -> Result<(Vec<PathBuf>, PartMetadata), PartError> {
+    let parts = query_parts(path)?;
+    let metadata = inspect_parts_metadata(path, &parts)?;
+    Ok((parts, metadata))
+}
+
 /// Return consistent metadata for a single part or a frozen table snapshot.
 pub fn inspect_query_source(path: &Path) -> Result<PartMetadata, PartError> {
-    let paths = query_parts(path)?;
-    inspect_parts_metadata(path, &paths)
+    query_parts_with_metadata(path).map(|(_, metadata)| metadata)
 }
 
 pub(crate) fn inspect_parts_metadata(
     path: &Path,
     paths: &[PathBuf],
 ) -> Result<PartMetadata, PartError> {
-    // Part metadata is immutable for an offline snapshot. For tables with many
-    // parts, inspect independent files in parallel without spawning one thread
-    // per part. Preserve input order so corruption reports stay deterministic.
-    const PARALLEL_THRESHOLD: usize = 32;
     const MAX_WORKERS: usize = 8;
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())
         .min(MAX_WORKERS);
-    let mut metadata = Vec::with_capacity(paths.len());
-    if paths.len() >= PARALLEL_THRESHOLD && workers > 1 {
-        // A few parts can have much larger metadata than the rest. Claim
-        // part indexes dynamically so one slow range does not hold up the
-        // whole scan. Retain results by input index for stable diagnostics.
+    inspect_parts_metadata_with_workers(path, paths, workers)
+}
+
+/// Bound the number of complete part schemas retained during metadata scans.
+/// Inspecting 16,384 wide parts must not retain 16,384 copies of every column.
+fn inspect_parts_metadata_with_workers(
+    path: &Path,
+    paths: &[PathBuf],
+    workers: usize,
+) -> Result<PartMetadata, PartError> {
+    let first_path = paths.first().ok_or_else(|| {
+        PartError::InvalidScan("snapshot contains no readable parts".into())
+    })?;
+    let first = inspect_part(first_path)?;
+    let mut rows = u128::from(first.rows);
+    let mut first_read_error: Option<(usize, PartError)> = None;
+    let mut first_schema_error: Option<usize> = None;
+    let mut record = |index: usize, result: Result<PartMetadata, PartError>| {
+        match result {
+            Err(error) => {
+                if first_read_error
+                    .as_ref()
+                    .is_none_or(|(previous, _)| index < *previous)
+                {
+                    first_read_error = Some((index, error));
+                }
+            }
+            Ok(item) => {
+                if item.columns != first.columns {
+                    first_schema_error = Some(first_schema_error.map_or(index, |previous| {
+                        previous.min(index)
+                    }));
+                }
+                rows += u128::from(item.rows);
+            }
+        }
+    };
+
+    if paths.len() >= 32 && workers > 1 {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let cursor = AtomicUsize::new(0);
-        let mut slots: Vec<Option<Result<PartMetadata, PartError>>> =
-            (0..paths.len()).map(|_| None).collect();
+        // Two pending results per worker bound queued schema memory even
+        // when a slow part is encountered among thousands of small parts.
+        let cursor = AtomicUsize::new(1);
         std::thread::scope(|scope| -> Result<(), PartError> {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(workers * 2);
             let handles = (0..workers)
                 .map(|_| {
+                    let sender = sender.clone();
                     let cursor = &cursor;
                     scope.spawn(move || {
-                        let mut completed = Vec::new();
                         loop {
                             let index = cursor.fetch_add(1, Ordering::Relaxed);
                             if index >= paths.len() {
                                 break;
                             }
-                            completed.push((index, inspect_part(&paths[index])));
+                            if sender.send((index, inspect_part(&paths[index]))).is_err() {
+                                break;
+                            }
                         }
-                        completed
                     })
                 })
                 .collect::<Vec<_>>();
+            drop(sender);
+            // Drain the channel even if a worker exits early. The scoped
+            // join below converts panics into an error rather than unwinding.
+            let mut received = 0usize;
+            while let Ok((index, item)) = receiver.recv() {
+                record(index, item);
+                received += 1;
+            }
             for handle in handles {
-                let completed = handle.join().map_err(|_| {
+                handle.join().map_err(|_| {
                     PartError::InvalidScan("snapshot metadata worker panicked".into())
                 })?;
-                for (index, item) in completed {
-                    slots[index] = Some(item);
-                }
+            }
+            if received != paths.len() - 1 {
+                return Err(PartError::InvalidScan(
+                    "snapshot metadata worker stopped".into(),
+                ));
             }
             Ok(())
         })?;
-        for slot in slots {
-            metadata.push(slot.expect("every claimed part has one result")?);
-        }
     } else {
-        for part in paths {
-            metadata.push(inspect_part(part)?);
+        for (index, part) in paths.iter().enumerate().skip(1) {
+            record(index, inspect_part(part));
         }
     }
 
-    let first = metadata
-        .first()
-        .ok_or_else(|| PartError::InvalidScan("snapshot contains no readable parts".into()))?;
-    let mut rows = 0u64;
-    for (part, item) in paths.iter().zip(&metadata) {
-        if item.columns != first.columns {
-            return Err(PartError::InvalidScan(format!(
-                "part schema mismatch in {}",
-                part.display()
-            )));
-        }
-        rows = rows
-            .checked_add(item.rows)
-            .ok_or_else(|| PartError::InvalidScan("table row count overflow".into()))?;
+    // Match the original diagnostics: report the earliest part-read failure
+    // before reporting schema disagreement or accumulated row overflow.
+    if let Some((_, error)) = first_read_error {
+        return Err(error);
     }
+    if let Some(index) = first_schema_error {
+        return Err(PartError::InvalidScan(format!(
+            "part schema mismatch in {}",
+            paths[index].display()
+        )));
+    }
+    let rows = u64::try_from(rows)
+        .map_err(|_| PartError::InvalidScan("table row count overflow".into()))?;
     Ok(PartMetadata {
         path: path.to_owned(),
-        columns: first.columns.clone(),
+        columns: first.columns,
         rows,
     })
 }
@@ -407,8 +479,8 @@ impl NumericQueryReader {
             // Skipping a complete part never needs to open its wide streams or
             // decode thousands of mark entries.
             let part = &self.parts[self.next_part];
-            let metadata = inspect_part(part)?;
-            if let Ok(rows) = usize::try_from(metadata.rows) {
+            let rows = read_part_row_count(part)?;
+            if let Ok(rows) = usize::try_from(rows) {
                 if rows <= max_rows - skipped {
                     skipped += rows;
                     self.next_part += 1;
@@ -571,9 +643,13 @@ mod tests {
             let part = root.join(format!("all_{index}_{index}_0"));
             write_wide_part(&part, &columns, &[vec![Some(index.to_string())]]).unwrap();
         }
-        let metadata = inspect_query_source(&root).unwrap();
+        let (paths, metadata) = query_parts_with_metadata(&root).unwrap();
+        assert_eq!(paths.len(), 40);
         assert_eq!(metadata.rows, 40);
         assert_eq!(metadata.columns, columns);
+        let parts = query_parts(&root).unwrap();
+        let streamed = inspect_parts_metadata_with_workers(&root, &parts, 4).unwrap();
+        assert_eq!(streamed, metadata);
         let mut reader =
             NumericQueryReader::open_with_metadata(&root, &["id".into()], &metadata).unwrap();
         let mut inspected = 0;
@@ -611,6 +687,10 @@ mod tests {
             inspect_query_source(&root),
             Err(PartError::InvalidScan(message)) if message.contains("schema mismatch")
         ));
+        assert!(matches!(
+            inspect_parts_metadata_with_workers(&root, &parts, 4),
+            Err(PartError::InvalidScan(message)) if message.contains("schema mismatch")
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -643,5 +723,68 @@ mod tests {
 
         let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (4, 5)])]);
         validate_block_ranges(&mut ranges).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod snapshot_root_identity_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn rejects_symlinked_snapshot_roots() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/all_1_1_0");
+        let link = std::env::temp_dir().join(format!(
+            "rusthouse-query-root-link-{}", std::process::id()
+        ));
+        let _ = fs::remove_file(&link);
+        symlink(&fixture, &link).unwrap();
+        assert!(query_parts(&link).is_err());
+        fs::remove_file(link).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod active_pointer_canonical_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_positive_canonical_generation_labels() {
+        for label in ["g1", "g42", "g18446744073709551615"] {
+            assert!(valid_generation_label(label), "{label}");
+        }
+        for label in [
+            "", "g", "g0", "g00", "g01", "g+1", "G1", "g1 ",
+            "g18446744073709551616",
+        ] {
+            assert!(!valid_generation_label(label), "{label}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod canonical_active_pointer_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_zero_padded_or_unbounded_snapshot_labels() {
+        assert!(valid_generation_label("g1"));
+        assert!(valid_generation_label(&format!("g{}", u64::MAX)));
+        for invalid in ["", "g", "g0", "g01", "g+1", "g18446744073709551616"] {
+            assert!(!valid_generation_label(invalid), "{invalid}");
+        }
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-canonical-pointer-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        for label in ["g0\n", "g01\n", "g+1\n", "g18446744073709551616\n"] {
+            fs::write(&pointer, label).unwrap();
+            assert!(resolve_active_snapshot(&root).is_err(), "{label:?}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,0 +1,8 @@
+{
+  "name": "topk-desc-offset",
+  "description": "Deep descending sorted page",
+  "kind": "page",
+  "direction": "DESC",
+  "limit": 32,
+  "offset": 4096
+}

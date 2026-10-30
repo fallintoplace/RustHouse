@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON_SUITES = ("bench", "bench/analytics", "bench/clickbench", "bench/joins", "bench/latency", "bench/measurements", "bench/ssb", "bench/tpch")
+PYTHON_SUITES = ("bench", "bench/analytics", "bench/clickbench", "bench/interop", "bench/joins", "bench/latency", "bench/measurements", "bench/ssb", "bench/tpch")
 BENCHMARK_SUITES = ("queries", "parts-sorted", "parts-shuffled", "grouped")
 WORKLOADS = {
     "analytics": "bench/analytics/run.py",
@@ -82,8 +82,9 @@ def check():
 
 def optional_version(command):
     try:
-        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
-    except OSError:
+        result = subprocess.run(command, cwd=ROOT, capture_output=True,
+                                text=True, check=False, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
 

@@ -16,7 +16,14 @@ SQL = ("SELECT COUNT(*) AS count_order, SUM(l_quantity) AS sum_qty, "
 def oracle(path):
     count = quantity = price = 0
     with Path(path).open(encoding="utf-8", newline="") as source:
-        for row in csv.DictReader(source, delimiter="\t"):
+        reader = csv.DictReader(source, delimiter="\t")
+        fields = reader.fieldnames or []
+        required = ("l_shipdate", "l_quantity", "l_extendedprice")
+        if len(fields) != len(set(fields)) or any(name not in fields for name in required):
+            raise ValueError("Q1 input has missing or duplicate columns")
+        for row in reader:
+            if None in row or any(row.get(name) is None for name in fields):
+                raise ValueError("Q1 input has missing or extra data fields")
             if row["l_shipdate"] <= "1998-09-02":
                 count += 1
                 quantity += int(row["l_quantity"])
