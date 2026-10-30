@@ -63,6 +63,17 @@ fn verify_part_files(
     })
 }
 
+fn has_trailing_byte(reader: &mut impl Read) -> io::Result<bool> {
+    let mut byte = [0u8; 1];
+    loop {
+        match reader.read(&mut byte) {
+            Ok(count) => return Ok(count != 0),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn hash_stored_file(path: &Path, expected_size: u64) -> Result<u128, PartError> {
     const BLOCK_BYTES: usize = 2048;
     let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
@@ -79,11 +90,7 @@ fn hash_stored_file(path: &Path, expected_size: u64) -> Result<u128, PartError> 
         remaining -= length as u64;
     }
     // Catch files extended after the size check, as well as changed data.
-    if file
-        .read(&mut buffer[..1])
-        .map_err(|source| io_error(path, source))?
-        != 0
-    {
+    if has_trailing_byte(&mut file).map_err(|source| io_error(path, source))? {
         return Err(invalid(path, "file changed during hash verification"));
     }
     #[cfg(unix)]
@@ -610,5 +617,40 @@ mod tests {
             }
         );
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod interrupted_hash_probe_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    struct InterruptOnce<R> {
+        inner: R,
+        interrupted: bool,
+    }
+
+    impl<R: Read> Read for InterruptOnce<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.inner.read(buffer)
+        }
+    }
+
+    #[test]
+    fn EOF_probe_retries_interrupted_reads_and_detects_extensions() {
+        let mut clean = InterruptOnce {
+            inner: Cursor::new(&b""[..]),
+            interrupted: false,
+        };
+        assert!(!has_trailing_byte(&mut clean).unwrap());
+        let mut extended = InterruptOnce {
+            inner: Cursor::new(&b"x"[..]),
+            interrupted: false,
+        };
+        assert!(has_trailing_byte(&mut extended).unwrap());
     }
 }
