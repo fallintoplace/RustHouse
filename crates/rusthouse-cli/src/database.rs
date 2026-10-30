@@ -123,6 +123,10 @@ fn drop_table(database: &Path, name: &str, if_exists: bool) -> Result<(), String
     }
     fs::rename(&schema, &tombstone)
         .map_err(|error| format!("cannot hide table schema {name}: {error}"))?;
+    // Persist the tombstone before deleting parts. Otherwise an interrupted
+    // rename may leave a visible schema whose data has already been removed.
+    sync_database_directory(database)?;
+    crash_if_requested("drop-after-schema-hide");
     if let Err(error) = fs::remove_dir_all(&parts) {
         return Err(format!(
             "cannot finish DROP for {name}: {error}; recovery schema is at {}",
