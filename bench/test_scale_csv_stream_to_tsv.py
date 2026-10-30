@@ -83,5 +83,19 @@ class CSVFieldBudgetTypeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "positive integer"):
                     convert("not-present.csv", "out.tsv", max_field_bytes=limit)
 
+    def test_optional_expected_column_count_rejects_mismatched_exports(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "input.csv"
+            output = Path(root) / "copy.tsv"
+            source.write_bytes(b"id,value\n1,a\n")
+            with self.assertRaisesRegex(ValueError, "expected_columns"):
+                convert(source, output, header=True, expected_columns=3)
+            self.assertFalse(output.exists())
+            report = convert(source, output, header=True, expected_columns=2)
+            self.assertEqual(report["columns"], 2)
+            for invalid in (0, 129, True, "2"):
+                with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "expected_columns"):
+                    convert("missing.csv", "output.tsv", expected_columns=invalid)
+
 if __name__ == "__main__":
     unittest.main()
