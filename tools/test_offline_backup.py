@@ -24,6 +24,20 @@ class BackupTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 preflight(folder, folder.parent / "unused-backup-for-test")
 
+    def test_rejects_backup_metadata_explosion(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            source = base / "db"
+            source.mkdir()
+            for number in range(4):
+                (source / f"part{number}").write_bytes(b"x")
+            destination = base / "backup"
+            with self.assertRaisesRegex(ValueError, "max_entries"):
+                preflight(source, destination, max_entries=3)
+            self.assertEqual(preflight(source, destination, max_entries=4)[1], destination)
+            with self.assertRaisesRegex(ValueError, "max_entries"):
+                preflight(source, destination, max_entries=True)
+
     def test_rejects_backup_exceeding_explicit_disk_budget(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "database"
