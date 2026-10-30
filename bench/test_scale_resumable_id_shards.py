@@ -75,5 +75,18 @@ class ResumableShardsTests(unittest.TestCase):
             self.assertEqual(list(outside.iterdir()), [])
 
 
+    def test_reuse_verification_detects_corruption_across_batch_boundary(self):
+        with tempfile.TemporaryDirectory() as root:
+            first = create(root, 100, 8193, 8193)
+            path = Path(first["shards"][0]["path"])
+            before = path.read_bytes()
+            reused = create(root, 100, 8193, 8193)
+            self.assertTrue(reused["shards"][0]["reused"])
+            self.assertEqual(reused["shards"][0]["sha256"], first["shards"][0]["sha256"])
+            bad = before.replace(b"4196\n", b"4195\n", 1)
+            path.write_bytes(bad)
+            with self.assertRaisesRegex(ValueError, "invalid or incomplete"):
+                create(root, 100, 8193, 8193)
+
 if __name__ == "__main__":
     unittest.main()
