@@ -151,3 +151,40 @@ fn corrupted_restored_copy_is_rejected_without_damaging_source() {
     );
     fs::remove_dir_all(base).unwrap();
 }
+
+#[test]
+fn cold_restore_preserves_renamed_table_and_latest_truncate_generation() {
+    let base = root();
+    fs::create_dir(&base).unwrap();
+    let source = base.join("source");
+    let backup = base.join("backup");
+    fs::create_dir(&source).unwrap();
+
+    must_succeed(sql(&source, "CREATE TABLE events (id UInt64, name String)"));
+    must_succeed(sql(&source, "INSERT INTO events VALUES (1, 'old')"));
+    must_succeed(sql(&source, "RENAME TABLE events TO archive"));
+    must_succeed(sql(&source, "TRUNCATE TABLE archive"));
+    must_succeed(sql(&source, "INSERT INTO archive VALUES (9, 'current')"));
+
+    let expected = must_succeed(
+        sql(&source, "SELECT id, name FROM archive ORDER BY id")
+    ).stdout;
+    assert_eq!(expected, b"id\\tname\\n9\\tcurrent\\n");
+    assert!(!sql(&source, "SELECT id FROM events").status.success());
+    must_succeed(doctor(&source));
+
+    copy_directory(&source, &backup);
+    must_succeed(doctor(&backup));
+    assert_eq!(
+        must_succeed(sql(&backup, "SELECT id, name FROM archive ORDER BY id")).stdout,
+        expected
+    );
+    assert!(!sql(&backup, "SELECT id FROM events").status.success());
+
+    must_succeed(sql(&backup, "INSERT INTO archive VALUES (10, 'restored')"));
+    assert_eq!(
+        must_succeed(sql(&backup, "SELECT count(*) FROM archive")).stdout,
+        b"count\\n2\\n"
+    );
+    fs::remove_dir_all(base).unwrap();
+}
