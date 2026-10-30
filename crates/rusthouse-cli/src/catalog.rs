@@ -185,6 +185,12 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(unix)]
+fn same_schema_identity(expected: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    expected.dev() == opened.dev() && expected.ino() == opened.ino()
+}
+
 pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     let path = schema_path(catalog, name);
     let metadata = fs::symlink_metadata(&path)
@@ -195,11 +201,22 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
     if metadata.len() > MAX_SCHEMA_BYTES {
         return Err(format!("schema is too large for table {name}"));
     }
-    // Limit reads even if a schema grows between metadata inspection and open.
+    // Verify the opened inode, not only the path inspected before open.
+    // Otherwise an external replacement can redirect a trusted schema read.
+    let file = fs::File::open(&path)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    let opened = file.metadata()
+        .map_err(|error| format!("cannot inspect opened table {name}: {error}"))?;
+    if !opened.file_type().is_file() || opened.len() != metadata.len() {
+        return Err(format!("table {name} schema changed before read"));
+    }
+    #[cfg(unix)]
+    if !same_schema_identity(&metadata, &opened) {
+        return Err(format!("table {name} schema inode changed before read"));
+    }
+    // Limit reads even if the opened inode grows during the read.
     let mut bytes = Vec::new();
-    fs::File::open(&path)
-        .map_err(|error| format!("cannot read table {name}: {error}"))?
-        .take(MAX_SCHEMA_BYTES + 1)
+    file.take(MAX_SCHEMA_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
     if bytes.len() as u64 > MAX_SCHEMA_BYTES {
@@ -445,5 +462,28 @@ mod show_tables_like_tests {
         assert!(table_matches_like("any", "%"));
         assert!(!table_matches_like("any", "other%"));
         assert!(!table_matches_like("any", r"any\"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod schema_identity_tests {
+    use super::*;
+
+    #[test]
+    fn schema_identity_rejects_same_length_replacement() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-schema-identity-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first");
+        let replacement = dir.join("replacement");
+        fs::write(&first, b"one").unwrap();
+        fs::write(&replacement, b"two").unwrap();
+        let before = fs::symlink_metadata(&first).unwrap();
+        let opened = fs::File::open(&replacement).unwrap().metadata().unwrap();
+        assert_eq!(before.len(), opened.len());
+        assert!(!same_schema_identity(&before, &opened));
+        fs::remove_dir_all(dir).unwrap();
     }
 }
