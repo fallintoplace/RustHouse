@@ -82,13 +82,25 @@ def write_csv(report, output):
     writer.writerows(rows_from_report(report))
 
 
+
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+
+
+def _read_bounded_report(path):
+    with path.open("rb") as source:
+        contents = source.read(MAX_REPORT_BYTES + 1)
+    if len(contents) > MAX_REPORT_BYTES:
+        raise ValueError("benchmark JSON report exceeds 16 MiB")
+    return contents.decode("utf-8")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = json.loads(args.input.read_text(encoding="utf-8"))
+        report = json.loads(_read_bounded_report(args.input))
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("w", encoding="utf-8", newline="") as output:
