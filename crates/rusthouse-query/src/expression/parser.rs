@@ -49,6 +49,21 @@ fn parse_case(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseErro
     Ok(ScalarExpr::Case { branches, else_expr })
 }
 
+fn parse_numeric_literal(number: &str) -> Result<ScalarExpr, ParseError> {
+    if number.contains('.') || number.contains('e') || number.contains('E') {
+        let value = number.parse::<f64>()
+            .map_err(|_| ParseError("invalid decimal expression literal".into()))?;
+        if !value.is_finite() {
+            return Err(ParseError("decimal expression literal must be finite".into()));
+        }
+        Ok(ScalarExpr::Decimal(number.to_owned()))
+    } else {
+        let value = number.parse::<i64>()
+            .map_err(|_| ParseError("integer expression literal is out of Int64 range".into()))?;
+        Ok(ScalarExpr::Integer(value))
+    }
+}
+
 pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     if depth >= MAX_EXPRESSION_DEPTH {
         return Err(ParseError("scalar expression exceeds nesting depth of 64".into()));
@@ -74,20 +89,7 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("CASE") => parse_case(parser, depth),
         Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
-            let literal = if number.contains('.') || number.contains('e') || number.contains('E') {
-                let value = number.parse::<f64>().map_err(|_| {
-                    ParseError("invalid decimal expression literal".into())
-                })?;
-                if !value.is_finite() {
-                    return Err(ParseError("decimal expression literal must be finite".into()));
-                }
-                ScalarExpr::Decimal(number.clone())
-            } else {
-                let value = number.parse::<i64>().map_err(|_| {
-                    ParseError("integer expression literal is out of Int64 range".into())
-                })?;
-                ScalarExpr::Integer(value)
-            };
+            let literal = parse_numeric_literal(number)?;
             parser.index += 1;
             Ok(literal)
         }
