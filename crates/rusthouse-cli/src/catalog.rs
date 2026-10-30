@@ -400,8 +400,20 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
         }
         Err(error) => return Err(format!("cannot rename table {from}: {error}")),
     }
+    // Ensure the destination name is on disk before removing the source.
+    // Otherwise a crash between the link and unlink can lose both names.
+    if let Err(error) = sync_catalog_dir(catalog) {
+        let rollback = fs::remove_file(&destination)
+            .and_then(|_| fs::File::open(catalog).and_then(|dir| dir.sync_all()));
+        if let Err(rollback) = rollback {
+            return Err(format!(
+                "cannot sync staged rename {from} to {to}: {error}; rollback failed: {rollback}"
+            ));
+        }
+        return Err(format!("cannot sync staged rename {from} to {to}: {error}"));
+    }
     if let Err(error) = fs::remove_file(&source) {
-        let _ = fs::remove_file(&destination);
+        // Keep the destination alias, which has already been durably linked.
         return Err(format!("cannot finish renaming table {from}: {error}"));
     }
     sync_catalog_dir(catalog).map_err(|error| {
@@ -523,5 +535,29 @@ mod schema_short_read_tests {
             read_complete_schema(Cursor::new(full), "events", full.len() as u64).unwrap(),
             full
         );
+    }
+}
+
+#[cfg(test)]
+mod durable_catalog_rename_tests {
+    use super::*;
+
+    #[test]
+    fn renaming_schema_keeps_the_destination_accessible() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-catalog-rename-durable-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let columns = vec![ColumnDef {
+            name: "id".into(),
+            data_type: "UInt64".into(),
+        }];
+        create_table(&root, "original", &columns, false).unwrap();
+        rename_table(&root, "original", "renamed").unwrap();
+        assert!(!schema_path(&root, "original").exists());
+        assert_eq!(read_schema(&root, "renamed").unwrap(), columns);
+        fs::remove_dir_all(root).unwrap();
     }
 }
