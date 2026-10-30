@@ -5,6 +5,20 @@ from numeric_oracle import compare_tsv, numeric_equal, parse_tolerance
 
 
 class NumericOracleTests(unittest.TestCase):
+    def test_numeric_oracle_bounds_file_reads(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from numeric_oracle import read_input
+        with tempfile.TemporaryDirectory() as root:
+            file = Path(root) / "result.tsv"
+            file.write_bytes(b"0123456789abcdefg")
+            with patch("numeric_oracle.MAX_INPUT_BYTES", 16):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    read_input(file)
+            self.assertEqual(read_input(file), b"0123456789abcdefg")
+
+
     def test_decimal_precision_and_tolerance(self):
         self.assertTrue(numeric_equal(b"1.00", b"1.0"))
         self.assertTrue(numeric_equal(b"1e-9", b"0.000000001"))

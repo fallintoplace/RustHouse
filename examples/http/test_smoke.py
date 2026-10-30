@@ -1,9 +1,16 @@
 import unittest
 from unittest.mock import patch
-from smoke import check, origin
+from smoke import NoRedirect, check, origin
 
 
 class SmokeTests(unittest.TestCase):
+    def test_refuses_http_redirect_targets(self):
+        self.assertIsNone(
+            NoRedirect().redirect_request(None, None, 307, "redirect", {},
+                                          "http://example.net/")
+        )
+
+
     def test_refuses_public_endpoint(self):
         with self.assertRaises(ValueError):
             origin("http://public.example:8123")

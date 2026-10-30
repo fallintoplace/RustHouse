@@ -40,6 +40,7 @@ pub struct JoinStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinAggregate {
     CountStar,
+    CountColumn(JoinColumn),
     Numeric {
         function: crate::AggregateFunction,
         column: JoinColumn,
@@ -58,11 +59,15 @@ pub struct JoinSelect {
     /// None projects every column from both tables.
     pub columns: Option<Vec<JoinColumn>>,
     pub aggregate: Option<JoinAggregate>,
+    /// Exactly one qualified GROUP BY key with COUNT(*) projected last.
+    pub grouped_count: Option<JoinColumn>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
     /// Optional post-join NULL filter (`true` means `IS NOT NULL`).
     pub where_null: Option<(JoinColumn, bool)>,
+    /// One typed comparison after a two-table unordered INNER JOIN.
+    pub where_comparison: Option<(JoinColumn, crate::Operator, String)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
@@ -93,13 +98,18 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     parser.keyword("SELECT");
     let aggregate = if parser.keyword("COUNT") {
-        if !parser.take(Token::LParen)
-            || !parser.take(Token::Star)
-            || !parser.take(Token::RParen)
-        {
-            return Err(ParseError("JOIN COUNT requires COUNT(*)".into()));
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("JOIN COUNT requires '('".into()));
         }
-        Some(JoinAggregate::CountStar)
+        let result = if parser.take(Token::Star) {
+            JoinAggregate::CountStar
+        } else {
+            JoinAggregate::CountColumn(qualified(&mut parser)?)
+        };
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("JOIN COUNT requires ')'".into()));
+        }
+        Some(result)
     } else {
         let function = if parser.keyword("SUM") {
             Some(crate::AggregateFunction::Sum)
@@ -125,6 +135,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             None
         }
     };
+    let mut grouped_count_projection = false;
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
     } else {
@@ -137,6 +148,16 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             }
             columns.push(projected(&mut parser)?);
             if !parser.take(Token::Comma) {
+                break;
+            }
+            if parser.keyword("COUNT") {
+                if !parser.take(Token::LParen)
+                    || !parser.take(Token::Star)
+                    || !parser.take(Token::RParen)
+                {
+                    return Err(ParseError("grouped JOIN requires COUNT(*)".into()));
+                }
+                grouped_count_projection = true;
                 break;
             }
         }
@@ -390,20 +411,33 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             using_keys: step_using,
         });
     }
-    let where_null = if parser.keyword("WHERE") {
+    let (where_null, where_comparison) = if parser.keyword("WHERE") {
         let column = qualified(&mut parser)?;
-        if !parser.keyword("IS") {
-            return Err(ParseError(
-                "JOIN WHERE supports only qualified IS [NOT] NULL".into(),
-            ));
+        if parser.keyword("IS") {
+            let not_null = parser.keyword("NOT");
+            if !parser.keyword("NULL") {
+                return Err(ParseError("JOIN WHERE requires IS [NOT] NULL".into()));
+            }
+            (Some((column, not_null)), None)
+        } else {
+            let operator = parser.operator()?;
+            if !matches!(operator,
+                crate::Operator::Eq | crate::Operator::Ne
+                | crate::Operator::Lt | crate::Operator::Le
+                | crate::Operator::Gt | crate::Operator::Ge)
+            {
+                return Err(ParseError("JOIN WHERE requires a comparison operator".into()));
+            }
+            (None, Some((column, operator, parser.literal()?)))
         }
-        let not_null = parser.keyword("NOT");
-        if !parser.keyword("NULL") {
-            return Err(ParseError(
-                "JOIN WHERE supports only qualified IS [NOT] NULL".into(),
-            ));
+    } else {
+        (None, None)
+    };
+    let group_by = if parser.keyword("GROUP") {
+        if !parser.keyword("BY") {
+            return Err(ParseError("JOIN GROUP requires BY".into()));
         }
-        Some((column, not_null))
+        Some(qualified(&mut parser)?)
     } else {
         None
     };
@@ -450,7 +484,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             || relation == right_alias
             || steps.iter().any(|step| step.alias == relation)
     };
-    if let Some(JoinAggregate::Numeric { column, .. }) = &aggregate {
+    if let Some(JoinAggregate::CountColumn(column) | JoinAggregate::Numeric { column, .. }) = &aggregate {
         if !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}", column.relation
@@ -467,12 +501,22 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             }
         }
     }
+    if let Some((column, _, _)) = &where_comparison {
+        if !known_qualifier(&column.relation) {
+            return Err(ParseError(format!("unknown JOIN qualifier: {}", column.relation)));
+        }
+    }
     if let Some((column, _)) = &where_null {
         if !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}",
                 column.relation
             )));
+        }
+    }
+    if let Some(column) = &group_by {
+        if !known_qualifier(&column.relation) {
+            return Err(ParseError(format!("unknown JOIN qualifier: {}", column.relation)));
         }
     }
     for (column, _, _) in &order_by {
@@ -506,11 +550,61 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
-    if aggregate.is_some()
-        && (!order_by.is_empty() || (steps.is_empty() && kind != JoinType::Inner))
+    if where_comparison.is_some()
+        && (kind != JoinType::Inner || !steps.is_empty()
+            || !order_by.is_empty() || aggregate.is_some()
+            || grouped_count_projection || group_by.is_some())
     {
         return Err(ParseError(
-            "JOIN COUNT requires no ORDER BY; two-table COUNT requires INNER JOIN".into(),
+            "JOIN comparison WHERE supports unordered two-table INNER joins without aggregation".into(),
+        ));
+    }
+    let grouped_count = if grouped_count_projection {
+        let projected_key = columns
+            .as_ref()
+            .and_then(|columns| (columns.len() == 1).then_some(&columns[0]))
+            .ok_or_else(|| ParseError("grouped JOIN projects one key and COUNT(*)".into()))?;
+        if group_by.as_ref() != Some(projected_key) {
+            return Err(ParseError("GROUP BY must match the selected JOIN key".into()));
+        }
+        if kind != JoinType::Inner || !steps.is_empty() {
+            return Err(ParseError("grouped JOIN COUNT requires two-table INNER JOIN".into()));
+        }
+        if order_by.iter().any(|(column, _, _)| column != projected_key) {
+            return Err(ParseError("grouped JOIN ORDER BY must use the group key".into()));
+        }
+        group_by
+    } else {
+        if group_by.is_some() {
+            return Err(ParseError("JOIN GROUP BY requires projected COUNT(*)".into()));
+        }
+        None
+    };
+    // The streaming COUNT(column) executor currently covers exactly two INNER sources.
+    if matches!(aggregate.as_ref(), Some(JoinAggregate::CountColumn(_)))
+        && (kind != JoinType::Inner || !steps.is_empty())
+    {
+        return Err(ParseError("JOIN COUNT(column) requires a two-table INNER JOIN".into()));
+    }
+    // Chained numeric/column aggregates and OUTER or filtered chained COUNT
+    // lack a matching streaming semantics implementation. Reject them.
+    if !steps.is_empty() && aggregate.is_some()
+        && (!matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))
+            || kind != JoinType::Inner
+            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || where_null.is_some())
+    {
+        return Err(ParseError(
+            "chained JOIN COUNT requires all INNER joins and no post-join NULL filter".into(),
+        ));
+    }
+    if aggregate.is_some()
+        && (!order_by.is_empty()
+            || (steps.is_empty() && kind != JoinType::Inner
+                && !matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))))
+    {
+        return Err(ParseError(
+            "JOIN aggregates require no ORDER BY; two-table OUTER JOIN supports COUNT(*) only".into(),
         ));
     }
     Ok(Some(JoinSelect {
@@ -522,9 +616,11 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         any,
         columns,
         aggregate,
+        grouped_count,
         keys,
         using_keys,
         where_null,
+        where_comparison,
         order_by,
         limit,
         offset,
@@ -600,6 +696,9 @@ pub fn explain_join(query: &JoinSelect) -> String {
         if let Some(aggregate) = &query.aggregate {
             match aggregate {
                 JoinAggregate::CountStar => "count(*)".to_owned(),
+                JoinAggregate::CountColumn(column) => {
+                    format!("count({}.{})", column.relation, column.name)
+                }
                 JoinAggregate::Numeric { function, column } => {
                     format!("{}({}.{})", function.name(), column.relation, column.name)
                 }
@@ -626,6 +725,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
             if *not_null { "NOT " } else { "" }
         ));
     }
+    if let Some((column, operator, value)) = &query.where_comparison {
+        plan.push_str(&format!(
+            "\nFilter: {}.{} {:?} literal({})",
+            column.relation, column.name, operator, value
+        ));
+    }
     if !query.order_by.is_empty() {
         let terms = query
             .order_by
@@ -647,6 +752,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         plan.push_str(&format!("\nOrder: {terms}"));
+    }
+    if let Some(column) = &query.grouped_count {
+        plan.push_str(&format!(
+            "\nAggregate: GROUP BY {}.{} with COUNT(*)",
+            column.relation, column.name,
+        ));
     }
     if query.offset > 0 {
         plan.push_str(&format!("\nOffset: {}", query.offset));
