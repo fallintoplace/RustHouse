@@ -120,13 +120,27 @@ def compile_case(case, rows):
 
 
 def _invoke(command, *, timeout, execute=None):
-    run = execute or subprocess.run
     started = time.perf_counter()
-    result = run(command, capture_output=True, check=False, timeout=timeout)
-    elapsed = time.perf_counter() - started
-    if result.returncode:
-        raise RuntimeError(f"command failed with exit {result.returncode}: {result.stderr[-600:]!r}")
-    return result.stdout, elapsed
+    if execute is not None:
+        result = execute(command, capture_output=True, check=False, timeout=timeout)
+        if result.returncode:
+            raise RuntimeError(f"command failed with exit {result.returncode}: {result.stderr[-600:]!r}")
+        output = result.stdout
+    else:
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            result = subprocess.run(command, stdout=stdout, stderr=stderr,
+                                    check=False, timeout=timeout)
+            if result.returncode:
+                stderr.seek(0, os.SEEK_END)
+                stderr.seek(max(0, stderr.tell() - 600))
+                raise RuntimeError(
+                    f"command failed with exit {result.returncode}: {stderr.read(600)!r}"
+                )
+            stdout.seek(0)
+            output = stdout.read(8 * 1024 * 1024 + 1)
+    if len(output) > 8 * 1024 * 1024:
+        raise ValueError("query matrix subprocess output exceeds 8 MiB")
+    return output, time.perf_counter() - started
 
 
 def verify_database(binary, database, rows, *, timeout=600, execute=None):
