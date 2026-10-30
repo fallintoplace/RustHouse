@@ -1,0 +1,22 @@
+{
+  "name": "distinct-dimension-pressure",
+  "description": "Measure integer distinct and grouped exact cardinality under different key domains",
+  "queries": [
+    {
+      "name": "global-distinct-user",
+      "sql": "SELECT COUNT(DISTINCT user_id) FROM events"
+    },
+    {
+      "name": "by-region-distinct-user",
+      "sql": "SELECT region, COUNT(DISTINCT user_id) FROM events GROUP BY region ORDER BY region"
+    },
+    {
+      "name": "by-category-distinct-user",
+      "sql": "SELECT category, COUNT(DISTINCT user_id) FROM events GROUP BY category ORDER BY category"
+    },
+    {
+      "name": "by-region-category-distinct-user",
+      "sql": "SELECT region, category, COUNT(DISTINCT user_id) FROM events GROUP BY region, category ORDER BY region, category"
+    }
+  ]
+}

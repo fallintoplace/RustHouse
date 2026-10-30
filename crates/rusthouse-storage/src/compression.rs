@@ -66,6 +66,19 @@ impl CompressedBlockReader<File> {
                 source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular file"),
             });
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if entry.dev() != metadata.dev() || entry.ino() != metadata.ino() {
+                return Err(PartError::Io {
+                    path: path.to_path_buf(),
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "compressed stream replaced before open",
+                    ),
+                });
+            }
+        }
         // File::open starts at offset zero. Reuse the validated metadata size
         // instead of stat-ing and seeking the file a second time.
         Ok(Self {
@@ -117,6 +130,9 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
             });
         }
 
+        if offset == self.offset && !self.done {
+            return Ok(());
+        }
         self.reader
             .seek(SeekFrom::Start(offset))
             .map_err(|source| PartError::Io {
@@ -182,6 +198,9 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
             || block.decompressed_size > MAX_DECODE_BLOCK_SIZE
         {
             return self.invalid_at(block.offset, "block exceeds the 64 MiB decode limit");
+        }
+        if !matches!(block.method, 0x02 | 0x82 | 0x90) {
+            return self.invalid_at(block.offset, "unsupported compression method");
         }
 
         // LZ4/ZSTD decode into separate output buffers. Reuse the encoded input
@@ -311,6 +330,45 @@ mod tests {
         CompressedBlockReader::new(Cursor::new(bytes), "data.bin")
             .unwrap()
             .collect()
+    }
+
+    #[test]
+    fn adjacent_blocks_skip_seeking_without_skipping_validation() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct CountingSeek {
+            data: Cursor<Vec<u8>>,
+            seeks: Rc<Cell<usize>>,
+        }
+        impl Read for CountingSeek {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                self.data.read(out)
+            }
+        }
+        impl Seek for CountingSeek {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+                self.seeks.set(self.seeks.get() + 1);
+                self.data.seek(position)
+            }
+        }
+
+        let mut data = checked_block(0x02, b"first", 5);
+        let second_offset = data.len() as u64;
+        data.extend(checked_block(0x02, b"second", 6));
+        let seeks = Rc::new(Cell::new(0));
+        let mut reader = CompressedBlockReader::new(
+            CountingSeek { data: Cursor::new(data), seeks: Rc::clone(&seeks) },
+            "test.bin",
+        ).unwrap();
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"first");
+        let before = seeks.get();
+        reader.seek_to_block(second_offset).unwrap();
+        assert_eq!(seeks.get(), before);
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"second");
+        reader.seek_to_block(0).unwrap();
+        assert!(seeks.get() > before);
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"first");
     }
 
     #[test]
@@ -742,5 +800,55 @@ mod tests {
                 ..
             }))
         ));
+    }
+}
+
+#[cfg(test)]
+mod unsupported_codec_early_rejection_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn rejects_unsupported_header_before_reading_payload() {
+        let mut bytes = vec![0u8; 16];
+        bytes.push(0xff);
+        bytes.extend_from_slice(&19u32.to_le_bytes());
+        bytes.extend_from_slice(&10u32.to_le_bytes());
+        // A complete but untrusted payload must not be decoded or hashed.
+        bytes.extend_from_slice(&[0u8; 10]);
+        let cursor = Cursor::new(bytes);
+        let mut reader = CompressedBlockReader::new(cursor, "unknown-codec").unwrap();
+        assert!(matches!(
+            reader.next_decoded(),
+            Some(Err(PartError::InvalidCompressedBlock {
+                reason: "unsupported compression method",
+                ..
+            }))
+        ));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod compressed_stream_identity_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn inode_identity_detects_same_size_replacement_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-block-inode-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let first = root.join("one.bin");
+        let second = root.join("two.bin");
+        std::fs::write(&first, [0u8; 25]).unwrap();
+        std::fs::write(&second, [1u8; 25]).unwrap();
+        let old = std::fs::symlink_metadata(&first).unwrap();
+        let replacement = File::open(&second).unwrap().metadata().unwrap();
+        assert_eq!(old.len(), replacement.len());
+        assert_ne!(old.ino(), replacement.ino());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

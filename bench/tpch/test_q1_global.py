@@ -24,5 +24,17 @@ class Q1GlobalTests(unittest.TestCase):
             self.assertEqual(oracle(path), b"0\tNULL\tNULL\n")
 
 
+class Q1InputShapeTests(unittest.TestCase):
+    def test_rejects_malformed_columns_in_reference_data(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "lineitem.tsv"
+            for payload in ("l_shipdate\tl_quantity\n1994-01-01\t1\n",
+                            "l_shipdate\tl_quantity\tl_extendedprice\n1994-01-01\t1\n",
+                            "l_shipdate\tl_quantity\tl_extendedprice\n1994-01-01\t1\t2\textra\n"):
+                path.write_text(payload)
+                with self.subTest(payload=payload):
+                    with self.assertRaisesRegex(ValueError, "columns|data fields"):
+                        oracle(path)
+
 if __name__ == "__main__":
     unittest.main()

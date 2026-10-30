@@ -14,16 +14,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql
 from schema import TABLES, create_sql, names
 
+MAX_RECORD_BYTES = 8 * 1024 * 1024
+
 
 def inspect_tsv(path, table):
     with Path(path).open("rb") as stream:
-        header = stream.readline().rstrip(b"\n").rstrip(b"\r")
+        header = stream.readline(MAX_RECORD_BYTES + 1)
+        if len(header) > MAX_RECORD_BYTES:
+            raise ValueError(f"{table}: oversized TSV header")
+        header = header.rstrip(b"\n").rstrip(b"\r")
         if header != "\t".join(names(table)).encode("utf-8"):
             raise ValueError(f"{table}: header does not match expected dbgen columns")
         count = 0
         expected_width = len(names(table))
-        for record in stream:
-            if not record.endswith(b"\n") or len(
+        for record in iter(lambda: stream.readline(MAX_RECORD_BYTES + 1), b""):
+            if len(record) > MAX_RECORD_BYTES or not record.endswith(b"\n") or len(
                 record.removesuffix(b"\n").removesuffix(b"\r").split(b"\t")
             ) != expected_width:
                 raise ValueError(f"{table}: malformed TSV data row {count + 1}")

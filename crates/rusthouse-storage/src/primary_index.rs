@@ -3,7 +3,7 @@ mod range_keys;
 use self::range_keys::*;
 
 use crate::{CompressedBlockReader, PartError};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::ops::{Bound, Range};
 use std::path::Path;
@@ -151,7 +151,19 @@ fn checked_field_offsets(path: &Path, field_widths: &[usize]) -> Result<Vec<usiz
 }
 
 fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
+    let original = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if !original.file_type().is_file() {
+        return Err(invalid(path, "primary index must be a regular file"));
+    }
     let file = File::open(path).map_err(|source| io_error(path, source))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let opened = file.metadata().map_err(|source| io_error(path, source))?;
+        if !opened.is_file() || original.dev() != opened.dev() || original.ino() != opened.ino() {
+            return Err(invalid(path, "primary index replaced during open"));
+        }
+    }
     let size = file
         .metadata()
         .map_err(|source| io_error(path, source))?
@@ -592,5 +604,28 @@ mod tests {
             candidate_u64_mark_range(&index, 0, Bound::Unbounded, Bound::Unbounded),
             Some(0..8_192)
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod raw_index_link_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn rejects_symlinked_primary_index_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-raw-primary-link-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let real = root.join("real.idx");
+        let link = root.join("link.idx");
+        fs::write(&real, 42u64.to_le_bytes()).unwrap();
+        symlink(&real, &link).unwrap();
+        assert!(read_fixed_primary_index(&link, &[8]).is_err());
+        assert_eq!(read_fixed_primary_index(&real, &[8]).unwrap().len(), 1);
+        fs::remove_dir_all(root).unwrap();
     }
 }

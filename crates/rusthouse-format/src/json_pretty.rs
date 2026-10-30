@@ -23,35 +23,35 @@ fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
     }
 }
 
-fn is_empty_pair(open: u8, close: u8) -> bool {
+fn is_empty_json_container_pair(open: u8, close: u8) -> bool {
     matches!((open, close), (b'{', b'}') | (b'[', b']'))
 }
 
 /// Pretty-print a validated JSON row, preserving punctuation inside strings.
 pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
-    let mut quoted = false;
-    let mut escaped = false;
+    let mut inside_json_string = false;
+    let mut previous_byte_was_escape = false;
     let mut depth = 0usize;
     let mut start = 0usize;
     for (index, &byte) in row.iter().enumerate() {
-        if quoted {
-            if escaped {
-                escaped = false;
+        if inside_json_string {
+            if previous_byte_was_escape {
+                previous_byte_was_escape = false;
             } else if byte == b'\\' {
-                escaped = true;
+                previous_byte_was_escape = true;
             } else if byte == b'"' {
-                quoted = false;
+                inside_json_string = false;
             }
             continue;
         }
         match byte {
-            b'"' => quoted = true,
+            b'"' => inside_json_string = true,
             b'{' | b'[' => {
                 output.write_all(&row[start..=index])?;
                 depth += 1;
                 let empty = row
                     .get(index + 1)
-                    .is_some_and(|&next| is_empty_pair(byte, next));
+                    .is_some_and(|&next| is_empty_json_container_pair(byte, next));
                 if !empty {
                     write_indent(output, depth)?;
                 }
@@ -60,7 +60,7 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
             b'}' | b']' => {
                 output.write_all(&row[start..index])?;
                 depth = depth.saturating_sub(1);
-                let empty = index > 0 && is_empty_pair(row[index - 1], byte);
+                let empty = index > 0 && is_empty_json_container_pair(row[index - 1], byte);
                 if !empty {
                     write_indent(output, depth)?;
                 }
@@ -74,8 +74,17 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
             }
             b':' => {
                 let span = &row[start..=index];
-                if span.len() < 64 {
-                    let mut buffer = [0u8; 64];
+                if span.len() < 256 {
+                    // One writer call for longer JSON keys (up to 254 bytes
+                    // plus a colon) and the required whitespace.
+                    let mut buffer = [0u8; 256];
+                    buffer[..span.len()].copy_from_slice(span);
+                    buffer[span.len()] = b' ';
+                    output.write_all(&buffer[..span.len() + 1])?;
+                } else if span.len() < 1024 {
+                    // Keep a separate medium-key path so short keys do not
+                    // pay to initialize a larger stack buffer.
+                    let mut buffer = [0u8; 1024];
                     buffer[..span.len()].copy_from_slice(span);
                     buffer[span.len()] = b' ';
                     output.write_all(&buffer[..span.len() + 1])?;
@@ -143,6 +152,52 @@ mod tests {
         let mut output = Vec::new();
         write_pretty_json_row(&mut output, br#"{"text":"a,{}","ok":null}"#).unwrap();
         assert_eq!(output, b"{\n    \"text\": \"a,{}\",\n    \"ok\": null\n  }");
+    }
+
+    #[test]
+    fn medium_json_key_and_colon_are_batched_together() {
+        struct Writes(Vec<Vec<u8>>);
+        impl Write for Writes {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.push(bytes.to_vec());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        for length in [64, 128, 250] {
+            let key = "k".repeat(length);
+            let row = format!("{{\"{key}\":0}}");
+            let mut output = Writes(Vec::new());
+            write_pretty_json_row(&mut output, row.as_bytes()).unwrap();
+            let wanted = format!("\"{key}\": ");
+            assert!(
+                output.0.iter().any(|chunk| chunk.as_slice() == wanted.as_bytes()),
+                "medium key was not emitted in one write"
+            );
+        }
+    }
+
+    #[test]
+    fn medium_long_json_keys_still_need_one_output_write() {
+        struct Calls(Vec<Vec<u8>>);
+        impl Write for Calls {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.push(bytes.to_vec());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        for length in [254, 255, 256, 512, 1020] {
+            let key = "a".repeat(length);
+            let input = format!("{{\"{key}\":1}}");
+            let mut output = Calls(Vec::new());
+            write_pretty_json_row(&mut output, input.as_bytes()).unwrap();
+            let encoded = format!("\"{key}\": ");
+            assert!(
+                output.0.iter().any(|bytes| bytes == encoded.as_bytes()),
+                "key of {length} bytes was split into multiple writes",
+            );
+        }
     }
 
     #[test]

@@ -69,7 +69,7 @@ impl Error for NullableArrayReadError {
     }
 }
 
-fn validated_nullable_type(data_type: &str) -> Result<&str, NullableArrayReadError> {
+fn validated_nullable_array_type(data_type: &str) -> Result<&str, NullableArrayReadError> {
     let nullable_type = data_type
         .strip_prefix("Array(")
         .and_then(|inner| inner.strip_suffix(')'))
@@ -98,7 +98,7 @@ pub fn read_nullable_numeric_array_column<O: Read, N: Read, D: Read>(
     rows: usize,
     encoding: ArrayOffsetsEncoding,
 ) -> Result<NullableNumericArrayColumn, NullableArrayReadError> {
-    let nullable_type = validated_nullable_type(data_type)?;
+    let nullable_type = validated_nullable_array_type(data_type)?;
 
     let offsets =
         read_array_offsets(offsets, rows, encoding).map_err(NullableArrayReadError::Offsets)?;

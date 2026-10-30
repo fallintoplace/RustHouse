@@ -62,6 +62,24 @@ fn encode_values_row(line: &[u8], columns: usize, values: &mut Vec<u8>) -> io::R
     Ok(())
 }
 
+fn emit_values_row<W: Write>(
+    output: &mut W,
+    values: &mut Vec<u8>,
+    rows: &mut usize,
+    line: &[u8],
+    columns: usize,
+) -> io::Result<()> {
+    encode_values_row(line, columns, values)?;
+    if *rows == 0 {
+        output.write_all(b"VALUES ")?;
+    } else {
+        output.write_all(b",\n")?;
+    }
+    output.write_all(values)?;
+    *rows += 1;
+    Ok(())
+}
+
 pub struct SqlValuesWriter<W: Write> {
     output: W,
     columns: Option<usize>,
@@ -93,14 +111,7 @@ impl<W: Write> SqlValuesWriter<W> {
             self.line.clear();
             return Ok(());
         };
-        encode_values_row(&self.line, columns, &mut self.values)?;
-        if self.rows == 0 {
-            self.output.write_all(b"VALUES ")?;
-        } else {
-            self.output.write_all(b",\n")?;
-        }
-        self.output.write_all(&self.values)?;
-        self.rows += 1;
+        emit_values_row(&mut self.output, &mut self.values, &mut self.rows, &self.line, columns)?;
         self.line.clear();
         Ok(())
     }
@@ -125,14 +136,31 @@ impl<W: Write> Write for SqlValuesWriter<W> {
         if self.finished {
             return Err(invalid("SQL VALUES output is already finished"));
         }
-        for &byte in bytes {
-            if byte == b'\n' {
-                self.finish_line()?;
+        for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
+            let complete = chunk.last() == Some(&b'\n');
+            let fragment = if complete {
+                &chunk[..chunk.len() - 1]
             } else {
-                if self.line.len() >= MAX_LINE_BYTES {
-                    return Err(invalid("SQL VALUES input line exceeds 1 MiB"));
+                chunk
+            };
+            if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
+                return Err(invalid("SQL VALUES input line exceeds 1 MiB"));
+            }
+            if complete && self.line.is_empty() {
+                if let Some(columns) = self.columns {
+                    emit_values_row(
+                        &mut self.output,
+                        &mut self.values,
+                        &mut self.rows,
+                        fragment,
+                        columns,
+                    )?;
+                    continue;
                 }
-                self.line.push(byte);
+            }
+            self.line.extend_from_slice(fragment);
+            if complete {
+                self.finish_line()?;
             }
         }
         Ok(bytes.len())
@@ -157,6 +185,18 @@ mod tests {
             writer.finish()?;
         }
         String::from_utf8(output).map_err(|_| invalid("invalid output UTF-8"))
+    }
+
+    #[test]
+    fn direct_large_rows_skip_input_staging() {
+        let mut writer = SqlValuesWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let before = writer.line.capacity();
+        let value = "z".repeat(16 * 1024);
+        writer.write_all(format!("{value}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        writer.finish().unwrap();
+        assert!(writer.output.ends_with(format!("('{value}');\n").as_bytes()));
     }
 
     #[test]

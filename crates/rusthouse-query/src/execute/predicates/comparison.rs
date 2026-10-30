@@ -66,9 +66,9 @@ pub(super) fn compile_part_predicates(
     let mut compiled = Vec::with_capacity(predicates.len());
     for predicate in predicates {
         let column = predicate.column();
-        let test = compile_predicate_test(predicate, column, &mut convert)?;
+        let compiled_test = compile_predicate_test(predicate, column, &mut convert)?;
         let index = scan_column_index(scan_columns, column);
-        compiled.push(CompiledPredicate { index, test });
+        compiled.push(CompiledPredicate { index, test: compiled_test });
     }
     Ok(compiled)
 }

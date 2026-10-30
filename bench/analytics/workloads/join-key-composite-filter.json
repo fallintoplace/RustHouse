@@ -1,0 +1,19 @@
+{
+  "name": "join-key-composite-filter",
+  "description": "Exercise composite equality keys on stored fact rows",
+  "max_rows": 16000,
+  "queries": [
+    {
+      "name": "composite-join-ascending",
+      "sql": "SELECT e.event_id, f.amount FROM events e JOIN events f ON e.event_id = f.event_id AND e.user_id = f.user_id ORDER BY e.event_id LIMIT 25"
+    },
+    {
+      "name": "composite-join-descending",
+      "sql": "SELECT e.event_id, f.category FROM events e JOIN events f ON e.event_id = f.event_id AND e.user_id = f.user_id ORDER BY e.event_id DESC LIMIT 25"
+    },
+    {
+      "name": "three-key-join",
+      "sql": "SELECT e.event_id, f.quantity FROM events e JOIN events f ON e.event_id = f.event_id AND e.user_id = f.user_id AND e.quantity = f.quantity ORDER BY e.event_id LIMIT 25"
+    }
+  ]
+}

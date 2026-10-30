@@ -1,0 +1,8 @@
+{
+  "name": "early-range-sum",
+  "description": "Leading 1 percent range sum",
+  "kind": "range",
+  "aggregate": "sum",
+  "lower_ppm": 0,
+  "upper_ppm": 10000
+}

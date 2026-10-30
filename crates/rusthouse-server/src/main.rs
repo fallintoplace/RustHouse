@@ -47,18 +47,23 @@ fn parse_header(line: &str) -> Result<(&str, &str), Response> {
 }
 
 fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
-    let words: Vec<&str> = line.split(' ').collect();
-    if words.len() != 3
-        || words.iter().any(|word| word.is_empty())
-        || !matches!(words[2], "HTTP/1.1" | "HTTP/1.0")
-        || !words[1].bytes().all(|byte| byte.is_ascii_graphic())
+    let mut words = line.split(' ');
+    let (Some(method), Some(target), Some(version), None) =
+        (words.next(), words.next(), words.next(), words.next())
+    else {
+        return Err(Response::text("400 Bad Request", "invalid HTTP request line\n"));
+    };
+    if method.is_empty()
+        || target.is_empty()
+        || version.is_empty()
+        || !matches!(version, "HTTP/1.1" | "HTTP/1.0")
+        || !target.bytes().all(|byte| byte.is_ascii_graphic())
     {
         return Err(Response::text(
             "400 Bad Request",
             "invalid HTTP request line\n",
         ));
     }
-    let (method, target) = (words[0], words[1]);
     if method != "GET" && method != "POST" {
         return Err(Response::text(
             "405 Method Not Allowed",

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Stream dbgen .tbl files to RustHouse TSV using explicit fixed-point scales."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime
 import re
 from decimal import Decimal, InvalidOperation
@@ -17,6 +18,21 @@ def parse_scaled_number(raw, scale):
     if scale != 1:
         if not DECIMAL.fullmatch(raw):
             raise ValueError("invalid fixed-point decimal")
+        # dbgen uses decimal scales of 100 and 10000. Keep their exact
+        # conversion in integer arithmetic instead of building millions of
+        # Decimal objects during SF1 and larger imports.
+        digits = str(scale)
+        if scale > 0 and digits.startswith("1") and set(digits[1:]) <= {"0"}:
+            precision = len(digits) - 1
+            negative = raw.startswith("-")
+            magnitude = raw[1:] if negative else raw
+            whole, _, fraction = magnitude.partition(".")
+            if len(fraction) > precision:
+                if any(char != "0" for char in fraction[precision:]):
+                    raise ValueError("decimal precision exceeds supported fixed-point scale")
+                fraction = fraction[:precision]
+            value = int(whole) * scale + int(fraction.ljust(precision, "0") or "0")
+            return -value if negative else value
         try:
             scaled = Decimal(raw) * scale
         except InvalidOperation as error:
@@ -58,7 +74,9 @@ def convert_table(source, target, table):
         with source.open("rb") as reader, \
                 temp.open("w", encoding="utf-8", newline="\n") as writer:
             writer.write("\t".join(names(table)) + "\n")
-            for number, raw_line in enumerate(reader, 1):
+            number = 0
+            while raw_line := reader.readline(MAX_LINE + 1):
+                number += 1
                 if len(raw_line) > MAX_LINE:
                     raise ValueError(f"{table} row {number}: exceeds 8 MiB")
                 try:
@@ -83,18 +101,26 @@ def convert_table(source, target, table):
     return rows
 
 
-def convert_directory(source_dir, target_dir, selected=None):
+def convert_directory(source_dir, target_dir, selected=None, jobs=1):
     selected = tuple(TABLES if selected is None else selected)
     if not selected or len(set(selected)) != len(selected) or any(
         table not in TABLES for table in selected
     ):
         raise ValueError("select a nonempty unique set of known TPC-H tables")
-    counts = {}
-    for table in selected:
+    if type(jobs) is not int or not 1 <= jobs <= len(TABLES):
+        raise ValueError("jobs must be an integer between 1 and 8")
+
+    def convert_one(table):
         src = Path(source_dir) / (table + ".tbl")
         dst = Path(target_dir) / (table + ".tsv")
-        counts[table] = convert_table(src, dst, table)
-    return counts
+        return table, convert_table(src, dst, table)
+
+    # Table files are independent and can be converted on separate workers.
+    # Maintain deterministic table-order reporting regardless of completion order.
+    if jobs == 1:
+        return dict(map(convert_one, selected))
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        return dict(pool.map(convert_one, selected))
 
 
 def main(argv=None):
@@ -102,9 +128,12 @@ def main(argv=None):
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--table", action="append", choices=tuple(TABLES))
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="Parallel dbgen table converters (1 to 8)")
     args = parser.parse_args(argv)
     try:
-        counts = convert_directory(args.input_dir, args.output_dir, args.table)
+        counts = convert_directory(args.input_dir, args.output_dir, args.table,
+                                   jobs=args.jobs)
     except (OSError, ValueError) as error:
         parser.exit(1, f"conversion failed: {error}\n")
     for table, rows in counts.items():

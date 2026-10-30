@@ -12,6 +12,26 @@ const MAX_GROUPS: usize = 200_000;
 
 const MAX_RETAINED_GROUP_BYTES: usize = 64 * 1024 * 1024;
 
+fn group_limit_error() -> ExecutionError {
+    ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into())
+}
+
+fn numeric_column_error() -> ExecutionError {
+    ExecutionError::Invalid("numeric aggregates require numeric columns".into())
+}
+
+fn charge_median_value(used: &mut usize) -> Result<(), ExecutionError> {
+    let next = used.checked_add(std::mem::size_of::<Number>())
+        .ok_or_else(|| ExecutionError::Invalid("composite group median memory overflow".into()))?;
+    if next > MAX_RETAINED_GROUP_BYTES {
+        return Err(ExecutionError::Invalid(
+            "composite GROUP BY median exceeds 64 MiB retained memory".into()
+        ));
+    }
+    *used = next;
+    Ok(())
+}
+
 fn charge_group(
     total: &mut usize,
     dimensions: usize,
@@ -60,9 +80,7 @@ fn numeric_value_at(column: &TypedColumn, row: usize) -> Result<Option<Number>, 
                 Ok(Some(super::number_at(values, row)))
             }
         }
-        _ => Err(ExecutionError::Invalid(
-            "numeric aggregates require numeric columns".into(),
-        )),
+        _ => Err(numeric_column_error()),
     }
 }
 
@@ -144,9 +162,7 @@ pub(super) fn execute<W: Write>(
         if *function != AggregateFunction::Count
             && matches!(typed::base_type(kind), "String" | "UUID")
         {
-            return Err(ExecutionError::Invalid(
-                "numeric aggregates require numeric columns".into(),
-            ));
+            return Err(numeric_column_error());
         }
         if !names.contains(column) {
             names.push(column.clone());
@@ -224,6 +240,7 @@ pub(super) fn execute<W: Write>(
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
     let mut retained_group_bytes = 0usize;
+    let mut retained_median_bytes = 0usize;
     let mut dense_slots = (columns.len() == 2
         && columns
             .iter()
@@ -274,9 +291,7 @@ pub(super) fn execute<W: Write>(
                     index
                 } else {
                     if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 200000 groups".into(),
-                        ));
+                        return Err(group_limit_error());
                     }
                     let index = groups.len();
                     let keys = group_indices
@@ -307,9 +322,7 @@ pub(super) fn execute<W: Write>(
                     index
                 } else {
                     if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 200000 groups".into(),
-                        ));
+                        return Err(group_limit_error());
                     }
                     let index = groups.len();
                     let keys = group_indices
@@ -350,6 +363,9 @@ pub(super) fn execute<W: Write>(
                     continue;
                 }
                 if let Some(value) = numeric_value_at(&batch[index], row)? {
+                    if *function == AggregateFunction::Median {
+                        charge_median_value(&mut retained_median_bytes)?;
+                    }
                     state.update(value)?;
                 }
             }
@@ -390,7 +406,48 @@ pub(super) fn execute<W: Write>(
         let end = query
             .limit
             .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
-        if let Some(end) = end.filter(|&end| end < groups.len()) {
+        let cached_medians = terms.iter().filter_map(|(_, metric, _, _)| *metric)
+            .filter(|&metric| items[metric].0 == AggregateFunction::Median)
+            .map(|metric| (metric, groups.iter()
+                .map(|(_, states)| states[metric].sort_cell())
+                .collect::<Vec<_>>()))
+            .collect::<HashMap<_, _>>();
+        if !cached_medians.is_empty() {
+            // Select each group's median only once, including composite
+            // group keys with many ORDER BY expressions and bounded pages.
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_cached = |left: &usize, right: &usize| {
+                for &(group, metric, descending, nulls_first) in &terms {
+                    let order = if let Some(index) = metric {
+                        if let Some(keys) = cached_medians.get(&index) {
+                            // Median sort cells were materialized once; borrow
+                            // them instead of cloning on every comparison.
+                            typed::compare_order_cells(
+                                &keys[*left], &keys[*right], descending, nulls_first,
+                            )
+                        } else {
+                            let left_cell = groups[*left].1[index].sort_cell();
+                            let right_cell = groups[*right].1[index].sort_cell();
+                            typed::compare_order_cells(
+                                &left_cell, &right_cell, descending, nulls_first,
+                            )
+                        }
+                    } else {
+                        let index = group.expect("GROUP BY ORDER BY validated by parser");
+                        typed::compare_order_cells(&groups[*left].0[index], &groups[*right].0[index],
+                            descending, nulls_first)
+                    };
+                    if order != Ordering::Equal { return order; }
+                }
+                left.cmp(right)
+            };
+            if let Some(end) = end.filter(|&end| end < indices.len()) {
+                indices.select_nth_unstable_by(end, &compare_cached);
+                indices.truncate(end);
+            }
+            indices.sort_unstable_by(compare_cached);
+            bounded_order = Some(indices);
+        } else if let Some(end) = end.filter(|&end| end < groups.len()) {
             let mut indices = (0..groups.len()).collect::<Vec<_>>();
             let compare_index = |left: &usize, right: &usize| {
                 compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
@@ -516,5 +573,57 @@ mod keyed_aggregate_group_memory_tests {
         assert!(charge_group(&mut used, usize::MAX, 1, 0).is_err());
         assert_eq!(used, before);
         assert!(charge_group(&mut used, 8, 6, MAX_RETAINED_GROUP_BYTES).is_err());
+    }
+}
+
+#[cfg(test)]
+mod composite_group_median_retention_tests {
+    use super::*;
+
+    #[test]
+    fn accounts_for_median_inputs_across_all_group_keys() {
+        let mut used = 0usize;
+        charge_median_value(&mut used).unwrap();
+        let single = used;
+        charge_median_value(&mut used).unwrap();
+        assert_eq!(used, 2 * single);
+        used = MAX_RETAINED_GROUP_BYTES - 1;
+        assert!(charge_median_value(&mut used).is_err());
+        assert_eq!(used, MAX_RETAINED_GROUP_BYTES - 1);
+    }
+}
+
+#[cfg(test)]
+mod cached_composite_group_median_order_tests {
+    use super::*;
+    #[test]
+    fn cached_composite_median_sort_compares_borrowed_cells() {
+        let mut numeric = Vec::new();
+        for n in [5u128, 2, 8] {
+            let mut state = AggregateState::new(AggregateFunction::Median);
+            state.update(Number::Unsigned(n)).unwrap();
+            numeric.push(state.sort_cell());
+        }
+        let mut positions = vec![0usize, 1, 2];
+        positions.sort_unstable_by(|&left, &right| {
+            typed::compare_order_cells(&numeric[left], &numeric[right], false, false)
+        });
+        assert_eq!(positions, vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn preselected_median_cells_preserve_composite_group_metric_order() {
+        let groups = [(30_u128, 40_u128), (4, 6), (20, 22)].map(|(first, second)| {
+            let mut state = AggregateState::new(AggregateFunction::Median);
+            state.update(Number::Unsigned(first)).unwrap();
+            state.update(Number::Unsigned(second)).unwrap();
+            state
+        });
+        let medians = groups.iter().map(AggregateState::sort_cell).collect::<Vec<_>>();
+        let mut indices = (0..groups.len()).collect::<Vec<_>>();
+        indices.sort_by(|&a, &b| typed::compare_order_cells(
+            &medians[a], &medians[b], false, None
+        ));
+        assert_eq!(indices, [1, 2, 0]);
     }
 }

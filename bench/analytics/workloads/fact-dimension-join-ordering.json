@@ -1,0 +1,23 @@
+{
+  "name": "fact-dimension-join-ordering",
+  "description": "Measure deterministic ordered hash JOIN materialization and pagination",
+  "max_rows": 16000,
+  "queries": [
+    {
+      "name": "first-joined-page",
+      "sql": "SELECT e.event_id, a.tier FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY e.event_id LIMIT 25"
+    },
+    {
+      "name": "later-joined-page",
+      "sql": "SELECT e.event_id, a.tier FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY e.event_id LIMIT 25 OFFSET 25"
+    },
+    {
+      "name": "grouped-join-sort",
+      "sql": "SELECT e.event_id, a.country FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY a.country, e.event_id LIMIT 25"
+    },
+    {
+      "name": "reverse-join-sort",
+      "sql": "SELECT e.event_id, a.tier FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY a.tier DESC, e.event_id ASC LIMIT 25"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "exclude-points-sum",
+  "description": "High-selectivity NOT IN sum",
+  "kind": "membership",
+  "aggregate": "sum",
+  "ids": [
+    0,
+    1,
+    7,
+    1024,
+    65536
+  ],
+  "exclude": true
+}

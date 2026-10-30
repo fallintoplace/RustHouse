@@ -1,0 +1,8 @@
+{
+  "name": "even-count",
+  "description": "Half-selectivity full-scan count",
+  "kind": "modulo",
+  "aggregate": "count",
+  "modulus": 2,
+  "residue": 0
+}

@@ -5,25 +5,32 @@ column contains each integer in [0, rows) exactly once.
 """
 import argparse
 import json
+import math
 import re
 import subprocess
 import time
 from pathlib import Path
 
 
-def aggregates(rows):
+def aggregates(rows, *, start=0, column="id"):
     if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive UInt64")
-    return (("count(*)", rows), ("sum(id)", rows * (rows - 1) // 2),
-            ("min(id)", 0), ("max(id)", rows - 1))
+    if (type(start) is not int or start < 0 or start + rows > (1 << 64)):
+        raise ValueError("invalid UInt64 interval")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column):
+        raise ValueError("column must be a SQL identifier")
+    total = rows * (2 * start + rows - 1) // 2
+    return (("count(*)", rows), (f"sum({column})", total),
+            (f"min({column})", start), (f"max({column})", start + rows - 1))
 
 
-def verify(binary, part, rows, *, timeout=600, execute=None):
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
+def verify(binary, part, rows, *, timeout=600, execute=None,
+           start=0, column="id"):
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
     run = execute or subprocess.run
     result = []
-    for expression, expected in aggregates(rows):
+    for expression, expected in aggregates(rows, start=start, column=column):
         sql = f"SELECT {expression} FROM part"
         started = time.perf_counter()
         completed = run([str(binary), "sql", sql, "--part", str(part),
@@ -37,7 +44,8 @@ def verify(binary, part, rows, *, timeout=600, execute=None):
         result.append({"aggregate": expression, "expected": expected,
                        "seconds": elapsed, "verified": True})
     return {"workload": "persisted-aggregate-probe", "rows_assumed": rows,
-            "assumption": "one record per id 0..rows-1", "results": result}
+            "assumption": f"one record per {column} in [{start}, {start + rows})",
+            "start": start, "column": column, "results": result}
 
 
 def main(argv=None):
@@ -45,11 +53,14 @@ def main(argv=None):
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--rows", type=int, required=True)
+    parser.add_argument("--start", type=int, default=0)
+    parser.add_argument("--column", default="id")
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = verify(args.binary, args.part, args.rows, timeout=args.timeout)
+        report = verify(args.binary, args.part, args.rows, timeout=args.timeout,
+                        start=args.start, column=args.column)
         content = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
