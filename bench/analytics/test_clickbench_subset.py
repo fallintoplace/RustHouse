@@ -13,6 +13,19 @@ class VerifiedClickBenchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "within"):
             parse_ids("10")
 
+    def test_rejects_invalid_timing_controls_before_loading_queries(self):
+        invalid = [
+            {"runs": True}, {"runs": 1.5}, {"runs": 0},
+            {"runs": 101}, {"warmups": True}, {"warmups": -1},
+            {"warmups": 100}, {"runs": 60, "warmups": 41},
+            {"timeout": True}, {"timeout": float("nan")},
+            {"timeout": float("inf")}, {"timeout": 0},
+        ]
+        for options in invalid:
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(ValueError, "timing parameters"):
+                    run_subset("fake", "db", "missing.sqlite", **options)
+
     def test_late_mismatch_discards_previous_timing_samples(self):
         with tempfile.TemporaryDirectory() as root:
             generate(root, 100, 5)
