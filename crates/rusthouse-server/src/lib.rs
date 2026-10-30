@@ -13,6 +13,7 @@ pub mod health;
 mod json_array;
 mod json_compact_each_row;
 mod jsonl;
+mod join_query;
 mod markdown;
 pub mod remote;
 mod sql_values;
@@ -24,7 +25,7 @@ use json_array::JsonArraySink;
 use json_compact_each_row::JsonCompactEachRowWriter;
 use jsonl::JsonlWriter;
 use markdown::MarkdownWriter;
-use rusthouse_query::{Source, execute, explain_select, parse_select};
+use rusthouse_query::{Source, execute, explain_select, parse_join, parse_select, split_clickhouse_format};
 use rusthouse_storage::{inspect_query_source, resolve_database_table};
 use sql_values::SqlValuesWriter;
 use std::io::{self, Write};
@@ -190,7 +191,7 @@ impl QueryFormat {
     }
 }
 
-fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
+fn query_parameters(target: &str) -> Result<(String, Option<String>, Option<QueryFormat>), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" && path != "/explain" {
         return Err("unknown SQL endpoint");
@@ -223,7 +224,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
     Ok((
         path.to_owned(),
         statement,
-        format.unwrap_or(QueryFormat::Tsv),
+        format,
     ))
 }
 
@@ -309,7 +310,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if body.len() > MAX_QUERY_BYTES || target.len() > MAX_HEADER_BYTES {
         return Response::text("413 Payload Too Large", "SQL statement too large\n");
     }
-    let (path, query, format) = match query_parameters(target) {
+    let (path, query, request_format) = match query_parameters(target) {
         Ok(v) => v,
         Err(message) => return Response::text("400 Bad Request", message),
     };
@@ -318,20 +319,62 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             return Response::text("400 Bad Request", "GET must not contain a request body\n");
         }
         "GET" => query.unwrap_or_default(),
-        "POST" if query.is_some() => {
-            return Response::text(
-                "400 Bad Request",
-                "do not combine query URL and POST body\n",
-            );
-        }
-        "POST" => match std::str::from_utf8(body) {
-            Ok(statement) => statement.to_owned(),
-            Err(_) => return Response::text("400 Bad Request", "SQL body is not UTF-8\n"),
+        // ClickHouse clients may place the beginning of the statement in the
+        // query URL parameter and the remainder in the POST body. The separator
+        // is a newline, not an empty string: "SEL" + "ECT" must not turn
+        // into "SELECT". Validate the combined limit before allocating.
+        "POST" => {
+            let tail = match std::str::from_utf8(body) {
+                Ok(statement) => statement,
+                Err(_) => return Response::text("400 Bad Request", "SQL body is not UTF-8\n"),
+            };
+            match query {
+                Some(head) if !head.is_empty() && !tail.is_empty() => {
+                    let combined_bytes = head
+                        .len()
+                        .checked_add(tail.len())
+                        .and_then(|size| size.checked_add(1));
+                    if combined_bytes.is_none_or(|size| size > MAX_QUERY_BYTES) {
+                        return Response::text("413 Payload Too Large", "SQL statement too large\n");
+                    }
+                    format!("{head}\n{tail}")
+                }
+                Some(head) if !head.is_empty() => head,
+                _ => tail.to_owned(),
+            }
         },
         _ => unreachable!(),
     };
     if sql.is_empty() || sql.len() > MAX_QUERY_BYTES {
         return Response::text("400 Bad Request", "missing or oversized SQL statement\n");
+    }
+    let (statement, inline_format) = match split_clickhouse_format(&sql) {
+        Ok(parts) => parts,
+        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+    };
+    let format = if let Some(name) = inline_format {
+        if path == "/explain" || request_format.is_some() {
+            return Response::text(
+                "400 Bad Request",
+                "SQL FORMAT cannot be combined with EXPLAIN or URL format\n",
+            );
+        }
+        match QueryFormat::parse(name) {
+            Ok(value) => value,
+            Err(message) => return Response::text("400 Bad Request", message),
+        }
+    } else {
+        request_format.unwrap_or(QueryFormat::Tsv)
+    };
+    let sql = statement.to_owned();
+    // Join queries need multiple resolved table sources and an independent
+    // bounded executor. Delegate before the single-source SELECT parser.
+    match parse_join(&sql) {
+        Ok(Some(mut join)) => {
+            return join_query::handle(&mut join, path == "/explain", format, config);
+        }
+        Ok(None) => {}
+        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
     }
     let mut select = match parse_select(&sql) {
         Ok(query) => query,
@@ -1115,5 +1158,28 @@ mod json_string_bulk_perf_tests {
         let mut output = Vec::new();
         write_json_string(&mut output, "a\"b\\\n\r\t\u{08}\u{0c}\u{0001}é").unwrap();
         assert_eq!(output, "\"a\\\"b\\\\\\n\\r\\t\\b\\f\\u0001é\"".as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod inline_clickhouse_format_tests {
+    use super::*;
+
+    #[test]
+    fn supports_inline_format_over_get_and_post() {
+        let config = Config { part: None, database: None, max_rows: 100 };
+        let get = handle_request("GET", "/?query=SELECT+number+FROM+numbers%282%29+FORMAT+TabSeparated", b"", &config);
+        assert_eq!(get.status, "200 OK");
+        assert_eq!(get.body, b"0\n1\n");
+        let post = handle_request("POST", "/", b"SELECT number FROM numbers(2) FORMAT JSONStringsEachRow", &config);
+        assert_eq!(post.status, "200 OK");
+        assert_eq!(post.body, b"{\"number\":\"0\"}\n{\"number\":\"1\"}\n");
+    }
+
+    #[test]
+    fn rejects_double_format_and_unimplemented_typed_json() {
+        let config = Config { part: None, database: None, max_rows: 100 };
+        assert_eq!(handle_request("POST", "/?format=csv", b"SELECT 1 FORMAT CSV", &config).status, "400 Bad Request");
+        assert_eq!(handle_request("POST", "/", b"SELECT 1 FORMAT JSONEachRow", &config).status, "400 Bad Request");
     }
 }

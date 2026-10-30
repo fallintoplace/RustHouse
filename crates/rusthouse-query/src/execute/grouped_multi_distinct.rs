@@ -13,6 +13,18 @@ const MAX_PAIRS: usize = 200_000;
 
 const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 
+/// Include the Group container, its fixed 256-bit byte-domain bitmap, and
+/// the hash-map entry. The old estimate only charged projected key cells.
+fn fixed_group_bytes(columns: usize) -> Result<usize, ExecutionError> {
+    std::mem::size_of::<Group>()
+        .checked_add(std::mem::size_of::<(Vec<Key>, usize)>())
+        .and_then(|base| {
+            columns.checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
+                .and_then(|keys| base.checked_add(keys))
+        })
+        .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))
+}
+
 fn charge_bytes(used: &mut usize, bytes: usize) -> Result<(), ExecutionError> {
     let next = used.checked_add(bytes)
         .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?;
@@ -108,9 +120,7 @@ pub(super) fn execute<W: Write>(
                         "GROUP BY supports at most 200000 groups".into()));
                 }
                 // Hash keys and projected group cells each own variable-width data.
-                let fixed = columns.len()
-                    .checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
-                    .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?;
+                let fixed = fixed_group_bytes(columns.len())?;
                 let bytes = probes.iter().try_fold(fixed, |total, key| {
                     let dynamic = match key {
                         Key::Text(text) => text.len().checked_mul(2),
@@ -200,6 +210,16 @@ pub(super) fn execute<W: Write>(
 #[cfg(test)]
 mod bounded_payload_tests {
     use super::*;
+    #[test]
+    fn fixed_group_budget_accounts_for_bitmap_and_hash_entry() {
+        assert!(fixed_group_bytes(0).unwrap() >=
+            std::mem::size_of::<Group>() + std::mem::size_of::<(Vec<Key>, usize)>());
+        assert_eq!(fixed_group_bytes(usize::MAX).is_err(), true);
+        let mut charged = 0;
+        charge_bytes(&mut charged, fixed_group_bytes(1).unwrap()).unwrap();
+        assert!(charged >= std::mem::size_of::<Group>());
+    }
+
     #[test]
     fn rejects_capacity_crossings_without_charging_failed_reservations() {
         let mut retained = 0usize;

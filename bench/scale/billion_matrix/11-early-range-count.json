@@ -1,0 +1,8 @@
+{
+  "name": "early-range-count",
+  "description": "Leading 1 percent range count",
+  "kind": "range",
+  "aggregate": "count",
+  "lower_ppm": 0,
+  "upper_ppm": 10000
+}
