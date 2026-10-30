@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "RIGHTPADUTF8"
             | "NORMALIZEIPV6"
     )
 }
@@ -3486,7 +3487,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "RPAD" => {
+        "RPAD" | "RIGHTPADUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "RPAD requires a width")?;
             let width = integer_arg(parser, depth + 1)?;
