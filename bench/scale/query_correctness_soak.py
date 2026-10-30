@@ -65,7 +65,10 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
     statement = sql.strip().removesuffix(";").rstrip()
     if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
         raise ValueError("soak requires one read-only SELECT")
-    with Path(expected_file).open("rb") as source:
+    expected_file = Path(expected_file)
+    if expected_file.is_symlink() or not expected_file.is_file():
+        raise ValueError("expected output must be a regular non-symlinked file")
+    with expected_file.open("rb") as source:
         reference, size = digest_file(source)
     execute = execute or (lambda: run_sql(binary, database, sql, timeout))
     samples = []
