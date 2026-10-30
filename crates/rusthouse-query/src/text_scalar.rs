@@ -4353,7 +4353,7 @@ mod clickhouse_ip_address_in_range_tests {
 
 #[cfg(test)]
 mod mac_oui_parser_reuse_tests {
-    use crate::{parse_select, Projection};
+    use crate::{parse_select, ConstantValue, Projection};
 
     #[test]
     fn mac_oui_reuses_strict_six_byte_parsing() {
@@ -4363,7 +4363,11 @@ mod mac_oui_parser_reuse_tests {
             ("SELECT MACStringToOUI('GG:BB:CC:DD:EE:FF')", 0),
             ("SELECT MACStringToOUI('AA:BB:CC')", 0),
         ] {
-            assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(ref values)
+                    if values.len() == 1 && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
         }
         assert!(parse_select("SELECT MACStringToOUI('AA:BB:CC:DD:EE:FF', 1)").is_err());
     }
