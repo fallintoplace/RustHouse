@@ -485,11 +485,11 @@ fn parallel_exact_multi_aggregates(
     // dynamically to avoid a worker being stranded with one oversized part.
     // The partial COUNT/SUM states merge in worker order for reproducibility.
     let cursor = std::sync::atomic::AtomicUsize::new(0);
-    let chunks = std::thread::scope(|scope| {
+    let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let cursor = &cursor;
         let paths = &parts;
         let handles = (0..workers).map(|_| {
-            scope.spawn(move || -> Result<Vec<State>, ExecutionError> {
+            std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Vec<State>, ExecutionError> {
                 let mut states = items.iter().map(|item| match item.function {
                     Some(function) => State::Numeric(AggregateState::new(function)),
                     None => State::Count(0),
@@ -527,12 +527,12 @@ fn parallel_exact_multi_aggregates(
                     }
                 }
                 Ok(states)
-            })
-        }).collect::<Vec<_>>();
-        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            }).map_err(|error| ExecutionError::Invalid(format!("cannot start aggregate worker: {error}")))
+        }).collect::<Result<Vec<_>, _>>()?;
+        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
             Err(ExecutionError::Invalid("parallel multi-aggregate worker panicked".into()))
-        })).collect::<Vec<_>>()
-    });
+        })).collect::<Vec<_>>())
+    })?;
     let mut totals = items.iter().map(|item| match item.function {
         Some(function) => State::Numeric(AggregateState::new(function)),
         None => State::Count(0),
