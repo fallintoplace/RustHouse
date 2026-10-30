@@ -22,6 +22,17 @@ RULES = (
 )
 
 
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+
+
+def load_report(path):
+    with Path(path).open("rb") as source:
+        payload = source.read(MAX_REPORT_BYTES + 1)
+    if len(payload) > MAX_REPORT_BYTES:
+        raise ValueError("compatibility report exceeds 2 MiB")
+    return json.loads(payload)
+
+
 KNOWN_STATUSES = frozenset((
     "passed", "unverified", "missing_query", "missing_reference",
     "unsupported_query", "mismatch", "timeout", "reference_error",
@@ -90,7 +101,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        source = json.loads(args.report.read_text(encoding="utf-8"))
+        source = load_report(args.report)
         result = analyze(source, args.require_all_22)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.exit(1, f"compatibility report failed: {error}\n")
