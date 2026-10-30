@@ -578,19 +578,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "MACStringToOUI requires one argument")?;
             match input {
                 Some(input) => {
-                    let octets: Vec<_> = input.split(':').collect();
-                    let oui = if octets.len() == 6
-                        && octets.iter().all(|part| {
-                            part.len() == 2 && part.bytes().all(|byte| byte.is_ascii_hexdigit())
-                        }) {
-                        octets[..3].iter().try_fold(0_u32, |acc, part| {
-                            u8::from_str_radix(part, 16)
-                                .ok().map(|byte| (acc << 8) | u32::from(byte))
-                        }).unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    ConstantValue::Integer(i64::from(oui))
+                    let oui = parse_mac_address(&input).map_or(0_u64, |mac| mac >> 24);
+                    ConstantValue::Integer(oui as i64)
                 }
                 None => ConstantValue::Null,
             }
@@ -4359,5 +4348,23 @@ mod clickhouse_ip_address_in_range_tests {
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod mac_oui_parser_reuse_tests {
+    use crate::{parse_select, Projection};
+
+    #[test]
+    fn mac_oui_reuses_strict_six_byte_parsing() {
+        for (sql, expected) in [
+            ("SELECT MACStringToOUI('AA:BB:CC:DD:EE:FF')", 0xAA_BB_CC),
+            ("SELECT MACStringToOUI('00:00:00:00:00:01')", 0),
+            ("SELECT MACStringToOUI('GG:BB:CC:DD:EE:FF')", 0),
+            ("SELECT MACStringToOUI('AA:BB:CC')", 0),
+        ] {
+            assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        }
+        assert!(parse_select("SELECT MACStringToOUI('AA:BB:CC:DD:EE:FF', 1)").is_err());
     }
 }
