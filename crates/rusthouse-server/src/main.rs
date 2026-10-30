@@ -5,13 +5,35 @@ use rusthouse_server::{
     Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
 };
 use std::io::{self, BufReader, Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 const MAX_CONFIGURED_CONNECTIONS: usize = 64;
+static HTTP_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static HTTP_ERRORS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+fn metrics_response(requests: u64, errors: u64) -> Response {
+    Response {
+        status: "200 OK",
+        content_type: "text/plain; version=0.0.4; charset=utf-8",
+        body: format!(
+            "# HELP rusthouse_http_requests_total HTTP requests processed by this server.\\n# TYPE rusthouse_http_requests_total counter\\nrusthouse_http_requests_total {requests}\\n# HELP rusthouse_http_errors_total HTTP requests with non-200 results.\\n# TYPE rusthouse_http_errors_total counter\\nrusthouse_http_errors_total {errors}\\n"
+        )
+        .into_bytes(),
+    }
+}
+/// Release a connection permit even when a worker panics or cannot start.
+struct ActiveRequest(Arc<AtomicUsize>);
+
+impl Drop for ActiveRequest {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 
 fn retryable_accept_error(kind: io::ErrorKind) -> bool {
     matches!(kind, io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted)
@@ -77,15 +99,59 @@ fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
     Ok((method, target))
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool), Response> {
+/// Only numeric bind addresses (and localhost for loopback) are trusted as
+/// Host values. This prevents DNS rebinding against an unauthenticated server.
+fn host_matches_listener(host: &str, listener: SocketAddr) -> bool {
+    let (name, port) = match host.rsplit_once(':') {
+        Some((name, port)) => (name, Some(port)),
+        None => (host, None),
+    };
+    if port.is_some_and(|port| port.parse::<u16>().ok() != Some(listener.port())) {
+        return false;
+    }
+    name == listener.ip().to_string()
+        || (listener.ip().is_loopback() && name.eq_ignore_ascii_case("localhost"))
+}
+
+
+const REQUEST_READ_DEADLINE: Duration = Duration::from_secs(5);
+
+fn request_remaining(started: Instant, deadline: Duration) -> Result<Duration, Response> {
+    deadline
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| Response::text("408 Request Timeout", "request read deadline exceeded\n"))
+}
+
+fn request_read_error(error: io::Error, incomplete: &'static str) -> Response {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    ) {
+        Response::text("408 Request Timeout", "request read deadline exceeded\n")
+    } else {
+        Response::text("400 Bad Request", incomplete)
+    }
+}
+
+fn read_request_with_deadline(
+    stream: &mut TcpStream,
+    deadline: Duration,
+) -> Result<(String, String, Vec<u8>, bool), Response> {
+    let started = Instant::now();
     let mut input = BufReader::new(stream);
     let mut head = Vec::new();
     // Read only until the headers end, without consuming the beginning of the body.
     while !head.ends_with(b"\r\n\r\n") {
+        let remaining = request_remaining(started, deadline)?;
+        input
+            .get_mut()
+            .set_read_timeout(Some(remaining))
+            .map_err(|error| request_read_error(error, "cannot set request read timeout\n"))?;
         let mut byte = [0u8];
         input
             .read_exact(&mut byte)
-            .map_err(|_| Response::text("400 Bad Request", "incomplete HTTP request headers\n"))?;
+            .map_err(|error| request_read_error(error, "incomplete HTTP request headers\n"))?;
         head.push(byte[0]);
         if head.len() > MAX_HEADER_BYTES {
             return Err(Response::text(
@@ -105,11 +171,23 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
     let mut transfer_encoding = false;
     let mut accept_lz4 = false;
     let mut seen_accept = false;
+    let mut host = None;
     for line in lines {
         if line.is_empty() {
             break;
         }
         let (key, value) = parse_header(line)?;
+        if key.eq_ignore_ascii_case("host") {
+            if host.replace(value.trim()).is_some() {
+                return Err(Response::text("400 Bad Request", "duplicate Host header\n"));
+            }
+        }
+        if key.eq_ignore_ascii_case("expect") {
+            return Err(Response::text(
+                "417 Expectation Failed",
+                "HTTP expectations are unsupported\n",
+            ));
+        }
         if key.eq_ignore_ascii_case("content-length") {
             if size.is_some() {
                 return Err(Response::text(
@@ -139,6 +217,18 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
             accept_lz4 = value.trim() == "x-rusthouse-lz4";
         }
     }
+    let listener = input
+        .get_ref()
+        .local_addr()
+        .map_err(|_| Response::text("400 Bad Request", "cannot validate Host\n"))?;
+    if host.is_some_and(|host| !host_matches_listener(host, listener))
+        || (host.is_none() && first.ends_with(" HTTP/1.1"))
+    {
+        return Err(Response::text(
+            "400 Bad Request",
+            "Host does not match listening address\n",
+        ));
+    }
     if transfer_encoding {
         return Err(Response::text(
             "400 Bad Request",
@@ -152,6 +242,12 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
         ));
     }
     let size = size.unwrap_or(0);
+    if method == "GET" && size != 0 {
+        return Err(Response::text(
+            "400 Bad Request",
+            "GET must not contain a request body\n",
+        ));
+    }
     if size > MAX_QUERY_BYTES {
         return Err(Response::text(
             "413 Payload Too Large",
@@ -159,11 +255,52 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
         ));
     }
     let mut body = vec![0u8; size];
-    input
-        .read_exact(&mut body)
-        .map_err(|_| Response::text("400 Bad Request", "incomplete HTTP request body\n"))?;
+    let mut received = 0;
+    while received < size {
+        let remaining = request_remaining(started, deadline)?;
+        input
+            .get_mut()
+            .set_read_timeout(Some(remaining))
+            .map_err(|error| request_read_error(error, "cannot set request read timeout\n"))?;
+        let count = input
+            .read(&mut body[received..])
+            .map_err(|error| request_read_error(error, "incomplete HTTP request body\n"))?;
+        if count == 0 {
+            return Err(Response::text(
+                "400 Bad Request",
+                "incomplete HTTP request body\n",
+            ));
+        }
+        received += count;
+    }
     Ok((method.to_owned(), target.to_owned(), body, accept_lz4 && method == "POST" && target == "/"))
 }
+
+fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool), Response> {
+    read_request_with_deadline(stream, REQUEST_READ_DEADLINE)
+}
+
+/// Enforce one total response-write budget, not a fresh timeout per syscall.
+fn write_with_deadline(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let remaining = deadline.checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "response write deadline exceeded"))?;
+        stream.set_write_timeout(Some(remaining))?;
+        // Limit each syscall to 64 KiB and recalculate the budget after it.
+        let written = stream.write(&bytes[..bytes.len().min(64 * 1024)])?;
+        if written == 0 {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "client closed during response"));
+        }
+        bytes = &bytes[written..];
+    }
+    Ok(())
+}
+
 
 fn respond(stream: &mut TcpStream, response: Response, allow_lz4: bool) -> io::Result<()> {
     // Compress only large successful analytical responses and only when the
@@ -178,15 +315,16 @@ fn respond(stream: &mut TcpStream, response: Response, allow_lz4: bool) -> io::R
         Some(bytes) => (bytes.as_slice(), "Content-Encoding: x-rusthouse-lz4\r\n"),
         None => (response.body.as_slice(), ""),
     };
-    write!(
-        stream,
+    let header = format!(
         "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Connection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",
         response.status,
         response.content_type,
         body.len(),
         encoding,
-    )?;
-    stream.write_all(body)
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    write_with_deadline(stream, header.as_bytes(), deadline)?;
+    write_with_deadline(stream, body, deadline)
 }
 
 fn configure_client_timeouts(stream: &TcpStream) -> io::Result<()> {
@@ -203,6 +341,16 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let request = read_request(&mut stream);
     let accept_lz4 = request.as_ref().is_ok_and(|(_, _, _, encoded)| *encoded);
     let response = match request {
+        Ok((method, target, body, _)) if target == "/metrics" => {
+            if method != "GET" || !body.is_empty() {
+                Response::text("405 Method Not Allowed", "metrics requires empty GET\n")
+            } else {
+                metrics_response(
+                    HTTP_REQUESTS_TOTAL.load(Ordering::Relaxed),
+                    HTTP_ERRORS_TOTAL.load(Ordering::Relaxed),
+                )
+            }
+        }
         Ok((method, target, body, _)) if target == "/cluster" => {
             cluster::handle(&method, &body, cluster)
         }
@@ -215,6 +363,10 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
         Ok((method, target, body, _)) => handle_request(&method, &target, &body, config),
         Err(response) => response,
     };
+    HTTP_REQUESTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    if response.status != "200 OK" {
+        HTTP_ERRORS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
     let _ = respond(&mut stream, response, accept_lz4);
 }
 
@@ -365,11 +517,14 @@ fn main() -> io::Result<()> {
         }
         let config = Arc::clone(&config);
         let cluster = Arc::clone(&cluster);
-        let active = Arc::clone(&active);
-        std::thread::spawn(move || {
+        let permit = ActiveRequest(Arc::clone(&active));
+        if let Err(error) = std::thread::Builder::new().spawn(move || {
+            let _permit = permit;
             serve(stream, &config, &cluster);
-            active.fetch_sub(1, Ordering::AcqRel);
-        });
+        }) {
+            // The failed spawn drops its closure and releases the permit.
+            eprintln!("RustHouse cannot start query worker: {error}");
+        }
     }
     Ok(())
 }
@@ -521,6 +676,105 @@ mod concurrency_capacity_tests {
 }
 
 #[cfg(test)]
+mod get_body_early_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_get_body_without_waiting_for_advertised_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client.write_all(
+            b"GET /ping HTTP/1.1\r\nHost: localhost\r\nContent-Length: 65536\r\n\r\n",
+        ).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        assert_eq!(
+            read_request(&mut server).err().map(|response| response.status),
+            Some("400 Bad Request"),
+        );
+        assert!(parse_request_line("GET /ping HTTP/1.1").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod expect_header_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_expect_does_not_wait_for_the_request_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .write_all(
+                b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1024\r\nExpect: 100-continue\r\n\r\n",
+            )
+            .unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        assert_eq!(
+            read_request(&mut server).err().map(|response| response.status),
+            Some("417 Expectation Failed"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod total_request_deadline_tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    #[test]
+    fn slow_header_bytes_cannot_extend_total_request_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(address).unwrap();
+            for byte in b"GET /ping HTTP/1.1\\r\\n" {
+                if client.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(35));
+            }
+        });
+        let (mut server, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let response =
+            read_request_with_deadline(&mut server, Duration::from_millis(120)).unwrap_err();
+        assert_eq!(response.status, "408 Request Timeout");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(server);
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn slow_body_bytes_cannot_extend_total_request_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(address).unwrap();
+            client
+                .write_all(b"POST / HTTP/1.1\\r\\nContent-Length: 32\\r\\n\\r\\n")
+                .unwrap();
+            for _ in 0..32 {
+                if client.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(35));
+            }
+        });
+        let (mut server, _) = listener.accept().unwrap();
+        let response =
+            read_request_with_deadline(&mut server, Duration::from_millis(120)).unwrap_err();
+        assert_eq!(response.status, "408 Request Timeout");
+        drop(server);
+        writer.join().unwrap();
+    }
+}
+
+#[cfg(test)]
 mod client_socket_timeout_tests {
     use super::*;
 
@@ -533,5 +787,77 @@ mod client_socket_timeout_tests {
         assert_eq!(server.read_timeout().unwrap(), Some(Duration::from_secs(5)));
         assert_eq!(server.write_timeout().unwrap(), Some(Duration::from_secs(5)));
         drop(client);
+    }
+}
+
+#[cfg(test)]
+mod response_write_deadline_tests {
+    use super::*;
+
+    #[test]
+    fn deadline_failure_happens_before_any_network_write() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let error = write_with_deadline(
+            &mut server, b"not sent", Instant::now() - Duration::from_millis(1)
+        ).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        drop(client);
+    }
+}
+
+#[cfg(test)]
+mod active_worker_permit_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_worker_slot_releases_capacity() {
+        let active = Arc::new(AtomicUsize::new(1));
+        {
+            let _permit = ActiveRequest(Arc::clone(&active));
+            assert_eq!(active.load(Ordering::Acquire), 1);
+        }
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+}
+
+#[cfg(test)]
+mod http_metrics_tests {
+    use super::*;
+
+    #[test]
+    fn metrics_use_stable_prometheus_counter_format() {
+        let response = metrics_response(125, 7);
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.content_type, "text/plain; version=0.0.4; charset=utf-8");
+        let text = std::str::from_utf8(&response.body).unwrap();
+        assert!(text.contains("# TYPE rusthouse_http_requests_total counter\n"));
+        assert!(text.contains("rusthouse_http_requests_total 125\n"));
+        assert!(text.contains("# TYPE rusthouse_http_errors_total counter\n"));
+        assert!(text.contains("rusthouse_http_errors_total 7\n"));
+    }
+}
+
+#[cfg(test)]
+mod host_validation_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_bound_address_or_loopback_alias() {
+        let loopback: SocketAddr = "127.0.0.1:8123".parse().unwrap();
+        for valid in ["127.0.0.1", "127.0.0.1:8123", "localhost", "LOCALHOST:8123"] {
+            assert!(host_matches_listener(valid, loopback), "{valid}");
+        }
+        for bad in [
+            "attacker.example", "attacker.example:8123", "127.0.0.1:8124",
+            "localhost:8124", "127.0.0.1:8123@evil.example", "",
+        ] {
+            assert!(!host_matches_listener(bad, loopback), "{bad}");
+        }
+        let private: SocketAddr = "10.1.2.3:8080".parse().unwrap();
+        assert!(host_matches_listener("10.1.2.3:8080", private));
+        assert!(!host_matches_listener("localhost:8080", private));
+        assert!(!host_matches_listener("10.1.2.4:8080", private));
     }
 }
