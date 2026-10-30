@@ -7,6 +7,7 @@ import json
 import math
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -33,14 +34,25 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
                            if descending else range(start, start + limit))
         expected = "".join(f"{value}\n" for value in expected_values).encode()
         begun = time.perf_counter()
-        completed = run([str(binary), "sql", sql, "--part", str(part),
-                         "--format", "tsv-no-header"],
-                        capture_output=True, check=False, timeout=timeout)
+        command = [str(binary), "sql", sql, "--part", str(part),
+                   "--format", "tsv-no-header"]
+        if execute is None:
+            with tempfile.TemporaryFile(mode="w+b") as sink, tempfile.TemporaryFile(mode="w+b") as errors:
+                completed = run(command, stdout=sink, stderr=errors,
+                                check=False, timeout=timeout)
+                sink.seek(0)
+                output = sink.read(len(expected) + 1)
+                errors.seek(0, 2)
+                errors.seek(max(0, errors.tell() - 600))
+                diagnostic = errors.read(600).decode("utf-8", "replace")
+        else:
+            completed = run(command, capture_output=True, check=False, timeout=timeout)
+            output = completed.stdout
+            diagnostic = completed.stderr[-600:].decode("utf-8", "replace")
         elapsed = time.perf_counter() - begun
         if completed.returncode:
-            reason = completed.stderr[-600:].decode("utf-8", "replace")
-            raise RuntimeError(f"{direction} top-K failed: {reason}")
-        if completed.stdout != expected:
+            raise RuntimeError(f"{direction} top-K failed: {diagnostic}")
+        if output != expected:
             raise ValueError(f"{direction} top-K differs from exact sequential-id reference")
         results.append({"direction": direction, "limit": limit,
                         "seconds": elapsed, "verified": True})

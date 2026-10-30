@@ -2,6 +2,7 @@
 """Generate reference TSV for the subset of TPC-H SQL that SQLite supports."""
 import argparse
 import json
+import tempfile
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -29,12 +30,17 @@ def write_one(connection, sql, destination, max_rows=100_000, null_token="NULL",
     if type(max_output_bytes) is not int or max_output_bytes < 1:
         raise ValueError("max_output_bytes must be positive")
     destination = Path(destination)
-    temporary = destination.with_name(destination.name + ".tmp")
+    temporary = None
     count = 0
     written = 0
     try:
         cursor = connection.execute(sql)
-        with temporary.open("w", encoding="utf-8", newline="\n") as output:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="\n",
+            dir=destination.parent, prefix=destination.name + ".",
+            suffix=".tmp", delete=False,
+        ) as output:
+            temporary = Path(output.name)
             for row in cursor:
                 if count >= max_rows:
                     raise ValueError(f"reference exceeds {max_rows} output rows")
@@ -46,7 +52,8 @@ def write_one(connection, sql, destination, max_rows=100_000, null_token="NULL",
                 count += 1
         temporary.replace(destination)
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return count
 
 

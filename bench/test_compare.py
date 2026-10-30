@@ -7,6 +7,19 @@ def result(number, status, seconds):
 
 
 class BenchmarkComparisonTests(unittest.TestCase):
+    def test_bounded_report_loader(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from bench.compare import load_report
+        with tempfile.TemporaryDirectory() as root:
+            report = Path(root) / "report.json"
+            report.write_bytes(b"0" * 17)
+            with patch("bench.compare.MAX_REPORT_BYTES", 16):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    load_report(report)
+
+
     def test_detects_slowdowns_and_speedups(self):
         baseline = {"engine": "rusthouse-cli", "rows": 100,
                     "results": [result(1, "passed", 0.01), result(2, "passed", 0.02)]}
