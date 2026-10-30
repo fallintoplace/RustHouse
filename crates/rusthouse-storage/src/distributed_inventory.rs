@@ -39,7 +39,18 @@ pub fn inventory_snapshot(
     max_bytes: u64,
 ) -> Result<Vec<InventoryEntry>, PartError> {
     let active = resolve_active_snapshot(root)?;
-    inventory_active_snapshot(&active, max_files, max_bytes)
+    let result = inventory_active_snapshot(&active, max_files, max_bytes)?;
+    require_unchanged_generation(root, &active)?;
+    Ok(result)
+}
+
+fn require_unchanged_generation(root: &Path, active: &Path) -> Result<(), PartError> {
+    if resolve_active_snapshot(root)? != active {
+        return Err(PartError::InvalidScan(
+            "active snapshot changed during inventory".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn inventory_active_snapshot(
@@ -122,13 +133,14 @@ fn checksum_inventory_entry(
             "snapshot inventory file changed during hashing".into(),
         ));
     }
-    let finished = file.metadata().map_err(|error| io_error(&path, error))?;
-    if finished.len() != opened.len()
-        || finished.modified().map_err(|error| io_error(&path, error))?
-            != opened.modified().map_err(|error| io_error(&path, error))?
+    let final_opened = file.metadata().map_err(|error| io_error(&path, error))?;
+    let final_path = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
+    if !final_path.file_type().is_file()
+        || !same_file_state(&metadata, &final_opened)
+        || !same_file_state(&metadata, &final_path)
     {
         return Err(PartError::InvalidScan(
-            "snapshot inventory file changed during hashing".into(),
+            "snapshot inventory source changed during hashing".into(),
         ));
     }
     Ok(CheckedInventoryEntry {
@@ -148,20 +160,24 @@ pub fn inventory_snapshot_crc32c(
     let entries = inventory_active_snapshot(&active, max_files, max_bytes)?;
     const PARALLEL_THRESHOLD: usize = 64;
     if entries.len() < PARALLEL_THRESHOLD {
-        return entries
+        let result = entries
             .iter()
             .map(|entry| checksum_inventory_entry(&active, entry))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
+        require_unchanged_generation(root, &active)?;
+        return Ok(result);
     }
     const MAX_HASH_WORKERS: usize = 4;
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())
         .min(MAX_HASH_WORKERS);
     if workers == 1 {
-        return entries
+        let result = entries
             .iter()
             .map(|entry| checksum_inventory_entry(&active, entry))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
+        require_unchanged_generation(root, &active)?;
+        return Ok(result);
     }
 
     // Hash each file independently with bounded concurrency. Keep original
@@ -203,11 +219,29 @@ pub fn inventory_snapshot_crc32c(
         }
         Ok(())
     })?;
-    slots
+    let result = slots
         .into_iter()
         .map(|slot| slot.expect("every claimed file has one result"))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    require_unchanged_generation(root, &active)?;
+    Ok(result)
 }
+
+fn same_file_state(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return same_file_identity(before, after)
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 
 #[cfg(unix)]
 fn same_file_identity(path_metadata: &fs::Metadata, opened_metadata: &fs::Metadata) -> bool {
@@ -237,6 +271,10 @@ mod immutable_identity_tests {
         assert_eq!(before.len(), opened.len());
         assert!(!same_file_identity(&before, &opened));
         assert!(same_file_identity(&before, &fs::File::open(&first).unwrap().metadata().unwrap()));
+        assert!(same_file_state(&before, &before));
+        assert!(!same_file_state(&before, &opened));
+        fs::write(&first, b"longer").unwrap();
+        assert!(!same_file_state(&before, &fs::metadata(&first).unwrap()));
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -484,6 +522,30 @@ mod checksum_source_version_tests {
         let after = file.metadata().unwrap();
         assert_eq!(before.len(), after.len());
         assert_ne!(before.modified().unwrap(), after.modified().unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod inventory_generation_stability_tests {
+    use super::*;
+
+    #[test]
+    fn notices_active_pointer_switches_during_inventory() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-inventory-generation-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let versions = root.join(".rusthouse-versions");
+        let first = versions.join("g1");
+        let second = versions.join("g2");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        fs::write(&pointer, "g1\n").unwrap();
+        assert!(require_unchanged_generation(&root, &first).is_ok());
+        fs::write(&pointer, "g2\n").unwrap();
+        assert!(require_unchanged_generation(&root, &first).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
