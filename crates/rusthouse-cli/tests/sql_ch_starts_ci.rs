@@ -19,9 +19,7 @@ fn supports_starts_ci_function() {
         );
         assert_eq!(output.stdout, expected.as_bytes(), "{query}");
     }
-    for query in [
-        "SELECT startsWithCaseInsensitive('a')",
-    ] {
+    for query in ["SELECT startsWithCaseInsensitive('a')"] {
         let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", query])
             .output()
