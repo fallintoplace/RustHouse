@@ -87,7 +87,7 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
     #[cfg(unix)]
     let file = OpenOptions::new()
         .read(true)
-        .write(true)
+        .write(exclusive)
         .create(true)
         .truncate(false)
         .open(&path)
@@ -112,4 +112,33 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         #[cfg(not(unix))]
         path,
     })
+}
+
+#[cfg(all(test, unix))]
+mod read_only_lock_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn read_lock_can_open_an_existing_read_only_lock_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-read-only-db-lock-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        let lock = acquire_database_lock(&directory, true).unwrap();
+        drop(lock);
+
+        let path = directory.join(".rusthouse-write.lock");
+        let original_mode = fs::metadata(&path).unwrap().permissions().mode();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+
+        let reader = acquire_database_lock(&directory, false).unwrap();
+        let second_reader = acquire_database_lock(&directory, false).unwrap();
+        drop(reader);
+        drop(second_reader);
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(original_mode)).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
