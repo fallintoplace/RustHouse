@@ -2238,10 +2238,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             )?;
             match (input, position, length) {
                 (Some(value), Some(position), length) => {
-                    if position < 1 {
-                        return Err(ParseError("SUBSTRING positions are 1-based".into()));
-                    }
-                    let start = usize::try_from(position - 1).unwrap_or(usize::MAX);
+                    let start = if name == "SUBSTRINGUTF8" && position == 0 {
+                        usize::MAX
+                    } else if name == "SUBSTRINGUTF8" && position < 0 {
+                        let length = value.chars().count();
+                        let back = usize::try_from(position.unsigned_abs()).unwrap_or(usize::MAX);
+                        if back > length {
+                            usize::MAX
+                        } else {
+                            length - back
+                        }
+                    } else {
+                        if position < 1 {
+                            return Err(ParseError("SUBSTRING positions are 1-based".into()));
+                        }
+                        usize::try_from(position - 1).unwrap_or(usize::MAX)
+                    };
                     let count = match length {
                         None => usize::MAX,
                         Some(Some(count)) if count >= 0 => {
