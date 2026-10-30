@@ -41,7 +41,7 @@ def accept(binary):
         invoke(binary, "sql", "UPDATE trial SET owner = 'Ada Lovelace' WHERE id = 1",
                "--database", db)
         invoke(binary, "sql", "DELETE FROM trial WHERE id = 2", "--database", db)
-        expected = "id\\towner\\tamount\\n1\\tAda Lovelace\\t20\\n"
+        expected = "id\towner\tamount\n1\tAda Lovelace\t20\n"
         actual = invoke(binary, "sql", "SELECT id, owner, amount FROM trial ORDER BY id",
                         "--database", db)
         if actual != expected:
