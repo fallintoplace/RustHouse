@@ -57,7 +57,10 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
     let mut seen = HashSet::new();
     for line in text.lines() {
         let member = parse_member(line)?;
-        if !seen.insert(member.node.clone()) {
+        // Borrow the validated node from the manifest for duplicate checks.
+        // The returned members still own their node and zone strings.
+        let node = line.split_whitespace().next().expect("validated member has a node");
+        if !seen.insert(node) {
             return Err("duplicate member or invalid weight");
         }
         members.push(member);
@@ -149,6 +152,16 @@ pub fn membership_capacity_by_zone(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parsed_membership_owns_fields_after_input_is_dropped() {
+        let members = {
+            let manifest = "n1 z1 1\nn2 z2 3\n".to_owned();
+            parse_membership(&manifest).unwrap()
+        };
+        assert_eq!(format_membership(&members).unwrap(), "n1 z1 1\nn2 z2 3\n");
+        assert!(parse_membership("n1 z1 1\nn1 z2 2\n").is_err());
+    }
 
     #[test]
     fn round_trips_membership() {
