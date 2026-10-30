@@ -37,6 +37,14 @@ fn shard_seed(shard: &str) -> u64 {
     hash_bytes(hash_bytes(OFFSET, &length), shard.as_bytes())
 }
 
+fn hash_to_open_unit_interval(hash: u64) -> f64 {
+    // Integer mantissas remain exact in f64. Clamping avoids both ln(0)
+    // and round-to-one when the hash is at the upper endpoint.
+    const MAX_MANTISSA: u64 = (1u64 << 53) - 1;
+    let mantissa = (hash >> 11).clamp(1, MAX_MANTISSA);
+    (mantissa as f64) / ((1u64 << 53) as f64)
+}
+
 fn score_with_seed(seed: u64, node: &str) -> u64 {
     let length = (node.len() as u64).to_le_bytes();
     hash_bytes(hash_bytes(seed, &length), node.as_bytes())
@@ -119,9 +127,7 @@ pub fn weighted_replicas_for(
         if !valid_node(node) || !(1..=1024).contains(&weight) || !seen.insert(node) {
             return Err("invalid weighted replica node or weight");
         }
-        // Keep U strictly inside (0, 1). Using the top 53 bits avoids
-        // rounding a 64-bit hash to 1.0 in f64.
-        let uniform = ((score_with_seed(seed, node) >> 11) as f64 + 0.5) / ((1u64 << 53) as f64);
+        let uniform = hash_to_open_unit_interval(score_with_seed(seed, node));
         let priority = -uniform.ln() / f64::from(weight);
         if replicas == 1 {
             if winner.is_none_or(|(best, best_node)| {
@@ -384,5 +390,24 @@ mod zone_aware_tests {
         }
         assert_eq!(zone_aware_replicas_for("s", &members, 3).unwrap().len(), 3);
         assert!(zone_aware_replicas_for("s", &members, 4).is_err());
+    }
+}
+
+#[cfg(test)]
+mod open_probability_endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn unit_interval_excludes_zero_and_one_for_all_hash_boundaries() {
+        for hash in [0, 1, 2047, 2048, 4095, u64::MAX - 2048, u64::MAX] {
+            let probability = hash_to_open_unit_interval(hash);
+            assert!(probability > 0.0 && probability < 1.0, "{hash}: {probability}");
+            assert!((-probability.ln()).is_finite());
+        }
+        assert_eq!(hash_to_open_unit_interval(0), 1.0 / ((1u64 << 53) as f64));
+        assert_eq!(
+            hash_to_open_unit_interval(u64::MAX),
+            ((1u64 << 53) - 1) as f64 / ((1u64 << 53) as f64),
+        );
     }
 }
