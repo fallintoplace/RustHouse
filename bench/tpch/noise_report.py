@@ -52,6 +52,18 @@ def assess_report(report, min_samples=5, max_cv_percent=10.0):
     }
 
 
+
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+
+
+def _read_bounded_report(path):
+    with path.open("rb") as source:
+        contents = source.read(MAX_REPORT_BYTES + 1)
+    if len(contents) > MAX_REPORT_BYTES:
+        raise ValueError("benchmark JSON report exceeds 16 MiB")
+    return contents.decode("utf-8")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
@@ -62,7 +74,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = assess_report(json.loads(args.input.read_text(encoding="utf-8")),
+        report = assess_report(json.loads(_read_bounded_report(args.input)),
                                args.min_samples, args.max_cv_percent)
     except (ValueError, OSError, KeyError, TypeError) as error:
         parser.exit(1, f"noise analysis failed: {error}\n")
