@@ -6,6 +6,35 @@ from bench.scale.csv_stream_to_tsv import convert, escape_field, utf8_length
 
 
 class CsvToTsvTests(unittest.TestCase):
+    def test_does_not_unlink_a_preexisting_pending_file(self):
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            source = folder / "input.csv"
+            output = folder / "out.tsv"
+            source.write_bytes(b"1,hello\\n")
+            old_pending = folder / f".out.tsv.{os.getpid()}.pending"
+            old_pending.write_bytes(b"must survive")
+            convert(source, output)
+            self.assertEqual(output.read_text(), "1\\thello\\n")
+            self.assertEqual(old_pending.read_bytes(), b"must survive")
+
+    def test_random_pending_name_collision_is_not_deleted(self):
+        from unittest.mock import patch
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            source = folder / "input.csv"
+            output = folder / "out.tsv"
+            source.write_bytes(b"1,hello\\n")
+            collision = folder / f".out.tsv.{os.getpid()}.collision.pending"
+            collision.write_bytes(b"existing")
+            with patch("bench.scale.csv_stream_to_tsv.secrets.token_hex", return_value="collision"):
+                with self.assertRaises(FileExistsError):
+                    convert(source, output)
+            self.assertEqual(collision.read_bytes(), b"existing")
+            self.assertFalse(output.exists())
+
     def test_quotes_embedded_newlines_tabs_and_backslashes(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "in.csv"
