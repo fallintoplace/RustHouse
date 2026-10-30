@@ -80,6 +80,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "DATETRUNC"
             | "JSON_QUOTE"
             | "ISVALIDJSON"
+            | "JSONTYPE"
             | "JSONLENGTH"
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
@@ -3817,6 +3818,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "JSONTYPE" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "JSONType requires one or two arguments")?;
+            match (input, path) {
+                (None, _) | (_, Some(None)) => ConstantValue::Null,
+                (Some(input), path) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let node = match path {
+                        Some(Some(path)) => json.at_path(&path),
+                        None => Some(&json),
+                        Some(None) => unreachable!(),
+                    };
+                    ConstantValue::Text(node.map_or("Null", |value| value.type_name()).into())
+                }
             }
         }
         "JSONLENGTH" => {
