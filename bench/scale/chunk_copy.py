@@ -121,11 +121,11 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         if not isinstance(entry, dict):
             raise ValueError("invalid shard manifest entry")
         name = entry.get("path")
+        if not isinstance(name, str) or not re.fullmatch(r"part-[0-9]{6}\.tsv", name):
+            raise ValueError("invalid shard path")
         if name in seen_names:
             raise ValueError(f"duplicate shard path: {name}")
         seen_names.add(name)
-        if not isinstance(name, str) or not re.fullmatch(r"part-[0-9]{6}\.tsv", name):
-            raise ValueError("invalid shard path")
         path = Path(source_dir) / name
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"missing or unsafe shard: {name}")
