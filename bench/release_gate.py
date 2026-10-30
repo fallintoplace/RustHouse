@@ -49,6 +49,8 @@ def parse_query_ids(spec):
             if number in ids:
                 raise ValueError(f"duplicate required query ID: {number}")
             ids.add(number)
+            if len(ids) > 10_000:
+                raise ValueError("required query ID set exceeds 10000")
     if not ids:
         raise ValueError("at least one required query ID is needed")
     return ids
