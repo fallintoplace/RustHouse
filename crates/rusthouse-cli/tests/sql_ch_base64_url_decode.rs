@@ -9,8 +9,8 @@ fn decodes_padded_and_unpadded_url_safe_base64() {
         ("SELECT base64URLDecode('Zm9v') AS value", "value\nfoo\n"),
         ("SELECT base64URLDecode('8J-Mng') AS value", "value\n🌞\n"),
         ("SELECT base64URLDecode('8J-Mng==') AS value", "value\n🌞\n"),
-        ("SELECT base64URLDecode('Pz8/') AS value", "value\\n???\\n"),
-        ("SELECT base64URLDecode('fn5+') AS value", "value\\n~~~\\n"),
+        ("SELECT base64URLDecode('Pz8/') AS value", "value\n???\n"),
+        ("SELECT base64URLDecode('fn5+') AS value", "value\n~~~\n"),
         ("SELECT base64URLDecode(NULL) AS value", "value\n\\N\n"),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
