@@ -258,11 +258,12 @@ fn inspect_parts_metadata_with_workers(
         let cursor = AtomicUsize::new(1);
         std::thread::scope(|scope| -> Result<(), PartError> {
             let (sender, receiver) = std::sync::mpsc::sync_channel(workers * 2);
-            let handles = (0..workers)
-                .map(|_| {
-                    let sender = sender.clone();
-                    let cursor = &cursor;
-                    scope.spawn(move || {
+            let mut handles = Vec::with_capacity(workers);
+            for _ in 0..workers {
+                let sender = sender.clone();
+                let cursor = &cursor;
+                let handle = std::thread::Builder::new()
+                    .spawn_scoped(scope, move || {
                         loop {
                             let index = cursor.fetch_add(1, Ordering::Relaxed);
                             if index >= paths.len() {
@@ -273,8 +274,13 @@ fn inspect_parts_metadata_with_workers(
                             }
                         }
                     })
-                })
-                .collect::<Vec<_>>();
+                    .map_err(|error| {
+                        PartError::InvalidScan(format!(
+                            "cannot start snapshot metadata worker: {error}"
+                        ))
+                    })?;
+                handles.push(handle);
+            }
             drop(sender);
             // Drain the channel even if a worker exits early. The scoped
             // join below converts panics into an error rather than unwinding.
