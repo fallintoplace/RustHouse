@@ -74,6 +74,32 @@ class ChunkCopyTests(unittest.TestCase):
                             execute=lambda *a, **k: calls.append(a))
             self.assertEqual(calls, [])
 
+    def test_rejects_manifest_swapped_for_symlink_during_open(self):
+        import os
+        from unittest.mock import patch
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("O_NOFOLLOW is required")
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            manifest = directory / "manifest.json"
+            manifest.write_text("{}")
+            outside = directory / "outside.json"
+            outside.write_text("{}")
+            original_open = os.open
+            swapped = False
+            def swap_open(path, *args, **kwargs):
+                nonlocal swapped
+                if Path(path) == manifest and not swapped:
+                    swapped = True
+                    manifest.rename(directory / "saved.json")
+                    manifest.symlink_to(outside)
+                return original_open(path, *args, **kwargs)
+            with patch("bench.scale.chunk_copy.os.open", side_effect=swap_open):
+                with self.assertRaises(OSError):
+                    load_chunks("binary", "db", "t", directory, dry_run=True)
+            self.assertTrue(swapped)
+            self.assertTrue(manifest.is_symlink())
+
     def test_fails_closed_on_bad_manifest(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "manifest.json"
