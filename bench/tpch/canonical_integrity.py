@@ -64,7 +64,8 @@ def verify(directory, expected=None):
         file = directory / name
         if file.is_symlink() or not file.is_file():
             raise ValueError(f"{name}: source must be a regular file")
-        raw = file.read_bytes()
+        with file.open("rb") as source:
+            raw = source.read(64 * 1024 + 1)
         if len(raw) > 64 * 1024 or b"\0" in raw:
             raise ValueError(f"{name}: SQL exceeds CLI size bound or contains NUL")
         sql = source_bytes(raw)

@@ -7,6 +7,7 @@ to TSV NULLs. CSV quote provenance for empty fields is not retained.
 import argparse
 import csv
 import os
+import secrets
 from pathlib import Path
 
 
@@ -48,12 +49,15 @@ def convert(source, destination, *, header=False, empty_as_null=False,
     count = 0
     width = None
     destination = Path(destination)
-    pending = destination.with_name("." + destination.name + f".{os.getpid()}.pending")
+    pending = destination.with_name(
+        "." + destination.name + f".{os.getpid()}.{secrets.token_hex(8)}.pending")
+    pending_created = False
     try:
         if destination.exists():
             raise ValueError("refusing to overwrite an existing output")
         with open(source, "r", encoding="utf-8-sig", newline="") as input_file:
             with pending.open("x", encoding="utf-8", newline="") as output_file:
+                pending_created = True
                 reader = csv.reader(input_file, strict=True)
                 for fields in reader:
                     if width is None:
@@ -80,8 +84,17 @@ def convert(source, destination, *, header=False, empty_as_null=False,
         if destination.exists():
             raise ValueError("refusing to overwrite an existing output")
         os.link(pending, destination)
+        if os.name == "posix":
+            # Publishing a hard link needs a parent-directory fsync to survive
+            # a crash, even when the TSV payload has already been fsynced.
+            descriptor = os.open(destination.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     finally:
-        pending.unlink(missing_ok=True)
+        if pending_created:
+            pending.unlink(missing_ok=True)
         csv.field_size_limit(old_limit)
     return {"records": count, "data_rows": count - int(header and count > 0),
             "columns": width or 0, "header": header,

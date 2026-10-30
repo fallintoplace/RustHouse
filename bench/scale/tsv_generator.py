@@ -11,7 +11,7 @@ from pathlib import Path
 MAX_UINT64 = (1 << 64) - 1
 
 
-def emit_rows(stream, rows, *, start=0, step=1, batch_rows=8192, header=False):
+def _validate_rows(rows, start, step, batch_rows, header):
     if type(rows) is not int or rows < 1:
         raise ValueError("rows must be positive")
     if type(start) is not int or not 0 <= start <= MAX_UINT64:
@@ -24,6 +24,11 @@ def emit_rows(stream, rows, *, start=0, step=1, batch_rows=8192, header=False):
         raise ValueError("batch_rows must be in 1..1000000")
     if type(header) is not bool:
         raise ValueError("header must be a boolean")
+
+
+
+def emit_rows(stream, rows, *, start=0, step=1, batch_rows=8192, header=False):
+    _validate_rows(rows, start, step, batch_rows, header)
     if header:
         stream.write("id\n")
     if step == 1:
@@ -46,6 +51,8 @@ def generate(path, rows, *, start=0, step=1, batch_rows=8192, header=False, forc
         raise ValueError("force must be a boolean")
     if (path.exists() or path.is_symlink()) and not force:
         raise FileExistsError(f"refusing to overwrite {path} without --force")
+    # Validate requests before touching the destination directory.
+    _validate_rows(rows, start, step, batch_rows, header)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:

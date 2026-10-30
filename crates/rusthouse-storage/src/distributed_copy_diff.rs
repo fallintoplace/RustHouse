@@ -14,19 +14,29 @@ impl ObjectMetadata {
     }
 }
 
+fn windows_device_segment(segment: &str) -> bool {
+    let stem = segment.split('.').next().unwrap_or(segment);
+    ["CON", "PRN", "AUX", "NUL"].iter().any(|name| stem.eq_ignore_ascii_case(name))
+        || (stem.len() == 4
+            && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+}
+
 fn valid_key(key: &str) -> bool {
     let bytes = key.as_bytes();
     if bytes.is_empty() || bytes.len() > 512 {
         return false;
     }
     let mut segment_start = true;
+    let mut segment_offset = 0usize;
     let mut previous_dot = false;
-    for &byte in bytes {
+    for (index, &byte) in bytes.iter().enumerate() {
         if byte == b'/' {
-            if segment_start || previous_dot {
+            if segment_start || previous_dot || windows_device_segment(&key[segment_offset..index]) {
                 return false;
             }
             segment_start = true;
+            segment_offset = index + 1;
             previous_dot = false;
             continue;
         }
@@ -39,7 +49,7 @@ fn valid_key(key: &str) -> bool {
         segment_start = false;
         previous_dot = byte == b'.';
     }
-    !segment_start && !previous_dot
+    !segment_start && !previous_dot && !windows_device_segment(&key[segment_offset..])
 }
 
 fn index(objects: &[ObjectMetadata]) -> Result<HashMap<&str, &ObjectMetadata>, &'static str> {
@@ -355,5 +365,23 @@ mod immutable_collision_tests {
         assert!(plan_replica_copy_batch(&source, &conflicting, 100, 10).is_err());
         assert!(plan_replica_copy_batch(&source, &source, 100, 10).unwrap().is_empty());
         assert_eq!(plan_replica_copy_batch(&source, &[], 100, 10).unwrap(), vec![source[0].clone()]);
+    }
+}
+
+#[cfg(test)]
+mod windows_inventory_keys_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_reserved_device_names_in_any_inventory_path_segment() {
+        for key in ["NUL", "p/CON.txt", "a/com1.bin", "a/b/LPT9.log", "prn.csv/part", "AUX"] {
+            let value = ObjectMetadata { key: key.to_owned(), bytes: 1, crc32c: 0 };
+            assert!(plan_replica_copies(&[value.clone()], &[]).is_err(), "{key}");
+            assert!(plan_replica_copy_batch(&[value], &[], 1, 1).is_err(), "{key}");
+        }
+        for key in ["a/CONTEXT.txt", "x/com10.bin", "z/LPT0.log"] {
+            let value = ObjectMetadata { key: key.to_owned(), bytes: 1, crc32c: 0 };
+            assert_eq!(plan_replica_copies(&[value.clone()], &[]).unwrap(), vec![value]);
+        }
     }
 }
