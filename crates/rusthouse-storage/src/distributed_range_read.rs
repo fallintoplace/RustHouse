@@ -21,7 +21,7 @@ fn same_object_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     before.dev() == after.dev() && before.ino() == after.ino()
 }
 
-fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
+fn open_verified_object(path: &Path) -> io::Result<(File, fs::Metadata)> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() {
         return Err(io::Error::other("object is not a regular file"));
@@ -35,8 +35,17 @@ fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
     if !same_object_identity(&meta, &opened) {
         return Err(io::Error::other("object inode changed before range read"));
     }
-    Ok((file, opened.len()))
+    Ok((file, opened))
 }
+
+fn verify_object_unchanged(file: &File, opened: &fs::Metadata) -> io::Result<()> {
+    let finished = file.metadata()?;
+    if finished.len() != opened.len() || finished.modified()? != opened.modified()? {
+        return Err(io::Error::other("object changed during range read"));
+    }
+    Ok(())
+}
+
 
 /// Read an exact byte range from a frozen regular file, rejecting short reads.
 pub fn read_object_range(
@@ -48,13 +57,14 @@ pub fn read_object_range(
     if length > max_length || length > ABSOLUTE_MAX_RANGE {
         return Err(io::Error::other("object byte range exceeds limit"));
     }
-    let (mut file, file_length) = open_verified_object(path)?;
-    validate_range(offset, length, file_length)?;
+    let (mut file, opened) = open_verified_object(path)?;
+    validate_range(offset, length, opened.len())?;
     if offset != 0 {
         file.seek(SeekFrom::Start(offset))?;
     }
     let mut bytes = vec![0; length];
     file.read_exact(&mut bytes)?;
+    verify_object_unchanged(&file, &opened)?;
     Ok(bytes)
 }
 
@@ -77,9 +87,9 @@ pub fn read_object_ranges(
             return Err(io::Error::other("object ranges exceed byte limit"));
         }
     }
-    let (mut file, file_length) = open_verified_object(path)?;
+    let (mut file, opened) = open_verified_object(path)?;
     for &(offset, length) in ranges {
-        validate_range(offset, length, file_length)?;
+        validate_range(offset, length, opened.len())?;
     }
     if let [(offset, length)] = ranges {
         // A single range needs neither interval sorting nor a second copy.
@@ -88,6 +98,7 @@ pub fn read_object_ranges(
             file.seek(SeekFrom::Start(*offset))?;
         }
         file.read_exact(&mut data)?;
+        verify_object_unchanged(&file, &opened)?;
         return Ok(vec![data]);
     }
     // Adjacent or overlapping logical ranges share one physical read.
@@ -139,6 +150,7 @@ pub fn read_object_ranges(
         }
         cursor = tail;
     }
+    verify_object_unchanged(&file, &opened)?;
     Ok(output)
 }
 
@@ -280,5 +292,31 @@ mod zero_offset_object_ranges_tests {
         assert_eq!(read_object_ranges(&path, &[(8, 2), (0, 3)], 5).unwrap(), vec![b"ij".to_vec(), b"abc".to_vec()]);
         assert_eq!(read_object_ranges(&path, &[(0, 6), (3, 6)], 12).unwrap(), vec![b"abcdef".to_vec(), b"defghi".to_vec()]);
         fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod range_source_version_tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    #[test]
+    fn recognizes_same_length_changes_to_an_opened_object() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-range-source-change-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let path = root.join("data");
+        fs::write(&path, b"unchanged").unwrap();
+        let file = File::open(&path).unwrap();
+        let opened = file.metadata().unwrap();
+        assert!(verify_object_unchanged(&file, &opened).is_ok());
+        file.set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
+        assert!(verify_object_unchanged(&file, &opened).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
