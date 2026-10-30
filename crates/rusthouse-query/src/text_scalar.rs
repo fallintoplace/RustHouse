@@ -97,6 +97,10 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
             | "FORMATREADABLETIMEDELTA"
+            | "TOINT8"
+            | "TOINT16"
+            | "TOINT32"
+            | "TOINT64"
             | "TO_INT64"
             | "TOSTRING"
             | "TRIM"
@@ -2398,6 +2402,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             };
             require(parser, Token::RParen, "toString requires one argument")?;
             value.map_or(ConstantValue::Null, ConstantValue::Text)
+        }
+        "TOINT8" | "TOINT16" | "TOINT32" | "TOINT64" => {
+            let input = constant_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "integer conversion requires one argument")?;
+            let number = match input {
+                ConstantValue::Null => None,
+                ConstantValue::Integer(value) => Some(i128::from(value)),
+                ConstantValue::Text(value) => Some(value.parse::<i128>()
+                    .map_err(|_| ParseError("invalid signed integer string".into()))?),
+            };
+            match number {
+                None => ConstantValue::Null,
+                Some(number) => ConstantValue::Integer(match name.as_str() {
+                    "TOINT8" => i64::from(number as i8),
+                    "TOINT16" => i64::from(number as i16),
+                    "TOINT32" => i64::from(number as i32),
+                    "TOINT64" => number as i64,
+                    _ => unreachable!(),
+                }),
+            }
         }
         "TO_INT64" => {
             let input = text_arg(parser, depth + 1)?;
