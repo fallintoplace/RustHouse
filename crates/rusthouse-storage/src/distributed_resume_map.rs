@@ -34,19 +34,18 @@ impl ResumeMap {
     /// Count verified chunks without constructing a list of missing indexes.
     /// Ignore unused bits in the final partially populated bitmap byte.
     pub fn completed_count(&self) -> usize {
-        self.completed
+        let full_bytes = self.chunks / 8;
+        let count = self.completed[..full_bytes]
             .iter()
-            .enumerate()
-            .map(|(byte_index, &bits)| {
-                let valid = (self.chunks - byte_index * 8).min(8);
-                let mask = if valid == 8 {
-                    u8::MAX
-                } else {
-                    ((1u16 << valid) - 1) as u8
-                };
-                (bits & mask).count_ones() as usize
-            })
-            .sum()
+            .map(|byte| byte.count_ones() as usize)
+            .sum::<usize>();
+        let remainder = self.chunks % 8;
+        if remainder == 0 {
+            count
+        } else {
+            let mask = ((1u16 << remainder) - 1) as u8;
+            count + (self.completed[full_bytes] & mask).count_ones() as usize
+        }
     }
 
     pub fn remaining_count(&self) -> usize {
@@ -403,5 +402,25 @@ mod binary_checkpoint_tests {
         assert!(ResumeMap::decode_binary(&[1, 0, 0, 0, 0x80]).is_err());
         assert!(ResumeMap::decode_binary(&[1, 0, 0, 0, 1, 0]).is_err());
         assert!(ResumeMap::decode_binary(&[1, 0, 1, 0]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod popcount_progress_tests {
+    use super::*;
+
+    #[test]
+    fn packed_popcounts_match_each_bit_across_partial_tail_bytes() {
+        for chunks in [0, 1, 2, 7, 8, 9, 15, 16, 17, 63, 64, 65, 65_536] {
+            let mut progress = ResumeMap::new(chunks).unwrap();
+            for index in 0..chunks {
+                if index % 3 != 1 { progress.mark_complete(index).unwrap(); }
+            }
+            let expected = (0..chunks).filter(|&index| {
+                let (byte, mask) = ResumeMap::bit_position(index);
+                progress.completed[byte] & mask != 0
+            }).count();
+            assert_eq!(progress.completed_count(), expected);
+        }
     }
 }
