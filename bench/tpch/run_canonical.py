@@ -9,6 +9,21 @@ from pathlib import Path
 
 from run import load_queries, official_22_coverage
 
+MAX_QUERY_BYTES = 64 * 1024
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+
+
+def read_bounded(path, limit):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("canonical input must be a regular, non-symlinked file")
+    with path.open("rb") as stream:
+        content = stream.read(limit + 1)
+    if len(content) > limit:
+        raise ValueError("canonical input exceeds its byte limit")
+    return content.decode("utf-8")
+
+
 
 def command(binary, database, queries_dir, reference_dir, report_path,
             runs=3, warmups=1, timeout=300):
@@ -23,7 +38,7 @@ def command(binary, database, queries_dir, reference_dir, report_path,
     if inventory["available_queries"] != 22 or inventory["missing_query_ids"] or inventory["unexpected_query_ids"]:
         raise ValueError("full canonical q01.sql through q22.sql corpus required")
     for number in range(1, 23):
-        content = (queries_dir / f"q{number:02d}.sql").read_text(encoding="utf-8")
+        content = read_bounded(queries_dir / f"q{number:02d}.sql", MAX_QUERY_BYTES)
         first_lines = content.splitlines()[:2]
         if len(first_lines) != 2 or "TPC-H Q" not in first_lines[0] or "SPDX-License-Identifier: MIT" not in first_lines[1]:
             raise ValueError(f"q{number:02d}: missing canonical upstream provenance")
@@ -48,7 +63,7 @@ def run_full(binary, database, queries_dir, reference_dir, report_path,
     outcome = invoke(cmd)
     if not Path(report_path).is_file():
         raise ValueError("full-query runner did not produce a JSON report")
-    report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    report = json.loads(read_bounded(report_path, MAX_REPORT_BYTES))
     records = report.get("results", [])
     verified = sorted(record["query"] for record in records
                       if record.get("status") == "passed")

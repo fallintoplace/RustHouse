@@ -105,6 +105,8 @@ def summarize_times(timings):
 
 
 def reference_failure(expected_path, output):
+    if expected_path.is_symlink():
+        return "unsafe_reference", str(expected_path)
     if not expected_path.is_file():
         return "missing_reference", str(expected_path)
     with expected_path.open("rb") as source:
@@ -128,6 +130,10 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
         expected_path = None if reference_dir is None else reference_dir / ("q%02d.tsv" % (index + 1))
         if expected_path is not None and not expected_path.is_file():
             results.append({"query": index + 1, "status": "missing_reference",
+                            "seconds": [], "latency": None, "error": str(expected_path)})
+            continue
+        if expected_path is not None and expected_path.is_symlink():
+            results.append({"query": index + 1, "status": "unsafe_reference",
                             "seconds": [], "latency": None, "error": str(expected_path)})
             continue
         if expected_path is not None and expected_path.stat().st_size > MAX_REFERENCE_BYTES:

@@ -27,7 +27,10 @@ pub(crate) fn validate_wide_marks_reader<R: Read + Seek>(
             if current.offset >= mark.compressed_offset {
                 break;
             }
-            preceding_end = current.offset + 16 + u64::from(current.compressed_size);
+            preceding_end = checked_compressed_end(current.offset, current.compressed_size)
+                .ok_or_else(|| {
+                    PartError::InvalidScan("compressed block end offset overflow".into())
+                })?;
             block = reader.next().transpose()?;
         }
 
@@ -39,6 +42,10 @@ pub(crate) fn validate_wide_marks_reader<R: Read + Seek>(
         block = reader.next().transpose()?;
     }
     Ok(())
+}
+
+fn checked_compressed_end(offset: u64, compressed_size: u32) -> Option<u64> {
+    offset.checked_add(16)?.checked_add(u64::from(compressed_size))
 }
 
 fn validate_wide_mark_target(
@@ -105,6 +112,19 @@ fn invalid_mark(marks: &WideMarks, index: usize, reason: &'static str) -> PartEr
         path: marks.path.clone(),
         index,
         reason,
+    }
+}
+
+#[cfg(test)]
+mod compressed_end_overflow_tests {
+    use super::*;
+
+    #[test]
+    fn checked_block_end_rejects_offsets_near_u64_max() {
+        assert_eq!(checked_compressed_end(0, 100), Some(116));
+        assert_eq!(checked_compressed_end(u64::MAX - 16, 0), Some(u64::MAX));
+        assert_eq!(checked_compressed_end(u64::MAX - 16, 1), None);
+        assert_eq!(checked_compressed_end(u64::MAX - 15, 0), None);
     }
 }
 
