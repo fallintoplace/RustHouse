@@ -348,6 +348,21 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                 println!("{ddl:#?}");
                 return Ok(());
             }
+            // Catalog-only schema changes also need cross-process serialization.
+            // Otherwise simultaneous ALTER/RENAME operations can lose updates.
+            let read_only = matches!(
+                &ddl,
+                rusthouse_query::Ddl::ShowTables
+                    | rusthouse_query::Ddl::ShowTablesLike { .. }
+                    | rusthouse_query::Ddl::ShowTablesNotLike { .. }
+                    | rusthouse_query::Ddl::ShowCreateTable { .. }
+                    | rusthouse_query::Ddl::DescribeTable { .. }
+            );
+            let _catalog_lock = if read_only && !catalog_path.is_dir() {
+                None
+            } else {
+                Some(rusthouse_storage::acquire_database_lock(&catalog_path, !read_only)?)
+            };
             return crate::catalog::apply(&catalog_path, &ddl);
         }
         return Err("--catalog is only supported for DDL statements".into());
