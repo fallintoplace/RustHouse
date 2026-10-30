@@ -77,11 +77,11 @@ class PhysicalSqlOutputBudgetTests(unittest.TestCase):
     def test_small_query_output_survives_spooling(self):
         from bench.scale.physical_scan import invoke
         def run(_command, **kwargs):
-            kwargs["stdout"].write(b"1\\n")
+            kwargs["stdout"].write(b"1\n")
             return SimpleNamespace(returncode=0, stderr=b"")
         with patch("bench.scale.physical_scan.subprocess.run", side_effect=run):
             output, elapsed = invoke("rusthouse", "db", "SELECT 1", timeout=1)
-            self.assertEqual(output, b"1\\n")
+            self.assertEqual(output, b"1\n")
             self.assertGreaterEqual(elapsed, 0)
 
 if __name__ == "__main__":
