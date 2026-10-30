@@ -41,5 +41,18 @@ class ConcurrentReadersTests(unittest.TestCase):
                 run_readers("rusthouse", "part", sql, b"1\n")
 
 
+    def test_reports_nearest_rank_tail_latency_only_for_verified_reads(self):
+        def execute(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout=b"1\n", stderr=b"")
+        report = run_readers("binary", "part", "SELECT 1", b"1\n",
+                             clients=2, rounds=2, execute=execute)
+        self.assertEqual(report["verified"], 4)
+        self.assertGreaterEqual(report["p95_query_seconds"], report["median_query_seconds"])
+        self.assertGreaterEqual(report["p99_query_seconds"], report["p95_query_seconds"])
+        failed = run_readers("binary", "part", "SELECT 1", b"2\n",
+                             clients=1, rounds=1, execute=execute)
+        self.assertIsNone(failed["p95_query_seconds"])
+        self.assertIsNone(failed["p99_query_seconds"])
+
 if __name__ == "__main__":
     unittest.main()
