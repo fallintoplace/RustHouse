@@ -12,18 +12,25 @@ fn is_peer_healthy(peer: Peer) -> bool {
     )
 }
 
+const MAX_INFLIGHT_HEALTH_PROBES: usize = 8;
+
 fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
-    // Probe each peer in parallel, bounded by the 16-peer registration limit.
+    // A large cluster must not spawn all peer probes for every HTTP request.
+    // Keep peer result order stable while limiting concurrent socket opens.
     std::thread::scope(|scope| {
-        let handles = cluster
-            .peers()
-            .iter()
-            .map(|&peer| scope.spawn(move || is_peer_healthy(peer)))
-            .collect::<Vec<_>>();
-        handles
-            .into_iter()
-            .map(|handle| handle.join().unwrap_or(false))
-            .collect()
+        let mut results = Vec::with_capacity(cluster.peers().len());
+        for peers in cluster.peers().chunks(MAX_INFLIGHT_HEALTH_PROBES) {
+            let handles = peers
+                .iter()
+                .map(|&peer| scope.spawn(move || is_peer_healthy(peer)))
+                .collect::<Vec<_>>();
+            results.extend(
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap_or(false)),
+            );
+        }
+        results
     })
 }
 
@@ -147,5 +154,24 @@ mod tests {
         assert_eq!(response.status, "503 Service Unavailable");
         assert!(response.body.ends_with(b"\"healthy\":false}]}\n"));
         assert_eq!(handle("GET", b"x", &cluster).status, "400 Bad Request");
+    }
+}
+
+#[cfg(test)]
+mod health_probe_budget_tests {
+    use super::*;
+
+    #[test]
+    fn large_clusters_have_one_health_result_per_peer() {
+        assert!(MAX_INFLIGHT_HEALTH_PROBES > 0);
+        assert!(MAX_INFLIGHT_HEALTH_PROBES < crate::cluster::MAX_PEERS);
+        let peers = (0..crate::cluster::MAX_PEERS)
+            .map(|index| Peer::parse(&format!("127.0.0.1:{}", 60000 + index)).unwrap())
+            .collect();
+        let cluster = Cluster::new(peers).unwrap();
+        let results = probe_peer_health(&cluster);
+        assert_eq!(results.len(), crate::cluster::MAX_PEERS);
+        // Local ports are not guaranteed to be unused on CI runners.
+        // This test checks that every registered peer has a result.
     }
 }
