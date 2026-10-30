@@ -57,7 +57,10 @@ def scan_rows(base, table, timeout):
         body = response.read(129)
     if len(body) > 128 or not re.fullmatch(rb"rows_checked\n[0-9]{1,20}\n", body):
         raise ValueError("readiness scan returned invalid SQL count output")
-    return int(body.splitlines()[1])
+    count = int(body.splitlines()[1])
+    if count > (1 << 64) - 1:
+        raise ValueError("readiness scan count exceeds UInt64")
+    return count
 
 
 def probe(base, expected_source, table=None, timeout=5, expected_version=None, verify_scan=False):
