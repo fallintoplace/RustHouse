@@ -116,5 +116,19 @@ class ShardTests(unittest.TestCase):
             self.assertFalse(target.exists())
 
 
+    def test_total_row_budget_rejects_partial_shards_without_publication(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "ids.tsv"
+            source.write_bytes(b"1\n2\n3\n")
+            destination = Path(root) / "shards"
+            with self.assertRaisesRegex(ValueError, "max_total_rows"):
+                split_tsv(source, destination, rows_per_chunk=1, max_total_rows=2)
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(Path(root).glob(".rusthouse-shards-*")), [])
+            report = split_tsv(source, destination, max_total_rows=3)
+            self.assertEqual(report["total_rows"], 3)
+            with self.assertRaisesRegex(ValueError, "max_total_rows"):
+                split_tsv(source, Path(root) / "invalid", max_total_rows=True)
+
 if __name__ == "__main__":
     unittest.main()
