@@ -11,11 +11,11 @@ class QueryMatrixOutputTests(unittest.TestCase):
     def test_spools_live_output(self):
         def run(command, **kwargs):
             self.assertNotIn("capture_output", kwargs)
-            kwargs["stdout"].write(b"3\\n")
+            kwargs["stdout"].write(b"3\n")
             return SimpleNamespace(returncode=0)
         with patch("bench.scale.billion_matrix.subprocess.run", side_effect=run):
             result, elapsed = _invoke(["fake"], timeout=3)
-        self.assertEqual(result, b"3\\n")
+        self.assertEqual(result, b"3\n")
         self.assertGreaterEqual(elapsed, 0)
 
     def test_bounds_stderr_tail(self):
@@ -39,9 +39,9 @@ class QueryMatrixOutputTests(unittest.TestCase):
     def test_injected_execution_keeps_captured_output_contract(self):
         def fake(command, **kwargs):
             self.assertTrue(kwargs["capture_output"])
-            return subprocess.CompletedProcess(command, 0, stdout=b"42\\n", stderr=b"")
+            return subprocess.CompletedProcess(command, 0, stdout=b"42\n", stderr=b"")
         output, _ = _invoke(["fake"], timeout=1, execute=fake)
-        self.assertEqual(output, b"42\\n")
+        self.assertEqual(output, b"42\n")
 
 
 if __name__ == "__main__":
