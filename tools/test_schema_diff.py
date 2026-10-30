@@ -1,7 +1,11 @@
 import unittest
-from schema_diff import columns, validate_url, compatible_columns
+from schema_diff import columns, validate_url, compatible_columns, fetch
 
 class SchemaTests(unittest.TestCase):
+    def test_fetch_validates_loopback_before_request(self):
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            fetch("http://example.com", "events")
+
     def test_order_and_types_are_retained(self):
         self.assertEqual(columns({"columns": [{"name": "id", "type": "UInt64"},
                                                {"name": "s", "type": "String"}]}),
