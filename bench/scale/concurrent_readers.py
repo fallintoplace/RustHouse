@@ -63,12 +63,18 @@ def run_readers(binary, part, sql, expected, *, clients=4, rounds=3,
         results = list(pool.map(one, range(clients * rounds)))
     elapsed = time.perf_counter() - started
     success = [r["seconds"] for r in results if r["ok"]]
+    ordered = sorted(success)
+    def percentile(percent):
+        return ordered[math.ceil(len(ordered) * percent / 100) - 1] if ordered else None
+
     return {"workload": "verified-offline-concurrent-reads",
             "clients": clients, "rounds": rounds, "planned": len(results),
             "verified": len(success), "all_verified": len(success) == len(results),
             "elapsed_seconds": elapsed,
             "verified_queries_per_second": len(success) / elapsed if elapsed > 0 else None,
             "median_query_seconds": statistics.median(success) if success else None,
+            "p95_query_seconds": percentile(95),
+            "p99_query_seconds": percentile(99),
             "results": results}
 
 
