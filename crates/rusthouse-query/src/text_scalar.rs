@@ -267,6 +267,9 @@ fn parse_readable_size_bytes(input: &str) -> Option<i64> {
 }
 
 fn bounded_edit_distance<T: Eq>(left: &[T], right: &[T]) -> Result<i64, ParseError> {
+    if left == right {
+        return Ok(0);
+    }
     if left.is_empty() {
         return i64::try_from(right.len())
             .map_err(|_| ParseError("editDistance exceeds Int64".into()));
@@ -299,6 +302,9 @@ fn bounded_edit_distance<T: Eq>(left: &[T], right: &[T]) -> Result<i64, ParseErr
 }
 
 fn bounded_utf8_edit_distance(left: &str, right: &str) -> Result<i64, ParseError> {
+    if left == right {
+        return Ok(0);
+    }
     let left: Vec<char> = left.chars().collect();
     let right: Vec<char> = right.chars().collect();
     if left.is_empty() {
@@ -4359,5 +4365,27 @@ mod clickhouse_ip_address_in_range_tests {
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod equal_edit_distance_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn equal_large_inputs_avoid_quadratic_distance_budget() {
+        let text = "a".repeat(4096);
+        assert_eq!(bounded_edit_distance(text.as_bytes(), text.as_bytes()).unwrap(), 0);
+        assert_eq!(bounded_utf8_edit_distance(&text, &text).unwrap(), 0);
+        let utf8 = "ü".repeat(2048);
+        assert_eq!(bounded_utf8_edit_distance(&utf8, &utf8).unwrap(), 0);
+    }
+
+    #[test]
+    fn unequal_large_inputs_still_obey_distance_budget() {
+        let lhs = "a".repeat(2048);
+        let rhs = "b".repeat(2048);
+        assert!(bounded_edit_distance(lhs.as_bytes(), rhs.as_bytes()).is_err());
+        assert!(bounded_utf8_edit_distance(&lhs, &rhs).is_err());
     }
 }
