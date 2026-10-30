@@ -5,6 +5,22 @@ from bench.scale.concurrent_readers import run_readers
 
 
 class ConcurrentReadersTests(unittest.TestCase):
+    def test_reference_file_read_is_bounded_and_no_symlink(self):
+        import tempfile
+        from pathlib import Path
+        from bench.scale.concurrent_readers import read_reference
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "expected.tsv"
+            path.write_bytes(b"1\n")
+            self.assertEqual(read_reference(path), b"1\n")
+            (Path(root) / "alias.tsv").symlink_to(path)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                read_reference(Path(root) / "alias.tsv")
+            path.write_bytes(b"x" * (1024 * 1024 + 1))
+            with self.assertRaisesRegex(ValueError, "exceeds 1 MiB"):
+                read_reference(path)
+
+
     def test_exact_reference_checked_for_every_reader(self):
         def run(command, **kwargs):
             return SimpleNamespace(returncode=0, stdout=b"2\n", stderr=b"")

@@ -77,6 +77,17 @@ def compare_text(baseline, candidate):
     return "\n".join(lines)
 
 
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+
+
+def _read_bounded_report(path):
+    with path.open("rb") as source:
+        contents = source.read(MAX_REPORT_BYTES + 1)
+    if len(contents) > MAX_REPORT_BYTES:
+        raise ValueError("PR comparison artifact exceeds 16 MiB")
+    return contents.decode("utf-8")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
@@ -85,8 +96,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         report = compare_text(
-            args.baseline.read_text(encoding="utf-8"),
-            args.candidate.read_text(encoding="utf-8"),
+            _read_bounded_report(args.baseline),
+            _read_bounded_report(args.candidate),
         )
         args.summary.write_text(report, encoding="utf-8")
     except (OSError, ValueError) as error:

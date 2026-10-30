@@ -6,6 +6,19 @@ import math
 import statistics
 from pathlib import Path
 
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+
+
+def load_report(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("report must be a regular, non-symlinked file")
+    with path.open("rb") as source:
+        payload = source.read(MAX_REPORT_BYTES + 1)
+    if len(payload) > MAX_REPORT_BYTES:
+        raise ValueError("benchmark report exceeds 2 MiB")
+    return json.loads(payload)
+
 
 def assess_query(result, min_samples=5, max_cv_percent=10.0):
     if (type(min_samples) is not int or min_samples < 2
@@ -62,7 +75,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = assess_report(json.loads(args.input.read_text(encoding="utf-8")),
+        report = assess_report(load_report(args.input),
                                args.min_samples, args.max_cv_percent)
     except (ValueError, OSError, KeyError, TypeError) as error:
         parser.exit(1, f"noise analysis failed: {error}\n")

@@ -20,20 +20,23 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
         raise ValueError("max_parts must be in 1..16384")
     command = [str(binary), "inspect-snapshot", str(path), "--json"]
     if run is None:
-        with tempfile.TemporaryFile(mode="w+b") as output:
+        with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile() as errors:
             result = subprocess.run(
-                command, stdout=output, stderr=subprocess.PIPE,
+                command, stdout=output, stderr=errors,
                 check=False, timeout=600,
             )
             output.seek(0)
             payload = output.read(MAX_SNAPSHOT_REPORT_BYTES + 1)
+            errors.seek(max(0, errors.tell() - 600))
+            diagnostic = errors.read(600).decode("utf-8", "replace")
     else:
         result = run(command, capture_output=True, check=False, timeout=600)
         payload = result.stdout
+        diagnostic = result.stderr[-600:].decode("utf-8", "replace")
     if len(payload) > MAX_SNAPSHOT_REPORT_BYTES:
         raise ValueError("snapshot report exceeds 2 MiB")
     if result.returncode:
-        raise RuntimeError(f"snapshot inspection failed: {result.stderr.decode('utf-8', 'replace')[-600:]}")
+        raise RuntimeError(f"snapshot inspection failed: {diagnostic}")
     def unique_fields(pairs):
         fields = {}
         for name, value in pairs:

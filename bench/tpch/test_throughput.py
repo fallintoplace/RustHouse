@@ -5,6 +5,18 @@ from throughput import MAX_REFERENCE_BYTES, read_reference, run_throughput
 
 
 class ThroughputTests(unittest.TestCase):
+    def test_rejects_symlinked_throughput_goldens(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as root:
+            actual = Path(root) / "real.tsv"
+            actual.write_bytes(b"1\n")
+            alias = Path(root) / "q01.tsv"
+            alias.symlink_to(actual)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                read_reference(alias)
+
+
     def test_reference_reads_are_bounded(self):
         import tempfile
         from pathlib import Path
