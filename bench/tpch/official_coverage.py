@@ -26,8 +26,15 @@ def clean_sql(path):
         payload = source.read(MAX_QUERY_FILE_BYTES + 1)
     if len(payload) > MAX_QUERY_FILE_BYTES:
         raise ValueError("TPC-H SQL source exceeds 64 KiB")
-    text = "\n".join(line for line in payload.decode("utf-8").splitlines()
-                     if not line.lstrip().startswith("--")).strip()
+    lines = payload.decode("utf-8").splitlines()
+    # Only discard provenance comments before the SQL statement. A line starting
+    # with '--' inside a multi-line quoted literal is query data, not a comment.
+    start = 0
+    while start < len(lines) and (
+        not lines[start].strip() or lines[start].lstrip().startswith("--")
+    ):
+        start += 1
+    text = "\n".join(lines[start:]).strip()
     return text.rstrip(";").strip()
 
 
