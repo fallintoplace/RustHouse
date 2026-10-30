@@ -1,0 +1,26 @@
+{
+  "name": "wide-selectivity-scan",
+  "description": "Compare broad physical scans with full COUNT and SUM baselines",
+  "queries": [
+    {
+      "name": "full-sum",
+      "sql": "SELECT SUM(amount) FROM events"
+    },
+    {
+      "name": "broad-range-sum",
+      "sql": "SELECT SUM(amount) FROM events WHERE event_id BETWEEN 1 AND 9000"
+    },
+    {
+      "name": "broad-range-count",
+      "sql": "SELECT COUNT(*) FROM events WHERE event_id BETWEEN 1 AND 9000"
+    },
+    {
+      "name": "common-status-count",
+      "sql": "SELECT COUNT(*) FROM events WHERE status = 'paid'"
+    },
+    {
+      "name": "broad-paid-sum",
+      "sql": "SELECT SUM(amount) FROM events WHERE event_id >= 100 AND status = 'paid'"
+    }
+  ]
+}

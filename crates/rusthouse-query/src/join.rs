@@ -41,6 +41,10 @@ pub struct JoinStep {
 pub enum JoinAggregate {
     CountStar,
     CountColumn(JoinColumn),
+    Numeric {
+        function: crate::AggregateFunction,
+        column: JoinColumn,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +97,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         if !parser.take(Token::LParen) {
             return Err(ParseError("JOIN COUNT requires '('".into()));
         }
-        let aggregate = if parser.take(Token::Star) {
+        let result = if parser.take(Token::Star) {
             JoinAggregate::CountStar
         } else {
             JoinAggregate::CountColumn(qualified(&mut parser)?)
@@ -101,9 +105,31 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         if !parser.take(Token::RParen) {
             return Err(ParseError("JOIN COUNT requires ')'".into()));
         }
-        Some(aggregate)
+        Some(result)
     } else {
-        None
+        let function = if parser.keyword("SUM") {
+            Some(crate::AggregateFunction::Sum)
+        } else if parser.keyword("AVG") {
+            Some(crate::AggregateFunction::Avg)
+        } else if parser.keyword("MIN") {
+            Some(crate::AggregateFunction::Min)
+        } else if parser.keyword("MAX") {
+            Some(crate::AggregateFunction::Max)
+        } else {
+            None
+        };
+        if let Some(function) = function {
+            if !parser.take(Token::LParen) {
+                return Err(ParseError("JOIN aggregate requires '('".into()));
+            }
+            let column = qualified(&mut parser)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("JOIN aggregate requires ')'".into()));
+            }
+            Some(JoinAggregate::Numeric { function, column })
+        } else {
+            None
+        }
     };
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
@@ -430,7 +456,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             || relation == right_alias
             || steps.iter().any(|step| step.alias == relation)
     };
-    if let Some(JoinAggregate::CountColumn(column)) = &aggregate {
+    if let Some(JoinAggregate::CountColumn(column) | JoinAggregate::Numeric { column, .. }) = &aggregate {
         if !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}", column.relation
@@ -486,10 +512,19 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
-    if aggregate.is_some() &&
-        (kind != JoinType::Inner || !steps.is_empty() || !order_by.is_empty()) {
+    // The streaming COUNT(column) executor currently covers exactly two INNER sources.
+    if matches!(aggregate.as_ref(), Some(JoinAggregate::CountColumn(_)))
+        && (kind != JoinType::Inner || !steps.is_empty())
+    {
+        return Err(ParseError("JOIN COUNT(column) requires a two-table INNER JOIN".into()));
+    }
+    if aggregate.is_some()
+        && (!order_by.is_empty()
+            || (steps.is_empty() && kind != JoinType::Inner
+                && !matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))))
+    {
         return Err(ParseError(
-            "streamed JOIN COUNT requires a two-table INNER JOIN without ORDER BY".into()
+            "JOIN aggregates require no ORDER BY; two-table OUTER JOIN supports COUNT(*) only".into(),
         ));
     }
     Ok(Some(JoinSelect {
@@ -581,6 +616,9 @@ pub fn explain_join(query: &JoinSelect) -> String {
                 JoinAggregate::CountStar => "count(*)".to_owned(),
                 JoinAggregate::CountColumn(column) => {
                     format!("count({}.{})", column.relation, column.name)
+                }
+                JoinAggregate::Numeric { function, column } => {
+                    format!("{}({}.{})", function.name(), column.relation, column.name)
                 }
             }
         } else { query.columns.as_ref().map_or("*".to_owned(), |columns| {

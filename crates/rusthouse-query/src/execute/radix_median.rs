@@ -33,31 +33,40 @@ fn sorted_key_signed(value: i128, bits: usize) -> u128 {
 }
 
 fn render_key(key: u128, bits: usize, signed: bool) -> String {
-    if !signed {
-        return key.to_string();
-    }
-    let sign_bit = 1_u128 << (bits - 1);
-    let original = key ^ sign_bit;
-    let extended = if original & sign_bit != 0 {
-        original | !low_mask(bits)
+    if signed {
+        signed_key_value(key, bits).to_string()
     } else {
-        original
-    };
-    (extended as i128).to_string()
+        key.to_string()
+    }
 }
 
-fn key_as_f64(key: u128, bits: usize, signed: bool) -> f64 {
-    if !signed {
-        return key as f64;
-    }
-    let sign_bit = 1_u128 << (bits - 1);
-    let original = key ^ sign_bit;
-    let extended = if original & sign_bit != 0 {
-        original | !low_mask(bits)
+fn signed_key_value(key: u128, bits: usize) -> i128 {
+    let sign = 1_u128 << (bits - 1);
+    let raw = key ^ sign;
+    let extended = if raw & sign != 0 { raw | !low_mask(bits) } else { raw };
+    extended as i128
+}
+
+/// Exact median of two integers, including UInt128/Int128 extrema and half
+/// values. Converting the operands to f64 first loses integer precision.
+fn render_middle_pair(low_key: u128, high_key: u128, bits: usize, signed: bool) -> String {
+    if signed {
+        let low = signed_key_value(low_key, bits);
+        let high = signed_key_value(high_key, bits);
+        let remainder = low.rem_euclid(2) + high.rem_euclid(2);
+        let floor = low.div_euclid(2) + high.div_euclid(2) + remainder / 2;
+        if remainder % 2 == 0 {
+            floor.to_string()
+        } else if floor < 0 {
+            format!("-{}.5", (floor + 1).unsigned_abs())
+        } else {
+            format!("{floor}.5")
+        }
     } else {
-        original
-    };
-    (extended as i128) as f64
+        let remainder = (low_key & 1) + (high_key & 1);
+        let floor = (low_key >> 1) + (high_key >> 1) + remainder / 2;
+        if remainder % 2 == 0 { floor.to_string() } else { format!("{floor}.5") }
+    }
 }
 
 /// Add the native integer batch directly to two radix histograms. Nullable
@@ -72,17 +81,23 @@ fn count_column(
     prefixes: &[u128; 2],
     histogram: &mut [[u64; 256]; 2],
 ) -> Result<(), ExecutionError> {
+    let shared_prefix = prefixes[0] & prefix_mask == prefixes[1] & prefix_mask;
     let mut visit = |value: u128, row: usize| {
         if nulls.is_some_and(|map| map[row] != 0)
             || included.is_some_and(|mask| !mask[row])
         {
             return;
         }
-        for side in 0..2 {
-            if value & prefix_mask != prefixes[side] & prefix_mask {
-                continue;
+        if shared_prefix {
+            if value & prefix_mask == prefixes[0] & prefix_mask {
+                histogram[0][((value >> shift) & 255) as usize] += 1;
             }
-            histogram[side][((value >> shift) & 255) as usize] += 1;
+        } else {
+            for side in 0..2 {
+                if value & prefix_mask == prefixes[side] & prefix_mask {
+                    histogram[side][((value >> shift) & 255) as usize] += 1;
+                }
+            }
         }
     };
     macro_rules! unsigned {
@@ -114,7 +129,36 @@ fn count_column(
             "radix median requires a native integer column".into()
         )),
     }
+    if shared_prefix {
+        histogram[1] = histogram[0];
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod shared_histogram_tests {
+    use super::*;
+
+    #[test]
+    fn shared_prefixes_count_both_median_ranks_exactly() {
+        let values = NumericColumn::UInt16(vec![1, 2, 257, 258]);
+        let mut result = [[0u64; 256]; 2];
+        count_column(&values, None, None, 16, 8, 0, &[0, 0], &mut result).unwrap();
+        assert_eq!(result[0], result[1]);
+        assert_eq!(result[0][0], 2);
+        assert_eq!(result[0][1], 2);
+    }
+
+    #[test]
+    fn divergent_prefixes_keep_independent_counts() {
+        let values = NumericColumn::UInt16(vec![1, 2, 257, 258]);
+        let mut result = [[0u64; 256]; 2];
+        count_column(&values, None, None, 16, 0, u128::MAX << 8, &[0, 256], &mut result).unwrap();
+        assert_eq!(result[0][1], 1);
+        assert_eq!(result[0][2], 1);
+        assert_eq!(result[1][1], 1);
+        assert_eq!(result[1][2], 1);
+    }
 }
 
 /// Exact order statistics from bounded 256-bucket histograms. Each pass reads
@@ -204,9 +248,7 @@ fn median_inner(
     if n % 2 == 1 {
         Ok(Some(render_key(keys[1], bits, signed)))
     } else {
-        let low = key_as_f64(keys[0], bits, signed);
-        let high = key_as_f64(keys[1], bits, signed);
-        Ok(Some((low / 2.0 + high / 2.0).to_string()))
+        Ok(Some(render_middle_pair(keys[0], keys[1], bits, signed)))
     }
 }
 
@@ -286,6 +328,21 @@ pub(super) fn median_filtered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_middle_pair_handles_half_values_without_float_rounding() {
+        let max = u128::MAX;
+        assert_eq!(render_middle_pair(max - 1, max, 128, false), format!("{}.5", max - 1));
+        assert_eq!(render_middle_pair(max, max, 128, false), max.to_string());
+        assert_eq!(render_middle_pair(1, 2, 64, false), "1.5");
+
+        let key = |value| sorted_key_signed(value, 128);
+        assert_eq!(render_middle_pair(key(i128::MIN), key(i128::MAX), 128, true), "-0.5");
+        assert_eq!(render_middle_pair(key(-3), key(-2), 128, true), "-2.5");
+        assert_eq!(render_middle_pair(key(-1), key(0), 128, true), "-0.5");
+        assert_eq!(render_middle_pair(key(9_007_199_254_740_993),
+            key(9_007_199_254_740_994), 128, true), "9007199254740993.5");
+    }
 
     #[test]
     fn signed_integer_key_order_matches_numeric_order() {

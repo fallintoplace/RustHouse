@@ -9,11 +9,12 @@ from pathlib import Path
 
 
 def emit(stream, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
-    if not 1 <= rows <= (1 << 64) - 1:
+    if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive UInt64")
-    if not 1 <= groups <= (1 << 32) or not 0 <= hot_percent <= 100:
+    if (type(groups) is not int or type(hot_percent) is not int
+            or not 1 <= groups <= (1 << 32) or not 0 <= hot_percent <= 100):
         raise ValueError("invalid groups or hot_percent")
-    if not 1 <= batch_rows <= 1_000_000:
+    if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("invalid batch_rows")
     for start in range(0, rows, batch_rows):
         lines = []
@@ -35,7 +36,9 @@ def generate(output, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
             temporary = Path(stream.name)
             emit(stream, rows, groups=groups, hot_percent=hot_percent,
                  batch_rows=batch_rows)
-        os.replace(temporary, output)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, output)
     finally:
         if temporary:
             temporary.unlink(missing_ok=True)
