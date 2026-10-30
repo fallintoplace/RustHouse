@@ -123,6 +123,41 @@ impl BitmapDistinct32 {
                 "COUNT(DISTINCT) exceeded its 65536-prefix budget".into(),
             ));
         }
+        // Plan the final representation before mutating any prefix.
+        // Sparse unions may promote to dense; the counters must follow those
+        // promotions, including when a complete dense block is cloned.
+        let mut sparse_keys = self.sparse_keys;
+        let mut dense_blocks = self.dense_blocks;
+        for (&prefix, incoming) in &other.blocks {
+            match (self.blocks.get(&prefix), incoming) {
+                (None, Block::Sparse(values)) => sparse_keys += values.len(),
+                (None, Block::Dense(_)) => dense_blocks += 1,
+                (Some(Block::Sparse(current)), Block::Sparse(values)) => {
+                    let additions = values.iter().filter(|value| !current.contains(value)).count();
+                    if current.len() + additions >= DENSE_THRESHOLD {
+                        sparse_keys -= current.len();
+                        dense_blocks += 1;
+                    } else {
+                        sparse_keys += additions;
+                    }
+                }
+                (Some(Block::Sparse(current)), Block::Dense(_)) => {
+                    sparse_keys -= current.len();
+                    dense_blocks += 1;
+                }
+                (Some(Block::Dense(_)), _) => {}
+            }
+        }
+        if sparse_keys > MAX_SPARSE_KEYS {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
+            ));
+        }
+        if dense_blocks > MAX_DENSE_BLOCKS {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) exceeded its dense-bitmap memory budget".into(),
+            ));
+        }
         for (&prefix, incoming) in &other.blocks {
             let additions = if let Some(current) = self.blocks.get_mut(&prefix) {
                 Self::merge_block(current, incoming)
@@ -134,6 +169,8 @@ impl BitmapDistinct32 {
             self.count = self.count.checked_add(additions)
                 .ok_or_else(|| ExecutionError::Invalid("distinct count overflow".into()))?;
         }
+        self.sparse_keys = sparse_keys;
+        self.dense_blocks = dense_blocks;
         Ok(())
     }
 
@@ -281,6 +318,46 @@ mod adaptive_large_keyspace_tests {
 #[cfg(test)]
 mod merge_tests {
     use super::*;
+
+    #[test]
+    fn merging_updates_sparse_and_dense_memory_counters() {
+        let mut sparse = BitmapDistinct32::new();
+        let mut overlap = BitmapDistinct32::new();
+        for value in 0..100 { sparse.insert(value).unwrap(); }
+        for value in 50..150 { overlap.insert(value).unwrap(); }
+        sparse.merge_from(&overlap).unwrap();
+        assert_eq!(sparse.len(), 150);
+        assert_eq!(sparse.sparse_keys, 150);
+        assert_eq!(sparse.dense_blocks, 0);
+
+        let mut dense_source = BitmapDistinct32::new();
+        for value in 0..4096 { dense_source.insert(value).unwrap(); }
+        sparse.merge_from(&dense_source).unwrap();
+        assert_eq!(sparse.sparse_keys, 0);
+        assert_eq!(sparse.dense_blocks, 1);
+        assert_eq!(sparse.len(), 4096);
+        sparse.insert(4096).unwrap();
+        assert_eq!(sparse.len(), 4097);
+    }
+
+    #[test]
+    fn merge_rejects_budget_overruns_without_mutating_destination() {
+        let mut incoming = BitmapDistinct32::new();
+        incoming.insert(8).unwrap();
+        let mut sparse = BitmapDistinct32::new();
+        sparse.sparse_keys = MAX_SPARSE_KEYS;
+        assert!(sparse.merge_from(&incoming).is_err());
+        assert_eq!(sparse.len(), 0);
+        assert!(sparse.blocks.is_empty());
+
+        let mut dense_source = BitmapDistinct32::new();
+        for value in 0..4096 { dense_source.insert(value).unwrap(); }
+        let mut dense = BitmapDistinct32::new();
+        dense.dense_blocks = MAX_DENSE_BLOCKS;
+        assert!(dense.merge_from(&dense_source).is_err());
+        assert_eq!(dense.len(), 0);
+        assert!(dense.blocks.is_empty());
+    }
 
     #[test]
     fn sparse_and_dense_partial_aggregates_union_without_double_counting() {
