@@ -51,6 +51,19 @@ class ConcurrentReadersTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "1 MiB"):
             run_readers("binary", "part", "SELECT 1", b"x" * (1024 * 1024 + 1))
 
+    def test_allows_semicolons_within_sql_string_literals(self):
+        from bench.scale.concurrent_readers import _has_separator
+        for statement in ("SELECT ';' AS x", 'SELECT ";" AS x',
+                          "SELECT 'it''s;safe' AS x", "SELECT 'a\\';b'"):
+            self.assertFalse(_has_separator(statement), statement)
+        for statement in ("SELECT 1; DROP TABLE t", "SELECT 'unterminated",
+                          'SELECT "unfinished'):
+            self.assertTrue(_has_separator(statement), statement)
+        report = run_readers("rusthouse", "part", "SELECT ';';", b";\n",
+                             clients=1, rounds=1, execute=lambda *_a, **_k:
+                             SimpleNamespace(returncode=0, stdout=b";\n", stderr=b""))
+        self.assertTrue(report["all_verified"])
+
     def test_rejects_mutations_and_multistatement_sql(self):
         for sql in ("DELETE FROM part", "SELECT 1; DROP TABLE events"):
             with self.assertRaisesRegex(ValueError, "read-only"):
