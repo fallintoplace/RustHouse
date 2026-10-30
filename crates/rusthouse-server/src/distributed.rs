@@ -286,6 +286,8 @@ fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> 
         .ok_or("peer schema has no row count")?;
     if count.is_empty()
         || !count.bytes().all(|b| b.is_ascii_digit())
+        || (count.len() > 1 && count.starts_with('0'))
+        || count.parse::<u64>().is_err()
         || !columns.starts_with('[')
         || !columns.ends_with(']')
         || !columns.contains("\"name\":")
@@ -2427,5 +2429,29 @@ mod shard_dispatch_wave_tests {
             .flat_map(|wave| wave.iter().copied()).collect();
         assert_eq!(selected, peers);
         assert_eq!(peers.chunks(8).count(), 4);
+    }
+}
+
+#[cfg(test)]
+mod peer_schema_row_count_tests {
+    use super::*;
+
+    fn mock_schema(rows: &str) -> remote::PeerResponse {
+        remote::PeerResponse {
+            status: 200,
+            content_type: "application/json; charset=utf-8".into(),
+            body: format!(
+                "{{\"rows\":{rows},\"columns\":[{{\"name\":\"id\",\"type\":\"UInt64\"}}]}}\n"
+            ).into_bytes(),
+        }
+    }
+
+    #[test]
+    fn requires_a_canonical_unsigned_64_bit_row_count() {
+        assert!(schema_signature(&mock_schema("0")).is_ok());
+        assert!(schema_signature(&mock_schema(&u64::MAX.to_string())).is_ok());
+        for count in ["", "01", "-1", "1.0", "18446744073709551616"] {
+            assert!(schema_signature(&mock_schema(count)).is_err(), "{count:?}");
+        }
     }
 }
