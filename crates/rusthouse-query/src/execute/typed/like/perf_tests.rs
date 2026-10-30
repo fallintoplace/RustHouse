@@ -199,3 +199,82 @@ fn long_like_patterns_keep_prefix_and_escape_semantics() {
     let escaped = compile_like(r"left\%right").unwrap();
     assert!(like_matches(b"left%right", &escaped, false));
 }
+
+#[test]
+fn simple_ilike_literals_reuse_precomputed_unicode_folds() {
+    let exact = compile_like("CAFÉ").unwrap();
+    assert!(matches!(
+        &exact,
+        LikePattern::Exact(literal) if literal.folded.as_deref() == Some("café")
+    ));
+    let prefix = compile_like("İ%").unwrap();
+    let suffix = compile_like("%İ").unwrap();
+    let contains = compile_like("%CAFÉ%").unwrap();
+    assert!(matches!(
+        &prefix,
+        LikePattern::Prefix(literal) if literal.folded.as_deref() == Some("i\u{307}")
+    ));
+    assert!(matches!(
+        &suffix,
+        LikePattern::Suffix(literal) if literal.folded.as_deref() == Some("i\u{307}")
+    ));
+    assert!(matches!(
+        &contains,
+        LikePattern::Contains(literal) if literal.folded.as_deref() == Some("café")
+    ));
+    assert!(like_matches("café".as_bytes(), &exact, true));
+    assert!(!like_matches("café".as_bytes(), &exact, false));
+    assert!(like_matches("i\u{307}stanbul".as_bytes(), &prefix, true));
+    assert!(like_matches("city i\u{307}".as_bytes(), &suffix, true));
+    assert!(like_matches("un café au lait".as_bytes(), &contains, true));
+    assert!(!like_matches("un thé".as_bytes(), &contains, true));
+    assert!(!like_matches(b"bad\xffbytes", &contains, true));
+    // A single ASCII character can expand from a Unicode uppercase character.
+    assert!(like_matches(
+        "İstanbul".as_bytes(),
+        &compile_like("i%").unwrap(),
+        true
+    ));
+}
+
+#[test]
+#[ignore = "manual Unicode ILIKE microbenchmark"]
+fn benchmark_compiled_unicode_ilike_literals() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let pattern = compile_like("%CAFÉ%").unwrap();
+    let rows = [
+        "un café très chaud",
+        "CAFÉ au lait",
+        "thé au citron",
+        "café sans sucre",
+        "encore un café",
+    ];
+    let iterations = 300_000usize;
+    let start = Instant::now();
+    let mut cached_hits = 0usize;
+    for i in 0..iterations {
+        cached_hits += usize::from(black_box(like_matches(
+            black_box(rows[i % rows.len()].as_bytes()),
+            black_box(&pattern),
+            true,
+        )));
+    }
+    let cached = start.elapsed();
+
+    // Original hot path: lowercase the row and SQL literal for each comparison.
+    let start = Instant::now();
+    let mut original_hits = 0usize;
+    for i in 0..iterations {
+        let value = black_box(rows[i % rows.len()]);
+        original_hits += usize::from(black_box(
+            value.to_lowercase().contains(&"CAFÉ".to_lowercase()),
+        ));
+    }
+    let original = start.elapsed();
+    assert_eq!(cached_hits, original_hits);
+    eprintln!(
+        "Unicode ILIKE contains, {iterations} rows: compiled {cached:?}, original {original:?}"
+    );
+}
