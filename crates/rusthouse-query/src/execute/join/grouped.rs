@@ -7,7 +7,8 @@ const MAX_JOIN_GROUP_BYTES: usize = 64 * 1024 * 1024;
 
 fn group_value_bytes(value: &typed::Cell) -> usize {
     match value {
-        typed::Cell::Text(bytes) | typed::Cell::Uuid(bytes) => bytes.len().saturating_mul(2),
+        typed::Cell::Text(bytes) => bytes.len().saturating_mul(2),
+        typed::Cell::Uuid(value) => value.len().saturating_mul(2),
         _ => 0,
     }
 }
