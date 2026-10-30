@@ -70,6 +70,9 @@ impl HyperLogLog {
                 tagged[1..].copy_from_slice(&value.to_le_bytes());
                 Self::hash(&tagged)
             }
+            Number::Signed(value) if value <= i128::from(u8::MAX) => {
+                SMALL_UNSIGNED_HASHES[value as usize]
+            }
             Number::Signed(value) => Self::hash(&value.to_le_bytes()),
             Number::Float(value) => {
                 let bits = if value == 0.0 {
@@ -374,5 +377,28 @@ mod atomic_invalid_hll_merge_tests {
         incoming[count - 1] = b'f';
         assert!(target.merge_hex_state(&String::from_utf8(incoming).unwrap()).is_err());
         assert_eq!(target.encode_state(), HyperLogLog::default().encode_state());
+    }
+}
+
+#[cfg(test)]
+mod small_positive_signed_hash_tests {
+    use super::*;
+
+    #[test]
+    fn positive_signed_values_reuse_canonical_small_unsigned_hashes() {
+        for value in 0..=u8::MAX {
+            let mut signed = HyperLogLog::default();
+            let mut unsigned = HyperLogLog::default();
+            signed.observe_number(Number::Signed(i128::from(value)));
+            unsigned.observe_number(Number::Unsigned(u128::from(value)));
+            assert_eq!(signed.encode_state(), unsigned.encode_state(), "{value}");
+        }
+        let mut signed = HyperLogLog::default();
+        let mut unsigned = HyperLogLog::default();
+        for value in 0..=u8::MAX {
+            signed.observe_number(Number::Signed(i128::from(value)));
+            unsigned.observe_number(Number::Unsigned(u128::from(value)));
+        }
+        assert_eq!(signed.estimate(), unsigned.estimate());
     }
 }
