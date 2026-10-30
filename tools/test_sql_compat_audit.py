@@ -19,6 +19,18 @@ class AuditTests(unittest.TestCase):
             path.write_text("-- note\nSELECT 2;\n", encoding="utf-8")
             self.assertEqual(read_queries(path), [(2, "SELECT 2")])
 
+    def test_accepts_semicolons_inside_sql_literals_only(self):
+        self.assertEqual(parse_lines("SELECT ';' AS punctuation;"), [
+            (1, "SELECT ';' AS punctuation")])
+        self.assertEqual(parse_lines('SELECT "column;id" FROM table;'), [
+            (1, 'SELECT "column;id" FROM table')])
+        self.assertEqual(parse_lines("SELECT 'it''s;a;literal';"), [
+            (1, "SELECT 'it''s;a;literal'")])
+        for sql in ("SELECT 1; DELETE FROM t;", "SELECT 'unterminated",
+                    "SELECT 1; SELECT 2"):
+            with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "one bounded SELECT"):
+                parse_lines(sql)
+
     def test_rejects_mutating_sql(self):
         with self.assertRaises(ValueError):
             parse_lines("DROP TABLE events;")
