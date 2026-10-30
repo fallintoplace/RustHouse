@@ -15,6 +15,19 @@ def report(rows=200000, topk=12.500, samples=21):
 
 
 class CompareRustBenchTests(unittest.TestCase):
+    def test_comparison_artifact_must_not_be_a_symlink(self):
+        import tempfile
+        from pathlib import Path
+        from bench.pr_bench_compare import _read_bounded_report
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "baseline.txt"
+            source.write_text(report(), encoding="utf-8")
+            alias = Path(root) / "linked.txt"
+            alias.symlink_to(source)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                _read_bounded_report(alias)
+            self.assertEqual(_read_bounded_report(source), report())
+
     def test_reports_improvements_and_sub_microsecond_measurements(self):
         result = compare_text(report(), report(topk=1.250))
         self.assertIn("| filtered top-K | 12.500000 | 1.250000 | -90.0% |", result)
