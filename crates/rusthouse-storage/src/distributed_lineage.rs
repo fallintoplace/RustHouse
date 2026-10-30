@@ -19,6 +19,10 @@ fn valid_version(version: SnapshotVersion) -> bool {
     version.epoch != 0 && version.generation != 0
 }
 
+fn valid_epoch_member(version: SnapshotVersion, epoch: u64) -> bool {
+    valid_version(version) && version.epoch == epoch
+}
+
 /// Comparing versions does not establish consensus or authorize writes.
 /// Different epochs or equal generations with different content must be reconciled.
 pub fn compare_snapshots(local: SnapshotVersion, remote: SnapshotVersion) -> VersionRelation {
@@ -133,7 +137,7 @@ pub fn newest_consistent_snapshot(
         // without constructing a temporary fingerprint hash map.
         let mut newest = versions[0];
         for (index, &version) in versions.iter().enumerate() {
-            if !valid_version(version) || version.epoch != epoch {
+            if !valid_epoch_member(version, epoch) {
                 return Err("invalid or mismatched snapshot epoch");
             }
             if versions[..index].iter().any(|earlier| {
@@ -151,7 +155,7 @@ pub fn newest_consistent_snapshot(
     let mut seen = std::collections::HashMap::with_capacity(versions.len());
     let mut newest = versions[0];
     for &version in versions {
-        if !valid_version(version) || version.epoch != epoch {
+        if !valid_epoch_member(version, epoch) {
             return Err("invalid or mismatched snapshot epoch");
         }
         if seen
