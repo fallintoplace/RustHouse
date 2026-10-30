@@ -26,7 +26,10 @@ fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), Part
             }
             let file = fs::File::open(pointer).map_err(|error| io_error(pointer, error))?;
             let opened = file.metadata().map_err(|error| io_error(pointer, error))?;
-            if !opened.file_type().is_file() || opened.len() > 64 {
+            if !opened.file_type().is_file()
+                || opened.len() != meta.len()
+                || opened.len() > 64
+            {
                 return Err(PartError::InvalidScan("active pointer changed".into()));
             }
             #[cfg(unix)]
@@ -40,8 +43,8 @@ fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), Part
             file.take(65)
                 .read_to_string(&mut current)
                 .map_err(|error| io_error(pointer, error))?;
-            if current.len() > 64 {
-                return Err(PartError::InvalidScan("active pointer too large".into()));
+            if current.len() > 64 || current.len() as u64 != opened.len() {
+                return Err(PartError::InvalidScan("active pointer changed during read".into()));
             }
             let prior = current
                 .strip_prefix('g')
@@ -132,7 +135,10 @@ pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
     };
     let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
     let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
-    if !opened.file_type().is_file() || opened.len() > 64 {
+    if !opened.file_type().is_file()
+        || opened.len() != initial.len()
+        || opened.len() > 64
+    {
         return Err(PartError::InvalidScan("active generation pointer changed".into()));
     }
     #[cfg(unix)]
@@ -146,6 +152,9 @@ pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
     file.take(65)
         .read_to_end(&mut bytes)
         .map_err(|error| io_error(&pointer, error))?;
+    if bytes.len() as u64 != opened.len() {
+        return Err(PartError::InvalidScan("active generation pointer changed during read".into()));
+    }
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| PartError::InvalidScan("active generation pointer is not UTF8".into()))?;
     let generation = text
