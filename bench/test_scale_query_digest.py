@@ -61,5 +61,12 @@ class QueryDigestTests(unittest.TestCase):
             self.assertEqual(query_digest("binary", "part", "SELECT 1")["bytes"], 3)
 
 
+    def test_refuses_mutations_and_multiple_statements(self):
+        def never_run(*_args, **_kwargs):
+            self.fail("mutating SQL must be rejected before execution")
+        for sql in ("DELETE FROM t", "DROP TABLE t", "SELECT 1; DELETE FROM t", "WITH x AS (SELECT 1) DELETE FROM t"):
+            with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "read-only SELECT"):
+                query_digest("rusthouse", "parts", sql, run=never_run)
+
 if __name__ == "__main__":
     unittest.main()
