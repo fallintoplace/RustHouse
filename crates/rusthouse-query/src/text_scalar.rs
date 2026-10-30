@@ -2945,7 +2945,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         let index = (bits << (5 - available)) as usize & 31;
                         output.push(char::from(alphabet[index]));
                     }
-                    while !output.len().is_multiple_of(8) {
+                    while output.len() % 8 != 0 {
                         output.push('=');
                     }
                     ConstantValue::Text(output)
