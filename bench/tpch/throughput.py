@@ -5,6 +5,7 @@ This is a stress workload. It is not the official TPC-H Throughput Test.
 """
 import argparse
 import concurrent.futures
+import math
 import subprocess
 import time
 import sys
@@ -110,8 +111,8 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    if args.timeout <= 0:
-        parser.error("--timeout must be positive")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("--timeout must be finite and positive")
     if args.require_verified and args.reference_dir is None:
         parser.error("--require-verified needs --reference-dir")
     try:
