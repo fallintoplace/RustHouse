@@ -23,7 +23,7 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
         return Err(format!("invalid database schema for {table}"));
     }
     let mut content = Vec::new();
-    let file = fs::File::open(&schema)
+    let mut file = fs::File::open(&schema)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
     let opened_schema_metadata = file
         .metadata()
@@ -41,9 +41,19 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
             return Err(format!("database schema replaced before read for {table}"));
         }
     }
-    file.take(32 * 1024 + 1)
+    (&mut file)
+        .take(32 * 1024 + 1)
         .read_to_end(&mut content)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
+    let finished_schema_metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect database schema after read for {table}: {error}"))?;
+    if finished_schema_metadata.len() != opened_schema_metadata.len()
+        || finished_schema_metadata.modified().map_err(|error| error.to_string())?
+            != opened_schema_metadata.modified().map_err(|error| error.to_string())?
+    {
+        return Err(format!("database schema changed during read for {table}"));
+    }
     if content.len() > 32 * 1024 {
         return Err(format!("database schema exceeds size limit for {table}"));
     }
@@ -128,6 +138,35 @@ mod schema_identity_tests {
         let second = fs::File::open(&b).unwrap().metadata().unwrap();
         assert_eq!(first.len(), second.len());
         assert_ne!(first.ino(), second.ino());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod schema_version_tests {
+    use std::fs;
+    use std::time::SystemTime;
+
+    #[test]
+    fn preserves_metadata_after_bounded_schema_reads() {
+        use std::io::Read;
+
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-schema-version-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let path = root.join("schema");
+        fs::write(&path, b"rusthouse-schema-v1\n").unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        let initial = file.metadata().unwrap();
+        let mut bytes = Vec::new();
+        (&mut file).take(32 * 1024 + 1).read_to_end(&mut bytes).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
+        let finished = file.metadata().unwrap();
+        assert_eq!(initial.len(), finished.len());
+        assert_ne!(initial.modified().unwrap(), finished.modified().unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 }
