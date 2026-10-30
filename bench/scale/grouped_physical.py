@@ -58,6 +58,18 @@ def reference(rows, groups):
     cold_sum = 0
     delta = 10 * (groups - 1)
     period = 97 // math.gcd(delta, 97)
+    # Each cold bucket walks the same modular cycle with one of 97
+    # starting residues. Build their prefix sums once instead of repeating
+    # up to 97 modulo operations for every bucket.
+    prefixes = []
+    stride = delta % 97
+    for initial in range(97):
+        values = [0]
+        residue = initial
+        for _ in range(period):
+            values.append(values[-1] + 1 + residue)
+            residue = (residue + stride) % 97
+        prefixes.append(values)
     for bucket in range(1, groups):
         first_block = bucket - 1
         if first_block >= blocks:
@@ -65,10 +77,9 @@ def reference(rows, groups):
         count = 1 + (blocks - 1 - first_block) // (groups - 1)
         base = 10 * first_block + 9
         full, extra = divmod(count, period)
-        one_period = sum(1 + ((base + delta * k) % 97) for k in range(period))
-        remainder = sum(1 + ((base + delta * k) % 97) for k in range(extra))
+        prefix = prefixes[base % 97]
         counts[bucket] = count
-        sums[bucket] = full * one_period + remainder
+        sums[bucket] = full * prefix[-1] + prefix[extra]
         cold_sum += sums[bucket]
     counts[0] = rows - blocks
     cycles, remainder = divmod(rows, 97)
