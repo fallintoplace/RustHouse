@@ -16,6 +16,10 @@ pub(super) fn is_function(name: &str) -> bool {
         "TOSTARTOFHALFHOUR"
             | "ADDDAYS"
             | "TOHOUR"
+            | "TOMINUTE"
+            | "TOSECOND"
+            | "TODATE"
+            | "TODATETIME"
             | "TORELATIVEMONTHNUM"
             | "TORELATIVEWEEKNUM"
             | "TORELATIVEDAYNUM"
@@ -192,6 +196,21 @@ pub(super) fn parse_after_open(
         }),
         "TOHOUR" => unary_date(parser, depth, |value| {
             Ok(ConstantValue::Integer(value.seconds.rem_euclid(DAY_SECONDS) / 3_600))
+        }),
+        "TOMINUTE" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.rem_euclid(3_600) / 60))
+        }),
+        "TOSECOND" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.rem_euclid(60)))
+        }),
+        "TODATE" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Text(Temporal::render(
+                value.seconds.div_euclid(DAY_SECONDS) * DAY_SECONDS,
+                false,
+            )?))
+        }),
+        "TODATETIME" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Text(Temporal::render(value.seconds, true)?))
         }),
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
@@ -682,6 +701,23 @@ mod utc_compat_tests {
             crate::Projection::Constants(values) if values.len() == 1 => values[0].value.clone(),
             crate::Projection::Literal(v) => ConstantValue::Integer(v),
             projection => panic!("unexpected projection: {projection:?}"),
+        }
+    }
+
+    #[test]
+    fn extracts_minute_second_and_converts_utc_date_constants() {
+        for (sql, expected) in [
+            ("SELECT toMinute('2024-02-29 23:59:08')", ConstantValue::Integer(59)),
+            ("SELECT toSecond('2024-02-29 23:59:08')", ConstantValue::Integer(8)),
+            ("SELECT toDate('2024-02-29 23:59:08')", ConstantValue::Text("2024-02-29".into())),
+            ("SELECT toDateTime('2024-02-29')", ConstantValue::Text("2024-02-29 00:00:00".into())),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for function in ["toMinute", "toSecond", "toDate", "toDateTime"] {
+            assert_eq!(value(&format!("SELECT {function}(NULL)")), ConstantValue::Null);
+            assert!(crate::parse_select(&format!("SELECT {function}('not-a-date')")).is_err());
+            assert!(crate::parse_select(&format!("SELECT {function}('2024-01-01', 1)")).is_err());
         }
     }
 
