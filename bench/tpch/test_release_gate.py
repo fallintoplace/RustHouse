@@ -79,6 +79,15 @@ class ReleaseGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reference comparisons"):
             gate.verify(report([(1, "passed")], reference_checked=False), {1})
 
+    def test_minimum_timing_runs_enforces_sample_confidence(self):
+        candidate = report([(1, "passed")], runs=2)
+        gate.verify(candidate, {1}, min_runs=2)
+        with self.assertRaisesRegex(ValueError, "fewer than required"):
+            gate.verify(candidate, {1}, min_runs=3)
+        for invalid in (0, True, -1, 1001):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "min_runs"):
+                gate.verify(candidate, {1}, min_runs=invalid)
+
     def test_rejects_incomplete_or_invalid_samples(self):
         baseline = report([(1, "passed")])
         baseline["results"][0]["timings_seconds"] = [0.01]
