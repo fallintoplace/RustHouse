@@ -32,6 +32,19 @@ def verified_report():
 
 
 class CompetitiveGateTests(unittest.TestCase):
+    def test_rejects_oversized_competitive_input(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from bench.tpch.competitive_gate import load_report
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "report.json"
+            source.write_bytes(b"0" * 17)
+            with patch("bench.tpch.competitive_gate.MAX_REPORT_BYTES", 16):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    load_report(source)
+
+
     def test_accepts_complete_verified_raw_samples_and_supports_a_target(self):
         report = summarize(verified_report(), min_queries=1, min_geomean=1.5)
         self.assertTrue(report["reference_verified"])

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Cold RustHouse database copy. Stop ALL writers and readers before using."""
 import argparse
+import math
 import os
 from pathlib import Path
 import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 
 def preflight(source, destination, max_bytes=None):
@@ -39,20 +41,27 @@ def preflight(source, destination, max_bytes=None):
     return source, destination, stage
 
 
-def backup(source, destination, binary="rusthouse", max_bytes=None):
+def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeout=3600):
+    if (type(doctor_timeout) not in (int, float) or
+            not math.isfinite(doctor_timeout) or doctor_timeout <= 0):
+        raise ValueError("doctor_timeout must be positive and finite")
     source, destination, stage = preflight(source, destination, max_bytes=max_bytes)
     # Preserve the complete layout, including hidden files and lock inode contents.
     shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
     try:
-        result = subprocess.run(
-            [str(binary), "doctor", "--database", str(stage), "--full-hashes"],
-            capture_output=True, text=True, timeout=3600, check=False,
-        )
+        with tempfile.TemporaryFile() as errors:
+            result = subprocess.run(
+                [str(binary), "doctor", "--database", str(stage), "--full-hashes"],
+                stdout=subprocess.DEVNULL, stderr=errors,
+                timeout=doctor_timeout, check=False,
+            )
+            errors.seek(max(0, errors.tell() - 2000))
+            diagnostic = errors.read(2000).decode("utf-8", "replace")
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError("backup remains at " + str(stage) + ": " + str(exc)) from exc
     if result.returncode:
         raise RuntimeError("doctor rejected staged backup at " + str(stage) +
-                           ": " + result.stderr[-2000:])
+                           ": " + diagnostic)
     stage.rename(destination)
     return destination
 
@@ -63,6 +72,8 @@ def main():
     parser.add_argument("destination", type=Path)
     parser.add_argument("--binary", default="target/debug/rusthouse")
     parser.add_argument("--offline-confirmed", action="store_true")
+    parser.add_argument("--doctor-timeout", type=float, default=3600,
+                        help="Maximum seconds to verify the staged backup")
     parser.add_argument("--max-backup-bytes", type=int,
                         help="Reject the source if its files exceed this byte budget")
     args = parser.parse_args()
@@ -70,7 +81,8 @@ def main():
         parser.error("stop ALL RustHouse readers and writers, then pass --offline-confirmed")
     try:
         target = backup(args.source, args.destination, args.binary,
-                        max_bytes=args.max_backup_bytes)
+                        max_bytes=args.max_backup_bytes,
+                        doctor_timeout=args.doctor_timeout)
     except (ValueError, OSError, RuntimeError) as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1

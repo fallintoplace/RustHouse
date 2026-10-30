@@ -1,6 +1,9 @@
 //! In-memory, bounded equi-join over validated immutable typed snapshots.
 
 mod keys;
+mod comparison_filter;
+mod grouped;
+mod count_column;
 mod aggregate;
 
 use self::keys::*;
@@ -1310,6 +1313,30 @@ pub fn execute_join<W: Write>(
         }
         left_keys.push(left_index);
         right_keys.push(right_index);
+    }
+
+    if query.where_comparison.is_some() {
+        return comparison_filter::execute(
+            query, left_path, right_path,
+            &left_names, &right_names, &selected,
+            &left_keys, &right_keys, output,
+        );
+    }
+
+    if query.grouped_count.is_some() {
+        return grouped::execute(
+            query, left_path, right_path,
+            &left_names, &right_names, &left_keys, &right_keys,
+            null_filter, output,
+        );
+    }
+
+    if let Some(JoinAggregate::CountColumn(column)) = &query.aggregate {
+        return count_column::execute(
+            query, left_path, right_path,
+            &left_names, &right_names, &left_keys, &right_keys,
+            null_filter, column, output,
+        );
     }
 
     if let Some(JoinAggregate::Numeric { function, column }) = &query.aggregate {

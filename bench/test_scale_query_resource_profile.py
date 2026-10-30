@@ -21,7 +21,7 @@ class ResourceProfileTests(unittest.TestCase):
         # A tiny Python process exercises resource monitoring, not RustHouse SQL.
         # The profiler's argument shape is tested through this harmless shim.
         with self.assertRaises(RuntimeError):
-            profile(sys.executable, ".", "ignored", timeout=1, sample_ms=10)
+            profile(sys.executable, ".", "SELECT 1", timeout=1, sample_ms=10)
 
     @unittest.skipUnless(sys.platform == "linux", "requires Linux")
     def test_large_stderr_does_not_deadlock_profile(self):
@@ -33,7 +33,7 @@ class ResourceProfileTests(unittest.TestCase):
 
         with patch("bench.scale.query_resource_profile.subprocess.Popen", side_effect=launch):
             with self.assertRaisesRegex(RuntimeError, "query exited 17"):
-                profile(sys.executable, ".", "ignored", timeout=3, sample_ms=10)
+                profile(sys.executable, ".", "SELECT 1", timeout=3, sample_ms=10)
 
     def test_budget_input_validation(self):
         if sys.platform == "linux":
@@ -53,6 +53,14 @@ class ResourceProfileTests(unittest.TestCase):
                          2048 * 1024)
         self.assertEqual(parse_rss("VmHWM:\t3 kB\nVmRSS:\t4 kB\n"), 4096)
 
+
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux")
+    def test_mutation_preflight_does_not_start_a_child(self):
+        with patch("bench.scale.query_resource_profile.subprocess.Popen") as launch:
+            for sql in ("DROP TABLE t", "DELETE FROM t", "SELECT 1; DROP TABLE t"):
+                with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "read-only SELECT"):
+                    profile("unused", ".", sql)
+            launch.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

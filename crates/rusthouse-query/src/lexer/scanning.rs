@@ -64,6 +64,12 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
     while cursor < bytes.len() {
         let escaped = match (bytes[cursor], bytes.get(cursor + 1)) {
             (b'\\', Some(b'\'' | b'\\')) => Some(bytes[cursor + 1]),
+            (b'\\', Some(b'n')) => Some(b'\n'),
+            (b'\\', Some(b'r')) => Some(b'\r'),
+            (b'\\', Some(b't')) => Some(b'\t'),
+            (b'\\', Some(b'0')) => Some(0),
+            (b'\\', Some(b'b')) => Some(8),
+            (b'\\', Some(b'f')) => Some(12),
             (b'\'', Some(b'\'')) => Some(b'\''),
             _ => None,
         };
@@ -225,6 +231,14 @@ mod exponent_tests {
             assert_eq!(index, input.len());
         }
         assert!(scan_number("-.",&mut 0).is_err());
+    }
+
+    #[test]
+    fn decodes_control_escapes_without_changing_unknown_backslashes() {
+        let mut index = 0;
+        let token = scan_string(r"'a\nb\tc\r\0\b\f\_z'", &mut index).unwrap();
+        assert_eq!(token, Token::String("a\nb\tc\r\0\x08\x0c\\_z".into()));
+        assert_eq!(index, r"'a\nb\tc\r\0\b\f\_z'".len());
     }
 
     #[test]

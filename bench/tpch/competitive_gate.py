@@ -11,6 +11,19 @@ import re
 import statistics
 from pathlib import Path
 
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+
+
+def load_report(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("report must be a regular, non-symlinked file")
+    with path.open("rb") as source:
+        payload = source.read(MAX_REPORT_BYTES + 1)
+    if len(payload) > MAX_REPORT_BYTES:
+        raise ValueError("benchmark report exceeds 2 MiB")
+    return json.loads(payload)
+
 HEX256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -117,7 +130,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         audit = summarize(
-            json.loads(args.input.read_text(encoding="utf-8")),
+            load_report(args.input),
             min_queries=args.min_queries,
             min_geomean=args.min_geomean,
             min_worst_p90=args.min_worst_p90,

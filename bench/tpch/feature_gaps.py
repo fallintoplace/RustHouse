@@ -22,6 +22,17 @@ RULES = (
 )
 
 
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+
+
+def load_report(path):
+    with Path(path).open("rb") as source:
+        payload = source.read(MAX_REPORT_BYTES + 1)
+    if len(payload) > MAX_REPORT_BYTES:
+        raise ValueError("compatibility report exceeds 2 MiB")
+    return json.loads(payload)
+
+
 KNOWN_STATUSES = frozenset((
     "passed", "unverified", "missing_query", "missing_reference",
     "unsupported_query", "mismatch", "timeout", "reference_error",
@@ -50,8 +61,8 @@ def analyze(report, require_all_22=False):
     if not isinstance(report, dict):
         raise ValueError("report must be an object")
     records = report.get("results")
-    if not isinstance(records, list):
-        raise ValueError("report must contain a results array")
+    if not isinstance(records, list) or not records:
+        raise ValueError("report must contain a nonempty results array")
     seen = set()
     groups = defaultdict(list)
     for item in records:
@@ -87,10 +98,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--require-all-22", action="store_true")
+    parser.add_argument("--fail-on-unverified", action="store_true",
+                        help="Fail when any examined query lacks verified correctness")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        source = json.loads(args.report.read_text(encoding="utf-8"))
+        source = load_report(args.report)
         result = analyze(source, args.require_all_22)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.exit(1, f"compatibility report failed: {error}\n")
@@ -98,7 +111,7 @@ def main(argv=None):
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")
     print(rendered, end="")
-    return 0
+    return 1 if args.fail_on_unverified and result["verified_correct_percent"] < 100 else 0
 
 
 if __name__ == "__main__":
