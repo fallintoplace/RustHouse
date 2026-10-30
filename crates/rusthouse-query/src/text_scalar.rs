@@ -1751,14 +1751,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             }
         }
         "COALESCE" => {
-            let mut first = None;
+            let mut first = ConstantValue::Null;
+            let mut seen_integer = false;
+            let mut seen_text = false;
             let mut count = 0;
             loop {
                 if count == 16 {
                     return Err(ParseError("COALESCE supports at most 16 arguments".into()));
                 }
-                let value = text_arg(parser, depth + 1)?;
-                if first.is_none() {
+                let value = constant_arg(parser, depth + 1)?;
+                seen_integer |= matches!(value, ConstantValue::Integer(_));
+                seen_text |= matches!(value, ConstantValue::Text(_));
+                if first == ConstantValue::Null && value != ConstantValue::Null {
                     first = value;
                 }
                 count += 1;
@@ -1771,7 +1775,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 Token::RParen,
                 "expected ')' after COALESCE arguments",
             )?;
-            first.map_or(ConstantValue::Null, ConstantValue::Text)
+            if seen_integer && seen_text {
+                return Err(ParseError("COALESCE requires compatible constant types".into()));
+            }
+            first
         }
         "CONCAT_WS" | "CONCATWITHSEPARATOR" => {
             let separator = text_arg(parser, depth + 1)?;
