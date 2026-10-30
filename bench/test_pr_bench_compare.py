@@ -26,8 +26,8 @@ class CompareRustBenchTests(unittest.TestCase):
             parse_benchmark(report().replace("filtered count 0.000 1.00", "filtered count 0.000 0.00"))
 
     def test_submicrosecond_improvements_are_not_rounded_to_zero(self):
-        baseline = report().replace("filtered count 0.000 1.00", "filtered count 0.000123 0.00")
-        candidate = report().replace("filtered count 0.000 1.00", "filtered count 0.000082 0.00")
+        baseline = report().replace("filtered count 0.000 1.00", "filtered count 1.000123 0.00")
+        candidate = report().replace("filtered count 0.000 1.00", "filtered count 1.000082 0.00")
         summary = compare_text(baseline, candidate)
         self.assertIn("| filtered count | 0.000123 | 0.000082 | -33.3% |", summary)
 
