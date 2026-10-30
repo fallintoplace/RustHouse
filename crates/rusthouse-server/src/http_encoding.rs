@@ -2,6 +2,14 @@ use super::*;
 
 const MAX_ENCODED_QUERY_BYTES: usize = MAX_QUERY_BYTES * 3;
 
+fn write_plain_json_string<const N: usize, W: Write>(writer: &mut W, bytes: &[u8]) -> io::Result<()> {
+    let mut quoted = [0u8; N];
+    quoted[0] = b'"';
+    quoted[1..bytes.len() + 1].copy_from_slice(bytes);
+    quoted[bytes.len() + 1] = b'"';
+    writer.write_all(&quoted[..bytes.len() + 2])
+}
+
 pub(super) fn hex_digit(value: u8) -> Option<u8> {
     match value {
         b'0'..=b'9' => Some(value - b'0'),
@@ -62,18 +70,10 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
         if bytes.len() <= 2048 {
             // Quote-free fields frequently exceed 256 bytes. Avoid three
             // buffered writes when they still fit in a small stack array.
-            let mut quoted = [0u8; 2050];
-            quoted[0] = b'"';
-            quoted[1..bytes.len() + 1].copy_from_slice(bytes);
-            quoted[bytes.len() + 1] = b'"';
-            return writer.write_all(&quoted[..bytes.len() + 2]);
+            return write_plain_json_string::<2050, _>(writer, bytes);
         }
         if bytes.len() <= 4094 {
-            let mut quoted = [0u8; 4096];
-            quoted[0] = b'"';
-            quoted[1..bytes.len() + 1].copy_from_slice(bytes);
-            quoted[bytes.len() + 1] = b'"';
-            return writer.write_all(&quoted[..bytes.len() + 2]);
+            return write_plain_json_string::<4096, _>(writer, bytes);
         }
         writer.write_all(b"\"")?;
         writer.write_all(bytes)?;
