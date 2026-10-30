@@ -89,9 +89,6 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
     Err(ParseError("unterminated string literal".into()))
 }
 
-/// Parse quoted identifiers without treating reserved words as SQL keywords.
-/// Database identifiers must keep the same bounded ASCII rules as unquoted
-/// names so quoted DDL cannot bypass storage path validation.
 fn valid_quoted_identifier(bytes: &[u8]) -> bool {
     let mut characters = bytes.iter().copied();
     matches!(
@@ -100,6 +97,9 @@ fn valid_quoted_identifier(bytes: &[u8]) -> bool {
     ) && characters.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+/// Parse quoted identifiers without treating reserved words as SQL keywords.
+/// Database identifiers must keep the same bounded ASCII rules as unquoted
+/// names so quoted DDL cannot bypass storage path validation.
 pub(super) fn scan_quoted_identifier(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
     let delimiter = bytes[*index];
@@ -151,7 +151,7 @@ pub(super) fn scan_quoted_identifier(sql: &str, index: &mut usize) -> Result<Tok
             return Err(ParseError("quoted identifier exceeds 128 bytes".into()));
         }
     }
-    let valid = valid_quoted_identifier(decoded);
+    let valid = valid_quoted_identifier(&decoded);
     if !valid {
         return Err(ParseError(
             "quoted identifiers require a simple ASCII identifier".into(),
