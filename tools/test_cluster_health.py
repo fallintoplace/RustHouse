@@ -6,6 +6,21 @@ class ClusterTests(unittest.TestCase):
         self.assertTrue(validate({"total": 1, "healthy": 1,
                                   "peers": [{"address": "127.0.0.1:8124", "healthy": True}]}))
 
+    def test_exact_membership_required_even_if_all_reported_healthy(self):
+        payload = {"total": 2, "healthy": 2, "peers": [
+            {"address": "127.0.0.1:9001", "healthy": True},
+            {"address": "127.0.0.1:9002", "healthy": True},
+        ]}
+        self.assertTrue(validate(
+            payload, expected_peers=["127.0.0.1:9002", "127.0.0.1:9001"]
+        ))
+        for expected in (["127.0.0.1:9003", "127.0.0.1:9001"],
+                         ["127.0.0.1:9001", "127.0.0.1:9001"], []):
+            with self.subTest(expected=expected), self.assertRaisesRegex(
+                ValueError, "membership"
+            ):
+                validate(payload, expected_peers=expected)
+
     def test_partial_failure(self):
         self.assertFalse(validate({"total": 1, "healthy": 0,
                                    "peers": [{"address": "127.0.0.1:8124", "healthy": False}]}))
