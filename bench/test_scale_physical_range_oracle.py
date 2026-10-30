@@ -52,5 +52,18 @@ class PhysicalRangeOracleTests(unittest.TestCase):
                    window_rows=1, execute=lambda _: b"")
 
 
+    def test_tail_latency_is_bounded_by_maximum(self):
+        def run(statement):
+            import re
+            first = int(re.search(r"id >= (\d+)", statement).group(1))
+            last = int(re.search(r"id < (\d+)", statement).group(1))
+            count, total = expected(first, last - first)
+            return f"{count}\t{total}\n".encode()
+        result = verify("binary", "db", "events", 0, 10, window_rows=2,
+                        execute=run)
+        self.assertGreaterEqual(result["p95_seconds"], result["median_seconds"])
+        self.assertGreaterEqual(result["p99_seconds"], result["p95_seconds"])
+        self.assertEqual(result["p99_seconds"], result["max_seconds"])
+
 if __name__ == "__main__":
     unittest.main()

@@ -72,9 +72,12 @@ def verify(binary, database, table, start, rows, window_rows=10_000_000,
         sum_total += reference[1]
     if (count_total, sum_total) != expected(start, rows):
         raise ValueError("verified window totals differ from the overall oracle")
+    ordered = sorted(seconds)
     return {"verified": True, "rows": count_total, "sum": sum_total,
             "windows": len(seconds), "median_seconds": statistics.median(seconds),
-            "max_seconds": max(seconds)}
+            "p95_seconds": ordered[math.ceil(0.95 * len(ordered)) - 1],
+            "p99_seconds": ordered[math.ceil(0.99 * len(ordered)) - 1],
+            "max_seconds": ordered[-1]}
 
 
 def main(argv=None):
