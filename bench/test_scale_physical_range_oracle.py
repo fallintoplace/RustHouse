@@ -28,6 +28,14 @@ class PhysicalRangeOracleTests(unittest.TestCase):
             verify("x", "x", "events", 10, 2, 2,
                    execute=lambda _: b"2\t999\n")
 
+    def test_custom_key_column_uses_safe_sql(self):
+        statement = sql_for("events", 20, 3, column="event_id")
+        self.assertIn("sum(event_id)", statement)
+        self.assertIn("event_id >= 20", statement)
+        self.assertIn("event_id < 23", statement)
+        with self.assertRaisesRegex(ValueError, "column"):
+            sql_for("events", 20, 3, column="id;DELETE")
+
     def test_rejects_noncanonical_numeric_wire_values(self):
         for raw in (b"+2\t21\n", b"02\t21\n", b"2\t21", b"2 \t21\n"):
             with self.subTest(raw=raw):
@@ -37,6 +45,11 @@ class PhysicalRangeOracleTests(unittest.TestCase):
     def test_rejects_unsafe_sql_names(self):
         with self.assertRaises(ValueError):
             sql_for("x;delete", 0, 1)
+
+    def test_rejects_unbounded_billion_row_query_count(self):
+        with self.assertRaisesRegex(ValueError, "10000 query windows"):
+            verify("rusthouse", "db", "events", 0, 1_000_000_000,
+                   window_rows=1, execute=lambda _: b"")
 
 
 if __name__ == "__main__":

@@ -36,6 +36,27 @@ class DbgenConversionTests(unittest.TestCase):
             self.assertEqual(cells[4:8], ["12345", "12345", "600", "600"])
             self.assertEqual(cells[10], "1994-05-06")
 
+    def test_exact_scaled_values_without_decimal_rounding(self):
+        cases = [
+            ("123.45", 100, 12345),
+            ("-23.50", 100, -2350),
+            ("0.07", 10000, 700),
+            ("0.0700000", 10000, 700),
+            ("-0.0001", 10000, -1),
+            ("-0.00", 10000, 0),
+            ("7", 10000, 70000),
+            ("0.000000", 10000, 0),
+        ]
+        for raw, scale, expected in cases:
+            with self.subTest(raw=raw, scale=scale):
+                from convert_dbgen import parse_scaled_number
+                self.assertEqual(parse_scaled_number(raw, scale), expected)
+        for raw in ("1.00001", "-0.00001", "0.01001"):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(ValueError, "precision"):
+                    from convert_dbgen import parse_scaled_number
+                    parse_scaled_number(raw, 10000)
+
     def test_rejects_precision_and_invalid_rows_without_publishing(self):
         with self.assertRaisesRegex(ValueError, "precision"):
             convert_value("0.00001", "Int64", 10000)
@@ -54,6 +75,15 @@ class DbgenConversionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "control-character"):
                     convert_value(value, "String", 1)
 
+    def test_oversized_unterminated_dbgen_record_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "region.tbl"
+            target = Path(root) / "region.tsv"
+            source.write_bytes(b"x" * (8 * 1024 * 1024 + 100))
+            with self.assertRaisesRegex(ValueError, "row 1: exceeds 8 MiB"):
+                convert_table(source, target, "region")
+            self.assertFalse(target.exists())
+
     def test_rejects_invalid_utf8_without_publishing(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "region.tbl"
@@ -69,6 +99,27 @@ class DbgenConversionTests(unittest.TestCase):
             with self.subTest(selected=selected):
                 with self.assertRaisesRegex(ValueError, "unique"):
                     convert_directory(Path("missing"), Path("output"), selected)
+
+    def test_parallel_table_conversion_matches_serial_outputs(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            for table in ("region", "nation", "supplier"):
+                (path / f"{table}.tbl").write_text(sample(table))
+            parallel = convert_directory(path, path / "parallel",
+                                         ["region", "nation", "supplier"], jobs=3)
+            serial = convert_directory(path, path / "serial",
+                                       ["region", "nation", "supplier"], jobs=1)
+            self.assertEqual(parallel, serial)
+            self.assertEqual(list(parallel), ["region", "nation", "supplier"])
+            for table in parallel:
+                self.assertEqual((path / "parallel" / f"{table}.tsv").read_bytes(),
+                                 (path / "serial" / f"{table}.tsv").read_bytes())
+
+    def test_invalid_parallel_worker_count(self):
+        for jobs in (0, 9, True, 1.5):
+            with self.subTest(jobs=jobs):
+                with self.assertRaisesRegex(ValueError, "jobs"):
+                    convert_directory("/unused", "/unused", ["region"], jobs=jobs)
 
     def test_converts_selected_tables_only(self):
         with tempfile.TemporaryDirectory() as root:
