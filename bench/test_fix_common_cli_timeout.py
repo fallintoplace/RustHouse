@@ -13,7 +13,10 @@ class SharedRunnerTimeoutTests(unittest.TestCase):
 
     @patch("bench.common.subprocess.run")
     def test_valid_timeout_reaches_process(self, run):
-        run.return_value = SimpleNamespace(returncode=0, stdout=b"1\n", stderr=b"")
+        def execute(command, **kwargs):
+            kwargs["stdout"].write(b"1\n")
+            return SimpleNamespace(returncode=0, stderr=b"")
+        run.side_effect = execute
         self.assertEqual(cli_sql("rusthouse", "db", "SELECT 1", 1), b"1\n")
         self.assertEqual(run.call_args.kwargs["timeout"], 1)
 

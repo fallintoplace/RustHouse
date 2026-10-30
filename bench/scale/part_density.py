@@ -56,11 +56,19 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
     # This is a row-count-only lower bound, not a safe merge plan.
     # Key ordering, schema compatibility and byte budgets can prevent merges.
     reclaimable = max(0, len(rows) - optimistic_part_floor)
+    midpoint = len(rows) // 2
+    median_numerator = (rows[midpoint] if len(rows) % 2
+                        else rows[midpoint - 1] + rows[midpoint])
+    median_denominator = 1 if len(rows) % 2 else 2
     return {"workload": "part-density-report", "part_count": len(rows),
             "rows": total, "min_rows_per_part": rows[0],
             "median_rows_per_part": statistics.median(rows),
+            "median_rows_per_part_exact_numerator": median_numerator,
+            "median_rows_per_part_exact_denominator": median_denominator,
             "max_rows_per_part": rows[-1],
             "mean_rows_per_part": total / len(rows),
+            "mean_rows_per_part_exact_numerator": total,
+            "mean_rows_per_part_exact_denominator": len(rows),
             "p90_rows_per_part": p90, "p99_rows_per_part": p99,
             "small_part_rows_threshold": small_part_rows,
             "small_part_count": small_count,

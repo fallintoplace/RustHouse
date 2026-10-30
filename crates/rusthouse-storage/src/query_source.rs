@@ -53,7 +53,7 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
     }
     let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
     let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
-    if !opened.file_type().is_file() || opened.len() > 64 {
+    if !opened.file_type().is_file() || opened.len() != metadata.len() || opened.len() > 64 {
         return Err(PartError::InvalidScan("active pointer changed before read".into()));
     }
     #[cfg(unix)]
@@ -785,6 +785,27 @@ mod canonical_active_pointer_tests {
             fs::write(&pointer, label).unwrap();
             assert!(resolve_active_snapshot(&root).is_err(), "{label:?}");
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod active_pointer_length_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn resolves_frozen_generations_after_pointer_size_changes() {
+        let root = std::env::temp_dir().join(format!("rusthouse-pointer-length-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let first = root.join(".rusthouse-versions/g1");
+        let second = root.join(".rusthouse-versions/g100");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(root.join(".rusthouse-active"), b"g1\n").unwrap();
+        assert_eq!(resolve_active_snapshot(&root).unwrap(), first);
+        fs::write(root.join(".rusthouse-active"), b"g100\n").unwrap();
+        assert_eq!(resolve_active_snapshot(&root).unwrap(), second);
         fs::remove_dir_all(root).unwrap();
     }
 }

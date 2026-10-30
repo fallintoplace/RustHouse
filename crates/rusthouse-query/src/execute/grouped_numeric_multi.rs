@@ -83,20 +83,23 @@ pub(super) fn execute<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_query_source(part)?;
+    // This index is also needed by predicate compilation below. Build it
+    // before metric validation instead of scanning metadata for every field.
+    let types = metadata
+        .columns
+        .iter()
+        .map(|column| (column.name.clone(), column.data_type.clone()))
+        .collect::<HashMap<_, _>>();
     let mut names = vec![column.to_owned()];
     for (function, value_column) in items {
         if !names.contains(value_column) {
             names.push(value_column.clone());
         }
-        let selected = metadata
-            .columns
-            .iter()
-            .find(|candidate| candidate.name == *value_column)
-            .ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown aggregate column: {value_column}"))
-            })?;
+        let selected = types.get(value_column).ok_or_else(|| {
+            ExecutionError::Invalid(format!("unknown aggregate column: {value_column}"))
+        })?;
         if *function != AggregateFunction::Count
-            && matches!(typed::base_type(&selected.data_type), "String" | "UUID")
+            && matches!(typed::base_type(selected), "String" | "UUID")
         {
             return Err(numeric_column_error());
         }
@@ -105,9 +108,9 @@ pub(super) fn execute<W: Write>(
         if !names.contains(filter) {
             names.push(filter.clone());
         }
-        let column_type = metadata.columns.iter().find(|column| &column.name == filter)
+        let column_type = types.get(filter)
             .ok_or_else(|| ExecutionError::Invalid(format!("unknown filter column: {filter}")))?;
-        if matches!(typed::base_type(&column_type.data_type), "String" | "UUID") {
+        if matches!(typed::base_type(column_type), "String" | "UUID") {
             return Err(ExecutionError::Invalid("conditional metric filters must be numeric".into()));
         }
     }
@@ -125,11 +128,6 @@ pub(super) fn execute<W: Write>(
         .iter()
         .enumerate()
         .map(|(index, name)| (name.clone(), index))
-        .collect::<HashMap<_, _>>();
-    let types = metadata
-        .columns
-        .iter()
-        .map(|column| (column.name.clone(), column.data_type.clone()))
         .collect::<HashMap<_, _>>();
     let group_type = types
         .get(column)
