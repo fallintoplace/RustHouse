@@ -18,6 +18,15 @@ class NoRedirect(HTTPRedirectHandler):
 NO_REDIRECT_OPENER = build_opener(NoRedirect())
 
 
+def _unique_object_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate schema JSON field: {key}")
+        result[key] = value
+    return result
+
+
 def validate_url(origin):
     url = urlsplit(origin)
     if (url.scheme != "http" or url.hostname not in ("localhost", "127.0.0.1")
@@ -58,7 +67,7 @@ def fetch(base, table, timeout=5):
         body = response.read(1_048_577)
     if len(body) > 1_048_576:
         raise ValueError("schema response too large")
-    return columns(json.loads(body))
+    return columns(json.loads(body, object_pairs_hook=_unique_object_pairs))
 
 
 def main():
