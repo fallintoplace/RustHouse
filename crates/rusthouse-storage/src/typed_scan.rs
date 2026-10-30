@@ -1,6 +1,7 @@
 //! Read typed batches from immutable wide MergeTree parts.
 //! This reader is deliberately separate from the optimized numeric-only scan.
 use crate::granules::{read_mark_bytes_cached, read_numeric_granule_cached};
+use crate::strings::read_legacy_strings_buffered;
 use crate::mark_validation::validate_wide_marks_reader;
 use crate::numeric::numeric_storage_type;
 use crate::query_parts;
@@ -9,11 +10,11 @@ use crate::{
     ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError,
     PartMetadata, StringColumn, UuidValue, WideMark, inspect_part, read_array_offsets,
     read_part_row_count,
-    read_legacy_strings, read_numeric_array_column, read_numeric_column, read_uuid_values,
+    read_numeric_array_column, read_numeric_column, read_uuid_values,
     read_wide_marks,
 };
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
 
 pub enum TypedColumn {
@@ -150,6 +151,26 @@ impl Read for MarkStream<'_> {
                 Some(Err(error)) => return Err(io::Error::other(error.to_string())),
             };
             self.offset = 0;
+        }
+    }
+}
+
+impl BufRead for MarkStream<'_> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        while self.block.as_ref().is_none_or(|block| self.offset == block.data.len()) {
+            self.block = match self.stream.reader.next_decoded() {
+                None => return Ok(&[]),
+                Some(Ok(block)) => Some(block),
+                Some(Err(error)) => return Err(io::Error::other(error.to_string())),
+            };
+            self.offset = 0;
+        }
+        Ok(&self.block.as_ref().expect("decoded block").data[self.offset..])
+    }
+
+    fn consume(&mut self, amount: usize) {
+        if let Some(block) = self.block.as_ref() {
+            self.offset += amount.min(block.data.len() - self.offset);
         }
     }
 }
@@ -328,12 +349,12 @@ fn read_string_key_map(
     let offsets = read_array_offsets(&mut sizes, rows, ArrayOffsetsEncoding::Sizes)
         .map_err(|error| PartError::InvalidScan(error.to_string()))?;
     let count = offsets.element_count();
-    let keys = read_legacy_strings(&mut MarkStream::open(keys_stream, mark)?, count)
+    let keys = read_legacy_strings_buffered(&mut MarkStream::open(keys_stream, mark)?, count)
         .map_err(|error| PartError::InvalidScan(error.to_string()))?;
     let (text_values, numeric_values) = if value_type == "String" {
         (
             Some(
-                read_legacy_strings(&mut MarkStream::open(values_stream, mark)?, count)
+                read_legacy_strings_buffered(&mut MarkStream::open(values_stream, mark)?, count)
                     .map_err(|error| PartError::InvalidScan(error.to_string()))?,
             ),
             None,
@@ -475,7 +496,7 @@ fn decode_typed_column(
         StorageKind::String | StorageKind::NullableString => {
             let mut stream = MarkStream::open(&mut column.data, index)?;
             TypedColumn::Text(
-                read_legacy_strings(&mut stream, rows)
+                read_legacy_strings_buffered(&mut stream, rows)
                     .map_err(|error| PartError::InvalidScan(error.to_string()))?,
             )
         }
@@ -1228,7 +1249,7 @@ mod tests {
         };
         {
             let mut first = MarkStream::open(&mut stream, 0).unwrap();
-            let values = read_legacy_strings(&mut first, 1).unwrap();
+            let values = read_legacy_strings_buffered(&mut first, 1).unwrap();
             assert_eq!(values.get(0), Some(b"abc".as_slice()));
         }
         assert!(
@@ -1239,7 +1260,7 @@ mod tests {
         );
         {
             let mut second = MarkStream::open(&mut stream, 1).unwrap();
-            let values = read_legacy_strings(&mut second, 1).unwrap();
+            let values = read_legacy_strings_buffered(&mut second, 1).unwrap();
             assert_eq!(values.get(0), Some(b"def".as_slice()));
         }
         assert!(

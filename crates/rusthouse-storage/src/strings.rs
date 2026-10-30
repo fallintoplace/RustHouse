@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::fmt;
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read};
 
 const MAX_BATCH_ROWS: usize = 1_000_000;
 const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
@@ -156,6 +156,54 @@ pub fn read_legacy_strings<R: Read>(
     Ok(values)
 }
 
+/// Read legacy String rows directly from the current verified block slice.
+/// A buffered source avoids a virtual Read call for every varint byte and
+/// copies each payload directly into the final StringColumn allocation.
+pub(crate) fn read_legacy_strings_buffered<R: BufRead>(
+    reader: &mut R,
+    rows: usize,
+) -> Result<StringColumn, StringReadError> {
+    checked_rows(rows)?;
+    let mut values = StringColumn::new(rows);
+    for _ in 0..rows {
+        let length = read_varuint_buffered(reader)?;
+        let next = checked_end(values.data.len(), length)?;
+        while values.data.len() < next {
+            let chunk = reader.fill_buf()?;
+            if chunk.is_empty() {
+                return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
+            }
+            let take = (next - values.data.len()).min(chunk.len());
+            values.data.extend_from_slice(&chunk[..take]);
+            reader.consume(take);
+        }
+        values.offsets.push(next);
+    }
+    Ok(values)
+}
+
+fn read_varuint_buffered<R: BufRead>(reader: &mut R) -> Result<u64, StringReadError> {
+    let mut result = 0u64;
+    for group in 0..10 {
+        let Some(&byte) = reader.fill_buf()?.first() else {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
+        };
+        reader.consume(1);
+        if group == 9 && byte > 1 {
+            return Err(StringReadError::InvalidVarUInt);
+        }
+        let value = u64::from(byte & 0x7f);
+        result |= value << (group * 7);
+        if byte & 0x80 == 0 {
+            if group != 0 && value == 0 {
+                return Err(StringReadError::InvalidVarUInt);
+            }
+            return Ok(result);
+        }
+    }
+    Err(StringReadError::InvalidVarUInt)
+}
+
 fn append_sized_offsets(values: &mut StringColumn, bytes: &[u8]) -> Result<(), StringReadError> {
     let mut end = *values.offsets.last().unwrap();
     for encoded in bytes.chunks_exact(SIZE_ENTRY_BYTES) {
@@ -206,6 +254,87 @@ fn read_varuint<R: Read>(reader: &mut R) -> Result<u64, StringReadError> {
         }
     }
     Err(StringReadError::InvalidVarUInt)
+}
+
+#[cfg(test)]
+mod buffered_legacy_string_tests {
+    use super::*;
+
+    struct BufferOnly<'a>(&'a [u8]);
+
+    impl Read for BufferOnly<'_> {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            panic!("buffered string decoder must not invoke Read::read")
+        }
+    }
+
+    impl BufRead for BufferOnly<'_> {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            Ok(self.0)
+        }
+
+        fn consume(&mut self, amt: usize) {
+            self.0 = &self.0[amt..];
+        }
+    }
+
+    #[test]
+    fn reads_payloads_without_per_row_reads_or_read_ahead() {
+        let mut encoded = vec![0, 3, b'a', 0xff, 0, 0x80, 1];
+        encoded.extend_from_slice(&[b'z'; 128]);
+        encoded.push(42);
+        let mut source = BufferOnly(&encoded);
+        let column = read_legacy_strings_buffered(&mut source, 3).unwrap();
+        assert_eq!(column.offsets(), &[0, 0, 3, 131]);
+        assert_eq!(column.get(0), Some(b"".as_slice()));
+        assert_eq!(column.get(1), Some([b'a', 0xff, 0].as_slice()));
+        assert_eq!(column.get(2), Some([b'z'; 128].as_slice()));
+        assert_eq!(source.0, &[42]);
+    }
+
+    #[test]
+    fn short_buffers_and_invalid_lengths_match_generic_reader() {
+        for encoded in [
+            vec![0x80],
+            vec![0x80, 0],
+            vec![3, b'a'],
+            vec![0x80; 10],
+            vec![0xff; 9].into_iter().chain([2]).collect(),
+        ] {
+            let mut generic = encoded.as_slice();
+            let mut buffered = std::io::BufReader::with_capacity(1, encoded.as_slice());
+            let old = read_legacy_strings(&mut generic, 1).unwrap_err();
+            let new = read_legacy_strings_buffered(&mut buffered, 1).unwrap_err();
+            match (old, new) {
+                (StringReadError::InvalidVarUInt, StringReadError::InvalidVarUInt) => {}
+                (StringReadError::Io(a), StringReadError::Io(b)) => {
+                    assert_eq!(a.kind(), b.kind());
+                }
+                (a, b) => panic!("different legacy String errors: {a:?} vs {b:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn buffered_decoder_matches_generic_reader_across_short_buffers() {
+        let mut encoded = Vec::new();
+        for row in 0..8192_usize {
+            let length = row % 129;
+            if length < 128 {
+                encoded.push(length as u8);
+            } else {
+                encoded.extend_from_slice(&[0x80, 1]);
+            }
+            encoded.extend(std::iter::repeat_n((row % 251) as u8, length));
+        }
+        let mut generic = encoded.as_slice();
+        let baseline = read_legacy_strings(&mut generic, 8192).unwrap();
+        for capacity in [1, 7, 128, 8192] {
+            let mut reader = std::io::BufReader::with_capacity(capacity, encoded.as_slice());
+            let optimized = read_legacy_strings_buffered(&mut reader, 8192).unwrap();
+            assert_eq!(baseline, optimized, "buffer capacity {capacity}");
+        }
+    }
 }
 
 #[cfg(test)]
