@@ -30,5 +30,16 @@ class DoctorReportTests(unittest.TestCase):
         self.assertEqual(item["stderr"], "failure")
         self.assertTrue(item["truncated"])
 
+    def test_custom_doctor_timeout_is_forwarded(self):
+        from unittest.mock import patch
+        from doctor_report import run
+        with patch("doctor_report.subprocess.run") as subprocess_run:
+            subprocess_run.return_value.returncode = 0
+            result = run("rusthouse", "db", timeout=12.5)
+            self.assertTrue(result["ok"])
+            self.assertEqual(subprocess_run.call_args.kwargs["timeout"], 12.5)
+            with self.assertRaisesRegex(ValueError, "timeout"):
+                run("rusthouse", "db", timeout=float("nan"))
+
 if __name__ == "__main__":
     unittest.main()
