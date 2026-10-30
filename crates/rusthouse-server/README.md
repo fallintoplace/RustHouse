@@ -65,7 +65,7 @@ return the bounded logical plan as plain text. The endpoint parses SQL but does
 not inspect parts or read rows. It uses the same 65536-byte input limit and
 server-side row cap as ordinary queries. This is not a physical or cost-based plan.
 
-\`GET /ready\` returns HTTP 200 when the configured local SQL source is a
+`GET /ready` returns HTTP 200 when the configured local SQL source is a
 readable real directory (or in generated-data mode), otherwise HTTP 503.
 This is a readiness hint, not a storage integrity, replication, or query
 correctness check. It does not write to the source.
