@@ -19,9 +19,10 @@ def invoke(binary, *args):
                 [str(binary), *args], stdout=output, stderr=errors,
                 check=False, timeout=120,
             )
-            errors.seek(0)
-            error = errors.read(2000).decode("utf-8", "replace")
             if completed.returncode:
+                errors.seek(0, 2)
+                errors.seek(max(0, errors.tell() - 2000))
+                error = errors.read(2000).decode("utf-8", "replace")
                 raise RuntimeError("rusthouse failed: " + error)
             output.seek(0)
             data = output.read(65_537)
