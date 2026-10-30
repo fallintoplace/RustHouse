@@ -459,3 +459,27 @@ mod show_tables_like_tests {
         assert!(!table_matches_like("any", r"any\"));
     }
 }
+
+#[cfg(test)]
+mod durable_catalog_rename_tests {
+    use super::*;
+
+    #[test]
+    fn renaming_schema_keeps_the_destination_accessible() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-catalog-rename-durable-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let columns = vec![ColumnDef {
+            name: "id".into(),
+            data_type: "UInt64".into(),
+        }];
+        create_table(&root, "original", &columns, false).unwrap();
+        rename_table(&root, "original", "renamed").unwrap();
+        assert!(!schema_path(&root, "original").exists());
+        assert_eq!(read_schema(&root, "renamed").unwrap(), columns);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
