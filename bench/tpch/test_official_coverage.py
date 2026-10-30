@@ -23,11 +23,11 @@ class CoverageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "q01.sql"
             source.write_text(
-                "-- provenance\\nSELECT 'first\\n-- literal value\\nlast' AS text;"
+                "-- provenance\nSELECT 'first\n-- literal value\nlast' AS text;"
             )
             self.assertEqual(
                 clean_sql(source),
-                "SELECT 'first\\n-- literal value\\nlast' AS text",
+                "SELECT 'first\n-- literal value\nlast' AS text",
             )
 
     def test_missing_queries_remain_explicit_and_unverified_is_not_a_pass(self):
