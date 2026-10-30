@@ -31,6 +31,15 @@ impl ScrubReport {
     }
 }
 
+fn require_unchanged_snapshot(root: &Path, active: &Path) -> Result<(), PartError> {
+    if resolve_active_snapshot(root)? != active {
+        return Err(PartError::InvalidScan(
+            "active snapshot changed during replica scrub".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Check the physical structure and stored-byte hashes of every active part.
 /// Stop writers first. This does not repair or mutate replicas.
 pub fn scrub_snapshot(root: &Path, max_parts: usize) -> Result<ScrubReport, PartError> {
@@ -60,6 +69,7 @@ pub fn scrub_snapshot_with_byte_limit(
             let checked = scrub_part(part)?;
             report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
         }
+        require_unchanged_snapshot(root, &active)?;
         return Ok(report);
     }
     const MAX_SCRUB_WORKERS: usize = 4;
@@ -71,6 +81,7 @@ pub fn scrub_snapshot_with_byte_limit(
             let checked = scrub_part(part)?;
             report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
         }
+        require_unchanged_snapshot(root, &active)?;
         return Ok(report);
     }
 
@@ -112,6 +123,7 @@ pub fn scrub_snapshot_with_byte_limit(
         let checked = slot.expect("each part was claimed exactly once")?;
         report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
     }
+    require_unchanged_snapshot(root, &active)?;
     Ok(report)
 }
 
@@ -275,6 +287,30 @@ mod pinned_scrub_preflight_tests {
         assert!(scrub_snapshot_with_byte_limit(&root, 1, first_bytes).is_ok());
         fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
         assert!(scrub_snapshot_with_byte_limit(&root, 1, first_bytes).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod scrub_generation_stability_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn active_generation_switch_is_not_a_successful_scrub() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-scrub-generation-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let first = root.join(".rusthouse-versions/g1");
+        let second = root.join(".rusthouse-versions/g2");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        fs::write(&pointer, "g1\n").unwrap();
+        assert!(require_unchanged_snapshot(&root, &first).is_ok());
+        fs::write(&pointer, "g2\n").unwrap();
+        assert!(require_unchanged_snapshot(&root, &first).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
