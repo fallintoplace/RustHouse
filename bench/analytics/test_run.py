@@ -12,6 +12,21 @@ SPEC.loader.exec_module(runner)
 
 
 class AnalyticsRunnerTests(unittest.TestCase):
+    def test_symlinked_reference_is_rejected_before_query(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "golden.tsv"
+            target.write_bytes(b"1\n")
+            (root / "q01.tsv").symlink_to(target)
+            invoked = []
+            report = runner.run_benchmark(["SELECT 1"], [0], 1, 1,
+                                          lambda *args: invoked.append(args), root)
+            self.assertEqual(report[0]["status"], "unsafe_reference")
+            self.assertEqual(invoked, [])
+            self.assertEqual(runner.reference_failure(root / "q01.tsv", b"1\n")[0],
+                             "unsafe_reference")
+
+
     def test_pinned_queries_are_all_present(self):
         queries = runner.load_queries(ROOT / "queries.sql")
         self.assertEqual(len(queries), 43)

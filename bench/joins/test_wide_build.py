@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bench.joins.wide_build import write_dimensions
+from bench.joins.wide_build import benchmark, write_dimensions
 
 
 class WideJoinFixtureTests(unittest.TestCase):
@@ -29,6 +29,26 @@ class WideJoinFixtureTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 write_dimensions(temp, 10, 0)
 
+
+
+
+class WideJoinControlValidationTests(unittest.TestCase):
+    def test_rejects_invalid_fixture_dimensions_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for rows, width in ((True, 8), (3, True), (3.5, 8), (3, 1.5)):
+                with self.subTest(values=(rows, width)), self.assertRaises(ValueError):
+                    write_dimensions(temp, rows, width)
+            self.assertEqual(list(Path(temp).iterdir()), [])
+
+    def test_rejects_invalid_benchmark_controls_before_running(self):
+        for values in (
+            {"runs": 101}, {"runs": True}, {"timeout": float("nan")},
+            {"timeout": float("inf")}, {"sample_ms": 0},
+            {"sample_ms": True}, {"max_rss_mib": 0},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                benchmark("no-binary", fact_rows=10, build_rows=5,
+                          payload_bytes=4, **values)
 
 if __name__ == "__main__":
     unittest.main()

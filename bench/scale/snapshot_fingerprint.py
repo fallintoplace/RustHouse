@@ -79,11 +79,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--max-files", type=int, default=1_000_000)
+    parser.add_argument("--block-size-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--expected-sha256")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         report = fingerprint(args.part, max_files=args.max_files,
+                             block_size=args.block_size_bytes,
                              expected_sha256=args.expected_sha256)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:

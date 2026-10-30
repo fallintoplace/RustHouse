@@ -57,7 +57,10 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
     let mut seen = HashSet::new();
     for line in text.lines() {
         let member = parse_member(line)?;
-        if !seen.insert(member.node.clone()) {
+        // Borrow the validated node from the manifest for duplicate checks.
+        // The returned members still own their node and zone strings.
+        let node = line.split_whitespace().next().expect("validated member has a node");
+        if !seen.insert(node) {
             return Err("duplicate member or invalid weight");
         }
         members.push(member);
@@ -77,13 +80,18 @@ pub(crate) fn validate_membership(members: &[Member]) -> Result<(), &'static str
     if members.is_empty() || members.len() > MAX_MEMBER_RECORDS {
         return Err("invalid membership record count");
     }
-    let mut seen = HashSet::with_capacity(members.len());
+    let mut seen = (members.len() > 8).then(|| HashSet::with_capacity(members.len()));
     let mut bytes = 0usize;
-    for member in members {
+    for (index, member) in members.iter().enumerate() {
+        let duplicate = if let Some(seen) = seen.as_mut() {
+            !seen.insert(member.node.as_str())
+        } else {
+            members[..index].iter().any(|previous| previous.node == member.node)
+        };
         if !identifier(&member.node)
             || !identifier(&member.zone)
             || !(1..=MAX_MEMBER_WEIGHT).contains(&member.weight)
-            || !seen.insert(member.node.as_str())
+            || duplicate
         {
             return Err("invalid or duplicate membership record");
         }
@@ -144,6 +152,16 @@ pub fn membership_capacity_by_zone(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parsed_membership_owns_fields_after_input_is_dropped() {
+        let members = {
+            let manifest = "n1 z1 1\nn2 z2 3\n".to_owned();
+            parse_membership(&manifest).unwrap()
+        };
+        assert_eq!(format_membership(&members).unwrap(), "n1 z1 1\nn2 z2 3\n");
+        assert!(parse_membership("n1 z1 1\nn1 z2 2\n").is_err());
+    }
 
     #[test]
     fn round_trips_membership() {
@@ -219,5 +237,25 @@ mod zone_capacity_tests {
         assert!(membership_capacity_by_zone(&[Member {
             node: "bad".into(), zone: "a".into(), weight: 0
         }]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod small_membership_validation_tests {
+    use super::*;
+
+    #[test]
+    fn small_and_large_validation_reject_the_same_duplicates() {
+        for count in [1, 2, 3, 8, 9, 16, 64] {
+            let valid = (0..count).map(|index| Member {
+                node: format!("node_{index}"), zone: format!("zone_{}", index % 3), weight: 1,
+            }).collect::<Vec<_>>();
+            assert!(validate_membership(&valid).is_ok());
+            if count > 1 {
+                let mut invalid = valid.clone();
+                invalid[count - 1].node = invalid[0].node.clone();
+                assert!(validate_membership(&invalid).is_err());
+            }
+        }
     }
 }

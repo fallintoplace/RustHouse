@@ -5,6 +5,7 @@ Each query is verified against SQLite before its sample is accepted.
 This is a subset, NOT a full 43-query official ClickBench score.
 """
 import argparse
+import math
 import sqlite3
 import subprocess
 import sys
@@ -37,7 +38,11 @@ def parse_ids(spec):
 
 def run_subset(binary, database, sqlite_db, only=None, runs=3, warmups=1,
                timeout=120, execute=None):
-    if runs < 1 or warmups < 0 or timeout <= 0:
+    if (type(runs) is not int or type(warmups) is not int
+            or not 1 <= runs <= 100 or not 0 <= warmups <= 100
+            or runs + warmups > 100
+            or type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or timeout <= 0):
         raise ValueError("invalid timing parameters")
     queries = load_queries(DEFAULT_QUERIES)
     if len(queries) != 43:

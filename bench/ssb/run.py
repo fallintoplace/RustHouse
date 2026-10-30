@@ -37,6 +37,19 @@ def expected_rows(reference, statement=SQL):
     ).encode()
 
 
+
+MAX_SQL_SCRIPT_BYTES = 64 * 1024
+
+
+def read_fixture_sql(path):
+    with Path(path).open("rb") as source:
+        raw = source.read(MAX_SQL_SCRIPT_BYTES + 1)
+    if len(raw) > MAX_SQL_SCRIPT_BYTES:
+        raise ValueError("SSB fixture SQL exceeds 64 KiB")
+    return raw.decode("utf-8").strip().rstrip(";")
+
+
+
 def benchmark(binary, rows=2000, seed=42, runs=3, warmups=1,
               timeout=120, execute=None, query="sorted-topk"):
     if (type(rows) is not int or not 1 <= rows <= MAX_FACTS
@@ -56,7 +69,7 @@ def benchmark(binary, rows=2000, seed=42, runs=3, warmups=1,
         if execute is None:
             execute = lambda sql: cli_sql(binary, database, sql, timeout)
         for table in ("date_dim", "lineorder"):
-            execute((root / (table + ".sql")).read_text().strip().rstrip(";"))
+            execute(read_fixture_sql(root / (table + ".sql")))
             source = (root / (table + ".tsv")).resolve().as_posix().replace("'", "''")
             execute(f"COPY {table} FROM '{source}' WITH (FORMAT TSV, HEADER TRUE)")
         for table, expected in (("date_dim", len(DATE_KEYS)), ("lineorder", rows)):
