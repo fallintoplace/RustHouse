@@ -169,7 +169,7 @@ fn cold_restore_preserves_renamed_table_and_latest_truncate_generation() {
     let expected = must_succeed(
         sql(&source, "SELECT id, name FROM archive ORDER BY id")
     ).stdout;
-    assert_eq!(expected, b"id\\tname\\n9\\tcurrent\\n");
+    assert_eq!(expected, b"id\tname\n9\tcurrent\n");
     assert!(!sql(&source, "SELECT id FROM events").status.success());
     must_succeed(doctor(&source));
 
@@ -184,7 +184,7 @@ fn cold_restore_preserves_renamed_table_and_latest_truncate_generation() {
     must_succeed(sql(&backup, "INSERT INTO archive VALUES (10, 'restored')"));
     assert_eq!(
         must_succeed(sql(&backup, "SELECT count(*) FROM archive")).stdout,
-        b"count\\n2\\n"
+        b"count\n2\n"
     );
     fs::remove_dir_all(base).unwrap();
 }
