@@ -34,19 +34,16 @@ impl ResumeMap {
     /// Count verified chunks without constructing a list of missing indexes.
     /// Ignore unused bits in the final partially populated bitmap byte.
     pub fn completed_count(&self) -> usize {
-        self.completed
+        let full_bytes = self.chunks / 8;
+        let mut count: usize = self.completed[..full_bytes]
             .iter()
-            .enumerate()
-            .map(|(byte_index, &bits)| {
-                let valid = (self.chunks - byte_index * 8).min(8);
-                let mask = if valid == 8 {
-                    u8::MAX
-                } else {
-                    ((1u16 << valid) - 1) as u8
-                };
-                (bits & mask).count_ones() as usize
-            })
-            .sum()
+            .map(|byte| byte.count_ones() as usize)
+            .sum();
+        let tail = self.chunks % 8;
+        if tail != 0 {
+            count += (self.completed[full_bytes] & ((1u8 << tail) - 1)).count_ones() as usize;
+        }
+        count
     }
 
     pub fn remaining_count(&self) -> usize {
@@ -198,6 +195,20 @@ impl ResumeMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_count_masks_unused_tail_bits() {
+        for chunks in [0usize, 1, 7, 8, 9, 17, 65_535, 65_536] {
+            let mut map = ResumeMap::new(chunks).unwrap();
+            for index in (0..chunks).step_by(3) {
+                map.mark_complete(index).unwrap();
+            }
+            assert_eq!(map.completed_count(), chunks.div_ceil(3));
+        }
+        let mut map = ResumeMap::new(9).unwrap();
+        map.completed[1] = u8::MAX;
+        assert_eq!(map.completed_count(), 1);
+    }
 
     #[test]
     fn checkpoints_and_resumes_missing_chunks() {
