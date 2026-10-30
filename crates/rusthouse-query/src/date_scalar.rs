@@ -13,7 +13,8 @@ pub(super) fn render_datetime64_utc(seconds: i64) -> Result<String, ParseError> 
 pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "TOSTARTOFHALFHOUR"
+        "MAKEDATE"
+            | "TOSTARTOFHALFHOUR"
             | "ADDDAYS"
             | "TOHOUR"
             | "TOMINUTE"
@@ -86,6 +87,34 @@ pub(super) fn parse_after_open(
     depth: usize,
 ) -> Result<ConstantValue, ParseError> {
     match name {
+        "MAKEDATE" => {
+            let year = super::text_scalar::integer_arg(parser, depth + 1)?;
+            require_separator(parser, "makeDate requires year, month and day")?;
+            let month = super::text_scalar::integer_arg(parser, depth + 1)?;
+            require_separator(parser, "makeDate requires year, month and day")?;
+            let day = super::text_scalar::integer_arg(parser, depth + 1)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("makeDate requires exactly three arguments".into()));
+            }
+            match (year, month, day) {
+                (Some(year), Some(month), Some(day)) => {
+                    let month = u32::try_from(month)
+                        .map_err(|_| ParseError("invalid makeDate month".into()))?;
+                    let day = u32::try_from(day)
+                        .map_err(|_| ParseError("invalid makeDate day".into()))?;
+                    if !(MIN_YEAR..=MAX_YEAR).contains(&year)
+                        || !(1..=12).contains(&month)
+                        || day == 0
+                        || day > days_in_month(year, month)
+                    {
+                        return Err(ParseError("invalid makeDate calendar date".into()));
+                    }
+                    let seconds = days_from_civil(year, month, day) * DAY_SECONDS;
+                    Ok(ConstantValue::Text(Temporal::render(seconds, false)?))
+                }
+                _ => Ok(ConstantValue::Null),
+            }
+        },
         "TOSTARTOFHALFHOUR" => unary_date(parser, depth, |value| {
             Ok(ConstantValue::Text(Temporal::render(
                 value.seconds.div_euclid(1_800) * 1_800,
@@ -476,6 +505,14 @@ pub(super) fn parse_after_open(
         }),
         "TIMEDIFF" => time_difference(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
+    }
+}
+
+fn require_separator(parser: &mut Parser, message: &str) -> Result<(), ParseError> {
+    if parser.take(Token::Comma) {
+        Ok(())
+    } else {
+        Err(ParseError(message.into()))
     }
 }
 
@@ -1402,5 +1439,37 @@ mod to_days_in_month_tests {
                     && values[0].value == expected), "{sql}");
         }
         assert!(parse_select("SELECT toDaysInMonth('2024-01-01', 1)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod make_date_constant_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn renders_valid_leap_year_and_null_dates() {
+        for (sql, expected) in [
+            ("SELECT makeDate(2024, 2, 29)", ConstantValue::Text("2024-02-29".into())),
+            ("SELECT makeDate(1900, 1, 1)", ConstantValue::Text("1900-01-01".into())),
+            ("SELECT makeDate(NULL, 1, 1)", ConstantValue::Null),
+        ] {
+            assert!(
+                matches!(
+                    parse_select(sql).unwrap().projection,
+                    Projection::Constants(ref values)
+                        if values.len() == 1 && values[0].value == expected
+                ),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_invalid_calendar_fields_and_arity() {
+        for sql in ["SELECT makeDate(2023, 2, 29)", "SELECT makeDate(2024, 13, 1)",
+            "SELECT makeDate(2024, 1, 0)", "SELECT makeDate(1899, 1, 1)",
+            "SELECT makeDate(2024, 1)", "SELECT makeDate(2024, 1, 1, 2)"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
