@@ -75,5 +75,18 @@ class SnapshotGateTests(unittest.TestCase):
                 inspect_snapshot("rusthouse", ".", min_rows=1, run=mocked)
 
 
+    def test_custom_snapshot_inspection_timeout(self):
+        def run(command, **kwargs):
+            self.assertEqual(kwargs["timeout"], 2.5)
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "rows": 10, "parts": 1,
+                "columns": [{"name": "id", "type": "UInt64"}]
+            }).encode(), stderr=b"")
+        self.assertEqual(inspect_snapshot("rusthouse", "parts", min_rows=10,
+                                          timeout=2.5, run=run)["physical_rows"], 10)
+        for invalid in (0, -1, float("inf"), float("nan"), True):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "timeout"):
+                inspect_snapshot("rusthouse", "parts", timeout=invalid, run=run)
+
 if __name__ == "__main__":
     unittest.main()
