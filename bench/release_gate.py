@@ -76,6 +76,18 @@ def verify(report, required, expected_revision=None):
     return len(seen)
 
 
+
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+
+
+def _read_bounded_report(path):
+    with path.open("rb") as source:
+        contents = source.read(MAX_REPORT_BYTES + 1)
+    if len(contents) > MAX_REPORT_BYTES:
+        raise ValueError("benchmark JSON report exceeds 16 MiB")
+    return contents.decode("utf-8")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path, help="JSON emitted by a RustHouse benchmark runner")
@@ -90,7 +102,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         required = parse_query_ids(args.queries)
-        report = json.loads(args.report.read_text(encoding="utf-8"))
+        report = json.loads(_read_bounded_report(args.report))
         count = verify(report, required, args.expected_revision)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"release SQL gate failed: {error}", file=sys.stderr)
