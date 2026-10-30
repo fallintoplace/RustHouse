@@ -491,18 +491,28 @@ fn merge_tsv_page(
         }
 
         let rows = &body[header_end + 1..];
+        let required_tabs = shard_header.iter().filter(|&&byte| byte == b'\t').count();
         let local_skip = offset.saturating_sub(seen_rows);
         let remaining = limit
             .map(|limit| limit.saturating_sub(returned_rows))
             .unwrap_or(usize::MAX);
         let mut shard_rows = 0usize;
         let mut row_start = 0usize;
+        let mut row_tabs = 0usize;
         let mut selected_start = None;
         let mut selected_end = 0usize;
         for (position, &byte) in rows.iter().enumerate() {
+            if byte == b'\t' {
+                row_tabs += 1;
+                continue;
+            }
             if byte != b'\n' {
                 continue;
             }
+            if row_tabs != required_tabs {
+                return Err(MergeError::InvalidResponse);
+            }
+            row_tabs = 0;
             // TSV data encodes embedded newlines as escapes, so all literal
             // newlines delimit rows. The selected page is a contiguous range.
             if shard_rows >= local_skip && shard_rows - local_skip < remaining {
@@ -2461,6 +2471,15 @@ mod distributed_scan_tsv_shape_tests {
         assert_eq!(
             merge_tsv(&[(10, b"id\tvalue\n1\t\n".to_vec())], 10).unwrap(),
             b"id\tvalue\n1\t\n",
+        );
+        // Even a malformed shard beyond the requested page must be rejected.
+        let shards = [
+            (10, b"id\tvalue\n1\tone\n".to_vec()),
+            (10, b"id\tvalue\n2\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_tsv_page(&shards, 1, 0, Some(1)),
+            Err(MergeError::InvalidResponse),
         );
     }
 }
