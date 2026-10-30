@@ -8,6 +8,7 @@ static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
 const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
 const MAX_CATALOG_COLUMNS: usize = 128;
 const MAX_TABLE_NAME_BYTES: usize = 128;
+const MAX_CATALOG_DIRECTORY_ENTRIES: usize = 10_000;
 
 fn schema_path(catalog: &Path, name: &str) -> PathBuf {
     catalog.join(format!("{name}.schema"))
@@ -112,6 +113,15 @@ fn table_matches_like(name: &str, pattern: &str) -> bool {
 }
 
 fn show_tables(catalog: &Path, pattern: Option<&str>, negated: bool) -> Result<(), String> {
+    show_tables_with_entry_limit(catalog, pattern, negated, MAX_CATALOG_DIRECTORY_ENTRIES)
+}
+
+fn show_tables_with_entry_limit(
+    catalog: &Path,
+    pattern: Option<&str>,
+    negated: bool,
+    max_entries: usize,
+) -> Result<(), String> {
     let entries = match fs::read_dir(catalog) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -127,7 +137,10 @@ fn show_tables(catalog: &Path, pattern: Option<&str>, negated: bool) -> Result<(
     };
 
     let mut names = Vec::new();
-    for entry in entries {
+    for (index, entry) in entries.enumerate() {
+        if index >= max_entries {
+            return Err("catalog directory exceeds entry limit".into());
+        }
         let entry = entry.map_err(|error| format!("cannot read catalog entry: {error}"))?;
         if !entry
             .file_type()
@@ -445,5 +458,24 @@ mod show_tables_like_tests {
         assert!(table_matches_like("any", "%"));
         assert!(!table_matches_like("any", "other%"));
         assert!(!table_matches_like("any", r"any\"));
+    }
+}
+
+#[cfg(test)]
+mod catalog_entry_budget_tests {
+    use super::*;
+
+    #[test]
+    fn table_discovery_counts_unrelated_entries_too() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-catalog-entry-cap-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("events.schema"), "rusthouse-schema-v1\nid\tUInt64\n").unwrap();
+        fs::write(root.join("unrelated.txt"), b"x").unwrap();
+        assert!(show_tables_with_entry_limit(&root, None, false, 1).is_err());
+        assert!(show_tables_with_entry_limit(&root, None, false, 2).is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
 }
