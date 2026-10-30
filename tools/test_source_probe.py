@@ -8,6 +8,12 @@ class SourceProbeTests(unittest.TestCase):
             verify_origin("http://example.com:8123")
 
     @patch("source_probe.read_json")
+    def test_direct_probe_refuses_nonloopback_before_http(self, read):
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            probe("http://example.com:8123", "database")
+        read.assert_not_called()
+
+    @patch("source_probe.read_json")
     def test_detects_source_mismatch(self, read):
         read.return_value = {"source": "generated", "read_only": True}
         with self.assertRaises(ValueError):
