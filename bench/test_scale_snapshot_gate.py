@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from bench.scale.snapshot_gate import inspect_snapshot
@@ -53,6 +54,24 @@ class SnapshotGateTests(unittest.TestCase):
             return SimpleNamespace(returncode=1, stdout=b"", stderr=b"overlapping")
         with self.assertRaisesRegex(RuntimeError, "overlapping"):
             inspect_snapshot("rusthouse", "parts", run=run)
+
+    def test_rejects_unbounded_snapshot_metadata(self):
+        def run(*_args, **_kwargs):
+            return SimpleNamespace(returncode=0, stdout=b" " * 1_048_577, stderr=b"")
+        with self.assertRaisesRegex(ValueError, "exceeds 1 MiB"):
+            inspect_snapshot("rusthouse", "part", run=run)
+
+    def test_default_subprocess_spools_both_streams(self):
+        payload = json.dumps({"rows": 1, "parts": 1,
+                              "columns": [{"name": "x", "type": "UInt64"}]}).encode()
+        def run(command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].write(payload)
+            kwargs["stderr"].write(b"unexpected" * 10_000)
+            return SimpleNamespace(returncode=0)
+        with patch("bench.scale.snapshot_gate.subprocess.run", side_effect=run):
+            result = inspect_snapshot("rusthouse", "part", min_rows=1)
+        self.assertEqual(result["physical_rows"], 1)
 
     def test_rejects_nonobject_snapshot_json(self):
         for payload in ([], None, 0, "unavailable"):
