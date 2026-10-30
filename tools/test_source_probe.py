@@ -8,6 +8,12 @@ class SourceProbeTests(unittest.TestCase):
             verify_origin("http://example.com:8123")
 
     @patch("source_probe.read_json")
+    def test_direct_probe_refuses_nonloopback_before_http(self, read):
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            probe("http://example.com:8123", "database")
+        read.assert_not_called()
+
+    @patch("source_probe.read_json")
     def test_detects_source_mismatch(self, read):
         read.return_value = {"source": "generated", "read_only": True}
         with self.assertRaises(ValueError):
@@ -79,6 +85,16 @@ class SourceProbeTests(unittest.TestCase):
             "http://127.0.0.1:8123/capabilities", timeout=3
         )
 
+    @patch("source_probe.NO_REDIRECT_OPENER")
+    def test_duplicate_capability_json_keys_are_rejected(self, opener):
+        from source_probe import read_json
+        opener.open.return_value.__enter__.return_value.read.return_value = (
+            b'{"read_only":false,"read_only":true}'
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate source probe JSON field"):
+            read_json("http://127.0.0.1:8123/capabilities", 3)
+
+class SourceTimeoutTests(unittest.TestCase):
     def test_source_probe_rejects_invalid_request_timeouts(self):
         from source_probe import read_json
         with patch("source_probe.NO_REDIRECT_OPENER") as opener:
@@ -86,6 +102,7 @@ class SourceProbeTests(unittest.TestCase):
                 with self.subTest(timeout=value), self.assertRaisesRegex(ValueError, "timeout"):
                     read_json("http://127.0.0.1:8123/capabilities", value)
             opener.open.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

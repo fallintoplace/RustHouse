@@ -2,6 +2,7 @@
 """Check RustHouse peer reachability from /cluster/health (not data freshness)."""
 import argparse
 import json
+import math
 import sys
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, build_opener
@@ -16,6 +17,15 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 NO_REDIRECT_OPENER = build_opener(NoRedirect())
+
+
+def _unique_object_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate peer-health JSON field: {key}")
+        result[key] = value
+    return result
 
 
 def validate(payload, *, min_healthy=None):
@@ -46,6 +56,8 @@ def validate(payload, *, min_healthy=None):
 
 
 def inspect(origin, timeout=5, min_healthy=None):
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 300:
+        raise ValueError("timeout must be finite and in (0, 300] seconds")
     url = urlsplit(origin)
     if (url.scheme != "http" or url.hostname not in ("localhost", "127.0.0.1")
             or url.path not in ("", "/") or url.query or url.fragment
@@ -60,18 +72,19 @@ def inspect(origin, timeout=5, min_healthy=None):
         raw = exc.read(1_048_577)
     if len(raw) > 1_048_576:
         raise ValueError("peer-health response too large")
-    payload = json.loads(raw)
+    payload = json.loads(raw, object_pairs_hook=_unique_object_pairs)
     return validate(payload, min_healthy=min_healthy), payload
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8123")
+    parser.add_argument("--timeout", type=float, default=5)
     parser.add_argument("--min-healthy", type=int,
                         help="Require at least this many reachable peers")
     args = parser.parse_args()
     try:
-        all_healthy, info = inspect(args.url, min_healthy=args.min_healthy)
+        all_healthy, info = inspect(args.url, min_healthy=args.min_healthy, timeout=args.timeout)
     except Exception as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1
