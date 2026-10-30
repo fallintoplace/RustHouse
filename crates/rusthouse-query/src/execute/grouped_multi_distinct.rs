@@ -41,12 +41,21 @@ struct Group {
     values: HashSet<Key>,
     // Exact cardinality of a byte-wide column needs only 256 bits per group.
     byte_values: [u64; 4],
+    distinct_count: usize,
 }
 
 impl Group {
     fn cardinality(&self) -> usize {
-        self.values.len()
-            + self.byte_values.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+        self.distinct_count
+    }
+
+    fn mark_byte(&mut self, value: u8) {
+        let word = &mut self.byte_values[usize::from(value) / 64];
+        let mask = 1u64 << (usize::from(value) % 64);
+        if *word & mask == 0 {
+            *word |= mask;
+            self.distinct_count += 1;
+        }
     }
 }
 
@@ -138,6 +147,7 @@ pub(super) fn execute<W: Write>(
                     keys:group_indices.iter().map(|&i|typed::cell(&batch[i],row)).collect(),
                     values:HashSet::new(),
                     byte_values: [0; 4],
+                    distinct_count: 0,
                 });
                 index
             };
@@ -145,8 +155,7 @@ pub(super) fn execute<W: Write>(
             if byte_values {
                 let byte = numeric_byte_at(&batch[value_index], row)
                     .ok_or_else(|| ExecutionError::Invalid("expected byte-width DISTINCT value".into()))?;
-                groups[group].byte_values[usize::from(byte) / 64] |=
-                    1u64 << (usize::from(byte) % 64);
+                groups[group].mark_byte(byte);
                 continue;
             }
             let value=typed::key_at(&batch[value_index],row);
@@ -164,6 +173,7 @@ pub(super) fn execute<W: Write>(
                     .checked_add(dynamic)
                     .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?)?;
                 groups[group].values.insert(value);
+                groups[group].distinct_count += 1;
                 total_pairs+=1;
             }
         }
@@ -210,6 +220,27 @@ pub(super) fn execute<W: Write>(
 #[cfg(test)]
 mod bounded_payload_tests {
     use super::*;
+    #[test]
+    fn caches_exact_distinct_cardinality_for_sorting_and_having() {
+        let mut group = Group {
+            keys: Vec::new(),
+            values: HashSet::new(),
+            byte_values: [0; 4],
+            distinct_count: 0,
+        };
+        for value in [0, 1, 255, 0, 64, 255, 128] {
+            group.mark_byte(value);
+        }
+        assert_eq!(group.cardinality(), 5);
+        assert_eq!(
+            group.byte_values.iter().map(|word| word.count_ones() as usize).sum::<usize>(),
+            group.cardinality()
+        );
+        group.values.insert(Key::Numeric(super::super::NumberKey::Unsigned(100)));
+        group.distinct_count += 1;
+        assert_eq!(group.cardinality(), 6);
+    }
+
     #[test]
     fn fixed_group_budget_accounts_for_bitmap_and_hash_entry() {
         assert!(fixed_group_bytes(0).unwrap() >=

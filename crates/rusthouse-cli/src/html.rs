@@ -117,15 +117,19 @@ fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) 
 fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::Result<()> {
     let (open, close) = cell_tags(header);
     for field in line.split('\t') {
-        // Most tabular cells are short ASCII without HTML metacharacters.
-        // Emit the whole cell in one write instead of three separate writes.
-        if field.len() <= 256
-            && field.bytes().all(|byte| {
-                byte.is_ascii()
-                    && !byte.is_ascii_control()
+        // Short UTF-8 cells without HTML metacharacters or controls can
+        // use one framed write. Check non-ASCII Unicode controls by character.
+        let unescaped = if field.is_ascii() {
+            field.bytes().all(|byte| {
+                !byte.is_ascii_control()
                     && !matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
             })
-        {
+        } else {
+            field.chars().all(|ch| {
+                !ch.is_control() && !matches!(ch, '&' | '<' | '>' | '"' | '\'')
+            })
+        };
+        if field.len() <= 256 && unescaped {
             let mut framed = [0u8; 265];
             framed[..open.len()].copy_from_slice(open);
             let body_end = open.len() + field.len();
@@ -249,6 +253,30 @@ mod tests {
         assert_eq!(header.writes, 1);
         assert!(header.bytes.starts_with(b"<th>"));
         assert!(header.bytes.ends_with(b"</th>"));
+    }
+
+    #[test]
+    fn short_unicode_cells_use_single_frame_without_skipping_controls() {
+        struct Counter {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Counter {
+            fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(input);
+                Ok(input.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let mut counter = Counter { writes: 0, bytes: Vec::new() };
+        write_plain_cells(&mut counter, "café\t東京", false).unwrap();
+        assert_eq!(counter.writes, 2);
+        assert_eq!(counter.bytes, "<td>café</td><td>東京</td>".as_bytes());
+
+        let mut escaped = Vec::new();
+        write_plain_cells(&mut escaped, "a\u{0085}b", false).unwrap();
+        assert_eq!(escaped, b"<td>a&#133;b</td>");
     }
 
     #[test]

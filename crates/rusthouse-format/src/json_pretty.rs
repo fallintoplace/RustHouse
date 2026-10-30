@@ -1,6 +1,8 @@
 //! Shared pretty-printing for complete, validated JSONL rows.
 use std::io::{self, Write};
 
+const MAX_PRETTY_JSON_DEPTH: usize = 256;
+
 fn write_spaces<W: Write>(output: &mut W, mut remaining: usize) -> io::Result<()> {
     let spaces = [b' '; 64];
     while remaining > 0 {
@@ -12,11 +14,14 @@ fn write_spaces<W: Write>(output: &mut W, mut remaining: usize) -> io::Result<()
 }
 
 fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
-    const SHORT_INDENT: &[u8; 65] =
-        b"\n                                                                ";
+    const CACHED_INDENT: [u8; MAX_PRETTY_JSON_DEPTH * 2 + 3] = {
+        let mut bytes = [b' '; MAX_PRETTY_JSON_DEPTH * 2 + 3];
+        bytes[0] = b'\n';
+        bytes
+    };
     let spaces = (depth + 1) * 2;
-    if spaces <= 64 {
-        output.write_all(&SHORT_INDENT[..spaces + 1])
+    if spaces + 1 <= CACHED_INDENT.len() {
+        output.write_all(&CACHED_INDENT[..spaces + 1])
     } else {
         output.write_all(b"\n")?;
         write_spaces(output, spaces)
@@ -47,6 +52,10 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
         match byte {
             b'"' => inside_json_string = true,
             b'{' | b'[' => {
+                if depth >= MAX_PRETTY_JSON_DEPTH {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                              "pretty JSON nesting exceeds 256 levels"));
+                }
                 output.write_all(&row[start..=index])?;
                 depth += 1;
                 let empty = row
@@ -216,5 +225,48 @@ mod tests {
         write_pretty_json_row(&mut output, br#"{"a":1}"#).unwrap();
         assert!(output.0.iter().any(|chunk| chunk.as_slice() == b"\"a\": "));
         assert_eq!(output.0.concat(), b"{\n    \"a\": 1\n  }");
+    }
+}
+
+#[cfg(test)]
+mod pretty_depth_limit_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_depth_limit_and_rejects_one_more_level() {
+        let input = format!("{}0{}", "[".repeat(256), "]".repeat(256));
+        let mut output = Vec::new();
+        write_pretty_json_row(&mut output, input.as_bytes()).unwrap();
+        assert!(output.len() > input.len());
+
+        let excess = format!("{}0{}", "[".repeat(257), "]".repeat(257));
+        let error = write_pretty_json_row(&mut Vec::new(), excess.as_bytes()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+}
+
+#[cfg(test)]
+mod deep_json_indent_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn deep_valid_indent_levels_need_a_single_writer_call() {
+        struct Writer { writes: usize, bytes: Vec<u8> }
+        impl Write for Writer {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        for depth in [0, 1, 31, 32, 33, 40, 128, 255, 256] {
+            let mut writer = Writer { writes: 0, bytes: Vec::new() };
+            write_indent(&mut writer, depth).unwrap();
+            assert_eq!(writer.writes, 1, "{depth}");
+            assert_eq!(writer.bytes.len(), 1 + (depth + 1) * 2);
+            assert_eq!(writer.bytes[0], b'\n');
+            assert!(writer.bytes[1..].iter().all(|&byte| byte == b' '));
+        }
     }
 }

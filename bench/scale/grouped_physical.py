@@ -58,6 +58,18 @@ def reference(rows, groups):
     cold_sum = 0
     delta = 10 * (groups - 1)
     period = 97 // math.gcd(delta, 97)
+    # Each cold bucket walks the same modular cycle with one of 97
+    # starting residues. Build their prefix sums once instead of repeating
+    # up to 97 modulo operations for every bucket.
+    prefixes = []
+    stride = delta % 97
+    for initial in range(97):
+        values = [0]
+        residue = initial
+        for _ in range(period):
+            values.append(values[-1] + 1 + residue)
+            residue = (residue + stride) % 97
+        prefixes.append(values)
     for bucket in range(1, groups):
         first_block = bucket - 1
         if first_block >= blocks:
@@ -65,10 +77,9 @@ def reference(rows, groups):
         count = 1 + (blocks - 1 - first_block) // (groups - 1)
         base = 10 * first_block + 9
         full, extra = divmod(count, period)
-        one_period = sum(1 + ((base + delta * k) % 97) for k in range(period))
-        remainder = sum(1 + ((base + delta * k) % 97) for k in range(extra))
+        prefix = prefixes[base % 97]
         counts[bucket] = count
-        sums[bucket] = full * one_period + remainder
+        sums[bucket] = full * prefix[-1] + prefix[extra]
         cold_sum += sums[bucket]
     counts[0] = rows - blocks
     cycles, remainder = divmod(rows, 97)
@@ -102,6 +113,13 @@ def scan(binary, directory, sql, golden, *, runs, warmups, timeout):
     }
 
 
+def _verification_failure(inspection):
+    return (
+        f"persisted snapshot verification failed: "
+        f"{inspection.stdout[:250]!r} {inspection.stderr[-600:]!r}"
+    )
+
+
 def benchmark(binary, rows, groups, runs, warmups, timeout, scratch_dir=None):
     if (type(runs) is not int or type(warmups) is not int
             or runs < 1 or warmups < 0 or runs + warmups > 1000):
@@ -126,9 +144,7 @@ def benchmark(binary, rows, groups, runs, warmups, timeout, scratch_dir=None):
             capture_output=True, check=False, timeout=timeout,
         )
         if inspection.returncode or f"OK events: {rows} rows, " not in inspection.stdout.decode("utf-8", "replace"):
-            raise RuntimeError(
-                f"persisted snapshot verification failed: {inspection.stdout!r} {inspection.stderr!r}"
-            )
+            raise RuntimeError(_verification_failure(inspection))
         return {
             "workload": "persisted-billion-row-skewed-grouped-analytics",
             "revision": os.environ.get("GITHUB_SHA"),
