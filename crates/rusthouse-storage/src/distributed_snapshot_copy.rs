@@ -41,6 +41,15 @@ fn sync_directory(path: &Path) -> Result<(), PartError> {
         .map_err(|error| io_error(path, error))
 }
 
+fn ensure_destination_absent(destination: &Path) -> Result<(), PartError> {
+    match fs::symlink_metadata(destination) {
+        Ok(_) => Err(PartError::InvalidScan("destination already exists".into())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error(destination, error)),
+    }
+}
+
+
 /// Copy a complete active generation into a new directory and validate it
 /// before rename. Does not copy catalog schemas or create remote connections.
 pub fn copy_frozen_snapshot(
@@ -71,11 +80,7 @@ pub fn copy_frozen_snapshot_with_file_limit(
     // Reject oversized inventories before checksum reads or staging any files.
     crate::distributed_inventory::inventory_active_snapshot(&active, max_files, max_bytes)?;
     inspect_query_source(&active)?;
-    match fs::symlink_metadata(destination) {
-        Ok(_) => return Err(PartError::InvalidScan("destination already exists".into())),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(io_error(destination, error)),
-    }
+    ensure_destination_absent(destination)?;
     let parent = destination
         .parent()
         .ok_or_else(|| PartError::InvalidScan("destination has no parent".into()))?;
@@ -179,11 +184,9 @@ pub fn copy_frozen_snapshot_with_file_limit(
         let _ = fs::remove_dir_all(&staging);
         return Err(PartError::InvalidScan("source snapshot changed during copy".into()));
     }
-    if destination.exists() {
+    if let Err(error) = ensure_destination_absent(destination) {
         let _ = fs::remove_dir_all(&staging);
-        return Err(PartError::InvalidScan(
-            "destination appeared during copy".into(),
-        ));
+        return Err(error);
     }
     if let Err(error) = fs::rename(&staging, destination) {
         let _ = fs::remove_dir_all(&staging);
@@ -499,6 +502,28 @@ mod private_snapshot_copy_tests {
             fs::metadata(&staging).unwrap().permissions().mode() & 0o077,
             0
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod dangling_destination_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn missing_symlink_target_does_not_make_destination_available() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-dangling-copy-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let destination = root.join("destination");
+        assert!(ensure_destination_absent(&destination).is_ok());
+        symlink("missing-target", &destination).unwrap();
+        assert!(ensure_destination_absent(&destination).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
