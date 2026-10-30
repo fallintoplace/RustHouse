@@ -10,6 +10,7 @@ import random
 import re
 import statistics
 import subprocess
+import tempfile
 import time
 
 
@@ -43,15 +44,22 @@ def percentile(samples, percent):
 
 
 def query(binary, database, statement, timeout):
-    result = subprocess.run(
-        [str(binary), "sql", statement, "--database", str(database),
-         "--format", "tsv-no-header"],
-        capture_output=True, timeout=timeout, check=False,
-    )
-    if result.returncode:
-        raise RuntimeError(result.stderr.decode("utf-8", "replace")[-500:])
-    return result.stdout
-
+    # A single point probe can only return a small result. Spool both streams.
+    with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
+        result = subprocess.run(
+            [str(binary), "sql", statement, "--database", str(database),
+             "--format", "tsv-no-header"],
+            stdout=output, stderr=errors, timeout=timeout, check=False,
+        )
+        if result.returncode:
+            errors.seek(0, 2)
+            errors.seek(max(0, errors.tell() - 500))
+            raise RuntimeError(errors.read(500).decode("utf-8", "replace"))
+        output.seek(0)
+        payload = output.read(129)
+        if len(payload) > 128:
+            raise ValueError("point probe SQL output exceeds 128 bytes")
+        return payload
 
 def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
           execute=None, column="id"):
