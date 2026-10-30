@@ -43,6 +43,20 @@ class SQLiteGoldenTests(unittest.TestCase):
 
 
 class SQLiteGoldenOutputBudgetTests(unittest.TestCase):
+    def test_existing_tmp_symlink_is_never_followed(self):
+        from sqlite_goldens import write_one
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            destination = base / "q01.tsv"
+            protected = base / "protected.txt"
+            protected.write_text("keep me")
+            (base / "q01.tsv.tmp").symlink_to(protected)
+            with closing(sqlite3.connect(":memory:")) as connection:
+                self.assertEqual(write_one(connection, "SELECT 1", destination), 1)
+            self.assertEqual(protected.read_text(), "keep me")
+            self.assertEqual(destination.read_bytes(), b"1\n")
+
+
     def test_enforces_bytes_and_does_not_publish_partial_reference(self):
         from sqlite_goldens import write_one
         with tempfile.TemporaryDirectory() as root:

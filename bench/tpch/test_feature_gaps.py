@@ -1,8 +1,15 @@
+import tempfile
 import unittest
-from feature_gaps import analyze, classify
+from pathlib import Path
+from feature_gaps import analyze, classify, load_report
 
 
 class FeatureGapTests(unittest.TestCase):
+    def test_empty_gap_report_cannot_claim_coverage(self):
+        with self.assertRaisesRegex(ValueError, "nonempty"):
+            analyze({"results": []})
+
+
     def test_grouping_labels_and_verified_coverage(self):
         report = {"results": [
             {"query": 1, "status": "passed"},
@@ -55,6 +62,41 @@ class InvalidGapStatusTests(unittest.TestCase):
                 self.assertEqual(classify({"status": status}), "unexpected_status")
                 with self.assertRaisesRegex(ValueError, "status"):
                     analyze({"results": [{"query": 1, "status": status}]})
+
+    def test_optional_verified_correctness_gate(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from feature_gaps import main
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "report.json"
+            path.write_text(json.dumps({"results": [
+                {"query": 1, "status": "passed"},
+                {"query": 2, "status": "unverified"},
+            ]}))
+            with patch("builtins.print"):
+                self.assertEqual(main(["--report", str(path)]), 0)
+                self.assertEqual(main(["--report", str(path), "--fail-on-unverified"]), 1)
+            path.write_text(json.dumps({"results": [{"query": 1, "status": "passed"}]}))
+            with patch("builtins.print"):
+                self.assertEqual(main(["--report", str(path), "--fail-on-unverified"]), 0)
+
+
+
+class BoundedFeatureGapReportTests(unittest.TestCase):
+    def test_rejects_oversized_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            path.write_bytes(b" " * (2 * 1024 * 1024 + 1))
+            with self.assertRaisesRegex(ValueError, "exceeds 2 MiB"):
+                load_report(path)
+
+    def test_loads_normal_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            path.write_bytes(b'{"results":[{"query":1,"status":"passed"}]}')
+            self.assertEqual(analyze(load_report(path))["verified_correct_percent"], 100)
 
 if __name__ == "__main__":
     unittest.main()

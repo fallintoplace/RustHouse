@@ -78,6 +78,12 @@ impl PartChecksums {
     }
 }
 
+#[cfg(unix)]
+fn same_checksums_inode(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.dev() == after.dev() && before.ino() == after.ino()
+}
+
 pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError> {
     let path = path.as_ref();
     let metadata = fs::symlink_metadata(path).map_err(|source| checksums_io_error(path, source))?;
@@ -91,10 +97,15 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
         });
     }
     let file = File::open(path).map_err(|source| checksums_io_error(path, source))?;
-    let size = file
-        .metadata()
-        .map_err(|source| checksums_io_error(path, source))?
-        .len();
+    let opened = file.metadata().map_err(|source| checksums_io_error(path, source))?;
+    if !opened.file_type().is_file() || opened.len() != metadata.len() {
+        return Err(invalid(path, "checksums file changed before open"));
+    }
+    #[cfg(unix)]
+    if !same_checksums_inode(&metadata, &opened) {
+        return Err(invalid(path, "checksums inode changed before open"));
+    }
+    let size = opened.len();
     if size > MAX_CHECKSUMS_BYTES {
         return Err(invalid(path, "checksums file exceeds 64 MiB"));
     }
@@ -544,5 +555,24 @@ mod tests {
                 ..
             })
         ));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod opened_checksums_identity_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_equal_size_replacements_before_parsing() {
+        let root = std::env::temp_dir().join(format!("rusthouse-checksum-id-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let first = root.join("a");
+        let second = root.join("b");
+        fs::write(&first, b"abcd").unwrap();
+        fs::write(&second, b"wxyz").unwrap();
+        assert!(same_checksums_inode(&fs::metadata(&first).unwrap(), &fs::metadata(&first).unwrap()));
+        assert!(!same_checksums_inode(&fs::metadata(&first).unwrap(), &fs::metadata(&second).unwrap()));
+        fs::remove_dir_all(root).unwrap();
     }
 }

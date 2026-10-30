@@ -74,7 +74,7 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("CASE") => parse_case(parser, depth),
         Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
-            let literal = if number.contains('.') {
+            let literal = if number.contains('.') || number.contains('e') || number.contains('E') {
                 let value = number.parse::<f64>().map_err(|_| {
                     ParseError("invalid decimal expression literal".into())
                 })?;
@@ -121,4 +121,22 @@ pub(super) fn product(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
         };
     }
     Ok(expr)
+}
+
+#[cfg(test)]
+mod scientific_expression_tests {
+    use super::*;
+
+    #[test]
+    fn exponent_only_literals_are_decimal_expressions() {
+        for literal in ["1e3", "2E-2", "0e+5", "-3e1"] {
+            assert_eq!(
+                super::super::parse_scalar_expression(literal).unwrap(),
+                ScalarExpr::Decimal(literal.to_owned()),
+                "{literal}"
+            );
+        }
+        assert!(super::super::parse_scalar_expression("1e309").is_err());
+        assert!(super::super::parse_scalar_expression("1e").is_err());
+    }
 }

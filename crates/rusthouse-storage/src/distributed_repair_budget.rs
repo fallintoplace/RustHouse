@@ -31,6 +31,16 @@ fn repair_priority(left: &RepairJob, right: &RepairJob) -> std::cmp::Ordering {
 }
 
 fn validate_repair_jobs(jobs: &[RepairJob]) -> Result<(), &'static str> {
+    if jobs.len() <= 8 {
+        for (index, job) in jobs.iter().enumerate() {
+            if !valid_repair_job(job)
+                || jobs[..index].iter().any(|prior| prior.shard == job.shard)
+            {
+                return Err("invalid or duplicate repair job");
+            }
+        }
+        return Ok(());
+    }
     let mut unique = HashSet::with_capacity(jobs.len());
     for job in jobs {
         if !valid_repair_job(job) || !unique.insert(job.shard.as_str()) {
@@ -91,6 +101,22 @@ pub fn plan_repairs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_and_large_repair_queues_preserve_duplicate_validation() {
+        for count in [1usize, 2, 8, 9, 32] {
+            let mut jobs = (0..count).map(|index| RepairJob {
+                shard: format!("shard_{index}"),
+                bytes: 1,
+                missing_replicas: 1,
+            }).collect::<Vec<_>>();
+            assert_eq!(plan_repairs(&jobs, 100, count).unwrap().len(), count);
+            if count > 1 {
+                jobs[count - 1].shard = jobs[0].shard.clone();
+                assert!(plan_repairs(&jobs, 100, count).is_err());
+            }
+        }
+    }
 
     #[test]
     fn schedules_urgent_repair_without_exceeding_budget() {

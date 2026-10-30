@@ -6,6 +6,19 @@ from report_csv import rows_from_report, write_csv
 
 
 class ReportCSVTests(unittest.TestCase):
+    def test_rejects_oversized_csv_source_report(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from report_csv import load_report
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "report.json"
+            source.write_bytes(b"0" * 17)
+            with patch("report_csv.MAX_REPORT_BYTES", 16):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    load_report(source)
+
+
     def test_exports_verified_timings_without_fake_failure_numbers(self):
         report = {"results": [
             {"query": 6, "status": "passed",
