@@ -168,7 +168,6 @@ mod lock_identity_tests {
     }
 }
 
-
 #[cfg(all(test, unix))]
 mod read_only_lock_tests {
     use super::*;
