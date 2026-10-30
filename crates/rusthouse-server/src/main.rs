@@ -206,6 +206,13 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let _ = respond(&mut stream, response, accept_lz4);
 }
 
+fn recoverable_accept_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionAborted | io::ErrorKind::Interrupted
+    )
+}
+
 fn main() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
     let mut port = 8123u16;
@@ -314,7 +321,14 @@ fn main() -> io::Result<()> {
     eprintln!("RustHouse read-only HTTP listening on http://{bind}:{port}");
     let active = Arc::new(AtomicUsize::new(0));
     for accepted in listener.incoming() {
-        let stream = accepted?;
+        let stream = match accepted {
+            Ok(stream) => stream,
+            Err(error) if recoverable_accept_error(&error) => {
+                eprintln!("transient connection accept error: {error}");
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let mut count = active.load(Ordering::Relaxed);
         let acquired = loop {
             if count >= max_connections {
@@ -477,5 +491,20 @@ mod concurrency_capacity_tests {
             assert!(parse_max_connections(invalid).is_err(), "{invalid}");
         }
         assert_eq!(MAX_CONNECTIONS, 16);
+    }
+}
+
+#[cfg(test)]
+mod accept_error_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn transient_socket_errors_do_not_terminate_listener() {
+        for kind in [io::ErrorKind::Interrupted, io::ErrorKind::ConnectionAborted] {
+            assert!(recoverable_accept_error(&io::Error::from(kind)));
+        }
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::AddrInUse] {
+            assert!(!recoverable_accept_error(&io::Error::from(kind)));
+        }
     }
 }
