@@ -92,6 +92,15 @@ class BoundedFeatureGapReportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exceeds 2 MiB"):
                 load_report(path)
 
+    def test_rejects_symlinked_compatibility_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "original.json"
+            source.write_text('{"results":[{"query":1,"status":"passed"}]}')
+            alias = Path(directory) / "linked.json"
+            alias.symlink_to(source)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                load_report(alias)
+
     def test_loads_normal_report(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "report.json"
