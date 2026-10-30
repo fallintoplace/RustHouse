@@ -184,3 +184,49 @@ mod replica_floor_tests {
         assert!(retention_candidates_below_replica_floor(&[1, 2], 2, 1, 0).is_err());
     }
 }
+
+/// Select oldest eligible generations for deletion without exceeding a byte budget.
+/// This plans only; the caller must coordinate readers and verify deletions.
+pub fn retention_candidates_with_byte_budget(
+    generations: &[(u64, u64)],
+    active: u64,
+    keep_latest: usize,
+    pinned: &[u64],
+    byte_budget: u64,
+) -> Result<(Vec<u64>, u64), &'static str> {
+    if generations.is_empty() || generations.len() > 16_384 {
+        return Err("invalid generation retention inventory");
+    }
+    let ids = generations.iter().map(|&(generation, _)| generation).collect::<Vec<_>>();
+    let eligible = retention_candidates_with_pins(&ids, active, keep_latest, pinned)?;
+    let sizes = generations.iter().copied().collect::<std::collections::HashMap<_, _>>();
+    let mut selected = Vec::new();
+    let mut total = 0u64;
+    for generation in eligible {
+        let bytes = sizes[&generation];
+        if bytes <= byte_budget - total {
+            total += bytes;
+            selected.push(generation);
+        }
+    }
+    Ok((selected, total))
+}
+
+#[cfg(test)]
+mod budgeted_retention_tests {
+    use super::*;
+
+    #[test]
+    fn protects_active_latest_and_pinned_generations_under_budget() {
+        let generations = [(5, 1u64), (1, 7), (2, 12), (3, 3), (4, 2)];
+        assert_eq!(
+            retention_candidates_with_byte_budget(&generations, 5, 1, &[3], 9).unwrap(),
+            (vec![1], 7)
+        );
+        assert_eq!(
+            retention_candidates_with_byte_budget(&generations, 5, 1, &[3], 21).unwrap(),
+            (vec![1, 2, 4], 21)
+        );
+        assert!(retention_candidates_with_byte_budget(&generations, 5, 1, &[99], 20).is_err());
+    }
+}
