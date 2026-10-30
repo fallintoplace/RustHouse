@@ -21,7 +21,7 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
         raise ValueError("invalid UInt64 start or range overflow")
     if type(limit) is not int or not 1 <= limit <= min(4096, rows):
         raise ValueError("limit must be in 1..min(4096, rows)")
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column):
+    if not isinstance(column, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", column):
         raise ValueError("column must be a simple SQL identifier")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
