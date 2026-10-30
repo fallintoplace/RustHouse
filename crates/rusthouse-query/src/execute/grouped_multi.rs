@@ -85,10 +85,10 @@ fn parallel_grouped_parts(
     }
     let chunk_size = parts.len().div_ceil(workers);
     let retained = std::sync::atomic::AtomicUsize::new(0);
-    let chunks = std::thread::scope(|scope| {
+    let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let retained = &retained;
         let handles = parts.chunks(chunk_size).map(|paths| {
-            scope.spawn(move || -> Result<Vec<(Vec<Cell>, u64)>, ExecutionError> {
+            std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Vec<(Vec<Cell>, u64)>, ExecutionError> {
                 let mut rows: Vec<(Vec<Cell>, u64)> = Vec::new();
                 let mut index: HashMap<Vec<Key>, usize> = HashMap::new();
                 // Frequent dimension keys should reuse their probe allocation
@@ -127,12 +127,12 @@ fn parallel_grouped_parts(
                     }
                 }
                 Ok(rows)
-            })
-        }).collect::<Vec<_>>();
-        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            }).map_err(|error| ExecutionError::Invalid(format!("cannot start multi-key GROUP BY worker: {error}")))
+        }).collect::<Result<Vec<_>, _>>()?;
+        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
             Err(ExecutionError::Invalid("parallel grouped worker panicked".into()))
-        })).collect::<Vec<_>>()
-    });
+        })).collect::<Vec<_>>())
+    })?;
     let mut rows = Vec::<(Vec<Cell>, u64)>::new();
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     for chunk in chunks {
