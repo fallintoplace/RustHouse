@@ -82,6 +82,18 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
             "checks": checks}
 
 
+
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+
+
+def _read_bounded_report(path):
+    with path.open("rb") as source:
+        contents = source.read(MAX_REPORT_BYTES + 1)
+    if len(contents) > MAX_REPORT_BYTES:
+        raise ValueError("benchmark JSON report exceeds 16 MiB")
+    return contents.decode("utf-8")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True)
@@ -91,7 +103,7 @@ def main(argv=None):
     parser.add_argument("--max-sample-spread-percent", type=float)
     args = parser.parse_args(argv)
     try:
-        report = validate(json.loads(args.report.read_text(encoding="utf-8")),
+        report = validate(json.loads(_read_bounded_report(args.report)),
                           min_rows=args.min_rows,
                           max_median_seconds=args.max_median_seconds,
                           max_p90_seconds=args.max_p90_seconds,
