@@ -51,5 +51,15 @@ class SchemaTests(unittest.TestCase):
             with self.subTest(malformed=malformed), self.assertRaises(ValueError):
                 columns({"columns": [malformed]})
 
+    def test_duplicate_schema_keys_are_rejected(self):
+        from unittest.mock import patch
+        from schema_diff import fetch
+        with patch("schema_diff.NO_REDIRECT_OPENER") as opener:
+            opener.open.return_value.__enter__.return_value.read.return_value = (
+                b'{"columns":[{"name":"id","name":"other","type":"UInt64"}]}'
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate schema JSON field"):
+                fetch("http://127.0.0.1:8123", "items")
+
 if __name__ == "__main__":
     unittest.main()
