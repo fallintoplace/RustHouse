@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "ENDSWITHCASEINSENSITIVEUTF8"
             | "NORMALIZEIPV6"
     )
 }
@@ -2912,6 +2913,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .any(|word| word == token);
                     ConstantValue::Integer(i64::from(found))
                 }
+                _ => ConstantValue::Null,
+            }
+        }
+        "ENDSWITHCASEINSENSITIVEUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "endsWithCaseInsensitiveUTF8 requires a suffix")?;
+            let suffix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after endsWithCaseInsensitiveUTF8")?;
+            match (input, suffix) {
+                (Some(input), Some(suffix)) => ConstantValue::Integer(i64::from(
+                    input.to_lowercase().ends_with(&suffix.to_lowercase())
+                )),
                 _ => ConstantValue::Null,
             }
         }
