@@ -11,6 +11,7 @@ use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use crate::{MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, Response};
 use rusthouse_query::{AggregateFunction, Having, Operator, Projection, Select, Source, parse_select};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
@@ -42,7 +43,7 @@ enum MergeError {
 fn merge_distinct_counts(shards: &[(usize, Vec<u8>)], column: &str) -> Result<Vec<u8>, MergeError> {
     const MAX_KEYS: usize = 100_000;
     let expected_header = format!("{column}\n");
-    let mut values: HashSet<&[u8]> = HashSet::new();
+    let mut values: HashSet<Cow<'_, [u8]>> = HashSet::new();
     for (cap, body) in shards {
         if !body.ends_with(b"\n") || !body.starts_with(expected_header.as_bytes()) {
             return Err(MergeError::InvalidDistinctCount);
@@ -61,10 +62,20 @@ fn merge_distinct_counts(shards: &[(usize, Vec<u8>)], column: &str) -> Result<Ve
                     return Err(MergeError::ShardRowLimit);
                 }
                 if value != b"\\N" {
-                    if values.len() >= MAX_KEYS && !values.contains(value) {
+                    // Distinct values are logical TSV cells, not wire encodings.
+                    // Borrow unescaped fields; allocate only when decoding escapes.
+                    let normalized: Cow<'_, [u8]> = if value.contains(&b'\\') {
+                        Cow::Owned(
+                            rusthouse_format::decode_tsv_field(value)
+                                .map_err(|_| MergeError::InvalidDistinctCount)?,
+                        )
+                    } else {
+                        Cow::Borrowed(value)
+                    };
+                    if values.len() >= MAX_KEYS && !values.contains(normalized.as_ref()) {
                         return Err(MergeError::CoordinatorLimit);
                     }
-                    values.insert(value);
+                    values.insert(normalized);
                 }
             }
         }
@@ -2427,5 +2438,31 @@ mod shard_dispatch_wave_tests {
             .flat_map(|wave| wave.iter().copied()).collect();
         assert_eq!(selected, peers);
         assert_eq!(peers.chunks(8).count(), 4);
+    }
+}
+
+#[cfg(test)]
+mod distributed_distinct_escape_normalization_tests {
+    use super::*;
+
+    #[test]
+    fn counts_equivalent_tsv_escapes_only_once_across_shards() {
+        let shards = [
+            (10, b"word\nfirst\\tsecond\n".to_vec()),
+            (10, b"word\nfirst\\x09second\n".to_vec()),
+            (10, b"word\n\\N\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_distinct_counts(&shards, "word").unwrap(),
+            b"count(DISTINCT word)\n1\n",
+        );
+    }
+
+    #[test]
+    fn refuses_malformed_tsv_escapes_in_distinct_values() {
+        assert_eq!(
+            merge_distinct_counts(&[(10, b"word\ninvalid\\q\n".to_vec())], "word"),
+            Err(MergeError::InvalidDistinctCount),
+        );
     }
 }
