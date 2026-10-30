@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "TRIMRIGHT"
             | "NORMALIZEIPV6"
     )
 }
@@ -2678,7 +2679,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "RTRIM" => {
+        "RTRIM" | "TRIMRIGHT" => {
             let input = text_arg(parser, depth + 1)?;
             let characters = if parser.take(Token::Comma) {
                 Some(text_arg(parser, depth + 1)?)
