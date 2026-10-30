@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "REGEXPQUOTEMETA"
             | "NORMALIZEIPV6"
     )
 }
@@ -2913,6 +2914,1485 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(found))
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "REGEXPQUOTEMETA" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "regexpQuoteMeta requires one argument")?;
+            match input {
+                Some(input) => {
+                    let mut result = String::with_capacity(input.len());
+                    for ch in input.chars() {
+                        if ch == '\0' {
+                            if result.len() + 2 > MAX_TEXT_BYTES {
+                                return Err(ParseError("regexpQuoteMeta result is too large".into()));
+                            }
+                            result.push('\\');
+                            result.push('0');
+                        } else {
+                            let escaped = matches!(
+                                ch,
+                                '\\' | '|' | '(' | ')' | '^' | '
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "CONTAINS requires a substring")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after CONTAINS arguments",
+            )?;
+            match (input, needle) {
+                (Some(input), Some(needle)) => {
+                    ConstantValue::Integer(i64::from(input.contains(needle.as_str())))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "STARTS_WITH" | "STARTSWITH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STARTS_WITH requires a prefix")?;
+            let prefix = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after STARTS_WITH arguments",
+            )?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => {
+                    ConstantValue::Integer(i64::from(input.starts_with(prefix.as_str())))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "REPLACE_FIRST" | "REPLACEONE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "REPLACE_FIRST requires a search string",
+            )?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPLACE_FIRST requires a replacement")?;
+            let replacement = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after REPLACE_FIRST arguments",
+            )?;
+            match (input, needle, replacement) {
+                (Some(input), Some(needle), Some(replacement)) => {
+                    if needle.is_empty() || !input.contains(&needle) {
+                        ConstantValue::Text(input)
+                    } else {
+                        let length = input.len() - needle.len();
+                        if length.saturating_add(replacement.len()) > MAX_TEXT_BYTES {
+                            return Err(ParseError("REPLACE_FIRST result is too large".into()));
+                        }
+                        ConstantValue::Text(input.replacen(&needle, &replacement, 1))
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "STRIP_PREFIX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STRIP_PREFIX requires a prefix")?;
+            let prefix = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after STRIP_PREFIX arguments",
+            )?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => ConstantValue::Text(
+                    input
+                        .strip_prefix(prefix.as_str())
+                        .unwrap_or(input.as_str())
+                        .to_owned(),
+                ),
+                _ => ConstantValue::Null,
+            }
+        }
+        "LEFT" | "LEFTUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "LEFT requires a character count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after LEFT arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    if count < 0 {
+                        return Err(ParseError("LEFT count must be nonnegative".into()));
+                    }
+                    let count = usize::try_from(count).unwrap_or(usize::MAX);
+                    if count >= value.len() {
+                        ConstantValue::Text(value)
+                    } else if value.as_bytes()[..count].is_ascii() {
+                        let mut result = value;
+                        result.truncate(count);
+                        ConstantValue::Text(result)
+                    } else {
+                        ConstantValue::Text(value.chars().take(count).collect())
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "REPLACE_LAST" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "REPLACE_LAST requires a search string",
+            )?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPLACE_LAST requires a replacement")?;
+            let replacement = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after REPLACE_LAST arguments",
+            )?;
+            match (input, needle, replacement) {
+                (Some(input), Some(needle), Some(replacement)) => {
+                    if needle.is_empty() {
+                        ConstantValue::Text(input)
+                    } else if let Some(index) = input.rfind(&needle) {
+                        let length = (input.len() - needle.len())
+                            .checked_add(replacement.len())
+                            .ok_or_else(|| ParseError("REPLACE_LAST result is too large".into()))?;
+                        if length > MAX_TEXT_BYTES {
+                            return Err(ParseError("REPLACE_LAST result is too large".into()));
+                        }
+                        let mut result = String::with_capacity(length);
+                        result.push_str(&input[..index]);
+                        result.push_str(&replacement);
+                        result.push_str(&input[index + needle.len()..]);
+                        ConstantValue::Text(result)
+                    } else {
+                        ConstantValue::Text(input)
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "HASTOKENCASEINSENSITIVE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "hasTokenCaseInsensitive requires a token",
+            )?;
+            let token = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after hasTokenCaseInsensitive",
+            )?;
+            match (input, token) {
+                (Some(input), Some(token)) => {
+                    if token.is_empty()
+                        || !token
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    {
+                        return Err(ParseError(
+                            "hasTokenCaseInsensitive requires a single ASCII token".into(),
+                        ));
+                    }
+                    let found = input
+                        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                        .any(|word| word.eq_ignore_ascii_case(&token));
+                    ConstantValue::Integer(i64::from(found))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "ENDS_WITH" | "ENDSWITH" | "ENDSWITHUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "ENDS_WITH requires a suffix")?;
+            let suffix = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after ENDS_WITH arguments",
+            )?;
+            match (input, suffix) {
+                (Some(input), Some(suffix)) => {
+                    ConstantValue::Integer(i64::from(input.ends_with(suffix.as_str())))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "URL_DECODE" | "DECODEURLCOMPONENT" | "DECODEURLFORMCOMPONENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "URL_DECODE requires one argument")?;
+            match input {
+                Some(input) => {
+                    let source = input.as_bytes();
+                    let mut result = Vec::with_capacity(source.len());
+                    let mut index = 0;
+                    while index < source.len() {
+                        if source[index] == b'%' {
+                            if index + 2 >= source.len() {
+                                return Err(ParseError("URL_DECODE has incomplete escape".into()));
+                            }
+                            let high = char::from(source[index + 1]).to_digit(16);
+                            let low = char::from(source[index + 2]).to_digit(16);
+                            let byte = match (high, low) {
+                                (Some(high), Some(low)) => (high * 16 + low) as u8,
+                                _ => {
+                                    return Err(ParseError("URL_DECODE has invalid escape".into()));
+                                }
+                            };
+                            result.push(byte);
+                            index += 3;
+                        } else {
+                            result.push(if source[index] == b'+'
+                                && name == "DECODEURLFORMCOMPONENT"
+                            {
+                                b' '
+                            } else {
+                                source[index]
+                            });
+                            index += 1;
+                        }
+                    }
+                    ConstantValue::Text(
+                        String::from_utf8(result)
+                            .map_err(|_| ParseError("URL_DECODE result is not UTF-8".into()))?,
+                    )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "BASE64_ENCODE" | "BASE64ENCODE" | "BASE64URLENCODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
+            match input {
+                Some(value) => {
+                    let output_len = value
+                        .len()
+                        .checked_add(2)
+                        .and_then(|length| length.checked_div(3))
+                        .and_then(|groups| groups.checked_mul(4))
+                        .ok_or_else(|| ParseError("BASE64_ENCODE result is too large".into()))?;
+                    if output_len > MAX_TEXT_BYTES {
+                        return Err(ParseError("BASE64_ENCODE result is too large".into()));
+                    }
+                    let alphabet: &[u8; 64] = if name == "BASE64URLENCODE" {
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                    } else {
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                    };
+                    let mut result = String::with_capacity(output_len);
+                    for chunk in value.as_bytes().chunks(3) {
+                        let mut bits = u32::from(chunk[0]) << 16;
+                        if chunk.len() > 1 {
+                            bits |= u32::from(chunk[1]) << 8;
+                        }
+                        if chunk.len() > 2 {
+                            bits |= u32::from(chunk[2]);
+                        }
+                        result.push(char::from(alphabet[((bits >> 18) & 63) as usize]));
+                        result.push(char::from(alphabet[((bits >> 12) & 63) as usize]));
+                        if chunk.len() > 1 {
+                            result.push(char::from(alphabet[((bits >> 6) & 63) as usize]));
+                        } else {
+                            result.push('=');
+                        }
+                        if chunk.len() > 2 {
+                            result.push(char::from(alphabet[(bits & 63) as usize]));
+                        } else {
+                            result.push('=');
+                        }
+                    }
+                    if name == "BASE64URLENCODE" {
+                        while result.ends_with('=') {
+                            result.pop();
+                        }
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "STRIP_SUFFIX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STRIP_SUFFIX requires a suffix")?;
+            let suffix = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after STRIP_SUFFIX arguments",
+            )?;
+            match (input, suffix) {
+                (Some(input), Some(suffix)) => ConstantValue::Text(
+                    input
+                        .strip_suffix(suffix.as_str())
+                        .unwrap_or(input.as_str())
+                        .to_owned(),
+                ),
+                _ => ConstantValue::Null,
+            }
+        }
+        "DOMAIN" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "domain requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority = input
+                        .split_once("://")
+                        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""))
+                        .unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let host = if let Some(without_bracket) = host_port.strip_prefix('[') {
+                        without_bracket
+                            .split_once(']')
+                            .map(|(host, _)| host)
+                            .unwrap_or("")
+                    } else {
+                        host_port.split(':').next().unwrap_or("")
+                    };
+                    ConstantValue::Text(host.to_owned())
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "NETLOC" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "netloc requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority = input.split_once("://").map_or("", |(_, rest)| {
+                        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+                        &rest[..end]
+                    });
+                    ConstantValue::Text(authority.to_owned())
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "RIGHT" | "RIGHTUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "RIGHT requires a character count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after RIGHT arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    if count < 0 {
+                        return Err(ParseError("RIGHT count must be nonnegative".into()));
+                    }
+                    let count = usize::try_from(count).unwrap_or(usize::MAX);
+                    if count >= value.len() {
+                        ConstantValue::Text(value)
+                    } else {
+                        let start = value.len() - count;
+                        if value.as_bytes()[start..].is_ascii() {
+                            let mut result = value;
+                            result.replace_range(..start, "");
+                            ConstantValue::Text(result)
+                        } else {
+                            let skip = value.chars().count().saturating_sub(count);
+                            ConstantValue::Text(value.chars().skip(skip).collect())
+                        }
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "SPACE" => {
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "SPACE requires one argument")?;
+            match count {
+                Some(count) => {
+                    let width = usize::try_from(count)
+                        .map_err(|_| ParseError("SPACE count must be nonnegative".into()))?;
+                    if width > MAX_TEXT_BYTES {
+                        return Err(ParseError("SPACE result is too large".into()));
+                    }
+                    ConstantValue::Text(" ".repeat(width))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOUINT8ORDEFAULT" | "TOUINT16ORDEFAULT" | "TOUINT32ORDEFAULT" => {
+            let input = text_arg(parser, depth + 1)?;
+            let fallback = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "unsigned OrDefault requires one or two arguments")?;
+            match (input, fallback) {
+                (Some(input), Some(fallback)) => {
+                    let (parsed, fallback) = match name.as_str() {
+                        "TOUINT8ORDEFAULT" => (
+                            input.parse::<u128>().ok().map(|n| i64::from(n as u8)),
+                            i64::from(u8::try_from(fallback)
+                                .map_err(|_| ParseError("UInt8 default is out of range".into()))?),
+                        ),
+                        "TOUINT16ORDEFAULT" => (
+                            input.parse::<u128>().ok().map(|n| i64::from(n as u16)),
+                            i64::from(u16::try_from(fallback)
+                                .map_err(|_| ParseError("UInt16 default is out of range".into()))?),
+                        ),
+                        "TOUINT32ORDEFAULT" => (
+                            input.parse::<u128>().ok().map(|n| i64::from(n as u32)),
+                            i64::from(u32::try_from(fallback)
+                                .map_err(|_| ParseError("UInt32 default is out of range".into()))?),
+                        ),
+                        _ => unreachable!(),
+                    };
+                    ConstantValue::Integer(parsed.unwrap_or(fallback))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "TOINT8ORDEFAULT" | "TOINT16ORDEFAULT" | "TOINT32ORDEFAULT" | "TOINT64ORDEFAULT" => {
+            let input = text_arg(parser, depth + 1)?;
+            let fallback = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "signed OrDefault requires one or two arguments")?;
+            match (input, fallback) {
+                (Some(input), Some(fallback)) => {
+                    let (parsed, fallback) = match name.as_str() {
+                        "TOINT8ORDEFAULT" => (
+                            input.parse::<i128>().ok().map(|n| i64::from(n as i8)),
+                            i64::from(i8::try_from(fallback)
+                                .map_err(|_| ParseError("Int8 default is out of range".into()))?),
+                        ),
+                        "TOINT16ORDEFAULT" => (
+                            input.parse::<i128>().ok().map(|n| i64::from(n as i16)),
+                            i64::from(i16::try_from(fallback)
+                                .map_err(|_| ParseError("Int16 default is out of range".into()))?),
+                        ),
+                        "TOINT32ORDEFAULT" => (
+                            input.parse::<i128>().ok().map(|n| i64::from(n as i32)),
+                            i64::from(i32::try_from(fallback)
+                                .map_err(|_| ParseError("Int32 default is out of range".into()))?),
+                        ),
+                        "TOINT64ORDEFAULT" => (input.parse::<i64>().ok(), fallback),
+                        _ => unreachable!(),
+                    };
+                    ConstantValue::Integer(parsed.unwrap_or(fallback))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "PARSEREADABLESIZE" | "PARSEREADABLESIZEORZERO" | "PARSEREADABLESIZEORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "parseReadableSize requires one string")?;
+            match input {
+                None => ConstantValue::Null,
+                Some(input) => match parse_readable_size_bytes(&input) {
+                    Some(bytes) => ConstantValue::Integer(bytes),
+                    None if name == "PARSEREADABLESIZEORZERO" => ConstantValue::Integer(0),
+                    None if name == "PARSEREADABLESIZEORNULL" => ConstantValue::Null,
+                    None => return Err(ParseError("invalid readable byte size".into())),
+                },
+            }
+        }
+        "TOINT8ORZERO" | "TOINT16ORZERO" | "TOINT32ORZERO" | "TOINT64ORZERO" => {
+            let text = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "integer OrZero cast requires one argument")?;
+            match text {
+                None => ConstantValue::Null,
+                Some(text) => {
+                    let parsed = match name.as_str() {
+                    "TOINT8ORZERO" => text.parse::<i128>().ok().map(|n| i64::from(n as i8)),
+                    "TOINT16ORZERO" => text.parse::<i128>().ok().map(|n| i64::from(n as i16)),
+                    "TOINT32ORZERO" => text.parse::<i128>().ok().map(|n| i64::from(n as i32)),
+                    "TOINT64ORZERO" => text.parse::<i64>().ok(),
+                        _ => unreachable!("only registered casts reach this branch"),
+                    };
+                    ConstantValue::Integer(parsed.unwrap_or(0))
+                }
+            }
+        }
+        "TOUINT8ORZERO" | "TOUINT16ORZERO" | "TOUINT32ORZERO" => {
+            let text = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "integer OrZero cast requires one argument")?;
+            match text {
+                None => ConstantValue::Null,
+                Some(text) => {
+                    let parsed = match name.as_str() {
+                    "TOUINT8ORZERO" => text.parse::<u128>().ok().map(|n| i64::from(n as u8)),
+                    "TOUINT16ORZERO" => text.parse::<u128>().ok().map(|n| i64::from(n as u16)),
+                    "TOUINT32ORZERO" => text.parse::<u128>().ok().map(|n| i64::from(n as u32)),
+                        _ => unreachable!("only registered casts reach this branch"),
+                    };
+                    ConstantValue::Integer(parsed.unwrap_or(0))
+                }
+            }
+        }
+        "TOINT8ORNULL" | "TOINT16ORNULL" | "TOINT32ORNULL" => {
+            let text = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "integer OrNull cast requires one argument")?;
+            match text {
+                None => ConstantValue::Null,
+                Some(text) => {
+                    let parsed = match name.as_str() {
+                    "TOINT8ORNULL" => text.parse::<i128>().ok().map(|n| i64::from(n as i8)),
+                    "TOINT16ORNULL" => text.parse::<i128>().ok().map(|n| i64::from(n as i16)),
+                    "TOINT32ORNULL" => text.parse::<i128>().ok().map(|n| i64::from(n as i32)),
+                        _ => unreachable!("only registered casts reach this branch"),
+                    };
+                    parsed.map_or(ConstantValue::Null, ConstantValue::Integer)
+                }
+            }
+        }
+        "TOUINT8ORNULL" | "TOUINT16ORNULL" | "TOUINT32ORNULL" => {
+            let text = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "integer OrNull cast requires one argument")?;
+            match text {
+                None => ConstantValue::Null,
+                Some(text) => {
+                    let parsed = match name.as_str() {
+                    "TOUINT8ORNULL" => text.parse::<u128>().ok().map(|n| i64::from(n as u8)),
+                    "TOUINT16ORNULL" => text.parse::<u128>().ok().map(|n| i64::from(n as u16)),
+                    "TOUINT32ORNULL" => text.parse::<u128>().ok().map(|n| i64::from(n as u32)),
+                        _ => unreachable!("only registered casts reach this branch"),
+                    };
+                    parsed.map_or(ConstantValue::Null, ConstantValue::Integer)
+                }
+            }
+        }
+        "TRY_TO_INT64" | "TOINT64ORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "TRY_TO_INT64 requires one argument")?;
+            match input {
+                Some(value) => value
+                    .parse::<i64>()
+                    .map_or(ConstantValue::Null, ConstantValue::Integer),
+                None => ConstantValue::Null,
+            }
+        }
+        "APPENDTRAILINGCHARIFABSENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "appendTrailingCharIfAbsent requires a character",
+            )?;
+            let ending = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after appendTrailingCharIfAbsent",
+            )?;
+            match (input, ending) {
+                (Some(mut input), Some(ending)) => {
+                    if ending.chars().count() != 1 {
+                        return Err(ParseError(
+                            "appendTrailingCharIfAbsent requires exactly one character".into(),
+                        ));
+                    }
+                    if !input.is_empty() && !input.ends_with(&ending) {
+                        if input.len().saturating_add(ending.len()) > MAX_TEXT_BYTES {
+                            return Err(ParseError(
+                                "appendTrailingCharIfAbsent result is too large".into(),
+                            ));
+                        }
+                        input.push_str(&ending);
+                    }
+                    ConstantValue::Text(input)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "RPAD" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "RPAD requires a width")?;
+            let width = integer_arg(parser, depth + 1)?;
+            let padding = if parser.take(Token::Comma) {
+                text_arg(parser, depth + 1)?
+            } else {
+                Some(" ".to_owned())
+            };
+            require(parser, Token::RParen, "expected ')' after RPAD arguments")?;
+            match (input, width, padding) {
+                (Some(input), Some(width), Some(padding)) => {
+                    let width = usize::try_from(width)
+                        .map_err(|_| ParseError("RPAD width must be nonnegative".into()))?;
+                    if width > MAX_TEXT_BYTES {
+                        return Err(ParseError("RPAD result is too large".into()));
+                    }
+                    let mut result: String = input.chars().take(width).collect();
+                    if result.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("RPAD result is too large".into()));
+                    }
+                    let missing = width - result.chars().count();
+                    if missing > 0 && padding.is_empty() {
+                        return Err(ParseError("RPAD padding cannot be empty".into()));
+                    }
+                    for character in padding.chars().cycle().take(missing) {
+                        if result.len() + character.len_utf8() > MAX_TEXT_BYTES {
+                            return Err(ParseError("RPAD result is too large".into()));
+                        }
+                        result.push(character);
+                    }
+                    ConstantValue::Text(result)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "BASE64_DECODE" | "BASE64DECODE" | "TRYBASE64DECODE" | "BASE64URLDECODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
+            match input {
+                Some(value) => {
+                    let decoded = (|| -> Result<ConstantValue, ParseError> {
+                    fn digit(value: u8) -> Option<u8> {
+                        match value {
+                            b'A'..=b'Z' => Some(value - b'A'),
+                            b'a'..=b'z' => Some(value - b'a' + 26),
+                            b'0'..=b'9' => Some(value - b'0' + 52),
+                            b'+' => Some(62),
+                            b'/' => Some(63),
+                            _ => None,
+                        }
+                    }
+                    let mut normalized = Vec::new();
+                    let source: &[u8] = if name == "BASE64URLDECODE" {
+                        normalized.reserve(value.len().saturating_add(3));
+                        for byte in value.bytes() {
+                            normalized.push(match byte {
+                                b'-' => b'+',
+                                b'_' => b'/',
+                                b'+' | b'/' => {
+                                    return Err(ParseError("invalid BASE64URLDECODE alphabet".into()));
+                                }
+                                byte => byte,
+                            });
+                        }
+                        match normalized.len() % 4 {
+                            0 => {}
+                            2 => normalized.extend_from_slice(b"=="),
+                            3 => normalized.push(b'='),
+                            _ => return Err(ParseError("invalid BASE64URLDECODE length".into())),
+                        }
+                        normalized.as_slice()
+                    } else {
+                        value.as_bytes()
+                    };
+                    if source.len() % 4 != 0 {
+                        return Err(ParseError("BASE64_DECODE requires four-byte groups".into()));
+                    }
+                    let mut bytes = Vec::with_capacity(source.len() / 4 * 3);
+                    for (index, group) in source.chunks_exact(4).enumerate() {
+                        let last = index + 1 == source.len() / 4;
+                        let a = digit(group[0])
+                            .ok_or_else(|| ParseError("invalid BASE64_DECODE character".into()))?;
+                        let b = digit(group[1])
+                            .ok_or_else(|| ParseError("invalid BASE64_DECODE character".into()))?;
+                        let (c, d, width) = if group[2] == b'=' {
+                            if group[3] != b'=' || !last || b & 15 != 0 {
+                                return Err(ParseError("invalid BASE64_DECODE padding".into()));
+                            }
+                            (0, 0, 1)
+                        } else if group[3] == b'=' {
+                            let c = digit(group[2]).ok_or_else(|| {
+                                ParseError("invalid BASE64_DECODE character".into())
+                            })?;
+                            if !last || c & 3 != 0 {
+                                return Err(ParseError("invalid BASE64_DECODE padding".into()));
+                            }
+                            (c, 0, 2)
+                        } else {
+                            let c = digit(group[2]).ok_or_else(|| {
+                                ParseError("invalid BASE64_DECODE character".into())
+                            })?;
+                            let d = digit(group[3]).ok_or_else(|| {
+                                ParseError("invalid BASE64_DECODE character".into())
+                            })?;
+                            (c, d, 3)
+                        };
+                        let bits = (u32::from(a) << 18)
+                            | (u32::from(b) << 12)
+                            | (u32::from(c) << 6)
+                            | u32::from(d);
+                        bytes.push((bits >> 16) as u8);
+                        if width > 1 {
+                            bytes.push((bits >> 8) as u8);
+                        }
+                        if width > 2 {
+                            bytes.push(bits as u8);
+                        }
+                    }
+                    Ok(ConstantValue::Text(
+                        String::from_utf8(bytes)
+                            .map_err(|_| ParseError("BASE64_DECODE result is not UTF-8".into()))?,
+                    ))
+                    })();
+                    match decoded {
+                        Ok(value) => value,
+                        Err(_) if name == "TRYBASE64DECODE" => {
+                            ConstantValue::Text(String::new())
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "EXTRACTURLPARAMETER" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "extractURLParameter requires a parameter name",
+            )?;
+            let name = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after extractURLParameter",
+            )?;
+            match (input, name) {
+                (Some(input), Some(name)) => {
+                    let before_fragment = input
+                        .split_once('#')
+                        .map_or(input.as_str(), |(head, _)| head);
+                    let query = before_fragment
+                        .split_once('?')
+                        .map_or("", |(_, query)| query);
+                    let value = query
+                        .split('&')
+                        .find_map(|part| {
+                            if part == name {
+                                Some("")
+                            } else {
+                                part.split_once('=')
+                                    .and_then(|(key, value)| (key == name).then_some(value))
+                            }
+                        })
+                        .unwrap_or("");
+                    ConstantValue::Text(value.to_owned())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "ISVALIDJSON" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isValidJSON requires one argument")?;
+            match input {
+                Some(input) => {
+                    ConstantValue::Integer(i64::from(crate::json::parse_json(&input).is_ok()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "JSONHAS" | "JSONEXTRACTSTRING" | "JSONEXTRACTRAW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSON function requires a key")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "JSON function requires two arguments",
+            )?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let found = json.at_path(&path);
+                    match name.as_str() {
+                        "JSONHAS" => ConstantValue::Integer(i64::from(found.is_some())),
+                        "JSONEXTRACTSTRING" => ConstantValue::Text(
+                            found
+                                .and_then(|value| value.as_string())
+                                .unwrap_or("")
+                                .to_owned(),
+                        ),
+                        _ => ConstantValue::Text(
+                            found.map(|value| value.raw()).unwrap_or("").to_owned(),
+                        ),
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSONLENGTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "JSONLength requires one or two arguments")?;
+            match (input, path) {
+                (None, _) | (_, Some(None)) => ConstantValue::Null,
+                (Some(input), path) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let value = match path {
+                        Some(Some(path)) => json.at_path(&path),
+                        None => Some(&json),
+                        Some(None) => unreachable!(),
+                    };
+                    let length = value.map_or(0, |node| node.container_len());
+                    ConstantValue::Integer(
+                        i64::try_from(length).map_err(|_| ParseError("JSONLength exceeds Int64".into()))?
+                    )
+                }
+            }
+        }
+        "JSONEXTRACTINT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSONExtractInt requires a path")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "JSONExtractInt requires two arguments")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let value = json
+                        .at_path(&path)
+                        .and_then(|value| value.raw().parse::<i64>().ok())
+                        .unwrap_or(0);
+                    ConstantValue::Integer(value)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSON_QUOTE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "JSON_QUOTE requires one argument")?;
+            match input {
+                Some(value) => {
+                    let mut result = String::with_capacity(value.len().saturating_add(2));
+                    result.push('"');
+                    for character in value.chars() {
+                        match character {
+                            '"' => result.push_str("\\\""),
+                            '\\' => result.push_str("\\\\"),
+                            '\n' => result.push_str("\\n"),
+                            '\r' => result.push_str("\\r"),
+                            '\t' => result.push_str("\\t"),
+                            '\u{0008}' => result.push_str("\\b"),
+                            '\u{000C}' => result.push_str("\\f"),
+                            character if character < '\u{0020}' => {
+                                const HEX: &[u8; 16] = b"0123456789abcdef";
+                                let byte = character as u8;
+                                result.push_str("\\u00");
+                                result.push(char::from(HEX[usize::from(byte >> 4)]));
+                                result.push(char::from(HEX[usize::from(byte & 0x0f)]));
+                            }
+                            character => result.push(character),
+                        }
+                        if result.len() >= MAX_TEXT_BYTES {
+                            return Err(ParseError("JSON_QUOTE result is too large".into()));
+                        }
+                    }
+                    result.push('"');
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTRINGCUTTOZERO" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStringCutToZero requires one argument")?;
+            match input {
+                Some(input) => {
+                    let before_nul = input.split('\0').next().unwrap_or("");
+                    ConstantValue::Text(before_nul.to_owned())
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "REPEAT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPEAT requires a count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after REPEAT arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    if count < 0 {
+                        return Err(ParseError("REPEAT count must be nonnegative".into()));
+                    }
+                    if value.is_empty() {
+                        ConstantValue::Text(String::new())
+                    } else {
+                        let count = usize::try_from(count).unwrap_or(usize::MAX);
+                        let length = value
+                            .len()
+                            .checked_mul(count)
+                            .ok_or_else(|| ParseError("REPEAT result is too large".into()))?;
+                        if length > MAX_TEXT_BYTES {
+                            return Err(ParseError("REPEAT result is too large".into()));
+                        }
+                        ConstantValue::Text(value.repeat(count))
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "LOWERUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "lowerUTF8 requires one argument")?;
+            match input {
+                Some(mut value) if value.is_ascii() => {
+                    value.make_ascii_lowercase();
+                    ConstantValue::Text(value)
+                }
+                Some(value) => {
+                    let result = value.to_lowercase();
+                    if result.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("lowerUTF8 result is too large".into()));
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOYEAR" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toYear requires one argument")?;
+            match input {
+                Some(value) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    ConstantValue::Integer(value[..4].parse::<i64>().unwrap())
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "NOTEMPTY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "notEmpty requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(!value.is_empty())),
+                None => ConstantValue::Null,
+            }
+        }
+        _ => return Err(ParseError(format!("unsupported string function: {name}"))),
+    };
+    Ok(value)
+}
+
+fn constant_arg(parser: &mut Parser, depth: usize) -> Result<ConstantValue, ParseError> {
+    match parser.tokens.get(parser.index) {
+        Some(Token::String(value)) => {
+            let result = ConstantValue::Text(value.clone());
+            parser.index += 1;
+            Ok(result)
+        }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
+            parser.index += 1;
+            Ok(ConstantValue::Null)
+        }
+        Some(Token::Word(word)) if is_function(word) => parse_at_depth(parser, depth),
+        _ => Ok(ConstantValue::Integer(super::scalar::parse(parser)?)),
+    }
+}
+
+fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), ParseError> {
+    if parser.take(token) {
+        Ok(())
+    } else {
+        Err(ParseError(message.into()))
+    }
+}
+
+pub(super) fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
+    ) {
+        parser.index += 1;
+        return Ok(None);
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if is_function(word)) {
+        return match parse_at_depth(parser, depth)? {
+            ConstantValue::Integer(value) => Ok(Some(value)),
+            ConstantValue::Null => Ok(None),
+            ConstantValue::Text(_) => Err(ParseError("expected an integer expression".into())),
+        };
+    }
+    Ok(Some(super::scalar::parse(parser)?))
+}
+
+pub(super) fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
+    match parser.tokens.get(parser.index) {
+        Some(Token::String(value)) => {
+            let result = value.clone();
+            parser.index += 1;
+            Ok(Some(result))
+        }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
+            parser.index += 1;
+            Ok(None)
+        }
+        Some(Token::Word(word)) if is_function(word) => match parse_at_depth(parser, depth)? {
+            ConstantValue::Text(value) => Ok(Some(value)),
+            ConstantValue::Null => Ok(None),
+            ConstantValue::Integer(_) => Err(ParseError("expected a string expression".into())),
+        },
+        _ => Err(ParseError(
+            "expected a string literal or string function".into(),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_readable_time_delta_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn formats_second_intervals_and_unit_limits() {
+        for (sql, expected) in [
+            ("SELECT formatReadableTimeDelta(0)", "0 seconds"),
+            ("SELECT formatReadableTimeDelta(12345)", "3 hours, 25 minutes and 45 seconds"),
+            ("SELECT formatReadableTimeDelta(100, 'minutes')", "1 minute and 40 seconds"),
+            ("SELECT formatReadableTimeDelta(12345, 'minutes')", "205 minutes and 45 seconds"),
+            ("SELECT formatReadableTimeDelta(-60)", "-1 minute"),
+            ("SELECT formatReadableTimeDelta(3600, 'minutes', 'minutes')", "60 minutes"),
+            ("SELECT formatReadableTimeDelta(5456456)", "2 months, 2 days, 3 hours, 40 minutes and 56 seconds"),
+        ] {
+            assert!(matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())), "{sql}");
+        }
+        assert!(parse_select("SELECT formatReadableTimeDelta(60, 'invalid')").is_err());
+        assert!(parse_select("SELECT formatReadableTimeDelta(60, 'minutes', 'hours')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod string_bytes_uniq_bitmap_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    #[test]
+    fn counts_distinct_bytes_including_utf8_and_duplicates() {
+        for (sql, expected) in [
+            ("SELECT stringBytesUniq('')", 0),
+            ("SELECT stringBytesUniq('aaaa')", 1),
+            ("SELECT stringBytesUniq('abcabc')", 3),
+            ("SELECT stringBytesUniq('éé')", 2),
+            ("SELECT stringBytesUniq('aé')", 3),
+        ] {
+            let parsed = parse_select(sql).unwrap();
+            assert!(
+                matches!(parsed.projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        let parsed = parse_select("SELECT stringBytesUniq(NULL)").unwrap();
+        assert!(matches!(parsed.projection, Projection::Constants(values)
+            if values[0].value == ConstantValue::Null));
+    }
+}
+
+#[cfg(test)]
+mod ch_position_byte_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn supported_values_and_invalid_arity() {
+        for (sql, expected) in [
+            ("SELECT position('éa', 'a')", ConstantValue::Integer(3)),
+            ("SELECT position('hello', 'll')", ConstantValue::Integer(3)),
+            ("SELECT position('abc', 'Z')", ConstantValue::Integer(0)),
+            ("SELECT position(NULL, 'a')", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_decode_url_form_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn decodes_plus_and_percent_escaped_form_components() {
+        for (sql, expected) in [
+            ("SELECT decodeURLFormComponent('hello+world')", "hello world"),
+            ("SELECT decodeURLFormComponent('x%2By+z')", "x+y z"),
+            ("SELECT decodeURLFormComponent('a%20b')", "a b"),
+            ("SELECT decodeURLFormComponent('')", ""),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT decodeURLFormComponent('%GG')",
+            "SELECT decodeURLFormComponent('%')",
+            "SELECT decodeURLFormComponent('x', 'y')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_to_num_or_null_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn valid_ipv4_is_numeric_and_invalid_input_is_null() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNumOrNull('192.168.0.1')", 3232235521),
+            ("SELECT IPv4StringToNumOrNull('0.0.0.0')", 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4StringToNumOrNull('invalid')",
+            "SELECT IPv4StringToNumOrNull(NULL)",
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1 && values[0].value == ConstantValue::Null),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT IPv4StringToNumOrNull('x', 'y')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_string_to_num_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn converts_ipv4_to_network_order_integer() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNum('0.0.0.0')", 0),
+            ("SELECT IPv4StringToNum('192.168.0.1')", 3232235521),
+            ("SELECT IPv4StringToNum('255.255.255.255')", 4294967295),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4StringToNum('256.1.2.3')",
+            "SELECT IPv4StringToNum('1.2.3')",
+            "SELECT IPv4StringToNum('1.2.3.4', 'x')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_num_to_string_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn formats_network_order_ipv4_integers() {
+        for (sql, expected) in [
+            ("SELECT IPv4NumToString(0)", "0.0.0.0"),
+            ("SELECT IPv4NumToString(3232235521)", "192.168.0.1"),
+            ("SELECT IPv4NumToString(4294967295)", "255.255.255.255"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4NumToString(-1)",
+            "SELECT IPv4NumToString(4294967296)",
+            "SELECT IPv4NumToString(1, 2)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_json_extract_bool_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn reads_boolean_paths_and_defaults_nonbooleans_to_zero() {
+        for (sql, expected) in [
+            (r#"SELECT JSONExtractBool('{"x":true}', 'x')"#, 1),
+            (r#"SELECT JSONExtractBool('{"x":false}', 'x')"#, 0),
+            (r#"SELECT JSONExtractBool('{"x":1}', 'x')"#, 0),
+            (r#"SELECT JSONExtractBool('{"x":{"y":true}}', 'x.y')"#, 1),
+            (r#"SELECT JSONExtractBool('{"x":true}', 'missing')"#, 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT JSONExtractBool('not-json', 'x')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_cut_url_parameter_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn removes_named_query_parameters_and_preserves_fragments() {
+        for (sql, expected) in [
+            ("SELECT cutURLParameter('https://a/?x=1&y=2', 'x')",
+                "https://a/?y=2"),
+            ("SELECT cutURLParameter('https://a/?x=1&x=2#frag', 'x')",
+                "https://a/#frag"),
+            ("SELECT cutURLParameter('https://a/?x=1', 'missing')",
+                "https://a/?x=1"),
+            ("SELECT cutURLParameter('https://a/path#frag', 'x')",
+                "https://a/path#frag"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT cutURLParameter('x')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_domain_without_www_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn extracts_domain_without_at_most_one_www_prefix() {
+        for (sql, expected) in [
+            ("SELECT domainWithoutWWW('https://www.example.org/p')", "example.org"),
+            ("SELECT domainWithoutWWW('www.example.org:80/p')", "example.org"),
+            ("SELECT domainWithoutWWW('https://www.www.example.org')", "www.example.org"),
+            ("SELECT domainWithoutWWW('https://example.org')", "example.org"),
+            ("SELECT domainWithoutWWW('not-a-url')", "not-a-url"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT domainWithoutWWW('x', 'y')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_cut_www_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn removes_one_www_prefix_without_changing_other_url_components() {
+        for (sql, expected) in [
+            ("SELECT cutWWW('https://www.example.org/a?b=1')",
+                "https://example.org/a?b=1"),
+            ("SELECT cutWWW('www.example.org/path')", "example.org/path"),
+            ("SELECT cutWWW('https://www.www.example.org')",
+                "https://www.example.org"),
+            ("SELECT cutWWW('https://example.org')", "https://example.org"),
+            ("SELECT cutWWW('https://u@www.example.org:80/x')",
+                "https://u@example.org:80/x"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT cutWWW('a', 'b')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_string_default_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn invalid_ipv4_strings_return_zero() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNumOrDefault('127.0.0.1')", 2130706433),
+            ("SELECT IPv4StringToNumOrDefault('invalid')", 0),
+            ("SELECT IPv4StringToNumOrDefault('256.0.0.1')", 0),
+            ("SELECT IPv4StringToNumOrDefault('0.0.0.0')", 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT IPv4StringToNumOrDefault('a', 0)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_class_c_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn redacts_low_octet_of_network_order_ipv4() {
+        for (sql, expected) in [
+            ("SELECT IPv4NumToStringClassC(3232235521)", "192.168.0.xxx"),
+            ("SELECT IPv4NumToStringClassC(0)", "0.0.0.xxx"),
+            ("SELECT IPv4NumToStringClassC(4294967295)", "255.255.255.xxx"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT IPv4NumToStringClassC(-1)").is_err());
+        assert!(parse_select("SELECT IPv4NumToStringClassC(1,2)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_mac_string_to_num_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn parses_six_octets_and_defaults_invalid_formats_to_zero() {
+        for (sql, expected) in [
+            ("SELECT MACStringToNum('01:02:03:04:05:06')", 1108152157446),
+            ("SELECT MACStringToNum('ff:ff:ff:ff:ff:ff')", 281474976710655),
+            ("SELECT MACStringToNum('bad')", 0),
+            ("SELECT MACStringToNum('01:02:03:04:05')", 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT MACStringToNum('x','y')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_mac_num_to_string_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn uses_big_endian_six_octet_mac_format() {
+        for (sql, expected) in [
+            ("SELECT MACNumToString(1108152157446)", "01:02:03:04:05:06"),
+            ("SELECT MACNumToString(0)", "00:00:00:00:00:00"),
+            ("SELECT MACNumToString(281474976710655)", "FF:FF:FF:FF:FF:FF"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT MACNumToString(-1)").is_err());
+        assert!(parse_select("SELECT MACNumToString(281474976710656)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_mac_string_to_oui_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn extracts_vendor_oui_prefix_of_valid_mac() {
+        for (sql, expected) in [
+            ("SELECT MACStringToOUI('01:02:03:AA:BB:CC')", 66051),
+            ("SELECT MACStringToOUI('ff:ff:ff:ff:ff:ff')", 16777215),
+            ("SELECT MACStringToOUI('00:00:00:12:34:56')", 0),
+            ("SELECT MACStringToOUI('invalid')", 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT MACStringToOUI('x', 'y')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ip_address_in_range_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn matches_ipv4_and_ipv6_with_prefix_boundaries() {
+        for (sql, expected) in [
+            ("SELECT isIPAddressInRange('192.168.1.10', '192.168.0.0/16')", 1),
+            ("SELECT isIPAddressInRange('192.167.1.10', '192.168.0.0/16')", 0),
+            ("SELECT isIPAddressInRange('1.2.3.4', '0.0.0.0/0')", 1),
+            ("SELECT isIPAddressInRange('2001:db8::1', '2001:db8::/32')", 1),
+            ("SELECT isIPAddressInRange('2001:db9::1', '2001:db8::/32')", 0),
+            ("SELECT isIPAddressInRange('::1', '::1/128')", 1),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT isIPAddressInRange('1.2.3.4', '1.2.3.4/33')",
+            "SELECT isIPAddressInRange('1.2.3.4', '::1/128')",
+            "SELECT isIPAddressInRange('x', '1.2.3.4/32')",
+            "SELECT isIPAddressInRange('1.2.3.4')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+ | '.' | '[' | ']'
+                                    | '?' | '*' | '+' | '{' | ':' | '-'
+                            );
+                            if result.len() + ch.len_utf8() + usize::from(escaped) > MAX_TEXT_BYTES {
+                                return Err(ParseError("regexpQuoteMeta result is too large".into()));
+                            }
+                            if escaped {
+                                result.push('\\');
+                            }
+                            result.push(ch);
+                        }
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
             }
         }
         "CONTAINS" => {
