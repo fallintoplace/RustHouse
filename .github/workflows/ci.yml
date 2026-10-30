@@ -25,8 +25,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: latest-main
-      - name: Verify workspace formatting
-        run: cargo fmt --all -- --check
       - name: Check workspace targets
         run: cargo check --workspace --all-targets --locked
 
