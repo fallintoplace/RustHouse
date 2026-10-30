@@ -1,6 +1,7 @@
 //! In-memory, bounded equi-join over validated immutable typed snapshots.
 
 mod keys;
+mod grouped;
 mod count_column;
 mod aggregate;
 
@@ -1311,6 +1312,14 @@ pub fn execute_join<W: Write>(
         }
         left_keys.push(left_index);
         right_keys.push(right_index);
+    }
+
+    if query.grouped_count.is_some() {
+        return grouped::execute(
+            query, left_path, right_path,
+            &left_names, &right_names, &left_keys, &right_keys,
+            null_filter, output,
+        );
     }
 
     if let Some(JoinAggregate::CountColumn(column)) = &query.aggregate {
