@@ -18,6 +18,15 @@ MAX_SHARDS = 16_384
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
+def unique_manifest_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate shard manifest JSON field: {key}")
+        result[key] = value
+    return result
+
+
 def copy_sql(table, path):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
         raise ValueError("table must be an unquoted SQL identifier")
@@ -106,7 +115,9 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         raise ValueError("shard manifest changed during reading")
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("shard manifest exceeds 8 MiB")
-    manifest = json.loads(payload)
+    manifest = json.loads(payload, object_pairs_hook=unique_manifest_fields)
+    if not isinstance(manifest, dict):
+        raise ValueError("shard manifest must be a JSON object")
     if manifest.get("format") != "rusthouse-tsv-shards-v1" or manifest.get("header") is not False:
         raise ValueError("expected a headerless rusthouse-tsv-shards-v1 manifest")
     shards = manifest.get("shards")
