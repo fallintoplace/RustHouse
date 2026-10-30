@@ -302,32 +302,39 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
 }
 
 pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
-    let cols = columns(database, &update.table)?;
-    let filter = RowPredicate::new(&update.select, &cols).map_err(|error| error.to_string())?;
-    let assignments = update
-        .assignments
-        .iter()
-        .map(|(name, value)| {
-            let index = cols
-                .iter()
-                .position(|column| column.name == *name)
-                .ok_or_else(|| format!("unknown UPDATE column: {name}"))?;
-            if value.is_none() && !cols[index].data_type.starts_with("Nullable(") {
-                return Err(format!("NULL is not allowed for UPDATE column: {name}"));
-            }
-            Ok((index, value.clone()))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
     let mut changed = 0usize;
-    rewrite::rewrite_rows(database, &update.table, |batch, row, values| {
-        if filter.matches(batch, row) {
-            for (index, literal) in &assignments {
-                values[*index] = literal.clone();
+    rewrite::rewrite_rows(
+        database,
+        &update.table,
+        |cols| {
+            let filter =
+                RowPredicate::new(&update.select, cols).map_err(|error| error.to_string())?;
+            let assignments = update
+                .assignments
+                .iter()
+                .map(|(name, value)| {
+                    let index = cols
+                        .iter()
+                        .position(|column| column.name == *name)
+                        .ok_or_else(|| format!("unknown UPDATE column: {name}"))?;
+                    if value.is_none() && !cols[index].data_type.starts_with("Nullable(") {
+                        return Err(format!("NULL is not allowed for UPDATE column: {name}"));
+                    }
+                    Ok((index, value.clone()))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok((filter, assignments))
+        },
+        |(filter, assignments), batch, row, values| {
+            if filter.matches(batch, row) {
+                for (index, literal) in assignments {
+                    values[*index] = literal.clone();
+                }
+                changed = changed.checked_add(1).ok_or("UPDATE row count overflow")?;
             }
-            changed += 1;
-        }
-        Ok(true)
-    })?;
+            Ok(true)
+        },
+    )?;
     println!("Updated {changed} rows in {}", update.table);
     Ok(())
 }
@@ -337,17 +344,20 @@ pub(super) fn delete(database: &Path, select: &Select) -> Result<(), String> {
     let Some(Source::Table(name)) = select.source.as_ref() else {
         return Err("DELETE requires a stored database table".into());
     };
-    let cols = columns(database, name)?;
-    let filter = RowPredicate::new(select, &cols).map_err(|error| error.to_string())?;
     let mut removed = 0usize;
-    let (scanned, retained) = rewrite::rewrite_rows(database, name, |batch, row, _| {
-        if filter.matches(batch, row) {
-            removed += 1;
-            Ok(false)
-        } else {
-            Ok(true)
-        }
-    })?;
+    let (scanned, retained) = rewrite::rewrite_rows(
+        database,
+        name,
+        |cols| RowPredicate::new(select, cols).map_err(|error| error.to_string()),
+        |filter, batch, row, _| {
+            if filter.matches(batch, row) {
+                removed = removed.checked_add(1).ok_or("DELETE row count overflow")?;
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        },
+    )?;
     if scanned != removed + retained {
         return Err("DELETE row count mismatch".into());
     }
