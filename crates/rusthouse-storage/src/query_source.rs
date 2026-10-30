@@ -158,6 +158,14 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
         let has_count = child.join("count.txt").exists();
         let has_columns = child.join("columns.txt").exists();
         if !has_count && !has_columns {
+            // Do not silently omit a real active part that lost both metadata
+            // files. An incomplete snapshot must fail rather than lose rows.
+            if name.to_str().is_some_and(|name| part_span(name).is_some()) {
+                return Err(PartError::InvalidScan(format!(
+                    "incomplete part metadata in {}",
+                    child.display()
+                )));
+            }
             continue; // e.g. detached/, shadow/ or non-part metadata.
         }
         if has_count != has_columns {
@@ -812,6 +820,35 @@ mod active_pointer_length_tests {
         assert_eq!(resolve_active_snapshot(&root).unwrap(), first);
         fs::write(root.join(".rusthouse-active"), b"g100\n").unwrap();
         assert_eq!(resolve_active_snapshot(&root).unwrap(), second);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod missing_part_metadata_regressions {
+    use super::*;
+
+    #[test]
+    fn missing_both_metadata_files_does_not_silently_hide_an_active_part() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-hidden-active-part-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let good = root.join("all_1_1_0");
+        let broken = root.join("all_2_2_0");
+        fs::create_dir_all(&good).unwrap();
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(good.join("count.txt"), "1\n").unwrap();
+        fs::write(good.join("columns.txt"), "columns format version: 1\n1 columns:\n`id` UInt64\n").unwrap();
+
+        assert!(matches!(
+            query_parts(&root),
+            Err(PartError::InvalidScan(message)) if message.contains("incomplete part metadata")
+        ));
+        fs::remove_dir_all(broken).unwrap();
+        fs::create_dir(root.join("detached")).unwrap();
+        assert_eq!(query_parts(&root).unwrap(), vec![good]);
         fs::remove_dir_all(root).unwrap();
     }
 }
