@@ -15,12 +15,16 @@ fn component(value: &str) -> bool {
     if bytes.is_empty() || bytes.len() > 128 || !bytes[0].is_ascii_alphanumeric() {
         return false;
     }
-    bytes.iter().all(|&byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
-    }) && bytes.last() != Some(&b'.')
-        && !bytes
-            .windows(2)
-            .any(|pair| pair[0] == b'.' && pair[1] == b'.')
+    let mut previous_dot = false;
+    for &byte in bytes {
+        if !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+            || (byte == b'.' && previous_dot)
+        {
+            return false;
+        }
+        previous_dot = byte == b'.';
+    }
+    !previous_dot
 }
 
 impl ObjectKey {
@@ -132,6 +136,17 @@ impl ObjectKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn component_validation_rejects_dot_runs_and_non_ascii() {
+        for valid in ["a", "a.b", "a_b-c", "a".repeat(128).as_str()] {
+            assert!(component(valid));
+        }
+        for invalid in ["", ".a", "a.", "a..b", "a/...b", "é", "a\\b"] {
+            assert!(!component(invalid), "{invalid}");
+        }
+        assert!(!component(&"a".repeat(129)));
+    }
 
     #[test]
     fn constructs_stable_generation_scoped_keys() {
