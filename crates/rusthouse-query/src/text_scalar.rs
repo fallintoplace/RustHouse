@@ -2544,21 +2544,42 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "COUNT_SUBSTRING requires a substring")?;
             let needle = text_arg(parser, depth + 1)?;
+            let start = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(1)
+            };
             require(
                 parser,
                 Token::RParen,
                 "expected ')' after COUNT_SUBSTRING arguments",
             )?;
-            match (input, needle) {
-                (Some(input), Some(needle)) => {
+            match (input, needle, start) {
+                (Some(input), Some(needle), Some(start)) => {
                     if needle.is_empty() {
                         return Err(ParseError("COUNT_SUBSTRING needle cannot be empty".into()));
                     }
-                    ConstantValue::Integer(
-                        i64::try_from(input.matches(&needle).count()).map_err(|_| {
-                            ParseError("COUNT_SUBSTRING count exceeds Int64".into())
-                        })?,
-                    )
+                    if start < 0 {
+                        return Err(ParseError("COUNT_SUBSTRING start must be nonnegative".into()));
+                    }
+                    let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
+                    let remaining = input.as_bytes().get(offset..).unwrap_or_default();
+                    let needle = needle.as_bytes();
+                    let mut count = 0usize;
+                    if needle.len() <= remaining.len() {
+                        let mut cursor = 0;
+                        while cursor <= remaining.len() - needle.len() {
+                            if remaining[cursor..cursor + needle.len()] == *needle {
+                                count += 1;
+                                cursor += needle.len();
+                            } else {
+                                cursor += 1;
+                            }
+                        }
+                    }
+                    ConstantValue::Integer(i64::try_from(count).map_err(|_| {
+                        ParseError("COUNT_SUBSTRING count exceeds Int64".into())
+                    })?)
                 }
                 _ => ConstantValue::Null,
             }
