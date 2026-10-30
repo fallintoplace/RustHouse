@@ -21,11 +21,16 @@ def positive(value, name, *, allow_zero=False):
 def validate_existing(path, start, count):
     digest = hashlib.sha256()
     with path.open("rb") as source:
-        for value in range(start, start + count):
-            expected = f"{value}\n".encode("ascii")
-            actual = source.readline()
+        # Compare 4096 exact UInt64 records at once instead of doing a
+        # Python readline, byte allocation and hash update per row.
+        for offset in range(0, count, 4096):
+            batch_rows = min(4096, count - offset)
+            expected = "".join(
+                f"{start + offset + index}\n" for index in range(batch_rows)
+            ).encode("ascii")
+            actual = source.read(len(expected))
             if actual != expected:
-                raise ValueError(f"invalid or incomplete shard {path} at row {value}")
+                raise ValueError(f"invalid or incomplete shard {path} near row {start + offset}")
             digest.update(actual)
         if source.read(1):
             raise ValueError(f"unexpected trailing rows in {path}")
