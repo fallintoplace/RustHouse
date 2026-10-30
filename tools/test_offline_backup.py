@@ -65,6 +65,21 @@ class BackupTests(unittest.TestCase):
             self.assertTrue((base / "backup.partial").exists())
             self.assertFalse((base / "backup").exists())
 
+    @unittest.skipUnless(__import__("os").name == "posix", "flock is POSIX-only")
+    def test_refuses_a_live_database_lock(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            source = folder / "db"
+            source.mkdir()
+            lock = source / ".rusthouse-write.lock"
+            lock.write_bytes(b"")
+            with lock.open("r+b") as owned:
+                fcntl.flock(owned, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaisesRegex(ValueError, "database is in use"):
+                    backup(source, folder / "copy")
+            self.assertFalse((folder / "copy.partial").exists())
+
     def test_allows_fresh_sibling(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "db"
