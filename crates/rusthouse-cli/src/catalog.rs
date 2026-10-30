@@ -202,6 +202,26 @@ fn validate_schema_identity(
     Ok(())
 }
 
+fn read_complete_schema(
+    mut input: impl Read,
+    name: &str,
+    expected_length: u64,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    input
+        .by_ref()
+        .take(MAX_SCHEMA_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    if bytes.len() as u64 > MAX_SCHEMA_BYTES {
+        return Err(format!("schema is too large for table {name}"));
+    }
+    if bytes.len() as u64 != expected_length {
+        return Err(format!("schema changed during read for table {name}"));
+    }
+    Ok(bytes)
+}
+
 pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     let path = schema_path(catalog, name);
     let metadata = fs::symlink_metadata(&path)
@@ -219,13 +239,7 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
     #[cfg(unix)]
     validate_schema_identity(&metadata, &file)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
-    let mut bytes = Vec::new();
-    file.take(MAX_SCHEMA_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read table {name}: {error}"))?;
-    if bytes.len() as u64 > MAX_SCHEMA_BYTES {
-        return Err(format!("schema is too large for table {name}"));
-    }
+    let bytes = read_complete_schema(file, name, metadata.len())?;
     let content = String::from_utf8(bytes)
         .map_err(|_| format!("invalid UTF-8 in schema for table {name}"))?;
     let mut lines = content.lines();
@@ -492,5 +506,23 @@ mod schema_open_identity_tests {
         let replacement = fs::File::open(&path).unwrap();
         assert!(validate_schema_identity(&metadata, &replacement).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod schema_short_read_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn detects_short_valid_schema_from_mutated_file() {
+        let full = b"rusthouse-schema-v1\nid\tUInt64\nname\tString\n";
+        let truncated = b"rusthouse-schema-v1\nid\tUInt64\n";
+        assert!(read_complete_schema(Cursor::new(truncated), "events", full.len() as u64).is_err());
+        assert_eq!(
+            read_complete_schema(Cursor::new(full), "events", full.len() as u64).unwrap(),
+            full
+        );
     }
 }
