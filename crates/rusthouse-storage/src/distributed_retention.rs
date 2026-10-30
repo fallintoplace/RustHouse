@@ -101,6 +101,12 @@ pub fn retention_candidates_with_pins(
         // Do not hash every candidate when no snapshot has a reader pin.
         return Ok(candidates);
     }
+    if let [pin] = pinned {
+        if known.binary_search(pin).is_err() {
+            return Err("duplicate or unknown pinned generation");
+        }
+        return Ok(candidates.into_iter().filter(|generation| generation != pin).collect());
+    }
     let mut pins = std::collections::HashSet::with_capacity(pinned.len());
     for &generation in pinned {
         if !pins.insert(generation) || known.binary_search(&generation).is_err() {
@@ -116,6 +122,16 @@ pub fn retention_candidates_with_pins(
 #[cfg(test)]
 mod pinned_retention_tests {
     use super::*;
+
+    #[test]
+    fn single_pin_avoids_indexing_and_preserves_retention_order() {
+        let generations = (1..=32_u64).rev().collect::<Vec<_>>();
+        let candidates = retention_candidates_with_pins(&generations, 32, 2, &[3]).unwrap();
+        assert_eq!(candidates.first(), Some(&1));
+        assert!(!candidates.contains(&3));
+        assert_eq!(candidates.last(), Some(&30));
+        assert!(retention_candidates_with_pins(&generations, 32, 2, &[99]).is_err());
+    }
 
     #[test]
     fn preserves_backup_pins_and_active_generation() {
