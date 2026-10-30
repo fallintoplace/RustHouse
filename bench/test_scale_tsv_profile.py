@@ -80,5 +80,17 @@ class InputProfileTests(unittest.TestCase):
                 profile(path, verify_sorted_uint64=True)
 
 
+    def test_optional_expected_sha256_checks_streamed_tsv(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "keys.tsv"
+            path.write_bytes(b"0\n1\n2\n")
+            sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            report = profile(path, verify_sorted_uint64=True, expected_sha256=sha)
+            self.assertTrue(report["sha256_verified"])
+            with self.assertRaisesRegex(ValueError, "differs"):
+                profile(path, expected_sha256="0" * 64)
+            with self.assertRaisesRegex(ValueError, "expected_sha256"):
+                profile(path, expected_sha256="X" * 64)
+
 if __name__ == "__main__":
     unittest.main()
