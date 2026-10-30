@@ -6,6 +6,19 @@ from official_coverage import coverage, clean_sql
 
 
 class CoverageTests(unittest.TestCase):
+    def test_refuses_symlinked_sql_without_execution(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            target = directory / "external.sql"
+            target.write_text("SELECT 1;")
+            (directory / "q01.sql").symlink_to(target)
+            invoked = []
+            report = coverage("rusthouse", "db", directory, runs=1, warmups=0,
+                              execute=lambda sql: invoked.append(sql))
+            self.assertEqual(report["results"][0]["status"], "unsupported_query")
+            self.assertEqual(invoked, [])
+
+
     def test_missing_queries_remain_explicit_and_unverified_is_not_a_pass(self):
         with tempfile.TemporaryDirectory() as root:
             queries = Path(root)
