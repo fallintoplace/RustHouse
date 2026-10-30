@@ -77,13 +77,18 @@ pub(crate) fn validate_membership(members: &[Member]) -> Result<(), &'static str
     if members.is_empty() || members.len() > MAX_MEMBER_RECORDS {
         return Err("invalid membership record count");
     }
-    let mut seen = HashSet::with_capacity(members.len());
+    let mut seen = (members.len() > 8).then(|| HashSet::with_capacity(members.len()));
     let mut bytes = 0usize;
-    for member in members {
+    for (index, member) in members.iter().enumerate() {
+        let duplicate = if let Some(seen) = seen.as_mut() {
+            !seen.insert(member.node.as_str())
+        } else {
+            members[..index].iter().any(|previous| previous.node == member.node)
+        };
         if !identifier(&member.node)
             || !identifier(&member.zone)
             || !(1..=MAX_MEMBER_WEIGHT).contains(&member.weight)
-            || !seen.insert(member.node.as_str())
+            || duplicate
         {
             return Err("invalid or duplicate membership record");
         }
@@ -219,5 +224,25 @@ mod zone_capacity_tests {
         assert!(membership_capacity_by_zone(&[Member {
             node: "bad".into(), zone: "a".into(), weight: 0
         }]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod small_membership_validation_tests {
+    use super::*;
+
+    #[test]
+    fn small_and_large_validation_reject_the_same_duplicates() {
+        for count in [1, 2, 3, 8, 9, 16, 64] {
+            let valid = (0..count).map(|index| Member {
+                node: format!("node_{index}"), zone: format!("zone_{}", index % 3), weight: 1,
+            }).collect::<Vec<_>>();
+            assert!(validate_membership(&valid).is_ok());
+            if count > 1 {
+                let mut invalid = valid.clone();
+                invalid[count - 1].node = invalid[0].node.clone();
+                assert!(validate_membership(&invalid).is_err());
+            }
+        }
     }
 }
