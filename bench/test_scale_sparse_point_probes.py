@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from bench.scale.sparse_point_probes import choose_ids, percentile, probe
 
@@ -65,6 +67,27 @@ class SparseProbeTests(unittest.TestCase):
         self.assertEqual(set(values), set(range(10, 10010)))
         self.assertEqual(counter.draws, 10000)
 
+
+
+
+class BoundedPointProbeOutputTests(unittest.TestCase):
+    def test_rejects_large_sql_output_before_materializing_it(self):
+        from bench.scale.sparse_point_probes import query
+        def runaway(_command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].write(b"x" * 256)
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with patch("bench.scale.sparse_point_probes.subprocess.run", side_effect=runaway):
+            with self.assertRaisesRegex(ValueError, "128 bytes"):
+                query("binary", "database", "SELECT id FROM t LIMIT 2", 2)
+
+    def test_returns_short_exact_sql_result(self):
+        from bench.scale.sparse_point_probes import query
+        def normal(_command, **kwargs):
+            kwargs["stdout"].write(b"123\n")
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with patch("bench.scale.sparse_point_probes.subprocess.run", side_effect=normal):
+            self.assertEqual(query("binary", "database", "SELECT 123", 2), b"123\n")
 
 if __name__ == "__main__":
     unittest.main()
