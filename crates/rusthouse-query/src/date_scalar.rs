@@ -209,11 +209,30 @@ pub(super) fn parse_after_open(
             let seconds = value.seconds.div_euclid(3_600) * 3_600;
             Ok(ConstantValue::Text(Temporal::render(seconds, true)?))
         }),
-        "TOSTARTOFWEEK" => unary_date(parser, depth, |value| {
-            let days = value.seconds.div_euclid(DAY_SECONDS);
-            let sunday = days - (days + 4).rem_euclid(7);
-            Ok(ConstantValue::Text(Temporal::render(sunday * DAY_SECONDS, false)?))
-        }),
+        "TOSTARTOFWEEK" => {
+            let source = super::text_scalar::text_arg(parser, depth + 1)?;
+            let mode = if parser.take(Token::Comma) {
+                super::text_scalar::integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("toStartOfWeek requires a date and optional mode".into()));
+            }
+            match (source, mode) {
+                (Some(source), Some(mode)) => {
+                    if !(0..=9).contains(&mode) {
+                        return Err(ParseError("toStartOfWeek mode must be between 0 and 9".into()));
+                    }
+                    let value = Temporal::parse(&source)?;
+                    let days = value.seconds.div_euclid(DAY_SECONDS);
+                    let first_weekday_offset = if mode % 2 == 0 { 4 } else { 3 };
+                    let first = days - (days + first_weekday_offset).rem_euclid(7);
+                    Ok(ConstantValue::Text(Temporal::render(first * DAY_SECONDS, false)?))
+                }
+                _ => Ok(ConstantValue::Null),
+            }
+        },
         "TOMONDAY" => unary_date(parser, depth, |value| {
             let days = value.seconds.div_euclid(DAY_SECONDS);
             let monday = days - (days + 3).rem_euclid(7);
