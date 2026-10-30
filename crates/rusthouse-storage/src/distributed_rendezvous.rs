@@ -177,6 +177,11 @@ pub fn zone_aware_replicas_for(
         .iter()
         .map(|member| (member.node.as_str(), member.weight))
         .collect::<Vec<_>>();
+    // A single placement cannot have a zone conflict. Use the weighted
+    // primary fast path instead of allocating a complete ranking and zone maps.
+    if replicas == 1 {
+        return weighted_replicas_for(shard, &nodes, 1);
+    }
     let ranked = weighted_replicas_for(shard, &nodes, members.len())?;
     // The placement loop can inspect every member. Resolve each node's zone
     // once instead of linearly searching membership for every ranked node.
@@ -342,6 +347,23 @@ mod tests {
 mod zone_aware_tests {
     use super::*;
     use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn single_zone_aware_replica_matches_weighted_primary() {
+        let members = parse_membership(
+            "n1 zone_a 1\nn2 zone_a 2\nn3 zone_b 4\nn4 zone_c 8\n"
+        ).unwrap();
+        let nodes = members.iter().map(|member| {
+            (member.node.as_str(), member.weight)
+        }).collect::<Vec<_>>();
+        for shard in 0..128 {
+            let shard = format!("s{shard}");
+            assert_eq!(
+                zone_aware_replicas_for(&shard, &members, 1).unwrap(),
+                weighted_replicas_for(&shard, &nodes, 1).unwrap()
+            );
+        }
+    }
 
     #[test]
     fn large_zone_membership_stays_deterministic_when_reversed() {
