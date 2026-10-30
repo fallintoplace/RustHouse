@@ -18,6 +18,18 @@ class ClickBenchLoadTests(unittest.TestCase):
             self.assertEqual(len(commands), 3)
             self.assertFalse(result["official_clickbench"])
 
+    def test_rejects_oversized_tsv_record_before_import(self):
+        with tempfile.TemporaryDirectory() as root:
+            generate(root, rows=4, seed=3)
+            path = Path(root) / "hits.tsv"
+            with path.open("a", encoding="utf-8") as out:
+                out.write("x" * 70_000 + "\n")
+            calls = []
+            with self.assertRaisesRegex(ValueError, "64 KiB"):
+                load_fixture("fake", Path(root) / "db", root,
+                             execute=lambda sql: calls.append(sql))
+            self.assertEqual(calls, [])
+
     def test_rejects_malformed_tsv_before_running_sql(self):
         with tempfile.TemporaryDirectory() as root:
             generate(root, rows=12, seed=3)
