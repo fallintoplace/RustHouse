@@ -40,6 +40,7 @@ pub struct JoinStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinAggregate {
     CountStar,
+    CountColumn(JoinColumn),
     Numeric {
         function: crate::AggregateFunction,
         column: JoinColumn,
@@ -93,13 +94,18 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     parser.keyword("SELECT");
     let aggregate = if parser.keyword("COUNT") {
-        if !parser.take(Token::LParen)
-            || !parser.take(Token::Star)
-            || !parser.take(Token::RParen)
-        {
-            return Err(ParseError("JOIN COUNT requires COUNT(*)".into()));
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("JOIN COUNT requires '('".into()));
         }
-        Some(JoinAggregate::CountStar)
+        let result = if parser.take(Token::Star) {
+            JoinAggregate::CountStar
+        } else {
+            JoinAggregate::CountColumn(qualified(&mut parser)?)
+        };
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("JOIN COUNT requires ')'".into()));
+        }
+        Some(result)
     } else {
         let function = if parser.keyword("SUM") {
             Some(crate::AggregateFunction::Sum)
@@ -450,7 +456,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             || relation == right_alias
             || steps.iter().any(|step| step.alias == relation)
     };
-    if let Some(JoinAggregate::Numeric { column, .. }) = &aggregate {
+    if let Some(JoinAggregate::CountColumn(column) | JoinAggregate::Numeric { column, .. }) = &aggregate {
         if !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}", column.relation
@@ -505,6 +511,12 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         return Err(ParseError(
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
+    }
+    // The streaming COUNT(column) executor currently covers exactly two INNER sources.
+    if matches!(aggregate.as_ref(), Some(JoinAggregate::CountColumn(_)))
+        && (kind != JoinType::Inner || !steps.is_empty())
+    {
+        return Err(ParseError("JOIN COUNT(column) requires a two-table INNER JOIN".into()));
     }
     if aggregate.is_some()
         && (!order_by.is_empty()
@@ -602,6 +614,9 @@ pub fn explain_join(query: &JoinSelect) -> String {
         if let Some(aggregate) = &query.aggregate {
             match aggregate {
                 JoinAggregate::CountStar => "count(*)".to_owned(),
+                JoinAggregate::CountColumn(column) => {
+                    format!("count({}.{})", column.relation, column.name)
+                }
                 JoinAggregate::Numeric { function, column } => {
                     format!("{}({}.{})", function.name(), column.relation, column.name)
                 }
