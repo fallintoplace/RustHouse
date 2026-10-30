@@ -13,6 +13,17 @@ fn same_source_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     before.dev() == after.dev() && before.ino() == after.ino()
 }
 
+fn create_private_replica_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 fn stream_bounded_copy(
     input: &mut impl Read,
     output: &mut File,
@@ -80,10 +91,7 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
     if !same_source_identity(&source_meta, &opened) {
         return Err(io::Error::other("source inode changed before immutable copy"));
     }
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staging)?;
+    let mut output = create_private_replica_file(&staging)?;
     let copied = stream_bounded_copy(&mut input, &mut output, source_meta.len(), max_bytes);
     drop(output);
     // hard_link fails if the destination already exists, unlike an overwriting rename.
@@ -263,5 +271,24 @@ mod interrupted_replica_copy_tests {
         drop(output);
         assert_eq!(fs::read(&path).unwrap(), b"frozen bytes");
         fs::remove_file(path).unwrap();
+    }
+}
+
+
+#[cfg(all(test, unix))]
+mod private_replica_object_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn new_replica_files_are_private_before_publication() {
+        let file = std::env::temp_dir().join(format!(
+            "rusthouse-private-replica-{}", std::process::id()
+        ));
+        let _ = fs::remove_file(&file);
+        let output = create_private_replica_file(&file).unwrap();
+        assert_eq!(output.metadata().unwrap().permissions().mode() & 0o077, 0);
+        drop(output);
+        fs::remove_file(file).unwrap();
     }
 }
