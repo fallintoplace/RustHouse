@@ -21,6 +21,10 @@ fn identifier(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+fn valid_member_identity(node: &str, zone: &str) -> bool {
+    identifier(node) && identifier(zone)
+}
+
 fn parse_member(line: &str) -> Result<Member, &'static str> {
     if line.is_empty() {
         return Err("empty membership record");
@@ -31,7 +35,7 @@ fn parse_member(line: &str) -> Result<Member, &'static str> {
     else {
         return Err("invalid membership record");
     };
-    if !identifier(node) || !identifier(zone) {
+    if !valid_member_identity(node, zone) {
         return Err("invalid membership record");
     }
     let weight = weight_text
@@ -88,8 +92,7 @@ pub(crate) fn validate_membership(members: &[Member]) -> Result<(), &'static str
         } else {
             members[..index].iter().any(|previous| previous.node == member.node)
         };
-        if !identifier(&member.node)
-            || !identifier(&member.zone)
+        if !valid_member_identity(&member.node, &member.zone)
             || !(1..=MAX_MEMBER_WEIGHT).contains(&member.weight)
             || duplicate
         {
