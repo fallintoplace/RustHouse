@@ -9,7 +9,7 @@ use std::path::Path;
 const MAX_TABLES: usize = 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 10_000;
 const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
-const MAX_SCHEMA_COLUMNS: usize = 64;
+const MAX_SCHEMA_COLUMNS: usize = 128;
 
 fn identifier(name: &str) -> bool {
     let mut bytes = name.bytes();
@@ -295,5 +295,21 @@ mod tests {
             },
         );
         assert_eq!(part.status, "400 Bad Request");
+    }
+}
+
+#[cfg(test)]
+mod wide_schema_discovery_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_all_128_supported_columns_but_not_129() {
+        let mut schema = String::from("rusthouse-schema-v1\n");
+        for index in 0..MAX_SCHEMA_COLUMNS {
+            schema.push_str(&format!("col_{index}\tUInt64\n"));
+        }
+        assert!(valid_schema_contents(&schema));
+        schema.push_str("extra\tUInt64\n");
+        assert!(!valid_schema_contents(&schema));
     }
 }
