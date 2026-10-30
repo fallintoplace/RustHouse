@@ -274,7 +274,6 @@ mod interrupted_replica_copy_tests {
     }
 }
 
-
 #[cfg(all(test, unix))]
 mod private_replica_object_tests {
     use super::*;
