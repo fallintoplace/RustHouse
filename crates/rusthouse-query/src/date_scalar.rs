@@ -22,6 +22,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOLASTDAYOFQUARTER"
             | "TOWEEK"
             | "ISLEAPYEAR"
+            | "TODAYSINMONTH"
             | "DAYSINMONTH"
             | "TIMESLOT"
             | "TORELATIVEYEARNUM"
@@ -138,6 +139,10 @@ pub(super) fn parse_after_open(
                     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0),
                 ))
             })
+        }),
+        "TODAYSINMONTH" => unary_date(parser, depth, |value| {
+            let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+            Ok(ConstantValue::Integer(i64::from(days_in_month(year, month))))
         }),
         "DAYSINMONTH" => unary_date(parser, depth, |value| {
             Ok({
@@ -1266,5 +1271,26 @@ mod clickhouse_start_of_half_hour_tests {
                 Projection::Constants(values) if values[0].value == ConstantValue::Null)
         );
         assert!(parse_select("SELECT toStartOfHalfHour('2024-01-01', 1)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod to_days_in_month_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn returns_gregorian_month_lengths_and_preserves_null() {
+        for (sql, expected) in [
+            ("SELECT toDaysInMonth('2023-02-01')", ConstantValue::Integer(28)),
+            ("SELECT toDaysInMonth('2024-02-29')", ConstantValue::Integer(29)),
+            ("SELECT toDaysInMonth('2024-04-15')", ConstantValue::Integer(30)),
+            ("SELECT toDaysInMonth('2024-12-31')", ConstantValue::Integer(31)),
+            ("SELECT toDaysInMonth(NULL)", ConstantValue::Null),
+        ] {
+            assert!(matches!(parse_select(sql).unwrap().projection,
+                Projection::Constants(ref values) if values.len() == 1
+                    && values[0].value == expected), "{sql}");
+        }
+        assert!(parse_select("SELECT toDaysInMonth('2024-01-01', 1)").is_err());
     }
 }
