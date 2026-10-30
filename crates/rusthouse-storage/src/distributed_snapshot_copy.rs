@@ -137,6 +137,10 @@ pub fn copy_frozen_snapshot(
             return Err(error);
         }
     };
+    if !source_generation_unchanged(source, &active) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(PartError::InvalidScan("source snapshot changed during copy".into()));
+    }
     if destination.exists() {
         let _ = fs::remove_dir_all(&staging);
         return Err(PartError::InvalidScan(
@@ -295,6 +299,37 @@ mod immutable_snapshot_copy_tests {
             let name = entry.unwrap().file_name();
             assert!(!name.to_string_lossy().starts_with(".rusthouse-replica-"));
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Catch accidental source snapshot switches before publishing the copied directory.
+fn source_generation_unchanged(source: &Path, expected: &Path) -> bool {
+    matches!(resolve_active_snapshot(source), Ok(active) if active == expected)
+}
+
+#[cfg(test)]
+mod source_generation_stability_tests {
+    use super::*;
+
+    #[test]
+    fn detects_pointer_switch_before_copy_publication() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-generation-switch-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let versions = root.join(".rusthouse-versions");
+        let first = versions.join("g1");
+        let second = versions.join("g2");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        fs::write(&pointer, "g1\n").unwrap();
+        assert!(source_generation_unchanged(&root, &first));
+        fs::write(&pointer, "g2\n").unwrap();
+        assert!(!source_generation_unchanged(&root, &first));
+        assert!(source_generation_unchanged(&root, &second));
         fs::remove_dir_all(root).unwrap();
     }
 }
