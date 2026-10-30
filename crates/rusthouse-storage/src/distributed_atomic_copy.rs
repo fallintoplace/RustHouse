@@ -2,7 +2,7 @@
 //! This is a filesystem transport, not an authenticated network protocol.
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
@@ -31,6 +31,14 @@ fn source_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     true
 }
 
+
+fn staging_path(parent: &Path, purpose: &str) -> PathBuf {
+    parent.join(format!(
+        ".rusthouse-{purpose}-{}-{}",
+        std::process::id(),
+        NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
+    ))
+}
 
 fn create_private_replica_file(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
@@ -96,11 +104,7 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
             "destination parent is not a real directory",
         ));
     }
-    let staging = parent.join(format!(
-        ".rusthouse-replica-{}-{}",
-        std::process::id(),
-        NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
-    ));
+    let staging = staging_path(parent, "replica");
     let mut input = File::open(source)?;
     let opened = input.metadata()?;
     if !opened.file_type().is_file() || opened.len() != source_meta.len() {
@@ -154,11 +158,7 @@ pub fn copy_immutable_file_checked(
     let parent = destination
         .parent()
         .ok_or_else(|| io::Error::other("destination has no parent directory"))?;
-    let staging = parent.join(format!(
-        ".rusthouse-checked-copy-{}-{}",
-        std::process::id(),
-        NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
-    ));
+    let staging = staging_path(parent, "checked-copy");
     let copied = copy_immutable_file(source, &staging, max_bytes)?;
     let verified = (|| -> io::Result<()> {
         let mut file = File::open(&staging)?;
