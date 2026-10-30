@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 
-def preflight(source, destination, max_bytes=None):
+def preflight(source, destination, max_bytes=None, max_entries=1_000_000):
     if source.is_symlink() or not source.is_dir():
         raise ValueError("source must be an existing real directory")
     source = source.resolve(strict=True)
@@ -25,9 +25,15 @@ def preflight(source, destination, max_bytes=None):
         raise ValueError("staging destination already exists: " + str(stage))
     if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 1):
         raise ValueError("max_bytes must be positive")
+    if type(max_entries) is not int or not 1 <= max_entries <= 10_000_000:
+        raise ValueError("max_entries must be between 1 and 10000000")
     total_bytes = 0
+    total_entries = 0
     for base, directories, files in os.walk(source, followlinks=False):
         for item in directories + files:
+            total_entries += 1
+            if total_entries > max_entries:
+                raise ValueError("backup exceeds max_entries preflight budget")
             if (Path(base) / item).is_symlink():
                 raise ValueError("backup refuses symlinks: " + str(Path(base) / item))
         for item in files:
@@ -41,11 +47,14 @@ def preflight(source, destination, max_bytes=None):
     return source, destination, stage
 
 
-def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeout=3600):
+def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeout=3600,
+           max_entries=1_000_000):
     if (type(doctor_timeout) not in (int, float) or
             not math.isfinite(doctor_timeout) or doctor_timeout <= 0):
         raise ValueError("doctor_timeout must be positive and finite")
-    source, destination, stage = preflight(source, destination, max_bytes=max_bytes)
+    source, destination, stage = preflight(
+        source, destination, max_bytes=max_bytes, max_entries=max_entries
+    )
     # Preserve the complete layout, including hidden files and lock inode contents.
     shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
     try:
@@ -76,6 +85,8 @@ def main():
                         help="Maximum seconds to verify the staged backup")
     parser.add_argument("--max-backup-bytes", type=int,
                         help="Reject the source if its files exceed this byte budget")
+    parser.add_argument("--max-backup-entries", type=int, default=1_000_000,
+                        help="Bound files and directories traversed by preflight")
     args = parser.parse_args()
     if not args.offline_confirmed:
         parser.error("stop ALL RustHouse readers and writers, then pass --offline-confirmed")
