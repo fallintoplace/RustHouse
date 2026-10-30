@@ -63,6 +63,25 @@ class InvalidGapStatusTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "status"):
                     analyze({"results": [{"query": 1, "status": status}]})
 
+    def test_optional_verified_correctness_gate(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from feature_gaps import main
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "report.json"
+            path.write_text(json.dumps({"results": [
+                {"query": 1, "status": "passed"},
+                {"query": 2, "status": "unverified"},
+            ]}))
+            with patch("builtins.print"):
+                self.assertEqual(main(["--report", str(path)]), 0)
+                self.assertEqual(main(["--report", str(path), "--fail-on-unverified"]), 1)
+            path.write_text(json.dumps({"results": [{"query": 1, "status": "passed"}]}))
+            with patch("builtins.print"):
+                self.assertEqual(main(["--report", str(path), "--fail-on-unverified"]), 0)
+
 
 
 class BoundedFeatureGapReportTests(unittest.TestCase):
