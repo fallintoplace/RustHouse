@@ -29,7 +29,13 @@ impl Scratch {
             let path = std::env::temp_dir().join(format!(
                 "rusthouse-typed-sort-{}-{sequence}", std::process::id(),
             ));
-            match fs::create_dir(&path) {
+            let mut directory = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                directory.mode(0o700);
+            }
+            match directory.create(&path) {
                 Ok(()) => return Ok(Self(path)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error.into()),
@@ -569,5 +575,18 @@ mod tests {
         let mut malformed = data;
         malformed[12] = 99;
         assert!(read_entry(&mut malformed.as_slice()).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod typed_sort_scratch_permissions_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn spill_directory_is_private_before_writing_query_rows() {
+        let scratch = Scratch::new().unwrap();
+        let permissions = fs::metadata(&scratch.0).unwrap().permissions();
+        assert_eq!(permissions.mode() & 0o077, 0);
     }
 }
