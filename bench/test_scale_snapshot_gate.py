@@ -48,6 +48,12 @@ class SnapshotGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "columns"):
                 inspect_snapshot("rusthouse", "/frozen/parts", run=run)
 
+    def test_rejects_oversized_snapshot_json_before_parsing(self):
+        def run(*_args, **_kwargs):
+            return SimpleNamespace(returncode=0, stdout=b"x" * 1_048_577, stderr=b"")
+        with self.assertRaisesRegex(ValueError, "1 MiB"):
+            inspect_snapshot("rusthouse", "part", run=run)
+
     def test_failure_propagates(self):
         def run(command, **kwargs):
             return SimpleNamespace(returncode=1, stdout=b"", stderr=b"overlapping")
