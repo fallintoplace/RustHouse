@@ -120,6 +120,23 @@ def _verification_failure(inspection):
     )
 
 
+def inspect_persisted_snapshot(binary, directory, rows, timeout):
+    command = [str(binary), "doctor", "--database", str(directory)]
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        result = subprocess.run(command, stdout=output, stderr=errors,
+                                check=False, timeout=timeout)
+        output.seek(0)
+        stdout = output.read(256 * 1024 + 1)
+        if len(stdout) > 256 * 1024:
+            raise RuntimeError("persisted doctor output exceeds 256 KiB")
+        if result.returncode or f"OK events: {rows} rows, ".encode() not in stdout:
+            errors.seek(0, os.SEEK_END)
+            errors.seek(max(0, errors.tell() - 600))
+            stderr = errors.read(600)
+            inspection = subprocess.CompletedProcess(command, result.returncode, stdout, stderr)
+            raise RuntimeError(_verification_failure(inspection))
+
+
 def benchmark(binary, rows, groups, runs, warmups, timeout, scratch_dir=None):
     if (type(runs) is not int or type(warmups) is not int
             or runs < 1 or warmups < 0 or runs + warmups > 1000):
@@ -139,12 +156,7 @@ def benchmark(binary, rows, groups, runs, warmups, timeout, scratch_dir=None):
             binary, directory, f"COPY events FROM '{escaped}' WITH (FORMAT TSV)",
             timeout=timeout,
         )
-        inspection = subprocess.run(
-            [str(binary), "doctor", "--database", str(directory)],
-            capture_output=True, check=False, timeout=timeout,
-        )
-        if inspection.returncode or f"OK events: {rows} rows, " not in inspection.stdout.decode("utf-8", "replace"):
-            raise RuntimeError(_verification_failure(inspection))
+        inspect_persisted_snapshot(binary, directory, rows, timeout)
         return {
             "workload": "persisted-billion-row-skewed-grouped-analytics",
             "revision": os.environ.get("GITHUB_SHA"),
