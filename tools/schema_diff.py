@@ -53,6 +53,7 @@ def compatible_columns(left, right, *, allow_additive=False):
 
 
 def fetch(base, table, timeout=5):
+    base = validate_url(base)
     url = base + "/schema?table=" + quote(table, safe="")
     with NO_REDIRECT_OPENER.open(url, timeout=timeout) as response:
         body = response.read(1_048_577)
