@@ -49,6 +49,13 @@ pub struct IndexedChunk {
     pub chunk: Chunk,
 }
 
+fn indexed_chunk_at(total_bytes: u64, chunk_bytes: u64, index: usize) -> IndexedChunk {
+    IndexedChunk {
+        index,
+        chunk: chunk_at_index(total_bytes, chunk_bytes, index),
+    }
+}
+
 /// Select an ordered, bounded prefix from ResumeMap::remaining().
 ///
 /// Validate strictly increasing indexes so a corrupt progress checkpoint
@@ -88,12 +95,12 @@ pub fn plan_missing_chunks(
         if selected.len() >= max_batch_chunks || remaining_bytes == 0 {
             break;
         }
-        let chunk = chunk_at_index(total_bytes, chunk_bytes, index);
-        if chunk.length > remaining_bytes {
+        let indexed = indexed_chunk_at(total_bytes, chunk_bytes, index);
+        if indexed.chunk.length > remaining_bytes {
             continue;
         }
-        remaining_bytes -= chunk.length;
-        selected.push(IndexedChunk { index, chunk });
+        remaining_bytes -= indexed.chunk.length;
+        selected.push(indexed);
     }
     Ok(selected)
 }
@@ -106,10 +113,7 @@ fn build_chunk_window(
 ) -> Vec<IndexedChunk> {
     let mut page = Vec::with_capacity(requested);
     for index in start_index..start_index + requested {
-        page.push(IndexedChunk {
-            index,
-            chunk: chunk_at_index(total_bytes, chunk_bytes, index),
-        });
+        page.push(indexed_chunk_at(total_bytes, chunk_bytes, index));
     }
     page
 }
