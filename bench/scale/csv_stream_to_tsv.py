@@ -32,6 +32,8 @@ def utf8_length(value):
 def convert(source, destination, *, header=False, empty_as_null=False,
             max_field_bytes=8 * 1024 * 1024, skip_header=False,
             expected_columns=None):
+    if Path(source).is_symlink():
+        raise ValueError("CSV source must not be a symlink")
     if Path(source).resolve() == Path(destination).resolve():
         raise ValueError("input and output must be different files")
     if skip_header and not header:
