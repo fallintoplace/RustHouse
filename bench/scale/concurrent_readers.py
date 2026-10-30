@@ -14,6 +14,29 @@ import time
 from pathlib import Path
 
 
+def _has_separator(statement):
+    # Delimiters inside quoted SQL text do not separate statements.
+    quote = None
+    index = 0
+    while index < len(statement):
+        char = statement[index]
+        if quote is not None:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                if index + 1 < len(statement) and statement[index + 1] == quote:
+                    index += 2
+                    continue
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == ";":
+            return True
+        index += 1
+    return quote is not None
+
+
 def read_reference(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -40,7 +63,7 @@ def run_readers(binary, part, sql, expected, *, clients=4, rounds=3,
     statement = sql.strip()
     if statement.endswith(";"):
         statement = statement[:-1].rstrip()
-    if not re.match(r"^(SELECT|WITH|EXPLAIN)\b", statement, re.IGNORECASE) or ";" in statement:
+    if not re.match(r"^(SELECT|WITH|EXPLAIN)\b", statement, re.IGNORECASE) or _has_separator(statement):
         raise ValueError("concurrent readers require one read-only SQL statement")
     run = execute or subprocess.run
     cmd = [str(binary), "sql", sql, "--part", str(part), "--format",
