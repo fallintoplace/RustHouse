@@ -8,10 +8,23 @@ use std::io::{self, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 const MAX_CONFIGURED_CONNECTIONS: usize = 64;
+static HTTP_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static HTTP_ERRORS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+fn metrics_response(requests: u64, errors: u64) -> Response {
+    Response {
+        status: "200 OK",
+        content_type: "text/plain; version=0.0.4; charset=utf-8",
+        body: format!(
+            "# HELP rusthouse_http_requests_total HTTP requests processed by this server.\n             # TYPE rusthouse_http_requests_total counter\n             rusthouse_http_requests_total {requests}\n             # HELP rusthouse_http_errors_total HTTP requests with non-200 results.\n             # TYPE rusthouse_http_errors_total counter\n             rusthouse_http_errors_total {errors}\n"
+        )
+        .into_bytes(),
+    }
+}
 
 /// Bound concurrent read-only analytical requests to avoid unbounded
 /// thread, decoded-block and response-buffer amplification.
@@ -191,6 +204,16 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let request = read_request(&mut stream);
     let accept_lz4 = request.as_ref().is_ok_and(|(_, _, _, encoded)| *encoded);
     let response = match request {
+        Ok((method, target, body, _)) if target == "/metrics" => {
+            if method != "GET" || !body.is_empty() {
+                Response::text("405 Method Not Allowed", "metrics requires empty GET\n")
+            } else {
+                metrics_response(
+                    HTTP_REQUESTS_TOTAL.load(Ordering::Relaxed),
+                    HTTP_ERRORS_TOTAL.load(Ordering::Relaxed),
+                )
+            }
+        }
         Ok((method, target, body, _)) if target == "/cluster" => {
             cluster::handle(&method, &body, cluster)
         }
@@ -203,6 +226,10 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
         Ok((method, target, body, _)) => handle_request(&method, &target, &body, config),
         Err(response) => response,
     };
+    HTTP_REQUESTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    if response.status != "200 OK" {
+        HTTP_ERRORS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
     let _ = respond(&mut stream, response, accept_lz4);
 }
 
@@ -477,5 +504,22 @@ mod concurrency_capacity_tests {
             assert!(parse_max_connections(invalid).is_err(), "{invalid}");
         }
         assert_eq!(MAX_CONNECTIONS, 16);
+    }
+}
+
+#[cfg(test)]
+mod http_metrics_tests {
+    use super::*;
+
+    #[test]
+    fn metrics_use_stable_prometheus_counter_format() {
+        let response = metrics_response(125, 7);
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.content_type, "text/plain; version=0.0.4; charset=utf-8");
+        let text = std::str::from_utf8(&response.body).unwrap();
+        assert!(text.contains("# TYPE rusthouse_http_requests_total counter\n"));
+        assert!(text.contains("rusthouse_http_requests_total 125\n"));
+        assert!(text.contains("# TYPE rusthouse_http_errors_total counter\n"));
+        assert!(text.contains("rusthouse_http_errors_total 7\n"));
     }
 }
