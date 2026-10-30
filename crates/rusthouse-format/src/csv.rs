@@ -1,5 +1,16 @@
 use std::io::{self, Write};
 
+fn write_buffered_unescaped_field<const N: usize, W: Write>(
+    output: &mut W,
+    field: &[u8],
+) -> io::Result<()> {
+    let mut buffer = [0u8; N];
+    buffer[0] = b'"';
+    buffer[1..field.len() + 1].copy_from_slice(field);
+    buffer[field.len() + 1] = b'"';
+    output.write_all(&buffer[..field.len() + 2])
+}
+
 fn write_short_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     // Worst case: every byte is a doubled quote plus two delimiters.
     let mut buffer = [0u8; 130];
@@ -54,26 +65,14 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
     if field.len() <= 2048 && !has_quote {
         // Medium-size quote-free strings are frequent in JSON and text
         // exports. Keep quote + payload + quote in one buffered write.
-        let mut buffer = [0u8; 2050];
-        buffer[0] = b'"';
-        buffer[1..field.len() + 1].copy_from_slice(field);
-        buffer[field.len() + 1] = b'"';
-        return output.write_all(&buffer[..field.len() + 2]);
+        return write_buffered_unescaped_field::<2050, _>(output, field);
     }
     if !has_quote {
         if field.len() <= 4094 {
-            let mut buffer = [0u8; 4096];
-            buffer[0] = b'"';
-            buffer[1..field.len() + 1].copy_from_slice(field);
-            buffer[field.len() + 1] = b'"';
-            return output.write_all(&buffer[..field.len() + 2]);
+            return write_buffered_unescaped_field::<4096, _>(output, field);
         }
         if field.len() <= 8190 {
-            let mut buffer = [0u8; 8192];
-            buffer[0] = b'"';
-            buffer[1..field.len() + 1].copy_from_slice(field);
-            buffer[field.len() + 1] = b'"';
-            return output.write_all(&buffer[..field.len() + 2]);
+            return write_buffered_unescaped_field::<8192, _>(output, field);
         }
         output.write_all(b"\"")?;
         output.write_all(field)?;
