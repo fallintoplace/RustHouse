@@ -51,7 +51,7 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
             "invalid database snapshot pointer".into(),
         ));
     }
-    let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let mut file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
     let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
     if !opened.file_type().is_file() || opened.len() != metadata.len() || opened.len() > 64 {
         return Err(PartError::InvalidScan("active pointer changed before read".into()));
@@ -64,9 +64,17 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
         }
     }
     let mut label = String::new();
-    file.take(65)
+    (&mut file)
+        .take(65)
         .read_to_string(&mut label)
         .map_err(|error| io_error(&pointer, error))?;
+    let finished = file.metadata().map_err(|error| io_error(&pointer, error))?;
+    if finished.len() != opened.len()
+        || finished.modified().map_err(|error| io_error(&pointer, error))?
+            != opened.modified().map_err(|error| io_error(&pointer, error))?
+    {
+        return Err(PartError::InvalidScan("active pointer changed during read".into()));
+    }
     if label.len() > 64 {
         return Err(PartError::InvalidScan("active pointer exceeds size limit".into()));
     }
