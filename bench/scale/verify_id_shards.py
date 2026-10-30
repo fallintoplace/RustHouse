@@ -48,7 +48,15 @@ def verify(manifest_path):
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("shard manifest exceeds 8 MiB")
     manifest_path = manifest_path.resolve()
-    manifest = json.loads(payload)
+    def unique_fields(pairs):
+        result = {}
+        for name, value in pairs:
+            if name in result:
+                raise ValueError(f"duplicate shard manifest JSON field: {name}")
+            result[name] = value
+        return result
+
+    manifest = json.loads(payload, object_pairs_hook=unique_fields)
     if manifest.get("schema_version") != 1:
         raise ValueError("unsupported shard manifest version")
     start = require_uint(manifest.get("start"), "start", zero=True)

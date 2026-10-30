@@ -103,5 +103,17 @@ class VerifyShardsTests(unittest.TestCase):
                 verify(manifest)
 
 
+    def test_rejects_duplicate_manifest_json_fields(self):
+        with tempfile.TemporaryDirectory() as root:
+            manifest = Path(root) / "manifest.json"
+            for text in (
+                '{"schema_version":1,"schema_version":2}',
+                '{"schema_version":1,"start":0,"start":1}',
+                '{"schema_version":1,"shards":[{"rows":1,"rows":2}]}',
+            ):
+                manifest.write_text(text)
+                with self.subTest(text=text), self.assertRaisesRegex(ValueError, "duplicate shard manifest JSON field"):
+                    verify(manifest)
+
 if __name__ == "__main__":
     unittest.main()
