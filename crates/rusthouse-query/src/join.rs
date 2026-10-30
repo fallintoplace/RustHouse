@@ -507,10 +507,12 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         ));
     }
     if aggregate.is_some()
-        && (!order_by.is_empty() || (steps.is_empty() && kind != JoinType::Inner))
+        && (!order_by.is_empty()
+            || (steps.is_empty() && kind != JoinType::Inner
+                && !matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))))
     {
         return Err(ParseError(
-            "JOIN COUNT requires no ORDER BY; two-table COUNT requires INNER JOIN".into(),
+            "JOIN aggregates require no ORDER BY; two-table OUTER JOIN supports COUNT(*) only".into(),
         ));
     }
     Ok(Some(JoinSelect {

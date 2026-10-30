@@ -1181,6 +1181,20 @@ fn prefer_left_hash_build(left_rows: u64, right_rows: u64, any: bool) -> bool {
             || right_rows >= left_rows.saturating_mul(4))
 }
 
+fn retain_or_count(
+    pairs: &mut Vec<Pair>,
+    count: &mut u64,
+    count_only: bool,
+    pair: Pair,
+) -> Result<(), ExecutionError> {
+    if count_only {
+        *count = count.checked_add(1).ok_or_else(|| invalid("JOIN count overflow"))?;
+        Ok(())
+    } else {
+        add_pair(pairs, pair)
+    }
+}
+
 /// Evaluate a two-table JOIN using typed values, not serialized TSV.
 pub fn execute_join<W: Write>(
     query: &JoinSelect,
@@ -1314,7 +1328,7 @@ pub fn execute_join<W: Write>(
         );
     }
 
-    if query.aggregate == Some(JoinAggregate::CountStar) {
+    if query.aggregate == Some(JoinAggregate::CountStar) && query.kind == JoinType::Inner {
         return execute_streaming_inner_count(
             query, left_path, right_path,
             InnerJoinColumns {
@@ -1326,6 +1340,11 @@ pub fn execute_join<W: Write>(
         );
     }
 
+    // Scalar COUNT LIMIT 0 has a header-only result, including OUTER joins.
+    if query.aggregate == Some(JoinAggregate::CountStar) && query.limit == Some(0) {
+        output.write_all(b"count\n")?;
+        return Ok(());
+    }
     // LIMIT 0 needs the validated output schema, but not either input scan.
     if query.limit == Some(0) {
         let header = selected
@@ -1348,7 +1367,7 @@ pub fn execute_join<W: Write>(
         return Ok(());
     }
 
-    if query.kind == JoinType::Right && order.is_empty()
+    if query.aggregate.is_none() && query.kind == JoinType::Right && order.is_empty()
         && left_meta.rows <= MAX_STREAM_BUILD_ROWS
         && right_meta.rows > MAX_INPUT_ROWS
     {
@@ -1458,6 +1477,8 @@ pub fn execute_join<W: Write>(
         })
     };
     let mut pairs: Vec<Pair> = Vec::new();
+    let count_only = query.aggregate == Some(JoinAggregate::CountStar);
+    let mut count = 0u64;
     // Reuse JOIN probe storage instead of allocating a fresh key Vec per left row.
     let mut lookup_key = Vec::with_capacity(left_keys.len());
     let mut matched_right = matches!(query.kind, JoinType::Right | JoinType::Full)
@@ -1489,7 +1510,7 @@ pub fn execute_join<W: Write>(
                     }
                     let pair = (Some(left_index), Some(right_index));
                     if keep(&pair) {
-                        add_pair(&mut pairs, pair)?;
+                        retain_or_count(&mut pairs, &mut count, count_only, pair)?;
                     }
                 }
             }
@@ -1497,7 +1518,7 @@ pub fn execute_join<W: Write>(
         if !matched && matches!(query.kind, JoinType::Left | JoinType::Full) {
             let pair = (Some(left_index), None);
             if keep(&pair) {
-                add_pair(&mut pairs, pair)?;
+                retain_or_count(&mut pairs, &mut count, count_only, pair)?;
             }
         }
     }
@@ -1506,10 +1527,17 @@ pub fn execute_join<W: Write>(
             if !matched {
                 let pair = (None, Some(right_index));
                 if keep(&pair) {
-                    add_pair(&mut pairs, pair)?;
+                    retain_or_count(&mut pairs, &mut count, count_only, pair)?;
                 }
             }
         }
+    }
+    if count_only {
+        output.write_all(b"count\n")?;
+        if query.offset == 0 {
+            writeln!(output, "{count}")?;
+        }
+        return Ok(());
     }
     if !order.is_empty() {
         let null = typed::Cell::Null;
