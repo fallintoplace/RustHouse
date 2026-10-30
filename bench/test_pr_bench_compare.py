@@ -8,7 +8,7 @@ def report(rows=200000, topk=12.500, samples=21):
     return (
         f"RustHouse numbers() benchmarks: {rows} input rows, {samples} samples, 3 warmups\n"
         "workload median ms M input rows/s\n"
-        "filtered count 0.000 0.00\n"
+        "filtered count 0.000 1.00\n"
         "filtered sum 0.003 1.00\n"
         f"filtered top-K {topk:.3f} 2.00\n"
     )
@@ -22,10 +22,15 @@ class CompareRustBenchTests(unittest.TestCase):
         self.assertIn("informational, not a required CI gate", result)
 
     def test_submicrosecond_improvements_are_not_rounded_to_zero(self):
-        baseline = report().replace("filtered count 0.000 0.00", "filtered count 0.000123 0.00")
-        candidate = report().replace("filtered count 0.000 0.00", "filtered count 0.000082 0.00")
+        baseline = report().replace("filtered count 0.000 1.00", "filtered count 0.000123 0.00")
+        candidate = report().replace("filtered count 0.000 1.00", "filtered count 0.000082 0.00")
         summary = compare_text(baseline, candidate)
         self.assertIn("| filtered count | 0.000123 | 0.000082 | -33.3% |", summary)
+
+    def test_rejects_zero_throughput_with_valid_median(self):
+        bad = report().replace("filtered count 0.000 1.00", "filtered count 0.000 0.00")
+        with self.assertRaisesRegex(ValueError, "invalid benchmark throughput"):
+            parse_benchmark(bad)
 
     def test_rejects_incompatible_settings(self):
         with self.assertRaisesRegex(ValueError, "settings do not match"):
