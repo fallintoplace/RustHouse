@@ -81,5 +81,25 @@ class IngestBenchmarkTests(unittest.TestCase):
             runner.benchmark(Path("/missing"), 3, 1, 0, 1, 1, "TSV")
 
 
+    def test_rejects_nonfinite_timeout_and_boolean_counts(self):
+        for timeout in (float("nan"), float("inf"), 0, -1, True):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                runner.benchmark(Path("rusthouse"), 10, 2, 1, 0, timeout, "TSV")
+        for rows, runs in ((True, 1), (10, True), (10, 1.5)):
+            with self.subTest(rows=rows, runs=runs), self.assertRaises(ValueError):
+                runner.benchmark(Path("rusthouse"), rows, 1, runs, 0, 3, "TSV")
+
+    def test_buffered_fixture_matches_one_row_reference(self):
+        with tempfile.TemporaryDirectory() as temp:
+            single = Path(temp) / "single.tsv"
+            batched = Path(temp) / "batched.tsv"
+            baseline = runner.write_input(single, 10003, 17, batch_rows=1)
+            generated = runner.write_input(batched, 10003, 17, batch_rows=4096)
+            self.assertEqual(baseline, generated)
+            self.assertEqual(single.read_bytes(), batched.read_bytes())
+            with self.assertRaisesRegex(ValueError, "batch_rows"):
+                runner.write_input(batched, 1, 1, batch_rows=0)
+
+
 if __name__ == "__main__":
     unittest.main()

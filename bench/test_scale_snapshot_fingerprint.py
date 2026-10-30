@@ -19,6 +19,17 @@ class SnapshotFingerprintTests(unittest.TestCase):
             b.write_bytes(b"three")
             self.assertNotEqual(first["sha256"], fingerprint(root)["sha256"])
 
+    def test_gates_fingerprint_on_exact_hash(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "data.bin").write_bytes(b"trusted")
+            sha = fingerprint(root)["sha256"]
+            result = fingerprint(root, expected_sha256=sha)
+            self.assertTrue(result["verified"])
+            with self.assertRaisesRegex(ValueError, "differs"):
+                fingerprint(root, expected_sha256="0" * 64)
+            with self.assertRaisesRegex(ValueError, "expected_sha256"):
+                fingerprint(root, expected_sha256="0" * 63)
+
     def test_rejects_empty_directory(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(ValueError, "no files"):
@@ -43,6 +54,15 @@ class SnapshotFingerprintTests(unittest.TestCase):
             (Path(root) / "link").symlink_to(a)
             with self.assertRaisesRegex(ValueError, "nonregular"):
                 fingerprint(root)
+
+    def test_rejects_file_identity_change_during_open(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "data.bin").write_bytes(b"one")
+            with patch("bench.scale.snapshot_fingerprint.os.fstat",
+                       return_value=SimpleNamespace(st_dev=-1, st_ino=-1)):
+                with self.assertRaisesRegex(ValueError, "replaced while opening"):
+                    fingerprint(root)
 
 
 if __name__ == "__main__":

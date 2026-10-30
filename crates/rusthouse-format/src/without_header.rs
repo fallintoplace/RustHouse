@@ -17,7 +17,7 @@ impl<W: Write> WithoutHeader<W> {
 
 impl<W: Write> Write for WithoutHeader<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let payload = if self.skipping_header {
+        let data_after_header = if self.skipping_header {
             match buf.iter().position(|byte| *byte == b'\n') {
                 Some(index) => {
                     self.skipping_header = false;
@@ -28,7 +28,7 @@ impl<W: Write> Write for WithoutHeader<W> {
         } else {
             buf
         };
-        self.output.write_all(payload)?;
+        self.output.write_all(data_after_header)?;
         Ok(buf.len())
     }
 

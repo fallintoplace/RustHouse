@@ -165,11 +165,14 @@ pub fn read_numeric_column<R: Read>(
     }
 }
 
-fn read_fixed<R: Read, T, const WIDTH: usize>(
+fn read_fixed<R: Read, T, F, const WIDTH: usize>(
     reader: &mut R,
     rows: usize,
-    parse: fn([u8; WIDTH]) -> T,
-) -> io::Result<Vec<T>> {
+    parse: F,
+) -> io::Result<Vec<T>>
+where
+    F: Fn([u8; WIDTH]) -> T,
+{
     if rows == 0 {
         return Ok(Vec::new());
     }

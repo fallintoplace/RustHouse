@@ -70,5 +70,17 @@ class SQLiteLoadTests(unittest.TestCase):
             convert_cell("-1", "UInt64")
 
 
+class SQLiteBoundedReadTests(unittest.TestCase):
+    def test_oversized_row_leaves_no_reference_database(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            source = directory / "region.tsv"
+            source.write_bytes(("\t".join(names("region")) + "\n").encode() +
+                               b"1\tEUROPE\t" + b"x" * 100 + b"\n")
+            with mock.patch("sqlite_load.MAX_RECORD_BYTES", 64):
+                with self.assertRaisesRegex(ValueError, "oversized"):
+                    load_database(directory, directory / "ref.sqlite", ["region"])
+            self.assertFalse((directory / "ref.sqlite").exists())
+
 if __name__ == "__main__":
     unittest.main()

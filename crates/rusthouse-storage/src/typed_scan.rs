@@ -8,6 +8,7 @@ use crate::scan_layout::ScanLayout;
 use crate::{
     ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError,
     PartMetadata, StringColumn, UuidValue, WideMark, inspect_part, read_array_offsets,
+    read_part_row_count,
     read_legacy_strings, read_numeric_array_column, read_numeric_column, read_uuid_values,
     read_wide_marks,
 };
@@ -27,23 +28,6 @@ pub enum TypedColumn {
         values: StringColumn,
         nulls: Vec<u8>,
     },
-}
-
-fn numeric_array_element(values: &NumericColumn, index: usize) -> String {
-    match values {
-        NumericColumn::UInt8(values) => values[index].to_string(),
-        NumericColumn::UInt16(values) => values[index].to_string(),
-        NumericColumn::UInt32(values) => values[index].to_string(),
-        NumericColumn::UInt64(values) => values[index].to_string(),
-        NumericColumn::UInt128(values) => values[index].to_string(),
-        NumericColumn::Int8(values) => values[index].to_string(),
-        NumericColumn::Int16(values) => values[index].to_string(),
-        NumericColumn::Int32(values) => values[index].to_string(),
-        NumericColumn::Int64(values) => values[index].to_string(),
-        NumericColumn::Int128(values) => values[index].to_string(),
-        NumericColumn::Float32(values) => values[index].to_string(),
-        NumericColumn::Float64(values) => values[index].to_string(),
-    }
 }
 
 impl TypedColumn {
@@ -525,7 +509,7 @@ fn decode_typed_column(
                     if text.len() != 1 {
                         text.push(',');
                     }
-                    text.push_str(&numeric_array_element(arrays.values(), element));
+                    append_map_numeric(&mut text, arrays.values(), element);
                 }
                 text.push(']');
                 decoded
@@ -924,6 +908,11 @@ impl TypedQueryReader {
     // Schedule one validated part open on the persistent worker. When a
     // receiver fails, fall back to synchronous opens without losing a part.
     fn prefetch_next(&mut self) {
+        // A two or three part snapshot usually completes its I/O faster
+        // than a fresh channel-backed thread can start and join.
+        if self.parts.len() < 4 {
+            return;
+        }
         if self.prefetched || self.next_part >= self.parts.len() {
             return;
         }
@@ -1000,8 +989,8 @@ impl TypedQueryReader {
         let mut skipped = 0usize;
         while skipped < max_rows && self.next_part < self.parts.len() {
             let part = &self.parts[self.next_part];
-            let metadata = inspect_part(part)?;
-            if let Ok(rows) = usize::try_from(metadata.rows) {
+            let rows = read_part_row_count(part)?;
+            if let Ok(rows) = usize::try_from(rows) {
                 if rows <= max_rows - skipped {
                     skipped += rows;
                     self.next_part += 1;
@@ -1049,6 +1038,38 @@ impl Drop for TypedQueryReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiny_typed_snapshot_opens_parts_without_a_prefetch_thread() {
+        use crate::{Column, write_wide_part};
+        use std::fs;
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-tiny-prefetch-{}", std::process::id(),
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let columns = [Column {
+            name: "value".into(), data_type: "UInt64".into(),
+        }];
+        for index in 0..2u64 {
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &columns, &[vec![Some(index.to_string())]],
+            ).unwrap();
+        }
+        let mut scan = TypedQueryReader::open(&root, &["value".into()]).unwrap();
+        let mut seen = Vec::new();
+        while let Some(batch) = scan.next_batch().unwrap() {
+            let TypedColumn::Numeric(crate::NumericColumn::UInt64(values)) = &batch[0] else {
+                panic!("expected UInt64 data");
+            };
+            seen.extend_from_slice(values);
+        }
+        assert_eq!(seen, [0, 1]);
+        assert_eq!(scan.prefetch_worker_starts, 0);
+        drop(scan);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn typed_part_prefetch_keeps_physical_row_order_and_offset() {
@@ -1369,6 +1390,22 @@ mod map_row_fast_path_tests {
 #[cfg(test)]
 mod direct_map_numeric_render_tests {
     use super::*;
+
+    #[test]
+    fn renders_large_numeric_array_without_intermediate_strings() {
+        let values = NumericColumn::UInt64((0..10_000u64).collect());
+        let mut row = String::from("[");
+        for index in 0..10_000 {
+            if index != 0 {
+                row.push(',');
+            }
+            append_map_numeric(&mut row, &values, index);
+        }
+        row.push(']');
+        assert!(row.starts_with("[0,1,2,3,4,5,6,7,8,9,"));
+        assert!(row.ends_with(",9997,9998,9999]"));
+        assert_eq!(row.bytes().filter(|&byte| byte == b',').count(), 9_999);
+    }
 
     #[test]
     fn appends_signed_unsigned_and_float_map_values_in_place() {

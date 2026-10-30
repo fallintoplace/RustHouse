@@ -24,16 +24,21 @@ def query_for_strictness(strictness):
 def write_facts(path, probe_rows):
     with path.open("w", encoding="utf-8") as facts:
         facts.write("id\tamount\n")
-        for index in range(probe_rows):
-            facts.write(f"{index}\t{index % 100}\n")
+        for first in range(0, probe_rows, 4096):
+            end = min(first + 4096, probe_rows)
+            facts.write("".join(f"{index}\t{index % 100}\n"
+                                for index in range(first, end)))
 
 
 def write_dimensions(path, build_rows, step, start=0, duplicate_factor=1):
     with path.open("w", encoding="utf-8") as dimensions:
         dimensions.write("id\tlabel\n")
-        for index in range(build_rows):
-            unique_index = index // duplicate_factor
-            dimensions.write(f"{start + unique_index * step}\tgroup-{unique_index % 10}\n")
+        for first in range(0, build_rows, 4096):
+            end = min(first + 4096, build_rows)
+            dimensions.write("".join(
+                f"{start + (index // duplicate_factor) * step}\tgroup-{(index // duplicate_factor) % 10}\n"
+                for index in range(first, end)
+            ))
 
 
 def write_fixture(directory, probe_rows, build_rows, disjoint=False, duplicate_factor=1):
@@ -86,7 +91,10 @@ def verify_result(output, expected_labels, multiplicity=1):
         raise ValueError("join result IDs differ from expected matches")
 
 def logical_probe_throughput(probe_rows, median_seconds):
-    if not math.isfinite(median_seconds) or median_seconds <= 0:
+    if type(probe_rows) is not int or probe_rows < 1:
+        raise ValueError("probe_rows must be a positive integer")
+    if (type(median_seconds) not in (int, float)
+            or not math.isfinite(median_seconds) or median_seconds <= 0):
         raise ValueError("median JOIN latency must be positive and finite")
     return probe_rows / median_seconds
 

@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bench.scale.permuted_ids import MASK, emit, generate, permuted
+from bench.scale.permuted_ids import MASK, MULTIPLIER, emit, generate, permuted
 
 
 class PermutedFixturesTests(unittest.TestCase):
@@ -38,6 +38,24 @@ class PermutedFixturesTests(unittest.TestCase):
             self.assertEqual(path.read_text().splitlines(), [str(permuted(i, 5)) for i in range(3)])
             with self.assertRaises(FileExistsError):
                 generate(path, 3)
+
+    def test_never_replaces_raced_destination(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "ids.tsv"
+            with patch("bench.scale.permuted_ids.os.link", side_effect=FileExistsError):
+                with self.assertRaises(FileExistsError):
+                    generate(path, 3)
+            self.assertFalse(path.exists())
+            self.assertEqual(list(Path(root).iterdir()), [])
+
+
+    def test_modular_recurrence_wraps_and_preserves_exact_ids(self):
+        for seed in (0, MASK, MASK - MULTIPLIER + 1):
+            output = io.StringIO()
+            emit(output, 11, seed=seed, batch_rows=2)
+            self.assertEqual(output.getvalue(),
+                             "".join(f"{permuted(i, seed)}\n" for i in range(11)))
 
 
 if __name__ == "__main__":

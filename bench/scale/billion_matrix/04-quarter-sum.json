@@ -1,0 +1,8 @@
+{
+  "name": "quarter-sum",
+  "description": "25 percent selectivity sum",
+  "kind": "modulo",
+  "aggregate": "sum",
+  "modulus": 4,
+  "residue": 3
+}

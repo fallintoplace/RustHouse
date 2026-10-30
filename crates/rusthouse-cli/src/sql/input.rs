@@ -38,6 +38,22 @@ pub(super) fn read_sql_input(
     }
 }
 
+fn push_sql_statement(statements: &mut Vec<String>, statement: &str) -> Result<(), String> {
+    if statement.is_empty() {
+        return Ok(());
+    }
+    if statement.len() > MAX_SQL_BYTES {
+        return Err(format!("SQL script statement exceeds {MAX_SQL_BYTES} bytes"));
+    }
+    if statements.len() >= MAX_SCRIPT_STATEMENTS {
+        return Err(format!(
+            "SQL script supports at most {MAX_SCRIPT_STATEMENTS} statements"
+        ));
+    }
+    statements.push(statement.to_owned());
+    Ok(())
+}
+
 pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
     let input = input.strip_prefix('\u{feff}').unwrap_or(input);
     let bytes = input.as_bytes();
@@ -91,19 +107,7 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
                 current.push_str(&input[segment..index]);
                 current.trim()
             };
-            if !statement.is_empty() {
-                if statement.len() > MAX_SQL_BYTES {
-                    return Err(format!(
-                        "SQL script statement exceeds {MAX_SQL_BYTES} bytes"
-                    ));
-                }
-                if statements.len() >= MAX_SCRIPT_STATEMENTS {
-                    return Err(format!(
-                        "SQL script supports at most {MAX_SCRIPT_STATEMENTS} statements"
-                    ));
-                }
-                statements.push(statement.to_owned());
-            }
+            push_sql_statement(&mut statements, statement)?;
             current.clear();
             index += 1;
             segment = index;
@@ -120,19 +124,7 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
         current.push_str(&input[segment..]);
         current.trim()
     };
-    if !statement.is_empty() {
-        if statement.len() > MAX_SQL_BYTES {
-            return Err(format!(
-                "SQL script statement exceeds {MAX_SQL_BYTES} bytes"
-            ));
-        }
-        if statements.len() >= MAX_SCRIPT_STATEMENTS {
-            return Err(format!(
-                "SQL script supports at most {MAX_SCRIPT_STATEMENTS} statements"
-            ));
-        }
-        statements.push(statement.to_owned());
-    }
+    push_sql_statement(&mut statements, statement)?;
     if statements.is_empty() {
         return Err("SQL script contains no statements".into());
     }

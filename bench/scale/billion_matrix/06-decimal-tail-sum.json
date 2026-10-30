@@ -1,0 +1,8 @@
+{
+  "name": "decimal-tail-sum",
+  "description": "10 percent cyclic selected SUM",
+  "kind": "modulo",
+  "aggregate": "sum",
+  "modulus": 10,
+  "residue": 9
+}

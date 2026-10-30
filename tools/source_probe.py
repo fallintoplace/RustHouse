@@ -5,7 +5,17 @@ import json
 import re
 import sys
 from urllib.parse import quote, urlsplit
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, build_opener
+
+
+class NoRedirect(HTTPRedirectHandler):
+    """Prevent loopback-only probes from following redirects to remote hosts."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+NO_REDIRECT_OPENER = build_opener(NoRedirect())
 
 
 def verify_origin(value):
@@ -18,27 +28,46 @@ def verify_origin(value):
 
 
 def read_json(url, timeout):
-    with urlopen(url, timeout=timeout) as reply:
+    with NO_REDIRECT_OPENER.open(url, timeout=timeout) as reply:
         payload = reply.read(1_048_577)
     if len(payload) > 1_048_576:
         raise ValueError("response exceeds 1 MiB")
     return json.loads(payload)
 
 
-def probe(base, expected_source, table=None, timeout=5):
+def probe(base, expected_source, table=None, timeout=5, expected_version=None):
     data = read_json(base + "/capabilities", timeout)
+    if not isinstance(data, dict):
+        raise ValueError("invalid capabilities response")
     if data.get("read_only") is not True:
         raise ValueError("server is not marked read-only")
     if data.get("source") != expected_source:
         raise ValueError("expected source " + expected_source + ", got " + str(data.get("source")))
+    if expected_version is not None:
+        if not isinstance(expected_version, str) or not expected_version:
+            raise ValueError("expected_version must be a nonempty string")
+        if data.get("version") != expected_version:
+            raise ValueError("expected RustHouse version " + expected_version +
+                             ", got " + str(data.get("version")))
     if table is not None:
         if expected_source != "database":
             raise ValueError("--table requires database mode")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
             raise ValueError("invalid table")
         schema = read_json(base + "/schema?table=" + quote(table, safe=""), timeout)
-        if not isinstance(schema.get("columns"), list):
+        if not isinstance(schema, dict) or not isinstance(schema.get("columns"), list):
             raise ValueError("missing schema columns")
+        columns = schema["columns"]
+        if not columns:
+            raise ValueError("schema has no columns")
+        names = set()
+        for column in columns:
+            if (not isinstance(column, dict) or not isinstance(column.get("name"), str)
+                    or not isinstance(column.get("type"), str)
+                    or not column["name"].strip() or not column["type"].strip()
+                    or column["name"] in names):
+                raise ValueError("invalid schema column")
+            names.add(column["name"])
     return data
 
 
@@ -47,9 +76,11 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8123")
     parser.add_argument("--source", choices=("generated", "part", "database"), required=True)
     parser.add_argument("--table")
+    parser.add_argument("--expected-version", help="Reject unexpected server versions")
     args = parser.parse_args()
     try:
-        info = probe(verify_origin(args.url), args.source, args.table)
+        info = probe(verify_origin(args.url), args.source, args.table,
+                     expected_version=args.expected_version)
     except Exception as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1

@@ -7,6 +7,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,14 +102,19 @@ def select_cases(cases, only):
 
 
 def invoke(binary, sql, timeout):
-    completed = subprocess.run(
-        [str(binary), "sql", sql, "--format", "tsv-no-header"],
-        capture_output=True, check=False, timeout=timeout,
-    )
+    with tempfile.TemporaryFile() as output:
+        completed = subprocess.run(
+            [str(binary), "sql", sql, "--format", "tsv-no-header"],
+            stdout=output, stderr=subprocess.PIPE, check=False, timeout=timeout,
+        )
+        output.seek(0)
+        payload = output.read(256 * 1024 + 1)
     if completed.returncode:
         message = completed.stderr.decode("utf-8", "replace")[:2000]
         raise RuntimeError(f"exit {completed.returncode}: {message}")
-    return completed.stdout
+    if len(payload) > 256 * 1024:
+        raise ValueError("generated SQL benchmark output exceeds 256 KiB")
+    return payload
 
 
 def benchmark_one(index, case, execute, runs, warmups):
@@ -147,9 +153,9 @@ def run_benchmark(cases, execute, runs, warmups):
 def optional_version(command):
     try:
         completed = subprocess.run(
-            command, cwd=ROOT, capture_output=True, text=True, check=False,
+            command, cwd=ROOT, capture_output=True, text=True, check=False, timeout=5,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     return completed.stdout.strip() if completed.returncode == 0 else None
 

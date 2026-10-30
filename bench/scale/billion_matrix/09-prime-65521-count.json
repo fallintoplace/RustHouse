@@ -1,0 +1,8 @@
+{
+  "name": "prime-65521-count",
+  "description": "Very sparse prime-modulo count",
+  "kind": "modulo",
+  "aggregate": "count",
+  "modulus": 65521,
+  "residue": 65520
+}

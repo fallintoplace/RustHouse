@@ -72,6 +72,12 @@ pub(super) fn push_cell(
                 .ok_or_else(|| invalid(format!("invalid Date value: {value}")))?;
             output.extend_from_slice(&days.to_le_bytes());
         }
+        "Date32" => {
+            let days = crate::parse_date32(value)
+                .or_else(|| value.parse::<i32>().ok())
+                .ok_or_else(|| invalid(format!("invalid Date32 value: {value}")))?;
+            output.extend_from_slice(&days.to_le_bytes());
+        }
         "DateTime" => {
             let seconds = crate::parse_datetime(value)
                 .or_else(|| value.parse::<u32>().ok())

@@ -10,6 +10,7 @@ fn scalar_euclidean_div_rem_evaluates_signed_and_nested_constants() {
         ("SELECT REM_EUCLID(7, -3)", 1),
         ("SELECT div_euclid(8, 3) + REM_EUCLID(8, 3)", 4),
         ("SELECT REM_EUCLID(-9223372036854775808, 3)", 1),
+        ("SELECT REM_EUCLID(-9223372036854775808, -1)", 0),
     ] {
         assert_eq!(
             parse_select(sql).unwrap().projection,
@@ -25,7 +26,6 @@ fn scalar_euclidean_div_rem_rejects_invalid_arguments() {
         "SELECT DIV_EUCLID(1, 0)",
         "SELECT REM_EUCLID(1, 0)",
         "SELECT DIV_EUCLID(-9223372036854775808, -1)",
-        "SELECT REM_EUCLID(-9223372036854775808, -1)",
         "SELECT DIV_EUCLID(1)",
         "SELECT REM_EUCLID(1, 2, 3)",
         "SELECT DIV_EUCLID('x', 2)",

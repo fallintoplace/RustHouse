@@ -49,5 +49,17 @@ class NoiseReportTests(unittest.TestCase):
         self.assertEqual(invalid["state"], "invalid_samples")
 
 
+class NoiseReportQueryIdTests(unittest.TestCase):
+    def test_rejects_duplicate_and_invalid_query_identifiers(self):
+        for results in (
+            [{"query": 6, "status": "passed"}, {"query": 6, "status": "passed"}],
+            [{"query": True, "status": "passed"}],
+            [{"query": "6", "status": "passed"}],
+            [None],
+        ):
+            with self.subTest(results=results):
+                with self.assertRaisesRegex(ValueError, "distinct positive"):
+                    assess_report({"results": results})
+
 if __name__ == "__main__":
     unittest.main()

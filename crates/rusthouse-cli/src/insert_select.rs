@@ -17,7 +17,7 @@ impl Drop for Spool {
     }
 }
 
-fn new_spool(database: &Path) -> Result<(Spool, File), String> {
+fn create_insert_spool(database: &Path) -> Result<(Spool, File), String> {
     let path = database.join(format!(
         ".rusthouse-insert-select-{}-{}.tmp",
         std::process::id(),
@@ -52,10 +52,10 @@ fn decode_field(value: &str) -> Result<Option<String>, String> {
             b'r' => decoded.push(b'\r'),
             b'0' => decoded.push(0),
             b'x' => {
-                let hi = bytes
+                let high_hex_digit = bytes
                     .next()
                     .ok_or("incomplete hex escape in SELECT result")?;
-                let lo = bytes
+                let low_hex_digit = bytes
                     .next()
                     .ok_or("incomplete hex escape in SELECT result")?;
                 let digit = |byte: u8| match byte {
@@ -64,9 +64,9 @@ fn decode_field(value: &str) -> Result<Option<String>, String> {
                     b'A'..=b'F' => Some(byte - b'A' + 10),
                     _ => None,
                 };
-                let hi = digit(hi).ok_or("invalid hex escape in SELECT result")?;
-                let lo = digit(lo).ok_or("invalid hex escape in SELECT result")?;
-                decoded.push((hi << 4) | lo);
+                let high_hex_digit = digit(high_hex_digit).ok_or("invalid hex escape in SELECT result")?;
+                let low_hex_digit = digit(low_hex_digit).ok_or("invalid hex escape in SELECT result")?;
+                decoded.push((high_hex_digit << 4) | low_hex_digit);
             }
             _ => return Err("invalid escape in SELECT result".into()),
         }
@@ -131,7 +131,7 @@ pub(super) fn run(database: &Path, statement: &InsertSelect) -> Result<(), Strin
         } else {
             None
         };
-        let (spool, file) = new_spool(database)?;
+        let (spool, file) = create_insert_spool(database)?;
         {
             let mut writer = BufWriter::new(file);
             execute(&query, part.as_deref(), &mut writer).map_err(|error| error.to_string())?;

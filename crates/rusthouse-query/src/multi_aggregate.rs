@@ -2,6 +2,8 @@ use crate::expression::parse_expression_tokens;
 use crate::lexer::Token;
 use crate::{AggregateFunction, ParseError, Parser, ScalarExpr};
 
+const MAX_AGGREGATE_ITEMS: usize = 128;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregateItem {
     pub function: Option<AggregateFunction>,
@@ -30,6 +32,18 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Column(name) => name.clone(),
         ScalarExpr::TextLength(name) => format!("length({name})"),
         ScalarExpr::Integer(number) => number.to_string(),
+        ScalarExpr::Decimal(number) => number.clone(),
+        ScalarExpr::Case { branches, else_expr } => {
+            let mut result = String::from("CASE");
+            for (condition, value) in branches {
+                result.push_str(&format!(" WHEN {} THEN {}", render_expr(condition), render_expr(value)));
+            }
+            if let Some(value) = else_expr {
+                result.push_str(&format!(" ELSE {}", render_expr(value)));
+            }
+            result.push_str(" END");
+            result
+        }
         ScalarExpr::Add(left, right) => format!("{} + {}", render_expr(left), render_expr(right)),
         ScalarExpr::Subtract(left, right) => {
             let right = if matches!(
@@ -153,8 +167,7 @@ pub(crate) fn parse_multiple(
             distinct,
             alias,
         });
-        if !already_closed
-            && items.len() >= 128
+        if items.len() >= MAX_AGGREGATE_ITEMS
             && parser.tokens.get(parser.index) == Some(&Token::Comma)
         {
             return Err(ParseError("SELECT supports at most 128 aggregates".into()));
@@ -181,6 +194,19 @@ pub(crate) fn parse_multiple(
 #[cfg(test)]
 mod tests {
     use crate::{Projection, parse_select};
+
+    #[test]
+    fn count_empty_parentheses_cannot_bypass_aggregate_list_limit() {
+        let within = format!("SELECT {} FROM numbers(1)",
+            vec!["count()"; 128].join(", "));
+        assert!(parse_select(&within).is_ok());
+        let oversized = format!("SELECT {} FROM numbers(1)",
+            vec!["count()"; 129].join(", "));
+        assert!(parse_select(&oversized).is_err());
+        let mixed = format!("SELECT {} FROM numbers(1)",
+            [vec!["count()"; 128], vec!["sum(number)"]].concat().join(", "));
+        assert!(parse_select(&mixed).is_err());
+    }
 
     #[test]
     fn parses_mixed_aggregates_and_calculated_arguments() {
@@ -226,6 +252,19 @@ mod tests {
         assert!(!items[1].distinct);
         assert_eq!(items[0].header(), "count(DISTINCT customer)");
         assert!(parse_select("SELECT sum(DISTINCT amount), count(*) FROM part").is_err());
+    }
+
+    #[test]
+    fn tpch_decimal_literals_in_computed_aggregates() {
+        let query = parse_select(
+            "SELECT sum(l_extendedprice * (1 - l_discount)), sum(l_quantity * 0.05) FROM lineitem"
+        ).unwrap();
+        let Projection::MultipleAggregates(items) = query.projection else {
+            panic!("expected computed aggregates");
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].header(), "sum(l_quantity * 0.05)");
+        assert!(parse_select("SELECT sum(l_quantity * 0.05) FROM lineitem").is_ok());
     }
 
     #[test]

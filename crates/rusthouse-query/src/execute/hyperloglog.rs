@@ -6,6 +6,18 @@ use rusthouse_storage::TypedColumn;
 
 const PRECISION: u32 = 14;
 const REGISTERS: usize = 1 << PRECISION;
+const MAX_REGISTER_RANK: u8 = (64 - PRECISION + 1) as u8;
+
+// Hash the canonical UInt128 little-endian encoding once per tiny value.
+const SMALL_UNSIGNED_HASHES: [u64; 256] = {
+    let mut values = [0u64; 256];
+    let mut index = 0usize;
+    while index < values.len() {
+        values[index] = HyperLogLog::hash(&(index as u128).to_le_bytes());
+        index += 1;
+    }
+    values
+};
 
 pub(super) struct HyperLogLog {
     registers: Box<[u8; REGISTERS]>,
@@ -20,12 +32,14 @@ impl Default for HyperLogLog {
 }
 
 impl HyperLogLog {
-    fn hash(value: &[u8]) -> u64 {
+    const fn hash(value: &[u8]) -> u64 {
         // Deterministic across processes; avalanche distributes sequential IDs.
         let mut hash = 0xcbf29ce484222325u64;
-        for &byte in value {
-            hash ^= u64::from(byte);
+        let mut index = 0;
+        while index < value.len() {
+            hash ^= value[index] as u64;
             hash = hash.wrapping_mul(0x100000001b3);
+            index += 1;
         }
         hash ^= hash >> 33;
         hash = hash.wrapping_mul(0xff51afd7ed558ccd);
@@ -36,13 +50,26 @@ impl HyperLogLog {
 
     fn add(&mut self, hash: u64) {
         let index = (hash >> (64 - PRECISION)) as usize;
-        let rank = (hash << PRECISION).leading_zeros() as u8 + 1;
+        // A zero suffix has rank 64 - PRECISION + 1, not 65.
+        // Keep every emitted register valid for strict shard-state decoding.
+        let rank = ((hash << PRECISION).leading_zeros() + 1)
+            .min(u32::from(MAX_REGISTER_RANK)) as u8;
         self.registers[index] = self.registers[index].max(rank);
     }
 
     fn observe_number(&mut self, value: Number) {
         let hash = match value {
+            Number::Unsigned(value) if value <= u8::MAX as u128 => {
+                SMALL_UNSIGNED_HASHES[value as usize]
+            }
             Number::Unsigned(value) => Self::hash(&value.to_le_bytes()),
+            Number::Signed(value) if value < 0 => {
+                // Negative Int128 keys must not collide with two's-complement UInt128 values.
+                let mut tagged = [0u8; 17];
+                tagged[0] = 1;
+                tagged[1..].copy_from_slice(&value.to_le_bytes());
+                Self::hash(&tagged)
+            }
             Number::Signed(value) => Self::hash(&value.to_le_bytes()),
             Number::Float(value) => {
                 let bits = if value == 0.0 {
@@ -93,7 +120,7 @@ impl HyperLogLog {
         String::from_utf8(bytes).expect("ASCII hex bytes are valid UTF-8")
     }
 
-    fn decode_state(value: &str) -> Result<Self, String> {
+    fn merge_hex_state(&mut self, value: &str) -> Result<(), String> {
         let bytes = value.as_bytes();
         if bytes.len() != REGISTERS * 2 {
             return Err("invalid HLL register count".into());
@@ -103,17 +130,18 @@ impl HyperLogLog {
             b'a'..=b'f' => Some(value - b'a' + 10),
             _ => None,
         };
-        let mut state = Self::default();
-        for (index, bytes) in bytes.chunks_exact(2).enumerate() {
-            let high = digit(bytes[0]).ok_or("invalid HLL hex state")?;
-            let low = digit(bytes[1]).ok_or("invalid HLL hex state")?;
+        // Decode into the final union. Do not allocate and zero a 16 KiB
+        // scratch sketch for every shard's serialized state.
+        for (target, pair) in self.registers.iter_mut().zip(bytes.chunks_exact(2)) {
+            let high = digit(pair[0]).ok_or("invalid HLL hex state")?;
+            let low = digit(pair[1]).ok_or("invalid HLL hex state")?;
             let register = (high << 4) | low;
-            if register > 51 {
+            if register > MAX_REGISTER_RANK {
                 return Err("invalid HLL register rank".into());
             }
-            state.registers[index] = register;
+            *target = (*target).max(register);
         }
-        Ok(state)
+        Ok(())
     }
 
     pub(super) fn merge(&mut self, other: &Self) {
@@ -123,17 +151,23 @@ impl HyperLogLog {
     }
 
     pub(super) fn estimate(&self) -> u64 {
-        let m = REGISTERS as f64;
-        let zero = self.registers.iter().filter(|&&rank| rank == 0).count();
-        let harmonic = self.registers.iter()
-            .map(|&rank| 2.0_f64.powi(-i32::from(rank)))
-            .sum::<f64>();
-        let alpha = 0.7213 / (1.0 + 1.079 / m);
-        let raw = alpha * m * m / harmonic;
-        let estimate = if raw <= 2.5 * m && zero > 0 {
-            m * (m / zero as f64).ln()
+        let register_count = REGISTERS as f64;
+        // Each rank is bounded to 64 - PRECISION + 1. Its contribution
+        // is an exact normal binary64 power of two, so avoid 16K powi calls.
+        // Count zero registers in the same pass.
+        let (harmonic, zero_register_count) = self.registers.iter().fold(
+            (0.0f64, 0usize),
+            |(sum, zeros), &rank| {
+                let contribution = f64::from_bits((1023 - u64::from(rank)) << 52);
+                (sum + contribution, zeros + usize::from(rank == 0))
+            },
+        );
+        let alpha = 0.7213 / (1.0 + 1.079 / register_count);
+        let raw_estimate = alpha * register_count * register_count / harmonic;
+        let estimate = if raw_estimate <= 2.5 * register_count && zero_register_count > 0 {
+            register_count * (register_count / zero_register_count as f64).ln()
         } else {
-            raw
+            raw_estimate
         };
         estimate.round().min(u64::MAX as f64) as u64
     }
@@ -142,6 +176,45 @@ impl HyperLogLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn precomputed_small_unsigned_hashes_match_canonical_bytes() {
+        for value in 0..=u8::MAX {
+            assert_eq!(
+                SMALL_UNSIGNED_HASHES[usize::from(value)],
+                HyperLogLog::hash(&u128::from(value).to_le_bytes())
+            );
+        }
+    }
+
+    #[test]
+    fn exponent_bits_match_original_power_of_two_contributions() {
+        for rank in 0..=MAX_REGISTER_RANK {
+            let encoded = f64::from_bits((1023 - u64::from(rank)) << 52);
+            assert_eq!(encoded, 2.0f64.powi(-i32::from(rank)));
+        }
+    }
+
+    #[test]
+    fn estimate_matches_original_two_pass_reference() {
+        let mut state = HyperLogLog::default();
+        for number in 0..50_000u64 {
+            state.add(HyperLogLog::hash(&number.to_le_bytes()));
+        }
+        let zeros = state.registers.iter().filter(|&&rank| rank == 0).count();
+        let harmonic = state.registers.iter()
+            .map(|&rank| 2.0f64.powi(-i32::from(rank)))
+            .sum::<f64>();
+        let m = REGISTERS as f64;
+        let alpha = 0.7213 / (1.0 + 1.079 / m);
+        let raw = alpha * m * m / harmonic;
+        let estimate = if raw <= 2.5 * m && zeros > 0 {
+            m * (m / zeros as f64).ln()
+        } else {
+            raw
+        };
+        assert_eq!(state.estimate(), estimate.round().min(u64::MAX as f64) as u64);
+    }
 
     #[test]
     fn empty_duplicates_and_small_counts_are_stable() {
@@ -170,6 +243,26 @@ mod tests {
     }
 
     #[test]
+    fn all_zero_hash_stays_in_portable_register_range() {
+        let mut sketch = HyperLogLog::default();
+        sketch.add(0);
+        assert_eq!(sketch.registers[0], (64 - PRECISION + 1) as u8);
+        let encoded = sketch.encode_state();
+        assert!(HyperLogLog::decode_state(&encoded).is_ok());
+    }
+
+    #[test]
+    fn negative_signed_keys_do_not_alias_large_unsigned_keys() {
+        let mut sketch = HyperLogLog::default();
+        sketch.observe_number(Number::Signed(-1));
+        sketch.observe_number(Number::Unsigned(u128::MAX));
+        assert_eq!(sketch.estimate(), 2);
+        sketch.observe_number(Number::Signed(7));
+        sketch.observe_number(Number::Unsigned(7));
+        assert_eq!(sketch.estimate(), 3);
+    }
+
+    #[test]
     fn canonical_float_zero_and_nan() {
         let mut sketch = HyperLogLog::default();
         sketch.observe_number(Number::Float(-0.0));
@@ -189,7 +282,7 @@ pub(super) fn merge_state_hex_values(states: &[&str]) -> Result<u64, String> {
     }
     let mut union = HyperLogLog::default();
     for &state in states {
-        union.merge(&HyperLogLog::decode_state(state)?);
+        union.merge_hex_state(state)?;
     }
     Ok(union.estimate())
 }
@@ -220,6 +313,20 @@ mod state_tests {
         );
         let empty = HyperLogLog::default().encode_state();
         assert_eq!(merge_state_hex_values(&[&empty]).unwrap(), 0);
+    }
+
+    #[test]
+    fn repeated_shards_reuse_union_storage_and_reject_late_invalid_states() {
+        let mut sketch = HyperLogLog::default();
+        for value in 0..20_000u64 {
+            sketch.observe_number(Number::Unsigned(value));
+        }
+        let encoded = sketch.encode_state();
+        let repeated = vec![encoded.as_str(); 256];
+        assert_eq!(merge_state_hex_values(&repeated).unwrap(), sketch.estimate());
+        let mut invalid = repeated;
+        invalid.push("00");
+        assert!(merge_state_hex_values(&invalid).is_err());
     }
 
     #[test]

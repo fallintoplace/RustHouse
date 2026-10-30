@@ -10,12 +10,12 @@ class PairedQueryTests(unittest.TestCase):
         order = []
         def ch(query):
             order.append("ch")
-            self.assertEqual(query, "SELECT count(*) FROM t FORMAT TabSeparated")
-            return b"42\n"
+            self.assertEqual(query, "SELECT count(*) FROM t FORMAT JSONEachRow SETTINGS output_format_json_quote_64bit_integers=0")
+            return b'{"count":42}\n'
         def rh(query):
             order.append("rh")
             self.assertEqual(query, "SELECT count(*) FROM t")
-            return b"42\n"
+            return b'{"count":"42"}\n'
         clock = itertools.count(0, 1_000_000).__next__
         report = paired_query("SELECT count(*) FROM t", rh, ch,
                               runs=2, warmups=1, clock=clock)
@@ -27,7 +27,7 @@ class PairedQueryTests(unittest.TestCase):
         self.assertEqual(len(report["rusthouse_samples_ms"]), 2)
 
     def test_compares_all_warmup_and_measured_outputs(self):
-        outputs = iter([b"2\n", b"2\n", b"3\n", b"2\n"])
+        outputs = iter([b'{"count":"2"}\n', b'{"count":2}\n', b'{"count":3}\n', b'{"count":"2"}\n'])
         def rh(query):
             return next(outputs)
         def ch(query):
@@ -38,9 +38,9 @@ class PairedQueryTests(unittest.TestCase):
 
     def test_rejects_incorrect_sample_counts(self):
         with self.assertRaises(ValueError):
-            paired_query("SELECT 1", lambda _: b"1\n", lambda _: b"1\n", runs=0)
+            paired_query("SELECT 1", lambda _: b'{"x":"1"}\n', lambda _: b'{"x":1}\n', runs=0)
         with self.assertRaises(ValueError):
-            paired_query("SELECT 1", lambda _: b"1\n", lambda _: b"1\n", warmups=-1)
+            paired_query("SELECT 1", lambda _: b'{"x":"1"}\n', lambda _: b'{"x":1}\n', warmups=-1)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,26 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+fn finish_complete_line<W: Write>(
+    output: &mut W,
+    columns: &mut Option<usize>,
+    line: &[u8],
+) -> io::Result<()> {
+    let width = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
+    if columns.is_some_and(|expected| expected != width) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Markdown row does not match header column count",
+        ));
+    }
+    write_markdown_row(output, line, columns.is_some())?;
+    if columns.is_none() {
+        write_header_separator(output, width)?;
+        *columns = Some(width);
+    }
+    Ok(())
+}
+
 /// Turn the SQL executor's TSV rows into a streaming Markdown table.
 pub struct MarkdownWriter<W: Write> {
     output: W,
@@ -21,24 +41,13 @@ impl<W: Write> MarkdownWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        let width = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
-        if self.columns.is_some_and(|expected| expected != width) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Markdown row does not match header column count",
-            ));
-        }
-        write_markdown_row(&mut self.output, &self.line, self.columns.is_some())?;
-        if self.columns.is_none() {
-            write_header_separator(&mut self.output, width)?;
-            self.columns = Some(width);
-        }
+        finish_complete_line(&mut self.output, &mut self.columns, &self.line)?;
         self.line.clear();
         Ok(())
     }
 }
 
-fn decode_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_, [u8]>> {
+fn decode_tsv_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_, [u8]>> {
     if data_row && field != b"\\N" && field.contains(&b'\\') {
         let decoded = decode_tsv_field(field)?;
         std::str::from_utf8(&decoded).map_err(|_| {
@@ -50,6 +59,25 @@ fn decode_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_, [u8
     }
 }
 
+// Plain fields are the common Markdown response case. Send the complete
+// framed cell in one write, while escaping special fields with the old path.
+fn write_framed_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+    if field.len() <= 256
+        && field.iter().all(|&byte| {
+            !byte.is_ascii_control() && !matches!(byte, b'|' | b'\\' | b'&' | b'<' | b'>')
+        })
+    {
+        let mut framed = [0u8; 259];
+        framed[0] = b' ';
+        framed[1..field.len() + 1].copy_from_slice(field);
+        framed[field.len() + 1..field.len() + 3].copy_from_slice(b" |");
+        return output.write_all(&framed[..field.len() + 3]);
+    }
+    output.write_all(b" ")?;
+    write_cell(output, field)?;
+    output.write_all(b" |")
+}
+
 fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
     if !line.contains(&b'\\') {
         // Validate before writing, so malformed UTF-8 never leaves a partial row.
@@ -58,15 +86,13 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
         })?;
         output.write_all(b"|")?;
         for field in line.split(|&byte| byte == b'\t') {
-            output.write_all(b" ")?;
-            write_cell(output, field)?;
-            output.write_all(b" |")?;
+            write_framed_cell(output, field)?;
         }
         return output.write_all(b"\n");
     }
     let fields = line
         .split(|&byte| byte == b'\t')
-        .map(|field| decode_markdown_field(field, data_row))
+        .map(|field| decode_tsv_markdown_field(field, data_row))
         .collect::<io::Result<Vec<_>>>()?;
     for field in &fields {
         std::str::from_utf8(field.as_ref()).map_err(|_| {
@@ -75,9 +101,7 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
     }
     output.write_all(b"|")?;
     for field in fields {
-        output.write_all(b" ")?;
-        write_cell(output, field.as_ref())?;
-        output.write_all(b" |")?;
+        write_framed_cell(output, field.as_ref())?;
     }
     output.write_all(b"\n")
 }
@@ -139,6 +163,10 @@ impl<W: Write> Write for MarkdownWriter<W> {
                     "Markdown row exceeds 1 MiB",
                 ));
             }
+            if complete && self.line.is_empty() {
+                finish_complete_line(&mut self.output, &mut self.columns, fragment)?;
+                continue;
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -157,6 +185,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn complete_rows_bypass_the_line_staging_buffer() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"item\n").unwrap();
+        let before = writer.line.capacity();
+        let item = "z".repeat(16 * 1024);
+        writer.write_all(format!("{item}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        assert!(writer.output.ends_with(format!("| {item} |\n").as_bytes()));
+    }
+
+    #[test]
+    fn plain_markdown_cells_need_one_output_call() {
+        struct Count {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let mut writer = Count { writes: 0, bytes: Vec::new() };
+        write_framed_cell(&mut writer, "München".as_bytes()).unwrap();
+        write_framed_cell(&mut writer, b"42").unwrap();
+        assert_eq!(writer.writes, 2);
+        assert_eq!(writer.bytes, " München | 42 |".as_bytes());
+
+        let mut special = Vec::new();
+        write_framed_cell(&mut special, b"a|b & <c>").unwrap();
+        assert_eq!(special, b" a\\|b &amp; &lt;c&gt; |");
+    }
+
+    #[test]
     fn plain_markdown_rows_stream_without_escape_decoding() {
         let mut output = Vec::new();
         write_markdown_row(&mut output, "café\t42".as_bytes(), true).unwrap();
@@ -166,19 +230,19 @@ mod tests {
     #[test]
     fn field_decoder_borrows_plain_and_null_fields() {
         assert!(matches!(
-            decode_markdown_field(b"plain", true).unwrap(),
+            decode_tsv_markdown_field(b"plain", true).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_markdown_field(b"\\N", true).unwrap(),
+            decode_tsv_markdown_field(b"\\N", true).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_markdown_field(b"a\\tb", false).unwrap(),
+            decode_tsv_markdown_field(b"a\\tb", false).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_markdown_field(b"a\\tb", true).unwrap(),
+            decode_tsv_markdown_field(b"a\\tb", true).unwrap(),
             Cow::Owned(_)
         ));
     }
@@ -186,12 +250,12 @@ mod tests {
     #[test]
     fn shared_decoder_validates_unicode_and_bad_bytes() {
         assert_eq!(
-            decode_markdown_field(br"caf\xC3\xA9", true)
+            decode_tsv_markdown_field(br"caf\xC3\xA9", true)
                 .unwrap()
                 .as_ref(),
             "café".as_bytes()
         );
-        assert!(decode_markdown_field(br"\xFF", true).is_err());
+        assert!(decode_tsv_markdown_field(br"\xFF", true).is_err());
     }
 
     #[test]

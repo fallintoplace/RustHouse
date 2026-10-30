@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_SQL_VALUES_COLUMNS: usize = 64;
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -50,16 +51,16 @@ fn encode_values_row_into(line: &[u8], columns: usize, values: &mut Vec<u8>) -> 
             .saturating_add(columns.saturating_mul(3))
             .saturating_add(2),
     );
-    let mut count = 0;
+    let mut encoded_field_count = 0;
     values.push(b'(');
     for field in line.split(|&byte| byte == b'\t') {
-        if count > 0 {
+        if encoded_field_count > 0 {
             values.extend_from_slice(b", ");
         }
         append_literal(values, field)?;
-        count += 1;
+        encoded_field_count += 1;
     }
-    if count != columns {
+    if encoded_field_count != columns {
         return Err(invalid("SQL VALUES row width differs from the header"));
     }
     values.push(b')');
@@ -71,6 +72,24 @@ fn encode_values_row(line: &[u8], columns: usize) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::new();
     encode_values_row_into(line, columns, &mut encoded)?;
     Ok(encoded)
+}
+
+fn emit_values_row<W: Write>(
+    output: &mut W,
+    encoded: &mut Vec<u8>,
+    rows: &mut usize,
+    line: &[u8],
+    columns: usize,
+) -> io::Result<()> {
+    encode_values_row_into(line, columns, encoded)?;
+    if *rows == 0 {
+        output.write_all(b"VALUES ")?;
+    } else {
+        output.write_all(b",\n")?;
+    }
+    output.write_all(encoded)?;
+    *rows += 1;
+    Ok(())
 }
 
 pub struct SqlValuesWriter<W: Write> {
@@ -97,21 +116,14 @@ impl<W: Write> SqlValuesWriter<W> {
     fn finish_line(&mut self) -> io::Result<()> {
         let Some(columns) = self.columns else {
             let columns = self.line.split(|&byte| byte == b'\t').count();
-            if columns == 0 || columns > 64 {
+            if columns == 0 || columns > MAX_SQL_VALUES_COLUMNS {
                 return Err(invalid("SQL VALUES supports 1 to 64 columns"));
             }
             self.columns = Some(columns);
             self.line.clear();
             return Ok(());
         };
-        encode_values_row_into(&self.line, columns, &mut self.encoded)?;
-        if self.rows == 0 {
-            self.output.write_all(b"VALUES ")?;
-        } else {
-            self.output.write_all(b",\n")?;
-        }
-        self.output.write_all(&self.encoded)?;
-        self.rows += 1;
+        emit_values_row(&mut self.output, &mut self.encoded, &mut self.rows, &self.line, columns)?;
         self.line.clear();
         Ok(())
     }
@@ -146,6 +158,18 @@ impl<W: Write> Write for SqlValuesWriter<W> {
             if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
                 return Err(invalid("SQL VALUES input line exceeds 1 MiB"));
             }
+            if complete && self.line.is_empty() {
+                if let Some(columns) = self.columns {
+                    emit_values_row(
+                        &mut self.output,
+                        &mut self.encoded,
+                        &mut self.rows,
+                        fragment,
+                        columns,
+                    )?;
+                    continue;
+                }
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -162,6 +186,18 @@ impl<W: Write> Write for SqlValuesWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contiguous_sql_rows_do_not_use_input_line_storage() {
+        let mut writer = SqlValuesWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let before = writer.line.capacity();
+        let value = "a".repeat(16 * 1024);
+        writer.write_all(format!("{value}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        writer.finish().unwrap();
+        assert!(writer.output.ends_with(format!("('{value}');\n").as_bytes()));
+    }
 
     #[test]
     fn bulk_input_serializes_multiple_rows_and_fragmented_tail() {

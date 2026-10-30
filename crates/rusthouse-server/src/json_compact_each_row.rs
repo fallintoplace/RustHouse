@@ -115,6 +115,17 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
                     "JSON row exceeds 1 MiB",
                 ));
             }
+            if complete && self.line.is_empty() {
+                if let Some(columns) = self.columns {
+                    write_compact_row_into(
+                        &mut self.output,
+                        fragment,
+                        columns,
+                        &mut self.encoded,
+                    )?;
+                    continue;
+                }
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -131,6 +142,20 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_large_rows_do_not_allocate_a_line_buffer() {
+        let mut writer = JsonCompactEachRowWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let before = writer.line.capacity();
+        let value = "z".repeat(16 * 1024);
+        writer.write_all(format!("{value}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        assert_eq!(
+            writer.finish().unwrap(),
+            format!("[\"{value}\"]\n").as_bytes()
+        );
+    }
 
     #[test]
     fn response_buffer_is_reused_for_shorter_rows() {

@@ -1,0 +1,26 @@
+{
+  "name": "nullable-dimension-filters",
+  "description": "Exercise null maps, nullable projection counting and selective group reductions",
+  "queries": [
+    {
+      "name": "nulls",
+      "sql": "SELECT COUNT(*) FROM events WHERE coupon IS NULL"
+    },
+    {
+      "name": "non-nulls",
+      "sql": "SELECT COUNT(coupon) FROM events"
+    },
+    {
+      "name": "nonnull-by-region",
+      "sql": "SELECT region, COUNT(*) FROM events WHERE coupon IS NOT NULL GROUP BY region ORDER BY region"
+    },
+    {
+      "name": "paid-noncoupon",
+      "sql": "SELECT COUNT(*) FROM events WHERE coupon IS NULL AND status = 'paid'"
+    },
+    {
+      "name": "promo-revenue",
+      "sql": "SELECT category, SUM(amount) FROM events WHERE coupon IS NOT NULL GROUP BY category ORDER BY category"
+    }
+  ]
+}

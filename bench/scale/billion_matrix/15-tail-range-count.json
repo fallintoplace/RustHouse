@@ -1,0 +1,8 @@
+{
+  "name": "tail-range-count",
+  "description": "Trailing 1 percent range count",
+  "kind": "range",
+  "aggregate": "count",
+  "lower_ppm": 990000,
+  "upper_ppm": 1000000
+}
