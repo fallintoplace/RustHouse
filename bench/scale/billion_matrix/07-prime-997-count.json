@@ -1,0 +1,8 @@
+{
+  "name": "prime-997-count",
+  "description": "Sparse prime-modulo count",
+  "kind": "modulo",
+  "aggregate": "count",
+  "modulus": 997,
+  "residue": 17
+}

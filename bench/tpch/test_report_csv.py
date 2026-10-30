@@ -66,5 +66,12 @@ class ReportCSVTests(unittest.TestCase):
                 rows_from_report(payload)
 
 
+class ReportCSVStatusTests(unittest.TestCase):
+    def test_rejects_unknown_or_non_string_status(self):
+        for status in ("passsed", None, [], True):
+            with self.subTest(status=status):
+                with self.assertRaisesRegex(ValueError, "unknown benchmark"):
+                    rows_from_report({"results": [{"query": 1, "status": status}]})
+
 if __name__ == "__main__":
     unittest.main()
