@@ -115,27 +115,58 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
     Ok(raw)
 }
 
+/// Bound the entire outbound request, not just time spent in one write.
+fn write_request_with_deadline(
+    stream: &mut TcpStream,
+    header: &[u8],
+    body: &[u8],
+    timeout: Duration,
+) -> Result<(), String> {
+    let started = Instant::now();
+    for mut remaining_bytes in [header, body] {
+        while !remaining_bytes.is_empty() {
+            let remaining = timeout
+                .checked_sub(started.elapsed())
+                .filter(|duration| !duration.is_zero())
+                .ok_or("peer request write deadline exceeded")?;
+            stream
+                .set_write_timeout(Some(remaining))
+                .map_err(|error| error.to_string())?;
+            match stream.write(remaining_bytes) {
+                Ok(0) => return Err("peer connection closed during request write".into()),
+                Ok(count) => remaining_bytes = &remaining_bytes[count..],
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    return Err("peer request write deadline exceeded".into());
+                }
+                Err(error) => return Err(format!("cannot write peer request: {error}")),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Never follows redirects, negotiates compression, or resolves hostnames.
 fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResponse, String> {
     let address = SocketAddr::V4(peer.address());
     let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)
         .map_err(|error| format!("cannot reach peer: {error}"))?;
-    stream
-        .set_write_timeout(Some(IO_TIMEOUT))
-        .map_err(|error| error.to_string())?;
     let accept_encoding = if is_query_request(method, path) {
         "Accept-Encoding: x-rusthouse-lz4\r\n"
     } else {
         ""
     };
-    write!(
-        stream,
+    let header = format!(
         "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\n{accept_encoding}Connection: close\r\n\r\n",
         peer.address().ip(),
         body.len()
-    )
-    .map_err(|error| error.to_string())?;
-    stream.write_all(body).map_err(|error| error.to_string())?;
+    );
+    write_request_with_deadline(&mut stream, header.as_bytes(), body, IO_TIMEOUT)?;
     let raw = read_with_deadline(&mut stream, response_timeout(method, path))?;
     parse_response_owned(raw)
 }
@@ -145,6 +176,20 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
+
+    #[test]
+    fn rejects_expired_total_peer_write_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        let error = write_request_with_deadline(
+            &mut client,
+            b"POST / HTTP/1.1\r\n\r\n",
+            b"SELECT 1",
+            Duration::ZERO,
+        ).unwrap_err();
+        assert_eq!(error, "peer request write deadline exceeded");
+    }
 
     #[test]
     fn queries_a_loopback_peer_with_exact_sql_body() {
