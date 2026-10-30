@@ -2,6 +2,7 @@
 """Validate the configured RustHouse HTTP source, not only process liveness."""
 import argparse
 import json
+import math
 import re
 import sys
 from urllib.parse import quote, urlsplit
@@ -18,6 +19,15 @@ class NoRedirect(HTTPRedirectHandler):
 NO_REDIRECT_OPENER = build_opener(NoRedirect())
 
 
+def _unique_object_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate source probe JSON field: {key}")
+        result[key] = value
+    return result
+
+
 def verify_origin(value):
     parsed = urlsplit(value)
     if (parsed.scheme != "http" or parsed.hostname not in ("localhost", "127.0.0.1")
@@ -28,14 +38,17 @@ def verify_origin(value):
 
 
 def read_json(url, timeout):
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 300:
+        raise ValueError("timeout must be finite and in (0, 300] seconds")
     with NO_REDIRECT_OPENER.open(url, timeout=timeout) as reply:
         payload = reply.read(1_048_577)
     if len(payload) > 1_048_576:
         raise ValueError("response exceeds 1 MiB")
-    return json.loads(payload)
+    return json.loads(payload, object_pairs_hook=_unique_object_pairs)
 
 
 def probe(base, expected_source, table=None, timeout=5, expected_version=None):
+    base = verify_origin(base)
     data = read_json(base + "/capabilities", timeout)
     if not isinstance(data, dict):
         raise ValueError("invalid capabilities response")
@@ -74,13 +87,14 @@ def probe(base, expected_source, table=None, timeout=5, expected_version=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8123")
+    parser.add_argument("--timeout", type=float, default=5)
     parser.add_argument("--source", choices=("generated", "part", "database"), required=True)
     parser.add_argument("--table")
     parser.add_argument("--expected-version", help="Reject unexpected server versions")
     args = parser.parse_args()
     try:
         info = probe(verify_origin(args.url), args.source, args.table,
-                     expected_version=args.expected_version)
+                     expected_version=args.expected_version, timeout=args.timeout)
     except Exception as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1
