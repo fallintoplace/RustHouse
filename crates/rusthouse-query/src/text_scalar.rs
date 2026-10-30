@@ -1951,7 +1951,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         _ => return Err(ParseError("unsupported dateTrunc unit".into())),
                     };
-                    ConstantValue::Text(rusthouse_storage::format_datetime(rounded))
+                    let rendered = rusthouse_storage::format_datetime(rounded);
+                    if matches!(
+                        unit.as_str(),
+                        "week" | "weeks" | "month" | "months" | "quarter"
+                            | "quarters" | "year" | "years"
+                    ) {
+                        ConstantValue::Text(rendered[..10].to_owned())
+                    } else {
+                        ConstantValue::Text(rendered)
+                    }
                 }
                 _ => ConstantValue::Null,
             }
