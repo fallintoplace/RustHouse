@@ -11,6 +11,20 @@ def fixture(milliseconds=1.0):
 
 
 class PersistedPartComparisonTests(unittest.TestCase):
+    def test_rejects_symlinked_performance_artifact(self):
+        import tempfile
+        from pathlib import Path
+        from bench.pr_parts_compare import _read_bounded_report
+
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "real.txt"
+            source.write_bytes(b"measurements")
+            alias = Path(folder) / "alias.txt"
+            alias.symlink_to(source)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                _read_bounded_report(alias)
+            self.assertEqual(_read_bounded_report(source), "measurements")
+
     def test_parses_verified_workloads_and_renders_comparison(self):
         a = parse_benchmark(fixture(2))
         self.assertEqual(set(a), set(CASES))
