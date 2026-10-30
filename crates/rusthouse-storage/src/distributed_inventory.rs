@@ -201,10 +201,10 @@ mod immutable_identity_tests {
         fs::write(&first, b"abcd").unwrap();
         fs::write(&second, b"wxyz").unwrap();
         let before = fs::symlink_metadata(&first).unwrap();
-        let opened = File::open(&second).unwrap().metadata().unwrap();
+        let opened = fs::File::open(&second).unwrap().metadata().unwrap();
         assert_eq!(before.len(), opened.len());
         assert!(!same_file_identity(&before, &opened));
-        assert!(same_file_identity(&before, &File::open(&first).unwrap().metadata().unwrap()));
+        assert!(same_file_identity(&before, &fs::File::open(&first).unwrap().metadata().unwrap()));
         fs::remove_dir_all(root).unwrap();
     }
 }
