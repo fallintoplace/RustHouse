@@ -8,6 +8,7 @@ import json
 import math
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -44,6 +45,18 @@ def verify_shard(path, entry):
     if (digest.hexdigest() != expected_hash or size != expected_bytes
             or lines != expected_rows or last_byte != 10):
         raise ValueError(f"shard checksum, byte size, or row count mismatch: {path.name}")
+
+
+def execute_copy(command, timeout, runner=None):
+    if runner is not None:
+        result = runner(command, capture_output=True, check=False, timeout=timeout)
+        return result.returncode, result.stderr[-500:].decode("utf-8", "replace")
+    with tempfile.TemporaryFile() as errors:
+        result = subprocess.run(command, stdout=subprocess.DEVNULL,
+                                stderr=errors, check=False, timeout=timeout)
+        errors.seek(max(0, errors.tell() - 500))
+        tail = errors.read(500).decode("utf-8", "replace")
+    return result.returncode, tail
 
 
 def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=None,
@@ -94,17 +107,16 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
                 "shards_loaded": 0, "shards_planned": len(paths),
                 "rows_reported_by_manifest": sum(s["rows"] for s in shards),
                 "results": []}
-    run = execute or subprocess.run
     completed = []
     for entry, path in zip(shards, paths):
         name = entry["path"]
         cmd = [str(binary), "sql", copy_sql(table, path), "--database", str(database)]
         started = time.perf_counter()
-        outcome = run(cmd, capture_output=True, check=False, timeout=timeout)
-        if outcome.returncode:
+        returncode, diagnostic = execute_copy(cmd, timeout, execute)
+        if returncode:
             raise RuntimeError(
                 f"COPY failed after {len(completed)} successful shards; "
-                f"failed={name}: {outcome.stderr.decode('utf-8', 'replace')[-500:]}"
+                f"failed={name}: {diagnostic}"
             )
         completed.append({"shard": name, "rows": entry["rows"],
                           "seconds": time.perf_counter() - started})
