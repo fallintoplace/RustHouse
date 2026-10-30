@@ -36,9 +36,11 @@ pub(super) fn tokenize_insert(sql: &str) -> Result<Vec<Token>, ParseError> {
 }
 
 fn skip_line_comment(bytes: &[u8], index: &mut usize) {
-    while *index < bytes.len() && !matches!(bytes[*index], b'\r' | b'\n') {
-        *index += 1;
-    }
+    let remaining = &bytes[*index..];
+    *index += remaining
+        .iter()
+        .position(|&byte| matches!(byte, b'\r' | b'\n'))
+        .unwrap_or(remaining.len());
 }
 
 fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseError> {
@@ -443,5 +445,17 @@ mod tests {
         assert!(matches!(tokens.first(), Some(Token::Word(word)) if word == "SELECT"));
         assert_eq!(tokens.len(), 200);
         assert_eq!(tokens.last(), Some(&Token::Number("99".into())));
+    }
+}
+
+#[cfg(test)]
+mod line_comment_scanning_tests {
+    use super::*;
+
+    #[test]
+    fn line_comments_stop_before_both_newline_forms() {
+        let plain = tokenize("SELECT 1 FROM numbers(2)").unwrap();
+        assert_eq!(tokenize("SELECT 1 -- ignored\nFROM numbers(2)").unwrap(), plain);
+        assert_eq!(tokenize("SELECT 1 # ignored\r\nFROM numbers(2)").unwrap(), plain);
     }
 }
