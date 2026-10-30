@@ -1732,13 +1732,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "toLastDayOfWeek requires one or two arguments")?;
             match (input, mode) {
                 (Some(value), Some(mode)) => {
-                    if !matches!(mode, 0 | 1) {
-                        return Err(ParseError("toLastDayOfWeek only supports week modes 0 and 1".into()));
+                    if !(0..=9).contains(&mode) {
+                        return Err(ParseError("toLastDayOfWeek mode must be between 0 and 9".into()));
                     }
                     let days = rusthouse_storage::parse_date(&value).map(u32::from)
                         .or_else(|| rusthouse_storage::parse_datetime(&value).map(|seconds| seconds / 86_400))
                         .ok_or_else(|| ParseError("toLastDayOfWeek requires a valid UTC Date or DateTime".into()))?;
-                    let weekday = (days + if mode == 1 { 3 } else { 4 }) % 7;
+                    let weekday = (days + if mode % 2 == 1 { 3 } else { 4 }) % 7;
                     let days = days.checked_add(6 - weekday).ok_or_else(|| {
                         ParseError("toLastDayOfWeek result overflows Date".into())
                     })?;
