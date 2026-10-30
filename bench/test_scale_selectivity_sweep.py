@@ -48,6 +48,15 @@ class SelectivitySweepTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "samples"):
             run_sweep("rusthouse", "part", 1_000_000_000, samples=129)
 
+    def test_cli_failure_keeps_only_bounded_stderr_tail(self):
+        def failing(*_args, **_kwargs):
+            return SimpleNamespace(returncode=2, stdout=b"",
+                                   stderr=b"a" * 10_000 + b"final failure")
+        with self.assertRaises(RuntimeError) as ctx:
+            run_sweep("rusthouse", "part", 10, samples=1, execute=failing)
+        self.assertLess(len(str(ctx.exception)), 750)
+        self.assertIn("final failure", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
