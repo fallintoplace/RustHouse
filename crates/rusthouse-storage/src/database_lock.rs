@@ -98,6 +98,9 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         validate_lock_identity(&path, &file)?;
         advisory::try_lock(&file, exclusive)
             .map_err(|error| format_database_lock_error("acquire", lock_kind, &path, error))?;
+        // Do not keep a lock on a detached inode if the path changed
+        // while the advisory lock was being acquired.
+        validate_lock_identity(&path, &file)?;
     }
 
     #[cfg(not(unix))]
@@ -112,4 +115,28 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         #[cfg(not(unix))]
         path,
     })
+}
+
+#[cfg(all(test, unix))]
+mod post_lock_identity_tests {
+    use super::*;
+
+    #[test]
+    fn detects_replacement_of_the_lock_path_after_open() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-lock-recheck-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let path = root.join(".rusthouse-write.lock");
+        fs::write(&path, b"original").unwrap();
+        let opened = fs::File::open(&path).unwrap();
+        assert!(validate_lock_identity(&path, &opened).is_ok());
+        fs::rename(&path, root.join("old-lock")).unwrap();
+        fs::write(&path, b"replacement").unwrap();
+        assert!(validate_lock_identity(&path, &opened).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
