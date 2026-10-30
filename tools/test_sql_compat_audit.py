@@ -10,6 +10,16 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(parse_lines("-- note\nSELECT 1;\nSELECT count(*) FROM numbers(3)\n"),
                          [(2, "SELECT 1"), (3, "SELECT count(*) FROM numbers(3)")])
 
+    def test_audit_corpus_rejects_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "queries.sql"
+            source.write_text("SELECT 1;")
+            alias = Path(directory) / "alias.sql"
+            alias.symlink_to(source)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                read_queries(alias)
+            self.assertEqual(read_queries(source), [(1, "SELECT 1")])
+
     def test_audit_file_fails_early_on_large_input(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "queries.sql"
