@@ -37,7 +37,7 @@ impl<'a> JsonValue<'a> {
             JsonKind::Primitive => match self.raw {
                 "true" | "false" => "Bool",
                 "null" => "Null",
-                text if text.as_bytes().iter().any(|byte| matches!(byte, b'.' | b'e' | b'E')) => "Double",
+                text if text.as_bytes().iter().any(|byte| matches!(*byte, b'.' | b'e' | b'E')) => "Double",
                 text if text.starts_with('-') || text.parse::<i64>().is_ok() => "Int64",
                 text if text.parse::<u64>().is_ok() => "UInt64",
                 _ => "Double",
