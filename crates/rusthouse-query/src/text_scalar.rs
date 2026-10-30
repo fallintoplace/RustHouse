@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "ISIPADDRESSINRANGE"
+        "CRC32"
+            | "ISIPADDRESSINRANGE"
             | "MACSTRINGTOOUI"
             | "MACNUMTOSTRING"
             | "MACSTRINGTONUM"
@@ -213,6 +214,17 @@ pub(super) fn is_function(name: &str) -> bool {
     )
 }
 
+fn crc32_ieee(input: &[u8]) -> u32 {
+    let mut crc = !0_u32;
+    for &byte in input {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xEDB8_8320 & (0_u32.wrapping_sub(crc & 1)));
+        }
+    }
+    !crc
+}
+
 fn parse_mac_address(input: &str) -> Option<u64> {
     let mut value = 0_u64;
     let mut count = 0;
@@ -351,6 +363,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "CRC32" => {
+            let value = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "CRC32 requires one argument")?;
+            match value {
+                Some(value) => ConstantValue::Integer(i64::from(crc32_ieee(value.as_bytes()))),
+                None => ConstantValue::Null,
+            }
+        }
         "IPV4STRINGTONUMORNULL" => {
             let input = text_arg(parser, depth + 1)?;
             require(
@@ -4388,5 +4408,31 @@ mod equal_edit_distance_fast_path_tests {
         let rhs = "b".repeat(2048);
         assert!(bounded_edit_distance(lhs.as_bytes(), rhs.as_bytes()).is_err());
         assert!(bounded_utf8_edit_distance(&lhs, &rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_crc32_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn crc32_matches_ieee_802_3_and_handles_null() {
+        for (sql, expected) in [
+            ("SELECT CRC32('')", 0),
+            ("SELECT CRC32('123456789')", 3_421_780_262),
+            ("SELECT CRC32('ClickHouse')", 1_538_217_360),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1 && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(matches!(
+            parse_select("SELECT CRC32(NULL)").unwrap().projection,
+            Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Null
+        ));
+        assert!(parse_select("SELECT CRC32('a', 'b')").is_err());
     }
 }
