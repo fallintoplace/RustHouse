@@ -40,7 +40,13 @@ fn bucket(value: f64, min: f64, max: f64, bins: usize) -> usize {
     if min == max {
         return 0;
     }
-    let fraction = ((value - min) / (max - min)).clamp(0.0, 1.0);
+    let span = max - min;
+    let fraction = if span.is_finite() {
+        (value - min) / span
+    } else {
+        (value * 0.5 - min * 0.5) / (max * 0.5 - min * 0.5)
+    }
+    .clamp(0.0, 1.0);
     ((fraction * bins as f64) as usize).min(bins - 1)
 }
 
@@ -57,11 +63,19 @@ fn to_bins(min: f64, max: f64, counts: &[u64]) -> Vec<Bin> {
         .iter()
         .enumerate()
         .map(|(index, &count)| Bin {
-            min: min + span * (index as f64 / counts.len() as f64),
+            min: if span.is_finite() {
+                min + span * (index as f64 / counts.len() as f64)
+            } else {
+                let t = index as f64 / counts.len() as f64;
+                min * (1.0 - t) + max * t
+            },
             max: if index + 1 == counts.len() {
                 max
-            } else {
+            } else if span.is_finite() {
                 min + span * ((index + 1) as f64 / counts.len() as f64)
+            } else {
+                let t = (index + 1) as f64 / counts.len() as f64;
+                min * (1.0 - t) + max * t
             },
             count,
         })
@@ -434,5 +448,25 @@ mod generated_histogram_boundary_regression_tests {
         let expected = to_bins(low, high, &expected);
         assert_eq!(actual.iter().map(|bin| (bin.min, bin.max, bin.count)).collect::<Vec<_>>(),
             expected.iter().map(|bin| (bin.min, bin.max, bin.count)).collect::<Vec<_>>());
+    }
+}
+
+#[cfg(test)]
+mod finite_extreme_histogram_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_bins_when_finite_data_range_overflows_f64() {
+        let min = -1e308;
+        let max = 1e308;
+        assert_eq!(bucket(min, min, max, 4), 0);
+        assert_eq!(bucket(0.0, min, max, 4), 2);
+        assert_eq!(bucket(max, min, max, 4), 3);
+        let bins = to_bins(min, max, &[1, 1, 1, 1]);
+        assert_eq!(bins.len(), 4);
+        assert_eq!(bins.first().unwrap().min, min);
+        assert_eq!(bins.last().unwrap().max, max);
+        assert!(bins.iter().all(|bin| bin.min.is_finite() && bin.max.is_finite()));
+        assert!(bins.windows(2).all(|pair| pair[0].max <= pair[1].min));
     }
 }
