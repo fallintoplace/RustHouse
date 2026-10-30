@@ -11,6 +11,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 const MAX_TABLE_PARTS: usize = 16_384;
+const MAX_SNAPSHOT_DIRECTORY_ENTRIES: usize = 65_536;
 
 fn io_error(path: &Path, source: io::Error) -> PartError {
     PartError::Io {
@@ -133,13 +134,22 @@ fn validate_block_ranges(ranges: &mut HashMap<String, Vec<(u64, u64)>>) -> Resul
 /// List complete active wide parts from an offline snapshot.
 /// Refuse overlapping block ranges rather than double-count replaced parts.
 pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
+    query_parts_with_entry_limit(path, MAX_SNAPSHOT_DIRECTORY_ENTRIES)
+}
+
+fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<PathBuf>, PartError> {
     require_snapshot_directory(path, "snapshot source must be a real directory")?;
     if path.join("count.txt").exists() || path.join("columns.txt").exists() {
         return Ok(vec![path.to_owned()]);
     }
     let mut parts = Vec::new();
     let mut ranges: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
-    for entry in fs::read_dir(path).map_err(|e| io_error(path, e))? {
+    for (index, entry) in fs::read_dir(path).map_err(|e| io_error(path, e))?.enumerate() {
+        if index >= max_entries {
+            return Err(PartError::InvalidScan(
+                "snapshot directory contains too many entries".into(),
+            ));
+        }
         let entry = entry.map_err(|e| io_error(path, e))?;
         let file_type = entry.file_type().map_err(|e| io_error(&entry.path(), e))?;
         if !file_type.is_dir() {
@@ -806,6 +816,30 @@ mod active_pointer_length_tests {
         assert_eq!(resolve_active_snapshot(&root).unwrap(), first);
         fs::write(root.join(".rusthouse-active"), b"g100\n").unwrap();
         assert_eq!(resolve_active_snapshot(&root).unwrap(), second);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod directory_enumeration_budget_tests {
+    use super::*;
+    use crate::write_wide_part;
+
+    #[test]
+    fn bounds_unrelated_directory_entries_as_well_as_active_parts() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-snapshot-entry-cap-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        write_wide_part(
+            &root.join("all_1_1_0"),
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("1".into())]],
+        ).unwrap();
+        fs::create_dir(root.join("unrelated")).unwrap();
+        assert!(query_parts_with_entry_limit(&root, 1).is_err());
+        assert_eq!(query_parts_with_entry_limit(&root, 2).unwrap().len(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 }
