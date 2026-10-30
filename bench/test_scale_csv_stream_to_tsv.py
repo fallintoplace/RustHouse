@@ -39,6 +39,20 @@ class CsvToTsvTests(unittest.TestCase):
             self.assertEqual(stats["data_rows"], 1)
             self.assertEqual(target.read_bytes(), b"id\tvalue\n1\tfirst\\r\\nsecond\n")
 
+    def test_published_tsv_fsyncs_directory(self):
+        import os
+        from unittest.mock import patch
+        if os.name != "posix":
+            self.skipTest("directory fsync requires POSIX")
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "in.csv"
+            target = Path(folder) / "out.tsv"
+            source.write_text("1,hello\n")
+            with patch("bench.scale.csv_stream_to_tsv.os.fsync", wraps=os.fsync) as fsync:
+                convert(source, target)
+            self.assertGreaterEqual(fsync.call_count, 2)
+            self.assertEqual(target.read_text(), "1\thello\n")
+
     def test_explicit_null_mode_and_empty_strings(self):
         self.assertEqual(escape_field("", False), "")
         self.assertEqual(escape_field("", True), r"\N")
