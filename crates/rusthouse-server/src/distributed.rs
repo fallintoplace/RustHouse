@@ -407,7 +407,22 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
             header = Some(shard_header);
         }
         let rows = &body[header_end + 1..];
-        let shard_rows = rows.iter().filter(|&&b| b == b'\n').count();
+        let required_tabs = shard_header.iter().filter(|&&byte| byte == b'\t').count();
+        let mut shard_rows = 0usize;
+        let mut row_tabs = 0usize;
+        // TSV field separators are literal tabs; tabs inside fields are escaped.
+        // Validate column counts rather than passing malformed remote rows through.
+        for &byte in rows {
+            if byte == b'\t' {
+                row_tabs += 1;
+            } else if byte == b'\n' {
+                if row_tabs != required_tabs {
+                    return Err(MergeError::InvalidResponse);
+                }
+                row_tabs = 0;
+                shard_rows += 1;
+            }
+        }
         if *cap == 0 || shard_rows >= *cap {
             return Err(MergeError::ShardRowLimit);
         }
@@ -476,18 +491,28 @@ fn merge_tsv_page(
         }
 
         let rows = &body[header_end + 1..];
+        let required_tabs = shard_header.iter().filter(|&&byte| byte == b'\t').count();
         let local_skip = offset.saturating_sub(seen_rows);
         let remaining = limit
             .map(|limit| limit.saturating_sub(returned_rows))
             .unwrap_or(usize::MAX);
         let mut shard_rows = 0usize;
         let mut row_start = 0usize;
+        let mut row_tabs = 0usize;
         let mut selected_start = None;
         let mut selected_end = 0usize;
         for (position, &byte) in rows.iter().enumerate() {
+            if byte == b'\t' {
+                row_tabs += 1;
+                continue;
+            }
             if byte != b'\n' {
                 continue;
             }
+            if row_tabs != required_tabs {
+                return Err(MergeError::InvalidResponse);
+            }
+            row_tabs = 0;
             // TSV data encodes embedded newlines as escapes, so all literal
             // newlines delimit rows. The selected page is a contiguous range.
             if shard_rows >= local_skip && shard_rows - local_skip < remaining {
@@ -2427,5 +2452,34 @@ mod shard_dispatch_wave_tests {
             .flat_map(|wave| wave.iter().copied()).collect();
         assert_eq!(selected, peers);
         assert_eq!(peers.chunks(8).count(), 4);
+    }
+}
+
+#[cfg(test)]
+mod distributed_scan_tsv_shape_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_incomplete_and_excess_tsv_fields() {
+        for row in ["1\n", "1\ttwo\tthree\n"] {
+            let body = format!("id\tvalue\n{row}").into_bytes();
+            assert_eq!(
+                merge_tsv(&[(10, body)], 10),
+                Err(MergeError::InvalidResponse),
+            );
+        }
+        assert_eq!(
+            merge_tsv(&[(10, b"id\tvalue\n1\t\n".to_vec())], 10).unwrap(),
+            b"id\tvalue\n1\t\n",
+        );
+        // Even a malformed shard beyond the requested page must be rejected.
+        let shards = [
+            (10, b"id\tvalue\n1\tone\n".to_vec()),
+            (10, b"id\tvalue\n2\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_tsv_page(&shards, 1, 0, Some(1)),
+            Err(MergeError::InvalidResponse),
+        );
     }
 }
