@@ -65,6 +65,26 @@ class BackupTests(unittest.TestCase):
             self.assertTrue((base / "backup.partial").exists())
             self.assertFalse((base / "backup").exists())
 
+    def test_rechecks_backup_size_after_copy(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "db"
+            source.mkdir()
+            (source / "part.bin").write_bytes(b"abc")
+            destination = Path(root) / "backup"
+            original_copytree = shutil.copytree
+
+            def growing_copy(*args, **kwargs):
+                copied = original_copytree(*args, **kwargs)
+                (copied / "part.bin").write_bytes(b"0123456789")
+                return copied
+
+            with patch("offline_backup.shutil.copytree", side_effect=growing_copy):
+                with self.assertRaisesRegex(ValueError, "max_bytes"):
+                    backup(source, destination, max_bytes=4)
+            self.assertFalse(destination.exists())
+            self.assertTrue(Path(str(destination) + ".partial").exists())
+
     def test_allows_fresh_sibling(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "db"
