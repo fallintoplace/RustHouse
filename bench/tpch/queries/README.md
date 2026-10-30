@@ -16,3 +16,24 @@ python3 bench/tpch/official_coverage.py \\
 ```
 
 Only independent reference-verified results count as passed. The runner never produces a certified TPC-H score. See [the TPC-H 3.0.1 specification](https://www.tpc.org/tpc_documents_current_versions/current_specifications5.asp?mode=CURRENT-ONLY) and the [local runner](../README.md).
+
+For the full 22-query CLI gate (after generating references from native
+TPC-H input data), pass **both** `--require-canonical` and
+`--require-verified`. Without them, a successful execution can still
+represent simplified SQL or unverified results:
+
+```sh
+python3 bench/tpch/run.py \
+  --binary target/release/rusthouse \
+  --database /path/to/rusthouse-db \
+  --queries-dir bench/tpch/queries \
+  --reference-dir /path/to/native-tpch-references \
+  --require-canonical --require-22 --require-verified \
+  --runs 5 --warmups 1 \
+  --output /tmp/rusthouse-full-tpch.json
+```
+
+This currently serves as a strict compatibility target; until the executor
+supports the full SQL and equivalent native decimal values, it can fail.
+The `--jobs` compatibility inventory is a faster diagnostic, not a fair
+uncontended performance benchmark.

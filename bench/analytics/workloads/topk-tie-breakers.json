@@ -1,0 +1,22 @@
+{
+  "name": "topk-tie-breakers",
+  "description": "Cover multi-column ORDER BY, mixed direction and offset without arbitrary order",
+  "queries": [
+    {
+      "name": "amount-desc-id",
+      "sql": "SELECT event_id, amount FROM events ORDER BY amount DESC, event_id ASC LIMIT 25"
+    },
+    {
+      "name": "amount-page-two",
+      "sql": "SELECT event_id, amount FROM events ORDER BY amount DESC, event_id ASC LIMIT 25 OFFSET 25"
+    },
+    {
+      "name": "quantity-asc-id-desc",
+      "sql": "SELECT event_id, quantity FROM events ORDER BY quantity ASC, event_id DESC LIMIT 30"
+    },
+    {
+      "name": "filtered-topk",
+      "sql": "SELECT event_id, amount FROM events WHERE status = 'paid' ORDER BY amount DESC, event_id ASC LIMIT 15"
+    }
+  ]
+}

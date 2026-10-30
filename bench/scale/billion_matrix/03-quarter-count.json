@@ -1,0 +1,8 @@
+{
+  "name": "quarter-count",
+  "description": "25 percent selectivity, nonzero residue",
+  "kind": "modulo",
+  "aggregate": "count",
+  "modulus": 4,
+  "residue": 3
+}

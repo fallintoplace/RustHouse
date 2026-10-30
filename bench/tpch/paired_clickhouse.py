@@ -17,10 +17,12 @@ import time
 from pathlib import Path
 
 from bench.tpch.run import compare_reference, load_queries, query_fingerprint
+from bench.tpch.canonical_integrity import verify as verify_canonical_sql
 
 ENGINES = ("rusthouse", "clickhouse")
 ABBA = ("rusthouse", "clickhouse", "clickhouse", "rusthouse")
 BAAB = ("clickhouse", "rusthouse", "rusthouse", "clickhouse")
+MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
 
 def command(engine, binary, database, sql):
@@ -108,7 +110,16 @@ def compare(binary, database, clickhouse_binary, clickhouse_database,
             record["error"] = f"missing reference: {ref_path}"
             results.append(record)
             continue
-        reference = ref_path.read_bytes()
+        if ref_path.is_symlink() or ref_path.stat().st_size > MAX_REFERENCE_BYTES:
+            record["error"] = "unsafe or oversized reference TSV"
+            results.append(record)
+            continue
+        with ref_path.open("rb") as source:
+            reference = source.read(MAX_REFERENCE_BYTES + 1)
+        if len(reference) > MAX_REFERENCE_BYTES:
+            record["error"] = "reference exceeds byte limit"
+            results.append(record)
+            continue
         record["reference_sha256"] = hashlib.sha256(reference).hexdigest()
 
         def execute(engine, statement):
@@ -144,6 +155,12 @@ def compare(binary, database, clickhouse_binary, clickhouse_database,
     }
 
 
+def load_paired_queries(directory, require_canonical=False):
+    if require_canonical:
+        verify_canonical_sql(directory)
+    return load_queries(directory)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
@@ -151,6 +168,8 @@ def main(argv=None):
     parser.add_argument("--clickhouse", default="clickhouse-client")
     parser.add_argument("--clickhouse-database", default="default")
     parser.add_argument("--queries-dir", required=True, type=Path)
+    parser.add_argument("--require-canonical", action="store_true",
+                        help="Use only exact upstream full Q1-Q22 SQL")
     parser.add_argument("--reference-dir", required=True, type=Path)
     parser.add_argument("--comparison", choices=("exact", "unordered"), default="exact",
                         help="Match ordered rows exactly, or compare unordered row multisets")
@@ -160,7 +179,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        queries = load_queries(args.queries_dir)
+        queries = load_paired_queries(args.queries_dir, args.require_canonical)
         report = compare(
             args.binary, args.database, args.clickhouse, args.clickhouse_database,
             queries, args.reference_dir, args.runs, args.warmups, args.timeout,

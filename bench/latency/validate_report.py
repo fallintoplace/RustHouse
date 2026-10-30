@@ -29,6 +29,10 @@ def validate_query_record(index, case, result, runs):
 
 
 def validate_report(report, *, rows, runs, warmups):
+    if (type(rows) is not int or rows < 1
+            or type(runs) is not int or runs < 1
+            or type(warmups) is not int or warmups < 0):
+        raise ValueError("rows and runs must be positive integers; warmups nonnegative")
     if not isinstance(report, dict) or report.get("suite") != "generated-sql-latency":
         raise ValueError("wrong SQL latency report type")
     for name, expected in (("rows", rows), ("runs", runs), ("warmups", warmups)):

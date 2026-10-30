@@ -1,0 +1,8 @@
+{
+  "name": "prime-997-sum",
+  "description": "Sparse prime-modulo sum",
+  "kind": "modulo",
+  "aggregate": "sum",
+  "modulus": 997,
+  "residue": 17
+}

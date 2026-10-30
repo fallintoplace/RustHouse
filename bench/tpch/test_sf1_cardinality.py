@@ -28,5 +28,12 @@ class SF1CardinalityTests(unittest.TestCase):
             verify(None, None, timeout=0, execute=lambda _: b"5\n")
 
 
+class SF1FiniteTimeoutTests(unittest.TestCase):
+    def test_nonfinite_and_boolean_timeouts_are_rejected(self):
+        for timeout in (float("nan"), float("inf"), True, "120"):
+            with self.subTest(timeout=timeout):
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    verify(None, None, timeout=timeout, execute=lambda _: b"5\n")
+
 if __name__ == "__main__":
     unittest.main()

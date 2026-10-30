@@ -14,6 +14,21 @@ class AuditTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_lines("SELECT 1; DROP TABLE events;")
 
+    def test_fail_fast_stops_after_first_parser_error(self):
+        run = Mock()
+        run.return_value.returncode = 1
+        run.return_value.stderr = "unsupported"
+        cases = [(1, "SELECT bad"), (2, "SELECT ok"), (3, "SELECT later")]
+        report = audit("rusthouse", cases, run, fail_fast=True)
+        self.assertEqual(report["total"], 1)
+        self.assertEqual(report["requested"], 3)
+        self.assertTrue(report["stopped_early"])
+        self.assertEqual(run.call_count, 1)
+        run.reset_mock()
+        complete = audit("rusthouse", cases, run)
+        self.assertEqual(complete["total"], 3)
+        self.assertFalse(complete["stopped_early"])
+
     def test_explain_only_and_counts_rejections(self):
         run = Mock()
         run.return_value.returncode = 1

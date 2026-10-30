@@ -42,12 +42,18 @@ def generate(output_dir, rows, seed):
     count, revenue = 0, 0
     with (output_dir / "lineitem.tsv").open("w", encoding="utf-8", newline="\n") as stream:
         stream.write("l_shipdate\tl_extendedprice\tl_discount\tl_quantity\n")
+        pending = []
         for shipdate, price, discount, quantity in row_source(rows, seed):
-            stream.write(f"{shipdate}\t{price}\t{discount}\t{quantity}\n")
+            pending.append(f"{shipdate}\t{price}\t{discount}\t{quantity}\n")
+            if len(pending) == 4096:
+                stream.write("".join(pending))
+                pending.clear()
             if ("1994-01-01" <= shipdate < "1995-01-01"
                     and 500 <= discount <= 700 and quantity < 24):
                 revenue += price * discount
                 count += 1
+        if pending:
+            stream.write("".join(pending))
     (output_dir / "queries" / "q06.sql").write_text(QUERY + ";\n", encoding="utf-8")
     (output_dir / "references" / "q06.tsv").write_text(
         f"{revenue}\t{count}\n", encoding="utf-8"

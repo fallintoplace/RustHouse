@@ -1,0 +1,22 @@
+{
+  "name": "cross-dimension-revenue",
+  "description": "Cross-dimensional grouped revenue and multi-metric aggregation",
+  "queries": [
+    {
+      "name": "region-category-revenue",
+      "sql": "SELECT region, category, SUM(amount) FROM events GROUP BY region, category ORDER BY region, category"
+    },
+    {
+      "name": "region-status-revenue",
+      "sql": "SELECT region, status, SUM(amount) FROM events GROUP BY region, status ORDER BY region, status"
+    },
+    {
+      "name": "category-status-orders",
+      "sql": "SELECT category, status, COUNT(*) FROM events GROUP BY category, status ORDER BY category, status"
+    },
+    {
+      "name": "region-category-metrics",
+      "sql": "SELECT region, category, SUM(amount), COUNT(amount) FROM events GROUP BY region, category ORDER BY region, category"
+    }
+  ]
+}

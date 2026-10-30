@@ -197,7 +197,7 @@ pub fn read_array_offsets<O: Read>(
     })
 }
 
-fn numeric_array_inner_type(data_type: &str) -> Result<&str, ArrayReadError> {
+fn validated_numeric_array_element_type(data_type: &str) -> Result<&str, ArrayReadError> {
     let nested_type = data_type
         .strip_prefix("Array(")
         .and_then(|inner| inner.strip_suffix(')'))
@@ -216,7 +216,7 @@ pub fn read_numeric_array_column<O: Read, D: Read>(
     rows: usize,
     encoding: ArrayOffsetsEncoding,
 ) -> Result<NumericArrayColumn, ArrayReadError> {
-    let nested_type = numeric_array_inner_type(data_type)?;
+    let nested_type = validated_numeric_array_element_type(data_type)?;
 
     let offsets = read_array_offsets(offset_stream, rows, encoding)?;
     let values = read_numeric_column(data_stream, nested_type, offsets.element_count())
@@ -563,10 +563,10 @@ mod numeric_array_type_fastcheck_tests {
     fn validates_numeric_array_inner_type_without_decoding() {
         for ty in ["Array(UInt64)", "Array(Int16)", "Array(Float64)", "Array(Date)",
             "Array(DateTime64(3, 'UTC'))"] {
-            assert!(numeric_array_inner_type(ty).is_ok(), "{ty}");
+            assert!(validated_numeric_array_element_type(ty).is_ok(), "{ty}");
         }
         for ty in ["Array(String)", "Array(Nullable(UInt64))", "Array(garbage)", "Array()"] {
-            assert!(numeric_array_inner_type(ty).is_err(), "{ty}");
+            assert!(validated_numeric_array_element_type(ty).is_err(), "{ty}");
         }
     }
 }

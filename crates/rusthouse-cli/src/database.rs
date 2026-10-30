@@ -5,7 +5,7 @@ mod rewrite;
 use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source, Update};
 use rusthouse_storage::{
     Column, DatabaseLock, acquire_database_lock, inspect_query_source, query_parts,
-    resolve_active_snapshot, verify_wide_part, write_wide_part,
+    query_parts_with_metadata, resolve_active_snapshot, verify_wide_part, write_wide_part,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,8 +60,8 @@ fn validated_parts(
         return Err(format!("table data is not a real directory: {name}"));
     }
     let active = active_source(database, name)?;
-    let parts = query_parts(&active).map_err(|error| error.to_string())?;
-    let source = inspect_query_source(&active).map_err(|error| error.to_string())?;
+    let (parts, source) =
+        query_parts_with_metadata(&active).map_err(|error| error.to_string())?;
     if source.columns != cols {
         return Err(format!("table {name} schema differs from its stored data"));
     }

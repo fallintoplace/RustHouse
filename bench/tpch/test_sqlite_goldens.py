@@ -42,5 +42,16 @@ class SQLiteGoldenTests(unittest.TestCase):
                 generate(database, query_dir, base / "goldens")
 
 
+class SQLiteGoldenOutputBudgetTests(unittest.TestCase):
+    def test_enforces_bytes_and_does_not_publish_partial_reference(self):
+        from sqlite_goldens import write_one
+        with tempfile.TemporaryDirectory() as root:
+            destination = Path(root) / "q01.tsv"
+            with closing(sqlite3.connect(":memory:")) as connection:
+                with self.assertRaisesRegex(ValueError, "byte limit"):
+                    write_one(connection, "SELECT 'ééééééééé'", destination,
+                              max_output_bytes=4)
+            self.assertFalse(destination.exists())
+
 if __name__ == "__main__":
     unittest.main()

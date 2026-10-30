@@ -58,3 +58,50 @@ fn discovery_endpoints_reject_request_bodies() {
         assert_eq!(response.status, "400 Bad Request", "{path}");
     }
 }
+
+#[test]
+fn clickhouse_http_post_can_split_sql_across_url_and_body() {
+    let url_only = handle_request("POST", "/?query=SELECT+7", b"", &config());
+    assert_eq!(url_only.status, "200 OK");
+    assert_eq!(url_only.body, b"7\n7\n");
+
+    let body_only = handle_request("POST", "/?query=", b"SELECT 8", &config());
+    assert_eq!(body_only.status, "200 OK");
+    assert_eq!(body_only.body, b"8\n8\n");
+
+    let split = handle_request("POST", "/?query=SELECT", b"number FROM numbers(3)", &config());
+    assert_eq!(split.status, "200 OK");
+    assert_eq!(split.body, b"number\n0\n1\n2\n");
+
+    let split_filter = handle_request(
+        "POST",
+        "/?query=SELECT+number+FROM+numbers(5)+WHERE",
+        b"number > 2 ORDER BY number DESC LIMIT 2",
+        &config(),
+    );
+    assert_eq!(split_filter.status, "200 OK");
+    assert_eq!(split_filter.body, b"number\n4\n3\n");
+}
+
+#[test]
+fn clickhouse_http_post_split_sql_is_bounded_and_never_joins_tokens() {
+    // ClickHouse inserts a line feed between the two pieces. The split must
+    // not permit concatenating fragments into keywords or new statements.
+    let bad_keyword = handle_request("POST", "/?query=SEL", b"ECT 1", &config());
+    assert_eq!(bad_keyword.status, "400 Bad Request");
+
+    let mutation = handle_request("POST", "/?query=SELECT+1", b"DROP TABLE t", &config());
+    assert_eq!(mutation.status, "400 Bad Request");
+
+    let invalid_utf8 = handle_request("POST", "/?query=SELECT", b"\xff", &config());
+    assert_eq!(invalid_utf8.status, "400 Bad Request");
+
+    let almost_full = " ".repeat(rusthouse_server::MAX_QUERY_BYTES);
+    let overflow = handle_request(
+        "POST",
+        "/?query=SELECT+1",
+        almost_full.as_bytes(),
+        &config(),
+    );
+    assert_eq!(overflow.status, "413 Payload Too Large");
+}

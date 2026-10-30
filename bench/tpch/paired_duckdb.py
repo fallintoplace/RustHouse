@@ -12,14 +12,17 @@ import json
 import math
 import statistics
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
 from bench.tpch.run import compare_reference, load_queries, query_fingerprint
+from bench.tpch.canonical_integrity import verify as verify_canonical_sql
 
 ENGINES = ("rusthouse", "duckdb")
 ABBA = ("rusthouse", "duckdb", "duckdb", "rusthouse")
 BAAB = ("duckdb", "rusthouse", "rusthouse", "duckdb")
+MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 
 
 def command(engine, binary, database, sql):
@@ -35,12 +38,20 @@ def command(engine, binary, database, sql):
 
 def invoke(args, timeout):
     start = time.perf_counter()
-    result = subprocess.run(args, capture_output=True, check=False, timeout=timeout)
-    duration = time.perf_counter() - start
+    with tempfile.TemporaryFile() as output:
+        result = subprocess.run(
+            args, stdout=output, stderr=subprocess.PIPE,
+            check=False, timeout=timeout,
+        )
+        duration = time.perf_counter() - start
+        output.seek(0)
+        payload = output.read(MAX_OUTPUT_BYTES + 1)
     if result.returncode:
         stderr = result.stderr.decode("utf-8", "replace")
         raise RuntimeError(f"exit {result.returncode}: {stderr[-500:]}")
-    return result.stdout, duration
+    if len(payload) > MAX_OUTPUT_BYTES:
+        raise ValueError("paired CLI output exceeds 16 MiB")
+    return payload, duration
 
 
 def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact"):
@@ -106,7 +117,16 @@ def compare(binary, database, duckdb_binary, duckdb_database,
             record["error"] = f"missing reference: {ref_path}"
             results.append(record)
             continue
-        reference = ref_path.read_bytes()
+        if ref_path.is_symlink():
+            record["error"] = "unsafe symlink reference TSV"
+            results.append(record)
+            continue
+        with ref_path.open("rb") as source:
+            reference = source.read(MAX_OUTPUT_BYTES + 1)
+        if len(reference) > MAX_OUTPUT_BYTES:
+            record["error"] = "paired CLI reference exceeds 16 MiB"
+            results.append(record)
+            continue
         record["reference_sha256"] = hashlib.sha256(reference).hexdigest()
 
         def execute(engine, statement):
@@ -142,6 +162,12 @@ def compare(binary, database, duckdb_binary, duckdb_database,
     }
 
 
+def load_paired_queries(directory, require_canonical=False):
+    if require_canonical:
+        verify_canonical_sql(directory)
+    return load_queries(directory)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
@@ -149,6 +175,8 @@ def main(argv=None):
     parser.add_argument("--duckdb", default="duckdb")
     parser.add_argument("--duckdb-database", required=True, type=Path)
     parser.add_argument("--queries-dir", required=True, type=Path)
+    parser.add_argument("--require-canonical", action="store_true",
+                        help="Use only exact upstream full Q1-Q22 SQL")
     parser.add_argument("--reference-dir", required=True, type=Path)
     parser.add_argument("--comparison", choices=("exact", "unordered"), default="exact",
                         help="Match ordered rows exactly, or compare unordered row multisets")
@@ -158,7 +186,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        queries = load_queries(args.queries_dir)
+        queries = load_paired_queries(args.queries_dir, args.require_canonical)
         report = compare(
             args.binary, args.database, args.duckdb, args.duckdb_database,
             queries, args.reference_dir, args.runs, args.warmups, args.timeout,

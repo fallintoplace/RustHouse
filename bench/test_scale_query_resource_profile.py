@@ -42,6 +42,17 @@ class ResourceProfileTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 profile("unused", ".", "x", max_rss_mib=0)
 
+    def test_invalid_physical_read_budgets_are_rejected_before_launch(self):
+        if sys.platform == "linux":
+            for invalid in (0, -1, float("nan"), float("inf"), True):
+                with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, "read budget"):
+                    profile("unused", ".", "x", max_read_mib=invalid)
+
+    def test_kernel_high_water_rss_wins_over_instantaneous_sample(self):
+        self.assertEqual(parse_rss("VmRSS:\t128 kB\nVmHWM:\t2048 kB\n"),
+                         2048 * 1024)
+        self.assertEqual(parse_rss("VmHWM:\t3 kB\nVmRSS:\t4 kB\n"), 4096)
+
 
 if __name__ == "__main__":
     unittest.main()

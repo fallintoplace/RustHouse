@@ -15,12 +15,13 @@ from pathlib import Path
 
 
 def parse_rss(status):
+    peak = 0
     for line in status.splitlines():
-        if line.startswith("VmRSS:"):
+        if line.startswith(("VmRSS:", "VmHWM:")):
             tokens = line.split()
             if len(tokens) == 3 and tokens[2] == "kB":
-                return int(tokens[1]) * 1024
-    return 0
+                peak = max(peak, int(tokens[1]) * 1024)
+    return peak
 
 
 def parse_io(payload):
@@ -32,13 +33,22 @@ def parse_io(payload):
     return {key: fields.get(key, 0) for key in ("read_bytes", "write_bytes")}
 
 
-def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25):
+def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
+            max_read_mib=None):
     if sys.platform != "linux":
         raise RuntimeError("process resource sampling requires Linux /proc")
-    if not math.isfinite(timeout) or timeout <= 0 or not 1 <= sample_ms <= 1000:
+    if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or timeout <= 0 or type(sample_ms) is not int
+            or not 1 <= sample_ms <= 1000):
         raise ValueError("invalid timeout or sample interval")
-    if max_rss_mib is not None and (not math.isfinite(max_rss_mib) or max_rss_mib <= 0):
+    if max_rss_mib is not None and (
+            type(max_rss_mib) not in (int, float)
+            or not math.isfinite(max_rss_mib) or max_rss_mib <= 0):
         raise ValueError("max RSS budget must be positive")
+    if max_read_mib is not None and (
+            type(max_read_mib) not in (int, float)
+            or not math.isfinite(max_read_mib) or max_read_mib <= 0):
+        raise ValueError("max physical read budget must be positive and finite")
     started = time.perf_counter()
     stderr_file = tempfile.TemporaryFile(mode="w+b")
     try:
@@ -52,6 +62,7 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25):
     peak = 0
     disk = {"read_bytes": 0, "write_bytes": 0}
     failed_budget = False
+    failed_read_budget = False
     timed_out = False
     try:
         proc = Path("/proc") / str(process.pid)
@@ -63,6 +74,10 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25):
                 pass  # The process may exit between poll() and the /proc reads.
             if max_rss_mib is not None and peak > max_rss_mib * 1024 * 1024:
                 failed_budget = True
+                process.kill()
+                break
+            if max_read_mib is not None and disk["read_bytes"] > max_read_mib * 1024 * 1024:
+                failed_read_budget = True
                 process.kill()
                 break
             if time.perf_counter() - started > timeout:
@@ -83,13 +98,15 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25):
     elapsed = time.perf_counter() - started
     if failed_budget:
         raise RuntimeError(f"query exceeded sampled RSS budget: {peak} bytes")
+    if failed_read_budget:
+        raise RuntimeError(f"query exceeded sampled physical read budget: {disk['read_bytes']} bytes")
     if timed_out:
         raise RuntimeError(f"query exceeded timeout of {timeout}s")
     if process.returncode:
         raise RuntimeError(f"query exited {process.returncode}: {stderr.decode('utf-8', 'replace')[-500:]}")
     return {"seconds": elapsed, "peak_rss_bytes_sampled": peak, **disk,
             "sample_interval_ms": sample_ms,
-            "note": "RSS peak is sampled; /proc I/O excludes page-cache hits."}
+            "note": "VmHWM gives the kernel RSS high-water mark when present; /proc I/O excludes page-cache hits."}
 
 
 def main(argv=None):
@@ -99,11 +116,13 @@ def main(argv=None):
     p.add_argument("--sql", required=True)
     p.add_argument("--timeout", type=float, default=120)
     p.add_argument("--max-rss-mib", type=float)
+    p.add_argument("--max-read-mib", type=float)
     p.add_argument("--sample-ms", type=int, default=25)
     a = p.parse_args(argv)
     try:
         report = profile(a.binary, a.database, a.sql, a.timeout,
-                         a.max_rss_mib, a.sample_ms)
+                         a.max_rss_mib, a.sample_ms,
+                         max_read_mib=a.max_read_mib)
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         p.exit(1, f"SQL resource profile failed: {error}\n")
     print(json.dumps(report))

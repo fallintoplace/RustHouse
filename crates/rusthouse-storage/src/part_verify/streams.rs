@@ -18,6 +18,12 @@ pub(super) fn validate_stream_pairs(
     Ok(())
 }
 
+fn checked_decoded_bytes(total: u64, bytes: u64, path: &Path) -> Result<u64, PartError> {
+    total
+        .checked_add(bytes)
+        .ok_or_else(|| invalid(path, "decoded byte count overflows"))
+}
+
 pub(super) fn account_decoded_blocks(
     data: &Path,
     report: &mut PartVerification,
@@ -30,13 +36,9 @@ pub(super) fn account_decoded_blocks(
             .blocks
             .checked_add(1)
             .ok_or_else(|| invalid(data, "block count overflows"))?;
-        decoded_size = decoded_size
-            .checked_add(block.data.len() as u64)
-            .ok_or_else(|| invalid(data, "decoded byte count overflows"))?;
-        report.decompressed_bytes = report
-            .decompressed_bytes
-            .checked_add(block.data.len() as u64)
-            .ok_or_else(|| invalid(data, "decoded byte count overflows"))?;
+        let bytes = block.data.len() as u64;
+        decoded_size = checked_decoded_bytes(decoded_size, bytes, data)?;
+        report.decompressed_bytes = checked_decoded_bytes(report.decompressed_bytes, bytes, data)?;
     }
     Ok(decoded_size)
 }
