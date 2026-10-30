@@ -85,6 +85,16 @@ pub fn copy_frozen_snapshot_with_file_limit(
             "destination parent is not a directory".into(),
         ));
     }
+    // Keep replica copies outside the source tree. Otherwise a successful
+    // copy would silently mutate its supposedly frozen source snapshot.
+    let source_root = fs::canonicalize(source).map_err(|error| io_error(source, error))?;
+    let destination_parent = fs::canonicalize(parent)
+        .map_err(|error| io_error(parent, error))?;
+    if destination_parent.starts_with(&source_root) {
+        return Err(PartError::InvalidScan(
+            "snapshot copy destination must be outside the source tree".into(),
+        ));
+    }
     let staging = parent.join(format!(
         ".rusthouse-snapshot-copy-{}-{}",
         std::process::id(),
@@ -239,6 +249,24 @@ mod tests {
         assert!(copy_frozen_snapshot(&source, &target, 1, 1_000_000).is_err());
         fs::remove_dir_all(base).unwrap();
     }
+    #[test]
+    fn rejects_copying_into_its_own_snapshot_root() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-snapshot-self-copy-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_wide_part(
+            &root.join("all_0_0_0"),
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("1".into())]],
+        ).unwrap();
+        let nested = root.join("replica");
+        assert!(copy_frozen_snapshot(&root, &nested, 1, 1_000_000).is_err());
+        assert!(!nested.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn corrupted_snapshot_never_publishes_destination() {
         let root =
