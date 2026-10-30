@@ -20,6 +20,16 @@ class BenchmarkComparisonTests(unittest.TestCase):
                     load_report(report)
 
 
+    def test_report_loader_rejects_duplicate_json_members(self):
+        import tempfile
+        from pathlib import Path
+        from bench.compare import load_report
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "comparison.json"
+            path.write_text('{"rows":1,"rows":2}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                load_report(path)
+
     def test_detects_slowdowns_and_speedups(self):
         baseline = {"engine": "rusthouse-cli", "rows": 100,
                     "results": [result(1, "passed", 0.01), result(2, "passed", 0.02)]}
