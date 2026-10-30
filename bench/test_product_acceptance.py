@@ -16,6 +16,16 @@ class AcceptanceTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             check_rows("id\towner\tamount\n1\tAda\t20\n2\tGrace\t99\n")
 
+    def test_failure_shows_last_diagnostic_with_bounded_output(self):
+        def fail(_argv, **kwargs):
+            kwargs["stderr"].write(b"x" * 100_000 + b"FATAL: disk full")
+            return SimpleNamespace(returncode=1)
+        with patch("bench.product_acceptance.subprocess.run", side_effect=fail):
+            with self.assertRaises(RuntimeError) as caught:
+                invoke("rusthouse", "doctor")
+        self.assertIn("FATAL: disk full", str(caught.exception))
+        self.assertLess(len(str(caught.exception)), 2040)
+
     def test_invoke_rejects_oversized_output(self):
         def write_large_output(_argv, **kwargs):
             kwargs["stdout"].write(b"x" * 65_537)
