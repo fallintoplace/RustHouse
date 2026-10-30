@@ -538,7 +538,6 @@ mod schema_short_read_tests {
     }
 }
 
-
 #[cfg(test)]
 mod durable_catalog_rename_tests {
     use super::*;
