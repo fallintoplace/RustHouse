@@ -199,6 +199,9 @@ pub fn retention_candidates_with_byte_budget(
     }
     let ids = generations.iter().map(|&(generation, _)| generation).collect::<Vec<_>>();
     let eligible = retention_candidates_with_pins(&ids, active, keep_latest, pinned)?;
+    if eligible.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
     let sizes = generations.iter().copied().collect::<std::collections::HashMap<_, _>>();
     let mut selected = Vec::new();
     let mut total = 0u64;
@@ -228,5 +231,24 @@ mod budgeted_retention_tests {
             (vec![1, 2, 4], 21)
         );
         assert!(retention_candidates_with_byte_budget(&generations, 5, 1, &[99], 20).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fully_retained_budget_tests {
+    use super::*;
+
+    #[test]
+    fn fully_retained_generations_have_no_budgeted_work() {
+        let generations = (1..=16_384_u64).map(|id| (id, 4)).collect::<Vec<_>>();
+        assert_eq!(
+            retention_candidates_with_byte_budget(
+                &generations, 16_384, generations.len(), &[], u64::MAX,
+            ).unwrap(),
+            (Vec::<u64>::new(), 0),
+        );
+        assert!(retention_candidates_with_byte_budget(
+            &[(1, 4), (1, 8)], 1, 2, &[], u64::MAX,
+        ).is_err());
     }
 }
