@@ -16,7 +16,7 @@ class AuditTests(unittest.TestCase):
             path.write_bytes(b"-" * (1_048_576 + 1))
             with self.assertRaisesRegex(ValueError, "1 MiB"):
                 read_queries(path)
-            path.write_text("-- note\\nSELECT 2;\\n", encoding="utf-8")
+            path.write_text("-- note\nSELECT 2;\n", encoding="utf-8")
             self.assertEqual(read_queries(path), [(2, "SELECT 2")])
 
     def test_rejects_mutating_sql(self):
