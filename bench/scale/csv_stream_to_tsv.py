@@ -78,6 +78,14 @@ def convert(source, destination, *, header=False, empty_as_null=False,
         if destination.exists():
             raise ValueError("refusing to overwrite an existing output")
         os.link(pending, destination)
+        if os.name == "posix":
+            # Publishing a hard link needs a parent-directory fsync to survive
+            # a crash, even when the TSV payload has already been fsynced.
+            descriptor = os.open(destination.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     finally:
         pending.unlink(missing_ok=True)
         csv.field_size_limit(old_limit)
