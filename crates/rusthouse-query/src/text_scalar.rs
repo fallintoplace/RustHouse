@@ -2922,9 +2922,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let prefix = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "expected ')' after startsWithCaseInsensitive")?;
             match (input, prefix) {
-                (Some(input), Some(prefix)) => ConstantValue::Integer(i64::from(
-                    input.as_bytes().get(..prefix.len()).is_some_and(|bytes| bytes.eq_ignore_ascii_case(prefix.as_bytes()))
-                )),
+                (Some(input), Some(prefix)) => {
+                    let matched = input
+                        .as_bytes()
+                        .get(..prefix.len())
+                        .is_some_and(|bytes| bytes.eq_ignore_ascii_case(prefix.as_bytes()));
+                    ConstantValue::Integer(i64::from(matched))
+                }
                 _ => ConstantValue::Null,
             }
         }
