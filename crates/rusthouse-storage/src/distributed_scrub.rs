@@ -51,7 +51,7 @@ pub fn scrub_snapshot_with_byte_limit(
         ));
     }
     if max_bytes != u64::MAX {
-        crate::distributed_inventory::inventory_snapshot(root, 1_048_576, max_bytes)?;
+        crate::distributed_inventory::inventory_snapshot(&active, 1_048_576, max_bytes)?;
     }
     const PARALLEL_THRESHOLD: usize = 16;
     const MAX_SCRUB_WORKERS: usize = 4;
@@ -242,6 +242,32 @@ mod byte_budget_tests {
         let report = scrub_snapshot_with_byte_limit(&root, 1, 1_000_000).unwrap();
         assert_eq!(report.parts, 1);
         assert!(report.checked_bytes > 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod pinned_scrub_preflight_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn scrub_budget_is_applied_to_selected_active_generation() {
+        let root = std::env::temp_dir().join(format!("rusthouse-scrub-generation-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let versions = root.join(".rusthouse-versions");
+        let first = versions.join("g1");
+        let second = versions.join("g2");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        write_wide_part(&first.join("all_0_0_0"), &[Column { name: "value".into(), data_type: "UInt64".into() }], &[vec![Some("1".into())]]).unwrap();
+        write_wide_part(&second.join("all_0_0_0"), &[Column { name: "value".into(), data_type: "String".into() }], &[vec![Some("a".repeat(512))]]).unwrap();
+        fs::write(root.join(".rusthouse-active"), "g1\n").unwrap();
+        let first_bytes = crate::distributed_inventory::inventory_snapshot(&first, 1024, u64::MAX).unwrap().iter().map(|e| e.bytes).sum::<u64>();
+        assert!(scrub_snapshot_with_byte_limit(&root, 1, first_bytes).is_ok());
+        fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
+        assert!(scrub_snapshot_with_byte_limit(&root, 1, first_bytes).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
