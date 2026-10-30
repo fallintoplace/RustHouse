@@ -18,9 +18,7 @@ fn supports_startswith_utf8_constants() {
         );
         assert_eq!(output.stdout, expected.as_bytes(), "{query}");
     }
-    for query in [
-        "SELECT startsWithUTF8('text')",
-    ] {
+    for query in ["SELECT startsWithUTF8('text')"] {
         let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", query])
             .output()
