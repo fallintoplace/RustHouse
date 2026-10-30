@@ -42,19 +42,23 @@ pub(super) fn combine_and(left: Branches, right: Branches) -> Result<Branches, P
     Ok(result)
 }
 
+fn inverse_comparison_operator(operator: &Operator) -> Operator {
+    match operator {
+        Operator::Eq => Operator::Ne,
+        Operator::Ne => Operator::Eq,
+        Operator::Lt => Operator::Ge,
+        Operator::Le => Operator::Gt,
+        Operator::Gt => Operator::Le,
+        Operator::Ge => Operator::Lt,
+        Operator::Modulo(n) => Operator::ModuloNe(*n),
+        Operator::ModuloNe(n) => Operator::Modulo(*n),
+    }
+}
+
 fn inverse(predicate: &Predicate) -> Branches {
     let opposite = match predicate {
         Predicate::Comparison { column, operator, value } => {
-            let operator = match operator {
-                Operator::Eq => Operator::Ne,
-                Operator::Ne => Operator::Eq,
-                Operator::Lt => Operator::Ge,
-                Operator::Le => Operator::Gt,
-                Operator::Gt => Operator::Le,
-                Operator::Ge => Operator::Lt,
-                Operator::Modulo(n) => Operator::ModuloNe(*n),
-                Operator::ModuloNe(n) => Operator::Modulo(*n),
-            };
+            let operator = inverse_comparison_operator(operator);
             Predicate::Comparison {
                 column: column.clone(), operator, value: value.clone(),
             }
