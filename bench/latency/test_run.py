@@ -123,6 +123,18 @@ class GeneratedQueryTests(unittest.TestCase):
             self.assertIn("Median ms", details.getvalue())
 
 
+    def test_failed_sql_spools_and_bounds_stderr(self):
+        def fail(command, **kwargs):
+            self.assertNotEqual(kwargs["stderr"], subprocess.PIPE)
+            kwargs["stderr"].write(b"failure " + b"x" * 100_000)
+            return subprocess.CompletedProcess(command, 1)
+
+        with mock.patch.object(runner.subprocess, "run", side_effect=fail):
+            with self.assertRaises(RuntimeError) as caught:
+                runner.invoke("rusthouse", "SELECT broken", 3)
+        self.assertIn("failure", str(caught.exception))
+        self.assertLess(len(str(caught.exception)), 2100)
+
     def test_sql_benchmark_capture_rejects_oversized_results(self):
         def fake_run(command, **kwargs):
             kwargs["stdout"].write(b"x" * (256 * 1024 + 1))
@@ -130,7 +142,7 @@ class GeneratedQueryTests(unittest.TestCase):
         with mock.patch.object(runner.subprocess, "run", side_effect=fake_run) as execute:
             with self.assertRaisesRegex(ValueError, "256 KiB"):
                 runner.invoke("rusthouse", "SELECT 1", 3)
-        self.assertEqual(execute.call_args.kwargs["stderr"], subprocess.PIPE)
+        self.assertNotEqual(execute.call_args.kwargs["stderr"], subprocess.PIPE)
 
 if __name__ == "__main__":
     unittest.main()
