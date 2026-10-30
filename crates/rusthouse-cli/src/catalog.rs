@@ -185,6 +185,23 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(unix)]
+fn validate_schema_identity(
+    before: &fs::Metadata,
+    file: &fs::File,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let opened = file.metadata()?;
+    if !opened.file_type().is_file()
+        || before.dev() != opened.dev()
+        || before.ino() != opened.ino()
+    {
+        return Err(std::io::Error::other("schema changed during open"));
+    }
+    Ok(())
+}
+
 pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     let path = schema_path(catalog, name);
     let metadata = fs::symlink_metadata(&path)
@@ -195,11 +212,15 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
     if metadata.len() > MAX_SCHEMA_BYTES {
         return Err(format!("schema is too large for table {name}"));
     }
-    // Limit reads even if a schema grows between metadata inspection and open.
+    // Validate the opened inode as well as the original path metadata.
+    // A symlink or file replacement between inspection and open must fail.
+    let file = fs::File::open(&path)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    #[cfg(unix)]
+    validate_schema_identity(&metadata, &file)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?;
     let mut bytes = Vec::new();
-    fs::File::open(&path)
-        .map_err(|error| format!("cannot read table {name}: {error}"))?
-        .take(MAX_SCHEMA_BYTES + 1)
+    file.take(MAX_SCHEMA_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
     if bytes.len() as u64 > MAX_SCHEMA_BYTES {
@@ -445,5 +466,31 @@ mod show_tables_like_tests {
         assert!(table_matches_like("any", "%"));
         assert!(!table_matches_like("any", "other%"));
         assert!(!table_matches_like("any", r"any\"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod schema_open_identity_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn rejects_file_replaced_between_metadata_and_open() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-catalog-inode-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("events.schema");
+        fs::write(&path, b"rusthouse-schema-v1\n").unwrap();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        fs::rename(&path, dir.join("old.schema")).unwrap();
+        fs::write(&path, b"rusthouse-schema-v2\n").unwrap();
+        let replacement = fs::File::open(&path).unwrap();
+        assert!(validate_schema_identity(&metadata, &replacement).is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 }
