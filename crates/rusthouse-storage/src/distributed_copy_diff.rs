@@ -92,6 +92,13 @@ pub fn plan_replica_copy_batch(
     // the bounded batch rather than the entire changed inventory.
     let source_index = index(source)?;
     let destination_index = index(destination)?;
+    // A generation-scoped immutable object must never be overwritten in place.
+    if source_index.iter().any(|(key, object)| {
+        destination_index.get(*key)
+            .is_some_and(|existing| !object.same_contents(existing))
+    }) {
+        return Err("replica copy conflicts with an existing immutable object");
+    }
     if max_objects == 0 {
         return Ok(Vec::new());
     }
@@ -334,5 +341,19 @@ mod canonical_inventory_key_tests {
             crc32c: 0,
         };
         assert_eq!(plan_replica_copies(&[valid.clone()], &[]).unwrap(), vec![valid]);
+    }
+}
+
+#[cfg(test)]
+mod immutable_collision_tests {
+    use super::*;
+
+    #[test]
+    fn batch_refuses_same_key_with_different_contents() {
+        let source = [ObjectMetadata { key: "p/g1/id.bin".into(), bytes: 10, crc32c: 1 }];
+        let conflicting = [ObjectMetadata { key: "p/g1/id.bin".into(), bytes: 10, crc32c: 2 }];
+        assert!(plan_replica_copy_batch(&source, &conflicting, 100, 10).is_err());
+        assert!(plan_replica_copy_batch(&source, &source, 100, 10).unwrap().is_empty());
+        assert_eq!(plan_replica_copy_batch(&source, &[], 100, 10).unwrap(), vec![source[0].clone()]);
     }
 }
