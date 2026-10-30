@@ -13,6 +13,15 @@ use std::time::Duration;
 
 const MAX_CONFIGURED_CONNECTIONS: usize = 64;
 
+/// Release a connection permit even when a worker panics or cannot start.
+struct ActiveRequest(Arc<AtomicUsize>);
+
+impl Drop for ActiveRequest {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Bound concurrent read-only analytical requests to avoid unbounded
 /// thread, decoded-block and response-buffer amplification.
 fn parse_max_connections(value: &str) -> io::Result<usize> {
@@ -341,11 +350,14 @@ fn main() -> io::Result<()> {
         }
         let config = Arc::clone(&config);
         let cluster = Arc::clone(&cluster);
-        let active = Arc::clone(&active);
-        std::thread::spawn(move || {
+        let permit = ActiveRequest(Arc::clone(&active));
+        if let Err(error) = std::thread::Builder::new().spawn(move || {
+            let _permit = permit;
             serve(stream, &config, &cluster);
-            active.fetch_sub(1, Ordering::AcqRel);
-        });
+        }) {
+            // The failed spawn drops its closure and releases the permit.
+            eprintln!("RustHouse cannot start query worker: {error}");
+        }
     }
     Ok(())
 }
@@ -477,5 +489,20 @@ mod concurrency_capacity_tests {
             assert!(parse_max_connections(invalid).is_err(), "{invalid}");
         }
         assert_eq!(MAX_CONNECTIONS, 16);
+    }
+}
+
+#[cfg(test)]
+mod active_worker_permit_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_worker_slot_releases_capacity() {
+        let active = Arc::new(AtomicUsize::new(1));
+        {
+            let _permit = ActiveRequest(Arc::clone(&active));
+            assert_eq!(active.load(Ordering::Acquire), 1);
+        }
+        assert_eq!(active.load(Ordering::Acquire), 0);
     }
 }
