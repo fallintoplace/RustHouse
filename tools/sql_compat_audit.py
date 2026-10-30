@@ -33,6 +33,9 @@ MAX_QUERY_FILE_BYTES = 1_048_576
 
 
 def read_queries(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("SQL audit corpus must be a regular, non-symlinked file")
     with path.open("rb") as handle:
         raw = handle.read(MAX_QUERY_FILE_BYTES + 1)
     if len(raw) > MAX_QUERY_FILE_BYTES:
