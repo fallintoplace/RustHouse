@@ -64,6 +64,12 @@ class ConcurrentReadersTests(unittest.TestCase):
                              SimpleNamespace(returncode=0, stdout=b";\n", stderr=b""))
         self.assertTrue(report["all_verified"])
 
+    def test_rejects_nonstring_sql_without_launching_workers(self):
+        for sql in (None, 42, b"SELECT 1", ["SELECT 1"]):
+            with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "SQL must"):
+                run_readers("binary", "part", sql, b"1\\n",
+                            execute=lambda *_a, **_k: self.fail("must not run"))
+
     def test_rejects_mutations_and_multistatement_sql(self):
         for sql in ("DELETE FROM part", "SELECT 1; DROP TABLE events"):
             with self.assertRaisesRegex(ValueError, "read-only"):
