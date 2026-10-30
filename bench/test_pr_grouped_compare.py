@@ -14,6 +14,20 @@ def output(rows=65536, keys=413, samples=11, min_ms=4.0):
 
 
 class GroupedBenchmarkComparisonTests(unittest.TestCase):
+    def test_rejects_symlinked_performance_artifact(self):
+        import tempfile
+        from pathlib import Path
+        from bench.pr_grouped_compare import _read_bounded_report
+
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "real.txt"
+            source.write_bytes(b"measurements")
+            alias = Path(folder) / "alias.txt"
+            alias.symlink_to(source)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                _read_bounded_report(alias)
+            self.assertEqual(_read_bounded_report(source), "measurements")
+
     def test_detects_faster_candidate(self):
         report = compare_text(output(), output(min_ms=2.0))
         self.assertIn("GROUP BY performance", report)
