@@ -85,13 +85,37 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
     let lock_kind = if exclusive { "write" } else { "read" };
 
     #[cfg(unix)]
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .map_err(|error| format_database_lock_error("open", lock_kind, &path, error))?;
+    let file = (|| {
+        if exclusive {
+            return OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path);
+        }
+
+        // Existing databases may be on a read-only mount. Open their lock
+        // inode without write access. Only a missing lock file needs creation.
+        OpenOptions::new().read(true).open(&path).or_else(|error| {
+            if error.kind() != io::ErrorKind::NotFound {
+                return Err(error);
+            }
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => Ok(file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    OpenOptions::new().read(true).open(&path)
+                }
+                Err(error) => Err(error),
+            }
+        })
+    })()
+    .map_err(|error| format_database_lock_error("open", lock_kind, &path, error))?;
 
     #[cfg(unix)]
     {
@@ -141,5 +165,36 @@ mod lock_identity_tests {
         fs::write(&path, b"").unwrap();
         assert!(validate_lock_identity(&path, &file).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+
+#[cfg(all(test, unix))]
+mod read_only_lock_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn read_lock_can_open_an_existing_read_only_lock_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-read-only-db-lock-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        // First reader creates the shared lock inode when it is absent.
+        let initial_reader = acquire_database_lock(&directory, false).unwrap();
+        drop(initial_reader);
+
+        let path = directory.join(".rusthouse-write.lock");
+        let original_mode = fs::metadata(&path).unwrap().permissions().mode();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+
+        let reader = acquire_database_lock(&directory, false).unwrap();
+        let second_reader = acquire_database_lock(&directory, false).unwrap();
+        drop(reader);
+        drop(second_reader);
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(original_mode)).unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 }
