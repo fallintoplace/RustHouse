@@ -29,6 +29,23 @@ class CorrectnessSoakTests(unittest.TestCase):
                 soak("x", "x", "select", oracle, runs=1, warmups=0,
                      execute=lambda: ("0" * 64, 8, 0.1))
 
+    def test_soak_subprocess_spools_and_bounds_stderr(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.query_correctness_soak import run_sql
+
+        def fail(_command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            self.assertNotEqual(kwargs["stderr"], __import__("subprocess").PIPE)
+            kwargs["stderr"].write(b"x" * 10_000 + b"last error")
+            return SimpleNamespace(returncode=1)
+
+        with patch("bench.scale.query_correctness_soak.subprocess.run", side_effect=fail):
+            with self.assertRaises(RuntimeError) as caught:
+                run_sql("rusthouse", "db", "SELECT 1", 1)
+        self.assertIn("last error", str(caught.exception))
+        self.assertLessEqual(len(str(caught.exception)), 500)
+
     def test_rejects_invalid_run_counts(self):
         with self.assertRaises(ValueError):
             soak("x", "x", "x", "none", runs=0)
