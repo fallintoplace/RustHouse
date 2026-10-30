@@ -2,6 +2,7 @@
 """Run RustHouse's offline doctor and print a bounded JSON report."""
 import argparse
 import json
+import math
 from pathlib import Path
 import subprocess
 import sys
@@ -23,6 +24,8 @@ def report(returncode, stdout, stderr, elapsed, full_hashes):
 
 
 def run(binary, database, full_hashes=True, timeout=600):
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 3600:
+        raise ValueError("timeout must be finite and in (0, 3600] seconds")
     command = [str(binary), "doctor", "--database", str(database)]
     if full_hashes:
         command.append("--full-hashes")
@@ -54,12 +57,16 @@ def main():
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--binary", type=Path, default=Path("target/debug/rusthouse"))
     parser.add_argument("--offline-confirmed", action="store_true")
+    parser.add_argument("--timeout", type=float, default=600,
+                        help="Maximum doctor runtime in seconds (up to 3600)")
     parser.add_argument("--quick", action="store_true",
                         help="Skip the slower stored-byte full-hash validation")
     args = parser.parse_args()
     if not args.offline_confirmed:
         parser.error("stop all writers and readers, then pass --offline-confirmed")
-    result = run(args.binary, args.database, not args.quick)
+    if not 0 < args.timeout <= 3600 or not math.isfinite(args.timeout):
+        parser.error("timeout must be finite and in (0, 3600] seconds")
+    result = run(args.binary, args.database, not args.quick, timeout=args.timeout)
     print(json.dumps(result, sort_keys=True))
     return 0 if result["ok"] else 1
 
