@@ -158,12 +158,13 @@ pub fn inventory_snapshot_crc32c(
     let mut slots: Vec<Option<Result<CheckedInventoryEntry, PartError>>> =
         (0..entries.len()).map(|_| None).collect();
     std::thread::scope(|scope| -> Result<(), PartError> {
-        let handles = (0..workers)
-            .map(|_| {
-                let cursor = &cursor;
-                let entries = &entries;
-                let active = &active;
-                scope.spawn(move || {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let cursor = &cursor;
+            let entries = &entries;
+            let active = &active;
+            let handle = std::thread::Builder::new()
+                .spawn_scoped(scope, move || {
                     let mut completed = Vec::new();
                     loop {
                         let index = cursor.fetch_add(1, Ordering::Relaxed);
@@ -174,8 +175,11 @@ pub fn inventory_snapshot_crc32c(
                     }
                     completed
                 })
-            })
-            .collect::<Vec<_>>();
+                .map_err(|error| {
+                    PartError::InvalidScan(format!("cannot start checksum worker: {error}"))
+                })?;
+            handles.push(handle);
+        }
         for handle in handles {
             let completed = handle.join().map_err(|_| {
                 PartError::InvalidScan("snapshot checksum worker panicked".into())
