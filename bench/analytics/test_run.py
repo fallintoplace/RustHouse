@@ -27,6 +27,15 @@ class AnalyticsRunnerTests(unittest.TestCase):
                              "unsafe_reference")
 
 
+    def test_sql_workload_rejects_symlinks(self):
+        with tempfile.TemporaryDirectory() as root:
+            real = Path(root) / "queries.sql"
+            real.write_text("SELECT 1;")
+            alias = Path(root) / "alias.sql"
+            alias.symlink_to(real)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                runner.load_queries(alias)
+
     def test_pinned_queries_are_all_present(self):
         queries = runner.load_queries(ROOT / "queries.sql")
         self.assertEqual(len(queries), 43)
