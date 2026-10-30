@@ -50,18 +50,21 @@ def invoke(binary, database, sql, *, timeout, no_header=False):
     if no_header:
         command.extend(["--format", "tsv-no-header"])
     start = time.perf_counter()
-    process = subprocess.run(
-        command,
-        capture_output=True,
-        check=False,
-        timeout=timeout,
-    )
-    elapsed = time.perf_counter() - start
-    if process.returncode:
-        raise RuntimeError(
-            f"{sql}: exit {process.returncode}: {process.stderr.decode('utf-8', 'replace')[-600:]}"
+    with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile() as errors:
+        process = subprocess.run(
+            command, stdout=output, stderr=errors,
+            check=False, timeout=timeout,
         )
-    return process.stdout, elapsed
+        elapsed = time.perf_counter() - start
+        if process.returncode:
+            errors.seek(max(0, errors.tell() - 600))
+            diagnostic = errors.read(600).decode("utf-8", "replace")
+            raise RuntimeError(f"{sql}: exit {process.returncode}: {diagnostic}")
+        output.seek(0)
+        payload = output.read(8 * 1024 * 1024 + 1)
+        if len(payload) > 8 * 1024 * 1024:
+            raise ValueError("physical scan SQL output exceeds 8 MiB")
+        return payload, elapsed
 
 
 def scan(binary, database, sql, expected, runs, warmups, timeout):
@@ -102,16 +105,20 @@ def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None, fixture_ba
             timeout=timeout,
         )
 
-        inspection = subprocess.run(
-            [str(binary), "doctor", "--database", str(directory)],
-            capture_output=True,
-            check=False,
-            timeout=timeout,
-        )
-        expected_summary = f"OK events: {rows} rows, "
-        if inspection.returncode or expected_summary not in inspection.stdout.decode("utf-8", "replace"):
+        with tempfile.TemporaryFile() as summary, tempfile.TemporaryFile() as errors:
+            inspection = subprocess.run(
+                [str(binary), "doctor", "--database", str(directory)],
+                stdout=summary, stderr=errors,
+                check=False, timeout=timeout,
+            )
+            summary.seek(0)
+            observed = summary.read(8193)
+            errors.seek(max(0, errors.tell() - 600))
+            diagnostic = errors.read(600)
+        expected_summary = f"OK events: {rows} rows, ".encode("utf-8")
+        if inspection.returncode or expected_summary not in observed:
             raise ValueError(
-                f"physical snapshot verification failed: {inspection.stdout!r} {inspection.stderr!r}"
+                f"physical snapshot verification failed: {observed[:8192]!r} {diagnostic!r}"
             )
         count_report = scan(binary, directory, COUNT_SQL, count, runs, warmups, timeout)
         sum_report = scan(binary, directory, SUM_SQL, total, runs, warmups, timeout)

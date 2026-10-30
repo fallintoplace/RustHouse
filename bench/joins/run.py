@@ -42,9 +42,11 @@ def write_dimensions(path, build_rows, step, start=0, duplicate_factor=1):
 
 
 def write_fixture(directory, probe_rows, build_rows, disjoint=False, duplicate_factor=1):
-    if probe_rows < 1 or not 1 <= build_rows <= 32768:
-        raise ValueError("probe rows must be positive; build rows must be in 1..32768")
-    if not 1 <= duplicate_factor <= build_rows or build_rows % duplicate_factor:
+    if (type(probe_rows) is not int or not 1 <= probe_rows <= 2_000_000
+            or type(build_rows) is not int or not 1 <= build_rows <= 32768):
+        raise ValueError("probe rows must be in 1..2000000; build rows must be in 1..32768")
+    if (type(duplicate_factor) is not int or not 1 <= duplicate_factor <= build_rows
+            or build_rows % duplicate_factor):
         raise ValueError("duplicate factor must evenly divide build rows")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -123,6 +125,7 @@ def main(argv=None):
     if (
         args.runs < 1
         or args.warmups < 0
+        or args.runs + args.warmups > 100
         or not math.isfinite(args.timeout)
         or args.timeout <= 0
     ):

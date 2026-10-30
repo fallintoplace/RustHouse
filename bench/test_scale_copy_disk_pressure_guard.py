@@ -71,5 +71,18 @@ class DiskGuardTests(unittest.TestCase):
                           min_free_gib=0.000001)
 
 
+    def test_refuses_oversized_copy_source_before_process_launch(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.tsv"
+            source.write_bytes(b"1\n2\n")
+            with patch("bench.scale.copy_disk_pressure_guard.subprocess.Popen") as launch:
+                with self.assertRaisesRegex(ValueError, "max_source_bytes"):
+                    guard("rusthouse", Path(root) / "db", "events", source, root,
+                          max_source_bytes=3)
+                with self.assertRaisesRegex(ValueError, "max_source_bytes"):
+                    guard("rusthouse", Path(root) / "db", "events", source, root,
+                          max_source_bytes=True)
+                launch.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
