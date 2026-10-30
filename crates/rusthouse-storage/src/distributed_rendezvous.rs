@@ -16,6 +16,7 @@ fn valid_shard(shard: &str) -> bool {
         && shard.len() <= 128
         && shard.as_bytes()[0].is_ascii_alphanumeric()
         && !shard.contains("..")
+        && !shard.ends_with('.')
         && shard
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
@@ -177,6 +178,9 @@ pub fn zone_aware_replicas_for(
         .iter()
         .map(|member| (member.node.as_str(), member.weight))
         .collect::<Vec<_>>();
+    if replicas == 1 {
+        return weighted_replicas_for(shard, &nodes, 1);
+    }
     let ranked = weighted_replicas_for(shard, &nodes, members.len())?;
     // The placement loop can inspect every member. Resolve each node's zone
     // once instead of linearly searching membership for every ranked node.
@@ -409,5 +413,43 @@ mod open_probability_endpoint_tests {
             hash_to_open_unit_interval(u64::MAX),
             ((1u64 << 53) - 1) as f64 / ((1u64 << 53) as f64),
         );
+    }
+}
+
+#[cfg(test)]
+mod single_zone_aware_primary_tests {
+    use super::*;
+    use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn primary_matches_weighted_selection_across_zones_and_member_orders() {
+        let members = parse_membership("a east 1\nb west 8\nc east 4\nd north 12\n").unwrap();
+        let weights = members.iter().map(|member| (member.node.as_str(), member.weight)).collect::<Vec<_>>();
+        let reversed = members.iter().rev().cloned().collect::<Vec<_>>();
+        for index in 0..256 {
+            let shard = format!("shard_{index}");
+            let best = weighted_replicas_for(&shard, &weights, 1).unwrap();
+            assert_eq!(zone_aware_replicas_for(&shard, &members, 1).unwrap(), best);
+            assert_eq!(zone_aware_replicas_for(&shard, &reversed, 1).unwrap(), best);
+        }
+        assert!(zone_aware_replicas_for("shard", &members, 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod portable_shard_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_trailing_dot_shards_for_replicated_object_paths() {
+        let nodes = vec!["node_a".to_owned(), "node_b".to_owned()];
+        for shard in ["part.", "events.2026.", "a..b"] {
+            assert!(replicas_for(shard, &nodes, 1).is_err(), "{shard}");
+            assert!(weighted_replicas_for(shard, &[("node_a", 1)], 1).is_err(), "{shard}");
+        }
+        for shard in ["events.2026", "a_1", "x"] {
+            assert!(replicas_for(shard, &nodes, 1).is_ok(), "{shard}");
+            assert!(crate::distributed_object_key::ObjectKey::new("cluster", shard, 1, "part", "data.bin").is_ok());
+        }
     }
 }

@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from bench.joins.hotspot import benchmark, fact_id, verify_rows, write_fixture
+from bench.joins.hotspot import benchmark, fact_id, fixture_copy_sql, verify_rows, write_fixture
 
 
 class SkewedJoinTests(unittest.TestCase):
@@ -50,6 +50,17 @@ class BoundedHotspotControlsTests(unittest.TestCase):
                        (1, 0, float("inf"))):
             with self.subTest(values=values), self.assertRaisesRegex(ValueError, "invalid benchmark"):
                 benchmark("no-binary", 10, 3, 50, *values)
+
+class HotJoinCopyEscapingTests(unittest.TestCase):
+    def test_copy_path_with_apostrophe_is_one_sql_literal(self):
+        from pathlib import Path
+        self.assertEqual(
+            fixture_copy_sql("dimensions", Path("/tmp/a'b/dimensions.tsv")),
+            "COPY dimensions FROM '/tmp/a''b/dimensions.tsv' WITH (FORMAT TSV, HEADER TRUE)",
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported fixture"):
+            fixture_copy_sql("invalid", Path("data.tsv"))
+
 
 if __name__ == "__main__":
     unittest.main()

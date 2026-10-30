@@ -8,6 +8,19 @@ import statistics
 import sys
 from pathlib import Path
 
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+
+
+def load_report(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("report must be a regular, non-symlinked file")
+    with path.open("rb") as source:
+        payload = source.read(MAX_REPORT_BYTES + 1)
+    if len(payload) > MAX_REPORT_BYTES:
+        raise ValueError("benchmark report exceeds 2 MiB")
+    return json.loads(payload)
+
 FIELDS = ("query", "status", "samples", "median_ms", "p90_ms", "error")
 KNOWN_STATUSES = frozenset((
     "passed", "unverified", "missing_query", "missing_reference",
@@ -88,7 +101,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = json.loads(args.input.read_text(encoding="utf-8"))
+        report = load_report(args.input)
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("w", encoding="utf-8", newline="") as output:

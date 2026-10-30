@@ -6,6 +6,52 @@ from bench.scale.csv_stream_to_tsv import convert, escape_field, utf8_length
 
 
 class CsvToTsvTests(unittest.TestCase):
+    def test_refuses_symlinked_csv_source_before_writing(self):
+        from bench.scale.csv_stream_to_tsv import convert
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            source = directory / "source.csv"
+            source.write_text("x\n")
+            link = directory / "alias.csv"
+            try:
+                link.symlink_to(source)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation unavailable")
+            target = directory / "out.tsv"
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                convert(link, target)
+            self.assertFalse(target.exists())
+
+
+    def test_does_not_unlink_a_preexisting_pending_file(self):
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            source = folder / "input.csv"
+            output = folder / "out.tsv"
+            source.write_bytes(b"1,hello\n")
+            old_pending = folder / f".out.tsv.{os.getpid()}.pending"
+            old_pending.write_bytes(b"must survive")
+            convert(source, output)
+            self.assertEqual(output.read_text(), "1\thello\n")
+            self.assertEqual(old_pending.read_bytes(), b"must survive")
+
+    def test_random_pending_name_collision_is_not_deleted(self):
+        from unittest.mock import patch
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            source = folder / "input.csv"
+            output = folder / "out.tsv"
+            source.write_bytes(b"1,hello\n")
+            collision = folder / f".out.tsv.{os.getpid()}.collision.pending"
+            collision.write_bytes(b"existing")
+            with patch("bench.scale.csv_stream_to_tsv.secrets.token_hex", return_value="collision"):
+                with self.assertRaises(FileExistsError):
+                    convert(source, output)
+            self.assertEqual(collision.read_bytes(), b"existing")
+            self.assertFalse(output.exists())
+
     def test_quotes_embedded_newlines_tabs_and_backslashes(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "in.csv"
@@ -38,6 +84,20 @@ class CsvToTsvTests(unittest.TestCase):
             stats = convert(source, target, header=True)
             self.assertEqual(stats["data_rows"], 1)
             self.assertEqual(target.read_bytes(), b"id\tvalue\n1\tfirst\\r\\nsecond\n")
+
+    def test_published_tsv_fsyncs_directory(self):
+        import os
+        from unittest.mock import patch
+        if os.name != "posix":
+            self.skipTest("directory fsync requires POSIX")
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "in.csv"
+            target = Path(folder) / "out.tsv"
+            source.write_text("1,hello\n")
+            with patch("bench.scale.csv_stream_to_tsv.os.fsync", wraps=os.fsync) as fsync:
+                convert(source, target)
+            self.assertGreaterEqual(fsync.call_count, 2)
+            self.assertEqual(target.read_text(), "1\thello\n")
 
     def test_explicit_null_mode_and_empty_strings(self):
         self.assertEqual(escape_field("", False), "")
