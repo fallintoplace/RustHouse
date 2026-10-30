@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from bench.scale.physical_scan import benchmark, even_reference, p90
 
@@ -55,6 +57,32 @@ class PhysicalScanReferenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "batch_rows"):
                 write_fixture(fixture, 5, batch_rows=1_000_000_001)
 
+
+
+
+class PhysicalSqlOutputBudgetTests(unittest.TestCase):
+    def test_large_query_output_is_spooled_and_rejected(self):
+        from bench.scale.physical_scan import invoke
+
+        def run(_command, **kwargs):
+            self.assertIn("stdout", kwargs)
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].write(b"x" * (8 * 1024 * 1024 + 1))
+            return SimpleNamespace(returncode=0, stderr=b"")
+
+        with patch("bench.scale.physical_scan.subprocess.run", side_effect=run):
+            with self.assertRaisesRegex(ValueError, "8 MiB"):
+                invoke("rusthouse", "db", "SELECT 1", timeout=1)
+
+    def test_small_query_output_survives_spooling(self):
+        from bench.scale.physical_scan import invoke
+        def run(_command, **kwargs):
+            kwargs["stdout"].write(b"1\\n")
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with patch("bench.scale.physical_scan.subprocess.run", side_effect=run):
+            output, elapsed = invoke("rusthouse", "db", "SELECT 1", timeout=1)
+            self.assertEqual(output, b"1\\n")
+            self.assertGreaterEqual(elapsed, 0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -50,18 +50,21 @@ def invoke(binary, database, sql, *, timeout, no_header=False):
     if no_header:
         command.extend(["--format", "tsv-no-header"])
     start = time.perf_counter()
-    process = subprocess.run(
-        command,
-        capture_output=True,
-        check=False,
-        timeout=timeout,
-    )
-    elapsed = time.perf_counter() - start
-    if process.returncode:
-        raise RuntimeError(
-            f"{sql}: exit {process.returncode}: {process.stderr.decode('utf-8', 'replace')[-600:]}"
+    with tempfile.TemporaryFile(mode="w+b") as output:
+        process = subprocess.run(
+            command, stdout=output, stderr=subprocess.PIPE,
+            check=False, timeout=timeout,
         )
-    return process.stdout, elapsed
+        elapsed = time.perf_counter() - start
+        if process.returncode:
+            raise RuntimeError(
+                f"{sql}: exit {process.returncode}: {process.stderr.decode('utf-8', 'replace')[-600:]}"
+            )
+        output.seek(0)
+        payload = output.read(8 * 1024 * 1024 + 1)
+        if len(payload) > 8 * 1024 * 1024:
+            raise ValueError("physical scan SQL output exceeds 8 MiB")
+        return payload, elapsed
 
 
 def scan(binary, database, sql, expected, runs, warmups, timeout):
