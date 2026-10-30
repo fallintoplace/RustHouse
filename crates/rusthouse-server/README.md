@@ -65,6 +65,10 @@ return the bounded logical plan as plain text. The endpoint parses SQL but does
 not inspect parts or read rows. It uses the same 65536-byte input limit and
 server-side row cap as ordinary queries. This is not a physical or cost-based plan.
 
+\`GET /metrics\` returns Prometheus text counters for processed HTTP requests and
+non-200 results, without exposing SQL or table data. The counters reset on
+server restart. Use this endpoint only on trusted loopback or overlay networks.
+
 `GET /capabilities` returns read-only JSON with the server version, source mode,
 SQL and response byte limits, and effective row cap. Empty-body GET only.
 
