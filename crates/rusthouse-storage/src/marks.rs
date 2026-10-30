@@ -110,6 +110,12 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
     if content.len() > MAX_MARKS_BYTES {
         return Err(marks_too_large(path));
     }
+    if content.len() as u64 != size {
+        return Err(marks_io_error(
+            path,
+            io::Error::new(io::ErrorKind::InvalidData, "marks file changed during read"),
+        ));
+    }
     parse_wide_marks(&content, format, path)
 }
 
