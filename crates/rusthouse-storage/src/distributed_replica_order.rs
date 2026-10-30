@@ -26,6 +26,18 @@ fn newest_first(left: &ReplicaStatus, right: &ReplicaStatus) -> std::cmp::Orderi
 }
 
 fn validate_replica_nodes(replicas: &[ReplicaStatus]) -> Result<(), &'static str> {
+    if replicas.len() <= 8 {
+        for (index, replica) in replicas.iter().enumerate() {
+            if !valid_node(&replica.node)
+                || replica.epoch == 0
+                || replica.generation == 0
+                || replicas[..index].iter().any(|prior| prior.node == replica.node)
+            {
+                return Err("invalid or duplicate replica version or node");
+            }
+        }
+        return Ok(());
+    }
     let mut seen = HashSet::with_capacity(replicas.len());
     for replica in replicas {
         if !valid_node(&replica.node)
@@ -142,6 +154,23 @@ pub fn best_read_replica_at_least(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn small_replica_validation_rejects_duplicates_and_invalid_versions() {
+        for count in [1usize, 2, 8, 9, 64] {
+            let mut replicas = (0..count).map(|index| ReplicaStatus {
+                node: format!("n{index}"),
+                epoch: 1,
+                generation: (index + 1) as u64,
+                healthy: true,
+            }).collect::<Vec<_>>();
+            assert_eq!(rank_read_replicas(&replicas).unwrap().len(), count);
+            if count > 1 {
+                replicas[count - 1].node = replicas[0].node.clone();
+                assert!(rank_read_replicas(&replicas).is_err());
+            }
+        }
+    }
 
     #[test]
     fn direct_selection_matches_sorted_replica_rankings() {

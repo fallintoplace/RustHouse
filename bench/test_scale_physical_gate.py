@@ -15,6 +15,13 @@ def example(rows=1_000_000_000, median=1.0):
 
 
 class PhysicalGateTests(unittest.TestCase):
+    def test_optional_samples_produce_no_spread(self):
+        result = validate(example())
+        self.assertTrue(result["all_passed"])
+        self.assertTrue(all(item["sample_spread_percent"] is None
+                            for item in result["checks"]))
+
+
     def test_passes_verified_1b_snapshots(self):
         self.assertTrue(validate(example(), max_median_seconds=2)["all_passed"])
 

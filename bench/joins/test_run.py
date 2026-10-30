@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import QUERY, logical_probe_throughput, main, query_for_strictness, verify_result, write_fixture
+from run import QUERY, fixture_copy_sql, logical_probe_throughput, main, query_for_strictness, verify_result, write_fixture
 
 class JoinWorkloadTests(unittest.TestCase):
     def test_join_throughput_rejects_invalid_medians(self):
@@ -129,6 +129,15 @@ class FullProbeFixtureBudgetTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as outcome:
             main(["--binary", "missing", "--runs", "100", "--warmups", "1"])
         self.assertEqual(outcome.exception.code, 2)
+
+class JoinCopyEscapingTests(unittest.TestCase):
+    def test_generated_copy_literal_escapes_apostrophes(self):
+        statement = fixture_copy_sql("facts", Path("/tmp/user's/facts.tsv"))
+        self.assertEqual(statement,
+                         "COPY facts FROM '/tmp/user''s/facts.tsv' WITH (FORMAT TSV, HEADER TRUE)")
+        with self.assertRaisesRegex(ValueError, "unsupported fixture"):
+            fixture_copy_sql("facts; DROP TABLE dimensions", Path("a.tsv"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -113,6 +113,13 @@ def scan(binary, directory, sql, golden, *, runs, warmups, timeout):
     }
 
 
+def _verification_failure(inspection):
+    return (
+        f"persisted snapshot verification failed: "
+        f"{inspection.stdout[:250]!r} {inspection.stderr[-600:]!r}"
+    )
+
+
 def benchmark(binary, rows, groups, runs, warmups, timeout, scratch_dir=None):
     if (type(runs) is not int or type(warmups) is not int
             or runs < 1 or warmups < 0 or runs + warmups > 1000):
@@ -137,9 +144,7 @@ def benchmark(binary, rows, groups, runs, warmups, timeout, scratch_dir=None):
             capture_output=True, check=False, timeout=timeout,
         )
         if inspection.returncode or f"OK events: {rows} rows, " not in inspection.stdout.decode("utf-8", "replace"):
-            raise RuntimeError(
-                f"persisted snapshot verification failed: {inspection.stdout!r} {inspection.stderr!r}"
-            )
+            raise RuntimeError(_verification_failure(inspection))
         return {
             "workload": "persisted-billion-row-skewed-grouped-analytics",
             "revision": os.environ.get("GITHUB_SHA"),

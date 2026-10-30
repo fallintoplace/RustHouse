@@ -98,17 +98,6 @@ impl Cluster {
     }
 }
 
-fn render_peer_addresses(peers: &[Peer]) -> String {
-    let mut addresses = String::new();
-    for (index, peer) in peers.iter().enumerate() {
-        if index != 0 {
-            addresses.push(',');
-        }
-        write!(&mut addresses, "\"{}\"", peer.address()).expect("writing to String cannot fail");
-    }
-    addresses
-}
-
 /// Membership describes peer addresses, not their health or consistency.
 pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
     if method != "GET" {
@@ -117,15 +106,25 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
     if !body.is_empty() {
         return Response::text("400 Bad Request", "GET must not contain a request body\n");
     }
-    let addresses = render_peer_addresses(cluster.peers());
+    let mut body = String::with_capacity(50 + cluster.peers().len() * 26);
+    write!(
+        &mut body,
+        "{{\"mode\":\"read-only\",\"peer_count\":{},\"peers\":[",
+        cluster.peers().len()
+    )
+    .expect("writing to String cannot fail");
+    for (index, peer) in cluster.peers().iter().enumerate() {
+        if index != 0 {
+            body.push(',');
+        }
+        write!(&mut body, "\"{}\"", peer.address())
+            .expect("writing to String cannot fail");
+    }
+    body.push_str("]}\n");
     Response {
         status: "200 OK",
         content_type: "application/json; charset=utf-8",
-        body: format!(
-            "{{\"mode\":\"read-only\",\"peer_count\":{},\"peers\":[{addresses}]}}\n",
-            cluster.peers().len()
-        )
-        .into_bytes(),
+        body: body.into_bytes(),
     }
 }
 
@@ -146,6 +145,21 @@ mod tests {
                 assert!(Cluster::new(duplicate).is_err());
             }
         }
+    }
+
+
+    #[test]
+    fn renders_membership_json_in_peer_order() {
+        let cluster = Cluster::new(vec![
+            Peer::parse("127.0.0.1:42210").unwrap(),
+            Peer::parse("127.0.0.1:42211").unwrap(),
+        ]).unwrap();
+        let response = handle("GET", &[], &cluster);
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(
+            response.body,
+            b"{\"mode\":\"read-only\",\"peer_count\":2,\"peers\":[\"127.0.0.1:42210\",\"127.0.0.1:42211\"]}\n"
+        );
     }
 
     #[test]
