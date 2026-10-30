@@ -46,6 +46,16 @@ class CorrectnessSoakTests(unittest.TestCase):
         self.assertIn("last error", str(caught.exception))
         self.assertLessEqual(len(str(caught.exception)), 500)
 
+    def test_refuses_symlinked_expected_output_before_query(self):
+        with tempfile.TemporaryDirectory() as root:
+            original = Path(root) / "reference.tsv"
+            original.write_bytes(b"count\\n1\\n")
+            alias = Path(root) / "reference-link.tsv"
+            alias.symlink_to(original)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                soak("rusthouse", "db", "SELECT 1", alias,
+                     runs=1, warmups=0, execute=lambda: self.fail("must not query"))
+
     def test_rejects_invalid_run_counts(self):
         with self.assertRaises(ValueError):
             soak("x", "x", "x", "none", runs=0)
