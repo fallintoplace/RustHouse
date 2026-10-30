@@ -118,6 +118,18 @@ fn checksum_inventory_entry(
             "snapshot inventory file changed during hashing".into(),
         ));
     }
+    // Check again after consuming the entire stream. A file can be replaced
+    // or rewritten without changing its length while its CRC is calculated.
+    let final_opened = file.metadata().map_err(|error| io_error(&path, error))?;
+    let final_path = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
+    if !final_path.file_type().is_file()
+        || !same_file_state(&metadata, &final_opened)
+        || !same_file_state(&metadata, &final_path)
+    {
+        return Err(PartError::InvalidScan(
+            "snapshot inventory source changed during hashing".into(),
+        ));
+    }
     Ok(CheckedInventoryEntry {
         relative_path: entry.relative_path.clone(),
         bytes,
@@ -192,6 +204,21 @@ pub fn inventory_snapshot_crc32c(
         .collect()
 }
 
+fn same_file_state(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return same_file_identity(before, after)
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 #[cfg(unix)]
 fn same_file_identity(path_metadata: &fs::Metadata, opened_metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -220,6 +247,10 @@ mod immutable_identity_tests {
         assert_eq!(before.len(), opened.len());
         assert!(!same_file_identity(&before, &opened));
         assert!(same_file_identity(&before, &fs::File::open(&first).unwrap().metadata().unwrap()));
+        assert!(same_file_state(&before, &before));
+        assert!(!same_file_state(&before, &opened));
+        fs::write(&first, b"longer").unwrap();
+        assert!(!same_file_state(&before, &fs::metadata(&first).unwrap()));
         fs::remove_dir_all(root).unwrap();
     }
 }
