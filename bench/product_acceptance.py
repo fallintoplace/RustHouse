@@ -13,11 +13,23 @@ def check_rows(output):
 
 
 def invoke(binary, *args):
-    completed = subprocess.run([str(binary), *args],
-                               capture_output=True, text=True, check=False)
-    if completed.returncode:
-        raise RuntimeError("rusthouse failed: " + completed.stderr[:2000])
-    return completed.stdout
+    try:
+        with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+            completed = subprocess.run(
+                [str(binary), *args], stdout=output, stderr=errors,
+                check=False, timeout=120,
+            )
+            errors.seek(0)
+            error = errors.read(2000).decode("utf-8", "replace")
+            if completed.returncode:
+                raise RuntimeError("rusthouse failed: " + error)
+            output.seek(0)
+            data = output.read(65_537)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("rusthouse acceptance command timed out") from exc
+    if len(data) > 65_536:
+        raise RuntimeError("rusthouse acceptance output exceeds 64 KiB")
+    return data.decode("utf-8", "replace")
 
 
 def accept(binary):
