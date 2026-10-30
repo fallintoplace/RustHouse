@@ -15,9 +15,10 @@ from bench.scale.query_resource_profile import profile
 
 
 def write_dimensions(directory, rows, payload_bytes):
-    if not 1 <= rows <= 32768:
+    if type(rows) is not int or not 1 <= rows <= 32768:
         raise ValueError("build rows must be 1..32768")
-    if not 1 <= payload_bytes <= 65536 or rows * payload_bytes > 128 * 1024 * 1024:
+    if (type(payload_bytes) is not int or not 1 <= payload_bytes <= 65536
+            or rows * payload_bytes > 128 * 1024 * 1024):
         raise ValueError("wide payload exceeds the 128 MiB fixture budget")
     directory = Path(directory)
     narrow = directory / "narrow.tsv"
@@ -34,10 +35,19 @@ def write_dimensions(directory, rows, payload_bytes):
 
 def benchmark(binary, fact_rows=65536, build_rows=8192, payload_bytes=4096,
               runs=3, timeout=120, max_rss_mib=None, sample_ms=25):
-    if not 1 <= fact_rows <= 2_000_000 or fact_rows < build_rows:
+    if (type(fact_rows) is not int or not 1 <= fact_rows <= 2_000_000
+            or type(build_rows) is not int or not 1 <= build_rows <= 32768
+            or fact_rows < build_rows):
         raise ValueError("fact rows must be >= build rows and <= 2 million")
-    if runs < 1 or not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("runs and timeout must be positive")
+    if (type(runs) is not int or not 1 <= runs <= 100
+            or type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or timeout <= 0 or type(sample_ms) is not int
+            or not 1 <= sample_ms <= 1000):
+        raise ValueError("invalid runs, timeout or sampling interval")
+    if max_rss_mib is not None and (
+            type(max_rss_mib) not in (int, float)
+            or not math.isfinite(max_rss_mib) or max_rss_mib <= 0):
+        raise ValueError("invalid max RSS budget")
     with tempfile.TemporaryDirectory(prefix="rusthouse-wide-join-") as temp:
         root = Path(temp)
         narrow, wide = write_dimensions(root, build_rows, payload_bytes)

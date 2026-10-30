@@ -23,11 +23,11 @@ def fact_id(index, build_rows, hot_percent):
 
 
 def write_fixture(directory, probe_rows, build_rows, hot_percent):
-    if not 1 <= probe_rows <= 131072:
+    if type(probe_rows) is not int or not 1 <= probe_rows <= 131072:
         raise ValueError("probe rows must be in 1..131072")
-    if not 1 <= build_rows <= 32768:
+    if type(build_rows) is not int or not 1 <= build_rows <= 32768:
         raise ValueError("build rows must be in 1..32768")
-    if not 0 <= hot_percent <= 100:
+    if type(hot_percent) is not int or not 0 <= hot_percent <= 100:
         raise ValueError("hot percent must be 0..100")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -63,7 +63,10 @@ def verify_rows(output, expected):
 
 def benchmark(binary, probe_rows=65536, build_rows=1024, hot_percent=90,
               runs=5, warmups=2, timeout=120):
-    if runs < 1 or warmups < 0 or not math.isfinite(timeout) or timeout <= 0:
+    if (type(runs) is not int or type(warmups) is not int
+            or runs < 1 or warmups < 0 or runs + warmups > 100
+            or type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or timeout <= 0):
         raise ValueError("invalid benchmark runs, warmups or timeout")
     with tempfile.TemporaryDirectory(prefix="rusthouse-join-hotspot-") as root:
         root = Path(root)
