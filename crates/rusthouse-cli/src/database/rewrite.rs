@@ -478,13 +478,16 @@ pub(super) fn append_parts_stream(
 
 /// Rewrite a local table using bounded batches. Keep the previous active
 /// snapshot visible until every replacement part has been written and verified.
-pub(super) fn rewrite_rows(
+pub(super) fn rewrite_rows<Prepared>(
     database: &Path,
     table: &str,
-    mut transform: impl FnMut(&[TypedColumn], usize, &mut Vec<Option<String>>) -> Result<bool, String>,
+    prepare: impl FnOnce(&[Column]) -> Result<Prepared, String>,
+    mut transform: impl FnMut(&Prepared, &[TypedColumn], usize, &mut Vec<Option<String>>) -> Result<bool, String>,
 ) -> Result<(usize, usize), String> {
     let _lock = lock(database)?;
     let cols = columns(database, table)?;
+    // Bind the predicate and column indexes only after taking the write lock.
+    let prepared = prepare(&cols)?;
     let (source, _) = validated_parts(database, table, &cols)?;
     let expected = inspect_query_source(&source)
         .map_err(|error| error.to_string())?
@@ -528,7 +531,7 @@ pub(super) fn rewrite_rows(
                     .iter()
                     .map(|col| column_value(col, index))
                     .collect::<Result<Vec<_>, _>>()?;
-                if !transform(&batch, index, &mut values)? {
+                if !transform(&prepared, &batch, index, &mut values)? {
                     continue;
                 }
                 if values.len() != cols.len() {
