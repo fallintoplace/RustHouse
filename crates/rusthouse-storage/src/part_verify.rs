@@ -68,10 +68,15 @@ fn fixed_stream_width(kind: &str) -> Option<u64> {
     match kind {
         "Bool" | "UInt8" | "Int8" => Some(1),
         "Date" | "UInt16" | "Int16" | "BFloat16" => Some(2),
-        "DateTime" | "UInt32" | "Int32" | "Float32" | "IPv4" => Some(4),
+        "DateTime" | "Date32" | "UInt32" | "Int32" | "Float32" | "IPv4" => Some(4),
         "UInt64" | "Int64" | "Float64" => Some(8),
         "UInt128" | "Int128" | "UUID" | "IPv6" => Some(16),
         "UInt256" | "Int256" => Some(32),
+        _ if kind.starts_with("DateTime64(")
+            && kind.strip_prefix("DateTime64(")
+                .and_then(|precision| precision.strip_suffix(')'))
+                .and_then(|precision| precision.parse::<u8>().ok())
+                .is_some_and(|precision| precision <= 9) => Some(8),
         _ => kind
             .strip_prefix("FixedString(")
             .and_then(|width| width.strip_suffix(')'))
@@ -208,6 +213,38 @@ mod tests {
                     ..
                 })
             ));
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn checks_date32_and_datetime64_stream_lengths() {
+        let dir = fixture();
+        for (kind, bytes_per_row) in [("Date32", 4), ("DateTime64(3)", 8)] {
+            fs::write(
+                dir.join("columns.txt"),
+                format!("columns format version: 1\n1 columns:\n`id` {kind}\n"),
+            )
+            .unwrap();
+            // Two rows in count.txt require exactly twice the physical width.
+            fs::write(
+                dir.join("id.bin"),
+                checked_plain_block(&vec![0; bytes_per_row * 2]),
+            )
+            .unwrap();
+            assert!(verify_wide_part(&dir).is_ok(), "{kind}");
+            fs::write(
+                dir.join("id.bin"),
+                checked_plain_block(&vec![0; bytes_per_row]),
+            )
+            .unwrap();
+            assert!(matches!(
+                verify_wide_part(&dir),
+                Err(PartError::InvalidPart {
+                    reason: "fixed-width stream byte count differs from count.txt",
+                    ..
+                })
+            ), "{kind}");
         }
         fs::remove_dir_all(dir).unwrap();
     }
