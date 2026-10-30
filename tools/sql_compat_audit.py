@@ -28,6 +28,17 @@ def parse_lines(content):
     return queries
 
 
+MAX_QUERY_FILE_BYTES = 1_048_576
+
+
+def read_queries(path):
+    with path.open("rb") as handle:
+        raw = handle.read(MAX_QUERY_FILE_BYTES + 1)
+    if len(raw) > MAX_QUERY_FILE_BYTES:
+        raise ValueError("SQL audit corpus exceeds 1 MiB")
+    return parse_lines(raw.decode("utf-8"))
+
+
 def audit(binary, queries, run=subprocess.run, fail_fast=False):
     results = []
     with tempfile.TemporaryDirectory(prefix="rusthouse-sql-audit-") as database:
@@ -61,7 +72,7 @@ def main():
     parser.add_argument("--fail-fast", action="store_true")
     args = parser.parse_args()
     try:
-        statements = parse_lines(args.queries.read_text(encoding="utf-8"))
+        statements = read_queries(args.queries)
         result = audit(args.binary, statements, fail_fast=args.fail_fast)
     except (OSError, UnicodeError, ValueError) as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
