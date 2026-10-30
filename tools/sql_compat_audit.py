@@ -10,6 +10,28 @@ import sys
 import tempfile
 
 
+def _has_separator(sql):
+    quote = None
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if quote is not None:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                if index + 1 < len(sql) and sql[index + 1] == quote:
+                    index += 2
+                    continue
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == ";":
+            return True
+        index += 1
+    return quote is not None
+
+
 def parse_lines(content):
     queries = []
     for number, line in enumerate(content.splitlines(), 1):
@@ -18,7 +40,7 @@ def parse_lines(content):
             continue
         if value.endswith(";"):
             value = value[:-1].rstrip()
-        if (not re.match(r"(?i)^SELECT\s", value) or ";" in value
+        if (not re.match(r"(?i)^SELECT\s", value) or _has_separator(value)
                 or len(value.encode("utf-8")) > 4096):
             raise ValueError("line " + str(number) + ": one bounded SELECT is required")
         if len(queries) >= 200:
