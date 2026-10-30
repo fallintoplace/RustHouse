@@ -93,7 +93,8 @@ def main():
     try:
         target = backup(args.source, args.destination, args.binary,
                         max_bytes=args.max_backup_bytes,
-                        doctor_timeout=args.doctor_timeout)
+                        doctor_timeout=args.doctor_timeout,
+                        max_entries=args.max_backup_entries)
     except (ValueError, OSError, RuntimeError) as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1
