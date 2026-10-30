@@ -924,12 +924,31 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let haystack = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "position requires two arguments")?;
             let needle = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "position requires two arguments")?;
-            match (haystack, needle) {
-                (Some(haystack), Some(needle)) => ConstantValue::Integer(
-                    i64::try_from(haystack.find(&needle).map_or(0, |index| index + 1))
-                        .map_err(|_| ParseError("position result exceeds Int64".into()))?,
-                ),
+            let start = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(1)
+            };
+            require(parser, Token::RParen, "position requires two or three arguments")?;
+            match (haystack, needle, start) {
+                (Some(haystack), Some(needle), Some(start)) => {
+                    if start < 0 {
+                        return Err(ParseError("position start must be nonnegative".into()));
+                    }
+                    let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
+                    let found = haystack.as_bytes().get(offset..).and_then(|tail| {
+                        tail.windows(needle.len().max(1))
+                            .position(|bytes| bytes == needle.as_bytes())
+                    });
+                    let position = if needle.is_empty() {
+                        if offset <= haystack.len() { offset + 1 } else { 0 }
+                    } else {
+                        found.map_or(0, |index| offset + index + 1)
+                    };
+                    ConstantValue::Integer(i64::try_from(position).map_err(|_| {
+                        ParseError("position result exceeds Int64".into())
+                    })?)
+                }
                 _ => ConstantValue::Null,
             }
         }
