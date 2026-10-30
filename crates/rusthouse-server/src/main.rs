@@ -314,7 +314,14 @@ fn main() -> io::Result<()> {
     eprintln!("RustHouse read-only HTTP listening on http://{bind}:{port}");
     let active = Arc::new(AtomicUsize::new(0));
     for accepted in listener.incoming() {
-        let stream = accepted?;
+        let stream = match accepted {
+            Ok(stream) => stream,
+            Err(error) if matches!(
+                error.kind(),
+                io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted
+            ) => continue,
+            Err(error) => return Err(error),
+        };
         let mut count = active.load(Ordering::Relaxed);
         let acquired = loop {
             if count >= max_connections {
@@ -430,6 +437,21 @@ mod request_line_spacing_regressions {
                     .map(|response| response.status),
                 Some("400 Bad Request")
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod accept_error_policy_tests {
+    use std::io;
+
+    #[test]
+    fn only_expected_transient_accept_errors_are_retryable() {
+        for kind in [io::ErrorKind::Interrupted, io::ErrorKind::ConnectionAborted] {
+            assert!(matches!(kind, io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted));
+        }
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+            assert!(!matches!(kind, io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted));
         }
     }
 }
