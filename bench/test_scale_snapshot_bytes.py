@@ -65,5 +65,14 @@ class SnapshotBytesTests(unittest.TestCase):
         self.assertEqual(classify("id.bin"), "data_bytes")
 
 
+    def test_total_snapshot_byte_budget_is_enforced(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "data.bin").write_bytes(b"x" * 11)
+            self.assertEqual(inventory(root, max_total_bytes=11)["total_bytes"], 11)
+            with self.assertRaisesRegex(ValueError, "max_total_bytes"):
+                inventory(root, max_total_bytes=10)
+            with self.assertRaisesRegex(ValueError, "max_total_bytes"):
+                inventory(root, max_total_bytes=True)
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,19 @@ from official_coverage import coverage, clean_sql
 
 
 class CoverageTests(unittest.TestCase):
+    def test_refuses_symlinked_sql_without_execution(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            target = directory / "external.sql"
+            target.write_text("SELECT 1;")
+            (directory / "q01.sql").symlink_to(target)
+            invoked = []
+            report = coverage("rusthouse", "db", directory, runs=1, warmups=0,
+                              execute=lambda sql: invoked.append(sql))
+            self.assertEqual(report["results"][0]["status"], "unsupported_query")
+            self.assertEqual(invoked, [])
+
+
     def test_missing_queries_remain_explicit_and_unverified_is_not_a_pass(self):
         with tempfile.TemporaryDirectory() as root:
             queries = Path(root)
@@ -82,6 +95,37 @@ class CoverageTests(unittest.TestCase):
                                   execute=lambda sql: called.append(sql))
             self.assertEqual(report["results"][0]["status"], "reference_error")
             self.assertEqual(called, [])
+
+
+    def test_serial_queries_load_references_only_when_executing(self):
+        with tempfile.TemporaryDirectory() as root:
+            queries = Path(root)
+            refs = queries / "refs"
+            refs.mkdir()
+            for number in (1, 2):
+                (queries / f"q{number:02d}.sql").write_text(
+                    f"SELECT {number};", encoding="utf-8"
+                )
+                (refs / f"q{number:02d}.tsv").write_bytes(f"{number}\n".encode())
+            opened = []
+            original_open = Path.open
+
+            def track_open(path, *args, **kwargs):
+                if path.suffix == ".tsv":
+                    opened.append(path.name)
+                return original_open(path, *args, **kwargs)
+
+            def execute(sql):
+                if sql == "SELECT 1":
+                    self.assertNotIn("q02.tsv", opened)
+                return sql.split()[-1].encode() + b"\n"
+
+            with patch("pathlib.Path.open", new=track_open):
+                report = coverage("fake", "db", queries, refs,
+                                  runs=1, warmups=0, jobs=1, execute=execute)
+            self.assertEqual(report["results"][0]["status"], "passed")
+            self.assertEqual(report["results"][1]["status"], "passed")
+            self.assertEqual(opened, ["q01.tsv", "q02.tsv"])
 
     def test_reference_match_and_mismatch_are_distinct(self):
         with tempfile.TemporaryDirectory() as root:

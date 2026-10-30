@@ -21,6 +21,17 @@ from run import (
 
 
 class ClickBenchRunnerTests(unittest.TestCase):
+    def test_bounded_workload_and_projection_files(self):
+        from unittest import mock
+        from run import read_bounded_text
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source.txt"
+            path.write_bytes(b"X" * 17)
+            with self.assertRaisesRegex(ValueError, "exceeds"):
+                read_bounded_text(path, 16)
+            self.assertEqual(read_bounded_text(path, 17), "X" * 17)
+
+
     def test_loads_queries_with_original_numbers(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "queries.sql"
