@@ -365,8 +365,24 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
         }
         Err(error) => return Err(format!("cannot rename table {from}: {error}")),
     }
+    // Make the destination name durable while the old name is still present.
+    // Removing the source before the first directory sync may lose both names
+    // after a crash or power interruption.
+    if let Err(error) = sync_catalog_dir(catalog) {
+        let rollback = fs::remove_file(&destination)
+            .and_then(|_| fs::File::open(catalog).and_then(|dir| dir.sync_all()));
+        return Err(format!(
+            "cannot persist destination schema {to}: {error}; rollback: {rollback:?}"
+        ));
+    }
+    #[cfg(debug_assertions)]
+    if std::env::var("RUSTHOUSE_DEBUG_CRASH_AT")
+        .is_ok_and(|value| value == "catalog-rename-after-link")
+    {
+        std::process::exit(86);
+    }
     if let Err(error) = fs::remove_file(&source) {
-        let _ = fs::remove_file(&destination);
+        // Keep the synced destination as the recoverable name on failures.
         return Err(format!("cannot finish renaming table {from}: {error}"));
     }
     sync_catalog_dir(catalog).map_err(|error| {
