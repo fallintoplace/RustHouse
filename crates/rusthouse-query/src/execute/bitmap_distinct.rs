@@ -123,6 +123,42 @@ impl BitmapDistinct32 {
                 "COUNT(DISTINCT) exceeded its 65536-prefix budget".into(),
             ));
         }
+        // Plan memory before mutating any block. Partial states may each fit
+        // their budgets while their union exceeds the global sparse/dense caps.
+        let mut sparse_keys = self.sparse_keys;
+        let mut dense_blocks = self.dense_blocks;
+        for (&prefix, incoming) in &other.blocks {
+            match (self.blocks.get(&prefix), incoming) {
+                (None, Block::Sparse(values)) => {
+                    sparse_keys += values.len();
+                }
+                (None, Block::Dense(_)) => dense_blocks += 1,
+                (Some(Block::Sparse(current)), Block::Dense(_)) => {
+                    sparse_keys -= current.len();
+                    dense_blocks += 1;
+                }
+                (Some(Block::Sparse(current)), Block::Sparse(values)) => {
+                    let added = values.iter().filter(|value| !current.contains(value)).count();
+                    if current.len() + added >= DENSE_THRESHOLD {
+                        sparse_keys -= current.len();
+                        dense_blocks += 1;
+                    } else {
+                        sparse_keys += added;
+                    }
+                }
+                (Some(Block::Dense(_)), _) => {}
+            }
+        }
+        if sparse_keys > MAX_SPARSE_KEYS {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
+            ));
+        }
+        if dense_blocks > MAX_DENSE_BLOCKS {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) exceeded its dense-bitmap memory budget".into(),
+            ));
+        }
         for (&prefix, incoming) in &other.blocks {
             let additions = if let Some(current) = self.blocks.get_mut(&prefix) {
                 Self::merge_block(current, incoming)
@@ -134,6 +170,8 @@ impl BitmapDistinct32 {
             self.count = self.count.checked_add(additions)
                 .ok_or_else(|| ExecutionError::Invalid("distinct count overflow".into()))?;
         }
+        self.sparse_keys = sparse_keys;
+        self.dense_blocks = dense_blocks;
         Ok(())
     }
 
@@ -327,5 +365,44 @@ mod merge_tests {
         incoming.insert(((MAX_BLOCKS - 1) as u32) << 16 | 1).unwrap();
         full.merge_from(&incoming).unwrap();
         assert_eq!(full.len(), MAX_BLOCKS as u64 + 2);
+    }
+}
+
+#[cfg(test)]
+mod partial_distinct_memory_budget_tests {
+    use super::*;
+
+    #[test]
+    fn partial_merge_rejects_sparse_memory_overflow_without_mutation() {
+        let mut left = BitmapDistinct32::new();
+        let mut right = BitmapDistinct32::new();
+        for prefix in 0..20_u32 {
+            for suffix in 0..4000_u32 {
+                left.insert(prefix << 16 | suffix).unwrap();
+                right.insert((prefix + 20) << 16 | suffix).unwrap();
+            }
+        }
+        assert!(left.merge_from(&right).is_err());
+        assert_eq!(left.len(), 80_000);
+        assert_eq!(left.sparse_keys, 80_000);
+        assert_eq!(left.blocks.len(), 20);
+    }
+
+    #[test]
+    fn merging_sparse_overlapping_prefixes_updates_dense_tracking() {
+        let mut left = BitmapDistinct32::new();
+        let mut right = BitmapDistinct32::new();
+        for suffix in 0..3000_u32 {
+            left.insert(suffix).unwrap();
+        }
+        for suffix in 2500..5000_u32 {
+            right.insert(suffix).unwrap();
+        }
+        left.merge_from(&right).unwrap();
+        assert_eq!(left.len(), 5000);
+        assert_eq!(left.sparse_keys, 0);
+        assert_eq!(left.dense_blocks, 1);
+        left.insert(5000).unwrap();
+        assert_eq!(left.len(), 5001);
     }
 }
