@@ -7,6 +7,8 @@ Input is expected to contain every ID in [start, start+rows) exactly once.
 import argparse
 import json
 import math
+import os
+import tempfile
 import re
 import statistics
 import subprocess
@@ -33,15 +35,25 @@ def sql_for(table, first, count, column="id"):
             f"{column} >= {first} AND {upper}")
 
 
+MAX_ORACLE_RESULT_BYTES = 1024
+
+
 def invoke(binary, database, statement, timeout):
-    response = subprocess.run(
-        [str(binary), "sql", statement, "--database", str(database),
-         "--format", "tsv-no-header"],
-        capture_output=True, timeout=timeout, check=False,
-    )
-    if response.returncode:
-        raise RuntimeError(response.stderr.decode("utf-8", "replace")[-500:])
-    return response.stdout
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        response = subprocess.run(
+            [str(binary), "sql", statement, "--database", str(database),
+             "--format", "tsv-no-header"],
+            stdout=output, stderr=errors, timeout=timeout, check=False,
+        )
+        if response.returncode:
+            errors.seek(0, os.SEEK_END)
+            errors.seek(max(0, errors.tell() - 500))
+            raise RuntimeError(errors.read().decode("utf-8", "replace"))
+        output.seek(0)
+        result = output.read(MAX_ORACLE_RESULT_BYTES + 1)
+    if len(result) > MAX_ORACLE_RESULT_BYTES:
+        raise ValueError("physical range oracle output exceeds 1 KiB")
+    return result
 
 
 def verify(binary, database, table, start, rows, window_rows=10_000_000,
