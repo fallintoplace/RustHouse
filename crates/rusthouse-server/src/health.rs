@@ -29,7 +29,8 @@ fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
 
 fn render_health_response(cluster: &Cluster, healthy: &[bool]) -> Response {
     let healthy_peer_count = healthy.iter().filter(|&&alive| alive).count();
-    let status = if healthy_peer_count == healthy.len() {
+    // A coordinator with no configured peers cannot serve distributed data.
+    let status = if !healthy.is_empty() && healthy_peer_count == healthy.len() {
         "200 OK"
     } else {
         "503 Service Unavailable"
@@ -93,7 +94,7 @@ mod tests {
     fn reports_empty_cluster_without_peer_allocations() {
         let cluster = Cluster::new(Vec::new()).unwrap();
         let response = handle("GET", b"", &cluster);
-        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.status, "503 Service Unavailable");
         assert_eq!(response.body, b"{\"total\":0,\"healthy\":0,\"peers\":[]}\n");
     }
 
