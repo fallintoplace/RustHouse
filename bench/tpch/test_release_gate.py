@@ -91,6 +91,17 @@ class ReleaseGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "invalid timing"):
                     gate.verify(bad, {1})
 
+    def test_verified_latency_baseline_blocks_regressions(self):
+        baseline = report([(1, "passed"), (6, "passed")])
+        candidate = report([(1, "passed"), (6, "passed")])
+        candidate["results"][0]["timings_seconds"] = [0.10, 0.20]
+        with self.assertRaisesRegex(ValueError, "median latency"):
+            gate.verify_latency_baseline(candidate, baseline, {1, 6}, 1.25)
+        candidate["results"][0]["timings_seconds"] = [0.01, 0.02]
+        gate.verify_latency_baseline(candidate, baseline, {1, 6}, 1.25)
+        with self.assertRaisesRegex(ValueError, "max slowdown"):
+            gate.verify_latency_baseline(candidate, baseline, {1, 6}, float("nan"))
+
     def test_cli_rejects_unverified_report_and_accepts_verified_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "report.json"
