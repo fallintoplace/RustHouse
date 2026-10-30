@@ -1286,13 +1286,32 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         let used_bytes = &retained_input;
         let mut results = Vec::with_capacity(cluster.peers().len());
         for wave in cluster.peers().chunks(MAX_INFLIGHT_SHARDS) {
-            let handles = wave.iter().map(|&peer| {
-                scope.spawn(move || {
-                    read_shard(peer, shard_query, sum_schema, group_schema, table, sorted_prefix, used_bytes)
+            let jobs = wave
+                .iter()
+                .map(|&peer| {
+                    match std::thread::Builder::new().spawn_scoped(scope, move || {
+                        read_shard(
+                            peer, shard_query, sum_schema, group_schema, table,
+                            sorted_prefix, used_bytes,
+                        )
+                    }) {
+                        Ok(handle) => Ok(handle),
+                        Err(_) => Err(read_shard(
+                            peer, shard_query, sum_schema, group_schema, table,
+                            sorted_prefix, used_bytes,
+                        )),
+                    }
                 })
-            }).collect::<Vec<_>>();
-            for handle in handles {
-                results.push(handle.join().unwrap_or_else(|_| Err("peer query panicked".into())));
+                .collect::<Vec<_>>();
+            // Retain configured peer order even when a worker ran inline.
+            for job in jobs {
+                let result = match job {
+                    Ok(handle) => handle
+                        .join()
+                        .unwrap_or_else(|_| Err("peer query panicked".into())),
+                    Err(inline) => inline,
+                };
+                results.push(result);
             }
         }
         results
