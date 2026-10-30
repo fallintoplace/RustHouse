@@ -222,6 +222,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "STARTSWITHCASEINSENSITIVE"
             | "BIN"
             | "ISNOTNULL"
             | "ISNULL"
@@ -3198,6 +3199,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(binary_string(&bytes[skip..])?)
                 }
                 ConstantValue::Null => ConstantValue::Null,
+            }
+        }
+        "STARTSWITHCASEINSENSITIVE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "startsWithCaseInsensitive requires a prefix")?;
+            let prefix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after startsWithCaseInsensitive")?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => {
+                    let matched = input
+                        .as_bytes()
+                        .get(..prefix.len())
+                        .is_some_and(|bytes| bytes.eq_ignore_ascii_case(prefix.as_bytes()));
+                    ConstantValue::Integer(i64::from(matched))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "CONTAINS" => {
