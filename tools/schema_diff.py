@@ -2,6 +2,7 @@
 """Compare ordered RustHouse table schema between two loopback servers."""
 import argparse
 import json
+import math
 import re
 import sys
 from urllib.parse import quote, urlsplit
@@ -16,6 +17,15 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 NO_REDIRECT_OPENER = build_opener(NoRedirect())
+
+
+def _unique_object_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate schema JSON field: {key}")
+        result[key] = value
+    return result
 
 
 def validate_url(origin):
@@ -53,12 +63,15 @@ def compatible_columns(left, right, *, allow_additive=False):
 
 
 def fetch(base, table, timeout=5):
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 300:
+        raise ValueError("timeout must be finite and in (0, 300] seconds")
+    base = validate_url(base)
     url = base + "/schema?table=" + quote(table, safe="")
     with NO_REDIRECT_OPENER.open(url, timeout=timeout) as response:
         body = response.read(1_048_577)
     if len(body) > 1_048_576:
         raise ValueError("schema response too large")
-    return columns(json.loads(body))
+    return columns(json.loads(body, object_pairs_hook=_unique_object_pairs))
 
 
 def main():
@@ -67,12 +80,13 @@ def main():
     parser.add_argument("--right", required=True)
     parser.add_argument("--table", required=True)
     parser.add_argument("--allow-additive", action="store_true")
+    parser.add_argument("--timeout", type=float, default=5)
     args = parser.parse_args()
     try:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", args.table):
             raise ValueError("invalid table name")
-        left = fetch(validate_url(args.left), args.table)
-        right = fetch(validate_url(args.right), args.table)
+        left = fetch(validate_url(args.left), args.table, timeout=args.timeout)
+        right = fetch(validate_url(args.right), args.table, timeout=args.timeout)
         if not compatible_columns(left, right, allow_additive=args.allow_additive):
             print("MISMATCH: ordered column names/types differ", file=sys.stderr)
             print("left: " + repr(left), file=sys.stderr)

@@ -6,6 +6,20 @@ import math
 import sys
 from pathlib import Path
 
+MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+
+
+def load_manifest(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("manifest must be a regular non-symlinked file")
+    with path.open("rb") as source:
+        payload = source.read(MAX_MANIFEST_BYTES + 1)
+    if len(payload) > MAX_MANIFEST_BYTES:
+        raise ValueError("manifest exceeds 2 MiB")
+    return json.loads(payload)
+
+
 from bench.__main__ import BENCHMARK_SUITES, benchmark_command
 
 
@@ -57,7 +71,7 @@ def main(argv=None):
     parser.add_argument("--stations", type=int, required=True)
     args = parser.parse_args(argv)
     try:
-        manifest = json.loads((args.output_dir / "manifest.json").read_text(encoding="utf-8"))
+        manifest = load_manifest(args.output_dir / "manifest.json")
         count = validate_manifest(
             args.output_dir, manifest, rows=args.rows, samples=args.samples, stations=args.stations
         )

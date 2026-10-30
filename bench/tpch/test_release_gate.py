@@ -25,6 +25,16 @@ def report(results, runs=2, reference_checked=True, timing_key="timings_seconds"
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def test_large_release_report_is_rejected(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "report.json"
+            path.write_bytes(b"X" * 17)
+            with patch.object(gate, "MAX_MANIFEST_BYTES", 16):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    gate.load_manifest(path)
+
+
     def test_accepts_verified_tpch_and_analytics_reports(self):
         required = {1, 6}
         gate.verify(report([(1, "passed"), (6, "passed")]), required)

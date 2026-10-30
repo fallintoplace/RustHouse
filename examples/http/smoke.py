@@ -4,7 +4,17 @@ import argparse
 import json
 import sys
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+
+class NoRedirect(HTTPRedirectHandler):
+    """Do not forward RustHouse diagnostics to redirect destinations."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+urlopen = build_opener(NoRedirect()).open
 
 
 def origin(value, allow_private=False):

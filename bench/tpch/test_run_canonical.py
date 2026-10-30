@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run_canonical import command, run_full
+from run_canonical import command, read_bounded, run_full
 
 
 def corpus(root):
@@ -16,6 +16,16 @@ def corpus(root):
 
 
 class FullRunnerTests(unittest.TestCase):
+    def test_bounded_query_and_report_inputs(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "q01.sql"
+            path.write_bytes(b"X" * 17)
+            with self.assertRaisesRegex(ValueError, "exceeds"):
+                read_bounded(path, 16)
+            self.assertEqual(read_bounded(path, 17), "X" * 17)
+
+
     def test_requires_22_upstream_labeled_queries(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "queries"
