@@ -61,6 +61,17 @@ class PhysicalScanReferenceTests(unittest.TestCase):
 
 
 class PhysicalSqlOutputBudgetTests(unittest.TestCase):
+    def test_failed_sql_command_keeps_bounded_diagnostics(self):
+        from bench.scale.physical_scan import invoke
+        def fail(_command, **kwargs):
+            kwargs["stderr"].write(b"x" * 10_000 + b"reason")
+            return SimpleNamespace(returncode=1)
+        with patch("bench.scale.physical_scan.subprocess.run", side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError, "reason") as failure:
+                invoke("rusthouse", "db", "SELECT 1", timeout=1)
+        self.assertLess(len(str(failure.exception)), 1000)
+
+
     def test_large_query_output_is_spooled_and_rejected(self):
         from bench.scale.physical_scan import invoke
 
