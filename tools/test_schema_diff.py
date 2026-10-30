@@ -1,7 +1,11 @@
 import unittest
-from schema_diff import columns, validate_url, compatible_columns
+from schema_diff import columns, validate_url, compatible_columns, fetch
 
 class SchemaTests(unittest.TestCase):
+    def test_fetch_validates_loopback_before_request(self):
+        with self.assertRaisesRegex(ValueError, "loopback"):
+            fetch("http://example.com", "events")
+
     def test_order_and_types_are_retained(self):
         self.assertEqual(columns({"columns": [{"name": "id", "type": "UInt64"},
                                                {"name": "s", "type": "String"}]}),
@@ -50,6 +54,26 @@ class SchemaTests(unittest.TestCase):
         ):
             with self.subTest(malformed=malformed), self.assertRaises(ValueError):
                 columns({"columns": [malformed]})
+
+    def test_duplicate_schema_keys_are_rejected(self):
+        from unittest.mock import patch
+        from schema_diff import fetch
+        with patch("schema_diff.NO_REDIRECT_OPENER") as opener:
+            opener.open.return_value.__enter__.return_value.read.return_value = (
+                b'{"columns":[{"name":"id","name":"other","type":"UInt64"}]}'
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate schema JSON field"):
+                fetch("http://127.0.0.1:8123", "items")
+
+class SchemaTimeoutTests(unittest.TestCase):
+    def test_schema_fetch_rejects_invalid_timeouts_before_network(self):
+        from unittest.mock import patch
+        with patch("schema_diff.NO_REDIRECT_OPENER") as opener:
+            for value in (True, 0, -1, float("nan"), float("inf"), 301):
+                with self.subTest(timeout=value), self.assertRaisesRegex(ValueError, "timeout"):
+                    fetch("http://127.0.0.1:8123", "items", timeout=value)
+            opener.open.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
