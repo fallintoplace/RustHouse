@@ -8,6 +8,34 @@ from bench.scale.tsv_shards import split_tsv
 
 
 class ShardTests(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "requires no-follow open")
+    def test_refuses_source_swapped_for_symlink_while_opening(self):
+        import os
+        from unittest.mock import patch
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("O_NOFOLLOW not available")
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            source = folder / "source.tsv"
+            source.write_bytes(b"1\\n")
+            evil = folder / "other.tsv"
+            evil.write_bytes(b"2\\n")
+            target = folder / "shards"
+            original_open = os.open
+            swapped = False
+            def swap_open(path, *args, **kwargs):
+                nonlocal swapped
+                if Path(path) == source and not swapped:
+                    swapped = True
+                    source.rename(folder / "saved.tsv")
+                    source.symlink_to(evil)
+                return original_open(path, *args, **kwargs)
+            with patch("bench.scale.tsv_shards.os.open", side_effect=swap_open):
+                with self.assertRaises(OSError):
+                    split_tsv(source, target)
+            self.assertTrue(swapped)
+            self.assertFalse(target.exists())
+
     def test_shards_are_ordered_hashed_and_bounded(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "input.tsv"
