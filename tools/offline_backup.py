@@ -11,6 +11,23 @@ import sys
 import tempfile
 
 
+def validate_tree(root, max_bytes):
+    total_bytes = 0
+    for base, directories, files in os.walk(source, followlinks=False):
+        for item in directories + files:
+            if (Path(base) / item).is_symlink():
+                raise ValueError("backup refuses symlinks: " + str(Path(base) / item))
+        for item in files:
+            file_stat = (Path(base) / item).stat()
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ValueError("backup requires regular files: " + str(Path(base) / item))
+            if max_bytes is not None:
+                total_bytes += file_stat.st_size
+                if total_bytes > max_bytes:
+                    raise ValueError("backup exceeds max_bytes preflight budget")
+    return total_bytes
+
+
 def preflight(source, destination, max_bytes=None):
     if source.is_symlink() or not source.is_dir():
         raise ValueError("source must be an existing real directory")
@@ -25,19 +42,7 @@ def preflight(source, destination, max_bytes=None):
         raise ValueError("staging destination already exists: " + str(stage))
     if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 1):
         raise ValueError("max_bytes must be positive")
-    total_bytes = 0
-    for base, directories, files in os.walk(source, followlinks=False):
-        for item in directories + files:
-            if (Path(base) / item).is_symlink():
-                raise ValueError("backup refuses symlinks: " + str(Path(base) / item))
-        for item in files:
-            file_stat = (Path(base) / item).stat()
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise ValueError("backup requires regular files: " + str(Path(base) / item))
-            if max_bytes is not None:
-                total_bytes += file_stat.st_size
-                if total_bytes > max_bytes:
-                    raise ValueError("backup exceeds max_bytes preflight budget")
+    validate_tree(source, max_bytes)
     return source, destination, stage
 
 
@@ -48,6 +53,8 @@ def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeo
     source, destination, stage = preflight(source, destination, max_bytes=max_bytes)
     # Preserve the complete layout, including hidden files and lock inode contents.
     shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
+    # Sources can grow after preflight. Refuse to publish an oversized or unsafe copy.
+    validate_tree(stage, max_bytes)
     try:
         with tempfile.TemporaryFile() as errors:
             result = subprocess.run(
