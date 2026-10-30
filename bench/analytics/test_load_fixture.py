@@ -60,6 +60,16 @@ class ClickBenchLoadTimeoutTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "finite"):
                     load_fixture("unused", "db", "no-such-fixture",
                                  timeout=timeout, execute=lambda sql: b"")
+    def test_sql_fixture_does_not_follow_symlinks(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            original = path / "create.sql"
+            original.write_text("CREATE TABLE t (id UInt64);")
+            alias = path / "alias.sql"
+            alias.symlink_to(original)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                read_fixture_sql(alias)
+
     def test_create_and_copy_sql_source_size_is_bounded(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "create.sql"

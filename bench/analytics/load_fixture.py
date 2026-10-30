@@ -17,7 +17,10 @@ MAX_SQL_SCRIPT_BYTES = 64 * 1024
 
 
 def read_fixture_sql(path):
-    with Path(path).open("rb") as source:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("fixture SQL must be a regular, non-symlinked file")
+    with path.open("rb") as source:
         raw = source.read(MAX_SQL_SCRIPT_BYTES + 1)
     if len(raw) > MAX_SQL_SCRIPT_BYTES:
         raise ValueError("analytics fixture SQL exceeds 64 KiB")
