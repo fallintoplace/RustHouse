@@ -13,6 +13,10 @@ fn validated_generations(generations: &[u64], active: u64) -> Result<Vec<u64>, &
     Ok(sorted_generations)
 }
 
+fn known_generation(generations: &[u64], generation: u64) -> bool {
+    generations.binary_search(&generation).is_ok()
+}
+
 fn planned_retention(
     generations: &[u64],
     active: u64,
@@ -102,14 +106,14 @@ pub fn retention_candidates_with_pins(
         return Ok(candidates);
     }
     if let [pin] = pinned {
-        if known.binary_search(pin).is_err() {
+        if !known_generation(&known, *pin) {
             return Err("duplicate or unknown pinned generation");
         }
         return Ok(candidates.into_iter().filter(|generation| generation != pin).collect());
     }
     if pinned.len() <= 4 && candidates.len() <= 128 {
         for (index, &generation) in pinned.iter().enumerate() {
-            if pinned[..index].contains(&generation) || known.binary_search(&generation).is_err() {
+            if pinned[..index].contains(&generation) || !known_generation(&known, generation) {
                 return Err("duplicate or unknown pinned generation");
             }
         }
@@ -119,7 +123,7 @@ pub fn retention_candidates_with_pins(
     }
     let mut pins = std::collections::HashSet::with_capacity(pinned.len());
     for &generation in pinned {
-        if !pins.insert(generation) || known.binary_search(&generation).is_err() {
+        if !pins.insert(generation) || !known_generation(&known, generation) {
             return Err("duplicate or unknown pinned generation");
         }
     }
