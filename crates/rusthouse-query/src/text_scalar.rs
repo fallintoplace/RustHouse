@@ -165,6 +165,10 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_PREFIX"
             | "RIGHT"
             | "RIGHTUTF8"
+            | "TO_BASE64"
+            | "TO_BASE64URL"
+            | "FROM_BASE64"
+            | "FROM_BASE64URL"
             | "BASE64_ENCODE"
             | "BASE64URLENCODE"
             | "BASE64ENCODE"
@@ -3208,7 +3212,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "BASE64_ENCODE" | "BASE64ENCODE" | "BASE64URLENCODE" => {
+        "BASE64_ENCODE" | "BASE64ENCODE" | "BASE64URLENCODE" | "TO_BASE64" | "TO_BASE64URL" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
             match input {
@@ -3222,7 +3226,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if output_len > MAX_TEXT_BYTES {
                         return Err(ParseError("BASE64_ENCODE result is too large".into()));
                     }
-                    let alphabet: &[u8; 64] = if name == "BASE64URLENCODE" {
+                    let alphabet: &[u8; 64] = if (name == "BASE64URLENCODE" || name == "TO_BASE64URL") {
                         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
                     } else {
                         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -3249,7 +3253,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.push('=');
                         }
                     }
-                    if name == "BASE64URLENCODE" {
+                    if (name == "BASE64URLENCODE" || name == "TO_BASE64URL") {
                         while result.ends_with('=') {
                             result.pop();
                         }
@@ -3582,7 +3586,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "BASE64_DECODE" | "BASE64DECODE" | "TRYBASE64DECODE" | "BASE64URLDECODE" => {
+        "BASE64_DECODE" | "BASE64DECODE" | "TRYBASE64DECODE" | "BASE64URLDECODE" | "FROM_BASE64" | "FROM_BASE64URL" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
             match input {
@@ -3599,7 +3603,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                     }
                     let mut normalized = Vec::new();
-                    let source: &[u8] = if name == "BASE64URLDECODE" {
+                    let source: &[u8] = if name == "BASE64URLDECODE" || name == "FROM_BASE64URL" {
                         normalized.reserve(value.len().saturating_add(3));
                         for byte in value.bytes() {
                             normalized.push(match byte {
