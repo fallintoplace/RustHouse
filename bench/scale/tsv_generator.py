@@ -61,6 +61,12 @@ def generate(path, rows, *, start=0, step=1, batch_rows=8192, header=False, forc
             os.replace(temporary, path)
         else:
             os.link(temporary, path)
+        if os.name == "posix":
+            descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
