@@ -31,7 +31,7 @@ def same_device(database, watch_dir):
 
 
 def guard(binary, database, table, source, watch_dir, min_free_gib=5,
-          timeout=3600, poll_seconds=0.25):
+          timeout=3600, poll_seconds=0.25, *, max_source_bytes=None):
     if (type(min_free_gib) not in (int, float)
             or not math.isfinite(min_free_gib) or min_free_gib <= 0):
         raise ValueError("min-free-gib must be positive")
@@ -44,8 +44,13 @@ def guard(binary, database, table, source, watch_dir, min_free_gib=5,
     reserve_float = min_free_gib * (1024**3)
     if not math.isfinite(reserve_float) or not 1 <= reserve_float <= (1 << 63) - 1:
         raise ValueError("min-free-gib must correspond to 1..Int64 bytes")
+    if max_source_bytes is not None and (
+            type(max_source_bytes) is not int or max_source_bytes < 1):
+        raise ValueError("max_source_bytes must be a positive integer")
     if not Path(source).is_file():
         raise ValueError("source TSV is missing")
+    if max_source_bytes is not None and Path(source).stat().st_size > max_source_bytes:
+        raise ValueError("COPY source exceeds max_source_bytes")
     if not Path(watch_dir).is_dir():
         raise ValueError("watch directory is missing")
     # New database paths are not present yet. The filesystem of their nearest
@@ -118,10 +123,12 @@ def main(argv=None):
     p.add_argument("--min-free-gib", type=float, default=5)
     p.add_argument("--timeout", type=float, default=3600)
     p.add_argument("--poll-seconds", type=float, default=0.25)
+    p.add_argument("--max-source-bytes", type=int)
     a = p.parse_args(argv)
     try:
         report = guard(a.binary, a.database, a.table, a.source, a.watch_dir,
-                       a.min_free_gib, a.timeout, a.poll_seconds)
+                       a.min_free_gib, a.timeout, a.poll_seconds,
+                       max_source_bytes=a.max_source_bytes)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         p.exit(1, f"guarded COPY failed: {error}\n")
     print(json.dumps(report))
