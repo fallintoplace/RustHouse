@@ -1837,11 +1837,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(input) => {
                     let unit = 10_i64.pow(3);
-                    let seconds = u32::try_from(input.div_euclid(unit)).map_err(|_| {
-                        ParseError("fromUnixTimestamp64Milli requires a supported UTC DateTime".into())
-                    })?;
+                    let seconds = input.div_euclid(unit);
                     let fraction = input.rem_euclid(unit);
-                    let datetime = rusthouse_storage::format_datetime(seconds);
+                    let datetime = super::date_scalar::render_datetime64_utc(seconds)?;
                     ConstantValue::Text(format!(
                         "{datetime}.{fraction:0width$}",
                         width = 3
@@ -2459,11 +2457,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(input) => {
                     let unit = 10_i64.pow(9);
-                    let seconds = u32::try_from(input.div_euclid(unit)).map_err(|_| {
-                        ParseError("fromUnixTimestamp64Nano requires a supported UTC DateTime".into())
-                    })?;
+                    let seconds = input.div_euclid(unit);
                     let fraction = input.rem_euclid(unit);
-                    let datetime = rusthouse_storage::format_datetime(seconds);
+                    let datetime = super::date_scalar::render_datetime64_utc(seconds)?;
                     ConstantValue::Text(format!(
                         "{datetime}.{fraction:0width$}",
                         width = 9
@@ -2520,11 +2516,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(input) => {
                     let unit = 10_i64.pow(6);
-                    let seconds = u32::try_from(input.div_euclid(unit)).map_err(|_| {
-                        ParseError("fromUnixTimestamp64Micro requires a supported UTC DateTime".into())
-                    })?;
+                    let seconds = input.div_euclid(unit);
                     let fraction = input.rem_euclid(unit);
-                    let datetime = rusthouse_storage::format_datetime(seconds);
+                    let datetime = super::date_scalar::render_datetime64_utc(seconds)?;
                     ConstantValue::Text(format!(
                         "{datetime}.{fraction:0width$}",
                         width = 6
