@@ -28,7 +28,10 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     let opened_schema_metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect opened schema for {table}: {error}"))?;
-    if !opened_schema_metadata.file_type().is_file() || opened_schema_metadata.len() > 32 * 1024 {
+    if !opened_schema_metadata.file_type().is_file()
+        || opened_schema_metadata.len() != schema_metadata.len()
+        || opened_schema_metadata.len() > 32 * 1024
+    {
         return Err(format!("database schema changed before read for {table}"));
     }
     #[cfg(unix)]
@@ -43,6 +46,9 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
     if content.len() > 32 * 1024 {
         return Err(format!("database schema exceeds size limit for {table}"));
+    }
+    if content.len() as u64 != opened_schema_metadata.len() {
+        return Err(format!("database schema changed during read for {table}"));
     }
     let content = String::from_utf8(content)
         .map_err(|_| format!("invalid UTF-8 in database schema for {table}"))?;
