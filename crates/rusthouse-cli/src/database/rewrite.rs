@@ -263,11 +263,12 @@ fn stage_existing_parts_with_workers(
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
     let next = AtomicUsize::new(0);
-    let completed = std::thread::scope(|scope| {
-        let handles = (0..workers)
-            .map(|_| {
-                let next = &next;
-                scope.spawn(move || -> Result<(), String> {
+    let completed = std::thread::scope(|scope| -> Result<Vec<Result<(), String>>, String> {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let next = &next;
+            let handle = std::thread::Builder::new()
+                .spawn_scoped(scope, move || -> Result<(), String> {
                     loop {
                         let index = next.fetch_add(1, Ordering::Relaxed);
                         if index >= existing.len() {
@@ -276,17 +277,18 @@ fn stage_existing_parts_with_workers(
                         stage_existing_part(&existing[index], staging)?;
                     }
                 })
-            })
-            .collect::<Vec<_>>();
-        handles
+                .map_err(|error| format!("cannot start immutable part staging worker: {error}"))?;
+            handles.push(handle);
+        }
+        Ok(handles
             .into_iter()
             .map(|handle| {
                 handle
                     .join()
                     .unwrap_or_else(|_| Err("immutable part staging worker panicked".into()))
             })
-            .collect::<Vec<_>>()
-    });
+            .collect::<Vec<_>>())
+    })?;
     for result in completed {
         result?;
     }
