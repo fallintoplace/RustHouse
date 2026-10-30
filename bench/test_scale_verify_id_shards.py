@@ -103,6 +103,42 @@ class VerifyShardsTests(unittest.TestCase):
                 verify(manifest)
 
 
+
+
+class RelativeShardPathConfinementTests(unittest.TestCase):
+    def test_rejects_parent_directory_escape(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            shard = root / "outside.tsv"
+            shard.write_bytes(b"0\n")
+            subdir = root / "inside"
+            subdir.mkdir()
+            manifest = subdir / "manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1, "start": 0, "rows": 1,
+                "shards": [{"path": "../outside.tsv", "start": 0, "rows": 1,
+                            "sha256": hashlib.sha256(shard.read_bytes()).hexdigest()}],
+            }))
+            with self.assertRaisesRegex(ValueError, "escapes manifest directory"):
+                verify(manifest)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows CI cannot create symlinks")
+    def test_rejects_relative_path_through_symlinked_directory(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "outside.tsv").write_bytes(b"0\n")
+            inside = root / "inside"
+            inside.mkdir()
+            (inside / "alias").symlink_to(root, target_is_directory=True)
+            manifest = inside / "manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1, "start": 0, "rows": 1,
+                "shards": [{"path": "alias/outside.tsv", "start": 0, "rows": 1,
+                            "sha256": hashlib.sha256(b"0\n").hexdigest()}],
+            }))
+            with self.assertRaisesRegex(ValueError, "escapes manifest directory"):
+                verify(manifest)
+
     def test_rejects_duplicate_manifest_json_fields(self):
         with tempfile.TemporaryDirectory() as root:
             manifest = Path(root) / "manifest.json"
