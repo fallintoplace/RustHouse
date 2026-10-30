@@ -192,8 +192,13 @@ fn write_entry(output: &mut impl Write, entry: &SortEntry) -> Result<(), Executi
 
 fn read_entry(input: &mut impl Read) -> Result<Option<SortEntry>, ExecutionError> {
     let mut header = [0u8; 12];
-    if input.read(&mut header[..1])? == 0 {
-        return Ok(None);
+    loop {
+        match input.read(&mut header[..1]) {
+            Ok(0) => return Ok(None),
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        }
     }
     input.read_exact(&mut header[1..])?;
     let ordinal: [u8; 8] = header[..8].try_into().expect("typed sort ordinal width");
@@ -569,5 +574,40 @@ mod tests {
         let mut malformed = data;
         malformed[12] = 99;
         assert!(read_entry(&mut malformed.as_slice()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod interrupted_typed_sort_header_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    struct InterruptOnce<'a> {
+        data: Cursor<&'a [u8]>,
+        interrupted: bool,
+    }
+
+    impl Read for InterruptOnce<'_> {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            self.data.read(bytes)
+        }
+    }
+
+    #[test]
+    fn retries_interrupted_first_byte_without_treating_it_as_end_of_run() {
+        let record = [0u8; 12];
+        let mut reader = InterruptOnce {
+            data: Cursor::new(record.as_slice()),
+            interrupted: false,
+        };
+        let entry = read_entry(&mut reader).unwrap().unwrap();
+        assert_eq!(entry.ordinal, 0);
+        assert!(entry.row.values.is_empty());
+        assert!(entry.row.sort_keys.is_empty());
+        assert!(read_entry(&mut reader).unwrap().is_none());
     }
 }
