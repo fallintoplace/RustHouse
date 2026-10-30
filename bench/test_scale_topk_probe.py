@@ -62,5 +62,29 @@ class SpoolingTopKProbeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "differs"):
                 probe("rusthouse", "part", 1_000_000, limit=1)
 
+class BoundedTopKFailureTests(unittest.TestCase):
+    def test_failed_injected_cli_keeps_only_stderr_tail(self):
+        def failing(*_args, **_kwargs):
+            return SimpleNamespace(returncode=2, stdout=b"",
+                                   stderr=b"a" * 10_000 + b"final failure")
+
+        with self.assertRaises(RuntimeError) as raised:
+            probe("rusthouse", "part", 5, execute=failing)
+        self.assertLess(len(str(raised.exception)), 750)
+        self.assertIn("final failure", str(raised.exception))
+
+    def test_default_subprocess_stderr_is_spooled_and_bounded(self):
+        def failing(_command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            self.assertTrue(hasattr(kwargs["stderr"], "write"))
+            kwargs["stderr"].write(b"a" * 10_000 + b"last error")
+            return SimpleNamespace(returncode=1)
+
+        with patch("bench.scale.topk_probe.subprocess.run", side_effect=failing):
+            with self.assertRaisesRegex(RuntimeError, "last error") as raised:
+                probe("rusthouse", "part", 5)
+        self.assertLess(len(str(raised.exception)), 750)
+
+
 if __name__ == "__main__":
     unittest.main()
