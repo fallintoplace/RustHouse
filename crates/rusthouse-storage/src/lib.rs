@@ -62,7 +62,7 @@ pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use database_lock::{DatabaseLock, acquire_database_lock};
 pub use database_table::resolve_database_table;
-pub use dates::{format_date, format_datetime, parse_date, parse_datetime};
+pub use dates::{format_date, format_date32, format_datetime, parse_date, parse_date32, parse_datetime};
 pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};
 pub use enums::{EnumColumn, EnumReadError, read_enum_column};
 pub use file_sizes::{
@@ -76,7 +76,7 @@ pub use granules::{read_mark_bytes, read_numeric_granule, read_u64_granule};
 pub use ip::{read_ipv4_values, read_ipv6_values};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
-pub use metadata::{Column, PartMetadata, inspect_part};
+pub use metadata::{Column, PartMetadata, inspect_part, read_part_row_count};
 pub use nested_arrays::{
     NestedArrayReadError, NestedNumericArrayColumn, read_nested_numeric_array_column,
 };
@@ -96,7 +96,8 @@ pub use primary_index::{
     candidate_u64_mark_range, candidate_u64_mark_ranges, read_fixed_primary_index,
 };
 pub use query_source::{
-    NumericQueryReader, inspect_query_source, query_parts, resolve_active_snapshot,
+    NumericQueryReader, inspect_query_source, query_parts, query_parts_with_metadata,
+    resolve_active_snapshot,
 };
 pub use stream::UInt64ColumnReader;
 pub use string_arrays::{

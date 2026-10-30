@@ -1,0 +1,8 @@
+{
+  "name": "full-range-sum",
+  "description": "Whole-range explicit predicate sum",
+  "kind": "range",
+  "aggregate": "sum",
+  "lower_ppm": 0,
+  "upper_ppm": 1000000
+}
