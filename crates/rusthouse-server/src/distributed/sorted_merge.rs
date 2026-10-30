@@ -36,6 +36,17 @@ struct Cursor {
     next_position: usize,
     descending: bool,
 }
+impl Cursor {
+    fn advance(self, key: IntegerKey, next_position: usize) -> Self {
+        Self {
+            key,
+            position: self.next_position,
+            next_position,
+            ..self
+        }
+    }
+}
+
 impl Ord for Cursor {
     fn cmp(&self, other: &Self) -> Ordering {
         let cmp = self.key.cmp(&other.key);
@@ -144,13 +155,7 @@ pub(super) fn merge_sorted_integer_page(
             break;
         }
         if let Some((key, next_position)) = next_row(body, end, unsigned)? {
-            heap.push(Cursor {
-                key,
-                shard: cursor.shard,
-                position: end,
-                next_position,
-                descending,
-            });
+            heap.push(cursor.advance(key, next_position));
         }
     }
     Ok(output)
