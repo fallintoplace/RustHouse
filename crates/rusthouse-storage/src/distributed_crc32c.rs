@@ -2,6 +2,11 @@
 use std::io::{self, Read};
 
 const POLYNOMIAL: u32 = 0x82f6_3b78;
+const INITIAL_CRC32C: u32 = !0;
+
+fn finalize_crc32c(state: u32) -> u32 {
+    state ^ !0
+}
 
 // Build the Castagnoli lookup table at compile time. Replication verifies every
 // copied byte, so avoid an eight-iteration bit loop for every input byte.
@@ -44,7 +49,7 @@ struct Checksum(u32);
 
 impl Checksum {
     fn new() -> Self {
-        Self(!0)
+        Self(INITIAL_CRC32C)
     }
 
     fn append(&mut self, bytes: &[u8]) {
@@ -52,7 +57,7 @@ impl Checksum {
     }
 
     fn finish(self) -> u32 {
-        self.0 ^ !0
+        finalize_crc32c(self.0)
     }
 }
 
@@ -178,7 +183,7 @@ pub struct Crc32cState {
 
 impl Crc32cState {
     pub fn new() -> Self {
-        Self { state: !0u32 }
+        Self { state: INITIAL_CRC32C }
     }
 
     pub fn append(&mut self, bytes: &[u8]) {
@@ -187,7 +192,7 @@ impl Crc32cState {
 
     /// Snapshot the current CRC32C without consuming the accumulator.
     pub fn checksum(&self) -> u32 {
-        self.state ^ !0u32
+        finalize_crc32c(self.state)
     }
 }
 
