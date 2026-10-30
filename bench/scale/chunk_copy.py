@@ -6,7 +6,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -35,12 +37,30 @@ def verify_shard(path, entry):
     digest = hashlib.sha256()
     size = lines = 0
     last_byte = None
-    with path.open("rb") as stream:
+    # Match the lstat identity against the opened file to reject a replaced
+    # or symlinked shard, including replacements between validation and open.
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"shard is not a regular file: {path.name}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+            raise ValueError(f"shard changed before verification: {path.name}")
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             size += len(block)
             lines += block.count(b"\n")
             last_byte = block[-1]
             digest.update(block)
+        after = os.fstat(stream.fileno())
+        if (opened.st_size, opened.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise ValueError(f"shard changed during verification: {path.name}")
+    current = path.lstat()
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)):
+        raise ValueError(f"shard changed during verification: {path.name}")
     if (digest.hexdigest() != expected_hash or size != expected_bytes
             or lines != expected_rows or last_byte != 10):
         raise ValueError(f"shard checksum, byte size, or row count mismatch: {path.name}")
