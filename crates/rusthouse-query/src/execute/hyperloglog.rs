@@ -130,16 +130,20 @@ impl HyperLogLog {
             b'a'..=b'f' => Some(value - b'a' + 10),
             _ => None,
         };
-        // Decode into the final union. Do not allocate and zero a 16 KiB
-        // scratch sketch for every shard's serialized state.
-        for (target, pair) in self.registers.iter_mut().zip(bytes.chunks_exact(2)) {
+        // Validate every register before modifying the union, so a malformed
+        // register near the end cannot leave a partially merged sketch behind.
+        for pair in bytes.chunks_exact(2) {
             let high = digit(pair[0]).ok_or("invalid HLL hex state")?;
             let low = digit(pair[1]).ok_or("invalid HLL hex state")?;
-            let register = (high << 4) | low;
-            if register > MAX_REGISTER_RANK {
+            if (high << 4) | low > MAX_REGISTER_RANK {
                 return Err("invalid HLL register rank".into());
             }
-            *target = (*target).max(register);
+        }
+        // Merge validated bytes directly without a 16 KiB per-shard scratch.
+        for (target, pair) in self.registers.iter_mut().zip(bytes.chunks_exact(2)) {
+            let high = digit(pair[0]).expect("validated HLL hex digit");
+            let low = digit(pair[1]).expect("validated HLL hex digit");
+            *target = (*target).max((high << 4) | low);
         }
         Ok(())
     }
@@ -337,5 +341,38 @@ mod state_tests {
         assert!(merge_state_hex_values(&[&format!("ff{}", &valid[2..])]).is_err());
         assert!(merge_state_hex_values(&[&format!("zz{}", &valid[2..])]).is_err());
         assert!(merge_state_hex_values(&[&format!("AA{}", &valid[2..])]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod atomic_invalid_hll_merge_tests {
+    use super::*;
+
+    #[test]
+    fn late_invalid_hex_does_not_mutate_target_registers() {
+        let mut target = HyperLogLog::default();
+        target.observe_number(Number::Unsigned(17));
+        let before = target.encode_state();
+        let mut incoming = HyperLogLog::default().encode_state().into_bytes();
+        incoming[0] = b'0';
+        incoming[1] = b'1';
+        *incoming.last_mut().unwrap() = b'z';
+        let incoming = String::from_utf8(incoming).unwrap();
+        assert!(target.merge_hex_state(&incoming).is_err());
+        assert_eq!(target.encode_state(), before);
+    }
+
+    #[test]
+    fn late_invalid_rank_does_not_mutate_target_registers() {
+        let mut target = HyperLogLog::default();
+        let before = target.encode_state();
+        let mut incoming = before.into_bytes();
+        incoming[0] = b'0';
+        incoming[1] = b'1';
+        let count = incoming.len();
+        incoming[count - 2] = b'f';
+        incoming[count - 1] = b'f';
+        assert!(target.merge_hex_state(&String::from_utf8(incoming).unwrap()).is_err());
+        assert_eq!(target.encode_state(), HyperLogLog::default().encode_state());
     }
 }
