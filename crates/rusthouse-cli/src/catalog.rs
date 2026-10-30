@@ -185,6 +185,12 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(unix)]
+fn same_schema_inode(before: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.dev() == opened.dev() && before.ino() == opened.ino()
+}
+
 pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     let path = schema_path(catalog, name);
     let metadata = fs::symlink_metadata(&path)
@@ -195,11 +201,25 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
     if metadata.len() > MAX_SCHEMA_BYTES {
         return Err(format!("schema is too large for table {name}"));
     }
-    // Limit reads even if a schema grows between metadata inspection and open.
+    // Verify the opened inode, not only the pathname that was inspected.
+    // This rejects a schema replaced or swapped for a symlink before open.
+    let file = fs::File::open(&path)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect opened table {name}: {error}"))?;
+    if !opened.file_type().is_file()
+        || opened.len() != metadata.len()
+        || opened.len() > MAX_SCHEMA_BYTES
+    {
+        return Err(format!("schema changed before read for table {name}"));
+    }
+    #[cfg(unix)]
+    if !same_schema_inode(&metadata, &opened) {
+        return Err(format!("schema file was replaced before read for table {name}"));
+    }
     let mut bytes = Vec::new();
-    fs::File::open(&path)
-        .map_err(|error| format!("cannot read table {name}: {error}"))?
-        .take(MAX_SCHEMA_BYTES + 1)
+    file.take(MAX_SCHEMA_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
     if bytes.len() as u64 > MAX_SCHEMA_BYTES {
@@ -445,5 +465,30 @@ mod show_tables_like_tests {
         assert!(table_matches_like("any", "%"));
         assert!(!table_matches_like("any", "other%"));
         assert!(!table_matches_like("any", r"any\"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod schema_inode_identity_tests {
+    use super::*;
+
+    #[test]
+    fn equal_sized_schema_files_are_not_interchangeable() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-schema-identity-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.schema");
+        let second = root.join("second.schema");
+        fs::write(&first, b"same-size").unwrap();
+        fs::write(&second, b"different").unwrap();
+        let expected = fs::symlink_metadata(&first).unwrap();
+        let opened = fs::File::open(&second).unwrap().metadata().unwrap();
+        assert_eq!(expected.len(), opened.len());
+        assert!(!same_schema_inode(&expected, &opened));
+        let same = fs::File::open(&first).unwrap().metadata().unwrap();
+        assert!(same_schema_inode(&expected, &same));
+        fs::remove_dir_all(root).unwrap();
     }
 }
