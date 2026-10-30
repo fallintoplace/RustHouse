@@ -1035,10 +1035,10 @@ fn parallel_exact_u32_distinct(part: &Path, column: &str) -> Result<Option<u64>,
     }
     let names = [column.to_owned()];
     let chunk_size = parts.len().div_ceil(workers);
-    let partials = std::thread::scope(|scope| {
+    let partials = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let handles = parts.chunks(chunk_size).map(|chunk| {
             let names = &names;
-            scope.spawn(move || -> Result<BitmapDistinct32, ExecutionError> {
+            std::thread::Builder::new().spawn_scoped(scope, move || -> Result<BitmapDistinct32, ExecutionError> {
                 let mut bitmap = BitmapDistinct32::new();
                 for path in chunk {
                     let mut scan = TypedPartReader::open(path, names)?;
@@ -1074,12 +1074,14 @@ fn parallel_exact_u32_distinct(part: &Path, column: &str) -> Result<Option<u64>,
                     }
                 }
                 Ok(bitmap)
-            })
-        }).collect::<Vec<_>>();
-        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            }).map_err(|error| ExecutionError::Invalid(format!(
+                "cannot start typed DISTINCT worker: {error}"
+            )))
+        }).collect::<Result<Vec<_>, _>>()?;
+        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
             Err(ExecutionError::Invalid("parallel DISTINCT worker panicked".into()))
-        })).collect::<Vec<_>>()
-    });
+        })).collect::<Vec<_>>())
+    })?;
     let mut merged = BitmapDistinct32::new();
     for partial in partials {
         merged.merge_from(&partial?)?;
@@ -1116,10 +1118,10 @@ fn parallel_filtered_count_parts(
 ) -> Result<u64, ExecutionError> {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     let cursor = AtomicUsize::new(0);
-    let partials = std::thread::scope(|scope| {
+    let partials = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let handles = (0..workers).map(|_| {
             let cursor = &cursor;
-            scope.spawn(move || -> Result<u64, ExecutionError> {
+            std::thread::Builder::new().spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
                 let mut subtotal = 0u64;
                 while let Some(path) = parts.get(cursor.fetch_add(1, AtomicOrdering::Relaxed)) {
                     let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
@@ -1138,12 +1140,14 @@ fn parallel_filtered_count_parts(
                     }
                 }
                 Ok(subtotal)
-            })
-        }).collect::<Vec<_>>();
-        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            }).map_err(|error| ExecutionError::Invalid(format!(
+                "cannot start typed filtered COUNT worker: {error}"
+            )))
+        }).collect::<Result<Vec<_>, _>>()?;
+        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
             Err(ExecutionError::Invalid("filtered COUNT worker panicked".into()))
-        })).collect::<Vec<_>>()
-    });
+        })).collect::<Vec<_>>())
+    })?;
     partials.into_iter().try_fold(0u64, |total, partial| {
         total.checked_add(partial?)
             .ok_or_else(|| ExecutionError::Invalid("filtered COUNT overflow".into()))
