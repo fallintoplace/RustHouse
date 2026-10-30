@@ -38,17 +38,19 @@ def command(engine, binary, database, sql):
 
 def invoke(args, timeout):
     start = time.perf_counter()
-    with tempfile.TemporaryFile() as output:
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         result = subprocess.run(
-            args, stdout=output, stderr=subprocess.PIPE,
+            args, stdout=output, stderr=errors,
             check=False, timeout=timeout,
         )
         duration = time.perf_counter() - start
+        if result.returncode:
+            errors.seek(0, os.SEEK_END)
+            errors.seek(max(0, errors.tell() - 500))
+            stderr = errors.read(500).decode("utf-8", "replace")
+            raise RuntimeError(f"exit {result.returncode}: {stderr}")
         output.seek(0)
         payload = output.read(MAX_OUTPUT_BYTES + 1)
-    if result.returncode:
-        stderr = result.stderr.decode("utf-8", "replace")
-        raise RuntimeError(f"exit {result.returncode}: {stderr[-500:]}")
     if len(payload) > MAX_OUTPUT_BYTES:
         raise ValueError("paired CLI output exceeds 16 MiB")
     return payload, duration
