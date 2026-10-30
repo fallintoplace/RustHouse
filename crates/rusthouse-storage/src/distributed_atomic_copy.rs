@@ -80,7 +80,14 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
         .write(true)
         .create_new(true)
         .open(&staging)?;
-    let copied = stream_bounded_copy(&mut input, &mut output, source_meta.len(), max_bytes);
+    let copied = stream_bounded_copy(&mut input, &mut output, source_meta.len(), max_bytes)
+        .and_then(|total| {
+            let after = input.metadata()?;
+            if after.len() != opened.len() || after.modified()? != opened.modified()? {
+                return Err(io::Error::other("source changed during immutable copy"));
+            }
+            Ok(total)
+        });
     drop(output);
     // hard_link fails if the destination already exists, unlike an overwriting rename.
     let published = copied.and_then(|total| {
@@ -180,6 +187,30 @@ mod tests {
         assert!(copy_immutable_file(&src, &dir.join("small"), 1).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn metadata_changes_are_detectable_after_reading() {
+        use std::time::SystemTime;
+
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-copy-metadata-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let source = dir.join("source");
+        fs::write(&source, b"immutable").unwrap();
+        let input = File::open(&source).unwrap();
+        let before = input.metadata().unwrap();
+        input
+            .set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
+        let after = input.metadata().unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_ne!(before.modified().unwrap(), after.modified().unwrap());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn oversized_source_reads_only_one_byte_past_cap() {
         let dir =
