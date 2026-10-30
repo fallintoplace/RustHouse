@@ -611,7 +611,9 @@ mod tests {
                 } else {
                     reader.next_decoded()
                 };
-                let Some(result) = result else { break };
+                let Some(result) = result else {
+                    break;
+                };
                 let decoded = result.unwrap();
                 std::hint::black_box(decoded.data[0]);
                 if reuse {
