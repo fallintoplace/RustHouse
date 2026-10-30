@@ -80,6 +80,34 @@ pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), 
     inspect_query_source(&target)?;
     for part in query_parts(&target)? {
         verify_part_file_hashes(&part)?;
+        // The caller may have staged a verified generation without syncing
+        // its bytes. Make the new generation durable *before* switching reads.
+        for entry in fs::read_dir(&part).map_err(|error| io_error(&part, error))? {
+            let entry = entry.map_err(|error| io_error(&part, error))?;
+            let path = entry.path();
+            if !entry.file_type().map_err(|error| io_error(&path, error))?.is_file() {
+                return Err(PartError::InvalidScan(
+                    "replica generation contains non-regular part entries".into(),
+                ));
+            }
+            fs::File::open(&path)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| io_error(&path, error))?;
+        }
+        #[cfg(unix)]
+        fs::File::open(&part)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| io_error(&part, error))?;
+    }
+    #[cfg(unix)]
+    {
+        fs::File::open(&target)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| io_error(&target, error))?;
+        let versions = root.join(".rusthouse-versions");
+        fs::File::open(&versions)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| io_error(&versions, error))?;
     }
     let pointer = root.join(".rusthouse-active");
     validate_fresh_generation(&pointer, generation)?;
