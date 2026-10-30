@@ -1170,6 +1170,17 @@ fn execute_streaming_inner_count<W: Write>(
     Ok(())
 }
 
+/// Prefer the smaller build side for strongly skewed unordered INNER joins.
+/// ANY must preserve its existing build ordering and first-match behavior.
+fn prefer_left_hash_build(left_rows: u64, right_rows: u64, any: bool) -> bool {
+    !any
+        && left_rows > 0
+        && left_rows <= MAX_STREAM_BUILD_ROWS
+        && left_rows < right_rows
+        && (right_rows > MAX_STREAM_BUILD_ROWS
+            || right_rows >= left_rows.saturating_mul(4))
+}
+
 /// Evaluate a two-table JOIN using typed values, not serialized TSV.
 pub fn execute_join<W: Write>(
     query: &JoinSelect,
@@ -1358,7 +1369,10 @@ pub fn execute_join<W: Write>(
     if query.kind == JoinType::Inner && order.is_empty() {
         // A very large right table can be the streamed side if the left fits
         // the same bounded hash-build budget.
-        if right_meta.rows > MAX_STREAM_BUILD_ROWS && left_meta.rows <= MAX_STREAM_BUILD_ROWS {
+        if prefer_left_hash_build(left_meta.rows, right_meta.rows, query.any)
+            || (query.any && right_meta.rows > MAX_STREAM_BUILD_ROWS
+                && left_meta.rows <= MAX_STREAM_BUILD_ROWS)
+        {
             return execute_streaming_right(
                 query,
                 left_path,
@@ -1732,5 +1746,20 @@ mod any_join_build_tests {
             hash.values().next().unwrap().iter().copied().collect::<Vec<_>>(),
             vec![1, 3]
         );
+    }
+}
+
+#[cfg(test)]
+mod adaptive_join_build_side_tests {
+    use super::*;
+    #[test]
+    fn selects_smaller_build_only_when_safe() {
+        assert!(prefer_left_hash_build(10_000, 200_000, false));
+        assert!(prefer_left_hash_build(3, 400_000, false));
+        assert!(!prefer_left_hash_build(0, 40_000, false));
+        assert!(!prefer_left_hash_build(200_000, 10_000, false));
+        assert!(!prefer_left_hash_build(40_000, 60_000, false));
+        assert!(!prefer_left_hash_build(10_000, 200_000, true));
+        assert!(!prefer_left_hash_build(MAX_STREAM_BUILD_ROWS + 1, u64::MAX, false));
     }
 }
