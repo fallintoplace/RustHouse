@@ -509,7 +509,6 @@ mod schema_open_identity_tests {
     }
 }
 
-
 #[cfg(test)]
 mod schema_short_read_tests {
     use super::*;
