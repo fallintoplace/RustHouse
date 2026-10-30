@@ -39,7 +39,7 @@ fn parse_select_suffix(parser: &mut Parser) -> Result<Option<Select>, ParseError
         return Ok(None);
     }
     // The SELECT parser expects the keyword as its first token.
-    parse_select_tokens(parser.tokens[parser.index - 1..].to_vec()).map(Some)
+    parse_select_tokens(parser.tokens.split_off(parser.index - 1)).map(Some)
 }
 
 pub fn parse_insert_select(sql: &str) -> Result<Option<InsertSelect>, ParseError> {
@@ -113,5 +113,19 @@ mod tests {
         ] {
             assert!(parse_insert_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod moved_select_tokens_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_insert_select_parsing_after_token_move() {
+        let parsed = parse_insert_select("INSERT INTO destination SELECT number FROM numbers(2)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.table, "destination");
+        assert!(parsed.columns.is_none());
     }
 }
