@@ -458,15 +458,22 @@ fn parallel_exact_multi_aggregates(
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
-    let chunk_size = parts.len().div_ceil(workers);
+    // Parts can differ by orders of magnitude in row count. Claim them
+    // dynamically to avoid a worker being stranded with one oversized part.
+    // The partial COUNT/SUM states merge in worker order for reproducibility.
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
     let chunks = std::thread::scope(|scope| {
-        let handles = parts.chunks(chunk_size).map(|paths| {
+        let cursor = &cursor;
+        let paths = &parts;
+        let handles = (0..workers).map(|_| {
             scope.spawn(move || -> Result<Vec<State>, ExecutionError> {
                 let mut states = items.iter().map(|item| match item.function {
                     Some(function) => State::Numeric(AggregateState::new(function)),
                     None => State::Count(0),
                 }).collect::<Vec<_>>();
-                for path in paths {
+                while let Some(path) = paths.get(
+                    cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ) {
                     let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
                     while let Some(batch) = reader.next_batch()? {
                         for row in 0..batch[0].len() {
@@ -1165,5 +1172,29 @@ mod multi_aggregate_distinct_text_budget_tests {
         assert!(distinct.insert_text(b"new-key").is_err());
         assert_eq!(distinct.retained_text_bytes, MAX_DISTINCT_TEXT_BYTES - 1);
         assert!(distinct.text.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod dynamic_multiagg_workers_tests {
+    #[test]
+    fn dynamic_cursor_distributes_all_uneven_parts_exactly_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cursor = AtomicUsize::new(0);
+        let mut indices = std::thread::scope(|scope| {
+            let handles = (0..4).map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    while let index @ 0..=250 = cursor.fetch_add(1, Ordering::Relaxed) {
+                        mine.push(index);
+                    }
+                    mine
+                })
+            }).collect::<Vec<_>>();
+            handles.into_iter()
+                .flat_map(|worker| worker.join().unwrap()).collect::<Vec<_>>()
+        });
+        indices.sort_unstable();
+        assert_eq!(indices, (0..=250).collect::<Vec<_>>());
     }
 }
