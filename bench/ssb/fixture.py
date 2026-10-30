@@ -59,7 +59,13 @@ def generate(root, rows=2000, seed=42):
     if not 1 <= rows <= MAX_FACTS:
         raise ValueError(f"lineorder rows must be 1..{MAX_FACTS}")
     root = Path(root)
+    if root.is_symlink():
+        raise ValueError("fixture root must not be a symlink")
     root.mkdir(parents=True, exist_ok=True)
+    for name in ("date_dim.tsv", "lineorder.tsv", "date_dim.sql",
+                 "lineorder.sql", "reference.sqlite"):
+        if (root / name).is_symlink():
+            raise ValueError(f"refusing symlinked fixture output: {name}")
     write_table(root, "date_dim", DATE_KEYS)
     write_table(root, "lineorder", fact_records(rows, seed))
     with closing(sqlite3.connect(root / "reference.sqlite")) as connection, connection:

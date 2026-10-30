@@ -38,5 +38,12 @@ class CorrectnessSoakTests(unittest.TestCase):
             soak("x", "x", "select", "none", runs=1000, warmups=1)
 
 
+    def test_rejects_mutating_or_multiple_sql_before_launch(self):
+        for statement in ("DROP TABLE t", "UPDATE t SET n=1",
+                          "SELECT 1; DROP TABLE t", "", "WITH x AS (SELECT 1) DELETE FROM t"):
+            with self.subTest(statement=statement), self.assertRaisesRegex(ValueError, "read-only SELECT"):
+                soak("rusthouse", "db", statement, "nonexistent-reference.tsv",
+                     execute=lambda: self.fail("must not run unsafe SQL"))
+
 if __name__ == "__main__":
     unittest.main()

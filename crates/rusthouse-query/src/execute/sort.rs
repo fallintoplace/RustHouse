@@ -102,7 +102,11 @@ fn read_sorted_row(
     directions: &Arc<[bool]>,
 ) -> Result<Option<SortedRow>, ExecutionError> {
     let mut header = [0u8; 16];
-    if reader.read(&mut header[..1])? == 0 { return Ok(None); }
+    match reader.read_exact(&mut header[..1]) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
     reader.read_exact(&mut header[1..])?;
     let sequence = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
         .map_err(|_| invalid("external sort sequence overflow"))?;
@@ -532,3 +536,24 @@ mod preflight_external_merge_budget_tests;
 #[cfg(test)]
 #[path = "sort/sort_memory_budget_tests.rs"]
 mod sort_memory_budget_tests;
+
+#[cfg(test)]
+mod external_sort_run_header_eof_tests {
+    use super::*;
+
+    #[test]
+    fn empty_run_is_eof_but_partial_header_is_corruption() {
+        let root = std::env::temp_dir().join(format!("rusthouse-sort-header-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("run.bin");
+        let directions: Arc<[bool]> = Arc::from([]);
+        fs::write(&path, []).unwrap();
+        let mut reader = BufReader::new(File::open(&path).unwrap());
+        assert!(read_sorted_row(&mut reader, false, &directions).unwrap().is_none());
+        fs::write(&path, [42u8]).unwrap();
+        let mut reader = BufReader::new(File::open(&path).unwrap());
+        assert!(read_sorted_row(&mut reader, false, &directions).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

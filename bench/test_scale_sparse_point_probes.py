@@ -1,6 +1,4 @@
 import unittest
-from types import SimpleNamespace
-from unittest.mock import patch
 
 from bench.scale.sparse_point_probes import choose_ids, percentile, probe
 
@@ -68,26 +66,62 @@ class SparseProbeTests(unittest.TestCase):
         self.assertEqual(counter.draws, 10000)
 
 
-
+    def test_custom_key_column_is_used_safely_in_sql(self):
+        statements = []
+        def run(statement):
+            statements.append(statement)
+            value = int(statement.rsplit(" = ", 1)[1].split()[0])
+            return f"{value}\n".encode()
+        report = probe("binary", "db", "events", 5, 4, count=2,
+                       execute=run, column="event_id")
+        self.assertEqual(report["column"], "event_id")
+        self.assertTrue(all("SELECT event_id" in sql and "WHERE event_id =" in sql
+                            for sql in statements))
+        with self.assertRaisesRegex(ValueError, "column identifier"):
+            probe("binary", "db", "events", 5, 4, column="id; DELETE")
 
 class BoundedPointProbeOutputTests(unittest.TestCase):
     def test_rejects_large_sql_output_before_materializing_it(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
         from bench.scale.sparse_point_probes import query
+
         def runaway(_command, **kwargs):
             self.assertNotIn("capture_output", kwargs)
+            self.assertTrue(hasattr(kwargs["stderr"], "write"))
             kwargs["stdout"].write(b"x" * 256)
-            return SimpleNamespace(returncode=0, stderr=b"")
+            return SimpleNamespace(returncode=0)
+
         with patch("bench.scale.sparse_point_probes.subprocess.run", side_effect=runaway):
             with self.assertRaisesRegex(ValueError, "128 bytes"):
                 query("binary", "database", "SELECT id FROM t LIMIT 2", 2)
 
-    def test_returns_short_exact_sql_result(self):
+    def test_failed_query_bounded_error_and_no_pipe(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
         from bench.scale.sparse_point_probes import query
+
+        def fail(_command, **kwargs):
+            kwargs["stderr"].write(b"x" * 10000 + b"last error")
+            return SimpleNamespace(returncode=1)
+
+        with patch("bench.scale.sparse_point_probes.subprocess.run", side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError, "last error") as raised:
+                query("binary", "database", "SELECT 1", 2)
+        self.assertLess(len(str(raised.exception)), 550)
+
+    def test_returns_short_exact_sql_result(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.sparse_point_probes import query
+
         def normal(_command, **kwargs):
             kwargs["stdout"].write(b"123\n")
-            return SimpleNamespace(returncode=0, stderr=b"")
+            return SimpleNamespace(returncode=0)
+
         with patch("bench.scale.sparse_point_probes.subprocess.run", side_effect=normal):
             self.assertEqual(query("binary", "database", "SELECT 123", 2), b"123\n")
+
 
 if __name__ == "__main__":
     unittest.main()
