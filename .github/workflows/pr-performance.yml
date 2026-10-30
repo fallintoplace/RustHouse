@@ -1,42 +1,40 @@
-name: Pull request SQL performance
+name: Main SQL performance comparison
 
 on:
-  pull_request:
-    paths:
-      - 'crates/rusthouse-query/src/execute.rs'
-      - 'crates/rusthouse-query/src/execute/**'
-      - 'crates/rusthouse-query/benches/queries.rs'
-      - 'crates/rusthouse-query/benches/parts.rs'
-      - 'crates/rusthouse-storage/src/**'
-      - 'bench/pr_parts_compare.py'
-      - 'bench/test_pr_parts_compare.py'
-      - 'bench/pr_bench_compare.py'
-      - 'bench/test_pr_bench_compare.py'
-      - 'crates/rusthouse-query/benches/grouped.rs'
-      - 'bench/pr_grouped_compare.py'
-      - 'bench/test_pr_grouped_compare.py'
-      - '.github/workflows/pr-performance.yml'
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: 'Optional baseline commit SHA (default: parent of main HEAD)'
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: sql-pr-performance-${{ github.event.pull_request.number }}
+  group: main-sql-performance-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   numbers-sql:
-    name: numbers() SQL base vs PR (ubuntu-24.04)
+    if: github.ref == 'refs/heads/main'
+    name: numbers() SQL baseline vs main (ubuntu-24.04)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ inputs.baseline }}
+      HEAD_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Choose previous main commit if no baseline was supplied
+        shell: bash
+        run: |
+          if [[ -z "$BASE_SHA" ]]; then
+            echo "BASE_SHA=$(git rev-parse "${HEAD_SHA}^")" >> "$GITHUB_ENV"
+          fi
       - uses: Swatinem/rust-cache@v2
         with:
           key: sql-pr-comparison
@@ -85,7 +83,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: rusthouse-pr-perf-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          name: rusthouse-main-perf-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/rusthouse-base-bench.txt
             ${{ runner.temp }}/rusthouse-pr-bench.txt
