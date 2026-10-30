@@ -37,7 +37,18 @@ pub fn inventory_snapshot(
     max_bytes: u64,
 ) -> Result<Vec<InventoryEntry>, PartError> {
     let active = resolve_active_snapshot(root)?;
-    inventory_active_snapshot(&active, max_files, max_bytes)
+    let result = inventory_active_snapshot(&active, max_files, max_bytes)?;
+    require_unchanged_generation(root, &active)?;
+    Ok(result)
+}
+
+fn require_unchanged_generation(root: &Path, active: &Path) -> Result<(), PartError> {
+    if resolve_active_snapshot(root)? != active {
+        return Err(PartError::InvalidScan(
+            "active snapshot changed during inventory".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn inventory_active_snapshot(
@@ -135,20 +146,24 @@ pub fn inventory_snapshot_crc32c(
     let entries = inventory_active_snapshot(&active, max_files, max_bytes)?;
     const PARALLEL_THRESHOLD: usize = 64;
     if entries.len() < PARALLEL_THRESHOLD {
-        return entries
+        let result = entries
             .iter()
             .map(|entry| checksum_inventory_entry(&active, entry))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
+        require_unchanged_generation(root, &active)?;
+        return Ok(result);
     }
     const MAX_HASH_WORKERS: usize = 4;
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())
         .min(MAX_HASH_WORKERS);
     if workers == 1 {
-        return entries
+        let result = entries
             .iter()
             .map(|entry| checksum_inventory_entry(&active, entry))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
+        require_unchanged_generation(root, &active)?;
+        return Ok(result);
     }
 
     // Hash each file independently with bounded concurrency. Keep original
@@ -186,10 +201,12 @@ pub fn inventory_snapshot_crc32c(
         }
         Ok(())
     })?;
-    slots
+    let result = slots
         .into_iter()
         .map(|slot| slot.expect("every claimed file has one result"))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    require_unchanged_generation(root, &active)?;
+    Ok(result)
 }
 
 #[cfg(unix)]
@@ -440,6 +457,30 @@ mod small_checksum_inventory_dispatch_tests {
             assert_eq!(entry.bytes, data.len() as u64);
             assert_eq!(entry.crc32c, crate::distributed_crc32c::crc32c(&data));
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod inventory_generation_stability_tests {
+    use super::*;
+
+    #[test]
+    fn notices_active_pointer_switches_during_inventory() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-inventory-generation-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let versions = root.join(".rusthouse-versions");
+        let first = versions.join("g1");
+        let second = versions.join("g2");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        fs::write(&pointer, "g1\n").unwrap();
+        assert!(require_unchanged_generation(&root, &first).is_ok());
+        fs::write(&pointer, "g2\n").unwrap();
+        assert!(require_unchanged_generation(&root, &first).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
