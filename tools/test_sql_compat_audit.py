@@ -1,12 +1,23 @@
 import unittest
 from unittest.mock import Mock
-from sql_compat_audit import audit, parse_lines
+from pathlib import Path
+import tempfile
+from sql_compat_audit import audit, parse_lines, read_queries
 
 
 class AuditTests(unittest.TestCase):
     def test_accepts_one_select_per_line(self):
         self.assertEqual(parse_lines("-- note\nSELECT 1;\nSELECT count(*) FROM numbers(3)\n"),
                          [(2, "SELECT 1"), (3, "SELECT count(*) FROM numbers(3)")])
+
+    def test_audit_file_fails_early_on_large_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "queries.sql"
+            path.write_bytes(b"-" * (1_048_576 + 1))
+            with self.assertRaisesRegex(ValueError, "1 MiB"):
+                read_queries(path)
+            path.write_text("-- note\nSELECT 2;\n", encoding="utf-8")
+            self.assertEqual(read_queries(path), [(2, "SELECT 2")])
 
     def test_rejects_mutating_sql(self):
         with self.assertRaises(ValueError):
@@ -28,6 +39,17 @@ class AuditTests(unittest.TestCase):
         complete = audit("rusthouse", cases, run)
         self.assertEqual(complete["total"], 3)
         self.assertFalse(complete["stopped_early"])
+
+    def test_large_cli_output_is_spooled_and_failure_reason_is_bounded(self):
+        def emit(command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            self.assertNotIn("text", kwargs)
+            kwargs["stdout"].write(b"x" * 100_000)
+            kwargs["stderr"].write(b"y" * 100_000)
+            return type("Result", (), {"returncode": 1})()
+        result = audit("rusthouse", [(1, "SELECT 1")], emit)
+        self.assertFalse(result["results"][0]["parser_accepted"])
+        self.assertEqual(len(result["results"][0]["reason"]), 500)
 
     def test_explain_only_and_counts_rejections(self):
         run = Mock()

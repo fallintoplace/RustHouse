@@ -19,12 +19,26 @@ OFFICIAL_QUERY_COUNT = 43
 SUCCESS = {"passed", "unverified"}
 SKIPPED = {"skipped_missing_columns", "unknown_requirements"}
 MAX_REFERENCE_BYTES = 16 * 1024 * 1024
+MAX_QUERY_BYTES = 4 * 1024 * 1024
+MAX_PROJECTION_BYTES = 1024 * 1024
+
+
+def read_bounded_text(path, max_bytes):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("benchmark input must be a regular, non-symlinked file")
+    with path.open("rb") as stream:
+        payload = stream.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise ValueError("benchmark input exceeds byte limit")
+    return payload.decode("utf-8")
+
 
 
 def load_queries(path):
     """ClickBench's queries.sql has one statement per non-comment line."""
     queries = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in read_bounded_text(path, MAX_QUERY_BYTES).splitlines():
         statement = line.strip()
         if not statement or statement.startswith("--") or statement.startswith("#"):
             continue
@@ -56,7 +70,7 @@ def load_projection(path):
     """Never guess required columns by tokenizing SQL expressions."""
     if path is None:
         return None
-    document = json.loads(path.read_text(encoding="utf-8"))
+    document = json.loads(read_bounded_text(path, MAX_PROJECTION_BYTES))
     if not isinstance(document, dict):
         raise ValueError("projection manifest must be a JSON object")
     available = document.get("available_columns")

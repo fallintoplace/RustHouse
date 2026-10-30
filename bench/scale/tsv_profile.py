@@ -2,7 +2,9 @@
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
 from pathlib import Path
 
 MAX_RECORD_BYTES = 8 * 1024 * 1024
@@ -27,9 +29,16 @@ def profile(path, *, columns=1, header=False, min_rows=1,
     records = 0
     bytes_read = 0
     source = Path(path)
-    if not source.is_file() or source.is_symlink():
+    before = source.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("expected a regular, non-symlinked TSV file")
-    with source.open("rb") as stream:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(source, flags)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("TSV file changed before opening")
         while True:
             raw = stream.readline(MAX_RECORD_BYTES + 1)
             if not raw:
@@ -58,6 +67,13 @@ def profile(path, *, columns=1, header=False, min_rows=1,
             digest.update(raw)
             bytes_read += len(raw)
             records += 1
+        finished = os.fstat(stream.fileno())
+        if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+            raise ValueError("TSV file changed while profiling")
+    after = source.lstat()
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+        raise ValueError("TSV file changed while profiling")
     rows = records - int(header)
     if rows < min_rows:
         raise ValueError(f"input has {rows} data rows; require {min_rows}")

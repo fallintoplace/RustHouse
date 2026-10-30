@@ -10,6 +10,17 @@ pub struct ObjectKey {
     file: String,
 }
 
+fn reserved_windows_device_name(value: &str) -> bool {
+    let stem = value.split('.').next().unwrap_or(value);
+    ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .any(|device| stem.eq_ignore_ascii_case(device))
+        || (stem.len() == 4
+            && (stem[..3].eq_ignore_ascii_case("COM")
+                || stem[..3].eq_ignore_ascii_case("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+}
+
 fn component(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.is_empty() || bytes.len() > 128 || !bytes[0].is_ascii_alphanumeric() {
@@ -24,7 +35,7 @@ fn component(value: &str) -> bool {
         }
         previous_dot = byte == b'.';
     }
-    !previous_dot
+    !previous_dot && !reserved_windows_device_name(value)
 }
 
 impl ObjectKey {
@@ -143,11 +154,12 @@ mod tests {
             assert!(component(valid));
         }
         assert!(component(&"a".repeat(128)));
-        for invalid in ["", ".a", "a.", "a..b", "a/...b", "é", "a\\b"] {
+        for invalid in ["", ".a", "a.", "a..b", "a/...b", "é", "a\\b", "CON", "com1.txt"] {
             assert!(!component(invalid), "{invalid}");
         }
         assert!(!component(&"a".repeat(129)));
     }
+
 
     #[test]
     fn constructs_stable_generation_scoped_keys() {
@@ -278,5 +290,24 @@ mod canonical_generation_digits_tests {
                 number
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod portable_device_name_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_windows_device_aliases_on_every_platform() {
+        for name in ["CON", "con.txt", "PrN.csv", "aux", "NUL.bin", "COM1", "com9.dat", "LPT1", "lpt9.log"] {
+            assert!(ObjectKey::new(name, "shard", 1, "part", "data.bin").is_err(), "{name}");
+            assert!(ObjectKey::new("cluster", name, 1, "part", "data.bin").is_err(), "{name}");
+            assert!(ObjectKey::new("cluster", "shard", 1, name, "data.bin").is_err(), "{name}");
+            assert!(ObjectKey::new("cluster", "shard", 1, "part", name).is_err(), "{name}");
+        }
+        for name in ["CONTEXT", "COM10", "LPT10", "NULL", "COM0", "part.txt"] {
+            assert!(ObjectKey::new("cluster", "shard", 1, "part", name).is_ok(), "{name}");
+        }
+        assert!(ObjectKey::parse_relative(std::path::Path::new("cluster/shard/g1/part/NUL.txt")).is_err());
     }
 }

@@ -3,6 +3,19 @@ from noise_report import assess_query, assess_report
 
 
 class NoiseReportTests(unittest.TestCase):
+    def test_oversized_noise_report_is_rejected(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from noise_report import load_report
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "noise.json"
+            source.write_bytes(b"X" * 17)
+            with patch("noise_report.MAX_REPORT_BYTES", 16):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    load_report(source)
+
+
     def test_marks_repeatable_verified_samples_as_stable(self):
         result = assess_query({"query": 6, "status": "passed",
                                "timings_seconds": [1, 1, 1, 1, 1]})

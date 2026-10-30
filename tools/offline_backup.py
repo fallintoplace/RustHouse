@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 
 def preflight(source, destination, max_bytes=None):
@@ -48,15 +49,19 @@ def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeo
     # Preserve the complete layout, including hidden files and lock inode contents.
     shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
     try:
-        result = subprocess.run(
-            [str(binary), "doctor", "--database", str(stage), "--full-hashes"],
-            capture_output=True, text=True, timeout=doctor_timeout, check=False,
-        )
+        with tempfile.TemporaryFile() as errors:
+            result = subprocess.run(
+                [str(binary), "doctor", "--database", str(stage), "--full-hashes"],
+                stdout=subprocess.DEVNULL, stderr=errors,
+                timeout=doctor_timeout, check=False,
+            )
+            errors.seek(max(0, errors.tell() - 2000))
+            diagnostic = errors.read(2000).decode("utf-8", "replace")
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError("backup remains at " + str(stage) + ": " + str(exc)) from exc
     if result.returncode:
         raise RuntimeError("doctor rejected staged backup at " + str(stage) +
-                           ": " + result.stderr[-2000:])
+                           ": " + diagnostic)
     stage.rename(destination)
     return destination
 
