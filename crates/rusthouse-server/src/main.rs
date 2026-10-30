@@ -9,7 +9,7 @@ use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_CONFIGURED_CONNECTIONS: usize = 64;
 
@@ -73,15 +73,44 @@ fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
     Ok((method, target))
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool), Response> {
+const REQUEST_READ_DEADLINE: Duration = Duration::from_secs(5);
+
+fn request_remaining(started: Instant, deadline: Duration) -> Result<Duration, Response> {
+    deadline
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| Response::text("408 Request Timeout", "request read deadline exceeded\n"))
+}
+
+fn request_read_error(error: io::Error, incomplete: &'static str) -> Response {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    ) {
+        Response::text("408 Request Timeout", "request read deadline exceeded\n")
+    } else {
+        Response::text("400 Bad Request", incomplete)
+    }
+}
+
+fn read_request_with_deadline(
+    stream: &mut TcpStream,
+    deadline: Duration,
+) -> Result<(String, String, Vec<u8>, bool), Response> {
+    let started = Instant::now();
     let mut input = BufReader::new(stream);
     let mut head = Vec::new();
     // Read only until the headers end, without consuming the beginning of the body.
     while !head.ends_with(b"\r\n\r\n") {
+        let remaining = request_remaining(started, deadline)?;
+        input
+            .get_mut()
+            .set_read_timeout(Some(remaining))
+            .map_err(|error| request_read_error(error, "cannot set request read timeout\n"))?;
         let mut byte = [0u8];
         input
             .read_exact(&mut byte)
-            .map_err(|_| Response::text("400 Bad Request", "incomplete HTTP request headers\n"))?;
+            .map_err(|error| request_read_error(error, "incomplete HTTP request headers\n"))?;
         head.push(byte[0]);
         if head.len() > MAX_HEADER_BYTES {
             return Err(Response::text(
@@ -155,10 +184,29 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
         ));
     }
     let mut body = vec![0u8; size];
-    input
-        .read_exact(&mut body)
-        .map_err(|_| Response::text("400 Bad Request", "incomplete HTTP request body\n"))?;
+    let mut received = 0;
+    while received < size {
+        let remaining = request_remaining(started, deadline)?;
+        input
+            .get_mut()
+            .set_read_timeout(Some(remaining))
+            .map_err(|error| request_read_error(error, "cannot set request read timeout\n"))?;
+        let count = input
+            .read(&mut body[received..])
+            .map_err(|error| request_read_error(error, "incomplete HTTP request body\n"))?;
+        if count == 0 {
+            return Err(Response::text(
+                "400 Bad Request",
+                "incomplete HTTP request body\n",
+            ));
+        }
+        received += count;
+    }
     Ok((method.to_owned(), target.to_owned(), body, accept_lz4 && method == "POST" && target == "/"))
+}
+
+fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool), Response> {
+    read_request_with_deadline(stream, REQUEST_READ_DEADLINE)
 }
 
 fn respond(stream: &mut TcpStream, response: Response, allow_lz4: bool) -> io::Result<()> {
@@ -477,5 +525,59 @@ mod concurrency_capacity_tests {
             assert!(parse_max_connections(invalid).is_err(), "{invalid}");
         }
         assert_eq!(MAX_CONNECTIONS, 16);
+    }
+}
+
+#[cfg(test)]
+mod total_request_deadline_tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    #[test]
+    fn slow_header_bytes_cannot_extend_total_request_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(address).unwrap();
+            for byte in b"GET /ping HTTP/1.1\\r\\n" {
+                if client.write_all(&[*byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(35));
+            }
+        });
+        let (mut server, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let response =
+            read_request_with_deadline(&mut server, Duration::from_millis(120)).unwrap_err();
+        assert_eq!(response.status, "408 Request Timeout");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(server);
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn slow_body_bytes_cannot_extend_total_request_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(address).unwrap();
+            client
+                .write_all(b"POST / HTTP/1.1\\r\\nContent-Length: 32\\r\\n\\r\\n")
+                .unwrap();
+            for _ in 0..32 {
+                if client.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(35));
+            }
+        });
+        let (mut server, _) = listener.accept().unwrap();
+        let response =
+            read_request_with_deadline(&mut server, Duration::from_millis(120)).unwrap_err();
+        assert_eq!(response.status, "408 Request Timeout");
+        drop(server);
+        writer.join().unwrap();
     }
 }
