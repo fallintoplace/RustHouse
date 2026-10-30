@@ -148,6 +148,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "COUNTSUBSTRINGS"
             | "EXTRACTURLPARAMETER"
             | "NULLIF"
+            | "IF"
             | "IFNULL"
             | "LAST_INDEX_OF"
             | "DATEADD"
@@ -2576,6 +2577,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "IF" => {
+            let condition = integer_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "if requires then and else branches")?;
+            let when_true = constant_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "if requires an else branch")?;
+            let when_false = constant_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "if requires three arguments")?;
+            let types_match = match (&when_true, &when_false) {
+                (ConstantValue::Null, _) | (_, ConstantValue::Null) => true,
+                (ConstantValue::Integer(_), ConstantValue::Integer(_)) => true,
+                (ConstantValue::Text(_), ConstantValue::Text(_)) => true,
+                _ => false,
+            };
+            if !types_match {
+                return Err(ParseError("if branches need a common type".into()));
+            }
+            if condition.is_some_and(|value| value != 0) {
+                when_true
+            } else {
+                when_false
+            }
+        }
         "IFNULL" => {
             let left = constant_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "ifNull requires a fallback")?;
@@ -4357,6 +4380,34 @@ mod clickhouse_ip_address_in_range_tests {
             "SELECT isIPAddressInRange('x', '1.2.3.4/32')",
             "SELECT isIPAddressInRange('1.2.3.4')",
         ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod constant_if_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn respects_integer_truthiness_null_conditions_and_common_types() {
+        for (sql, expected) in [
+            ("SELECT if(1, 'yes', 'no')", ConstantValue::Text("yes".into())),
+            ("SELECT if(0, 3, 4)", ConstantValue::Integer(4)),
+            ("SELECT if(NULL, 'yes', 'no')", ConstantValue::Text("no".into())),
+            ("SELECT if(-3, NULL, 4)", ConstantValue::Null),
+        ] {
+            assert!(matches!(
+                parse_select(sql).unwrap().projection,
+                Projection::Constants(ref values) if values.len() == 1 && values[0].value == expected
+            ), "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_type_and_arity_errors() {
+        for sql in ["SELECT if(1, 1)", "SELECT if(1, 2, 'text')",
+            "SELECT if(1, 2, 3, 4)", "SELECT if('x', 1, 2)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
