@@ -21,7 +21,7 @@ class QuerySoakOutputBudgetTests(unittest.TestCase):
     def test_rejects_injected_query_output_larger_than_budget(self):
         with tempfile.TemporaryDirectory() as directory:
             reference = Path(directory) / "expected.tsv"
-            reference.write_bytes(b"1\\n")
+            reference.write_bytes(b"1\n")
             with self.assertRaisesRegex(ValueError, "query output"):
                 soak("fake", directory, "SELECT 1", reference, runs=1, warmups=0,
                      max_output_bytes=2,
