@@ -2,7 +2,7 @@
 //! Sparse prefixes store exact keys; dense prefixes use 8 KiB bitmaps.
 
 use super::ExecutionError;
-use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashMap};
 
 const WORDS_PER_BLOCK: usize = 1024;
 const MAX_BLOCKS: usize = 65_536; // All UInt16 prefixes, still bounded by sparse and dense memory caps.
@@ -42,61 +42,71 @@ impl BitmapDistinct32 {
     pub(super) fn insert(&mut self, key: u32) -> Result<(), ExecutionError> {
         let prefix = (key >> 16) as u16;
         let suffix = (key & 0xffff) as u16;
-        if let Some(Block::Dense(bitmap)) = self.blocks.get_mut(&prefix) {
-            if set_bitmap_bit_if_unset(bitmap.as_mut(), suffix) {
-                self.count = self.count.checked_add(1).ok_or_else(|| {
-                    ExecutionError::Invalid("distinct count overflow".into())
-                })?;
-            }
-            return Ok(());
-        }
-        if self.blocks.len() >= MAX_BLOCKS && !self.blocks.contains_key(&prefix) {
-            return Err(ExecutionError::Invalid(
-                "COUNT(DISTINCT) exceeded its 65536-prefix budget".into(),
-            ));
-        }
-        if self.dense_blocks >= MAX_DENSE_BLOCKS
-            && matches!(self.blocks.get(&prefix),
-                Some(Block::Sparse(values))
-                    if values.len() + 1 == DENSE_THRESHOLD && !values.contains(&suffix))
-        {
-            return Err(ExecutionError::Invalid(
-                "COUNT(DISTINCT) exceeded its dense-bitmap memory budget".into(),
-            ));
-        }
-        // Do not admit new sparse entries once the global memory budget is
-        // exhausted. Dense bitmap inserts and duplicate keys remain valid.
-        if self.sparse_keys >= MAX_SPARSE_KEYS {
-            match self.blocks.get(&prefix) {
-                Some(Block::Dense(_)) => {}
-                Some(Block::Sparse(values))
-                    if values.contains(&suffix) || values.len() + 1 == DENSE_THRESHOLD => {}
-                _ => return Err(ExecutionError::Invalid(
-                    "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
-                )),
-            }
-        }
-        let block = self.blocks.entry(prefix)
-            .or_insert_with(|| Block::Sparse(std::collections::HashSet::new()));
-        let inserted = match block {
-            Block::Sparse(values) => {
-                let fresh = values.insert(suffix);
-                if fresh {
-                    self.sparse_keys += 1;
+        // Resolve the prefix once. Sparse inserts previously looked up the
+        // same prefix with get_mut() and again with entry().
+        let prefix_budget_full = self.blocks.len() >= MAX_BLOCKS;
+        let inserted = match self.blocks.entry(prefix) {
+            Entry::Vacant(entry) => {
+                if prefix_budget_full {
+                    return Err(ExecutionError::Invalid(
+                        "COUNT(DISTINCT) exceeded its 65536-prefix budget".into(),
+                    ));
                 }
-                if fresh && values.len() == DENSE_THRESHOLD {
-                    self.sparse_keys -= DENSE_THRESHOLD;
-                    self.dense_blocks += 1;
-                    let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
-                    for &value in values.iter() {
-                        set_bitmap_bit_if_unset(bitmap.as_mut(), value);
+                if self.sparse_keys >= MAX_SPARSE_KEYS {
+                    return Err(ExecutionError::Invalid(
+                        "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
+                    ));
+                }
+                let mut values = std::collections::HashSet::new();
+                values.insert(suffix);
+                entry.insert(Block::Sparse(values));
+                self.sparse_keys += 1;
+                true
+            }
+            Entry::Occupied(mut entry) => {
+                let block = entry.get_mut();
+                match block {
+                    Block::Dense(bitmap) => set_bitmap_bit_if_unset(bitmap.as_mut(), suffix),
+                    Block::Sparse(values) => {
+                        let promotes = values.len() + 1 == DENSE_THRESHOLD;
+                        // Check caps before inserting, preserving duplicates
+                        // and failed-insert atomicity when either cap is full.
+                        if promotes
+                            && self.dense_blocks >= MAX_DENSE_BLOCKS
+                            && !values.contains(&suffix)
+                        {
+                            return Err(ExecutionError::Invalid(
+                                "COUNT(DISTINCT) exceeded its dense-bitmap memory budget".into(),
+                            ));
+                        }
+                        if self.sparse_keys >= MAX_SPARSE_KEYS
+                            && !promotes
+                            && !values.contains(&suffix)
+                        {
+                            return Err(ExecutionError::Invalid(
+                                "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
+                            ));
+                        }
+
+                        let fresh = values.insert(suffix);
+                        if fresh {
+                            if values.len() == DENSE_THRESHOLD {
+                                let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
+                                for &value in values.iter() {
+                                    set_bitmap_bit_if_unset(bitmap.as_mut(), value);
+                                }
+                                *block = Block::Dense(bitmap);
+                                // The 4096th key went directly into the bitmap.
+                                // Only the previous sparse keys were counted.
+                                self.sparse_keys -= DENSE_THRESHOLD - 1;
+                                self.dense_blocks += 1;
+                            } else {
+                                self.sparse_keys += 1;
+                            }
+                        }
+                        fresh
                     }
-                    *block = Block::Dense(bitmap);
                 }
-                fresh
-            }
-            Block::Dense(bitmap) => {
-                set_bitmap_bit_if_unset(bitmap.as_mut(), suffix)
             }
         };
         if inserted {
@@ -253,6 +263,44 @@ mod tests {
         }
         bitmap.insert((-1i32) as u32).unwrap();
         assert_eq!(bitmap.len(), 5);
+    }
+}
+
+#[cfg(test)]
+mod single_lookup_insert_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_and_dense_paths_preserve_exact_cardinality_and_memory_counts() {
+        let mut state = BitmapDistinct32::new();
+        for suffix in 0..DENSE_THRESHOLD as u32 {
+            state.insert((37 << 16) | suffix).unwrap();
+            state.insert((37 << 16) | suffix).unwrap();
+        }
+        assert_eq!(state.len(), DENSE_THRESHOLD as u64);
+        assert_eq!(state.sparse_keys, 0);
+        assert_eq!(state.dense_blocks, 1);
+        assert!(matches!(state.blocks.get(&37), Some(Block::Dense(_))));
+
+        state.insert((38 << 16) | 7).unwrap();
+        state.insert((38 << 16) | 7).unwrap();
+        assert_eq!(state.len(), DENSE_THRESHOLD as u64 + 1);
+        assert_eq!(state.sparse_keys, 1);
+        assert_eq!(state.dense_blocks, 1);
+    }
+
+    #[test]
+    fn rejected_vacant_prefix_does_not_allocate_or_change_counts() {
+        let mut state = BitmapDistinct32::new();
+        state.sparse_keys = MAX_SPARSE_KEYS;
+        assert!(matches!(
+            state.insert(0x1234_5678),
+            Err(ExecutionError::Invalid(message))
+                if message == "COUNT(DISTINCT) exceeded its sparse-key memory budget"
+        ));
+        assert!(state.blocks.is_empty());
+        assert_eq!(state.count, 0);
+        assert_eq!(state.sparse_keys, MAX_SPARSE_KEYS);
     }
 }
 
