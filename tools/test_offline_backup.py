@@ -46,6 +46,29 @@ class BackupTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "regular files"):
                 preflight(source, Path(root) / "backup")
 
+    def test_doctor_errors_are_spooled_and_bounded(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from offline_backup import backup
+
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "db"
+            source.mkdir()
+            (source / "data.bin").write_bytes(b"safe")
+            destination = Path(root) / "backup"
+
+            def fail(_command, **kwargs):
+                self.assertNotIn("capture_output", kwargs)
+                kwargs["stderr"].write(b"x" * 100_000 + b"last error")
+                return SimpleNamespace(returncode=1)
+
+            with patch("offline_backup.subprocess.run", side_effect=fail):
+                with self.assertRaises(RuntimeError) as ctx:
+                    backup(source, destination)
+            self.assertLess(len(str(ctx.exception)), 2300)
+            self.assertIn("last error", str(ctx.exception))
+            self.assertTrue(Path(str(destination) + ".partial").is_dir())
+
     def test_allows_fresh_sibling(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "db"
