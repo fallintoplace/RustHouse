@@ -56,7 +56,7 @@ def validate_samples(samples, runs, number):
         raise ValueError(f"query {number} has invalid timing samples")
 
 
-def verify(report, required, expected_revision=None):
+def verify(report, required, expected_revision=None, *, min_runs=1):
     if not isinstance(report, dict) or report.get("reference_checked") is not True:
         raise ValueError("benchmark report must confirm reference comparisons")
     if expected_revision is not None:
@@ -64,8 +64,10 @@ def verify(report, required, expected_revision=None):
         if not expected_revision or not isinstance(revision, str) or revision != expected_revision:
             raise ValueError("benchmark revision differs from the required commit")
     runs = report.get("runs")
-    if type(runs) is not int or runs < 1:
-        raise ValueError("benchmark report must include a positive runs count")
+    if type(min_runs) is not int or not 1 <= min_runs <= 1000:
+        raise ValueError("min_runs must be between 1 and 1000")
+    if type(runs) is not int or runs < min_runs:
+        raise ValueError("benchmark report has fewer than required timing runs")
     rows = report.get("results")
     if not isinstance(rows, list) or not rows:
         raise ValueError("benchmark report contains no query results")
@@ -101,11 +103,13 @@ def main(argv=None):
         "--queries", required=True,
         help="required query IDs, e.g. 1-43 or 1,6,12",
     )
+    parser.add_argument("--min-runs", type=int, default=1,
+                        help="Require a minimum number of timing repetitions")
     args = parser.parse_args(argv)
     try:
         required = parse_query_ids(args.queries)
         report = load_manifest(args.report)
-        count = verify(report, required, args.expected_revision)
+        count = verify(report, required, args.expected_revision, min_runs=args.min_runs)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"release SQL gate failed: {error}", file=sys.stderr)
         return 1
