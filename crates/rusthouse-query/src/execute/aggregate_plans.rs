@@ -28,12 +28,12 @@ fn parallel_dense_grouped_count(
     };
     let names = [column.to_owned()];
     let chunk_size = parts.len().div_ceil(workers);
-    let chunks = std::thread::scope(|scope| {
+    let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let names = &names;
         let handles = parts
             .chunks(chunk_size)
             .map(|paths| {
-                scope.spawn(move || -> Result<DenseGroupChunk, ExecutionError> {
+                std::thread::Builder::new().spawn_scoped(scope,move || -> Result<DenseGroupChunk, ExecutionError> {
                     let mut counts = vec![0u64; slots];
                     let mut order = Vec::new();
                     for path in paths {
@@ -85,16 +85,18 @@ fn parallel_dense_grouped_count(
                         }
                     }
                     Ok(DenseGroupChunk { counts, order })
-                })
+                }).map_err(|error| ExecutionError::Invalid(format!(
+                    "cannot start dense integer GROUP BY worker: {error}"
+                )))
             })
-            .collect::<Vec<_>>();
-        handles
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(handles
             .into_iter()
             .map(|handle| handle.join().unwrap_or_else(|_| {
                 Err(ExecutionError::Invalid("grouped scan worker panicked".into()))
             }))
-            .collect::<Vec<_>>()
-    });
+            .collect::<Vec<_>>())
+    })?;
     let mut counts = vec![0u64; slots];
     let mut order = Vec::new();
     for chunk in chunks {
@@ -208,11 +210,11 @@ fn parallel_integer_grouped_count(
     let names = [column.to_owned()];
     let chunk_size = parts.len().div_ceil(workers);
     let retained = AtomicUsize::new(0);
-    let chunks = std::thread::scope(|scope| {
+    let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let handles = parts.chunks(chunk_size).map(|paths| {
             let names = &names;
             let retained = &retained;
-            scope.spawn(move || -> Result<Option<Vec<(u64, u64)>>, ExecutionError> {
+            std::thread::Builder::new().spawn_scoped(scope,move || -> Result<Option<Vec<(u64, u64)>>, ExecutionError> {
                 let mut keys = HashMap::<u64, usize>::new();
                 let mut counts = Vec::<(u64, u64)>::new();
                 for path in paths {
@@ -269,12 +271,14 @@ fn parallel_integer_grouped_count(
                     }
                 }
                 Ok(Some(counts))
-            })
-        }).collect::<Vec<_>>();
-        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            }).map_err(|error| ExecutionError::Invalid(format!(
+                "cannot start hashed integer GROUP BY worker: {error}"
+            )))
+        }).collect::<Result<Vec<_>, _>>()?;
+        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
             Err(ExecutionError::Invalid("parallel grouped worker panicked".into()))
-        })).collect::<Vec<_>>()
-    });
+        })).collect::<Vec<_>>())
+    })?;
     let mut keys = HashMap::<u64, usize>::new();
     let mut counts = Vec::<(u64, u64)>::new();
     for chunk in chunks {
@@ -1136,9 +1140,9 @@ fn parallel_exact_narrow_distinct(
         return Ok(None);
     }
     let chunk_size = parts.len().div_ceil(workers);
-    let chunks = std::thread::scope(|scope| {
+    let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let handles = parts.chunks(chunk_size).map(|paths| {
-            scope.spawn(move || -> Result<Vec<u64>, ExecutionError> {
+            std::thread::Builder::new().spawn_scoped(scope,move || -> Result<Vec<u64>, ExecutionError> {
                 let mut bits = vec![0u64; domain / 64];
                 for path in paths {
                     let mut reader = rusthouse_storage::NumericPartReader::open(path, scan_columns)?;
@@ -1161,12 +1165,14 @@ fn parallel_exact_narrow_distinct(
                     }
                 }
                 Ok(bits)
-            })
-        }).collect::<Vec<_>>();
-        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            }).map_err(|error| ExecutionError::Invalid(format!(
+                "cannot start narrow DISTINCT worker: {error}"
+            )))
+        }).collect::<Result<Vec<_>, _>>()?;
+        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
             Err(ExecutionError::Invalid("distinct worker panicked".into()))
-        })).collect::<Vec<_>>()
-    });
+        })).collect::<Vec<_>>())
+    })?;
     let mut bits = vec![0u64; domain / 64];
     for chunk in chunks {
         for (dest, value) in bits.iter_mut().zip(chunk?) {
