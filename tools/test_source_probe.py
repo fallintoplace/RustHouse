@@ -79,5 +79,14 @@ class SourceProbeTests(unittest.TestCase):
             "http://127.0.0.1:8123/capabilities", timeout=3
         )
 
+    @patch("source_probe.NO_REDIRECT_OPENER")
+    def test_duplicate_capability_json_keys_are_rejected(self, opener):
+        from source_probe import read_json
+        opener.open.return_value.__enter__.return_value.read.return_value = (
+            b'{"read_only":false,"read_only":true}'
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate source probe JSON field"):
+            read_json("http://127.0.0.1:8123/capabilities", 3)
+
 if __name__ == "__main__":
     unittest.main()
