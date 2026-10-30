@@ -287,10 +287,30 @@ pub(super) fn parse_after_open(
             let (_, _, day) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             Ok(ConstantValue::Integer(i64::from(day)))
         }),
-        "TODAYOFWEEK" => unary_date(parser, depth, |value| {
-            let days = value.seconds.div_euclid(DAY_SECONDS);
-            Ok(ConstantValue::Integer((days + 3).rem_euclid(7) + 1))
-        }),
+        "TODAYOFWEEK" => {
+            let input = super::text_scalar::text_arg(parser, depth + 1)?;
+            let mode = if parser.take(Token::Comma) {
+                super::text_scalar::integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("toDayOfWeek needs one or two arguments".into()));
+            }
+            let (Some(input), Some(mode)) = (input, mode) else {
+                return Ok(ConstantValue::Null);
+            };
+            let day = (Temporal::parse(&input)?.seconds.div_euclid(DAY_SECONDS) + 3)
+                .rem_euclid(7);
+            let result = match mode {
+                0 => day + 1,                       // Monday 1..7
+                1 => day,                           // Monday 0..6
+                2 => (day + 1).rem_euclid(7),       // Sunday 0..6
+                3 => (day + 1).rem_euclid(7) + 1,   // Sunday 1..7
+                _ => return Err(ParseError("toDayOfWeek mode must be 0..3".into())),
+            };
+            Ok(ConstantValue::Integer(result))
+        },
         "TODAYOFYEAR" => unary_date(parser, depth, |value| {
             let days = value.seconds.div_euclid(DAY_SECONDS);
             let (year, _, _) = civil_from_days(days);
@@ -1330,6 +1350,37 @@ mod clickhouse_start_of_half_hour_tests {
                 Projection::Constants(values) if values[0].value == ConstantValue::Null)
         );
         assert!(parse_select("SELECT toStartOfHalfHour('2024-01-01', 1)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod day_of_week_mode_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn monday_and_sunday_modes_match_calendar_weekdays() {
+        for (sql, expected) in [
+            ("SELECT toDayOfWeek('2023-04-21')", 5),
+            ("SELECT toDayOfWeek('2023-04-21', 0)", 5),
+            ("SELECT toDayOfWeek('2023-04-21', 1)", 4),
+            ("SELECT toDayOfWeek('2023-04-21', 2)", 5),
+            ("SELECT toDayOfWeek('2023-04-21', 3)", 6),
+            ("SELECT toDayOfWeek('2023-04-23', 2)", 0),
+            ("SELECT toDayOfWeek('2023-04-23', 3)", 1),
+        ] {
+            assert!(matches!(parse_select(sql).unwrap().projection,
+                Projection::Constants(ref values) if values.len() == 1
+                    && values[0].value == ConstantValue::Integer(expected)), "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_modes_and_extra_arguments_fail() {
+        for sql in ["SELECT toDayOfWeek('2024-01-01', -1)",
+            "SELECT toDayOfWeek('2024-01-01', 4)",
+            "SELECT toDayOfWeek('2024-01-01', 0, 'UTC')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
 
