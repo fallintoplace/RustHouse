@@ -69,6 +69,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "QUOTE_LITERAL"
             | "FROMUNIXTIMESTAMP64MILLI"
             | "CUTQUERYSTRINGANDFRAGMENT"
+            | "MULTIIF"
             | "COALESCE"
             | "SUBTRACTHOURS"
             | "CONCAT_WS"
@@ -344,6 +345,46 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "MULTIIF" => {
+            let mut args = Vec::new();
+            loop {
+                if args.len() == 33 {
+                    return Err(ParseError("multiIf supports at most 16 conditions".into()));
+                }
+                args.push(constant_arg(parser, depth + 1)?);
+                if !parser.take(Token::Comma) {
+                    break;
+                }
+            }
+            require(parser, Token::RParen, "expected ')' after multiIf arguments")?;
+            if args.len() < 3 || args.len() % 2 == 0 {
+                return Err(ParseError("multiIf requires condition/value pairs and else".into()));
+            }
+            // ClickHouse requires a common branch type; allow NULL arms.
+            let mut branch_is_text = None;
+            for (index, arg) in args.iter().enumerate() {
+                if index + 1 == args.len() || index % 2 == 1 {
+                    let current_is_text = match arg {
+                        ConstantValue::Text(_) => Some(true),
+                        ConstantValue::Integer(_) => Some(false),
+                        ConstantValue::Null => None,
+                    };
+                    if let Some(current_is_text) = current_is_text {
+                        if branch_is_text.is_some_and(|kind| kind != current_is_text) {
+                            return Err(ParseError("multiIf branches need a common type".into()));
+                        }
+                        branch_is_text = Some(current_is_text);
+                    }
+                } else if matches!(arg, ConstantValue::Text(_)) {
+                    return Err(ParseError("multiIf conditions must be integer or NULL".into()));
+                }
+            }
+            let last = args.len() - 1;
+            let chosen = (0..last).step_by(2).find(|index| {
+                matches!(args[*index], ConstantValue::Integer(value) if value != 0)
+            }).map_or(last, |index| index + 1);
+            args.swap_remove(chosen)
+        }
         "IPV4STRINGTONUMORNULL" => {
             let input = text_arg(parser, depth + 1)?;
             require(
@@ -4356,6 +4397,38 @@ mod clickhouse_ip_address_in_range_tests {
             "SELECT isIPAddressInRange('1.2.3.4', '::1/128')",
             "SELECT isIPAddressInRange('x', '1.2.3.4/32')",
             "SELECT isIPAddressInRange('1.2.3.4')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod constant_multi_if_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn picks_first_true_branch_and_treats_null_conditions_as_false() {
+        for (sql, expected) in [
+            ("SELECT multiIf(0, 'no', 1, 'yes', 'otherwise')", ConstantValue::Text("yes".into())),
+            ("SELECT multiIf(NULL, 4, 1, 7, 9)", ConstantValue::Integer(7)),
+            ("SELECT multiIf(0, 4, 0, 7, 9)", ConstantValue::Integer(9)),
+            ("SELECT multiIf(1, NULL, 2)", ConstantValue::Null),
+        ] {
+            assert!(matches!(
+                parse_select(sql).unwrap().projection,
+                Projection::Constants(ref values) if values.len() == 1 && values[0].value == expected
+            ), "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_arity_condition_types_and_branch_types() {
+        for sql in [
+            "SELECT multiIf(1, 2)",
+            "SELECT multiIf(1, 2, 0, 3)",
+            "SELECT multiIf('yes', 2, 3)",
+            "SELECT multiIf(1, 'yes', 4)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
