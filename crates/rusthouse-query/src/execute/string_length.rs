@@ -2,7 +2,7 @@ use super::ExecutionError;
 use super::typed;
 use crate::Select;
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
@@ -30,6 +30,7 @@ fn checked_text_length_at_row(
 }
 
 const OUTPUT_BATCH_BYTES: usize = 64 * 1024;
+const MAX_DISTINCT_LENGTHS: usize = 100_000;
 
 fn append_length_line(buffer: &mut Vec<u8>, length: Option<usize>) -> std::io::Result<()> {
     match length {
@@ -103,6 +104,8 @@ pub(super) fn execute<W: Write>(
     let limit = query.limit.unwrap_or(usize::MAX);
     let is_unfiltered = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut output_batch = Vec::with_capacity(OUTPUT_BATCH_BYTES);
+    // DISTINCT is applied before OFFSET, and NULL contributes one distinct value.
+    let mut seen_lengths = HashSet::<Option<usize>>::new();
     // Reuse typed mark skipping: LENGTH only needs rows after OFFSET when
     // neither filtering, sorting nor deduplication changes row positions.
     if is_unfiltered && query.order_by.is_none() && query.order_by_extra.is_empty() && !query.distinct
@@ -136,15 +139,25 @@ pub(super) fn execute<W: Write>(
             if !is_unfiltered && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            if skipped < offset {
-                skipped += 1;
-                continue;
-            }
             let length = if nulls.is_some_and(|map| map[row] != 0) {
                 None
             } else {
                 Some(offsets[row + 1] - offsets[row])
             };
+            if query.distinct {
+                if !seen_lengths.insert(length) {
+                    continue;
+                }
+                if seen_lengths.len() > MAX_DISTINCT_LENGTHS {
+                    return Err(ExecutionError::Invalid(
+                        "DISTINCT LENGTH exceeds 100000 values".into(),
+                    ));
+                }
+            }
+            if skipped < offset {
+                skipped += 1;
+                continue;
+            }
             append_length_line(&mut output_batch, length)?;
             if output_batch.len() >= OUTPUT_BATCH_BYTES {
                 output.write_all(&output_batch)?;
@@ -205,5 +218,49 @@ mod tests {
     #[test]
     fn rejects_unexpected_column_types() {
         assert!(checked_text_length_at_row(&TypedColumn::Uuid(Vec::new()), 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod distinct_length_integration_tests {
+    use super::*;
+    use rusthouse_storage::{Column, write_wide_part};
+
+    #[test]
+    fn distinct_length_deduplicates_before_offset_and_preserves_one_null() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-distinct-length-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let columns = [Column {
+            name: "name".into(),
+            data_type: "Nullable(String)".into(),
+        }];
+        let rows = [
+            vec![Some("a".into())],
+            vec![Some("b".into())],
+            vec![None],
+            vec![Some("hello".into())],
+            vec![None],
+            vec![Some("cc".into())],
+        ];
+        write_wide_part(&root, &columns, &rows).unwrap();
+
+        let query = crate::parse_select(
+            "SELECT DISTINCT LENGTH(name) FROM part LIMIT 3 OFFSET 1",
+        ).unwrap();
+        let mut output = Vec::new();
+        execute(&query, &root, "name", &mut output).unwrap();
+        assert_eq!(output, b"length(name)\n\\N\n5\n2\n");
+
+        let query = crate::parse_select("SELECT LENGTH(name) FROM part").unwrap();
+        let mut plain = Vec::new();
+        execute(&query, &root, "name", &mut plain).unwrap();
+        assert_eq!(plain, b"length(name)\n1\n1\n\\N\n5\n\\N\n2\n");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
