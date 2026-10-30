@@ -19,6 +19,13 @@ class NoiseReportTests(unittest.TestCase):
         self.assertEqual([q["state"] for q in report["queries"]],
                          ["noisy", "insufficient_samples", "not_verified"])
 
+    def test_large_finite_samples_do_not_overflow_cv(self):
+        samples = [1e308, 1e308, 1e308, 1e308, 1e307]
+        result = assess_query({"query": 6, "status": "passed",
+                               "timings_seconds": samples})
+        self.assertEqual(result["state"], "noisy")
+        self.assertTrue(0 < result["cv_percent"] < 100)
+
     def test_zero_negative_and_boolean_timings_are_invalid(self):
         for bad in (0.0, -0.1, True, float("inf")):
             with self.subTest(sample=bad):
