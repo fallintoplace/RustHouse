@@ -8,6 +8,7 @@ import json
 import math
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -28,18 +29,32 @@ def verify(binary, part, rows, *, timeout=600, execute=None,
            start=0, column="id"):
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
-    run = execute or subprocess.run
     result = []
     for expression, expected in aggregates(rows, start=start, column=column):
         sql = f"SELECT {expression} FROM part"
+        command = [str(binary), "sql", sql, "--part", str(part),
+                   "--format", "tsv-no-header"]
+        expected_bytes = f"{expected}\n".encode()
         started = time.perf_counter()
-        completed = run([str(binary), "sql", sql, "--part", str(part),
-                         "--format", "tsv-no-header"],
-                        capture_output=True, check=False, timeout=timeout)
+        if execute is None:
+            with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+                completed = subprocess.run(command, stdout=output, stderr=errors,
+                                           check=False, timeout=timeout)
+                if completed.returncode:
+                    errors.seek(0, 2)
+                    errors.seek(max(0, errors.tell() - 500))
+                    diagnostic = errors.read(500)
+                    raise RuntimeError(f"{expression}: query failed: {diagnostic!r}")
+                output.seek(0)
+                actual = output.read(len(expected_bytes) + 1)
+        else:
+            completed = execute(command, capture_output=True,
+                                check=False, timeout=timeout)
+            if completed.returncode:
+                raise RuntimeError(f"{expression}: query failed: {completed.stderr[:500]!r}")
+            actual = completed.stdout
         elapsed = time.perf_counter() - started
-        if completed.returncode:
-            raise RuntimeError(f"{expression}: query failed: {completed.stderr!r}")
-        if completed.stdout != f"{expected}\n".encode():
+        if actual != expected_bytes:
             raise ValueError(f"{expression}: result differs from independent reference")
         result.append({"aggregate": expression, "expected": expected,
                        "seconds": elapsed, "verified": True})

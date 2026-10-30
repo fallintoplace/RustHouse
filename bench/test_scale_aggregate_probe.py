@@ -43,6 +43,22 @@ class AggregateProbeTests(unittest.TestCase):
         self.assertEqual(len(report["results"]), 4)
         self.assertTrue(all(r["verified"] for r in report["results"]))
 
+    def test_real_process_uses_bounded_output_spooling(self):
+        from unittest.mock import patch
+        from bench.scale import aggregate_probe
+        expected = dict(aggregates(3))
+
+        def run(command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            expression = command[2].removeprefix("SELECT ").removesuffix(" FROM part")
+            kwargs["stdout"].write(f"{expected[expression]}\n".encode())
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(aggregate_probe.subprocess, "run", side_effect=run) as mocked:
+            report = aggregate_probe.verify("rusthouse", "part", 3)
+        self.assertEqual(mocked.call_count, 4)
+        self.assertEqual(len(report["results"]), 4)
+
     def test_mismatch_rejected(self):
         with self.assertRaisesRegex(ValueError, "differs"):
             verify("rusthouse", "parts", 5, execute=lambda *a, **kw:
