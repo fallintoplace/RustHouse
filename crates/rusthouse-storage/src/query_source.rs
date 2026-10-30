@@ -348,22 +348,24 @@ struct NumericPartPrefetchWorker {
 }
 
 impl NumericPartPrefetchWorker {
-    fn new(columns: std::sync::Arc<[String]>) -> Self {
+    fn new(columns: std::sync::Arc<[String]>) -> Option<Self> {
         let (requests, jobs) = std::sync::mpsc::sync_channel::<PathBuf>(1);
         let (answers, responses) =
             std::sync::mpsc::sync_channel::<Result<NumericPartReader, PartError>>(1);
-        let thread = std::thread::spawn(move || {
-            while let Ok(path) = jobs.recv() {
-                if answers.send(NumericPartReader::open(&path, &columns)).is_err() {
-                    break;
+        let thread = std::thread::Builder::new()
+            .spawn(move || {
+                while let Ok(path) = jobs.recv() {
+                    if answers.send(NumericPartReader::open(&path, &columns)).is_err() {
+                        break;
+                    }
                 }
-            }
-        });
-        Self {
+            })
+            .ok()?;
+        Some(Self {
             requests: Some(requests),
             responses,
             thread: Some(thread),
-        }
+        })
     }
 }
 
@@ -442,7 +444,12 @@ impl NumericQueryReader {
             return;
         }
         if self.worker.is_none() {
-            self.worker = Some(NumericPartPrefetchWorker::new(self.columns.clone()));
+            self.worker = NumericPartPrefetchWorker::new(self.columns.clone());
+            if self.worker.is_none() {
+                // Fallback to synchronous open when the OS cannot create a
+                // prefetch thread. A resource limit must not abort the query.
+                return;
+            }
             #[cfg(test)]
             { self.prefetch_worker_starts += 1; }
         }
