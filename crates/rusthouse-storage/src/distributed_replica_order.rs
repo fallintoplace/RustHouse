@@ -51,6 +51,11 @@ fn validate_replica_nodes(replicas: &[ReplicaStatus]) -> Result<(), &'static str
     Ok(())
 }
 
+fn ranked_node_ids(mut replicas: Vec<&ReplicaStatus>) -> Vec<String> {
+    replicas.sort_unstable_by(|left, right| newest_first(left, right));
+    replicas.into_iter().map(|replica| replica.node.clone()).collect()
+}
+
 /// Return healthy node IDs, newest advertised version first.
 /// A caller must still validate returned data and enforce its consistency model.
 pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'static str> {
@@ -58,15 +63,11 @@ pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'s
         return Err("invalid replica status set");
     }
     validate_replica_nodes(replicas)?;
-    let mut healthy: Vec<_> = replicas.iter().filter(|replica| replica.healthy).collect();
+    let healthy: Vec<_> = replicas.iter().filter(|replica| replica.healthy).collect();
     if healthy.is_empty() {
         return Err("no healthy storage replica");
     }
-    healthy.sort_unstable_by(|left, right| newest_first(left, right));
-    Ok(healthy
-        .into_iter()
-        .map(|replica| replica.node.clone())
-        .collect())
+    Ok(ranked_node_ids(healthy))
 }
 
 /// Rank healthy replicas at or above a required snapshot version.
@@ -83,7 +84,7 @@ pub fn rank_read_replicas_at_least(
     if minimum_epoch == 0 || minimum_generation == 0 {
         return Err("invalid replica freshness floor");
     }
-    let mut eligible: Vec<_> = replicas
+    let eligible: Vec<_> = replicas
         .iter()
         .filter(|replica| {
             replica.healthy
@@ -98,11 +99,7 @@ pub fn rank_read_replicas_at_least(
             "no healthy storage replica"
         });
     }
-    eligible.sort_unstable_by(|left, right| newest_first(left, right));
-    Ok(eligible
-        .into_iter()
-        .map(|replica| replica.node.clone())
-        .collect())
+    Ok(ranked_node_ids(eligible))
 }
 
 /// Select only the preferred healthy replica in one scan.
