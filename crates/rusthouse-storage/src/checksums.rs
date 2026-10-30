@@ -117,6 +117,9 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     if content.len() as u64 > MAX_CHECKSUMS_BYTES {
         return Err(invalid(path, "checksums file exceeds 64 MiB"));
     }
+    if content.len() as u64 != size {
+        return Err(invalid(path, "checksums file changed during read"));
+    }
     parse_checksums(&content, path)
 }
 
