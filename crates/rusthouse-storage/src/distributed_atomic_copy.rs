@@ -13,6 +13,25 @@ fn same_source_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     before.dev() == after.dev() && before.ino() == after.ino()
 }
 
+fn source_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if !after.file_type().is_file()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return same_source_identity(before, after)
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
+
 fn create_private_replica_file(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -96,6 +115,15 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
     drop(output);
     // hard_link fails if the destination already exists, unlike an overwriting rename.
     let published = copied.and_then(|total| {
+        // Recheck both the opened inode and the source path after the stream.
+        // A mutation or replacement at the same length must not be published.
+        let final_opened = input.metadata()?;
+        let final_path = fs::symlink_metadata(source)?;
+        if !source_unchanged(&source_meta, &final_opened)
+            || !source_unchanged(&source_meta, &final_path)
+        {
+            return Err(io::Error::other("source changed during immutable copy"));
+        }
         fs::hard_link(&staging, destination)?;
         Ok(total)
     });
@@ -168,6 +196,11 @@ mod copy_identity_tests {
         fs::hard_link(&first, &link).unwrap();
         assert!(same_source_identity(&fs::metadata(&first).unwrap(), &fs::metadata(&link).unwrap()));
         assert!(!same_source_identity(&fs::metadata(&first).unwrap(), &fs::metadata(&second).unwrap()));
+        let baseline = fs::metadata(&first).unwrap();
+        assert!(source_unchanged(&baseline, &baseline));
+        assert!(!source_unchanged(&baseline, &fs::metadata(&second).unwrap()));
+        fs::write(&first, b"longer").unwrap();
+        assert!(!source_unchanged(&baseline, &fs::metadata(&first).unwrap()));
         fs::remove_dir_all(root).unwrap();
     }
 }

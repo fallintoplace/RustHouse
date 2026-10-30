@@ -79,6 +79,61 @@ class BackupTests(unittest.TestCase):
             self.assertTrue((base / "backup.partial").exists())
             self.assertFalse((base / "backup").exists())
 
+    @unittest.skipUnless(__import__("os").name == "posix", "flock is POSIX-only")
+    def test_refuses_a_live_database_lock(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            source = folder / "db"
+            source.mkdir()
+            lock = source / ".rusthouse-write.lock"
+            lock.write_bytes(b"")
+            with lock.open("r+b") as owned:
+                fcntl.flock(owned, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaisesRegex(ValueError, "database is in use"):
+                    backup(source, folder / "copy")
+            self.assertFalse((folder / "copy.partial").exists())
+
+
+    def test_rechecks_backup_size_after_copy(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "db"
+            source.mkdir()
+            (source / "part.bin").write_bytes(b"abc")
+            destination = Path(root) / "backup"
+            original_copytree = shutil.copytree
+
+            def growing_copy(*args, **kwargs):
+                copied = original_copytree(*args, **kwargs)
+                (copied / "part.bin").write_bytes(b"0123456789")
+                return copied
+
+            with patch("offline_backup.shutil.copytree", side_effect=growing_copy):
+                with self.assertRaisesRegex(ValueError, "max_bytes"):
+                    backup(source, destination, max_bytes=4)
+            self.assertFalse(destination.exists())
+            self.assertTrue(Path(str(destination) + ".partial").exists())
+
+
+    def test_syncs_file_and_directory_before_publication(self):
+        from offline_backup import sync_copied_tree
+        import os
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root) / "stage"
+            nested = folder / "parts"
+            nested.mkdir(parents=True)
+            (nested / "count.txt").write_bytes(b"1\\n")
+            calls = []
+            original = os.fsync
+            def counted(fd):
+                calls.append(fd)
+                return original(fd)
+            with patch("offline_backup.os.fsync", side_effect=counted):
+                sync_copied_tree(folder)
+            self.assertGreaterEqual(len(calls), 3 if os.name == "posix" else 1)
+
+
     def test_allows_fresh_sibling(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "db"

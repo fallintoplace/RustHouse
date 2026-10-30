@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cold RustHouse database copy. Stop ALL writers and readers before using."""
 import argparse
+from contextlib import contextmanager
 import math
 import os
 from pathlib import Path
@@ -9,6 +10,89 @@ import stat
 import subprocess
 import sys
 import tempfile
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+
+
+@contextmanager
+def refuse_live_database(source):
+    """Hold the database advisory lock for the entire cold backup."""
+    lock = source / ".rusthouse-write.lock"
+    if fcntl is None or not lock.exists():
+        yield
+        return
+    fd = None
+    try:
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(lock, flags)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("database lock is not a regular file")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("database is in use; stop readers and writers") from exc
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def validate_tree(root, max_bytes=None, max_entries=1_000_000):
+    """Reject symlinks, special files and oversized source or copied trees."""
+    total_bytes = 0
+    total_entries = 0
+    for base, directories, files in os.walk(root, followlinks=False):
+        for item in directories + files:
+            total_entries += 1
+            if total_entries > max_entries:
+                raise ValueError("backup exceeds max_entries preflight budget")
+            path = Path(base) / item
+            if path.is_symlink():
+                raise ValueError("backup refuses symlinks: " + str(path))
+        for item in files:
+            path = Path(base) / item
+            file_stat = path.stat()
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ValueError("backup requires regular files: " + str(path))
+            if max_bytes is not None:
+                total_bytes += file_stat.st_size
+                if total_bytes > max_bytes:
+                    raise ValueError("backup exceeds max_bytes preflight budget")
+    return total_bytes
+
+
+def sync_copied_tree(root):
+    """Persist copied files and directory entries before backup publication."""
+    for directory, _subdirs, files in os.walk(root, topdown=False, followlinks=False):
+        folder = Path(directory)
+        for name in files:
+            path = folder / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("backup contains a non-regular file: " + str(path))
+            with path.open("rb") as copied:
+                os.fsync(copied.fileno())
+        if os.name == "posix":
+            fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+
+def sync_parent_directory(path):
+    if os.name != "posix":
+        return
+    fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 
 
 def preflight(source, destination, max_bytes=None, max_entries=1_000_000):
@@ -27,23 +111,7 @@ def preflight(source, destination, max_bytes=None, max_entries=1_000_000):
         raise ValueError("max_bytes must be positive")
     if type(max_entries) is not int or not 1 <= max_entries <= 10_000_000:
         raise ValueError("max_entries must be between 1 and 10000000")
-    total_bytes = 0
-    total_entries = 0
-    for base, directories, files in os.walk(source, followlinks=False):
-        for item in directories + files:
-            total_entries += 1
-            if total_entries > max_entries:
-                raise ValueError("backup exceeds max_entries preflight budget")
-            if (Path(base) / item).is_symlink():
-                raise ValueError("backup refuses symlinks: " + str(Path(base) / item))
-        for item in files:
-            file_stat = (Path(base) / item).stat()
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise ValueError("backup requires regular files: " + str(Path(base) / item))
-            if max_bytes is not None:
-                total_bytes += file_stat.st_size
-                if total_bytes > max_bytes:
-                    raise ValueError("backup exceeds max_bytes preflight budget")
+    validate_tree(source, max_bytes, max_entries)
     return source, destination, stage
 
 
@@ -55,24 +123,29 @@ def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeo
     source, destination, stage = preflight(
         source, destination, max_bytes=max_bytes, max_entries=max_entries
     )
-    # Preserve the complete layout, including hidden files and lock inode contents.
-    shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
-    try:
-        with tempfile.TemporaryFile() as errors:
-            result = subprocess.run(
-                [str(binary), "doctor", "--database", str(stage), "--full-hashes"],
-                stdout=subprocess.DEVNULL, stderr=errors,
-                timeout=doctor_timeout, check=False,
-            )
-            errors.seek(max(0, errors.tell() - 2000))
-            diagnostic = errors.read(2000).decode("utf-8", "replace")
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError("backup remains at " + str(stage) + ": " + str(exc)) from exc
-    if result.returncode:
-        raise RuntimeError("doctor rejected staged backup at " + str(stage) +
-                           ": " + diagnostic)
-    stage.rename(destination)
-    return destination
+    with refuse_live_database(source):
+        # Preserve all generations, including hidden files and lock metadata.
+        shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
+        # The copied tree may have changed after source preflight.
+        validate_tree(stage, max_bytes, max_entries)
+        try:
+            with tempfile.TemporaryFile() as errors:
+                result = subprocess.run(
+                    [str(binary), "doctor", "--database", str(stage), "--full-hashes"],
+                    stdout=subprocess.DEVNULL, stderr=errors,
+                    timeout=doctor_timeout, check=False,
+                )
+                errors.seek(max(0, errors.tell() - 2000))
+                diagnostic = errors.read(2000).decode("utf-8", "replace")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("backup remains at " + str(stage) + ": " + str(exc)) from exc
+        if result.returncode:
+            raise RuntimeError("doctor rejected staged backup at " + str(stage) +
+                               ": " + diagnostic)
+        sync_copied_tree(stage)
+        stage.rename(destination)
+        sync_parent_directory(destination)
+        return destination
 
 
 def main():
