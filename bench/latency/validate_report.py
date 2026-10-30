@@ -6,6 +6,17 @@ import math
 import sys
 from pathlib import Path
 
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+
+
+def load_report(path):
+    with Path(path).open("rb") as source:
+        payload = source.read(MAX_REPORT_BYTES + 1)
+    if len(payload) > MAX_REPORT_BYTES:
+        raise ValueError("SQL latency report exceeds 2 MiB")
+    return json.loads(payload.decode("utf-8"))
+
+
 from bench.common import latency_summary
 from bench.latency.run import make_cases
 
@@ -59,7 +70,7 @@ def main(argv=None):
     parser.add_argument("--warmups", type=int, required=True)
     args = parser.parse_args(argv)
     try:
-        report = json.loads(args.report.read_text(encoding="utf-8"))
+        report = load_report(args.report)
         count = validate_report(report, rows=args.rows, runs=args.runs, warmups=args.warmups)
     except (OSError, ValueError) as error:
         print(f"SQL latency report validation failed: {error}", file=sys.stderr)
