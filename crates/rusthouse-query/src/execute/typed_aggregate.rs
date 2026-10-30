@@ -297,9 +297,9 @@ fn parallel_grouped_integer_sum(
         return Ok(None);
     }
     let chunk_size = parts.len().div_ceil(workers);
-    let chunks = std::thread::scope(|scope| {
+    let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let handles = parts.chunks(chunk_size).map(|paths| {
-            scope.spawn(move || -> Result<Vec<(Cell, AggregateState)>, ExecutionError> {
+            std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Vec<(Cell, AggregateState)>, ExecutionError> {
                 let mut groups: Vec<(Cell, AggregateState)> = Vec::new();
                 let mut by_key = HashMap::<typed::Key, usize>::new();
                 for path in paths {
@@ -332,12 +332,14 @@ fn parallel_grouped_integer_sum(
                     }
                 }
                 Ok(groups)
-            })
-        }).collect::<Vec<_>>();
-        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            }).map_err(|error| ExecutionError::Invalid(format!(
+                "cannot start grouped SUM worker: {error}"
+            )))
+        }).collect::<Result<Vec<_>, _>>()?;
+        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
             Err(ExecutionError::Invalid("parallel grouped SUM worker panicked".into()))
-        })).collect::<Vec<_>>()
-    });
+        })).collect::<Vec<_>>())
+    })?;
     let mut groups: Vec<(Cell, AggregateState)> = Vec::new();
     let mut by_key = HashMap::<typed::Key, usize>::new();
     for chunk in chunks {
