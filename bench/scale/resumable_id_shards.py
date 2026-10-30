@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import secrets
 from pathlib import Path
 
@@ -21,9 +22,16 @@ def positive(value, name, *, allow_zero=False):
 
 def validate_existing(path, start, count):
     digest = hashlib.sha256()
-    with path.open("rb") as source:
-        # Compare 4096 exact UInt64 records at once instead of doing a
-        # Python readline, byte allocation and hash update per row.
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"reused shard is not a regular file: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+            raise ValueError(f"reused shard changed before opening: {path}")
         for offset in range(0, count, 4096):
             batch_rows = min(4096, count - offset)
             expected = "".join(
@@ -35,8 +43,14 @@ def validate_existing(path, start, count):
             digest.update(actual)
         if source.read(1):
             raise ValueError(f"unexpected trailing rows in {path}")
+        finished = os.fstat(source.fileno())
+        if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+            raise ValueError(f"reused shard changed while reading: {path}")
+    after = path.lstat()
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+        raise ValueError(f"reused shard changed while reading: {path}")
     return digest.hexdigest()
-
 
 def write_shard(path, start, count):
     if path.is_symlink():

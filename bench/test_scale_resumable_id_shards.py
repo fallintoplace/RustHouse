@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 import tempfile
@@ -36,6 +37,22 @@ class ResumableShardsTests(unittest.TestCase):
                     create(folder, 0, 1, 1)
             self.assertEqual(pending.read_bytes(), b"keep")
             self.assertFalse(shard.exists())
+
+    @unittest.skipIf(sys.platform == "win32", "Windows CI cannot create symlinks")
+    def test_direct_reuse_verification_refuses_symlinked_input(self):
+        from bench.scale.resumable_id_shards import validate_existing
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            original = folder / "original.tsv"
+            original.write_bytes(b"0\n1\n")
+            alias = folder / "alias.tsv"
+            alias.symlink_to(original)
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                validate_existing(alias, 0, 2)
+            self.assertEqual(
+                validate_existing(original, 0, 2),
+                hashlib.sha256(original.read_bytes()).hexdigest(),
+            )
 
     def test_creates_and_reuses_checked_shards(self):
         with tempfile.TemporaryDirectory() as temp:
