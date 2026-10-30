@@ -97,12 +97,16 @@ def row_equal(actual, expected):
 
 
 def assert_ordered_rows(actual, expected_rows):
+    if len(actual) != len(expected_rows):
+        raise ValueError("ordered SQLite result row count mismatch")
     for number, (row, expected) in enumerate(zip(actual, expected_rows), 1):
         if not row_equal(row, expected):
             raise ValueError(f"row {number} differs from SQLite")
 
 
 def assert_unordered_rows(actual, expected_rows):
+    if len(actual) != len(expected_rows):
+        raise ValueError("unordered SQLite result row count mismatch")
     if len(actual) > 4096:
         raise ValueError("unordered comparison is limited to 4096 result rows")
     if all(all(type(value) in (int, bool) for value in row) for row in expected_rows):
