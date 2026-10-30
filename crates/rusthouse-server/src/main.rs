@@ -73,6 +73,21 @@ fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
     Ok((method, target))
 }
 
+fn request_read_error(error: io::Error, section: &str) -> Response {
+    if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) {
+        Response::text("408 Request Timeout", "HTTP request read timed out\n")
+    } else {
+        Response::text(
+            "400 Bad Request",
+            if section == "headers" {
+                "incomplete HTTP request headers\n"
+            } else {
+                "incomplete HTTP request body\n"
+            },
+        )
+    }
+}
+
 fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool), Response> {
     let mut input = BufReader::new(stream);
     let mut head = Vec::new();
@@ -81,7 +96,7 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
         let mut byte = [0u8];
         input
             .read_exact(&mut byte)
-            .map_err(|_| Response::text("400 Bad Request", "incomplete HTTP request headers\n"))?;
+            .map_err(|error| request_read_error(error, "headers"))?;
         head.push(byte[0]);
         if head.len() > MAX_HEADER_BYTES {
             return Err(Response::text(
@@ -157,7 +172,7 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
     let mut body = vec![0u8; size];
     input
         .read_exact(&mut body)
-        .map_err(|_| Response::text("400 Bad Request", "incomplete HTTP request body\n"))?;
+        .map_err(|error| request_read_error(error, "body"))?;
     Ok((method.to_owned(), target.to_owned(), body, accept_lz4 && method == "POST" && target == "/"))
 }
 
@@ -477,5 +492,30 @@ mod concurrency_capacity_tests {
             assert!(parse_max_connections(invalid).is_err(), "{invalid}");
         }
         assert_eq!(MAX_CONNECTIONS, 16);
+    }
+}
+
+#[cfg(test)]
+mod http_timeout_status_tests {
+    use super::*;
+
+    #[test]
+    fn distinguishes_read_deadlines_from_malformed_requests() {
+        for kind in [io::ErrorKind::TimedOut, io::ErrorKind::WouldBlock] {
+            assert_eq!(
+                request_read_error(io::Error::from(kind), "headers").status,
+                "408 Request Timeout",
+            );
+            assert_eq!(
+                request_read_error(io::Error::from(kind), "body").status,
+                "408 Request Timeout",
+            );
+        }
+        for section in ["headers", "body"] {
+            assert_eq!(
+                request_read_error(io::Error::from(io::ErrorKind::UnexpectedEof), section).status,
+                "400 Bad Request",
+            );
+        }
     }
 }
