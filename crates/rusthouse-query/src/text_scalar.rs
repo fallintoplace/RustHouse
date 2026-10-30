@@ -222,6 +222,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "ISVALIDASCII"
             | "TRIMRIGHT"
             | "STARTSWITHUTF8"
             | "RIGHTPADUTF8"
@@ -1607,7 +1608,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "IS_ASCII" => {
+        "IS_ASCII" | "ISVALIDASCII" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "IS_ASCII requires one argument")?;
             match input {
