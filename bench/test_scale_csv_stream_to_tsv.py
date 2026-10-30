@@ -6,6 +6,23 @@ from bench.scale.csv_stream_to_tsv import convert, escape_field, utf8_length
 
 
 class CsvToTsvTests(unittest.TestCase):
+    def test_refuses_symlinked_csv_source_before_writing(self):
+        from bench.scale.csv_stream_to_tsv import convert
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            source = directory / "source.csv"
+            source.write_text("x\n")
+            link = directory / "alias.csv"
+            try:
+                link.symlink_to(source)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation unavailable")
+            target = directory / "out.tsv"
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                convert(link, target)
+            self.assertFalse(target.exists())
+
+
     def test_does_not_unlink_a_preexisting_pending_file(self):
         import os
         with tempfile.TemporaryDirectory() as temp:
