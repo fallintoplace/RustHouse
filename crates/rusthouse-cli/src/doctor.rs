@@ -436,8 +436,8 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
         report.checked_tables, report.warnings, report.errors
     );
     if full_hashes {
-        println!("Validation includes stored file hashes, block checksums, and manifest sizes.");
-        println!("Uncompressed manifest hashes and power-loss durability are not verified.");
+        println!("Validation includes stored and uncompressed hashes, block checksums, and manifest sizes.");
+        println!("Power-loss durability is not verified.");
     } else {
         println!(
             "Validation includes block checksums and manifest file sizes, not stored file hashes."
