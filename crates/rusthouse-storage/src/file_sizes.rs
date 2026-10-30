@@ -68,6 +68,7 @@ fn hash_stored_file(path: &Path, expected_size: u64) -> Result<u128, PartError> 
     let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     #[cfg(unix)]
     ensure_opened_file_identity(path, &file)?;
+    let opened = file.metadata().map_err(|source| io_error(path, source))?;
     let mut hash = U128::new(0, 0);
     let mut remaining = expected_size;
     let mut buffer = [0u8; BLOCK_BYTES];
@@ -88,6 +89,13 @@ fn hash_stored_file(path: &Path, expected_size: u64) -> Result<u128, PartError> 
     }
     #[cfg(unix)]
     ensure_opened_file_identity(path, &file)?;
+    let finished = file.metadata().map_err(|source| io_error(path, source))?;
+    if finished.len() != opened.len()
+        || finished.modified().map_err(|source| io_error(path, source))?
+            != opened.modified().map_err(|source| io_error(path, source))?
+    {
+        return Err(invalid(path, "file changed during hash verification"));
+    }
     Ok(u128::from(hash))
 }
 
