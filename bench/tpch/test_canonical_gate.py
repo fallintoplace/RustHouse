@@ -58,6 +58,20 @@ class CanonicalGateTests(unittest.TestCase):
 
 
 class CanonicalInventoryShapeTests(unittest.TestCase):
+    def test_rejects_symlinked_canonical_report(self):
+        import tempfile
+        from pathlib import Path
+        from canonical_gate import _read_bounded_report
+
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "results.json"
+            source.write_text('{"reference_checked":true}')
+            link = Path(root) / "symlink.json"
+            link.symlink_to(source)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                _read_bounded_report(link)
+            self.assertEqual(_read_bounded_report(source), source.read_text())
+
     def test_rejects_nonobject_query_inventory(self):
         for value in ([], 1, True, "22"):
             with self.subTest(inventory=value):
