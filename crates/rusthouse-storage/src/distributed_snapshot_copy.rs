@@ -192,6 +192,11 @@ pub fn preview_frozen_snapshot(
         verify_part_file_hashes(part)?;
         verify_wide_part(part)?;
     }
+    if !source_generation_unchanged(source, &active) {
+        return Err(PartError::InvalidScan(
+            "source snapshot changed during preview".into(),
+        ));
+    }
     Ok(SnapshotCopy {
         parts: parts.len(),
         files: files.len(),
