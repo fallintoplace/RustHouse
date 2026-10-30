@@ -46,6 +46,16 @@ class CorrectnessSoakTests(unittest.TestCase):
         self.assertIn("last error", str(caught.exception))
         self.assertLessEqual(len(str(caught.exception)), 500)
 
+    def test_rejects_bad_elapsed_samples(self):
+        with tempfile.TemporaryDirectory() as root:
+            oracle = Path(root) / "oracle.tsv"
+            oracle.write_bytes(b"data")
+            digest = hashlib.sha256(b"data").hexdigest()
+            for seconds in (True, "0.1", float("nan"), -1, 10 ** 400):
+                with self.subTest(seconds=seconds), self.assertRaisesRegex(ValueError, "elapsed"):
+                    soak("x", "db", "SELECT 1", oracle, runs=1, warmups=0,
+                         execute=lambda: (digest, 4, seconds))
+
     def test_rejects_invalid_run_counts(self):
         with self.assertRaises(ValueError):
             soak("x", "x", "x", "none", runs=0)
