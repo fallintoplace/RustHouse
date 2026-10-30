@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from bench.scale.topk_probe import probe
@@ -47,6 +48,19 @@ class TopKProbeTests(unittest.TestCase):
                                    "--rows", "5", "--timeout", "42"]), 0)
             self.assertEqual(call.call_args.kwargs["timeout"], 42.0)
 
+
+
+
+class SpoolingTopKProbeTests(unittest.TestCase):
+    def test_real_cli_path_reads_only_expected_prefix(self):
+        def runaway(_command, **kwargs):
+            self.assertIn("stdout", kwargs)
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].write(b"9\n" * 50_000)
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with patch("bench.scale.topk_probe.subprocess.run", side_effect=runaway):
+            with self.assertRaisesRegex(ValueError, "differs"):
+                probe("rusthouse", "part", 1_000_000, limit=1)
 
 if __name__ == "__main__":
     unittest.main()

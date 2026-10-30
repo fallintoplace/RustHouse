@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from bench.joins.hotspot import fact_id, verify_rows, write_fixture
+from bench.joins.hotspot import benchmark, fact_id, verify_rows, write_fixture
 
 
 class SkewedJoinTests(unittest.TestCase):
@@ -32,6 +32,24 @@ class SkewedJoinTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "final newline"):
                 verify_rows(b"0\tgroup-0", expected)
 
+
+
+
+class BoundedHotspotControlsTests(unittest.TestCase):
+    def test_invalid_dimensions_fail_before_writing_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            for dims in ((True, 10, 90), (4.5, 10, 90),
+                         (100, True, 90), (100, 10, True),
+                         (100, 10, 90.5)):
+                with self.subTest(dims=dims), self.assertRaises(ValueError):
+                    write_fixture(root, *dims)
+
+    def test_invalid_run_counts_fail_before_launching_sql(self):
+        for values in ((True, 0, 1), (1, True, 1), (101, 0, 1),
+                       (50, 51, 1), (1, 0, float("nan")),
+                       (1, 0, float("inf"))):
+            with self.subTest(values=values), self.assertRaisesRegex(ValueError, "invalid benchmark"):
+                benchmark("no-binary", 10, 3, 50, *values)
 
 if __name__ == "__main__":
     unittest.main()

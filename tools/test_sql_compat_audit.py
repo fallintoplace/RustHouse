@@ -39,5 +39,16 @@ class AuditTests(unittest.TestCase):
         self.assertIn("--database", run.call_args.args[0])
 
 
+    def test_custom_per_query_timeout_and_invalid_values(self):
+        run = Mock()
+        run.return_value.returncode = 0
+        run.return_value.stderr = ""
+        report = audit("rusthouse", [(1, "SELECT 1")], run, timeout=0.5)
+        self.assertEqual(report["accepted"], 1)
+        self.assertEqual(run.call_args.kwargs["timeout"], 0.5)
+        for invalid in (0, -1, float("inf"), float("nan"), True):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "timeout"):
+                audit("rusthouse", [(1, "SELECT 1")], run, timeout=invalid)
+
 if __name__ == "__main__":
     unittest.main()

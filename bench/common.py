@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+MAX_SQL_STDOUT_BYTES = 64 * 1024 * 1024
+
 
 def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-header"):
     """Execute SQL via the CLI and return exact output bytes for verification."""
@@ -23,17 +25,24 @@ def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-heade
         command.extend(["--format", select_format])
     elif select_format != "tsv-no-header":
         raise ValueError("a verification format can be used only with SELECT")
-    completed = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=timeout,
-    )
-    if completed.returncode:
-        error = completed.stderr.decode("utf-8", "replace")[:2000]
-        raise RuntimeError(f"exit {completed.returncode}: {error}")
-    return completed.stdout
+    # Do not buffer an untrusted query result in subprocess.PIPE. Only a
+    # bounded prefix is ever read back into the Python heap.
+    with tempfile.TemporaryFile(mode="w+b") as output:
+        completed = subprocess.run(
+            command,
+            stdout=output,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+        )
+        if completed.returncode:
+            error = completed.stderr.decode("utf-8", "replace")[:2000]
+            raise RuntimeError(f"exit {completed.returncode}: {error}")
+        output.seek(0)
+        result = output.read(MAX_SQL_STDOUT_BYTES + 1)
+        if len(result) > MAX_SQL_STDOUT_BYTES:
+            raise ValueError("SQL query output exceeds 64 MiB")
+        return result
 
 
 def latency_summary(seconds):
