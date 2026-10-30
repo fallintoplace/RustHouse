@@ -25,6 +25,16 @@ def report(results, runs=2, reference_checked=True, timing_key="timings_seconds"
 
 
 class ReleaseGateTests(unittest.TestCase):
+    def test_rejects_duplicate_verification_fields_in_manifest(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "report.json"
+            path.write_text(
+                '{"reference_checked": false, "reference_checked": true, '
+                '"runs":1,"results":[]}', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate benchmark manifest key"):
+                gate.load_manifest(path)
+
     def test_large_release_report_is_rejected(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as root:
