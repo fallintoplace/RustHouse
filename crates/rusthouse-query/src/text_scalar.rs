@@ -2935,7 +2935,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             return Err(ParseError("invalid Base32 padding".into()));
                         }
                     };
-                    if !bytes.len().is_multiple_of(8)
+                    if bytes.len() % 8 != 0
                         || data_len % 8 != required_remainder
                     {
                         return Err(ParseError("invalid Base32 length".into()));
