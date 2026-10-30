@@ -5,6 +5,14 @@ use std::collections::hash_map::Entry;
 const MAX_JOIN_GROUPS: usize = 100_000;
 const MAX_JOIN_GROUP_BYTES: usize = 64 * 1024 * 1024;
 
+fn group_value_bytes(value: &typed::Cell) -> usize {
+    match value {
+        typed::Cell::Text(bytes) => bytes.len().saturating_mul(2),
+        typed::Cell::Uuid(value) => value.len().saturating_mul(2),
+        _ => 0,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute<W: Write>(
     query: &JoinSelect,
@@ -87,11 +95,7 @@ pub(super) fn execute<W: Write>(
                         if group_count >= MAX_JOIN_GROUPS {
                             return Err(invalid("too many JOIN groups"));
                         }
-                        let variable = match value {
-                            typed::Cell::Text(value) => value.len().saturating_mul(2),
-                            typed::Cell::Uuid(value) => value.len().saturating_mul(2),
-                            _ => 0,
-                        };
+                        let variable = group_value_bytes(value);
                         bytes = bytes
                             .checked_add(
                                 std::mem::size_of::<(typed::Key, typed::Cell, u64)>()
