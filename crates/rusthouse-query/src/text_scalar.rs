@@ -3874,18 +3874,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "JSONHAS" | "JSONEXTRACTSTRING" | "JSONEXTRACTRAW" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "JSON function requires a key")?;
-            let path = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
             require(
                 parser,
                 Token::RParen,
-                "JSON function requires two arguments",
+                "JSON function requires one or two arguments",
             )?;
             match (input, path) {
-                (Some(input), Some(path)) => {
+                (Some(input), path) if path != Some(None) => {
                     let json = crate::json::parse_json(&input)
                         .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
-                    let found = json.at_path(&path);
+                    let found = match path {
+                        Some(Some(path)) => json.at_path(&path),
+                        None => Some(&json),
+                        Some(None) => unreachable!(),
+                    };
                     match name.as_str() {
                         "JSONHAS" => ConstantValue::Integer(i64::from(found.is_some())),
                         "JSONEXTRACTSTRING" => ConstantValue::Text(
