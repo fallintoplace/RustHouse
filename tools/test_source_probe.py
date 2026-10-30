@@ -39,12 +39,12 @@ class SourceProbeTests(unittest.TestCase):
     @patch("source_probe.NO_REDIRECT_OPENER")
     def test_scan_rejects_wrong_or_oversized_count_output(self, opener):
         from source_probe import scan_rows
-        for body in (b"bad", b"rows_checked\\n-1\\n", b"x" * 129):
+        for body in (b"bad", b"rows_checked\n-1\n", b"x" * 129):
             opener.open.return_value.__enter__.return_value.read.return_value = body
             with self.subTest(body=body), self.assertRaisesRegex(ValueError, "scan"):
                 scan_rows("http://127.0.0.1:8123", "events", 3)
         opener.open.return_value.__enter__.return_value.read.return_value = (
-            b"rows_checked\\n42\\n"
+            b"rows_checked\n42\n"
         )
         self.assertEqual(scan_rows("http://127.0.0.1:8123", "events", 3), 42)
 
