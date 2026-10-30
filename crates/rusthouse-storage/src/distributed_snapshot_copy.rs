@@ -183,7 +183,7 @@ pub fn preview_frozen_snapshot(
         return Err(PartError::InvalidScan("snapshot preview exceeds part limit".into()));
     }
     inspect_query_source(&active)?;
-    let files = crate::distributed_inventory::inventory_snapshot(source, max_files, max_bytes)?;
+    let files = crate::distributed_inventory::inventory_snapshot(&active, max_files, max_bytes)?;
     let bytes = files.iter().try_fold(0u64, |total, file| {
         total.checked_add(file.bytes)
             .ok_or_else(|| PartError::InvalidScan("snapshot preview byte overflow".into()))
@@ -372,6 +372,32 @@ mod copy_file_budget_tests {
         assert!(!destination.exists());
         let copied = copy_frozen_snapshot_with_file_limit(&source, &destination, 1, 32, 1_000_000).unwrap();
         assert!(copied.files > 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod pinned_preview_generation_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn previews_selected_generation_instead_of_relisting_the_active_pointer() {
+        let root = std::env::temp_dir().join(format!("rusthouse-preview-generations-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let first = root.join(".rusthouse-versions/g1");
+        let second = root.join(".rusthouse-versions/g2");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        write_wide_part(&first.join("all_0_0_0"), &[Column { name: "id".into(), data_type: "UInt64".into() }], &[vec![Some("1".into())]]).unwrap();
+        write_wide_part(&second.join("all_0_0_0"), &[Column { name: "id".into(), data_type: "String".into() }], &[vec![Some("data".repeat(256))]]).unwrap();
+        fs::write(root.join(".rusthouse-active"), "g1\n").unwrap();
+        let first_preview = preview_frozen_snapshot(&root, 1, 100, u64::MAX).unwrap();
+        fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
+        let second_preview = preview_frozen_snapshot(&root, 1, 100, u64::MAX).unwrap();
+        assert_eq!(first_preview.parts, 1);
+        assert_eq!(second_preview.parts, 1);
+        assert!(second_preview.bytes > first_preview.bytes);
         fs::remove_dir_all(root).unwrap();
     }
 }
