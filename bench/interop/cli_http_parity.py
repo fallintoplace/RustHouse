@@ -34,17 +34,25 @@ QUERIES = (
 
 
 def cli(binary, directory, statement):
-    result = subprocess.run(
-        [str(binary), "sql", statement, "--database", str(directory)],
-        capture_output=True,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode:
-        raise RuntimeError(
-            f"CLI failed for {statement}: {result.stderr.decode('utf-8', 'replace')[-500:]}"
+    # Spool both streams: a noisy CLI must not exhaust memory or block on stderr.
+    with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
+        result = subprocess.run(
+            [str(binary), "sql", statement, "--database", str(directory)],
+            stdout=output,
+            stderr=errors,
+            timeout=30,
+            check=False,
         )
-    return result.stdout
+        if result.returncode:
+            errors.seek(0, 2)
+            errors.seek(max(0, errors.tell() - 500))
+            diagnostic = errors.read(500).decode("utf-8", "replace")
+            raise RuntimeError(f"CLI failed for {statement}: {diagnostic}")
+        output.seek(0)
+        payload = output.read(4 * 1024 * 1024 + 1)
+        if len(payload) > 4 * 1024 * 1024:
+            raise ValueError("CLI parity SQL response exceeds 4 MiB")
+        return payload
 
 
 def unused_loopback_port():
