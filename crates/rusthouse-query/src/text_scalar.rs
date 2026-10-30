@@ -435,15 +435,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             (url, Some(fragment))
                         });
                     if let Some((prefix, query)) = url.split_once('?') {
-                        let kept: Vec<&str> = query
-                            .split('&')
-                            .filter(|pair| pair.split('=').next() != Some(parameter.as_str()))
-                            .collect();
                         let mut output = String::with_capacity(input.len());
                         output.push_str(prefix);
-                        if !kept.is_empty() {
-                            output.push('?');
-                            output.push_str(&kept.join("&"));
+                        let mut kept = false;
+                        for pair in query.split('&') {
+                            if pair.split('=').next() == Some(parameter.as_str()) {
+                                continue;
+                            }
+                            output.push(if kept { '&' } else { '?' });
+                            output.push_str(pair);
+                            kept = true;
                         }
                         if let Some(fragment) = fragment {
                             output.push('#');
@@ -4358,6 +4359,27 @@ mod clickhouse_ip_address_in_range_tests {
             "SELECT isIPAddressInRange('1.2.3.4')",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod cut_url_parameter_single_pass_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn preserves_order_delimiters_and_fragment_when_removing_keys() {
+        for (query, expected) in [
+            ("SELECT cutURLParameter('https://a.test/p?x=1&y=2&x=3#frag', 'x')", "https://a.test/p?y=2#frag"),
+            ("SELECT cutURLParameter('https://a.test/p?x=1&x=2', 'x')", "https://a.test/p"),
+            ("SELECT cutURLParameter('https://a.test/p?z=1#f', 'x')", "https://a.test/p?z=1#f"),
+            ("SELECT cutURLParameter('https://a.test/p?','x')", "https://a.test/p?"),
+        ] {
+            assert!(
+                matches!(parse_select(query).unwrap().projection, Projection::Constants(ref values)
+                    if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())),
+                "{query}",
+            );
         }
     }
 }
