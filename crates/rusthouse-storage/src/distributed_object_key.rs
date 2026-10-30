@@ -139,9 +139,10 @@ mod tests {
 
     #[test]
     fn component_validation_rejects_dot_runs_and_non_ascii() {
-        for valid in ["a", "a.b", "a_b-c", "a".repeat(128).as_str()] {
+        for valid in ["a", "a.b", "a_b-c"] {
             assert!(component(valid));
         }
+        assert!(component(&"a".repeat(128)));
         for invalid in ["", ".a", "a.", "a..b", "a/...b", "é", "a\\b"] {
             assert!(!component(invalid), "{invalid}");
         }
