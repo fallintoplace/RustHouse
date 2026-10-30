@@ -76,6 +76,11 @@ def rows_from_report(report):
             if (not math.isclose(latency["median_seconds"], median, rel_tol=1e-9)
                     or not math.isclose(latency["p90_seconds"], p90, rel_tol=1e-9)):
                 raise ValueError("successful query has inconsistent latency summary")
+        if valid and any(
+            not math.isfinite(latency[key] * 1000)
+            for key in ("median_seconds", "p90_seconds")
+        ):
+            raise ValueError("successful query millisecond values overflow")
         rows.append({
             "query": result["query"],
             "status": result["status"],

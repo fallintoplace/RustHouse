@@ -73,6 +73,15 @@ class ReportCSVTests(unittest.TestCase):
             "median_seconds": 2.0, "p90_seconds": 3.0}
         self.assertEqual(rows_from_report(payload)[0]["median_ms"], "2000.000000")
 
+    def test_rejects_nonfinite_milliseconds_after_unit_conversion(self):
+        payload = {"results": [{
+            "query": 1, "status": "passed",
+            "timings_seconds": [1e308],
+            "latency": {"median_seconds": 1e308, "p90_seconds": 1e308},
+        }]}
+        with self.assertRaisesRegex(ValueError, "millisecond values overflow"):
+            rows_from_report(payload)
+
     def test_rejects_incomplete_json(self):
         for payload in ({}, {"results": None}, {"results": [{}]}):
             with self.assertRaises(ValueError):
