@@ -32,6 +32,15 @@ class AnalyticsSuiteTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "1 MiB"):
                 load_workload(path)
 
+    def test_suite_workload_rejects_symlinks(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "normal.json"
+            path.write_text('{"name":"test","queries":[{"name":"q","sql":"SELECT 1"}]}')
+            alias = Path(root) / "alias.json"
+            alias.symlink_to(path)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                load_workload(alias)
+
     def test_duplicate_workload_json_fields_are_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "workload.json"
