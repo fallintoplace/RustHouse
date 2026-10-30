@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "COUNTSUBSTRINGSCASEINSENSITIVEUTF8"
             | "NORMALIZEIPV6"
     )
 }
@@ -2911,6 +2912,47 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                         .any(|word| word == token);
                     ConstantValue::Integer(i64::from(found))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "COUNTSUBSTRINGSCASEINSENSITIVEUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "countSubstringsCaseInsensitiveUTF8 requires a needle",
+            )?;
+            let needle = text_arg(parser, depth + 1)?;
+            let start = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(1)
+            };
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after countSubstringsCaseInsensitiveUTF8",
+            )?;
+            match (input, needle, start) {
+                (Some(input), Some(needle), Some(start)) => {
+                    if start < 0 {
+                        return Err(ParseError(
+                            "countSubstringsCaseInsensitiveUTF8 start must be nonnegative".into(),
+                        ));
+                    }
+                    let start = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
+                    let offset = input.char_indices().nth(start).map_or(input.len(), |(i, _)| i);
+                    let haystack = input[offset..].to_lowercase();
+                    let needle = needle.to_lowercase();
+                    let count = if needle.is_empty() {
+                        0
+                    } else {
+                        haystack.matches(&needle).count()
+                    };
+                    ConstantValue::Integer(i64::try_from(count).map_err(|_| {
+                        ParseError("countSubstringsCaseInsensitiveUTF8 exceeds Int64".into())
+                    })?)
                 }
                 _ => ConstantValue::Null,
             }
