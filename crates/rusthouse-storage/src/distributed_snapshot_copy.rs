@@ -68,6 +68,8 @@ pub fn copy_frozen_snapshot_with_file_limit(
             "snapshot copy exceeds part limit".into(),
         ));
     }
+    // Reject oversized inventories before checksum reads or staging any files.
+    crate::distributed_inventory::inventory_active_snapshot(&active, max_files, max_bytes)?;
     inspect_query_source(&active)?;
     match fs::symlink_metadata(destination) {
         Ok(_) => return Err(PartError::InvalidScan("destination already exists".into())),
@@ -418,6 +420,37 @@ mod copy_file_budget_tests {
         assert!(!destination.exists());
         let copied = copy_frozen_snapshot_with_file_limit(&source, &destination, 1, 32, 1_000_000).unwrap();
         assert!(copied.files > 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod preflight_copy_budget_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn rejects_impossible_budget_without_creating_staging_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-preflight-budget-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir_all(&source).unwrap();
+        write_wide_part(
+            &source.join("all_0_0_0"),
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("3".into())]],
+        )
+        .unwrap();
+        let error = copy_frozen_snapshot_with_file_limit(&source, &target, 1, 32, 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("inventory"));
+        assert!(!target.exists());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 }
