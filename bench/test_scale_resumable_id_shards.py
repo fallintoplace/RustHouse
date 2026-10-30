@@ -9,6 +9,35 @@ from bench.scale.resumable_id_shards import create
 
 
 class ResumableShardsTests(unittest.TestCase):
+    def test_stale_pid_pending_files_are_not_removed(self):
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            folder.mkdir(exist_ok=True)
+            shard = folder / "id-00000000000000000000-00000000000000000001.tsv"
+            old_shard_pending = folder / f".{shard.name}.{os.getpid()}.pending"
+            old_manifest_pending = folder / f".manifest.{os.getpid()}.pending"
+            old_shard_pending.write_bytes(b"stale shard")
+            old_manifest_pending.write_bytes(b"stale manifest")
+            manifest = create(folder, 0, 1, 1)
+            self.assertEqual(manifest["rows"], 1)
+            self.assertEqual(old_shard_pending.read_bytes(), b"stale shard")
+            self.assertEqual(old_manifest_pending.read_bytes(), b"stale manifest")
+
+    def test_random_pending_collision_never_deletes_existing_file(self):
+        from unittest.mock import patch
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            shard = folder / "id-00000000000000000000-00000000000000000001.tsv"
+            pending = folder / f".{shard.name}.{os.getpid()}.collision.pending"
+            pending.write_bytes(b"keep")
+            with patch("bench.scale.resumable_id_shards.secrets.token_hex", return_value="collision"):
+                with self.assertRaises(FileExistsError):
+                    create(folder, 0, 1, 1)
+            self.assertEqual(pending.read_bytes(), b"keep")
+            self.assertFalse(shard.exists())
+
     @unittest.skipIf(sys.platform == "win32", "Windows CI cannot create symlinks")
     def test_direct_reuse_verification_refuses_symlinked_input(self):
         from bench.scale.resumable_id_shards import validate_existing
