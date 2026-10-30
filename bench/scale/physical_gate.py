@@ -69,7 +69,7 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
                 raise ValueError(f"{query}: timing summary differs from raw samples")
         if max_sample_spread_percent is not None and samples is None:
             raise ValueError(f"{query}: sample spread budget requires timing samples")
-        spread_percent = (100 * (max(samples) - min(samples)) / median
+        spread_percent = (100 * ((max(samples) - min(samples)) / median
                           if samples is not None else None)
         checks.append({"query": query, "median_seconds": median,
                        "p90_seconds": p90, "sample_spread_percent": spread_percent,

@@ -87,5 +87,17 @@ class PhysicalGateTests(unittest.TestCase):
             validate(broken)
 
 
+
+
+class LargeFinitePhysicalSpreadTests(unittest.TestCase):
+    def test_large_finite_durations_do_not_overflow_spread(self):
+        report = example(median=1.5e307)
+        for name in ("count_even", "sum_even"):
+            report[name]["samples_seconds"] = [1e307, 2e307]
+            report[name]["p90_seconds"] = 2e307
+        result = validate(report, max_sample_spread_percent=100)
+        self.assertTrue(result["all_passed"])
+        self.assertAlmostEqual(result["checks"][0]["sample_spread_percent"], 66.6666666667)
+
 if __name__ == "__main__":
     unittest.main()
