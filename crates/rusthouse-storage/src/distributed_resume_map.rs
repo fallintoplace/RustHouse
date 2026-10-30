@@ -34,19 +34,18 @@ impl ResumeMap {
     /// Count verified chunks without constructing a list of missing indexes.
     /// Ignore unused bits in the final partially populated bitmap byte.
     pub fn completed_count(&self) -> usize {
-        self.completed
+        let full_bytes = self.chunks / 8;
+        let count = self.completed[..full_bytes]
             .iter()
-            .enumerate()
-            .map(|(byte_index, &bits)| {
-                let valid = (self.chunks - byte_index * 8).min(8);
-                let mask = if valid == 8 {
-                    u8::MAX
-                } else {
-                    ((1u16 << valid) - 1) as u8
-                };
-                (bits & mask).count_ones() as usize
-            })
-            .sum()
+            .map(|byte| byte.count_ones() as usize)
+            .sum::<usize>();
+        let remainder = self.chunks % 8;
+        if remainder == 0 {
+            count
+        } else {
+            let mask = ((1u16 << remainder) - 1) as u8;
+            count + (self.completed[full_bytes] & mask).count_ones() as usize
+        }
     }
 
     pub fn remaining_count(&self) -> usize {
@@ -142,15 +141,16 @@ impl ResumeMap {
 
     pub fn decode(text: &str) -> Result<Self, &'static str> {
         let mut result = Self::new(text.len())?;
-        for (index, byte) in text.bytes().enumerate() {
-            match byte {
-                b'0' => {}
-                b'1' => {
-                    let (byte, mask) = Self::bit_position(index);
-                    result.completed[byte] |= mask;
+        for (byte_index, group) in text.as_bytes().chunks(8).enumerate() {
+            let mut flags = 0u8;
+            for (bit, &value) in group.iter().enumerate() {
+                match value {
+                    b'0' => {}
+                    b'1' => flags |= 1u8 << bit,
+                    _ => return Err("invalid resume map byte"),
                 }
-                _ => return Err("invalid resume map byte"),
             }
+            result.completed[byte_index] = flags;
         }
         Ok(result)
     }
@@ -403,5 +403,43 @@ mod binary_checkpoint_tests {
         assert!(ResumeMap::decode_binary(&[1, 0, 0, 0, 0x80]).is_err());
         assert!(ResumeMap::decode_binary(&[1, 0, 0, 0, 1, 0]).is_err());
         assert!(ResumeMap::decode_binary(&[1, 0, 1, 0]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod popcount_progress_tests {
+    use super::*;
+
+    #[test]
+    fn packed_popcounts_match_each_bit_across_partial_tail_bytes() {
+        for chunks in [0, 1, 2, 7, 8, 9, 15, 16, 17, 63, 64, 65, 65_536] {
+            let mut progress = ResumeMap::new(chunks).unwrap();
+            for index in 0..chunks {
+                if index % 3 != 1 { progress.mark_complete(index).unwrap(); }
+            }
+            let expected = (0..chunks).filter(|&index| {
+                let (byte, mask) = ResumeMap::bit_position(index);
+                progress.completed[byte] & mask != 0
+            }).count();
+            assert_eq!(progress.completed_count(), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod grouped_ascii_resume_decoder_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_bit_patterns_in_eight_character_groups() {
+        for length in [0, 1, 7, 8, 9, 15, 16, 17, 511, 512, 513, 65_536] {
+            let encoded = (0..length).map(|index| if index % 5 < 2 { '1' } else { '0' }).collect::<String>();
+            let map = ResumeMap::decode(&encoded).unwrap();
+            assert_eq!(map.encode(), encoded);
+            assert_eq!(map.completed_count(), (0..length).filter(|i| i % 5 < 2).count());
+        }
+        for encoded in ["10x", "00000000x", "11111111\u{00a0}"] {
+            assert!(ResumeMap::decode(encoded).is_err());
+        }
     }
 }

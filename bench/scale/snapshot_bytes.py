@@ -21,7 +21,7 @@ def classify(path):
     return "metadata_bytes"
 
 
-def inventory(root, *, max_files=1_000_000, largest_files=0):
+def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=None):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected a real offline snapshot directory")
@@ -29,9 +29,12 @@ def inventory(root, *, max_files=1_000_000, largest_files=0):
         raise ValueError("max_files must be a positive integer")
     if type(largest_files) is not int or not 0 <= largest_files <= 100:
         raise ValueError("largest_files must be in 0..100")
+    if max_total_bytes is not None and (type(max_total_bytes) is not int or max_total_bytes < 1):
+        raise ValueError("max_total_bytes must be a positive integer")
     heap = []
     groups = dict.fromkeys(("data_bytes", "mark_bytes", "index_bytes", "metadata_bytes"), 0)
     count = 0
+    total_bytes = 0
     def fail_walk(error):
         raise error
 
@@ -44,6 +47,9 @@ def inventory(root, *, max_files=1_000_000, largest_files=0):
             info = path.lstat()
             if not stat.S_ISREG(info.st_mode):
                 raise ValueError(f"unsafe snapshot entry: {path}")
+            total_bytes += info.st_size
+            if max_total_bytes is not None and total_bytes > max_total_bytes:
+                raise ValueError("snapshot exceeds max_total_bytes")
             groups[classify(name)] += info.st_size
             if largest_files:
                 item = (info.st_size, path.relative_to(root).as_posix())
@@ -72,11 +78,13 @@ def main(argv=None):
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--max-files", type=int, default=1_000_000)
     parser.add_argument("--largest-files", type=int, default=0)
+    parser.add_argument("--max-total-bytes", type=int)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         result = inventory(args.part, max_files=args.max_files,
-                           largest_files=args.largest_files)
+                           largest_files=args.largest_files,
+                           max_total_bytes=args.max_total_bytes)
         rendered = json.dumps(result, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

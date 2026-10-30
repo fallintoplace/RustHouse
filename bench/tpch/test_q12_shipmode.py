@@ -5,6 +5,15 @@ from q12_shipmode import benchmark, oracle
 
 
 class Q12ShipmodeTests(unittest.TestCase):
+    def test_indexed_oracle_handles_reordered_extra_columns(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "lineitem.tsv"
+            path.write_text("extra\tl_shipmode\tl_receiptdate\tcomment\n"
+                            "x\tAIR\t1994-12-31\ty\n"
+                            "z\tSHIP\t1994-01-01\tw\n")
+            self.assertEqual(oracle(path), b"AIR\t1\nSHIP\t1\n")
+
+
     def test_groups_and_sorts_only_matching_dates(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "lineitem.tsv"

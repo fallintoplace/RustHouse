@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from bench.scale.topk_probe import probe
@@ -46,6 +47,43 @@ class TopKProbeTests(unittest.TestCase):
             self.assertEqual(main(["--part", "part", "--binary", "rusthouse",
                                    "--rows", "5", "--timeout", "42"]), 0)
             self.assertEqual(call.call_args.kwargs["timeout"], 42.0)
+
+
+
+
+class SpoolingTopKProbeTests(unittest.TestCase):
+    def test_real_cli_path_reads_only_expected_prefix(self):
+        def runaway(_command, **kwargs):
+            self.assertIn("stdout", kwargs)
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].write(b"9\n" * 50_000)
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with patch("bench.scale.topk_probe.subprocess.run", side_effect=runaway):
+            with self.assertRaisesRegex(ValueError, "differs"):
+                probe("rusthouse", "part", 1_000_000, limit=1)
+
+class BoundedTopKFailureTests(unittest.TestCase):
+    def test_failed_injected_cli_keeps_only_stderr_tail(self):
+        def failing(*_args, **_kwargs):
+            return SimpleNamespace(returncode=2, stdout=b"",
+                                   stderr=b"a" * 10_000 + b"final failure")
+
+        with self.assertRaises(RuntimeError) as raised:
+            probe("rusthouse", "part", 5, execute=failing)
+        self.assertLess(len(str(raised.exception)), 750)
+        self.assertIn("final failure", str(raised.exception))
+
+    def test_default_subprocess_stderr_is_spooled_and_bounded(self):
+        def failing(_command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            self.assertTrue(hasattr(kwargs["stderr"], "write"))
+            kwargs["stderr"].write(b"a" * 10_000 + b"last error")
+            return SimpleNamespace(returncode=1)
+
+        with patch("bench.scale.topk_probe.subprocess.run", side_effect=failing):
+            with self.assertRaisesRegex(RuntimeError, "last error") as raised:
+                probe("rusthouse", "part", 5)
+        self.assertLess(len(str(raised.exception)), 750)
 
 
 if __name__ == "__main__":

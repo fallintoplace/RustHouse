@@ -10,6 +10,7 @@ import random
 import re
 import statistics
 import subprocess
+import tempfile
 import time
 
 
@@ -43,33 +44,43 @@ def percentile(samples, percent):
 
 
 def query(binary, database, statement, timeout):
-    result = subprocess.run(
-        [str(binary), "sql", statement, "--database", str(database),
-         "--format", "tsv-no-header"],
-        capture_output=True, timeout=timeout, check=False,
-    )
-    if result.returncode:
-        raise RuntimeError(result.stderr.decode("utf-8", "replace")[-500:])
-    return result.stdout
-
+    # A single point probe can only return a small result. Spool both streams.
+    with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
+        result = subprocess.run(
+            [str(binary), "sql", statement, "--database", str(database),
+             "--format", "tsv-no-header"],
+            stdout=output, stderr=errors, timeout=timeout, check=False,
+        )
+        if result.returncode:
+            errors.seek(0, 2)
+            errors.seek(max(0, errors.tell() - 500))
+            raise RuntimeError(errors.read(500).decode("utf-8", "replace"))
+        output.seek(0)
+        payload = output.read(129)
+        if len(payload) > 128:
+            raise ValueError("point probe SQL output exceeds 128 bytes")
+        return payload
 
 def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
-          execute=None):
+          execute=None, column="id"):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", table):
         raise ValueError("unsafe table identifier")
+    if not isinstance(column, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", column):
+        raise ValueError("unsafe key column identifier")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     execute = execute or (lambda sql: query(binary, database, sql, timeout))
     sampled = choose_ids(start, rows, count, seed)
     times = []
     for value in sampled:
-        statement = f"SELECT id FROM {table} WHERE id = {value} LIMIT 2"
+        statement = f"SELECT {column} FROM {table} WHERE {column} = {value} LIMIT 2"
         begun = time.perf_counter()
         actual = execute(statement)
         times.append(time.perf_counter() - begun)
         if actual != f"{value}\n".encode("ascii"):
             raise ValueError(f"point probe {value} returned {actual[:100]!r}")
     return {"verified": True, "rows_in_domain": rows, "samples": count,
+            "column": column,
             "seed": seed, "p50_seconds": statistics.median(times),
             "p95_seconds": percentile(times, 95),
             "p99_seconds": percentile(times, 99),
@@ -81,6 +92,7 @@ def main(argv=None):
     p.add_argument("--binary", required=True)
     p.add_argument("--database", required=True)
     p.add_argument("--table", required=True)
+    p.add_argument("--column", default="id")
     p.add_argument("--start", type=int, default=0)
     p.add_argument("--rows", required=True, type=int)
     p.add_argument("--count", type=int, default=50)
@@ -89,7 +101,7 @@ def main(argv=None):
     a = p.parse_args(argv)
     try:
         report = probe(a.binary, a.database, a.table, a.start,
-                       a.rows, a.count, a.seed, a.timeout)
+                       a.rows, a.count, a.seed, a.timeout, column=a.column)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         p.exit(1, f"sparse point probe failed: {error}\n")
     print(json.dumps(report))

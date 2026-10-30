@@ -89,6 +89,24 @@ def copy_statement(table, path):
     )
 
 
+MAX_DUCKDB_OUTPUT_BYTES = 1024 * 1024
+
+
+def run_bounded(command, timeout):
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        completed = subprocess.run(
+            command, stdout=output, stderr=errors, check=False, timeout=timeout,
+        )
+        output.seek(0)
+        payload = output.read(MAX_DUCKDB_OUTPUT_BYTES + 1)
+        if len(payload) > MAX_DUCKDB_OUTPUT_BYTES:
+            raise RuntimeError("native DuckDB CLI output exceeds 1 MiB")
+        errors.seek(0, os.SEEK_END)
+        errors.seek(max(0, errors.tell() - 500))
+        error_tail = errors.read()
+    return subprocess.CompletedProcess(command, completed.returncode, payload, error_tail)
+
+
 def load(duckdb, database, source_dir, selected=None, timeout=3600, execute=None):
     selected = tuple(TABLES if selected is None else selected)
     if not selected or len(set(selected)) != len(selected) or any(
@@ -100,9 +118,7 @@ def load(duckdb, database, source_dir, selected=None, timeout=3600, execute=None
         raise ValueError("refusing to overwrite an existing DuckDB database")
     database.parent.mkdir(parents=True, exist_ok=True)
     if execute is None:
-        execute = lambda cmd: subprocess.run(
-            cmd, capture_output=True, check=False, timeout=timeout
-        )
+        execute = lambda cmd: run_bounded(cmd, timeout)
     results = []
     with tempfile.TemporaryDirectory(prefix="tpch-native-decimals-", dir=database.parent) as work:
         work = Path(work)
