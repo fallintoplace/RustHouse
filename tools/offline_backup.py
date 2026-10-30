@@ -41,6 +41,34 @@ def preflight(source, destination, max_bytes=None):
     return source, destination, stage
 
 
+def sync_copied_tree(root):
+    """Persist copied files and directory entries before backup publication."""
+    for directory, _subdirs, files in os.walk(root, topdown=False, followlinks=False):
+        folder = Path(directory)
+        for name in files:
+            path = folder / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("backup contains a non-regular file: " + str(path))
+            with path.open("rb") as copied:
+                os.fsync(copied.fileno())
+        if os.name == "posix":
+            fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+
+def sync_parent_directory(path):
+    if os.name != "posix":
+        return
+    fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeout=3600):
     if (type(doctor_timeout) not in (int, float) or
             not math.isfinite(doctor_timeout) or doctor_timeout <= 0):
@@ -62,7 +90,10 @@ def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeo
     if result.returncode:
         raise RuntimeError("doctor rejected staged backup at " + str(stage) +
                            ": " + diagnostic)
+    sync_copied_tree(stage)
     stage.rename(destination)
+    # Persist the new backup directory entry, not only the file contents.
+    sync_parent_directory(destination)
     return destination
 
 
