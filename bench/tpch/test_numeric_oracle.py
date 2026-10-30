@@ -27,6 +27,12 @@ class NumericOracleTests(unittest.TestCase):
         self.assertFalse(numeric_equal(b"1.1", b"1.2"))
         self.assertTrue(numeric_equal(b"1.1", b"1.2", Decimal("0.1")))
 
+    def test_extreme_decimal_exponents_do_not_match_or_crash(self):
+        self.assertFalse(numeric_equal(b"1e-9999999999", b"0"))
+        self.assertTrue(numeric_equal(b"1e999999999999", b"1.0e999999999999"))
+        self.assertFalse(numeric_equal(b"1e999999999999", b"0", Decimal("1")))
+        self.assertTrue(numeric_equal(b"0.0010", b"0.001", Decimal("0")))
+
     def test_text_and_structure_stay_strict(self):
         self.assertTrue(compare_tsv(b"1.00\tEUROPE\n", b"1\tEUROPE\n"))
         self.assertFalse(compare_tsv(b"1\tEUROPE\n", b"1\tASIA\n"))
