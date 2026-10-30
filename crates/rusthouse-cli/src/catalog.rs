@@ -365,9 +365,15 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
         }
         Err(error) => return Err(format!("cannot rename table {from}: {error}")),
     }
+    // The new name must be durable before removing the only previous name.
+    // Otherwise a crash can lose both links to this schema inode.
+    if let Err(error) = sync_catalog_dir(catalog) {
+        return Err(format!(
+            "cannot persist new catalog table name {to}: {error}; both names are retained"
+        ));
+    }
     if let Err(error) = fs::remove_file(&source) {
-        let _ = fs::remove_file(&destination);
-        return Err(format!("cannot finish renaming table {from}: {error}"));
+        return Err(format!("cannot finish renaming table {from}: {error}; both names may remain"));
     }
     sync_catalog_dir(catalog).map_err(|error| {
         format!("table {from} was renamed but durability is uncertain: {error}")
