@@ -28,7 +28,21 @@ fn read_schema_bytes(path: &Path) -> Option<Vec<u8>> {
     let Ok(mut file) = fs::File::open(path) else {
         return None;
     };
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let Ok(opened) = file.metadata() else {
+        return None;
+    };
+    if !opened.file_type().is_file() || opened.len() > MAX_SCHEMA_BYTES {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+            // The path may have been swapped between lstat and open.
+            return None;
+        }
+    }
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
     if Read::by_ref(&mut file)
         .take(MAX_SCHEMA_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -172,6 +186,19 @@ mod tests {
         ));
         fs::create_dir_all(&db).unwrap();
         db
+    }
+
+    #[test]
+    fn schema_read_rejects_non_files_and_oversized_files() {
+        let db = temporary_database();
+        let valid = db.join("valid.schema");
+        fs::write(&valid, b"rusthouse-schema-v1\nid\tUInt64\n").unwrap();
+        assert!(read_schema_bytes(&valid).is_some());
+        assert!(read_schema_bytes(&db).is_none());
+        let large = db.join("large.schema");
+        fs::write(&large, vec![b'x'; MAX_SCHEMA_BYTES as usize + 1]).unwrap();
+        assert!(read_schema_bytes(&large).is_none());
+        fs::remove_dir_all(db).unwrap();
     }
 
     #[test]

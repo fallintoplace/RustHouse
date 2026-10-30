@@ -7,6 +7,20 @@ from schema import TABLES, names
 
 
 class DbgenLoadTests(unittest.TestCase):
+    def test_rejects_symlinked_dbgen_input_before_copy(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            target = directory / "actual.tsv"
+            target.write_text("\t".join(names("region")) +
+                              "\n1\tEUROPE\tcomment\n")
+            (directory / "region.tsv").symlink_to(target)
+            calls = []
+            with self.assertRaisesRegex(ValueError, "symlinked"):
+                load_tables("binary", "db", directory, ["region"],
+                            execute=lambda sql: calls.append(sql))
+            self.assertEqual(calls, [])
+
+
     def test_import_selected_tables_and_verify_exact_counts(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root)

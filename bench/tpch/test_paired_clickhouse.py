@@ -26,6 +26,22 @@ class PairedClickHouseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             command("unknown", "binary", "db", sql)
 
+    def test_real_process_output_is_bounded_by_reference_budget(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.tpch.paired_clickhouse import invoke
+
+        def run(_args, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].write(b"x" * 50)
+            kwargs["stderr"].write(b"error")
+            return SimpleNamespace(returncode=0)
+
+        with patch("bench.tpch.paired_clickhouse.subprocess.run", side_effect=run):
+            with patch("bench.tpch.paired_clickhouse.MAX_REFERENCE_BYTES", 4):
+                with self.assertRaisesRegex(ValueError, "16 MiB"):
+                    invoke(["rusthouse"], 10)
+
     def test_paired_samples_use_abba_order_and_check_warmups(self):
         calls = []
         def execute(engine, sql):

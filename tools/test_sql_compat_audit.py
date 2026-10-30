@@ -1,12 +1,23 @@
 import unittest
 from unittest.mock import Mock
-from sql_compat_audit import audit, parse_lines
+from pathlib import Path
+import tempfile
+from sql_compat_audit import audit, parse_lines, read_queries
 
 
 class AuditTests(unittest.TestCase):
     def test_accepts_one_select_per_line(self):
         self.assertEqual(parse_lines("-- note\nSELECT 1;\nSELECT count(*) FROM numbers(3)\n"),
                          [(2, "SELECT 1"), (3, "SELECT count(*) FROM numbers(3)")])
+
+    def test_audit_file_fails_early_on_large_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "queries.sql"
+            path.write_bytes(b"-" * (1_048_576 + 1))
+            with self.assertRaisesRegex(ValueError, "1 MiB"):
+                read_queries(path)
+            path.write_text("-- note\nSELECT 2;\n", encoding="utf-8")
+            self.assertEqual(read_queries(path), [(2, "SELECT 2")])
 
     def test_rejects_mutating_sql(self):
         with self.assertRaises(ValueError):
@@ -49,6 +60,17 @@ class AuditTests(unittest.TestCase):
         self.assertIn("--explain", run.call_args.args[0])
         self.assertIn("--database", run.call_args.args[0])
 
+
+    def test_custom_per_query_timeout_and_invalid_values(self):
+        run = Mock()
+        run.return_value.returncode = 0
+        run.return_value.stderr = ""
+        report = audit("rusthouse", [(1, "SELECT 1")], run, timeout=0.5)
+        self.assertEqual(report["accepted"], 1)
+        self.assertEqual(run.call_args.kwargs["timeout"], 0.5)
+        for invalid in (0, -1, float("inf"), float("nan"), True):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "timeout"):
+                audit("rusthouse", [(1, "SELECT 1")], run, timeout=invalid)
 
 if __name__ == "__main__":
     unittest.main()
