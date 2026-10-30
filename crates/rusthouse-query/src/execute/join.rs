@@ -1,12 +1,13 @@
 //! In-memory, bounded equi-join over validated immutable typed snapshots.
 
 mod keys;
+mod aggregate;
 
 use self::keys::*;
 
 use super::{ExecutionError, Number, typed};
 use crate::{JoinAggregate, JoinColumn, JoinSelect, JoinType};
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{PartMetadata, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::io::Write;
@@ -20,14 +21,49 @@ pub(super) const MAX_RESULT_ROWS: usize = crate::join::MAX_JOIN_RESULT_ROWS;
 // Bound retained cells as well as row count to protect against wide String rows.
 const MAX_STREAM_BUILD_ROWS: u64 = crate::join::MAX_STREAM_JOIN_BUILD_ROWS;
 pub(super) const MAX_STREAM_BUILD_BYTES: usize = crate::join::MAX_JOIN_BUILD_BYTES;
+/// Integers of different widths or signedness can be equi-joined exactly
+/// through the canonical 128-bit hash key; floats remain strict by type.
+pub(super) fn compatible_join_types(left: &str, right: &str) -> bool {
+    let (left, right) = (base_type(left), base_type(right));
+    if left == right {
+        return true;
+    }
+    let integer = |kind: &str| matches!(
+        kind, "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+    );
+    integer(left) && integer(right)
+}
+
 
 type Pair = (Option<usize>, Option<usize>);
+
+// Distinct join keys can be much fewer than build rows on skewed dimensions.
+// Grow the table with observed cardinality instead of preallocating for all rows.
+fn initial_hash_capacity(rows: usize) -> usize {
+    rows.min(4096)
+}
+
+// A large input row count is not proof that the hash build fits the byte budget.
+const INITIAL_JOIN_ROW_CAPACITY: u64 = 4_096;
+
+fn initial_join_row_capacity(expected_rows: u64) -> usize {
+    expected_rows.min(INITIAL_JOIN_ROW_CAPACITY) as usize
+}
 
 pub(super) fn multi_join_row_key(
     row: &[typed::Cell],
     indices: &[usize],
 ) -> Option<Vec<typed::Key>> {
     row_key(row, indices)
+}
+
+pub(super) fn multi_join_row_key_into(
+    row: &[typed::Cell],
+    indices: &[usize],
+    result: &mut Vec<typed::Key>,
+) -> bool {
+    row_key_into(row, indices, result)
 }
 
 fn invalid(message: impl Into<String>) -> ExecutionError {
@@ -53,7 +89,7 @@ pub(super) fn read_rows(
     // Byte-budget validation, not the uncompressed row-count estimate,
     // should determine retained capacity. Avoid eagerly allocating hundreds
     // of thousands of row slots for wide tables that will fail the byte cap.
-    let mut rows = Vec::with_capacity(expected_rows.min(4096) as usize);
+    let mut rows = Vec::with_capacity(initial_join_row_capacity(expected_rows));
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
@@ -114,9 +150,13 @@ fn retained_build_columns(
     for &key in keys {
         keep[key] = true;
     }
-    for &(column, _, _) in selected {
-        if let Some(local) = column.checked_sub(base).filter(|&local| local < names.len()) {
-            keep[local] = true;
+    for &(column, _, fallback) in selected {
+        // FULL/RIGHT JOIN USING projections may read a fallback key from
+        // the opposite side when the preferred side is NULL.
+        for index in std::iter::once(column).chain(fallback) {
+            if let Some(local) = index.checked_sub(base).filter(|&local| local < names.len()) {
+                keep[local] = true;
+            }
         }
     }
     if let Some((column, _)) = null_filter {
@@ -130,13 +170,29 @@ fn retained_build_columns(
 /// Keep full-column positions for existing JOIN key/projection code, but only
 /// decode retained physical streams. This is especially useful for wide
 /// dimensions with many String payload columns.
-fn read_projected_build_rows(
+pub(super) fn read_projected_build_rows(
     path: &Path,
     names: &[String],
     indices: &[usize],
     expected_rows: u64,
     row_limit: u64,
     byte_limit: usize,
+) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
+    read_projected_build_rows_using_metadata(
+        path, names, indices, expected_rows, row_limit, byte_limit, None,
+    )
+}
+
+/// JOIN plans that already inspected their immutable snapshot do not need to
+/// reopen and validate its part metadata a second time.
+fn read_projected_build_rows_using_metadata(
+    path: &Path,
+    names: &[String],
+    indices: &[usize],
+    expected_rows: u64,
+    row_limit: u64,
+    byte_limit: usize,
+    metadata: Option<&PartMetadata>,
 ) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
     if expected_rows > row_limit {
         return Err(invalid(format!("JOIN supports at most {row_limit} input rows per table")));
@@ -145,8 +201,12 @@ fn read_projected_build_rows(
         return Err(invalid("JOIN requires nonempty build columns"));
     }
     let projected = indices.iter().map(|&i| names[i].clone()).collect::<Vec<_>>();
-    let mut reader = TypedQueryReader::open(path, &projected)?;
-    let mut rows = Vec::with_capacity(expected_rows as usize);
+    let mut reader = if let Some(metadata) = metadata {
+        TypedQueryReader::open_with_metadata(path, &projected, metadata)?
+    } else {
+        TypedQueryReader::open(path, &projected)?
+    };
+    let mut rows = Vec::with_capacity(initial_join_row_capacity(expected_rows));
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
@@ -226,6 +286,23 @@ impl Bucket {
             Self::One(value) => std::slice::from_ref(value).iter(),
             Self::Many(values) => values.iter(),
         }
+    }
+}
+
+/// Duplicate build keys are not needed when ANY joins select one right row
+/// for each left row. Keep the first row to match existing stream behavior.
+fn insert_build_key(
+    hash: &mut HashMap<Vec<typed::Key>, Bucket>,
+    key: Vec<typed::Key>,
+    index: usize,
+    any: bool,
+) {
+    if any {
+        hash.entry(key).or_insert(Bucket::One(index));
+    } else {
+        hash.entry(key)
+            .and_modify(|bucket| bucket.push(index))
+            .or_insert(Bucket::One(index));
     }
 }
 
@@ -430,11 +507,11 @@ fn execute_streaming_right_outer<W: Write>(
     } = columns;
     let left_meta = inspect_query_source(left_path)?;
     let keep = retained_build_columns(left_names, left_keys, selected, null_filter, 0);
-    let left_rows = read_projected_build_rows(
+    let left_rows = read_projected_build_rows_using_metadata(
         left_path, left_names, &keep, left_meta.rows,
-        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
+        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES, Some(&left_meta),
     )?;
-    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(left_rows.len()));
     for (index, row) in left_rows.iter().enumerate() {
         if let Some(key) = row_key(row, left_keys) {
             if query.any {
@@ -525,26 +602,21 @@ fn execute_streaming_inner<W: Write>(
     // hash-build and matched-output limits, not an artificial probe-row cap.
     let right_meta = inspect_query_source(right_path)?;
     let keep = retained_build_columns(right_names, right_keys, selected, null_filter, left_names.len());
-    let right_rows = read_projected_build_rows(
+    let right_rows = read_projected_build_rows_using_metadata(
         right_path,
         right_names,
         &keep,
         right_meta.rows,
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
+        Some(&right_meta),
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
+    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_hash_capacity(right_rows.len()));
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
             // ANY keeps the first right match only, so duplicate indexes
             // never need to be retained in the hash table.
-            if query.any {
-                hash.entry(key).or_insert(Bucket::One(index));
-            } else {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
-            }
+            insert_build_key(&mut hash, key, index, query.any);
         }
     }
     if hash.is_empty() {
@@ -757,15 +829,16 @@ fn execute_streaming_right<W: Write>(
     } = columns;
     let left_meta = inspect_query_source(left_path)?;
     let keep = retained_build_columns(left_names, left_keys, selected, null_filter, 0);
-    let left_rows = read_projected_build_rows(
+    let left_rows = read_projected_build_rows_using_metadata(
         left_path,
         left_names,
         &keep,
         left_meta.rows,
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
+        Some(&left_meta),
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(left_rows.len());
+    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_hash_capacity(left_rows.len()));
     for (index, row) in left_rows.iter().enumerate() {
         if let Some(key) = row_key(row, left_keys) {
             hash.entry(key)
@@ -918,11 +991,11 @@ fn execute_streaming_ordered_inner<W: Write>(
     }
     keep.sort_unstable();
     keep.dedup();
-    let right_rows = read_projected_build_rows(
+    let right_rows = read_projected_build_rows_using_metadata(
         right_path, right_names, &keep, right_metadata.rows,
-        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
+        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES, Some(&right_metadata),
     )?;
-    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
             if query.any {
@@ -955,6 +1028,27 @@ fn execute_streaming_ordered_inner<W: Write>(
             let at = |index: usize| -> &typed::Cell {
                 if index < width { &left[index] } else { &right[index - width] }
             };
+            let ordinal = sequence;
+            sequence = sequence.checked_add(1)
+                .ok_or_else(|| invalid("ordered JOIN row count overflow"))?;
+            // Compare borrowed values before cloning any projected rows.
+            if heap.len() == requested {
+                if let Some(worst) = heap.peek() {
+                    let mut comparison = Ordering::Equal;
+                    for (position, &(index, descending, nulls_first)) in order.iter().enumerate() {
+                        comparison = typed::compare_order_cells(
+                            at(index), &worst.keys[position], descending, nulls_first,
+                        );
+                        if comparison != Ordering::Equal {
+                            break;
+                        }
+                    }
+                    // Later equal keys cannot displace an earlier winner.
+                    if comparison != Ordering::Less {
+                        return Ok(());
+                    }
+                }
+            }
             let keys: Vec<typed::Cell> = order.iter().map(|(index, _, _)| at(*index).clone()).collect();
             let values: Vec<typed::Cell> = selected
                 .iter().map(|(index, _, _)| at(*index).clone()).collect();
@@ -962,11 +1056,9 @@ fn execute_streaming_ordered_inner<W: Write>(
                 .checked_add(ordered_join_retained_bytes(&values)?)
                 .ok_or_else(|| invalid("ordered JOIN output size overflow"))?;
             let candidate = OrderedJoinRow {
-                values, keys, directions: directions.clone(), sequence,
+                values, keys, directions: directions.clone(), sequence: ordinal,
                 retained_bytes: bytes,
             };
-            sequence = sequence.checked_add(1)
-                .ok_or_else(|| invalid("ordered JOIN row count overflow"))?;
             if heap.len() == requested &&
                 heap.peek().is_some_and(|worst| candidate >= *worst) {
                 return Ok(());
@@ -1031,7 +1123,7 @@ fn execute_streaming_inner_count<W: Write>(
             right_path, right_names, &keep, right_count,
             MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
         for (index, row) in right_rows.iter().enumerate() {
             if let Some(key) = row_key(row, right_keys) {
                 if query.any {
@@ -1058,7 +1150,7 @@ fn execute_streaming_inner_count<W: Write>(
             left_path, left_names, &keep, left_count,
             MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(left_rows.len()));
         for (index, row) in left_rows.iter().enumerate() {
             if let Some(key) = row_key(row, left_keys) {
                 hash.entry(key)
@@ -1076,6 +1168,17 @@ fn execute_streaming_inner_count<W: Write>(
     };
     write!(output, "count\n{count}\n")?;
     Ok(())
+}
+
+/// Prefer the smaller build side for strongly skewed unordered INNER joins.
+/// ANY must preserve its existing build ordering and first-match behavior.
+fn prefer_left_hash_build(left_rows: u64, right_rows: u64, any: bool) -> bool {
+    !any
+        && left_rows > 0
+        && left_rows <= MAX_STREAM_BUILD_ROWS
+        && left_rows < right_rows
+        && (right_rows > MAX_STREAM_BUILD_ROWS
+            || right_rows >= left_rows.saturating_mul(4))
 }
 
 /// Evaluate a two-table JOIN using typed values, not serialized TSV.
@@ -1186,13 +1289,29 @@ pub fn execute_join<W: Write>(
         };
         let left_type = &left_meta.columns[left_index].data_type;
         let right_type = &right_meta.columns[right_index].data_type;
-        if base_type(left_type) != base_type(right_type) {
+        if !compatible_join_types(left_type, right_type) {
             return Err(invalid(format!(
                 "JOIN key types differ: {left_type} and {right_type}"
             )));
         }
         left_keys.push(left_index);
         right_keys.push(right_index);
+    }
+
+    if let Some(JoinAggregate::Numeric { function, column }) = &query.aggregate {
+        return aggregate::execute_numeric(
+            query,
+            left_path,
+            right_path,
+            &left_names,
+            &right_names,
+            &left_keys,
+            &right_keys,
+            null_filter,
+            *function,
+            column,
+            output,
+        );
     }
 
     if query.aggregate == Some(JoinAggregate::CountStar) {
@@ -1250,7 +1369,10 @@ pub fn execute_join<W: Write>(
     if query.kind == JoinType::Inner && order.is_empty() {
         // A very large right table can be the streamed side if the left fits
         // the same bounded hash-build budget.
-        if right_meta.rows > MAX_STREAM_BUILD_ROWS && left_meta.rows <= MAX_STREAM_BUILD_ROWS {
+        if prefer_left_hash_build(left_meta.rows, right_meta.rows, query.any)
+            || (query.any && right_meta.rows > MAX_STREAM_BUILD_ROWS
+                && left_meta.rows <= MAX_STREAM_BUILD_ROWS)
+        {
             return execute_streaming_right(
                 query,
                 left_path,
@@ -1319,12 +1441,13 @@ pub fn execute_join<W: Write>(
         MAX_INPUT_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
+    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_hash_capacity(right_rows.len()));
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, &right_keys) {
-            hash.entry(key)
-                .and_modify(|bucket| bucket.push(index))
-                .or_insert(Bucket::One(index));
+            insert_build_key(
+                &mut hash, key, index,
+                query.any && matches!(query.kind, JoinType::Inner | JoinType::Left),
+            );
         }
     }
     let keep = |pair: &Pair| {
@@ -1436,6 +1559,22 @@ mod tests {
     use rusthouse_storage::NumericColumn;
 
     #[test]
+    fn projected_hash_build_retains_using_fallback_on_either_side() {
+        let names = vec!["id".to_owned(), "payload".to_owned(), "key".to_owned()];
+        let selected = vec![(3, "id".to_owned(), Some(0))];
+        assert_eq!(retained_build_columns(&names, &[2], &selected, None, 0), vec![0, 2]);
+        assert_eq!(retained_build_columns(&names, &[2], &selected, None, 3), vec![2]);
+    }
+
+    #[test]
+    fn projected_join_build_initial_capacity_is_bounded() {
+        assert_eq!(initial_join_row_capacity(0), 0);
+        assert_eq!(initial_join_row_capacity(25), 25);
+        assert_eq!(initial_join_row_capacity(262_144), 4_096);
+        assert_eq!(initial_join_row_capacity(u64::MAX), 4_096);
+    }
+
+    #[test]
     fn streaming_right_preserves_unmatched_rows_and_key_fallbacks() {
         use rusthouse_storage::{Column, write_wide_part};
         use std::fs;
@@ -1505,6 +1644,13 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(matches!(&rows[0][1], typed::Cell::Null));
         assert!(matches!(&rows[0][2], typed::Cell::Text(value) if value == b"ok"));
+        // The already validated snapshot must return the same projected rows.
+        let metadata = inspect_query_source(&root).unwrap();
+        let reused = read_projected_build_rows_using_metadata(
+            &root, &names, &keep, 1, 10, 4_096, Some(&metadata),
+        ).unwrap();
+        assert_eq!(reused.len(), rows.len());
+        assert!(matches!(&reused[0][2], typed::Cell::Text(value) if value == b"ok"));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1565,5 +1711,55 @@ mod projected_count_build_tests {
         assert_eq!(count_build_columns(&[0], Some((7, false)), 3, 5), vec![0, 4]);
         assert_eq!(count_build_columns(&[], None, 0, 4), vec![0]);
         assert!(count_build_columns(&[], None, 0, 0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod hash_capacity_regressions {
+    use super::initial_hash_capacity;
+
+    #[test]
+    fn hash_buckets_grow_with_distinct_keys_not_input_row_estimates() {
+        assert_eq!(initial_hash_capacity(0), 0);
+        assert_eq!(initial_hash_capacity(11), 11);
+        assert_eq!(initial_hash_capacity(262_144), 4096);
+        assert_eq!(initial_hash_capacity(usize::MAX), 4096);
+    }
+}
+
+#[cfg(test)]
+mod any_join_build_tests {
+    use super::*;
+
+    #[test]
+    fn any_join_retains_only_first_duplicate_build_index() {
+        let mut hash = HashMap::new();
+        let key = vec![typed::Key::Text(b"heavy-hitter".to_vec())];
+        insert_build_key(&mut hash, vec![typed::Key::Text(b"heavy-hitter".to_vec())], 1, true);
+        insert_build_key(&mut hash, key, 2, true);
+        assert_eq!(
+            hash.values().next().unwrap().iter().copied().collect::<Vec<_>>(),
+            vec![1]
+        );
+        insert_build_key(&mut hash, vec![typed::Key::Text(b"heavy-hitter".to_vec())], 3, false);
+        assert_eq!(
+            hash.values().next().unwrap().iter().copied().collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+    }
+}
+
+#[cfg(test)]
+mod adaptive_join_build_side_tests {
+    use super::*;
+    #[test]
+    fn selects_smaller_build_only_when_safe() {
+        assert!(prefer_left_hash_build(10_000, 200_000, false));
+        assert!(prefer_left_hash_build(3, 400_000, false));
+        assert!(!prefer_left_hash_build(0, 40_000, false));
+        assert!(!prefer_left_hash_build(200_000, 10_000, false));
+        assert!(!prefer_left_hash_build(40_000, 60_000, false));
+        assert!(!prefer_left_hash_build(10_000, 200_000, true));
+        assert!(!prefer_left_hash_build(MAX_STREAM_BUILD_ROWS + 1, u64::MAX, false));
     }
 }

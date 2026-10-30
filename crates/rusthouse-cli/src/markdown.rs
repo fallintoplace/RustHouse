@@ -4,6 +4,26 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+fn finish_complete_line<W: Write>(
+    output: &mut W,
+    columns: &mut Option<usize>,
+    line: &[u8],
+) -> io::Result<()> {
+    let width = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
+    if columns.is_some_and(|expected| expected != width) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Markdown row does not match header column count",
+        ));
+    }
+    write_tsv_markdown_row(output, line, columns.is_some())?;
+    if columns.is_none() {
+        write_header_separator(output, width)?;
+        *columns = Some(width);
+    }
+    Ok(())
+}
+
 /// Turn the SQL executor's TSV rows into a streaming Markdown table.
 pub struct MarkdownWriter<W: Write> {
     output: W,
@@ -21,18 +41,7 @@ impl<W: Write> MarkdownWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        let width = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
-        if self.columns.is_some_and(|expected| expected != width) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Markdown row does not match header column count",
-            ));
-        }
-        write_markdown_row(&mut self.output, &self.line, self.columns.is_some())?;
-        if self.columns.is_none() {
-            write_header_separator(&mut self.output, width)?;
-            self.columns = Some(width);
-        }
+        finish_complete_line(&mut self.output, &mut self.columns, &self.line)?;
         self.line.clear();
         Ok(())
     }
@@ -50,7 +59,7 @@ fn decode_markdown_fields(line: &[u8], data_row: bool) -> io::Result<Vec<Cow<'_,
         .collect()
 }
 
-fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
+fn write_tsv_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
     if !data_row || !line.contains(&b'\\') {
         // Validate every field before writing so malformed UTF-8 is atomic.
         std::str::from_utf8(line).map_err(|_| {
@@ -59,7 +68,7 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
         output.write_all(b"|")?;
         for field in line.split(|&byte| byte == b'\t') {
             output.write_all(b" ")?;
-            write_cell(output, field)?;
+            write_markdown_cell(output, field)?;
             output.write_all(b" |")?;
         }
         return output.write_all(b"\n");
@@ -73,7 +82,7 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
     output.write_all(b"|")?;
     for field in fields {
         output.write_all(b" ")?;
-        write_cell(output, field.as_ref())?;
+        write_markdown_cell(output, field.as_ref())?;
         output.write_all(b" |")?;
     }
     output.write_all(b"\n")
@@ -87,7 +96,7 @@ fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Resul
     output.write_all(b"\n")
 }
 
-fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+fn write_markdown_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let mut start = 0;
     for (index, &byte) in field.iter().enumerate() {
         let escape: Option<&[u8]> = match byte {
@@ -136,6 +145,12 @@ impl<W: Write> Write for MarkdownWriter<W> {
                     "Markdown row exceeds 1 MiB",
                 ));
             }
+            if complete && self.line.is_empty() {
+                // SQL output commonly delivers several complete rows in one write.
+                // Format them in place; buffer only a fragmented trailing row.
+                finish_complete_line(&mut self.output, &mut self.columns, fragment)?;
+                continue;
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -154,9 +169,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn complete_large_rows_do_not_fill_the_line_buffer() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"item\n").unwrap();
+        let before = writer.line.capacity();
+        let item = "x".repeat(16 * 1024);
+        writer.write_all(format!("{item}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        assert!(writer.output.ends_with(format!("| {item} |\n").as_bytes()));
+    }
+
+    #[test]
     fn writes_plain_rows_without_decoding_field_allocations() {
         let mut output = Vec::new();
-        write_markdown_row(&mut output, "café\tforty".as_bytes(), true).unwrap();
+        write_tsv_markdown_row(&mut output, "café\tforty".as_bytes(), true).unwrap();
         assert_eq!(output, "| café | forty |\n".as_bytes());
     }
 
@@ -185,7 +211,7 @@ mod tests {
     #[test]
     fn row_renderer_keeps_cell_escaping_independent_of_writer_state() {
         let mut output = Vec::new();
-        write_markdown_row(&mut output, b"first|col\t<a>&b", false).unwrap();
+        write_tsv_markdown_row(&mut output, b"first|col\t<a>&b", false).unwrap();
         assert_eq!(output, b"| first\\|col | &lt;a&gt;&amp;b |\n");
     }
 
@@ -311,14 +337,14 @@ mod markdown_bulk_output_tests {
     #[test]
     fn writes_plain_markdown_cell_with_one_bulk_call() {
         let mut output = CountingWriter { calls: 0, bytes: 0 };
-        write_cell(&mut output, &vec![b'a'; 16 * 1024]).unwrap();
+        write_markdown_cell(&mut output, &vec![b'a'; 16 * 1024]).unwrap();
         assert_eq!(output.bytes, 16 * 1024);
         assert_eq!(output.calls, 1);
     }
     #[test]
     fn keeps_escaped_bytes_and_control_formatting() {
         let mut output = Vec::new();
-        write_cell(&mut output, b"abc|xyz<&>\r\x01").unwrap();
+        write_markdown_cell(&mut output, b"abc|xyz<&>\r\x01").unwrap();
         assert_eq!(output, b"abc\\|xyz&lt;&amp;&gt;&#13;&#1;");
     }
 }
