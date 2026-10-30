@@ -208,6 +208,8 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "SUBSTR"
+            | "MID"
             | "NORMALIZEIPV6"
     )
 }
@@ -2222,7 +2224,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "SUBSTRING" | "SUBSTRINGUTF8" => {
+        "SUBSTRING" | "SUBSTRINGUTF8" | "SUBSTR" | "MID" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "SUBSTRING requires a start position")?;
             let position = integer_arg(parser, depth + 1)?;
@@ -2252,7 +2254,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         Some(None) => return Ok(ConstantValue::Null),
                     };
-                    ConstantValue::Text(value.chars().skip(start).take(count).collect())
+                    if matches!(name, "SUBSTR" | "MID") {
+                        let end = start.saturating_add(count).min(value.len());
+                        let result = if start >= value.len() {
+                            ""
+                        } else {
+                            value.get(start..end).ok_or_else(|| {
+                                ParseError("SUBSTR byte boundaries must be UTF-8".into())
+                            })?
+                        };
+                        ConstantValue::Text(result.to_owned())
+                    } else {
+                        ConstantValue::Text(value.chars().skip(start).take(count).collect())
+                    }
                 }
                 _ => ConstantValue::Null,
             }
