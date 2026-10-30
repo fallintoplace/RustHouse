@@ -87,6 +87,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--require-all-22", action="store_true")
+    parser.add_argument("--fail-on-unverified", action="store_true",
+                        help="Fail when any examined query lacks verified correctness")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
@@ -98,7 +100,7 @@ def main(argv=None):
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")
     print(rendered, end="")
-    return 0
+    return 1 if args.fail_on_unverified and result["verified_correct_percent"] < 100 else 0
 
 
 if __name__ == "__main__":
