@@ -26,9 +26,12 @@ def run_sweep(binary, part, rows, *, samples=3, timeout=600,
             or type(timeout) not in (int, float) or not math.isfinite(timeout)
             or timeout <= 0):
         raise ValueError("samples must be positive integers and timeout finite and positive")
+    selected_thresholds = thresholds(rows, steps)
+    if len(selected_thresholds) * samples > 1_024:
+        raise ValueError("selectivity sweep exceeds 1024 SQL executions")
     run = execute or subprocess.run
     results = []
-    for threshold in thresholds(rows, steps):
+    for threshold in selected_thresholds:
         sql = f"SELECT count(*) FROM part WHERE id >= {threshold}"
         expected = f"{rows - threshold}\n".encode()
         durations = []
