@@ -22,8 +22,8 @@ class CompareRustBenchTests(unittest.TestCase):
         self.assertIn("informational, not a required CI gate", result)
 
     def test_submicrosecond_improvements_are_not_rounded_to_zero(self):
-        baseline = report().replace("filtered count 0.000 1.00", "filtered count 0.000123 0.00")
-        candidate = report().replace("filtered count 0.000 1.00", "filtered count 0.000082 0.00")
+        baseline = report().replace("filtered count 0.000 1.00", "filtered count 0.000123 1.00")
+        candidate = report().replace("filtered count 0.000 1.00", "filtered count 0.000082 1.00")
         summary = compare_text(baseline, candidate)
         self.assertIn("| filtered count | 0.000123 | 0.000082 | -33.3% |", summary)
 
