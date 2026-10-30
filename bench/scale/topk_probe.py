@@ -38,7 +38,8 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
                         capture_output=True, check=False, timeout=timeout)
         elapsed = time.perf_counter() - begun
         if completed.returncode:
-            raise RuntimeError(f"{direction} top-K failed: {completed.stderr!r}")
+            reason = completed.stderr[-600:].decode("utf-8", "replace")
+            raise RuntimeError(f"{direction} top-K failed: {reason}")
         if completed.stdout != expected:
             raise ValueError(f"{direction} top-K differs from exact sequential-id reference")
         results.append({"direction": direction, "limit": limit,
