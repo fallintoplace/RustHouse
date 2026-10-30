@@ -3,25 +3,30 @@ mod arithmetic;
 use self::arithmetic::*;
 
 use super::typed::{self, Cell};
-use super::{AggregateState, ExecutionError, Number, NumberKey, number_at};
+use super::{AggregateState, BitmapDistinct32, ExecutionError, Number, NumberKey, number_at};
 use crate::{AggregateItem, ScalarExpr, Select};
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
 const MAX_DISTINCT_VALUES: usize = 100_000;
+const MAX_DISTINCT_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Default)]
 struct DistinctValues {
     other: HashSet<typed::Key>,
     text: HashSet<Vec<u8>>,
     uuids: HashSet<[u8; 16]>,
+    retained_text_bytes: usize,
+    // Multi-metric queries share the exact UInt32/Int32 bitmap fast path.
+    bitmap32: Option<BitmapDistinct32>,
 }
 
 impl DistinctValues {
     fn len(&self) -> usize {
         self.other.len() + self.text.len() + self.uuids.len()
+            + self.bitmap32.as_ref().map_or(0, |bitmap| bitmap.len() as usize)
     }
 
     fn insert_key(&mut self, key: typed::Key) -> Result<(), ExecutionError> {
@@ -44,7 +49,22 @@ impl DistinctValues {
                 "COUNT(DISTINCT) supports at most 100000 values".into(),
             ));
         }
+        let additional = value.len().checked_add(
+            std::mem::size_of::<Vec<u8>>() + 2 * std::mem::size_of::<usize>()
+        ).ok_or_else(|| ExecutionError::Invalid(
+            "multi-aggregate DISTINCT String memory overflow".into(),
+        ))?;
+        let next = self.retained_text_bytes.checked_add(additional)
+            .ok_or_else(|| ExecutionError::Invalid(
+                "multi-aggregate DISTINCT String memory overflow".into(),
+            ))?;
+        if next > MAX_DISTINCT_TEXT_BYTES {
+            return Err(ExecutionError::Invalid(
+                "multi-aggregate COUNT(DISTINCT) String keys exceed 64 MiB".into(),
+            ));
+        }
         self.text.insert(value.to_vec());
+        self.retained_text_bytes = next;
         Ok(())
     }
 
@@ -59,6 +79,26 @@ impl DistinctValues {
     }
 
     fn insert_column(&mut self, column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
+        if let Some(bitmap) = self.bitmap32.as_mut() {
+            let value = match column {
+                TypedColumn::Numeric(NumericColumn::UInt32(values)) => Some(values[row]),
+                TypedColumn::Numeric(NumericColumn::Int32(values)) =>
+                    Some(values[row] as u32),
+                TypedColumn::NullableNumeric {
+                    values: NumericColumn::UInt32(values), nulls,
+                } => (nulls[row] == 0).then_some(values[row]),
+                TypedColumn::NullableNumeric {
+                    values: NumericColumn::Int32(values), nulls,
+                } => (nulls[row] == 0).then_some(values[row] as u32),
+                _ => return Err(ExecutionError::Invalid(
+                    "32-bit distinct bitmap requires a 32-bit integer column".into(),
+                )),
+            };
+            if let Some(key) = value {
+                bitmap.insert(key)?;
+            }
+            return Ok(true);
+        }
         match column {
             TypedColumn::Text(values) => {
                 if let Some(value) = values.get(row) {
@@ -90,6 +130,7 @@ enum BoundExpr {
     Column(usize),
     TextLength(usize),
     Integer(i64),
+    Float(f64),
     // Fast path for the affine expression family in ClickBench Q30.
     AffineColumn {
         index: usize,
@@ -101,10 +142,7 @@ enum BoundExpr {
     Multiply(Box<Self>, Box<Self>),
     Divide(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
-    Case {
-        branches: Vec<(Self, Self)>,
-        else_expr: Option<Box<Self>>,
-    },
+    Case { branches: Vec<(Self, Self)>, else_expr: Option<Box<Self>> },
 }
 
 impl BoundExpr {
@@ -120,20 +158,24 @@ impl BoundExpr {
         };
         Ok(match expression {
             ScalarExpr::Case { branches, else_expr } => Self::Case {
-                branches: branches
-                    .iter()
-                    .map(|(condition, value)| {
-                        Ok((Self::bind(condition, indices)?, Self::bind(value, indices)?))
-                    })
-                    .collect::<Result<Vec<_>, ExecutionError>>()?,
-                else_expr: else_expr
-                    .as_ref()
-                    .map(|value| Self::bind(value, indices).map(Box::new))
-                    .transpose()?,
+                branches: branches.iter().map(|(condition, value)| {
+                    Ok((Self::bind(condition, indices)?, Self::bind(value, indices)?))
+                }).collect::<Result<Vec<_>, ExecutionError>>()?,
+                else_expr: else_expr.as_ref()
+                    .map(|value| Self::bind(value, indices).map(Box::new)).transpose()?,
             },
             ScalarExpr::Column(name) => Self::Column(index(name)?),
             ScalarExpr::TextLength(name) => Self::TextLength(index(name)?),
             ScalarExpr::Integer(number) => Self::Integer(*number),
+            ScalarExpr::Decimal(number) => {
+                let value = number.parse::<f64>().map_err(|_| {
+                    ExecutionError::Invalid("invalid decimal expression literal".into())
+                })?;
+                if !value.is_finite() {
+                    return Err(ExecutionError::Invalid("non-finite decimal literal".into()));
+                }
+                Self::Float(value)
+            },
             ScalarExpr::Add(left, right) => {
                 if let (ScalarExpr::Column(name), ScalarExpr::Integer(constant)) =
                     (left.as_ref(), right.as_ref())
@@ -204,6 +246,60 @@ fn numeric_argument_at(
     }
 }
 
+/// Compare a UInt128 against an IEEE Float64 without rounding the integer
+/// through Float64 first. Conversions below are exact for in-range whole
+/// Float64 values; fractional portions are resolved after integer comparison.
+fn compare_unsigned_float(integer: u128, float: f64) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    if float.is_nan() { return None; }
+    if float < 0.0 { return Some(Ordering::Greater); }
+    if float.is_infinite() || float >= 2.0_f64.powi(128) {
+        return Some(Ordering::Less);
+    }
+    let whole = float.trunc() as u128;
+    Some(integer.cmp(&whole).then_with(|| {
+        if float.fract() > 0.0 { Ordering::Less } else { Ordering::Equal }
+    }))
+}
+
+fn compare_signed_float(integer: i128, float: f64) -> Option<std::cmp::Ordering> {
+    if integer >= 0 {
+        compare_unsigned_float(integer as u128, float)
+    } else if float >= 0.0 {
+        Some(std::cmp::Ordering::Less)
+    } else {
+        compare_unsigned_float(integer.unsigned_abs(), -float)
+            .map(std::cmp::Ordering::reverse)
+    }
+}
+
+/// SQL expression comparisons must compare numeric values, not the
+/// internal Number enum variant order used by mixed-type sort keys.
+fn compare_expression_numbers(left: Number, right: Number) -> Option<std::cmp::Ordering> {
+    match (left, right) {
+        (Number::Unsigned(left), Number::Signed(right)) => Some(
+            match u128::try_from(right) {
+                Ok(right) => left.cmp(&right),
+                Err(_) => std::cmp::Ordering::Greater,
+            }
+        ),
+        (Number::Signed(left), Number::Unsigned(right)) => Some(
+            match u128::try_from(left) {
+                Ok(left) => left.cmp(&right),
+                Err(_) => std::cmp::Ordering::Less,
+            }
+        ),
+        (Number::Float(left), Number::Float(right)) => left.partial_cmp(&right),
+        (Number::Unsigned(left), Number::Float(right)) => compare_unsigned_float(left, right),
+        (Number::Signed(left), Number::Float(right)) => compare_signed_float(left, right),
+        (Number::Float(left), Number::Unsigned(right)) => compare_unsigned_float(right, left)
+            .map(std::cmp::Ordering::reverse),
+        (Number::Float(left), Number::Signed(right)) => compare_signed_float(right, left)
+            .map(std::cmp::Ordering::reverse),
+        _ => Some(super::compare_numbers(left, right)),
+    }
+}
+
 fn eval_number(
     expression: &BoundExpr,
     batch: &[TypedColumn],
@@ -218,9 +314,7 @@ fn eval_number(
                     Some(Number::Float(value)) => value != 0.0,
                     None => false,
                 };
-                if truthy {
-                    return eval_number(value, batch, row);
-                }
+                if truthy { return eval_number(value, batch, row); }
             }
             match else_expr {
                 Some(value) => eval_number(value, batch, row),
@@ -231,20 +325,21 @@ fn eval_number(
         BoundExpr::Compare(left, operator, right) => {
             let Some(left) = eval_number(left, batch, row)? else {return Ok(None)};
             let Some(right) = eval_number(right, batch, row)? else {return Ok(None)};
-            let order = super::compare_numbers(left, right);
+            let order = compare_expression_numbers(left, right);
             let matched = match operator {
-                crate::Operator::Eq => order.is_eq(),
-                crate::Operator::Ne => order.is_ne(),
-                crate::Operator::Lt => order.is_lt(),
-                crate::Operator::Le => order.is_le(),
-                crate::Operator::Gt => order.is_gt(),
-                crate::Operator::Ge => order.is_ge(),
+                crate::Operator::Eq => order.is_some_and(|order| order.is_eq()),
+                crate::Operator::Ne => order.is_none_or(|order| order.is_ne()),
+                crate::Operator::Lt => order.is_some_and(|order| order.is_lt()),
+                crate::Operator::Le => order.is_some_and(|order| order.is_le()),
+                crate::Operator::Gt => order.is_some_and(|order| order.is_gt()),
+                crate::Operator::Ge => order.is_some_and(|order| order.is_ge()),
                 _ => return Err(ExecutionError::Invalid(
                     "unsupported numeric comparison operator".into())),
             };
             Ok(Some(Number::Unsigned(u128::from(matched))))
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
+        BoundExpr::Float(value) => Ok(Some(Number::Float(*value))),
         BoundExpr::AffineColumn {
             index,
             constant,
@@ -386,15 +481,22 @@ fn parallel_exact_multi_aggregates(
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
-    let chunk_size = parts.len().div_ceil(workers);
+    // Parts can differ by orders of magnitude in row count. Claim them
+    // dynamically to avoid a worker being stranded with one oversized part.
+    // The partial COUNT/SUM states merge in worker order for reproducibility.
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
     let chunks = std::thread::scope(|scope| {
-        let handles = parts.chunks(chunk_size).map(|paths| {
+        let cursor = &cursor;
+        let paths = &parts;
+        let handles = (0..workers).map(|_| {
             scope.spawn(move || -> Result<Vec<State>, ExecutionError> {
                 let mut states = items.iter().map(|item| match item.function {
                     Some(function) => State::Numeric(AggregateState::new(function)),
                     None => State::Count(0),
                 }).collect::<Vec<_>>();
-                for path in paths {
+                while let Some(path) = paths.get(
+                    cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ) {
                     let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
                     while let Some(batch) = reader.next_batch()? {
                         for row in 0..batch[0].len() {
@@ -600,7 +702,17 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|item| match item.function {
             Some(function) => State::Numeric(AggregateState::new(function)),
-            None if item.distinct => State::Distinct(DistinctValues::default()),
+            None if item.distinct => {
+                let bitmap32 = match item.argument.as_ref() {
+                    Some(ScalarExpr::Column(column)) if types.get(column).is_some_and(|kind| {
+                        matches!(typed::base_type(kind), "UInt32" | "Int32")
+                    }) => Some(BitmapDistinct32::new()),
+                    _ => None,
+                };
+                State::Distinct(DistinctValues {
+                    bitmap32, ..DistinctValues::default()
+                })
+            },
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
@@ -699,13 +811,9 @@ pub(super) fn execute<W: Write>(
 /// Compute exact arithmetic-series metrics in O(number of aggregates) instead
 /// of iterating a billion generated rows. Predicated or DISTINCT inputs keep the
 /// existing streaming path.
-fn generated_series_metrics(
-    start: u64,
-    rows: u64,
-    step: u64,
-    items: &[AggregateItem],
-) -> Option<Result<Vec<String>, ExecutionError>> {
-    if !items.iter().all(|item| {
+/// Only these generated metrics have a constant-time arithmetic result.
+pub(super) fn supports_generated_series_metrics(items: &[AggregateItem]) -> bool {
+    items.iter().all(|item| {
         !item.distinct
             && item.argument.as_ref().is_none_or(|expression| {
                 matches!(expression, ScalarExpr::Column(name) if name == "number")
@@ -713,7 +821,16 @@ fn generated_series_metrics(
             && matches!(item.function, None | Some(crate::AggregateFunction::Count
                 | crate::AggregateFunction::Sum | crate::AggregateFunction::Min
                 | crate::AggregateFunction::Max | crate::AggregateFunction::Avg))
-    }) {
+    })
+}
+
+fn generated_series_metrics(
+    start: u64,
+    rows: u64,
+    step: u64,
+    items: &[AggregateItem],
+) -> Option<Result<Vec<String>, ExecutionError>> {
+    if !supports_generated_series_metrics(items) {
         return None;
     }
     let first = u128::from(start);
@@ -779,12 +896,23 @@ pub(super) fn execute_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    if query.predicates.is_empty() && query.or_predicates.is_empty() {
-        if let Some(results) = generated_series_metrics(start, rows, step, items) {
-            if query.offset.unwrap_or(0) == 0 {
-                writeln!(output, "{}", results?.join("\t"))?;
+    // Monotonic predicates select an exact contiguous arithmetic interval.
+    // Reuse the formula path for the selected range instead of scanning every
+    // generated row and updating each metric separately.
+    let interval = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        Some((0, rows))
+    } else {
+        super::monotonic_range_indices(&comparisons, start, rows, step)
+    };
+    if let Some((lower, upper)) = interval {
+        let first = u128::from(start) + u128::from(lower) * u128::from(step);
+        if let Ok(first) = u64::try_from(first) {
+            if let Some(results) = generated_series_metrics(first, upper - lower, step, items) {
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{}", results?.join("\t"))?;
+                }
+                return Ok(());
             }
-            return Ok(());
         }
     }
     let mut states = items
@@ -911,6 +1039,20 @@ mod distinct_key_tests {
 }
 
 #[cfg(test)]
+mod tpch_decimal_literal_tests {
+    use super::*;
+
+    #[test]
+    fn binds_and_evaluates_decimal_constant_once() {
+        let bound = BoundExpr::bind(
+            &ScalarExpr::Decimal("0.05".to_owned()), &HashMap::new()
+        ).unwrap();
+        let value = eval_number(&bound, &[], 0).unwrap();
+        assert!(matches!(value, Some(Number::Float(f)) if (f - 0.05).abs() < 1e-15));
+    }
+}
+
+#[cfg(test)]
 mod direct_numeric_argument_tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
@@ -931,5 +1073,151 @@ mod direct_numeric_argument_tests {
         assert!(eval_number(&BoundExpr::Column(1), &batch, 1).unwrap().is_none());
         let affine = BoundExpr::AffineColumn { index: 0, constant: 5, subtract: false };
         assert!(matches!(eval_number(&affine, &batch, 0).unwrap(), Some(Number::Unsigned(105)) | Some(Number::Signed(105))));
+    }
+}
+
+#[cfg(test)]
+mod mixed_integer_expression_comparison_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn unsigned_columns_compare_numerically_against_signed_literals() {
+        let batch = [TypedColumn::Numeric(NumericColumn::UInt64(vec![0, 2, 3]))];
+        let expression = BoundExpr::Compare(
+            Box::new(BoundExpr::Column(0)),
+            crate::Operator::Gt,
+            Box::new(BoundExpr::Integer(2)),
+        );
+        for (row, expected) in [(0, 0u128), (1, 0), (2, 1)] {
+            assert!(matches!(eval_number(&expression, &batch, row).unwrap(),
+                Some(Number::Unsigned(value)) if value == expected));
+        }
+        assert_eq!(compare_expression_numbers(
+            Number::Unsigned(u128::MAX), Number::Signed(-1)
+        ), Some(std::cmp::Ordering::Greater));
+        assert_eq!(compare_expression_numbers(
+            Number::Signed(i128::MIN), Number::Unsigned(0)
+        ), Some(std::cmp::Ordering::Less));
+    }
+}
+
+#[cfg(test)]
+mod ieee_comparison_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn compares_float_zero_normally_and_nan_as_unordered() {
+        assert_eq!(compare_expression_numbers(
+            Number::Float(-0.0), Number::Float(0.0)),
+            Some(std::cmp::Ordering::Equal));
+        assert_eq!(compare_expression_numbers(
+            Number::Float(f64::NAN), Number::Float(f64::NAN)), None);
+        let batch = [
+            TypedColumn::Numeric(NumericColumn::Float64(vec![-0.0, f64::NAN])),
+            TypedColumn::Numeric(NumericColumn::Float64(vec![0.0, f64::NAN])),
+        ];
+        for (operator, row, expected) in [
+            (crate::Operator::Eq, 0, 1),
+            (crate::Operator::Ne, 0, 0),
+            (crate::Operator::Eq, 1, 0),
+            (crate::Operator::Ne, 1, 1),
+            (crate::Operator::Lt, 1, 0),
+            (crate::Operator::Ge, 1, 0),
+        ] {
+            let expression = BoundExpr::Compare(
+                Box::new(BoundExpr::Column(0)), operator,
+                Box::new(BoundExpr::Column(1)),
+            );
+            assert!(matches!(eval_number(&expression, &batch, row).unwrap(),
+                Some(Number::Unsigned(actual)) if actual == expected));
+        }
+    }
+}
+
+#[cfg(test)]
+mod exact_mixed_float_integer_comparison_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn integer_float_comparisons_keep_u128_precision() {
+        let border = 9_007_199_254_740_992u128;
+        assert_eq!(compare_unsigned_float(border + 1, border as f64), Some(Ordering::Greater));
+        assert_eq!(compare_unsigned_float(u128::MAX, 2.0_f64.powi(128)), Some(Ordering::Less));
+        assert_eq!(compare_unsigned_float(u128::MAX, f64::INFINITY), Some(Ordering::Less));
+        assert_eq!(compare_unsigned_float(0, -0.0), Some(Ordering::Equal));
+        assert_eq!(compare_signed_float(-1, -1.5), Some(Ordering::Greater));
+        assert_eq!(compare_signed_float(i128::MIN, -2.0_f64.powi(127)), Some(Ordering::Equal));
+        assert_eq!(compare_signed_float(-1, f64::NEG_INFINITY), Some(Ordering::Greater));
+        assert_eq!(compare_unsigned_float(1, f64::NAN), None);
+        assert_eq!(compare_expression_numbers(
+            Number::Float(-1.5), Number::Signed(-1)), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn float_columns_compare_against_signed_constant_literals() {
+        let batch = [TypedColumn::Numeric(NumericColumn::Float64(
+            vec![-1.0, 3.0, 4.5, f64::NAN]
+        ))];
+        let comparison = BoundExpr::Compare(
+            Box::new(BoundExpr::Column(0)),
+            crate::Operator::Gt,
+            Box::new(BoundExpr::Integer(3)),
+        );
+        for (index, expected) in [0u128, 0, 1, 0].into_iter().enumerate() {
+            assert!(matches!(eval_number(&comparison, &batch, index).unwrap(),
+                Some(Number::Unsigned(actual)) if actual == expected));
+        }
+    }
+}
+
+#[cfg(test)]
+mod multi_aggregate_distinct_text_budget_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_text_keys_do_not_consume_additional_memory() {
+        let mut distinct = DistinctValues::default();
+        distinct.insert_text(b"long-segment-key").unwrap();
+        let first = distinct.retained_text_bytes;
+        distinct.insert_text(b"long-segment-key").unwrap();
+        assert_eq!(first, distinct.retained_text_bytes);
+        assert_eq!(distinct.len(), 1);
+    }
+
+    #[test]
+    fn text_budget_refuses_new_keys_before_mutating_set() {
+        let mut distinct = DistinctValues::default();
+        distinct.retained_text_bytes = MAX_DISTINCT_TEXT_BYTES - 1;
+        assert!(distinct.insert_text(b"new-key").is_err());
+        assert_eq!(distinct.retained_text_bytes, MAX_DISTINCT_TEXT_BYTES - 1);
+        assert!(distinct.text.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod dynamic_multiagg_workers_tests {
+    #[test]
+    fn dynamic_cursor_distributes_all_uneven_parts_exactly_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cursor = AtomicUsize::new(0);
+        let mut indices = std::thread::scope(|scope| {
+            let handles = (0..4).map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    while let index @ 0..=250 = cursor.fetch_add(1, Ordering::Relaxed) {
+                        mine.push(index);
+                    }
+                    mine
+                })
+            }).collect::<Vec<_>>();
+            handles.into_iter()
+                .flat_map(|worker| worker.join().unwrap()).collect::<Vec<_>>()
+        });
+        indices.sort_unstable();
+        assert_eq!(indices, (0..=250).collect::<Vec<_>>());
     }
 }
