@@ -25,7 +25,14 @@ fn describe_source(source: Option<&Source>) -> String {
 }
 
 fn format_comma_separated_labels(labels: impl Iterator<Item = String>) -> String {
-    labels.collect::<Vec<_>>().join(", ")
+    let mut result = String::new();
+    for (index, label) in labels.enumerate() {
+        if index != 0 {
+            result.push_str(", ");
+        }
+        result.push_str(&label);
+    }
+    result
 }
 
 fn describe_projection(projection: &Projection) -> String {
@@ -275,6 +282,21 @@ mod tests {
         assert_eq!(
             explain_select(&literal),
             "Source: constant row\nProject: 42\nAlias: answer"
+        );
+    }
+}
+
+#[cfg(test)]
+mod label_join_tests {
+    use super::format_comma_separated_labels;
+
+    #[test]
+    fn formats_empty_single_and_multiple_labels() {
+        assert_eq!(format_comma_separated_labels(std::iter::empty::<String>()), "");
+        assert_eq!(format_comma_separated_labels(["one".to_owned()].into_iter()), "one");
+        assert_eq!(
+            format_comma_separated_labels(["one".to_owned(), "".to_owned(), "three".to_owned()].into_iter()),
+            "one, , three"
         );
     }
 }
