@@ -348,6 +348,14 @@ fn main() -> io::Result<()> {
         };
         if !acquired {
             let mut stream = stream;
+            // Busy replies run on the accept thread, outside serve()'s
+            // per-connection timeout setup. Never block acceptance here.
+            if stream
+                .set_write_timeout(Some(Duration::from_millis(250)))
+                .is_err()
+            {
+                continue;
+            }
             let _ = respond(
                 &mut stream,
                 Response::text("503 Service Unavailable", "server busy\n"),
