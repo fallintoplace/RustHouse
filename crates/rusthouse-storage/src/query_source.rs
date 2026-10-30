@@ -70,6 +70,9 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
     if label.len() > 64 {
         return Err(PartError::InvalidScan("active pointer exceeds size limit".into()));
     }
+    if label.len() as u64 != opened.len() {
+        return Err(PartError::InvalidScan("active pointer changed during read".into()));
+    }
     let label = label
         .strip_suffix('\n')
         .ok_or_else(|| PartError::InvalidScan("invalid snapshot pointer format".into()))?;
