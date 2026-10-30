@@ -80,13 +80,13 @@ class ChunkCopyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             folder = Path(root)
             source = folder / "part-000001.tsv"
-            source.write_bytes(b"42\\n")
+            source.write_bytes(b"42\n")
             link = folder / "part-000000.tsv"
             try:
                 os.symlink(source, link)
             except (OSError, NotImplementedError):
                 self.skipTest("symlink creation unavailable")
-            entry = {"rows": 1, "bytes": 3, "sha256": hashlib.sha256(b"42\\n").hexdigest()}
+            entry = {"rows": 1, "bytes": 3, "sha256": hashlib.sha256(b"42\n").hexdigest()}
             with self.assertRaisesRegex(ValueError, "regular file"):
                 verify_shard(link, entry)
             verify_shard(source, entry)
