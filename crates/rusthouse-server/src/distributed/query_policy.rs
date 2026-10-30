@@ -1,5 +1,9 @@
 use super::*;
 
+fn verify_rewritten_select(rewritten: String, expected: &Select) -> Option<String> {
+    (parse_select(&rewritten).ok()? == *expected).then_some(rewritten)
+}
+
 fn is_safe_table_select(select: &Select) -> bool {
     matches!(select.source, Some(Source::Table(_)))
         && !select.distinct
@@ -52,7 +56,7 @@ pub(super) fn uniq_state_shard_sql(sql: &str, select: &Select) -> Option<String>
     let mut expected = select.clone();
     expected.projection = Projection::ApproxDistinctState { column: column.clone() };
     expected.alias = None;
-    (parse_select(&rewritten).ok()? == expected).then_some(rewritten)
+    verify_rewritten_select(rewritten, &expected)
 }
 
 pub(super) fn is_safe_count_distinct(select: &Select) -> bool {
@@ -78,7 +82,7 @@ pub(super) fn distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
     let mut expected = select.clone();
     expected.projection = Projection::Columns(vec![column.to_owned()]);
     expected.distinct = true;
-    (parse_select(&rewritten).ok()? == expected).then_some(rewritten)
+    verify_rewritten_select(rewritten, &expected)
 }
 
 pub(super) fn is_safe_sum(select: &Select) -> bool {
@@ -293,7 +297,7 @@ pub(super) fn sorted_scan_sql(sql: &str, select: &Select) -> Option<String> {
     let mut expected = select.clone();
     expected.offset = None;
     expected.limit = Some(prefix);
-    (parse_select(&rewritten).ok()? == expected).then_some(rewritten)
+    verify_rewritten_select(rewritten, &expected)
 }
 
 #[cfg(test)]
