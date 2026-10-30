@@ -36,7 +36,7 @@ class SharedWorkloadTests(unittest.TestCase):
             execute.call_args.args[0],
             ["rusthouse", "sql", "SELECT 1", "--database", "db", "--format", "tsv-no-header"],
         )
-        self.assertEqual(execute.call_args.kwargs["stderr"], subprocess.PIPE)
+        self.assertNotEqual(execute.call_args.kwargs["stderr"], subprocess.PIPE)
         self.assertEqual(execute.call_args.kwargs["timeout"], 5)
         self.assertNotEqual(execute.call_args.kwargs["stdout"], subprocess.PIPE)
 
@@ -48,6 +48,15 @@ class SharedWorkloadTests(unittest.TestCase):
         with mock.patch("bench.common.subprocess.run", side_effect=write_oversized):
             with self.assertRaisesRegex(ValueError, "64 MiB"):
                 cli_sql("rusthouse", "db", "SELECT 1", 5)
+
+    def test_cli_caps_large_stderr_in_memory(self):
+        def noisy_sql(command, **kwargs):
+            kwargs["stderr"].write(b"error " + b"x" * 100_000)
+            return subprocess.CompletedProcess(command, 1)
+        with mock.patch("bench.common.subprocess.run", side_effect=noisy_sql):
+            with self.assertRaises(RuntimeError) as raised:
+                cli_sql("rusthouse", "db", "bad", 1)
+        self.assertLess(len(str(raised.exception)), 2100)
 
     def test_cli_json_oracle_mode_is_explicit_and_read_only(self):
         with mock.patch(
@@ -79,7 +88,10 @@ class SharedWorkloadTests(unittest.TestCase):
                 )
 
     def test_cli_error_and_timeout_are_not_swallowed(self):
-        with mock.patch("bench.common.subprocess.run", return_value=subprocess.CompletedProcess([], 2, b"", b"failure")):
+        def fail_sql(command, **kwargs):
+            kwargs["stderr"].write(b"failure")
+            return subprocess.CompletedProcess(command, 2)
+        with mock.patch("bench.common.subprocess.run", side_effect=fail_sql):
             with self.assertRaisesRegex(RuntimeError, "exit 2: failure"):
                 cli_sql("rusthouse", "db", "bad", 1)
         with mock.patch("bench.common.subprocess.run", side_effect=subprocess.TimeoutExpired("rusthouse", 1)):

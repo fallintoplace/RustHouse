@@ -27,16 +27,17 @@ def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-heade
         raise ValueError("a verification format can be used only with SELECT")
     # Do not buffer an untrusted query result in subprocess.PIPE. Only a
     # bounded prefix is ever read back into the Python heap.
-    with tempfile.TemporaryFile(mode="w+b") as output:
+    with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
         completed = subprocess.run(
             command,
             stdout=output,
-            stderr=subprocess.PIPE,
+            stderr=errors,
             check=False,
             timeout=timeout,
         )
         if completed.returncode:
-            error = completed.stderr.decode("utf-8", "replace")[:2000]
+            errors.seek(0)
+            error = errors.read(2000).decode("utf-8", "replace")
             raise RuntimeError(f"exit {completed.returncode}: {error}")
         output.seek(0)
         result = output.read(MAX_SQL_STDOUT_BYTES + 1)
