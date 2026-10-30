@@ -71,6 +71,17 @@ class DiskGuardTests(unittest.TestCase):
                           min_free_gib=0.000001)
 
 
+    def test_refuses_symlinked_source_before_launch(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.tsv"
+            source.write_bytes(b"1\\n")
+            symlink = Path(root) / "source-link.tsv"
+            symlink.symlink_to(source)
+            with patch("bench.scale.copy_disk_pressure_guard.subprocess.Popen") as launch:
+                with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                    guard("rusthouse", Path(root) / "db", "events", symlink, root)
+                launch.assert_not_called()
+
     def test_refuses_oversized_copy_source_before_process_launch(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "source.tsv"
