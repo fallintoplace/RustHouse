@@ -5,7 +5,10 @@ Metadata describes rows on disk, but a COUNT(*) may use metadata-only paths.
 import argparse
 import json
 import subprocess
+import tempfile
 from pathlib import Path
+
+MAX_SNAPSHOT_REPORT_BYTES = 2 * 1024 * 1024
 
 
 def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
@@ -15,11 +18,20 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
     if max_parts is not None and (
             type(max_parts) is not int or not 1 <= max_parts <= 16_384):
         raise ValueError("max_parts must be in 1..16384")
-    execute = run or subprocess.run
-    result = execute(
-        [str(binary), "inspect-snapshot", str(path), "--json"],
-        capture_output=True, check=False, timeout=600,
-    )
+    command = [str(binary), "inspect-snapshot", str(path), "--json"]
+    if run is None:
+        with tempfile.TemporaryFile(mode="w+b") as output:
+            result = subprocess.run(
+                command, stdout=output, stderr=subprocess.PIPE,
+                check=False, timeout=600,
+            )
+            output.seek(0)
+            payload = output.read(MAX_SNAPSHOT_REPORT_BYTES + 1)
+    else:
+        result = run(command, capture_output=True, check=False, timeout=600)
+        payload = result.stdout
+    if len(payload) > MAX_SNAPSHOT_REPORT_BYTES:
+        raise ValueError("snapshot report exceeds 2 MiB")
     if result.returncode:
         raise RuntimeError(f"snapshot inspection failed: {result.stderr.decode('utf-8', 'replace')[-600:]}")
     def unique_fields(pairs):
@@ -30,7 +42,7 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
             fields[name] = value
         return fields
 
-    data = json.loads(result.stdout, object_pairs_hook=unique_fields)
+    data = json.loads(payload, object_pairs_hook=unique_fields)
     if not isinstance(data, dict):
         raise ValueError("snapshot report must be a JSON object")
     rows, parts = data.get("rows"), data.get("parts")
