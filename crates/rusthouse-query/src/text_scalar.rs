@@ -3266,7 +3266,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("RIGHT count must be nonnegative".into()));
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    if count >= value.len() {
+                    if name == "RIGHT" {
+                        let start = value.len().saturating_sub(count);
+                        let result = value.get(start..).ok_or_else(|| {
+                            ParseError("RIGHT byte boundary must be valid UTF-8".into())
+                        })?;
+                        ConstantValue::Text(result.to_owned())
+                    } else if count >= value.len() {
                         ConstantValue::Text(value)
                     } else {
                         let start = value.len() - count;
