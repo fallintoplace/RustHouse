@@ -19,6 +19,29 @@ class GroupedPhysicalReferenceTests(unittest.TestCase):
                 self.assertEqual(counts, expected_counts, (rows, groups))
                 self.assertEqual(sums, expected_sums, (rows, groups))
 
+    def test_full_uint16_group_domain_preserves_exact_totals(self):
+        rows = 1_000_000_000
+        groups = 65_536
+        counts, sums = reference(rows, groups)
+        self.assertEqual(len(counts), groups)
+        self.assertEqual(sum(counts), rows)
+        cycles, tail = divmod(rows, 97)
+        self.assertEqual(sum(sums), cycles * 4753 + tail * (tail + 1) // 2)
+        self.assertEqual(counts[0], 900_000_000)
+
+    def test_modular_prefixes_agree_across_cycle_lengths(self):
+        for groups in (2, 3, 97, 98, 99, 195):
+            for rows in (1, 9, 10, 11, 98, 1_000, 10_000):
+                counts, sums = reference(rows, groups)
+                expected_counts = [0] * groups
+                expected_sums = [0] * groups
+                for row in range(rows):
+                    key = region_at(row, groups)
+                    expected_counts[key] += 1
+                    expected_sums[key] += 1 + row % 97
+                self.assertEqual(counts, expected_counts, (rows, groups))
+                self.assertEqual(sums, expected_sums, (rows, groups))
+
     def test_real_billion_row_closed_form_oracle(self):
         rows = 1_000_000_000
         counts, sums = reference(rows, 4096)
