@@ -6,8 +6,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
+import stat
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -35,15 +38,45 @@ def verify_shard(path, entry):
     digest = hashlib.sha256()
     size = lines = 0
     last_byte = None
-    with path.open("rb") as stream:
+    # Match the lstat identity against the opened file to reject a replaced
+    # or symlinked shard, including replacements between validation and open.
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"shard is not a regular file: {path.name}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+            raise ValueError(f"shard changed before verification: {path.name}")
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             size += len(block)
             lines += block.count(b"\n")
             last_byte = block[-1]
             digest.update(block)
+        after = os.fstat(stream.fileno())
+        if (opened.st_size, opened.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise ValueError(f"shard changed during verification: {path.name}")
+    current = path.lstat()
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)):
+        raise ValueError(f"shard changed during verification: {path.name}")
     if (digest.hexdigest() != expected_hash or size != expected_bytes
             or lines != expected_rows or last_byte != 10):
         raise ValueError(f"shard checksum, byte size, or row count mismatch: {path.name}")
+
+
+def execute_copy(command, timeout, runner=None):
+    if runner is not None:
+        result = runner(command, capture_output=True, check=False, timeout=timeout)
+        return result.returncode, result.stderr[-500:].decode("utf-8", "replace")
+    with tempfile.TemporaryFile() as errors:
+        result = subprocess.run(command, stdout=subprocess.DEVNULL,
+                                stderr=errors, check=False, timeout=timeout)
+        errors.seek(max(0, errors.tell() - 500))
+        tail = errors.read(500).decode("utf-8", "replace")
+    return result.returncode, tail
 
 
 def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=None,
@@ -53,10 +86,24 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
     if type(dry_run) is not bool:
         raise ValueError("dry_run must be a boolean")
     manifest_path = Path(source_dir) / "manifest.json"
-    if manifest_path.is_symlink():
+    before = manifest_path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("refusing a symlinked shard manifest")
-    with manifest_path.open("rb") as stream:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(manifest_path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+            raise ValueError("shard manifest changed before reading")
         payload = stream.read(MAX_MANIFEST_BYTES + 1)
+        finished = os.fstat(stream.fileno())
+        if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+            raise ValueError("shard manifest changed during reading")
+    after = manifest_path.lstat()
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+        raise ValueError("shard manifest changed during reading")
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("shard manifest exceeds 8 MiB")
     manifest = json.loads(payload)
@@ -94,17 +141,16 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
                 "shards_loaded": 0, "shards_planned": len(paths),
                 "rows_reported_by_manifest": sum(s["rows"] for s in shards),
                 "results": []}
-    run = execute or subprocess.run
     completed = []
     for entry, path in zip(shards, paths):
         name = entry["path"]
         cmd = [str(binary), "sql", copy_sql(table, path), "--database", str(database)]
         started = time.perf_counter()
-        outcome = run(cmd, capture_output=True, check=False, timeout=timeout)
-        if outcome.returncode:
+        returncode, diagnostic = execute_copy(cmd, timeout, execute)
+        if returncode:
             raise RuntimeError(
                 f"COPY failed after {len(completed)} successful shards; "
-                f"failed={name}: {outcome.stderr.decode('utf-8', 'replace')[-500:]}"
+                f"failed={name}: {diagnostic}"
             )
         completed.append({"shard": name, "rows": entry["rows"],
                           "seconds": time.perf_counter() - started})

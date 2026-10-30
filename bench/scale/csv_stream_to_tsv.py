@@ -7,6 +7,7 @@ to TSV NULLs. CSV quote provenance for empty fields is not retained.
 import argparse
 import csv
 import os
+import secrets
 from pathlib import Path
 
 
@@ -30,30 +31,41 @@ def utf8_length(value):
 
 
 def convert(source, destination, *, header=False, empty_as_null=False,
-            max_field_bytes=8 * 1024 * 1024, skip_header=False):
+            max_field_bytes=8 * 1024 * 1024, skip_header=False,
+            expected_columns=None):
+    if Path(source).is_symlink():
+        raise ValueError("CSV source must not be a symlink")
     if Path(source).resolve() == Path(destination).resolve():
         raise ValueError("input and output must be different files")
     if skip_header and not header:
         raise ValueError("skip_header requires header=True")
     if type(max_field_bytes) is not int or max_field_bytes < 1:
         raise ValueError("max_field_bytes must be a positive integer")
+    if expected_columns is not None and (
+            type(expected_columns) is not int or not 1 <= expected_columns <= 128):
+        raise ValueError("expected_columns must be in 1..128")
     old_limit = csv.field_size_limit()
     csv.field_size_limit(max_field_bytes)
     count = 0
     width = None
     destination = Path(destination)
-    pending = destination.with_name("." + destination.name + f".{os.getpid()}.pending")
+    pending = destination.with_name(
+        "." + destination.name + f".{os.getpid()}.{secrets.token_hex(8)}.pending")
+    pending_created = False
     try:
         if destination.exists():
             raise ValueError("refusing to overwrite an existing output")
         with open(source, "r", encoding="utf-8-sig", newline="") as input_file:
             with pending.open("x", encoding="utf-8", newline="") as output_file:
+                pending_created = True
                 reader = csv.reader(input_file, strict=True)
                 for fields in reader:
                     if width is None:
                         width = len(fields)
                         if width < 1 or width > 128:
                             raise ValueError("CSV must contain 1..128 columns")
+                        if expected_columns is not None and width != expected_columns:
+                            raise ValueError("CSV columns differ from expected_columns")
                     elif len(fields) != width:
                         raise ValueError(f"CSV column count mismatch at record {count + 1}")
                     if any(utf8_length(value) > max_field_bytes for value in fields):
@@ -72,8 +84,17 @@ def convert(source, destination, *, header=False, empty_as_null=False,
         if destination.exists():
             raise ValueError("refusing to overwrite an existing output")
         os.link(pending, destination)
+        if os.name == "posix":
+            # Publishing a hard link needs a parent-directory fsync to survive
+            # a crash, even when the TSV payload has already been fsynced.
+            descriptor = os.open(destination.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     finally:
-        pending.unlink(missing_ok=True)
+        if pending_created:
+            pending.unlink(missing_ok=True)
         csv.field_size_limit(old_limit)
     return {"records": count, "data_rows": count - int(header and count > 0),
             "columns": width or 0, "header": header,
@@ -87,10 +108,12 @@ def main(argv=None):
     parser.add_argument("--header", action="store_true")
     parser.add_argument("--skip-header", action="store_true", help="omit CSV header from COPY TSV")
     parser.add_argument("--empty-as-null", action="store_true")
+    parser.add_argument("--expected-columns", type=int)
     args = parser.parse_args(argv)
     try:
         report = convert(args.source, args.destination, header=args.header,
-                         empty_as_null=args.empty_as_null, skip_header=args.skip_header)
+                         empty_as_null=args.empty_as_null, skip_header=args.skip_header,
+                         expected_columns=args.expected_columns)
     except (OSError, csv.Error, UnicodeError, ValueError) as error:
         parser.exit(1, f"CSV conversion failed: {error}\n")
     print(f"{report['data_rows']} data rows written to {args.destination}")
