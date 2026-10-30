@@ -125,11 +125,17 @@ pub fn inventory_snapshot_crc32c(
     let active = resolve_active_snapshot(root)?;
     let entries = inventory_snapshot(&active, max_files, max_bytes)?;
     const PARALLEL_THRESHOLD: usize = 64;
+    if entries.len() < PARALLEL_THRESHOLD {
+        return entries
+            .iter()
+            .map(|entry| checksum_inventory_entry(&active, entry))
+            .collect();
+    }
     const MAX_HASH_WORKERS: usize = 4;
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())
         .min(MAX_HASH_WORKERS);
-    if entries.len() < PARALLEL_THRESHOLD || workers == 1 {
+    if workers == 1 {
         return entries
             .iter()
             .map(|entry| checksum_inventory_entry(&active, entry))
@@ -377,6 +383,29 @@ mod pinned_inventory_tests {
         let second = inventory_snapshot_crc32c(&root, 128, 1_000_000).unwrap();
         assert_eq!(first.len(), second.len());
         assert_ne!(first, second);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod small_checksum_inventory_dispatch_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn small_inventories_return_correct_checksums_in_path_order() {
+        let root = std::env::temp_dir().join(format!("rusthouse-small-inventory-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_wide_part(&root.join("all_0_0_0"), &[Column { name: "id".into(), data_type: "UInt64".into() }], &[vec![Some("7".into())]]).unwrap();
+        let actual = inventory_snapshot_crc32c(&root, 63, 1_000_000).unwrap();
+        assert!(!actual.is_empty() && actual.len() < 64);
+        assert!(actual.windows(2).all(|window| window[0].relative_path < window[1].relative_path));
+        for entry in &actual {
+            let data = fs::read(root.join(&entry.relative_path)).unwrap();
+            assert_eq!(entry.bytes, data.len() as u64);
+            assert_eq!(entry.crc32c, crate::distributed_crc32c::crc32c(&data));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }
