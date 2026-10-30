@@ -50,9 +50,9 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     } else {
         let shift = u32::try_from(-remaining_scale)
             .map_err(|_| ParseError("decimal exponent is too large".into()))?;
-        let factor = 10_i128.checked_pow(shift)
-            .ok_or_else(|| ParseError("decimal exponent overflows Int128".into()))?;
-        let value = signed.checked_mul(factor)
+        let value = 10_i128
+            .checked_pow(shift)
+            .and_then(|factor| signed.checked_mul(factor))
             .ok_or_else(|| ParseError("decimal exponent overflows Int128".into()))?;
         Ok((value, 0))
     }
