@@ -61,8 +61,8 @@ def analyze(report, require_all_22=False):
     if not isinstance(report, dict):
         raise ValueError("report must be an object")
     records = report.get("results")
-    if not isinstance(records, list):
-        raise ValueError("report must contain a results array")
+    if not isinstance(records, list) or not records:
+        raise ValueError("report must contain a nonempty results array")
     seen = set()
     groups = defaultdict(list)
     for item in records:
