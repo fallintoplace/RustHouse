@@ -33,6 +33,9 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
         raise ValueError("expected_sha256 must be lowercase SHA256 hex")
     if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
         raise ValueError("SQL must be nonempty and at most 64 KiB")
+    statement = sql.strip().removesuffix(";").rstrip()
+    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
+        raise ValueError("digest requires one read-only SELECT")
     execute = run or subprocess.run
     started = time.perf_counter()
     with tempfile.TemporaryFile(mode="w+b") as output:
