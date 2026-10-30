@@ -2,6 +2,7 @@
 """Generate reference TSV for the subset of TPC-H SQL that SQLite supports."""
 import argparse
 import json
+import os
 import tempfile
 import sqlite3
 from contextlib import closing
@@ -24,7 +25,7 @@ def tsv_cell(value, null_token="NULL"):
 
 
 def write_one(connection, sql, destination, max_rows=100_000, null_token="NULL",
-              max_output_bytes=16 * 1024 * 1024):
+              max_output_bytes=16 * 1024 * 1024, *, overwrite=False):
     if type(max_rows) is not int or max_rows < 1:
         raise ValueError("max_rows must be positive")
     if type(max_output_bytes) is not int or max_output_bytes < 1:
@@ -50,7 +51,11 @@ def write_one(connection, sql, destination, max_rows=100_000, null_token="NULL",
                     raise ValueError("reference exceeds output byte limit")
                 output.write(rendered)
                 count += 1
-        temporary.replace(destination)
+        if overwrite:
+            temporary.replace(destination)
+        else:
+            # A concurrent writer must not replace a golden created after preflight.
+            os.link(temporary, destination)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -77,7 +82,8 @@ def generate(database, queries_dir, output_dir, only=None,
         connection.execute("PRAGMA query_only = ON")
         for (number, sql), destination in zip(queries, destinations):
             try:
-                count = write_one(connection, sql, destination, max_rows, null_token)
+                count = write_one(connection, sql, destination, max_rows, null_token,
+                                  overwrite=overwrite)
             except (sqlite3.DatabaseError, ValueError) as error:
                 raise ValueError(f"q{number:02d}: {error}") from error
             summary.append({"query": number, "rows": count, "path": str(destination)})
