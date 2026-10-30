@@ -5,6 +5,7 @@ Metadata describes rows on disk, but a COUNT(*) may use metadata-only paths.
 import argparse
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -15,13 +16,25 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
     if max_parts is not None and (
             type(max_parts) is not int or not 1 <= max_parts <= 16_384):
         raise ValueError("max_parts must be in 1..16384")
-    execute = run or subprocess.run
-    result = execute(
-        [str(binary), "inspect-snapshot", str(path), "--json"],
-        capture_output=True, check=False, timeout=600,
-    )
+    command = [str(binary), "inspect-snapshot", str(path), "--json"]
+    if run is None:
+        # Spool untrusted subprocess output before reading a bounded JSON payload.
+        with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+            result = subprocess.run(command, stdout=output, stderr=errors,
+                                    check=False, timeout=600)
+            output.seek(0)
+            raw = output.read(1_048_577)
+            errors.seek(0)
+            diagnostic = errors.read(601).decode("utf-8", "replace")
+    else:
+        # Keep the injected runner interface stable for existing unit tests.
+        result = run(command, capture_output=True, check=False, timeout=600)
+        raw = result.stdout
+        diagnostic = result.stderr[:601].decode("utf-8", "replace")
     if result.returncode:
-        raise RuntimeError(f"snapshot inspection failed: {result.stderr.decode('utf-8', 'replace')[-600:]}")
+        raise RuntimeError("snapshot inspection failed: " + diagnostic[:600])
+    if len(raw) > 1_048_576:
+        raise ValueError("snapshot inspection JSON exceeds 1 MiB")
     def unique_fields(pairs):
         fields = {}
         for name, value in pairs:
@@ -30,7 +43,7 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
             fields[name] = value
         return fields
 
-    data = json.loads(result.stdout, object_pairs_hook=unique_fields)
+    data = json.loads(raw, object_pairs_hook=unique_fields)
     if not isinstance(data, dict):
         raise ValueError("snapshot report must be a JSON object")
     rows, parts = data.get("rows"), data.get("parts")
