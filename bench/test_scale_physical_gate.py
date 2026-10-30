@@ -87,5 +87,19 @@ class PhysicalGateTests(unittest.TestCase):
             validate(broken)
 
 
+    def test_large_physical_report_is_rejected_before_json_parse(self):
+        import tempfile
+        from pathlib import Path
+        from bench.scale.physical_gate import read_report
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "large.json"
+            source.write_bytes(b"x" * 100)
+            with self.assertRaisesRegex(ValueError, "max_bytes"):
+                read_report(source, max_bytes=20)
+            with self.assertRaisesRegex(ValueError, "max_bytes"):
+                read_report(source, max_bytes=True)
+            source.write_text('{"valid":true}')
+            self.assertEqual(read_report(source, max_bytes=100), {"valid": True})
+
 if __name__ == "__main__":
     unittest.main()
