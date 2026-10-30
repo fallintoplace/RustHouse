@@ -49,5 +49,18 @@ class SelectivitySweepTests(unittest.TestCase):
             run_sweep("rusthouse", "part", 1_000_000_000, samples=129)
 
 
+    def test_shifted_sequential_key_domain(self):
+        self.assertEqual(thresholds(8, steps=4, start=100), [100, 102, 104, 106, 108])
+        def execute(command, **kwargs):
+            threshold = int(command[2].rsplit(" ", 1)[-1])
+            return SimpleNamespace(returncode=0,
+                                   stdout=f"{108 - threshold}\n".encode(), stderr=b"")
+        report = run_sweep("rusthouse", "part", 8, start=100, steps=4,
+                           samples=1, execute=execute)
+        self.assertEqual(report["start"], 100)
+        self.assertEqual(report["results"][-1]["expected_count"], 0)
+        with self.assertRaisesRegex(ValueError, "UInt64 start"):
+            thresholds(8, start=2**64-8)
+
 if __name__ == "__main__":
     unittest.main()
