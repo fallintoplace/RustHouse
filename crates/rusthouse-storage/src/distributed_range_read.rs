@@ -21,7 +21,36 @@ fn same_object_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     before.dev() == after.dev() && before.ino() == after.ino()
 }
 
-fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
+fn object_state_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if !after.file_type().is_file()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return same_object_identity(before, after)
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
+fn verify_object_after_read(path: &Path, file: &File, before: &fs::Metadata) -> io::Result<()> {
+    let end_fd = file.metadata()?;
+    let end_path = fs::symlink_metadata(path)?;
+    if !object_state_unchanged(before, &end_fd)
+        || !object_state_unchanged(before, &end_path)
+    {
+        return Err(io::Error::other("replica object changed during range read"));
+    }
+    Ok(())
+}
+
+fn open_verified_object(path: &Path) -> io::Result<(File, fs::Metadata)> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() {
         return Err(io::Error::other("object is not a regular file"));
@@ -35,7 +64,7 @@ fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
     if !same_object_identity(&meta, &opened) {
         return Err(io::Error::other("object inode changed before range read"));
     }
-    Ok((file, opened.len()))
+    Ok((file, opened))
 }
 
 /// Read an exact byte range from a frozen regular file, rejecting short reads.
@@ -48,13 +77,14 @@ pub fn read_object_range(
     if length > max_length || length > ABSOLUTE_MAX_RANGE {
         return Err(io::Error::other("object byte range exceeds limit"));
     }
-    let (mut file, file_length) = open_verified_object(path)?;
-    validate_range(offset, length, file_length)?;
+    let (mut file, baseline) = open_verified_object(path)?;
+    validate_range(offset, length, baseline.len())?;
     if offset != 0 {
         file.seek(SeekFrom::Start(offset))?;
     }
     let mut bytes = vec![0; length];
     file.read_exact(&mut bytes)?;
+    verify_object_after_read(path, &file, &baseline)?;
     Ok(bytes)
 }
 
@@ -77,9 +107,9 @@ pub fn read_object_ranges(
             return Err(io::Error::other("object ranges exceed byte limit"));
         }
     }
-    let (mut file, file_length) = open_verified_object(path)?;
+    let (mut file, baseline) = open_verified_object(path)?;
     for &(offset, length) in ranges {
-        validate_range(offset, length, file_length)?;
+        validate_range(offset, length, baseline.len())?;
     }
     if let [(offset, length)] = ranges {
         // A single range needs neither interval sorting nor a second copy.
@@ -88,6 +118,7 @@ pub fn read_object_ranges(
             file.seek(SeekFrom::Start(*offset))?;
         }
         file.read_exact(&mut data)?;
+        verify_object_after_read(path, &file, &baseline)?;
         return Ok(vec![data]);
     }
     // Adjacent or overlapping logical ranges share one physical read.
@@ -139,6 +170,7 @@ pub fn read_object_ranges(
         }
         cursor = tail;
     }
+    verify_object_after_read(path, &file, &baseline)?;
     Ok(output)
 }
 
@@ -161,6 +193,11 @@ mod immutable_object_identity_tests {
         fs::hard_link(&a, &link).unwrap();
         assert!(same_object_identity(&fs::metadata(&a).unwrap(), &fs::metadata(&link).unwrap()));
         assert!(!same_object_identity(&fs::metadata(&a).unwrap(), &fs::metadata(&b).unwrap()));
+        let baseline = fs::metadata(&a).unwrap();
+        assert!(object_state_unchanged(&baseline, &baseline));
+        assert!(!object_state_unchanged(&baseline, &fs::metadata(&b).unwrap()));
+        fs::write(&a, b"longer").unwrap();
+        assert!(!object_state_unchanged(&baseline, &fs::metadata(&a).unwrap()));
         fs::remove_dir_all(root).unwrap();
     }
 }
