@@ -25,6 +25,16 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
+fn create_private_staging_directory(path: &Path) -> io::Result<()> {
+    let mut directory = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directory.mode(0o700);
+    }
+    directory.create(path)
+}
+
 fn sync_directory(path: &Path) -> Result<(), PartError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
@@ -80,7 +90,8 @@ pub fn copy_frozen_snapshot_with_file_limit(
         std::process::id(),
         NEXT_COPY.fetch_add(1, Ordering::Relaxed)
     ));
-    fs::create_dir(&staging).map_err(|error| io_error(&staging, error))?;
+    create_private_staging_directory(&staging)
+        .map_err(|error| io_error(&staging, error))?;
     let copied = (|| -> Result<SnapshotCopy, PartError> {
         let mut report = SnapshotCopy {
             parts: 0,
@@ -398,6 +409,28 @@ mod pinned_preview_generation_tests {
         assert_eq!(first_preview.parts, 1);
         assert_eq!(second_preview.parts, 1);
         assert!(second_preview.bytes > first_preview.bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod private_snapshot_copy_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn staging_directory_blocks_other_local_users() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-private-copy-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let staging = root.join("staging");
+        create_private_staging_directory(&staging).unwrap();
+        assert_eq!(
+            fs::metadata(&staging).unwrap().permissions().mode() & 0o077,
+            0
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }
