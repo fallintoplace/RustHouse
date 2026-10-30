@@ -142,18 +142,18 @@ def cli_clickhouse(client, host, port, query, timeout, database=None, data=None)
     command = [str(client), "--host", host, "--port", str(port), "--query", query]
     if database:
         command.extend(["--database", database])
-    with tempfile.TemporaryFile() as output:
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         result = subprocess.run(
-            command, input=data, stdout=output, stderr=subprocess.PIPE,
+            command, input=data, stdout=output, stderr=errors,
             timeout=timeout, check=False,
         )
+        if result.returncode:
+            errors.seek(0, 2)
+            errors.seek(max(0, errors.tell() - 1000))
+            diagnostic = errors.read(1000).decode("utf-8", "replace")
+            raise RuntimeError(f"ClickHouse exit {result.returncode}: {diagnostic}")
         output.seek(0)
         payload = output.read(4_000_001)
-    if result.returncode:
-        raise RuntimeError(
-            f"ClickHouse exit {result.returncode}: "
-            + result.stderr.decode("utf-8", "replace")[:1000]
-        )
     if len(payload) > 4_000_000:
         raise ValueError("ClickHouse result exceeds 4 MB comparison limit")
     return payload
