@@ -3067,7 +3067,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("LEFT count must be nonnegative".into()));
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    if count >= value.len() {
+                    if name == "LEFT" {
+                        let end = count.min(value.len());
+                        let result = value.get(..end).ok_or_else(|| {
+                            ParseError("LEFT byte boundary must be valid UTF-8".into())
+                        })?;
+                        ConstantValue::Text(result.to_owned())
+                    } else if count >= value.len() {
                         ConstantValue::Text(value)
                     } else if value.as_bytes()[..count].is_ascii() {
                         let mut result = value;
