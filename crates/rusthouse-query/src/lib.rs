@@ -875,6 +875,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         let is_text_scalar = matches!(
             parser.tokens.get(parser.index),
             Some(Token::Word(name)) if text_scalar::is_function(name)
+                && (!scalar::is_function(name)
+                    || matches!(parser.tokens.get(parser.index + 2), Some(Token::String(_)))
+                    || matches!(parser.tokens.get(parser.index + 2),
+                        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")))
         );
         loop {
             if columns.len() >= 64 {
@@ -883,6 +887,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             let value = match parser.tokens.get(parser.index) {
                 Some(Token::Number(_) | Token::LParen | Token::Plus | Token::Minus) => {
                     ConstantValue::Integer(scalar::parse(&mut parser)?)
+                }
+                Some(Token::Word(name))
+                    if scalar::is_function(name)
+                        && text_scalar::is_function(name)
+                        && (matches!(parser.tokens.get(parser.index + 2), Some(Token::String(_)))
+                            || matches!(parser.tokens.get(parser.index + 2),
+                                Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL"))) =>
+                {
+                    text_scalar::parse(&mut parser)?
                 }
                 Some(Token::Word(name)) if scalar::is_function(name) => {
                     ConstantValue::Integer(scalar::parse(&mut parser)?)
