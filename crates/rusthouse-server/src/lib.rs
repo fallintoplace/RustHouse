@@ -248,6 +248,26 @@ fn capabilities_response(config: &Config) -> Response {
     }
 }
 
+/// Report whether the configured SQL source is a readable real directory.
+/// This is a liveness/readiness hint, not a checksum or replica consistency audit.
+fn readiness_response(config: &Config) -> Response {
+    let source = match (config.part.as_deref(), config.database.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Response::text("503 Service Unavailable", "conflicting SQL sources\n");
+        }
+        (Some(path), None) | (None, Some(path)) => path,
+        (None, None) => return Response::text("200 OK", "Ready.\n"),
+    };
+    let readable = std::fs::symlink_metadata(source)
+        .is_ok_and(|metadata| metadata.file_type().is_dir())
+        && std::fs::read_dir(source).is_ok();
+    if readable {
+        Response::text("200 OK", "Ready.\n")
+    } else {
+        Response::text("503 Service Unavailable", "SQL source is not readable\n")
+    }
+}
+
 /// Runs only the subset accepted by the existing SELECT parser. DDL and
 /// writes cannot pass this interface. All responses are bounded in memory.
 pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) -> Response {
@@ -259,6 +279,15 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             return Response::text("400 Bad Request", "GET must not contain a request body\n");
         }
         return Response::text("200 OK", "Ok.\n");
+    }
+    if target == "/ready" {
+        if method != "GET" {
+            return Response::text("405 Method Not Allowed", "readiness requires GET\n");
+        }
+        if !body.is_empty() {
+            return Response::text("400 Bad Request", "GET must not contain a request body\n");
+        }
+        return readiness_response(config);
     }
     if target == "/capabilities" {
         if method != "GET" {
@@ -1181,5 +1210,38 @@ mod inline_clickhouse_format_tests {
         let config = Config { part: None, database: None, max_rows: 100 };
         assert_eq!(handle_request("POST", "/?format=csv", b"SELECT 1 FORMAT CSV", &config).status, "400 Bad Request");
         assert_eq!(handle_request("POST", "/", b"SELECT 1 FORMAT JSONEachRow", &config).status, "400 Bad Request");
+    }
+}
+
+#[cfg(test)]
+mod readiness_endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn readiness_checks_real_source_directory_without_modification() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-readiness-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let config = Config {
+            database: Some(root.clone()),
+            part: None,
+            max_rows: 10,
+        };
+        assert_eq!(handle_request("GET", "/ready", b"", &config).status, "200 OK");
+        assert_eq!(handle_request("POST", "/ready", b"", &config).status, "405 Method Not Allowed");
+        assert_eq!(handle_request("GET", "/ready", b"x", &config).status, "400 Bad Request");
+
+        std::fs::remove_dir(&root).unwrap();
+        assert_eq!(handle_request("GET", "/ready", b"", &config).status, "503 Service Unavailable");
+        assert_eq!(
+            handle_request("GET", "/ready", b"", &Config::default()).status,
+            "200 OK",
+        );
     }
 }
