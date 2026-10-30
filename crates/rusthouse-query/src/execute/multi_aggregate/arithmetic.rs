@@ -18,10 +18,10 @@ fn number_as_i128(number: Number) -> Result<i128, ExecutionError> {
 }
 
 fn aggregate_overflow() -> ExecutionError {
-    aggregate_overflow()
+    ExecutionError::Invalid("aggregate expression overflow".into())
 }
 
-~fn mixed_negative(magnitude: u128) -> Result<Number, ExecutionError> {
+fn mixed_negative(magnitude: u128) -> Result<Number, ExecutionError> {
     if magnitude <= i128::MAX as u128 {
         return Ok(Number::Signed(-(magnitude as i128)));
     }
@@ -49,7 +49,7 @@ fn unsigned_with_signed(
     let add = (signed >= 0) != subtract;
     if add {
         unsigned.checked_add(magnitude).map(mixed_positive)
-            .ok_or_else(|| aggregate_overflow())
+            .ok_or_else(aggregate_overflow)
     } else if unsigned >= magnitude {
         Ok(mixed_positive(unsigned - magnitude))
     } else {
@@ -66,7 +66,7 @@ fn signed_minus_unsigned(signed: i128, unsigned: u128) -> Result<Number, Executi
         }
     } else {
         signed.unsigned_abs().checked_add(unsigned)
-            .ok_or_else(|| aggregate_overflow())
+            .ok_or_else(aggregate_overflow)
             .and_then(mixed_negative)
     }
 }
@@ -111,14 +111,14 @@ pub(super) fn checked_binary(
         (a, b) => {
             op(number_as_i128(a)?, number_as_i128(b)?)
                 .map(Number::Signed)
-                .ok_or_else(|| aggregate_overflow())
+                .ok_or_else(aggregate_overflow)
         }
     }
 }
 
 fn multiply_unsigned_signed(unsigned: u128, signed: i128) -> Result<Number, ExecutionError> {
     let magnitude = unsigned.checked_mul(signed.unsigned_abs())
-        .ok_or_else(|| aggregate_overflow())?;
+        .ok_or_else(aggregate_overflow)?;
     if signed < 0 {
         mixed_negative(magnitude)
     } else {
@@ -142,7 +142,7 @@ pub(super) fn checked_multiply(left: Number, right: Number) -> Result<Number, Ex
             number_as_i128(a)?
                 .checked_mul(number_as_i128(b)?)
                 .map(Number::Signed)
-                .ok_or_else(|| aggregate_overflow())
+                .ok_or_else(aggregate_overflow)
         }
     }
 }
