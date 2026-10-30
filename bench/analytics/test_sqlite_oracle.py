@@ -51,6 +51,16 @@ class SqliteOracleTests(unittest.TestCase):
         self.assertFalse(cell_equal(r"\0", "0"))
         self.assertTrue(cell_equal(r"\0", "\x00"))
 
+    def test_direct_row_comparison_rejects_missing_and_extra_rows(self):
+        from sqlite_oracle import assert_ordered_rows, assert_unordered_rows
+        for checker in (assert_ordered_rows, assert_unordered_rows):
+            with self.subTest(checker=checker.__name__):
+                with self.assertRaisesRegex(ValueError, "row count mismatch"):
+                    checker([["1"]], [(1,), (2,)])
+                with self.assertRaisesRegex(ValueError, "row count mismatch"):
+                    checker([["1"], ["2"]], [(1,)])
+                checker([["1"]], [(1,)])
+
     def test_ties_compare_as_a_multiset(self):
         with self.assertRaisesRegex(ValueError, "row 1"):
             assert_matches(b"B\t2\nA\t1\n", [("A", 1), ("B", 2)])
