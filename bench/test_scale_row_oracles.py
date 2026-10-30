@@ -1,6 +1,6 @@
 import unittest
 
-from bench.scale.row_oracles import make_oracles, modulo_reference, sum_range, progression_reference
+from bench.scale.row_oracles import make_oracles, modulo_reference, sum_range, progression_reference, progression_modulo_reference
 
 
 class RowOracleTests(unittest.TestCase):
@@ -61,6 +61,42 @@ class RowOracleTests(unittest.TestCase):
         self.assertEqual(modulo_interval_reference(start, start, 2, 1),
                          {"count": 0, "sum": 0})
 
+
+
+
+class ProgressionModuloTests(unittest.TestCase):
+    def test_reduced_modular_inverse_matches_small_bruteforce(self):
+        for modulus in range(1, 16):
+            for residue in range(modulus):
+                for start in (0, 1, 8, 14):
+                    for step in (1, 2, 3, 7):
+                        rows = 29
+                        matching = [start + index * step for index in range(rows)
+                                    if (start + index * step) % modulus == residue]
+                        self.assertEqual(
+                            progression_modulo_reference(start, rows, step, modulus, residue),
+                            {"count": len(matching), "sum": sum(matching)},
+                            (start, rows, step, modulus, residue),
+                        )
+
+    def test_non_coprime_and_full_uint64_values(self):
+        self.assertEqual(
+            progression_modulo_reference(1, 100, 6, 12, 0),
+            {"count": 0, "sum": 0})
+        top = (1 << 64) - 1
+        self.assertEqual(
+            progression_modulo_reference(top - 2, 2, 2, 2, 1),
+            {"count": 2, "sum": 2 * top - 2})
+
+    def test_custom_cli_oracle_fields_are_opt_in(self):
+        result = make_oracles(20, start=3, step=2, modulus=5, residue=1)
+        self.assertEqual(result["modulo"],
+                         progression_modulo_reference(3, 20, 2, 5, 1))
+        self.assertNotIn("modulo", make_oracles(20))
+        with self.assertRaisesRegex(ValueError, "requires modulus"):
+            make_oracles(3, residue=1)
+        with self.assertRaisesRegex(ValueError, "modulus"):
+            make_oracles(3, modulus=True)
 
 if __name__ == "__main__":
     unittest.main()
