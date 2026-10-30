@@ -235,6 +235,31 @@ fn read_complete_schema(
     Ok(bytes)
 }
 
+fn verify_schema_after_read(
+    path: &Path,
+    file: &fs::File,
+    before: &fs::Metadata,
+) -> std::io::Result<()> {
+    let opened = file.metadata()?;
+    let current = fs::symlink_metadata(path)?;
+    for after in [&opened, &current] {
+        if !after.file_type().is_file()
+            || after.len() != before.len()
+            || after.modified()? != before.modified()?
+        {
+            return Err(std::io::Error::other("catalog schema changed during read"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if after.dev() != before.dev() || after.ino() != before.ino() {
+                return Err(std::io::Error::other("catalog schema replaced during read"));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     let path = schema_path(catalog, name);
     let metadata = fs::symlink_metadata(&path)
@@ -247,12 +272,14 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
     }
     // Validate the opened inode as well as the original path metadata.
     // A symlink or file replacement between inspection and open must fail.
-    let file = fs::File::open(&path)
+    let mut file = fs::File::open(&path)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
     #[cfg(unix)]
     validate_schema_identity(&metadata, &file)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
-    let bytes = read_complete_schema(file, name, metadata.len())?;
+    let bytes = read_complete_schema(&mut file, name, metadata.len())?;
+    verify_schema_after_read(&path, &file, &metadata)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?;
     let content = String::from_utf8(bytes)
         .map_err(|_| format!("invalid UTF-8 in schema for table {name}"))?;
     let mut lines = content.lines();
@@ -590,6 +617,32 @@ mod durable_catalog_rename_tests {
         rename_table(&root, "original", "renamed").unwrap();
         assert!(!schema_path(&root, "original").exists());
         assert_eq!(read_schema(&root, "renamed").unwrap(), columns);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod postread_catalog_schema_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_same_length_schema_replacement_after_open() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-catalog-after-read-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("events.schema");
+        let moved = root.join("moved.schema");
+        fs::write(&path, b"rusthouse-schema-v1\nid\tUInt64\n").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let original = file.metadata().unwrap();
+        assert!(verify_schema_after_read(&path, &file, &original).is_ok());
+        fs::rename(&path, &moved).unwrap();
+        fs::write(&path, b"rusthouse-schema-v1\nid\tUInt64\n").unwrap();
+        assert!(verify_schema_after_read(&path, &file, &original).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
