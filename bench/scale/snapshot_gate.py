@@ -4,12 +4,15 @@ Metadata describes rows on disk, but a COUNT(*) may use metadata-only paths.
 """
 import argparse
 import json
+import math
 import subprocess
 from pathlib import Path
 
 
 def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
-                     max_parts=None):
+                     max_parts=None, timeout=600):
+    if (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0):
+        raise ValueError("snapshot timeout must be positive and finite")
     if type(min_rows) is not int or not 1 <= min_rows <= (1 << 64) - 1:
         raise ValueError("min_rows must be a positive UInt64 integer")
     if max_parts is not None and (
@@ -18,7 +21,7 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
     execute = run or subprocess.run
     result = execute(
         [str(binary), "inspect-snapshot", str(path), "--json"],
-        capture_output=True, check=False, timeout=600,
+        capture_output=True, check=False, timeout=timeout,
     )
     if result.returncode:
         raise RuntimeError(f"snapshot inspection failed: {result.stderr.decode('utf-8', 'replace')[-600:]}")
@@ -63,11 +66,12 @@ def main(argv=None):
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--min-rows", type=int, default=1_000_000_000)
     parser.add_argument("--max-parts", type=int)
+    parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         report = inspect_snapshot(args.binary, args.part, min_rows=args.min_rows,
-                                  max_parts=args.max_parts)
+                                  max_parts=args.max_parts, timeout=args.timeout)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
