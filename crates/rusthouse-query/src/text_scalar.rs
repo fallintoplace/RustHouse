@@ -224,6 +224,8 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "BASE32ENCODE"
+            | "TO_BASE32"
             | "ENDSWITHCASEINSENSITIVE"
             | "STARTSWITHCASEINSENSITIVE"
             | "BIN"
@@ -3270,6 +3272,45 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(matched))
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "BASE32ENCODE" | "TO_BASE32" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "base32Encode requires one argument")?;
+            match input {
+                Some(input) => {
+                    let size = input
+                        .len()
+                        .div_ceil(5)
+                        .checked_mul(8)
+                        .ok_or_else(|| ParseError("Base32 output is too large".into()))?;
+                    if size > MAX_TEXT_BYTES {
+                        return Err(ParseError("Base32 output is too large".into()));
+                    }
+                    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+                    let mut output = String::with_capacity(size);
+                    let mut bits = 0_u16;
+                    let mut available = 0_u8;
+                    for byte in input.bytes() {
+                        bits = (bits << 8) | u16::from(byte);
+                        available += 8;
+                        while available >= 5 {
+                            available -= 5;
+                            let index = (bits >> available) as usize & 31;
+                            output.push(char::from(alphabet[index]));
+                        }
+                        bits &= (1_u16 << available) - 1;
+                    }
+                    if available > 0 {
+                        let index = (bits << (5 - available)) as usize & 31;
+                        output.push(char::from(alphabet[index]));
+                    }
+                    while output.len() % 8 != 0 {
+                        output.push('=');
+                    }
+                    ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
             }
         }
         "CONTAINS" => {
