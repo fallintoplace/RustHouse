@@ -287,14 +287,14 @@ mod tests {
     fn small_and_large_schema_validation_preserves_duplicate_checks() {
         for count in [1usize, 2, 8, 9, 32] {
             let entries = (0..count)
-                .map(|index| format!("id_{index} UInt64\n"))
+                .map(|index| format!("`id_{index}` UInt64\n"))
                 .collect::<String>();
             let document = format!("columns format version: 1\n{count} columns:\n{entries}");
             assert_eq!(parse_columns(&document).unwrap().len(), count);
             if count > 1 {
                 let repeated = entries.replacen(
-                    &format!("id_{} UInt64\n", count - 1),
-                    "id_0 UInt64\n",
+                    &format!("`id_{}` UInt64\n", count - 1),
+                    "`id_0` UInt64\n",
                     1,
                 );
                 let duplicate = format!("columns format version: 1\n{count} columns:\n{repeated}");
