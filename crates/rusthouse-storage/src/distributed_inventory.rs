@@ -37,7 +37,15 @@ pub fn inventory_snapshot(
     max_bytes: u64,
 ) -> Result<Vec<InventoryEntry>, PartError> {
     let active = resolve_active_snapshot(root)?;
-    let parts = query_parts(&active)?;
+    inventory_active_snapshot(&active, max_files, max_bytes)
+}
+
+fn inventory_active_snapshot(
+    active: &Path,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<Vec<InventoryEntry>, PartError> {
+    let parts = query_parts(active)?;
     // A typical wide part has several streams plus its metadata files.
     // Cap the estimate to avoid excessive allocations for sparse inventories.
     let estimated_file_capacity = parts.len().saturating_mul(8).min(max_files).min(1024);
@@ -123,7 +131,8 @@ pub fn inventory_snapshot_crc32c(
     max_bytes: u64,
 ) -> Result<Vec<CheckedInventoryEntry>, PartError> {
     let active = resolve_active_snapshot(root)?;
-    let entries = inventory_snapshot(&active, max_files, max_bytes)?;
+    // Inventory exactly the resolved generation without another pointer lookup.
+    let entries = inventory_active_snapshot(&active, max_files, max_bytes)?;
     const PARALLEL_THRESHOLD: usize = 64;
     if entries.len() < PARALLEL_THRESHOLD {
         return entries
@@ -359,6 +368,31 @@ mod checksummed_inventory_tests {
 mod pinned_inventory_tests {
     use super::*;
     use crate::{Column, write_wide_part};
+
+    #[test]
+    fn resolved_generation_inventory_matches_the_public_root_inventory() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-inventory-single-resolve-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let active = root.join(".rusthouse-versions").join("g1");
+        fs::create_dir_all(&active).unwrap();
+        write_wide_part(
+            &active.join("all_0_0_0"),
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("42".into())]],
+        ).unwrap();
+        fs::write(root.join(".rusthouse-active"), b"g1\n").unwrap();
+        let direct = inventory_active_snapshot(&active, 128, 1_000_000).unwrap();
+        let via_root = inventory_snapshot(&root, 128, 1_000_000).unwrap();
+        assert_eq!(via_root, direct);
+        let checksummed = inventory_snapshot_crc32c(&root, 128, 1_000_000).unwrap();
+        assert_eq!(
+            checksummed.iter().map(|entry| (&entry.relative_path, entry.bytes)).collect::<Vec<_>>(),
+            direct.iter().map(|entry| (&entry.relative_path, entry.bytes)).collect::<Vec<_>>(),
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn checksums_follow_one_selected_immutable_generation() {
