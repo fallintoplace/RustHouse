@@ -157,7 +157,10 @@ def assert_matches(output, expected_rows, unordered=False):
 
 
 def sqlite_query(path, sql):
-    database_uri = Path(path).resolve().as_uri() + "?mode=ro"
+    path = Path(path)
+    if path.is_symlink():
+        raise ValueError("SQLite reference must not be a symlink")
+    database_uri = path.resolve().as_uri() + "?mode=ro"
     with closing(sqlite3.connect(database_uri, uri=True)) as connection:
         rows = connection.execute(sql).fetchmany(100_001)
         if len(rows) > 100_000:

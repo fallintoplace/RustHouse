@@ -71,6 +71,18 @@ class SqliteOracleTests(unittest.TestCase):
                 sqlite_query(missing, "SELECT 1")
             self.assertFalse(missing.exists())
 
+    def test_sqlite_oracle_refuses_symlinked_database(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "source.sqlite"
+            with closing(sqlite3.connect(path)) as db:
+                db.execute("CREATE TABLE t(x INTEGER)")
+                db.commit()
+            alias = Path(root) / "alias.sqlite"
+            alias.symlink_to(path)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                sqlite_query(alias, "SELECT x FROM t")
+            self.assertEqual(sqlite_query(path, "SELECT x FROM t"), [])
+
     def test_sqlite_query(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "db.sqlite"
