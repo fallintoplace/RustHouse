@@ -107,6 +107,8 @@ jobs:
           else
             cargo build --locked -p rusthouse-cli
           fi
+      - name: Verify durable local database product acceptance
+        run: python3 -m bench.product_acceptance --binary target/debug/rusthouse
       - name: Verify 20 generated SQL queries
         run: |
           python3 -m bench workload latency -- \
