@@ -302,6 +302,7 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
 }
 
 pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
+    let _lock = lock(database)?;
     let cols = columns(database, &update.table)?;
     let filter = RowPredicate::new(&update.select, &cols).map_err(|error| error.to_string())?;
     let assignments = update
@@ -319,7 +320,7 @@ pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
         })
         .collect::<Result<Vec<_>, String>>()?;
     let mut changed = 0usize;
-    rewrite::rewrite_rows(database, &update.table, |batch, row, values| {
+    rewrite::rewrite_rows_locked(database, &update.table, |batch, row, values| {
         if filter.matches(batch, row) {
             for (index, literal) in &assignments {
                 values[*index] = literal.clone();
@@ -334,13 +335,14 @@ pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
 
 /// Delete matching rows by switching a complete immutable snapshot.
 pub(super) fn delete(database: &Path, select: &Select) -> Result<(), String> {
+    let _lock = lock(database)?;
     let Some(Source::Table(name)) = select.source.as_ref() else {
         return Err("DELETE requires a stored database table".into());
     };
     let cols = columns(database, name)?;
     let filter = RowPredicate::new(select, &cols).map_err(|error| error.to_string())?;
     let mut removed = 0usize;
-    let (scanned, retained) = rewrite::rewrite_rows(database, name, |batch, row, _| {
+    let (scanned, retained) = rewrite::rewrite_rows_locked(database, name, |batch, row, _| {
         if filter.matches(batch, row) {
             removed += 1;
             Ok(false)
@@ -658,5 +660,26 @@ mod large_copy_row_layout_tests {
         let source = vec![Some("replaced".into()), Some("final".into())];
         let result = order_stream_row(source, &[1, 1], 3, false);
         assert_eq!(result, [None, Some("final".into()), None]);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod mutation_lock_order_tests {
+    use super::*;
+
+    #[test]
+    fn update_acquires_lock_before_reading_table_schema() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-update-lock-order-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let held = lock(&dir).unwrap();
+        let update_statement =
+            rusthouse_query::parse_update("UPDATE missing SET id = 1").unwrap().unwrap();
+        let error = update(&dir, &update_statement).unwrap_err();
+        assert!(error.contains("acquire database write lock"), "{error}");
+        drop(held);
+        fs::remove_dir_all(dir).unwrap();
     }
 }
