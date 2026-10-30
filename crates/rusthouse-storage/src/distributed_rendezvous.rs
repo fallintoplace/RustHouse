@@ -51,6 +51,12 @@ fn score_with_seed(seed: u64, node: &str) -> u64 {
     hash_bytes(hash_bytes(seed, &length), node.as_bytes())
 }
 
+fn weighted_rank_order(left: &(f64, &str), right: &(f64, &str)) -> std::cmp::Ordering {
+    left.0
+        .total_cmp(&right.0)
+        .then_with(|| left.1.cmp(right.1))
+}
+
 /// Rank up to 64 distinct nodes for one shard. This is placement, not membership consensus.
 pub fn replicas_for(
     shard: &str,
@@ -148,14 +154,10 @@ pub fn weighted_replicas_for(
     }
     if replicas < ranked.len() {
         // Partition first; sorting just the selected replica prefix is enough.
-        ranked.select_nth_unstable_by(replicas, |left, right| {
-            left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
-        });
+        ranked.select_nth_unstable_by(replicas, weighted_rank_order);
         ranked.truncate(replicas);
     }
-    ranked.sort_unstable_by(|left, right| {
-        left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
-    });
+    ranked.sort_unstable_by(weighted_rank_order);
     Ok(ranked
         .into_iter()
         .take(replicas)
