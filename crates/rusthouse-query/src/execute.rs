@@ -689,7 +689,7 @@ fn parallel_integer_minmax(
                 let names = &names;
                 let branches = &branches;
                 let parts = &parts;
-                scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
+                std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Option<Number>, ExecutionError> {
                     let mut state = AggregateState::new(*function);
                     while let Some(index) = next_part_index(next, parts.len()) {
                         let mut reader =
@@ -703,9 +703,11 @@ fn parallel_integer_minmax(
                         }
                     }
                     Ok(state.value)
-                })
+                }).map_err(|error| ExecutionError::Invalid(format!(
+                    "cannot start parallel extremum worker: {error}"
+                )))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let mut extremum = None;
         for handle in handles {
             if let Some(value) = handle.join().map_err(|_| {
@@ -844,7 +846,7 @@ fn parallel_integer_sum(
                     let end = (begin + chunk).min(marks);
                     let scan_columns = &scan_columns;
                     let comparisons = &comparisons;
-                    scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
+                    std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Option<Number>, ExecutionError> {
                         let mut reader =
                             rusthouse_storage::NumericPartReader::open(single_part, scan_columns)?;
                         reader.seek_to_mark(begin)?;
@@ -859,9 +861,11 @@ fn parallel_integer_sum(
                             }
                         }
                         Ok(state.value)
-                    })
+                    }).map_err(|error| ExecutionError::Invalid(format!(
+                        "cannot start parallel SUM worker: {error}"
+                    )))
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()?;
             let mut total = None;
             for handle in handles {
                 let partial = handle.join().map_err(|_| {
@@ -881,7 +885,7 @@ fn parallel_integer_sum(
                 let comparisons = &comparisons;
                 let next = &next;
                 let parts = &parts;
-                scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
+                std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Option<Number>, ExecutionError> {
                     let mut result = None;
                     while let Some(index) = next_part_index(next, parts.len()) {
                         // Scan compressed numeric columns directly, without
@@ -901,9 +905,11 @@ fn parallel_integer_sum(
                         result = add_integer_partial(result, state.value)?;
                     }
                     Ok(result)
-                })
+                }).map_err(|error| ExecutionError::Invalid(format!(
+                    "cannot start parallel SUM worker: {error}"
+                )))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let mut total = None;
         for handle in handles {
             let partial = handle
