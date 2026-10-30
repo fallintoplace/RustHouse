@@ -3218,6 +3218,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL_DECODE requires one argument")?;
             match input {
+                Some(input)
+                    if !input.contains('%')
+                        && (name != "DECODEURLFORMCOMPONENT" || !input.contains('+')) =>
+                {
+                    // Common case: no decoding work is needed, so reuse the String.
+                    ConstantValue::Text(input)
+                }
                 Some(input) => {
                     let source = input.as_bytes();
                     let mut result = Vec::with_capacity(source.len());
