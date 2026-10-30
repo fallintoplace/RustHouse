@@ -130,11 +130,19 @@ fn validate_block_ranges(ranges: &mut HashMap<String, Vec<(u64, u64)>>) -> Resul
     Ok(())
 }
 
+fn entry_present(path: &Path) -> Result<bool, PartError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error(path, error)),
+    }
+}
+
 /// List complete active wide parts from an offline snapshot.
 /// Refuse overlapping block ranges rather than double-count replaced parts.
 pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
     require_snapshot_directory(path, "snapshot source must be a real directory")?;
-    if path.join("count.txt").exists() || path.join("columns.txt").exists() {
+    if entry_present(&path.join("count.txt"))? || entry_present(&path.join("columns.txt"))? {
         return Ok(vec![path.to_owned()]);
     }
     let mut parts = Vec::new();
@@ -155,8 +163,8 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
             continue;
         }
         let child = entry.path();
-        let has_count = child.join("count.txt").exists();
-        let has_columns = child.join("columns.txt").exists();
+        let has_count = entry_present(&child.join("count.txt"))?;
+        let has_columns = entry_present(&child.join("columns.txt"))?;
         if !has_count && !has_columns {
             continue; // e.g. detached/, shadow/ or non-part metadata.
         }
@@ -806,6 +814,28 @@ mod active_pointer_length_tests {
         assert_eq!(resolve_active_snapshot(&root).unwrap(), first);
         fs::write(root.join(".rusthouse-active"), b"g100\n").unwrap();
         assert_eq!(resolve_active_snapshot(&root).unwrap(), second);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod dangling_part_metadata_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn dangling_metadata_links_are_not_silently_skipped() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-part-metadata-link-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let part = root.join("all_0_0_0");
+        fs::create_dir_all(&part).unwrap();
+        symlink("missing-count", part.join("count.txt")).unwrap();
+        assert!(query_parts(&root).is_err());
+        symlink("missing-columns", part.join("columns.txt")).unwrap();
+        assert_eq!(query_parts(&root).unwrap(), vec![part]);
+        assert!(inspect_query_source(&root).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
