@@ -41,11 +41,15 @@ def refuse_live_database(source):
             os.close(fd)
 
 
+def raise_walk_error(error):
+    raise error
+
+
 def validate_tree(root, max_bytes=None, max_entries=1_000_000):
     """Reject symlinks, special files and oversized source or copied trees."""
     total_bytes = 0
     total_entries = 0
-    for base, directories, files in os.walk(root, followlinks=False):
+    for base, directories, files in os.walk(root, followlinks=False, onerror=raise_walk_error):
         for item in directories + files:
             total_entries += 1
             if total_entries > max_entries:
@@ -67,7 +71,7 @@ def validate_tree(root, max_bytes=None, max_entries=1_000_000):
 
 def sync_copied_tree(root):
     """Persist copied files and directory entries before backup publication."""
-    for directory, _subdirs, files in os.walk(root, topdown=False, followlinks=False):
+    for directory, _subdirs, files in os.walk(root, topdown=False, followlinks=False, onerror=raise_walk_error):
         folder = Path(directory)
         for name in files:
             path = folder / name
