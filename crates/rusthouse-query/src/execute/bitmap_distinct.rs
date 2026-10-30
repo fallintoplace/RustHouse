@@ -5,7 +5,7 @@ use super::ExecutionError;
 use std::collections::HashMap;
 
 const WORDS_PER_BLOCK: usize = 1024;
-const MAX_BLOCKS: usize = 32_768; // Limit occupied prefixes independently of representation.
+const MAX_BLOCKS: usize = 65_536; // All UInt16 prefixes, still bounded by sparse and dense memory caps.
 const MAX_SPARSE_KEYS: usize = 131_072; // Bound HashSet memory across all prefixes.
 const MAX_DENSE_BLOCKS: usize = 8_192; // 64 MiB of 8 KiB bitmaps.
 
@@ -52,7 +52,7 @@ impl BitmapDistinct32 {
         }
         if self.blocks.len() >= MAX_BLOCKS && !self.blocks.contains_key(&prefix) {
             return Err(ExecutionError::Invalid(
-                "COUNT(DISTINCT) exceeded its 32768-prefix budget".into(),
+                "COUNT(DISTINCT) exceeded its 65536-prefix budget".into(),
             ));
         }
         if self.dense_blocks >= MAX_DENSE_BLOCKS
@@ -120,7 +120,7 @@ impl BitmapDistinct32 {
             .is_none_or(|n| n > MAX_BLOCKS)
         {
             return Err(ExecutionError::Invalid(
-                "COUNT(DISTINCT) exceeded its 32768-prefix budget".into(),
+                "COUNT(DISTINCT) exceeded its 65536-prefix budget".into(),
             ));
         }
         for (&prefix, incoming) in &other.blocks {
@@ -313,17 +313,19 @@ mod merge_tests {
     }
 
     #[test]
-    fn prefix_budget_rejects_merge_without_partial_mutation() {
+    fn full_uint32_prefix_space_is_exact_and_works_with_existing_merge() {
         let mut full = BitmapDistinct32::new();
         for prefix in 0..MAX_BLOCKS {
             full.insert((prefix as u32) << 16).unwrap();
         }
+        for prefix in 0..MAX_BLOCKS {
+            full.insert((prefix as u32) << 16).unwrap();
+        }
+        assert_eq!(full.len(), MAX_BLOCKS as u64);
         let mut incoming = BitmapDistinct32::new();
-        incoming.insert(0).unwrap();
-        incoming.insert((MAX_BLOCKS as u32) << 16).unwrap();
-        assert!(full.merge_from(&incoming).is_err());
-        assert_eq!(full.len(), MAX_BLOCKS as u64);
-        full.insert(0).unwrap();
-        assert_eq!(full.len(), MAX_BLOCKS as u64);
+        incoming.insert(1).unwrap();
+        incoming.insert(((MAX_BLOCKS - 1) as u32) << 16 | 1).unwrap();
+        full.merge_from(&incoming).unwrap();
+        assert_eq!(full.len(), MAX_BLOCKS as u64 + 2);
     }
 }
