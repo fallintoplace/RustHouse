@@ -71,6 +71,22 @@ class PairedDuckDbTests(unittest.TestCase):
                            lambda engine, statement: (b"B\nA\nA\n", 0.001),
                            1, 0, comparison="unordered")
 
+    def test_failed_paired_query_spools_and_bounds_stderr(self):
+        import subprocess
+        from unittest import mock
+        from bench.tpch import paired_duckdb as runner
+
+        def fake_run(command, **kwargs):
+            self.assertNotEqual(kwargs["stderr"], subprocess.PIPE)
+            kwargs["stderr"].write(b"x" * 100_000 + b"error detail")
+            return subprocess.CompletedProcess(command, 1)
+
+        with mock.patch.object(runner.subprocess, "run", side_effect=fake_run):
+            with self.assertRaises(RuntimeError) as caught:
+                runner.invoke(["fake"], 5)
+        self.assertIn("error detail", str(caught.exception))
+        self.assertLess(len(str(caught.exception)), 540)
+
     def test_cli_output_is_spooled_and_capped(self):
         import subprocess
         from unittest import mock
