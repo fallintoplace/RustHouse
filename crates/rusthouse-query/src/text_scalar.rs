@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "POSITIONCASEINSENSITIVEUTF8"
             | "NORMALIZEIPV6"
     )
 }
@@ -2911,6 +2912,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                         .any(|word| word == token);
                     ConstantValue::Integer(i64::from(found))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "POSITIONCASEINSENSITIVEUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "positionCaseInsensitiveUTF8 requires a needle")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after positionCaseInsensitiveUTF8")?;
+            match (input, needle) {
+                (Some(input), Some(needle)) => {
+                    let lower = input.to_lowercase();
+                    let target = needle.to_lowercase();
+                    let index = lower
+                        .find(target.as_str())
+                        .map(|byte_index| lower[..byte_index].chars().count() + 1)
+                        .unwrap_or(0);
+                    ConstantValue::Integer(i64::try_from(index).map_err(|_| {
+                        ParseError("positionCaseInsensitiveUTF8 result exceeds Int64".into())
+                    })?)
                 }
                 _ => ConstantValue::Null,
             }
