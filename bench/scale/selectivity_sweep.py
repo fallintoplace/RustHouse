@@ -40,7 +40,8 @@ def run_sweep(binary, part, rows, *, samples=3, timeout=600,
             )
             elapsed = time.perf_counter() - start
             if completed.returncode:
-                raise RuntimeError(f"failed predicate threshold {threshold}: {completed.stderr!r}")
+                reason = completed.stderr[-600:].decode("utf-8", "replace")
+                raise RuntimeError(f"failed predicate threshold {threshold}: {reason}")
             if completed.stdout != expected:
                 raise ValueError(f"threshold {threshold}: result differs from sequential-id oracle")
             durations.append(elapsed)
