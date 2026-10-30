@@ -23,8 +23,8 @@ SUM_SQL = "SELECT sum(id) FROM events WHERE id % 2 = 0"
 
 def even_reference(rows):
     """For input integers 0..rows-1, return even-row count and sum."""
-    if type(rows) is not int or rows < 1:
-        raise ValueError("rows must be positive")
+    if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
+        raise ValueError("rows must be positive UInt64")
     count = (rows + 1) // 2
     return count, count * (count - 1)
 
