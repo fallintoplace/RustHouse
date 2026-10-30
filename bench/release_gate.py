@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+from statistics import median
 import sys
 from pathlib import Path
 
@@ -90,6 +91,26 @@ def verify(report, required, expected_revision=None):
     return len(seen)
 
 
+def verify_latency_baseline(candidate, baseline, required, max_slowdown=1.25):
+    """Reject median latency regressions after both reports pass correctness checks."""
+    if (type(max_slowdown) not in (int, float) or
+            not math.isfinite(max_slowdown) or max_slowdown < 1):
+        raise ValueError("max slowdown must be a finite ratio >= 1")
+    verify(candidate, required)
+    verify(baseline, required)
+    prior = {row["query"]: row for row in baseline["results"]}
+    for row in candidate["results"]:
+        number = row["query"]
+        old = prior[number]
+        old_samples = old.get("timings_seconds", old.get("seconds"))
+        new_samples = row.get("timings_seconds", row.get("seconds"))
+        old_median = median(old_samples)
+        new_median = median(new_samples)
+        if (old_median == 0 and new_median > 0) or (
+                old_median > 0 and new_median > old_median * max_slowdown):
+            raise ValueError(f"query {number} exceeds median latency slowdown limit")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path, help="JSON emitted by a RustHouse benchmark runner")
@@ -101,11 +122,18 @@ def main(argv=None):
         "--queries", required=True,
         help="required query IDs, e.g. 1-43 or 1,6,12",
     )
+    parser.add_argument("--baseline-manifest", type=Path,
+                        help="Compare current median query timings against verified baseline")
+    parser.add_argument("--max-median-slowdown", type=float, default=1.25,
+                        help="Maximum allowed candidate/baseline median ratio")
     args = parser.parse_args(argv)
     try:
         required = parse_query_ids(args.queries)
         report = load_manifest(args.report)
         count = verify(report, required, args.expected_revision)
+        if args.baseline_manifest is not None:
+            baseline = load_manifest(args.baseline_manifest)
+            verify_latency_baseline(report, baseline, required, args.max_median_slowdown)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"release SQL gate failed: {error}", file=sys.stderr)
         return 1
