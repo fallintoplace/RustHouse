@@ -6,6 +6,10 @@ const DAY_SECONDS: i64 = 86_400;
 const MIN_YEAR: i64 = 1900;
 const MAX_YEAR: i64 = 2299;
 
+pub(super) fn render_datetime64_utc(seconds: i64) -> Result<String, ParseError> {
+    Temporal::render(seconds, true)
+}
+
 pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
