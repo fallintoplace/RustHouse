@@ -6,6 +6,20 @@ import math
 import sys
 from pathlib import Path
 
+MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+
+
+def load_manifest(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("manifest must be a regular non-symlinked file")
+    with path.open("rb") as source:
+        payload = source.read(MAX_MANIFEST_BYTES + 1)
+    if len(payload) > MAX_MANIFEST_BYTES:
+        raise ValueError("manifest exceeds 2 MiB")
+    return json.loads(payload)
+
+
 
 def parse_query_ids(spec):
     ids = set()
@@ -90,7 +104,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         required = parse_query_ids(args.queries)
-        report = json.loads(args.report.read_text(encoding="utf-8"))
+        report = load_manifest(args.report)
         count = verify(report, required, args.expected_revision)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"release SQL gate failed: {error}", file=sys.stderr)

@@ -14,6 +14,17 @@ import time
 from pathlib import Path
 
 
+def read_reference(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("reference must be a regular non-symlinked file")
+    with path.open("rb") as stream:
+        payload = stream.read(1024 * 1024 + 1)
+    if len(payload) > 1024 * 1024:
+        raise ValueError("reference exceeds 1 MiB")
+    return payload
+
+
 def run_readers(binary, part, sql, expected, *, clients=4, rounds=3,
                 timeout=120, execute=None):
     if (type(clients) is not int or type(rounds) is not int
@@ -63,12 +74,18 @@ def run_readers(binary, part, sql, expected, *, clients=4, rounds=3,
         results = list(pool.map(one, range(clients * rounds)))
     elapsed = time.perf_counter() - started
     success = [r["seconds"] for r in results if r["ok"]]
+    ordered = sorted(success)
+    def percentile(percent):
+        return ordered[math.ceil(len(ordered) * percent / 100) - 1] if ordered else None
+
     return {"workload": "verified-offline-concurrent-reads",
             "clients": clients, "rounds": rounds, "planned": len(results),
             "verified": len(success), "all_verified": len(success) == len(results),
             "elapsed_seconds": elapsed,
             "verified_queries_per_second": len(success) / elapsed if elapsed > 0 else None,
             "median_query_seconds": statistics.median(success) if success else None,
+            "p95_query_seconds": percentile(95),
+            "p99_query_seconds": percentile(99),
             "results": results}
 
 
@@ -84,10 +101,9 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        if args.expected_file.stat().st_size > 1024 * 1024:
-            raise ValueError("reference exceeds 1 MiB")
+        expected = read_reference(args.expected_file)
         report = run_readers(args.binary, args.part, args.sql,
-                             args.expected_file.read_bytes(), clients=args.clients,
+                             expected, clients=args.clients,
                              rounds=args.rounds, timeout=args.timeout)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:

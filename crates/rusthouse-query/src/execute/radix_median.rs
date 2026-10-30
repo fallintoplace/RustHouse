@@ -6,6 +6,29 @@ use super::predicates::CompiledPredicate;
 use rusthouse_storage::{NumericColumn, NumericQueryReader, PartMetadata, TypedColumn, TypedQueryReader};
 use std::path::Path;
 
+#[cfg(test)]
+mod masked_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn radix_histograms_match_distinct_and_shared_prefixes() {
+        let column = NumericColumn::UInt64(vec![0, 1, 2, 3, 4, 5]);
+        let mut separate = [[0u64; 256]; 2];
+        count_column(&column, None, None, 64, 0, 1, &[0, 1], &mut separate).unwrap();
+        assert_eq!(separate[0][0], 1);
+        assert_eq!(separate[0][2], 1);
+        assert_eq!(separate[0][4], 1);
+        assert_eq!(separate[1][1], 1);
+        assert_eq!(separate[1][3], 1);
+        assert_eq!(separate[1][5], 1);
+        let mut shared = [[0u64; 256]; 2];
+        count_column(&column, None, None, 64, 0, 1, &[0, 0], &mut shared).unwrap();
+        assert_eq!(shared[0], shared[1]);
+        assert_eq!(shared[0][0], 1);
+        assert_eq!(shared[0][1], 0);
+    }
+}
+
 fn width_and_sign(kind: &str) -> Option<(usize, bool)> {
     Some(match kind {
         "UInt8" => (1, false), "UInt16" => (2, false),
@@ -81,20 +104,22 @@ fn count_column(
     prefixes: &[u128; 2],
     histogram: &mut [[u64; 256]; 2],
 ) -> Result<(), ExecutionError> {
-    let shared_prefix = prefixes[0] & prefix_mask == prefixes[1] & prefix_mask;
+    let targets = [prefixes[0] & prefix_mask, prefixes[1] & prefix_mask];
+    let shared_prefix = targets[0] == targets[1];
     let mut visit = |value: u128, row: usize| {
         if nulls.is_some_and(|map| map[row] != 0)
             || included.is_some_and(|mask| !mask[row])
         {
             return;
         }
+        let masked = value & prefix_mask;
         if shared_prefix {
-            if value & prefix_mask == prefixes[0] & prefix_mask {
+            if masked == targets[0] {
                 histogram[0][((value >> shift) & 255) as usize] += 1;
             }
         } else {
             for side in 0..2 {
-                if value & prefix_mask == prefixes[side] & prefix_mask {
+                if masked == targets[side] {
                     histogram[side][((value >> shift) & 255) as usize] += 1;
                 }
             }

@@ -12,8 +12,8 @@ MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 def inspect_table(path, table):
     path = Path(path)
-    if not path.is_file():
-        raise ValueError(f"{table}: converted TSV does not exist: {path}")
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{table}: converted TSV must be a regular, non-symlinked file: {path}")
     expected = "\t".join(names(table)).encode("utf-8")
     digest = hashlib.sha256()
     rows = 0

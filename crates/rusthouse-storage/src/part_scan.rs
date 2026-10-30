@@ -76,12 +76,15 @@ impl NumericPartReader {
         }
         let part = part.as_ref();
         let metadata = inspect_part(part)?;
+        // Wide queries may request hundreds of fields. Resolve schema names
+        // once rather than linearly scanning the schema for every projection.
+        let mut schema = std::collections::HashMap::with_capacity(metadata.columns.len());
+        for column in &metadata.columns {
+            schema.entry(column.name.as_str()).or_insert(column.data_type.as_str());
+        }
         let mut types = Vec::with_capacity(columns.len());
         for name in columns {
-            let column = metadata
-                .columns
-                .iter()
-                .find(|column| column.name == *name)
+            let data_type = *schema.get(name.as_str())
                 .ok_or_else(|| PartError::InvalidScan(format!("unknown column: {name}")))?;
             if !name
                 .bytes()
@@ -91,13 +94,12 @@ impl NumericPartReader {
                     "unsupported column filename: {name}"
                 )));
             }
-            if numeric_storage_type(&column.data_type).is_none() {
+            if numeric_storage_type(data_type).is_none() {
                 return Err(PartError::InvalidScan(format!(
-                    "unsupported numeric column type: {} {}",
-                    column.name, column.data_type
+                    "unsupported numeric column type: {name} {data_type}"
                 )));
             }
-            types.push(column.data_type.as_str());
+            types.push(data_type);
         }
 
         let mut streams = Vec::with_capacity(columns.len());
@@ -324,6 +326,19 @@ mod tests {
             ]
         );
         assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn indexed_schema_resolution_preserves_missing_column_validation() {
+        let dir = fixture();
+        let invalid = NumericPartReader::open(&dir, &["price".into(), "missing".into()]);
+        assert!(matches!(invalid, Err(PartError::InvalidScan(_))));
+        let mut reader = NumericPartReader::open(&dir, &["id".into(), "price".into()]).unwrap();
+        assert_eq!(reader.next_batch().unwrap().unwrap(), vec![
+            NumericColumn::Int32(vec![1, 2]),
+            NumericColumn::UInt16(vec![10, 20]),
+        ]);
         fs::remove_dir_all(dir).unwrap();
     }
 

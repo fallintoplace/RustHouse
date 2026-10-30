@@ -282,9 +282,9 @@ pub fn write_wide_part_with_compression(
         write_tracked_file(part, "count.txt", count.as_bytes(), None, &mut files)?;
 
         if !rows.is_empty() {
-            // Encode up to four columns per batch, rather than retaining the
-            // uncompressed granules of the entire table schema at once.
-            const COLUMN_BATCH: usize = 4;
+            // Release each column's granules after encoding its streams.
+            // Existing marks, compression, checksum and atomic cleanup paths stay unchanged.
+            const COLUMN_BATCH: usize = 1;
             for batch_start in (0..columns.len()).step_by(COLUMN_BATCH) {
                 let batch_end = (batch_start + COLUMN_BATCH).min(columns.len());
                 let mut streams = Vec::with_capacity(COLUMN_BATCH * 3);

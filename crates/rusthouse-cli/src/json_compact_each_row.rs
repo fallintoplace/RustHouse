@@ -66,12 +66,8 @@ fn write_complete_row<W: Write>(
     line: &[u8],
     columns: usize,
 ) -> io::Result<()> {
-    if count_tsv_fields(line) != columns {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "JSON row width differs from header",
-            ));
-        }
+    // Stage one full JSON row and validate its width before sending it.
+        // Counting fields in this encoding pass avoids a full input rescan.
         // Quotes and separators expand plain TSV rows by about three
         // bytes per field, so reserve that framing before serializing.
         let capacity = line
@@ -81,11 +77,19 @@ fn write_complete_row<W: Write>(
         encoded.clear();
         encoded.reserve(capacity);
         encoded.write_all(b"[")?;
-        for (index, value) in line.split(|byte| *byte == b'\t').enumerate() {
-            if index != 0 {
+        let mut field_count = 0usize;
+        for value in line.split(|byte| *byte == b'\t') {
+            if field_count != 0 {
                 encoded.write_all(b",")?;
             }
             write_json_value(&mut *encoded, value)?;
+            field_count += 1;
+        }
+        if field_count != columns {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSON row width differs from header",
+            ));
         }
         encoded.write_all(b"]\n")?;
         output.write_all(encoded)?;
@@ -160,6 +164,22 @@ mod tests {
             writer.finish().unwrap(),
             format!("[\"{value}\"]\n").as_bytes()
         );
+    }
+
+    #[test]
+    fn one_pass_encoding_rejects_wrong_column_counts_atomically() {
+        let mut result = b"before".to_vec();
+        let mut scratch = Vec::new();
+        for (line, columns) in [
+            (b"one".as_slice(), 2usize),
+            (b"one\ttwo\tthree".as_slice(), 2),
+            (b"one".as_slice(), 0),
+        ] {
+            assert!(write_complete_row(&mut result, &mut scratch, line, columns).is_err());
+            assert_eq!(result, b"before");
+        }
+        write_complete_row(&mut result, &mut scratch, b"one\ttwo", 2).unwrap();
+        assert_eq!(result, b"before[\"one\",\"two\"]\n");
     }
 
     #[test]

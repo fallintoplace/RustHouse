@@ -17,6 +17,21 @@ class InputProfileTests(unittest.TestCase):
             self.assertEqual(result["bytes"], len(raw))
             self.assertEqual(result["sha256"], hashlib.sha256(raw).hexdigest())
 
+    def test_rejects_symlinked_tsv_input(self):
+        import os
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            original = directory / "original.tsv"
+            original.write_bytes(b"1\n")
+            alias = directory / "alias.tsv"
+            try:
+                os.symlink(original, alias)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink unavailable")
+            with self.assertRaisesRegex(ValueError, "regular"):
+                profile(alias)
+            self.assertEqual(profile(original)["rows"], 1)
+
     def test_rejects_bad_column_counts(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "events.tsv"
@@ -79,6 +94,18 @@ class InputProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "overflow"):
                 profile(path, verify_sorted_uint64=True)
 
+
+    def test_optional_expected_sha256_checks_streamed_tsv(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "keys.tsv"
+            path.write_bytes(b"0\n1\n2\n")
+            sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            report = profile(path, verify_sorted_uint64=True, expected_sha256=sha)
+            self.assertTrue(report["sha256_verified"])
+            with self.assertRaisesRegex(ValueError, "differs"):
+                profile(path, expected_sha256="0" * 64)
+            with self.assertRaisesRegex(ValueError, "expected_sha256"):
+                profile(path, expected_sha256="X" * 64)
 
 if __name__ == "__main__":
     unittest.main()
