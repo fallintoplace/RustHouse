@@ -9,7 +9,7 @@ use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_CONFIGURED_CONNECTIONS: usize = 64;
 
@@ -161,6 +161,27 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
     Ok((method.to_owned(), target.to_owned(), body, accept_lz4 && method == "POST" && target == "/"))
 }
 
+/// Enforce one total response-write budget, not a fresh timeout per syscall.
+fn write_with_deadline(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let remaining = deadline.checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "response write deadline exceeded"))?;
+        stream.set_write_timeout(Some(remaining))?;
+        // Limit each syscall to 64 KiB and recalculate the budget after it.
+        let written = stream.write(&bytes[..bytes.len().min(64 * 1024)])?;
+        if written == 0 {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "client closed during response"));
+        }
+        bytes = &bytes[written..];
+    }
+    Ok(())
+}
+
 fn respond(stream: &mut TcpStream, response: Response, allow_lz4: bool) -> io::Result<()> {
     // Compress only large successful analytical responses and only when the
     // caller opted into our private peer encoding. Older clients are unchanged.
@@ -174,15 +195,16 @@ fn respond(stream: &mut TcpStream, response: Response, allow_lz4: bool) -> io::R
         Some(bytes) => (bytes.as_slice(), "Content-Encoding: x-rusthouse-lz4\r\n"),
         None => (response.body.as_slice(), ""),
     };
-    write!(
-        stream,
+    let header = format!(
         "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Connection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",
         response.status,
         response.content_type,
         body.len(),
         encoding,
-    )?;
-    stream.write_all(body)
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    write_with_deadline(stream, header.as_bytes(), deadline)?;
+    write_with_deadline(stream, body, deadline)
 }
 
 fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
@@ -477,5 +499,22 @@ mod concurrency_capacity_tests {
             assert!(parse_max_connections(invalid).is_err(), "{invalid}");
         }
         assert_eq!(MAX_CONNECTIONS, 16);
+    }
+}
+
+#[cfg(test)]
+mod response_write_deadline_tests {
+    use super::*;
+
+    #[test]
+    fn deadline_failure_happens_before_any_network_write() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let error = write_with_deadline(
+            &mut server, b"not sent", Instant::now() - Duration::from_millis(1)
+        ).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        drop(client);
     }
 }
