@@ -4,6 +4,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+pub(crate) const MAX_REPLICA_INVENTORY_FILES: usize = 131_072;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InventoryEntry {
     pub relative_path: PathBuf,
@@ -46,6 +48,8 @@ fn inventory_active_snapshot(
     max_bytes: u64,
 ) -> Result<Vec<InventoryEntry>, PartError> {
     let parts = query_parts(active)?;
+    // Protect callers that request usize::MAX against unbounded inventories.
+    let max_files = max_files.min(MAX_REPLICA_INVENTORY_FILES);
     // A typical wide part has several streams plus its metadata files.
     // Cap the estimate to avoid excessive allocations for sparse inventories.
     let estimated_file_capacity = parts.len().saturating_mul(8).min(max_files).min(1024);

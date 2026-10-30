@@ -60,6 +60,7 @@ pub fn copy_frozen_snapshot_with_file_limit(
     max_files: usize,
     max_bytes: u64,
 ) -> Result<SnapshotCopy, PartError> {
+    let max_files = max_files.min(crate::distributed_inventory::MAX_REPLICA_INVENTORY_FILES);
     let active = resolve_active_snapshot(source)?;
     let parts = query_parts(&active)?;
     if parts.len() > max_parts || max_parts > 16_384 {
@@ -198,6 +199,7 @@ pub fn preview_frozen_snapshot(
     max_files: usize,
     max_bytes: u64,
 ) -> Result<SnapshotCopy, PartError> {
+    let max_files = max_files.min(crate::distributed_inventory::MAX_REPLICA_INVENTORY_FILES);
     let active = resolve_active_snapshot(source)?;
     let parts = query_parts(&active)?;
     if parts.len() > max_parts || max_parts > 16_384 {
