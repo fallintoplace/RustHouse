@@ -15,7 +15,7 @@ impl UuidValue {
         &self.bytes
     }
 
-    fn from_disk_bytes(mut bytes: [u8; 16]) -> Self {
+    fn decode_uuid_disk_bytes(mut bytes: [u8; 16]) -> Self {
         for half in bytes.chunks_exact_mut(8) {
             half.reverse();
         }
@@ -50,7 +50,7 @@ pub fn read_uuid_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<
         reader,
         rows,
         "UUID batch exceeds 64 MiB",
-        UuidValue::from_disk_bytes,
+        UuidValue::decode_uuid_disk_bytes,
     )
 }
 
@@ -77,7 +77,7 @@ mod tests {
                 Ok(())
             }
         }
-        let value = UuidValue::from_disk_bytes(EXAMPLE);
+        let value = UuidValue::decode_uuid_disk_bytes(EXAMPLE);
         let mut sink = Sink {
             calls: 0,
             output: String::new(),
@@ -90,9 +90,9 @@ mod tests {
     #[test]
     fn on_disk_half_reversal_is_reversible() {
         let disk: [u8; 16] = std::array::from_fn(|index| index as u8);
-        let canonical = UuidValue::from_disk_bytes(disk);
+        let canonical = UuidValue::decode_uuid_disk_bytes(disk);
         assert_eq!(
-            *UuidValue::from_disk_bytes(*canonical.as_bytes()).as_bytes(),
+            *UuidValue::decode_uuid_disk_bytes(*canonical.as_bytes()).as_bytes(),
             disk
         );
     }
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn converts_uuid_disk_halves_independently() {
         let disk = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-        let value = UuidValue::from_disk_bytes(disk);
+        let value = UuidValue::decode_uuid_disk_bytes(disk);
         assert_eq!(
             value.as_bytes(),
             &[7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8]
