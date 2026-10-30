@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import statistics
 import subprocess
 import tempfile
@@ -56,6 +57,12 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
         raise ValueError("runs and warmups must total 1..1000 executions")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
+    if (not isinstance(sql, str) or not sql.strip()
+            or len(sql.encode("utf-8")) > 65_536):
+        raise ValueError("soak requires a bounded read-only SELECT")
+    statement = sql.strip().removesuffix(";").rstrip()
+    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
+        raise ValueError("soak requires one read-only SELECT")
     with Path(expected_file).open("rb") as source:
         reference, size = digest_file(source)
     execute = execute or (lambda: run_sql(binary, database, sql, timeout))
