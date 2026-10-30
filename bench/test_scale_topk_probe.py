@@ -47,6 +47,15 @@ class TopKProbeTests(unittest.TestCase):
                                    "--rows", "5", "--timeout", "42"]), 0)
             self.assertEqual(call.call_args.kwargs["timeout"], 42.0)
 
+    def test_failed_topk_keeps_only_bounded_stderr_tail(self):
+        def failing(*_args, **_kwargs):
+            return SimpleNamespace(returncode=2, stdout=b"",
+                                   stderr=b"a" * 10_000 + b"final failure")
+        with self.assertRaises(RuntimeError) as ctx:
+            probe("rusthouse", "part", 5, execute=failing)
+        self.assertLess(len(str(ctx.exception)), 750)
+        self.assertIn("final failure", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
