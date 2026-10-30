@@ -12,6 +12,19 @@ from common import cli_sql, emit_json
 from fixture import FIELDS
 
 
+
+MAX_SQL_SCRIPT_BYTES = 64 * 1024
+
+
+def read_fixture_sql(path):
+    with Path(path).open("rb") as source:
+        raw = source.read(MAX_SQL_SCRIPT_BYTES + 1)
+    if len(raw) > MAX_SQL_SCRIPT_BYTES:
+        raise ValueError("analytics fixture SQL exceeds 64 KiB")
+    return raw.decode("utf-8").strip().rstrip(";")
+
+
+
 def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
     if (type(timeout) not in (int, float) or not math.isfinite(timeout)
             or timeout <= 0):
@@ -44,8 +57,8 @@ def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
                     raise ValueError(f"hits TSV row {number} differs from SQLite reference")
     if execute is None:
         execute = lambda sql: cli_sql(binary, database, sql, timeout)
-    create = (root / "create.sql").read_text().strip().rstrip(";")
-    copy = (root / "copy.sql").read_text().strip().rstrip(";")
+    create = read_fixture_sql(root / "create.sql")
+    copy = read_fixture_sql(root / "copy.sql")
     if len(copy.encode("utf-8")) > 4096:
         raise ValueError("COPY SQL exceeds statement size limit")
     execute(create)

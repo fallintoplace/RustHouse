@@ -62,5 +62,19 @@ class CapacityPlanTests(unittest.TestCase):
             plan(100, disk_copies=0)
 
 
+    def test_disk_reserve_prevents_filling_available_capacity(self):
+        baseline = plan(100, bytes_per_row=20, disk_budget_bytes=4500,
+                        disk_copies=2)
+        self.assertTrue(baseline["disk_budget_fit"])
+        reserved = plan(100, bytes_per_row=20, disk_budget_bytes=4500,
+                        disk_copies=2, disk_reserve_bytes=600)
+        self.assertFalse(reserved["disk_budget_fit"])
+        self.assertEqual(reserved["required_disk_budget_bytes"], 4600)
+        self.assertEqual(reserved["disk_reserve_bytes"], 600)
+        with self.assertRaisesRegex(ValueError, "disk_reserve_bytes"):
+            plan(100, disk_reserve_bytes=-1)
+        with self.assertRaisesRegex(ValueError, "disk_reserve_bytes"):
+            plan(100, disk_reserve_bytes=True)
+
 if __name__ == "__main__":
     unittest.main()

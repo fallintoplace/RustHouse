@@ -4,7 +4,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 
 from native_reference_fixture import (
-    convert_native_table, create_statement, duckdb_type, load, copy_statement
+    convert_native_table, create_statement, duckdb_type, load, copy_statement, run_bounded
 )
 from schema import TABLES
 
@@ -46,6 +46,30 @@ class NativeFixtureTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "import failed"):
                 load("duckdb", target, root, ["region"], execute=reject)
             self.assertFalse(target.exists())
+
+
+    def test_native_duckdb_cli_capture_is_spooled_and_bounded(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        def excessive(_cmd, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].write(b"x" * (1024 * 1024 + 1))
+            return SimpleNamespace(returncode=0)
+
+        with patch("native_reference_fixture.subprocess.run", side_effect=excessive):
+            with self.assertRaisesRegex(RuntimeError, "1 MiB"):
+                run_bounded(["duckdb"], 30)
+
+        def stderr_failure(_cmd, **kwargs):
+            kwargs["stderr"].write(b"x" * 50000 + b"final error")
+            return SimpleNamespace(returncode=1)
+
+        with patch("native_reference_fixture.subprocess.run", side_effect=stderr_failure):
+            response = run_bounded(["duckdb"], 30)
+        self.assertEqual(response.returncode, 1)
+        self.assertLessEqual(len(response.stderr), 500)
+        self.assertTrue(response.stderr.endswith(b"final error"))
 
     def test_rejects_bad_selection_and_escapes_sql_filename(self):
         with self.assertRaisesRegex(ValueError, "unique"):

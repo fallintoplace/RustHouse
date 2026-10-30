@@ -83,7 +83,7 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
     let opened = file
         .metadata()
         .map_err(|source| marks_io_error(path, source))?;
-    if !opened.file_type().is_file() {
+    if !opened.file_type().is_file() || opened.len() != entry.len() {
         return Err(marks_io_error(
             path,
             io::Error::new(io::ErrorKind::InvalidData, "marks file changed before open"),
@@ -517,5 +517,21 @@ mod raw_mark_identity_tests {
         assert_eq!(read_wide_marks(&path).unwrap().marks.len(), 1);
         assert!(read_wide_marks(dir.join("missing.mrk")).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod raw_marks_size_stability_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn rejects_truncated_raw_mark_records() {
+        let path = std::env::temp_dir().join(format!("rusthouse-raw-mark-size-{}.mrk2", std::process::id()));
+        fs::write(&path, [0u8; 23]).unwrap();
+        assert!(read_wide_marks(&path).is_err());
+        fs::write(&path, [0u8; 24]).unwrap();
+        assert_eq!(read_wide_marks(&path).unwrap().marks.len(), 1);
+        fs::remove_file(path).unwrap();
     }
 }
