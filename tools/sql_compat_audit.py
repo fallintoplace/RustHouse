@@ -54,6 +54,14 @@ def audit(binary, queries, run=subprocess.run, fail_fast=False):
     }
 
 
+def read_queries_file(path):
+    with path.open("rb") as source:
+        raw = source.read(1_048_577)
+    if len(raw) > 1_048_576:
+        raise ValueError("SQL audit input exceeds 1 MiB")
+    return parse_lines(raw.decode("utf-8"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("queries", type=Path, help="one SELECT per line")
@@ -61,7 +69,7 @@ def main():
     parser.add_argument("--fail-fast", action="store_true")
     args = parser.parse_args()
     try:
-        statements = parse_lines(args.queries.read_text(encoding="utf-8"))
+        statements = read_queries_file(args.queries)
         result = audit(args.binary, statements, fail_fast=args.fail_fast)
     except (OSError, UnicodeError, ValueError) as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
