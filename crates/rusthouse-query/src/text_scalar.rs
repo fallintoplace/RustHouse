@@ -2558,11 +2558,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
                     let remaining = input.as_bytes().get(offset..).unwrap_or_default();
                     let needle = needle.as_bytes();
-                    let count = if needle.len() > remaining.len() {
-                        0
-                    } else {
-                        remaining.windows(needle.len()).filter(|w| *w == needle).count()
-                    };
+                    let mut count = 0usize;
+                    if needle.len() <= remaining.len() {
+                        let mut cursor = 0;
+                        while cursor <= remaining.len() - needle.len() {
+                            if remaining[cursor..cursor + needle.len()] == *needle {
+                                count += 1;
+                                cursor += needle.len();
+                            } else {
+                                cursor += 1;
+                            }
+                        }
+                    }
                     ConstantValue::Integer(i64::try_from(count).map_err(|_| {
                         ParseError("COUNT_SUBSTRING count exceeds Int64".into())
                     })?)
