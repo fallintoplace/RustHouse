@@ -89,6 +89,21 @@ class SnapshotGateTests(unittest.TestCase):
 
 
 
+class SnapshotTimeoutTests(unittest.TestCase):
+    def test_custom_snapshot_inspection_timeout(self):
+        def run(command, **kwargs):
+            self.assertEqual(kwargs["timeout"], 2.5)
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "rows": 10, "parts": 1,
+                "columns": [{"name": "id", "type": "UInt64"}]
+            }).encode(), stderr=b"")
+        self.assertEqual(inspect_snapshot("rusthouse", "parts", min_rows=10,
+                                          timeout=2.5, run=run)["physical_rows"], 10)
+        for invalid in (0, -1, float("inf"), float("nan"), True):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "timeout"):
+                inspect_snapshot("rusthouse", "parts", timeout=invalid, run=run)
+
+
 class SnapshotMetadataBudgetTests(unittest.TestCase):
     def test_rejects_oversized_inspection_before_json_parse(self):
         payload = b" " * (2 * 1024 * 1024 + 1)

@@ -4,6 +4,7 @@ Metadata describes rows on disk, but a COUNT(*) may use metadata-only paths.
 """
 import argparse
 import json
+import math
 import subprocess
 import tempfile
 from pathlib import Path
@@ -12,7 +13,9 @@ MAX_SNAPSHOT_REPORT_BYTES = 2 * 1024 * 1024
 
 
 def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
-                     max_parts=None):
+                     max_parts=None, timeout=600):
+    if (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0):
+        raise ValueError("snapshot timeout must be positive and finite")
     if type(min_rows) is not int or not 1 <= min_rows <= (1 << 64) - 1:
         raise ValueError("min_rows must be a positive UInt64 integer")
     if max_parts is not None and (
@@ -23,14 +26,14 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
         with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile() as errors:
             result = subprocess.run(
                 command, stdout=output, stderr=errors,
-                check=False, timeout=600,
+                check=False, timeout=timeout,
             )
             output.seek(0)
             payload = output.read(MAX_SNAPSHOT_REPORT_BYTES + 1)
             errors.seek(max(0, errors.tell() - 600))
             diagnostic = errors.read(600).decode("utf-8", "replace")
     else:
-        result = run(command, capture_output=True, check=False, timeout=600)
+        result = run(command, capture_output=True, check=False, timeout=timeout)
         payload = result.stdout
         diagnostic = result.stderr[-600:].decode("utf-8", "replace")
     if len(payload) > MAX_SNAPSHOT_REPORT_BYTES:
@@ -78,11 +81,12 @@ def main(argv=None):
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--min-rows", type=int, default=1_000_000_000)
     parser.add_argument("--max-parts", type=int)
+    parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         report = inspect_snapshot(args.binary, args.part, min_rows=args.min_rows,
-                                  max_parts=args.max_parts)
+                                  max_parts=args.max_parts, timeout=args.timeout)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
