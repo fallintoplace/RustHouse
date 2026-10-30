@@ -106,6 +106,12 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
             break;
         }
         let (key, value) = parse_header(line)?;
+        if key.eq_ignore_ascii_case("expect") {
+            return Err(Response::text(
+                "417 Expectation Failed",
+                "HTTP expectations are unsupported\n",
+            ));
+        }
         if key.eq_ignore_ascii_case("content-length") {
             if size.is_some() {
                 return Err(Response::text(
@@ -477,5 +483,29 @@ mod concurrency_capacity_tests {
             assert!(parse_max_connections(invalid).is_err(), "{invalid}");
         }
         assert_eq!(MAX_CONNECTIONS, 16);
+    }
+}
+
+#[cfg(test)]
+mod expect_header_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_expect_does_not_wait_for_the_request_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .write_all(
+                b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1024\r\nExpect: 100-continue\r\n\r\n",
+            )
+            .unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        assert_eq!(
+            read_request(&mut server).err().map(|response| response.status),
+            Some("417 Expectation Failed"),
+        );
     }
 }
