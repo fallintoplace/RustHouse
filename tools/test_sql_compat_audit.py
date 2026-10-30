@@ -1,6 +1,8 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock
-from sql_compat_audit import audit, parse_lines
+from sql_compat_audit import audit, parse_lines, read_queries_file
 
 
 class AuditTests(unittest.TestCase):
@@ -37,6 +39,18 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(report["accepted"], 0)
         self.assertIn("--explain", run.call_args.args[0])
         self.assertIn("--database", run.call_args.args[0])
+
+    def test_input_file_is_bounded_before_parsing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "queries.sql"
+            source.write_bytes(b"SELECT 1\n")
+            self.assertEqual(read_queries_file(source), [(1, "SELECT 1")])
+            source.write_bytes(b" " * 1_048_577)
+            with self.assertRaisesRegex(ValueError, "1 MiB"):
+                read_queries_file(source)
+            source.write_bytes(b"SELECT \xff")
+            with self.assertRaises(UnicodeError):
+                read_queries_file(source)
 
 
 if __name__ == "__main__":
