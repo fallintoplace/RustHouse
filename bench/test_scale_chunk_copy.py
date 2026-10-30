@@ -9,6 +9,21 @@ from bench.scale.chunk_copy import copy_sql, load_chunks
 
 
 class ChunkCopyTests(unittest.TestCase):
+    def test_default_copy_process_spools_stderr(self):
+        import subprocess
+        from unittest.mock import patch
+        from bench.scale.chunk_copy import execute_copy
+        def failing(_cmd, **kwargs):
+            self.assertEqual(kwargs["stdout"], subprocess.DEVNULL)
+            kwargs["stderr"].write(b"x" * 4000 + b"failure")
+            return SimpleNamespace(returncode=1)
+        with patch("bench.scale.chunk_copy.subprocess.run", side_effect=failing):
+            code, diagnostic = execute_copy(["fake"], 5)
+        self.assertEqual(code, 1)
+        self.assertTrue(diagnostic.endswith("failure"))
+        self.assertLessEqual(len(diagnostic), 500)
+
+
     def test_escapes_path_and_rejects_identifier_injection(self):
         self.assertIn("WITH (FORMAT TSV)", copy_sql("events", "events.tsv"))
         with self.assertRaisesRegex(ValueError, "identifier"):
