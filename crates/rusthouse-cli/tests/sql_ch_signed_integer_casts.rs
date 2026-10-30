@@ -14,7 +14,7 @@ fn signed_casts_accept_strings_numbers_and_nested_constants() {
         ("SELECT toInt16(65535) AS value", "-1"),
         ("SELECT toInt32('2147483647') AS value", "2147483647"),
         ("SELECT toInt64('-9223372036854775808') AS value", "-9223372036854775808"),
-        ("SELECT toInt8(toInt16('130')) AS value", "-126"),
+        ("SELECT toInt8(toInt16(130)) AS value", "-126"),
     ] {
         let result = sql(query);
         assert!(result.status.success(), "{query}: {}", String::from_utf8_lossy(&result.stderr));
