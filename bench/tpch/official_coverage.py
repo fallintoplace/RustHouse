@@ -60,30 +60,37 @@ def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
                             "error": "empty query or exceeds SQL statement limit"}
             continue
         executed_sql.append((number, sql))
-        reference = None
+        ref = None
         if reference_dir is not None:
             ref = Path(reference_dir) / f"q{number:02d}.tsv"
             if not ref.is_file():
                 results[number - 1] = {"query": number, "status": "missing_reference",
                                 "timings_seconds": [], "latency": None, "error": str(ref)}
                 continue
-            # Cap third-party reference reads and refuse known symlinks.
+            # Only retain paths during preflight. Read references inside workers
+            # so peak retained reference memory scales with jobs, not 22 queries.
             if ref.is_symlink() or ref.stat().st_size > MAX_REFERENCE_BYTES:
                 results[number - 1] = {"query": number, "status": "reference_error",
                                        "timings_seconds": [], "latency": None,
                                        "error": "unsafe or oversized reference file"}
                 continue
-            with ref.open("rb") as stream:
-                reference = stream.read(MAX_REFERENCE_BYTES + 1)
-            if len(reference) > MAX_REFERENCE_BYTES:
-                results[number - 1] = {"query": number, "status": "reference_error",
-                                       "timings_seconds": [], "latency": None,
-                                       "error": "reference file grew beyond byte limit"}
-                continue
-        pending.append((number, sql, reference))
+        pending.append((number, sql, ref))
 
     def run_query(item):
-        number, sql, reference = item
+        number, sql, ref = item
+        reference = None
+        if ref is not None:
+            try:
+                if ref.is_symlink() or ref.stat().st_size > MAX_REFERENCE_BYTES:
+                    raise ValueError("unsafe or oversized reference file")
+                with ref.open("rb") as stream:
+                    reference = stream.read(MAX_REFERENCE_BYTES + 1)
+                if len(reference) > MAX_REFERENCE_BYTES:
+                    raise ValueError("reference file grew beyond byte limit")
+            except (OSError, ValueError) as error:
+                return {"query": number, "status": "reference_error",
+                        "timings_seconds": [], "latency": None,
+                        "error": str(error)[:200]}
         return benchmark_one(number, sql, execute, runs, warmups, reference)
 
     if jobs == 1:
