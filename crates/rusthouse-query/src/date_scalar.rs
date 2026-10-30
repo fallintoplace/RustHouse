@@ -55,6 +55,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOSTARTOFMONTH"
             | "TOMONDAY"
             | "TOSTARTOFWEEK"
+            | "TOSTARTOFINTERVAL"
             | "TOSTARTOFHOUR"
             | "TOSTARTOFDAY"
             | "SUBTRACTQUARTERS"
@@ -200,6 +201,37 @@ pub(super) fn parse_after_open(
             let seconds = value.seconds.div_euclid(DAY_SECONDS) * DAY_SECONDS;
             Ok(ConstantValue::Text(Temporal::render(seconds, true)?))
         }),
+        "TOSTARTOFINTERVAL" => {
+            let input = super::text_scalar::text_arg(parser, depth + 1)?;
+            if !parser.take(Token::Comma) || !parser.keyword("INTERVAL") {
+                return Err(ParseError("toStartOfInterval requires INTERVAL amount unit".into()));
+            }
+            let amount = super::text_scalar::integer_arg(parser, depth + 1)?;
+            let unit = parser.word()?.to_ascii_uppercase();
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after toStartOfInterval".into()));
+            }
+            let unit_seconds = match unit.as_str() {
+                "SECOND" | "SECONDS" => 1,
+                "MINUTE" | "MINUTES" => 60,
+                "HOUR" | "HOURS" => 3_600,
+                "DAY" | "DAYS" => DAY_SECONDS,
+                _ => return Err(ParseError("unsupported toStartOfInterval unit".into())),
+            };
+            let (Some(input), Some(amount)) = (input, amount) else {
+                return Ok(ConstantValue::Null);
+            };
+            if !(1..=1_000_000).contains(&amount) {
+                return Err(ParseError("toStartOfInterval amount must be 1..1000000".into()));
+            }
+            let step = amount * unit_seconds;
+            let value = Temporal::parse(&input)?;
+            let rounded = value.seconds.div_euclid(step) * step;
+            Ok(ConstantValue::Text(Temporal::render(
+                rounded,
+                value.has_time || unit_seconds < DAY_SECONDS,
+            )?))
+        },
         "TOSTARTOFHOUR" => unary_date(parser, depth, |value| {
             let seconds = value.seconds.div_euclid(3_600) * 3_600;
             Ok(ConstantValue::Text(Temporal::render(seconds, true)?))
@@ -1266,5 +1298,38 @@ mod clickhouse_start_of_half_hour_tests {
                 Projection::Constants(values) if values[0].value == ConstantValue::Null)
         );
         assert!(parse_select("SELECT toStartOfHalfHour('2024-01-01', 1)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod to_start_of_interval_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn floors_utc_seconds_minutes_hours_and_days() {
+        for (sql, expected) in [
+            ("SELECT toStartOfInterval('2024-02-29 14:37:59', INTERVAL 15 MINUTE)", "2024-02-29 14:30:00"),
+            ("SELECT toStartOfInterval('2024-02-29 14:37:59', INTERVAL 20 SECOND)", "2024-02-29 14:37:40"),
+            ("SELECT toStartOfInterval('2024-02-29 14:37:59', INTERVAL 2 HOUR)", "2024-02-29 14:00:00"),
+            ("SELECT toStartOfInterval('2024-02-29', INTERVAL 1 DAY)", "2024-02-29"),
+        ] {
+            assert!(matches!(
+                parse_select(sql).unwrap().projection,
+                Projection::Constants(ref values)
+                    if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())
+            ), "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_zero_interval_unknown_unit_and_extra_arguments() {
+        for sql in [
+            "SELECT toStartOfInterval('2024-01-01', INTERVAL 0 DAY)",
+            "SELECT toStartOfInterval('2024-01-01', INTERVAL 1 MONTH)",
+            "SELECT toStartOfInterval('2024-01-01', 5)",
+            "SELECT toStartOfInterval('2024-01-01', INTERVAL 1 DAY, 'Europe/Berlin')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
