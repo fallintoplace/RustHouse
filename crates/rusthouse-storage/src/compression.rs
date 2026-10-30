@@ -189,6 +189,15 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
     }
 
     pub fn next_decoded(&mut self) -> Option<Result<DecodedBlock, PartError>> {
+        self.next_decoded_reusing(Vec::new())
+    }
+
+    /// Recycle a previously returned decoded block's allocation on the next
+    /// read. The caller must finish consuming the old block before passing it.
+    pub(crate) fn next_decoded_reusing(
+        &mut self,
+        mut decoded_scratch: Vec<u8>,
+    ) -> Option<Result<DecodedBlock, PartError>> {
         let header = match self.next_header()? {
             Ok(header) => header,
             Err(error) => return Some(Err(error)),
@@ -203,11 +212,13 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
             return self.invalid_at(block.offset, "unsupported compression method");
         }
 
-        // LZ4/ZSTD decode into separate output buffers. Reuse the encoded input
-        // allocation for later blocks, including across intervening NONE blocks.
-        // For NONE, return the allocation itself to avoid a copy of the payload.
+        // Keep the encoded scratch for compressed blocks; reuse the previous
+        // decoded allocation for the next result when the caller releases it.
+        // NONE blocks can use that allocation for their encoded input too.
         let mut encoded = if block.method == 0x02 {
-            vec![0u8; block.compressed_size as usize]
+            let mut buffer = std::mem::take(&mut decoded_scratch);
+            buffer.resize(block.compressed_size as usize, 0);
+            buffer
         } else {
             let mut scratch = std::mem::take(&mut self.encoded_scratch);
             scratch.resize(block.compressed_size as usize, 0);
@@ -236,6 +247,7 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
                     block.method,
                     &encoded[HEADER_SIZE as usize..],
                     block.decompressed_size as usize,
+                    decoded_scratch,
                 );
                 self.encoded_scratch = encoded;
                 match decoded {
@@ -274,8 +286,9 @@ fn decode_codec_payload(
     method: u8,
     payload: &[u8],
     decompressed_size: usize,
+    mut decoded: Vec<u8>,
 ) -> Result<Vec<u8>, &'static str> {
-    let mut decoded = vec![0u8; decompressed_size];
+    decoded.resize(decompressed_size, 0);
     let size = match method {
         0x82 => decompress_into(payload, &mut decoded).ok(),
         0x90 => zstd::bulk::decompress_to_buffer(payload, &mut decoded).ok(),
@@ -545,6 +558,92 @@ mod tests {
         assert_eq!(second.block.offset, second_offset);
         assert_eq!(second.data, b"plain");
         assert!(reader.next_decoded().is_none());
+    }
+
+    #[test]
+    fn recycles_decoded_storage_across_lz4_zstd_and_raw_blocks() {
+        let data = vec![42u8; 8192];
+        let raw = vec![7u8; 1024];
+        let lz4 = lz4_flex::block::compress(&data);
+        let zstd = zstd::bulk::compress(&data, 1).unwrap();
+        let bytes = [
+            checked_block(0x82, &lz4, data.len() as u32),
+            checked_block(0x90, &zstd, data.len() as u32),
+            checked_block(0x02, &raw, raw.len() as u32),
+        ]
+        .concat();
+        let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "recycled.bin").unwrap();
+
+        let first = reader.next_decoded().unwrap().unwrap();
+        assert_eq!(first.data, data);
+        let address = first.data.as_ptr();
+
+        let second = reader.next_decoded_reusing(first.data).unwrap().unwrap();
+        assert_eq!(second.data, data);
+        assert_eq!(second.data.as_ptr(), address);
+
+        let third = reader.next_decoded_reusing(second.data).unwrap().unwrap();
+        assert_eq!(third.data, raw);
+        assert_eq!(third.data.as_ptr(), address);
+        assert!(reader.next_decoded().is_none());
+    }
+
+    #[test]
+    #[ignore = "manual release benchmark; timings depend on the host"]
+    fn bench_reused_decode_buffers() {
+        use std::time::Instant;
+
+        let data = (0..16 * 1024)
+            .map(|index| ((index * 31) % 251) as u8)
+            .collect::<Vec<_>>();
+        let compressed = lz4_flex::block::compress(&data);
+        let frame = checked_block(0x82, &compressed, data.len() as u32);
+        let input = frame.repeat(256);
+
+        fn sample(input: &[u8], reuse: bool) -> u128 {
+            let mut reader = CompressedBlockReader::new(Cursor::new(input), "bench.bin").unwrap();
+            let mut recycled = Vec::new();
+            let mut count = 0;
+            let start = Instant::now();
+            loop {
+                let result = if reuse {
+                    reader.next_decoded_reusing(std::mem::take(&mut recycled))
+                } else {
+                    reader.next_decoded()
+                };
+                let Some(result) = result else { break };
+                let decoded = result.unwrap();
+                std::hint::black_box(decoded.data[0]);
+                if reuse {
+                    recycled = decoded.data;
+                }
+                count += 1;
+            }
+            assert_eq!(count, 256);
+            start.elapsed().as_micros()
+        }
+
+        for _ in 0..2 {
+            sample(&input, false);
+            sample(&input, true);
+        }
+        let mut original = Vec::new();
+        let mut recycled = Vec::new();
+        for iteration in 0..9 {
+            if iteration % 2 == 0 {
+                original.push(sample(&input, false));
+                recycled.push(sample(&input, true));
+            } else {
+                recycled.push(sample(&input, true));
+                original.push(sample(&input, false));
+            }
+        }
+        original.sort_unstable();
+        recycled.sort_unstable();
+        eprintln!(
+            "LZ4, 256 x 16 KiB: fresh={} us, recycled={} us (median of 9)",
+            original[4], recycled[4]
+        );
     }
 
     #[test]
