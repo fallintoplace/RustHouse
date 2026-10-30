@@ -20,6 +20,11 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
     };
     let value = std::str::from_utf8(&decoded)
         .map_err(|_| invalid("SQL VALUES output requires UTF-8 text"))?;
+    append_quoted_text(output, value);
+    Ok(())
+}
+
+fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
     output.push(b'\'');
     let bytes = value.as_bytes();
     let mut start = 0;
@@ -36,7 +41,6 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
     }
     output.extend_from_slice(&bytes[start..]);
     output.push(b'\'');
-    Ok(())
 }
 
 fn encode_values_row(line: &[u8], columns: usize, values: &mut Vec<u8>) -> io::Result<()> {
