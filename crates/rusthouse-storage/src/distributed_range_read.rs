@@ -67,6 +67,15 @@ fn open_verified_object(path: &Path) -> io::Result<(File, fs::Metadata)> {
     Ok((file, opened))
 }
 
+fn read_at(file: &mut File, offset: u64, length: usize) -> io::Result<Vec<u8>> {
+    if offset != 0 {
+        file.seek(SeekFrom::Start(offset))?;
+    }
+    let mut bytes = vec![0; length];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
 /// Read an exact byte range from a frozen regular file, rejecting short reads.
 pub fn read_object_range(
     path: &Path,
@@ -79,11 +88,7 @@ pub fn read_object_range(
     }
     let (mut file, baseline) = open_verified_object(path)?;
     validate_range(offset, length, baseline.len())?;
-    if offset != 0 {
-        file.seek(SeekFrom::Start(offset))?;
-    }
-    let mut bytes = vec![0; length];
-    file.read_exact(&mut bytes)?;
+    let bytes = read_at(&mut file, offset, length)?;
     verify_object_after_read(path, &file, &baseline)?;
     Ok(bytes)
 }
@@ -113,11 +118,7 @@ pub fn read_object_ranges(
     }
     if let [(offset, length)] = ranges {
         // A single range needs neither interval sorting nor a second copy.
-        let mut data = vec![0u8; *length];
-        if *offset != 0 {
-            file.seek(SeekFrom::Start(*offset))?;
-        }
-        file.read_exact(&mut data)?;
+        let data = read_at(&mut file, *offset, *length)?;
         verify_object_after_read(path, &file, &baseline)?;
         return Ok(vec![data]);
     }
@@ -150,18 +151,10 @@ pub fn read_object_ranges(
             // For an isolated interval the final output can own the read
             // buffer. There is no reason to copy it through a temporary.
             let index = ordered[cursor].0;
-            let mut range = vec![0u8; bytes];
-            if start != 0 {
-                file.seek(SeekFrom::Start(start))?;
-            }
-            file.read_exact(&mut range)?;
+            let range = read_at(&mut file, start, bytes)?;
             output[index] = range;
         } else {
-            let mut chunk = vec![0u8; bytes];
-            if start != 0 {
-                file.seek(SeekFrom::Start(start))?;
-            }
-            file.read_exact(&mut chunk)?;
+            let chunk = read_at(&mut file, start, bytes)?;
             for &(index, offset, item_end) in &ordered[cursor..tail] {
                 let from = (offset - start) as usize;
                 let to = (item_end - start) as usize;
