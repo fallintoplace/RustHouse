@@ -30,6 +30,13 @@ fn repair_priority(left: &RepairJob, right: &RepairJob) -> std::cmp::Ordering {
         .then_with(|| left.shard.cmp(&right.shard))
 }
 
+fn validate_repair_plan_bounds(jobs: &[RepairJob], job_limit: usize) -> Result<(), &'static str> {
+    if jobs.len() > MAX_REPAIR_JOBS || job_limit > MAX_REPAIR_JOBS {
+        return Err("repair job count exceeds bound");
+    }
+    Ok(())
+}
+
 fn validate_repair_jobs(jobs: &[RepairJob]) -> Result<(), &'static str> {
     if jobs.len() <= 8 {
         for (index, job) in jobs.iter().enumerate() {
@@ -91,9 +98,7 @@ pub fn plan_repairs(
     byte_budget: u64,
     job_limit: usize,
 ) -> Result<Vec<RepairJob>, &'static str> {
-    if jobs.len() > MAX_REPAIR_JOBS || job_limit > MAX_REPAIR_JOBS {
-        return Err("repair job count exceeds bound");
-    }
+    validate_repair_plan_bounds(jobs, job_limit)?;
     validate_repair_jobs(jobs)?;
     Ok(plan_ranked_repairs(jobs.iter(), byte_budget, job_limit))
 }
@@ -189,9 +194,7 @@ pub fn plan_repairs_excluding(
     byte_budget: u64,
     job_limit: usize,
 ) -> Result<Vec<RepairJob>, &'static str> {
-    if jobs.len() > MAX_REPAIR_JOBS || job_limit > MAX_REPAIR_JOBS {
-        return Err("repair job count exceeds bound");
-    }
+    validate_repair_plan_bounds(jobs, job_limit)?;
     if in_flight.len() > MAX_REPAIR_JOBS {
         return Err("too many in-flight repair shards");
     }
