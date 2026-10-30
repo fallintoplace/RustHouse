@@ -95,6 +95,7 @@ fn read_bounded_metadata_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, Pa
         .read_to_end(&mut bytes)
         .map_err(|source| io_error(path, source))?;
     ensure_metadata_size(path, bytes.len() as u64, max_bytes)?;
+    ensure_exact_metadata_length(path, opened.len(), bytes.len())?;
     Ok(bytes)
 }
 
@@ -114,6 +115,17 @@ fn parse_count(content: &str) -> Result<u64, PartError> {
     digits
         .parse()
         .map_err(|_| PartError::InvalidCount(content.to_owned()))
+}
+
+fn ensure_exact_metadata_length(
+    path: &Path,
+    opened_size: u64,
+    read_size: usize,
+) -> Result<(), PartError> {
+    if read_size as u64 != opened_size {
+        return Err(invalid_metadata(path, "part metadata length changed during read"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -312,5 +324,17 @@ mod bounded_metadata_length_tests {
         fs::write(&path, b"123456\n").unwrap();
         assert!(read_bounded_metadata_file(&path, 5).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod metadata_short_read_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_shorter_metadata_even_when_within_size_limit() {
+        let path = Path::new("synthetic-count.txt");
+        assert!(ensure_exact_metadata_length(path, 10, 9).is_err());
+        assert!(ensure_exact_metadata_length(path, 10, 10).is_ok());
     }
 }
