@@ -75,5 +75,24 @@ class SnapshotGateTests(unittest.TestCase):
                 inspect_snapshot("rusthouse", ".", min_rows=1, run=mocked)
 
 
+
+
+class SnapshotMetadataBudgetTests(unittest.TestCase):
+    def test_rejects_oversized_inspection_before_json_parse(self):
+        payload = b" " * (2 * 1024 * 1024 + 1)
+        def run(*_args, **_kwargs):
+            return SimpleNamespace(returncode=0, stdout=payload, stderr=b"")
+        with self.assertRaisesRegex(ValueError, "2 MiB"):
+            inspect_snapshot("rusthouse", "part", run=run)
+
+    def test_normal_metadata_stays_supported(self):
+        result = inspect_snapshot(
+            "rusthouse", "part", min_rows=1,
+            run=lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=0,
+                stdout=b'{"rows":1,"parts":1,"columns":[{"name":"id","type":"UInt64"}]}',
+                stderr=b""))
+        self.assertEqual(result["physical_rows"], 1)
+
 if __name__ == "__main__":
     unittest.main()
