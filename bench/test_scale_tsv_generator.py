@@ -62,6 +62,20 @@ class MassiveTsvGeneratorTests(unittest.TestCase):
             generate(path, 4, start=2, step=7, batch_rows=2)
             self.assertEqual(path.read_text(), "2\n9\n16\n23\n")
 
+    def test_invalid_generate_never_creates_parent_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "new" / "nested" / "large.tsv"
+            for kwargs in (
+                {"rows": 0},
+                {"rows": 2, "start": MAX_UINT64},
+                {"rows": 2, "step": 0},
+                {"rows": 1, "batch_rows": 0},
+                {"rows": 1, "header": "yes"},
+            ):
+                with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                    generate(output, **kwargs)
+                self.assertFalse(output.parent.exists())
+
     def test_dangling_symlink_is_not_overwritten(self):
         import sys
         if sys.platform == "win32":
@@ -73,6 +87,18 @@ class MassiveTsvGeneratorTests(unittest.TestCase):
                 generate(path, 3)
             self.assertTrue(path.is_symlink())
 
+
+    def test_published_fixture_is_fsynced_with_its_directory(self):
+        import os
+        from unittest.mock import patch
+        if os.name != "posix":
+            self.skipTest("directory fsync requires POSIX")
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "durable.tsv"
+            with patch("bench.scale.tsv_generator.os.fsync", wraps=os.fsync) as fsync:
+                generate(path, 2)
+            self.assertGreaterEqual(fsync.call_count, 2)
+            self.assertEqual(path.read_bytes(), b"0\n1\n")
 
 if __name__ == "__main__":
     unittest.main()

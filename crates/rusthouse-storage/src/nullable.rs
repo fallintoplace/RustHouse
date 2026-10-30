@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn reads_numeric_values_for_every_row_including_nulls() {
-        let mut nulls = Cursor::new([0, 1, 255, 77]);
+        let mut nulls = Cursor::new([0, 1, 1, 77]);
         let mut bytes = Vec::new();
         for value in [42u16, 0, 73] {
             bytes.extend_from_slice(&value.to_le_bytes());
@@ -216,7 +216,7 @@ mod tests {
 
         assert_eq!(column.len(), 3);
         assert!(!column.is_empty());
-        assert_eq!(column.null_map(), &[0, 1, 255]);
+        assert_eq!(column.null_map(), &[0, 1, 1]);
         assert_eq!(column.is_null(0), Some(false));
         assert_eq!(column.is_null(1), Some(true));
         assert_eq!(column.is_null(2), Some(true));

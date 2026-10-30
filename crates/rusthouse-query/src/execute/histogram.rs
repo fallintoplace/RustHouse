@@ -36,12 +36,37 @@ fn finite_number_as_f64(value: Number) -> Result<f64, ExecutionError> {
     }
 }
 
-fn bucket(value: f64, min: f64, max: f64, bins: usize) -> usize {
-    if min == max {
-        return 0;
+#[derive(Clone, Copy)]
+struct BucketLayout {
+    min: f64,
+    max: f64,
+    span: f64,
+    bins: usize,
+    bins_float: f64,
+}
+
+impl BucketLayout {
+    fn new(min: f64, max: f64, bins: usize) -> Self {
+        Self { min, max, span: max - min, bins, bins_float: bins as f64 }
     }
-    let fraction = ((value - min) / (max - min)).clamp(0.0, 1.0);
-    ((fraction * bins as f64) as usize).min(bins - 1)
+
+    fn bucket(self, value: f64) -> usize {
+        if self.min == self.max {
+            return 0;
+        }
+        let fraction = if self.span.is_finite() {
+            (value - self.min) / self.span
+        } else {
+            (value * 0.5 - self.min * 0.5) / (self.max * 0.5 - self.min * 0.5)
+        }
+        .clamp(0.0, 1.0);
+        ((fraction * self.bins_float) as usize).min(self.bins - 1)
+    }
+}
+
+#[cfg(test)]
+fn bucket(value: f64, min: f64, max: f64, bins: usize) -> usize {
+    BucketLayout::new(min, max, bins).bucket(value)
 }
 
 fn to_bins(min: f64, max: f64, counts: &[u64]) -> Vec<Bin> {
@@ -57,11 +82,19 @@ fn to_bins(min: f64, max: f64, counts: &[u64]) -> Vec<Bin> {
         .iter()
         .enumerate()
         .map(|(index, &count)| Bin {
-            min: min + span * (index as f64 / counts.len() as f64),
+            min: if span.is_finite() {
+                min + span * (index as f64 / counts.len() as f64)
+            } else {
+                let t = index as f64 / counts.len() as f64;
+                min * (1.0 - t) + max * t
+            },
             max: if index + 1 == counts.len() {
                 max
-            } else {
+            } else if span.is_finite() {
                 min + span * ((index + 1) as f64 / counts.len() as f64)
+            } else {
+                let t = (index + 1) as f64 / counts.len() as f64;
+                min * (1.0 - t) + max * t
             },
             count,
         })
@@ -217,8 +250,9 @@ pub(super) fn execute_part<W: Write>(
         ));
     }
     let mut counts = vec![0u64; *bins];
+    let layout = BucketLayout::new(min, max, *bins);
     visit_part(part, &metadata, &names, &indices, column, &conditions, no_filters, |value| {
-        let index = bucket(value, min, max, *bins);
+        let index = layout.bucket(value);
         counts[index] = counts[index]
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("histogram bin overflow".into()))?;
@@ -246,6 +280,7 @@ fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: u
         return vec![Bin { min, max, count }];
     }
     let mut counts = vec![0u64; bins];
+    let layout = BucketLayout::new(min, max, bins);
     let mut start_row = 0u64;
     for (bin, slot) in counts.iter_mut().enumerate() {
         if start_row == count {
@@ -255,7 +290,7 @@ fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: u
         let mut hi = count;
         while lo < hi {
             let middle = lo + (hi - lo) / 2;
-            if bucket(value(middle), min, max, bins) <= bin {
+            if layout.bucket(value(middle)) <= bin {
                 lo = middle + 1;
             } else {
                 hi = middle;
@@ -322,10 +357,11 @@ pub(super) fn execute_numbers<W: Write>(
         return output_bins(query, output, column, *bins, &[]);
     }
     let mut counts = vec![0u64; *bins];
+    let layout = BucketLayout::new(min, max, *bins);
     for index in 0..rows {
         let number = u128::from(start) + u128::from(index) * u128::from(step);
         if number_matches_all(Number::Unsigned(number), &conditions) {
-            counts[bucket(number as f64, min, max, *bins)] += 1;
+            counts[layout.bucket(number as f64)] += 1;
         }
     }
     output_bins(query, output, column, *bins, &to_bins(min, max, &counts))
@@ -434,5 +470,43 @@ mod generated_histogram_boundary_regression_tests {
         let expected = to_bins(low, high, &expected);
         assert_eq!(actual.iter().map(|bin| (bin.min, bin.max, bin.count)).collect::<Vec<_>>(),
             expected.iter().map(|bin| (bin.min, bin.max, bin.count)).collect::<Vec<_>>());
+    }
+}
+
+#[cfg(test)]
+mod histogram_bucket_layout_tests {
+    use super::*;
+
+    #[test]
+    fn prepared_bucket_layout_keeps_endpoints_and_range_boundaries() {
+        for (min, max) in [(0.0, 1024.0), (-20.0, 20.0), (-1e308, 1e308), (17.0, 17.0)] {
+            for bins in [1usize, 2, 4, 16, 128] {
+                let prepared = BucketLayout::new(min, max, bins);
+                for value in [min, min / 2.0, 0.0, max / 2.0, max] {
+                    assert_eq!(prepared.bucket(value), bucket(value, min, max, bins));
+                }
+                assert!(prepared.bucket(max) < bins);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod finite_extreme_histogram_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_bins_when_finite_data_range_overflows_f64() {
+        let min = -1e308;
+        let max = 1e308;
+        assert_eq!(bucket(min, min, max, 4), 0);
+        assert_eq!(bucket(0.0, min, max, 4), 2);
+        assert_eq!(bucket(max, min, max, 4), 3);
+        let bins = to_bins(min, max, &[1, 1, 1, 1]);
+        assert_eq!(bins.len(), 4);
+        assert_eq!(bins.first().unwrap().min, min);
+        assert_eq!(bins.last().unwrap().max, max);
+        assert!(bins.iter().all(|bin| bin.min.is_finite() && bin.max.is_finite()));
+        assert!(bins.windows(2).all(|pair| pair[0].max <= pair[1].min));
     }
 }
