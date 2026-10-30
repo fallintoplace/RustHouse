@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify TSV reference rows using exact text or arbitrary-precision numbers."""
 import argparse
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException, InvalidOperation
 from pathlib import Path
 
 MAX_INPUT_BYTES = 16 * 1024 * 1024
@@ -40,7 +40,16 @@ def numeric_equal(left, right, tolerance=Decimal("0")):
         rhs = Decimal(right.decode("ascii"))
     except (UnicodeDecodeError, InvalidOperation):
         return False
-    return lhs.is_finite() and rhs.is_finite() and abs(lhs - rhs) <= tolerance
+    if not lhs.is_finite() or not rhs.is_finite():
+        return False
+    if tolerance == 0:
+        # Subtraction can underflow tiny, unequal values to zero.
+        return lhs == rhs
+    try:
+        return abs(lhs - rhs) <= tolerance
+    except DecimalException:
+        # Exponents outside the active decimal context must not crash the oracle.
+        return False
 
 
 def split_tsv_rows(data):
