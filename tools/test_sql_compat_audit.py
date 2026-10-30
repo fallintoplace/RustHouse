@@ -40,6 +40,17 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(complete["total"], 3)
         self.assertFalse(complete["stopped_early"])
 
+    def test_large_cli_output_is_spooled_and_failure_reason_is_bounded(self):
+        def emit(command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            self.assertNotIn("text", kwargs)
+            kwargs["stdout"].write(b"x" * 100_000)
+            kwargs["stderr"].write(b"y" * 100_000)
+            return type("Result", (), {"returncode": 1})()
+        result = audit("rusthouse", [(1, "SELECT 1")], emit)
+        self.assertFalse(result["results"][0]["parser_accepted"])
+        self.assertEqual(len(result["results"][0]["reason"]), 500)
+
     def test_explain_only_and_counts_rejections(self):
         run = Mock()
         run.return_value.returncode = 1

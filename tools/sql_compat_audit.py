@@ -47,10 +47,24 @@ def audit(binary, queries, run=subprocess.run, fail_fast=False, timeout=10):
     with tempfile.TemporaryDirectory(prefix="rusthouse-sql-audit-") as database:
         for line, query in queries:
             try:
-                result = run([str(binary), "sql", query, "--database", database, "--explain"],
-                             capture_output=True, text=True, timeout=timeout, check=False)
-                status = result.returncode == 0
-                reason = "" if status else result.stderr[:500].strip()
+                # Keep noisy SQL CLI output out of process memory.
+                with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                    result = run(
+                        [str(binary), "sql", query, "--database", database, "--explain"],
+                        stdout=stdout, stderr=stderr, timeout=timeout, check=False,
+                    )
+                    status = result.returncode == 0
+                    stderr.seek(0)
+                    raw = stderr.read(500)
+                    reason = "" if status else raw.decode("utf-8", "replace").strip()
+                    # Preserve compatibility with injected test runners which
+                    # return a stderr value instead of writing to the file.
+                    if not status and not raw:
+                        reported = getattr(result, "stderr", None)
+                        if isinstance(reported, bytes):
+                            reason = reported[:500].decode("utf-8", "replace").strip()
+                        elif isinstance(reported, str):
+                            reason = reported[:500].strip()
             except (OSError, subprocess.TimeoutExpired) as exc:
                 status = False
                 reason = str(exc)[:500]
