@@ -1,7 +1,7 @@
 import re
 import unittest
 
-from bench.scale.physical_range_oracle import expected, sql_for, verify
+from bench.scale.physical_range_oracle import expected, invoke, sql_for, verify
 
 
 class PhysicalRangeOracleTests(unittest.TestCase):
@@ -51,6 +51,46 @@ class PhysicalRangeOracleTests(unittest.TestCase):
             verify("rusthouse", "db", "events", 0, 1_000_000_000,
                    window_rows=1, execute=lambda _: b"")
 
+    def test_subprocess_output_spooled_and_bounded(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        def fake_run(_args, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].write(b"x" * 1025)
+            return SimpleNamespace(returncode=0)
+
+        with patch("bench.scale.physical_range_oracle.subprocess.run", side_effect=fake_run):
+            with self.assertRaisesRegex(ValueError, "1 KiB"):
+                invoke("rusthouse", "database", "SELECT 1", 30)
+
+    def test_subprocess_failure_uses_bounded_error_tail(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        def fake_run(_args, **kwargs):
+            kwargs["stderr"].write(b"x" * 10000 + b"last error")
+            return SimpleNamespace(returncode=1)
+
+        with patch("bench.scale.physical_range_oracle.subprocess.run", side_effect=fake_run):
+            with self.assertRaises(RuntimeError) as caught:
+                invoke("rusthouse", "database", "SELECT 1", 30)
+        self.assertIn("last error", str(caught.exception))
+        self.assertLess(len(str(caught.exception)), 501)
+
+
+    def test_tail_latency_is_bounded_by_maximum(self):
+        def run(statement):
+            import re
+            first = int(re.search(r"id >= (\d+)", statement).group(1))
+            last = int(re.search(r"id < (\d+)", statement).group(1))
+            count, total = expected(first, last - first)
+            return f"{count}\t{total}\n".encode()
+        result = verify("binary", "db", "events", 0, 10, window_rows=2,
+                        execute=run)
+        self.assertGreaterEqual(result["p95_seconds"], result["median_seconds"])
+        self.assertGreaterEqual(result["p99_seconds"], result["p95_seconds"])
+        self.assertEqual(result["p99_seconds"], result["max_seconds"])
 
 if __name__ == "__main__":
     unittest.main()

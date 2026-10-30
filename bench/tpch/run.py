@@ -16,6 +16,19 @@ from bench.tpch.canonical_integrity import verify as verify_canonical_sql
 
 QUERY_NAME = re.compile(r"q(\d{1,2})\.sql$", re.IGNORECASE)
 MAX_QUERY_FILE_BYTES = 64 * 1024
+MAX_REFERENCE_BYTES = 16 * 1024 * 1024
+
+
+def read_reference(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("TPC-H reference must be a regular, non-symlinked file")
+    with path.open("rb") as source:
+        payload = source.read(MAX_REFERENCE_BYTES + 1)
+    if len(payload) > MAX_REFERENCE_BYTES:
+        raise ValueError("TPC-H reference exceeds 16 MiB")
+    return payload
+
 
 def require_canonical_corpus(directory):
     """Reject any SQL that differs from pinned upstream full TPC-H Q1-Q22."""
@@ -220,7 +233,7 @@ def main(argv=None):
                     "timings_seconds": [], "latency": None, "error": str(path),
                 })
                 continue
-            reference = path.read_bytes()
+            reference = read_reference(path)
         results.append(benchmark_one(
             number, sql, execute, args.runs, args.warmups, reference,
             comparison=args.comparison,

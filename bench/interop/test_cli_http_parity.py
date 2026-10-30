@@ -57,25 +57,73 @@ class InteropParityTests(unittest.TestCase):
 
 
 
+class ServerStderrBackpressureTests(unittest.TestCase):
+    def test_server_launch_does_not_create_unread_pipe(self):
+        with mock.patch.object(parity.subprocess, "Popen") as popen:
+            parity.launch_server("server", "db", 8123)
+            self.assertEqual(popen.call_args.kwargs["stderr"], parity.subprocess.DEVNULL)
+            self.assertEqual(popen.call_args.kwargs["stdout"], parity.subprocess.DEVNULL)
+            self.assertEqual(popen.call_args.args[0],
+                             ["server", "--database", "db", "--port", "8123"])
+
+
+
 class BoundedCliParityTests(unittest.TestCase):
-    def test_large_cli_output_is_rejected_without_buffering_pipe(self):
+    def test_large_cli_output_is_rejected_without_pipe_capture(self):
         from types import SimpleNamespace
+
         def run(_command, **kwargs):
             self.assertNotIn("capture_output", kwargs)
+            self.assertTrue(hasattr(kwargs["stderr"], "write"))
             kwargs["stdout"].truncate(4 * 1024 * 1024 + 1)
-            return SimpleNamespace(returncode=0, stderr=b"")
+            return SimpleNamespace(returncode=0)
+
         with mock.patch.object(parity.subprocess, "run", side_effect=run):
             with self.assertRaisesRegex(ValueError, "4 MiB"):
                 parity.cli("binary", "db", "SELECT 1")
 
-    def test_normal_cli_output_survives_spooling(self):
+    def test_error_message_is_bounded_and_no_stderr_pipe(self):
         from types import SimpleNamespace
+
         def run(_command, **kwargs):
-            kwargs["stdout"].write(b"count\n3\n")
-            return SimpleNamespace(returncode=0, stderr=b"")
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stderr"].write(b"x" * 10000 + b"last failure")
+            return SimpleNamespace(returncode=1)
+
+        with mock.patch.object(parity.subprocess, "run", side_effect=run):
+            with self.assertRaisesRegex(RuntimeError, "last failure") as raised:
+                parity.cli("binary", "db", "SELECT 1")
+        self.assertLess(len(str(raised.exception)), 550)
+
+    def test_normal_cli_output_is_unchanged(self):
+        from types import SimpleNamespace
+
+        def run(_command, **kwargs):
+            kwargs["stdout"].write(b"count\\n3\\n")
+            return SimpleNamespace(returncode=0)
+
         with mock.patch.object(parity.subprocess, "run", side_effect=run):
             self.assertEqual(parity.cli("binary", "db", "SELECT count(*) FROM events"),
-                             b"count\n3\n")
+                             b"count\\n3\\n")
+
+
+class SchemaResponseLimitTests(unittest.TestCase):
+    def test_oversized_schema_is_rejected_before_json_decode(self):
+        with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:
+            response = opener.open.return_value.__enter__.return_value
+            response.read.return_value = b" " * 1_048_577
+            with self.assertRaisesRegex(ValueError, "exceeds 1 MiB"):
+                parity.fetch_schema(8123)
+            response.read.assert_called_once_with(1_048_577)
+
+    def test_schema_requires_object_and_accepts_normal_json(self):
+        with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:
+            response = opener.open.return_value.__enter__.return_value
+            response.read.return_value = b'[]'
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                parity.fetch_schema(8123)
+            response.read.return_value = b'{"rows":3,"columns":[]}'
+            self.assertEqual(parity.fetch_schema(8123)["rows"], 3)
 
 if __name__ == "__main__":
     unittest.main()
