@@ -104,24 +104,26 @@ pub(super) fn finish_ddl(parser: &mut Parser) -> Result<(), ParseError> {
     Ok(())
 }
 
-pub(super) fn optional_if_exists(parser: &mut Parser) -> Result<bool, ParseError> {
+fn optional_if_clause(parser: &mut Parser, negated: bool) -> Result<bool, ParseError> {
     if !parser.keyword("IF") {
         return Ok(false);
     }
-    if !parser.keyword("EXISTS") {
+    if negated {
+        if !parser.keyword("NOT") || !parser.keyword("EXISTS") {
+            return Err(ParseError("expected IF NOT EXISTS".into()));
+        }
+    } else if !parser.keyword("EXISTS") {
         return Err(ParseError("expected IF EXISTS".into()));
     }
     Ok(true)
 }
 
+pub(super) fn optional_if_exists(parser: &mut Parser) -> Result<bool, ParseError> {
+    optional_if_clause(parser, false)
+}
+
 pub(super) fn optional_if_not_exists(parser: &mut Parser) -> Result<bool, ParseError> {
-    if !parser.keyword("IF") {
-        return Ok(false);
-    }
-    if !parser.keyword("NOT") || !parser.keyword("EXISTS") {
-        return Err(ParseError("expected IF NOT EXISTS".into()));
-    }
-    Ok(true)
+    optional_if_clause(parser, true)
 }
 
 pub(super) fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<ColumnDef>, ParseError> {
