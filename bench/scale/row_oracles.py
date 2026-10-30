@@ -4,6 +4,7 @@ No RustHouse database is read. These oracles assume ids are 0..rows-1 exactly.
 """
 import argparse
 import json
+import math
 
 MAX_UINT64 = (1 << 64) - 1
 
@@ -82,17 +83,43 @@ def parity_progression(start, rows, step, parity):
             if count else 0}
 
 
-def make_oracles(rows, *, start=0, step=1):
+def progression_modulo_reference(start, rows, step, modulus, residue):
+    """Exact COUNT and SUM for a residue in a bounded UInt64 progression."""
+    progression_reference(start, rows, step)
+    if (type(modulus) is not int or type(residue) is not int
+            or not 1 <= modulus <= MAX_UINT64 or not 0 <= residue < modulus):
+        raise ValueError("invalid modulus or residue")
+    divisor = math.gcd(step, modulus)
+    if (residue - start) % divisor:
+        return {"count": 0, "sum": 0}
+    cycle = modulus // divisor
+    first_index = (((residue - start) // divisor) * pow(step // divisor, -1, cycle)) % cycle if cycle > 1 else 0
+    if first_index >= rows:
+        return {"count": 0, "sum": 0}
+    count = 1 + (rows - 1 - first_index) // cycle
+    first = start + first_index * step
+    stride = cycle * step
+    return {"count": count, "sum": count * (2 * first + (count - 1) * stride) // 2}
+
+
+def make_oracles(rows, *, start=0, step=1, modulus=None, residue=0):
     if type(rows) is not int or not 1 <= rows <= MAX_UINT64 + 1:
         raise ValueError("rows must be in 1..2^64")
     total = progression_reference(start, rows, step)
     even = parity_progression(start, rows, step, 0)
     odd = parity_progression(start, rows, step, 1)
-    return {"rows": rows,
-            "assumption": f"exactly one id in start={start}, step={step}, rows={rows}",
-            "count_all": rows, "sum_all": total["sum"],
-            "sum_squares_all": progression_squares(start, rows, step),
-            "even": even, "odd": odd}
+    result = {"rows": rows,
+              "assumption": f"exactly one id in start={start}, step={step}, rows={rows}",
+              "count_all": rows, "sum_all": total["sum"],
+              "sum_squares_all": progression_squares(start, rows, step),
+              "even": even, "odd": odd}
+    if modulus is not None:
+        result["modulo"] = progression_modulo_reference(start, rows, step, modulus, residue)
+        result["modulus"] = modulus
+        result["residue"] = residue
+    elif residue != 0:
+        raise ValueError("residue requires modulus")
+    return result
 
 
 def main(argv=None):
@@ -100,10 +127,13 @@ def main(argv=None):
     parser.add_argument("--rows", type=int, required=True)
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--step", type=int, default=1)
+    parser.add_argument("--modulus", type=int)
+    parser.add_argument("--residue", type=int, default=0)
     parser.add_argument("--output")
     args = parser.parse_args(argv)
     try:
-        content = json.dumps(make_oracles(args.rows, start=args.start, step=args.step), indent=2) + "\n"
+        content = json.dumps(make_oracles(args.rows, start=args.start, step=args.step,
+                                          modulus=args.modulus, residue=args.residue), indent=2) + "\n"
     except ValueError as error:
         parser.exit(1, f"numeric oracle failed: {error}\n")
     if args.output:
