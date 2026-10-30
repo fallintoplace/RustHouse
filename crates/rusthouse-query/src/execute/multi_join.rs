@@ -366,7 +366,9 @@ pub fn execute_multi_join<W: Write>(
         using_keys: query.using_keys.clone(),
     };
     // Validate the complete output schema without materializing rows.
-    if query.limit == Some(0) {
+    if query.limit == Some(0)
+        || (query.aggregate == Some(crate::JoinAggregate::CountStar) && query.offset > 0)
+    {
         for (index, join) in std::iter::once(&initial_step)
             .chain(query.steps.iter())
             .enumerate()
@@ -454,6 +456,25 @@ pub fn execute_multi_join<W: Write>(
                     }
                 }
             }
+        }
+        // COUNT(*) over a validated all-INNER chain needs only the final
+        // hash-bucket multiplicities. No final joined rows are retained.
+        if query.aggregate == Some(crate::JoinAggregate::CountStar)
+            && step_index == query.steps.len()
+        {
+            let mut count = 0u64;
+            for row in &rows {
+                if let Some(key) = row_key(row, &left_keys) {
+                    if let Some(matches) = hash.get(&key) {
+                        let multiplicity = if step.any { 1usize } else { matches.iter().len() };
+                        count = count.checked_add(u64::try_from(multiplicity)
+                            .map_err(|_| invalid("JOIN count overflow"))?)
+                            .ok_or_else(|| invalid("JOIN count overflow"))?;
+                    }
+                }
+            }
+            writeln!(output, "count\n{count}")?;
+            return Ok(());
         }
         // Most fact-to-dimension joins preserve the incoming row count.
         let mut next = Vec::with_capacity(rows.len().min(MAX_RESULT_ROWS));

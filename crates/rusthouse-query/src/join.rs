@@ -518,6 +518,18 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     {
         return Err(ParseError("JOIN COUNT(column) requires a two-table INNER JOIN".into()));
     }
+    // Chained numeric/column aggregates and OUTER or filtered chained COUNT
+    // lack a matching streaming semantics implementation. Reject them.
+    if !steps.is_empty() && aggregate.is_some()
+        && (!matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))
+            || kind != JoinType::Inner
+            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || where_null.is_some())
+    {
+        return Err(ParseError(
+            "chained JOIN COUNT requires all INNER joins and no post-join NULL filter".into(),
+        ));
+    }
     if aggregate.is_some()
         && (!order_by.is_empty()
             || (steps.is_empty() && kind != JoinType::Inner
