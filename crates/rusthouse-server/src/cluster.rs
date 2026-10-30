@@ -76,10 +76,18 @@ impl Cluster {
         if peers.len() > MAX_PEERS {
             return Err("too many peers (maximum 32)");
         }
-        let mut seen_addresses = HashSet::with_capacity(peers.len());
-        for peer in &peers {
-            if !seen_addresses.insert(peer.address()) {
-                return Err("duplicate peer");
+        if peers.len() <= 8 {
+            for (index, peer) in peers.iter().enumerate() {
+                if peers[..index].iter().any(|other| other.address() == peer.address()) {
+                    return Err("duplicate peer");
+                }
+            }
+        } else {
+            let mut seen_addresses = HashSet::with_capacity(peers.len());
+            for peer in &peers {
+                if !seen_addresses.insert(peer.address()) {
+                    return Err("duplicate peer");
+                }
             }
         }
         Ok(Self { peers })
@@ -124,6 +132,21 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn small_and_large_membership_paths_reject_duplicate_peers() {
+        for count in [1usize, 2, 8, 9, MAX_PEERS] {
+            let peers = (0..count)
+                .map(|index| Peer::parse(&format!("127.0.0.1:{}", 42000 + index)).unwrap())
+                .collect::<Vec<_>>();
+            assert!(Cluster::new(peers.clone()).is_ok());
+            if count > 1 {
+                let mut duplicate = peers;
+                duplicate[count - 1] = duplicate[0];
+                assert!(Cluster::new(duplicate).is_err());
+            }
+        }
+    }
 
     #[test]
     fn accepts_only_canonical_ipv4_loopback_peers() {
