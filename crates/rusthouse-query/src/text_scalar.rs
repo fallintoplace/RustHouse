@@ -1919,16 +1919,46 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "dateTrunc requires two arguments")?;
             match (unit, input) {
                 (Some(unit), Some(input)) => {
-                    let step: u32 = match unit.to_ascii_lowercase().as_str() {
-                        "second" | "seconds" => 1,
-                        "minute" | "minutes" => 60,
-                        "hour" | "hours" => 3_600,
-                        "day" | "days" => 86_400,
-                        _ => return Err(ParseError("unsupported dateTrunc unit".into())),
-                    };
+                    let unit = unit.to_ascii_lowercase();
                     let seconds = rusthouse_storage::parse_datetime(&input)
                         .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
-                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds / step * step))
+                    let rounded = match unit.as_str() {
+                        "second" | "seconds" => seconds,
+                        "minute" | "minutes" => seconds / 60 * 60,
+                        "hour" | "hours" => seconds / 3_600 * 3_600,
+                        "day" | "days" => seconds / 86_400 * 86_400,
+                        "week" | "weeks" => {
+                            let day = seconds / 86_400;
+                            let monday_offset = (day + 3) % 7;
+                            day.checked_sub(monday_offset)
+                                .and_then(|day| day.checked_mul(86_400))
+                                .ok_or_else(|| ParseError("dateTrunc week is outside DateTime range".into()))?
+                        }
+                        "month" | "months" | "quarter" | "quarters" | "year" | "years" => {
+                            let calendar = rusthouse_storage::format_datetime(seconds);
+                            let month = calendar[5..7].parse::<u32>()
+                                .expect("formatted DateTime has a numeric month");
+                            let start_month = match unit.as_str() {
+                                "month" | "months" => month,
+                                "quarter" | "quarters" => (month - 1) / 3 * 3 + 1,
+                                _ => 1,
+                            };
+                            let first = format!("{}-{start_month:02}-01 00:00:00", &calendar[..4]);
+                            rusthouse_storage::parse_datetime(&first)
+                                .ok_or_else(|| ParseError("dateTrunc calendar boundary is invalid".into()))?
+                        }
+                        _ => return Err(ParseError("unsupported dateTrunc unit".into())),
+                    };
+                    let rendered = rusthouse_storage::format_datetime(rounded);
+                    if matches!(
+                        unit.as_str(),
+                        "week" | "weeks" | "month" | "months" | "quarter"
+                            | "quarters" | "year" | "years"
+                    ) {
+                        ConstantValue::Text(rendered[..10].to_owned())
+                    } else {
+                        ConstantValue::Text(rendered)
+                    }
                 }
                 _ => ConstantValue::Null,
             }
