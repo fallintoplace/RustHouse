@@ -48,6 +48,10 @@ pub(super) fn decode_compressed_checksums(
     Ok(decoded)
 }
 
+fn valid_path_segment(segment: &str) -> bool {
+    !segment.is_empty() && segment != "." && segment != ".."
+}
+
 pub(super) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && !name.contains('\\')
@@ -55,7 +59,7 @@ pub(super) fn valid_name(name: &str) -> bool {
         && !name.bytes().any(|byte| byte.is_ascii_control())
         && name
             .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
+            .all(valid_path_segment)
         && !name.starts_with('/')
 }
 
