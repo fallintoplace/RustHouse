@@ -3635,6 +3635,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
             match input {
                 Some(value) => {
+                    // ClickHouse 26.7+ allows ASCII whitespace around Base64 data.
+                    // Avoid allocating when the input has no ignored characters.
+                    let cleaned = if value.bytes().any(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0c)) {
+                        std::borrow::Cow::Owned(value.chars().filter(|ch| !matches!(*ch, ' ' | '\t' | '\n' | '\r' | '\u{000c}')).collect::<String>())
+                    } else {
+                        std::borrow::Cow::Borrowed(value.as_str())
+                    };
+                    let value: &str = cleaned.as_ref();
                     let decoded = (|| -> Result<ConstantValue, ParseError> {
                     fn digit(value: u8) -> Option<u8> {
                         match value {
