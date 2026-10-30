@@ -65,6 +65,10 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ADDSECONDS"
             | "ADDMINUTES"
             | "ADDHOURS"
+            | "SUBTRACTHOURS"
+            | "SUBTRACTMINUTES"
+            | "ADDMONTHS"
+            | "SUBTRACTMONTHS"
             | "SUBTRACTWEEKS"
             | "ADDWEEKS"
             | "SUBTRACTDAYS"
@@ -190,8 +194,12 @@ pub(super) fn parse_after_open(
         "SUBTRACTWEEKS" => offset_seconds(parser, depth, 7 * DAY_SECONDS, true, false),
         "ADDHOURS" => offset_seconds(parser, depth, 3_600, false, true),
         "ADDMINUTES" => offset_seconds(parser, depth, 60, false, true),
+        "SUBTRACTHOURS" => offset_seconds(parser, depth, 3_600, true, true),
+        "SUBTRACTMINUTES" => offset_seconds(parser, depth, 60, true, true),
         "ADDSECONDS" => offset_seconds(parser, depth, 1, false, true),
         "SUBTRACTSECONDS" => offset_seconds(parser, depth, 1, true, true),
+        "ADDMONTHS" => offset_months(parser, depth, 1, false),
+        "SUBTRACTMONTHS" => offset_months(parser, depth, 1, true),
         "ADDYEARS" => offset_months(parser, depth, 12, false),
         "SUBTRACTYEARS" => offset_months(parser, depth, 12, true),
         "ADDQUARTERS" => offset_months(parser, depth, 3, false),
@@ -655,6 +663,24 @@ mod utc_compat_tests {
             crate::Projection::Literal(v) => ConstantValue::Integer(v),
             projection => panic!("unexpected projection: {projection:?}"),
         }
+    }
+
+    #[test]
+    fn supports_missing_clickhouse_date_arithmetic_variants() {
+        for (sql, expected) in [
+            ("SELECT addMonths('2024-01-31', 1)", "2024-02-29"),
+            ("SELECT subtractMonths('2024-03-31', 1)", "2024-02-29"),
+            ("SELECT subtractHours('2024-03-01 00:30:00', 1)", "2024-02-29 23:30:00"),
+            ("SELECT subtractMinutes('2024-03-01 00:00:30', 1)", "2024-02-29 23:59:30"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        for function in ["addMonths", "subtractMonths", "subtractHours", "subtractMinutes"] {
+            assert_eq!(value(&format!("SELECT {function}(NULL, 1)")), ConstantValue::Null);
+            assert!(crate::parse_select(&format!("SELECT {function}('2024-01-01', 1, 2)")).is_err());
+        }
+        assert!(crate::parse_select("SELECT addMonths('2299-12-31', 1)").is_err());
+        assert!(crate::parse_select("SELECT subtractMonths('1900-01-01', 1)").is_err());
     }
 
     #[test]
