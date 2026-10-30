@@ -9,12 +9,14 @@ mod insert;
 mod insert_select;
 mod join;
 mod json;
+pub use json::parse_json_each_row_fields;
 mod lexer;
 mod literal;
 mod multi_aggregate;
 mod scalar;
 mod text_scalar;
 mod update;
+mod where_parser;
 pub use copy::{CopyFormat, CopyFrom, parse_copy_from};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
@@ -362,7 +364,7 @@ impl Parser {
 
     fn word(&mut self) -> Result<String, ParseError> {
         match self.tokens.get(self.index) {
-            Some(Token::Word(value)) => {
+            Some(Token::Word(value) | Token::QuotedWord(value)) => {
                 self.index += 1;
                 Ok(value.clone())
             }
@@ -665,6 +667,78 @@ impl Parser {
     }
 }
 
+// ClickHouse ORDER BY ALL sorts by each selected output column in order.
+// The current engine supports at most eight sort keys and cannot expand *.
+fn order_by_all_columns(projection: &Projection) -> Result<Vec<String>, ParseError> {
+    let mut columns = match projection {
+        Projection::Columns(columns) => columns.clone(),
+        Projection::GroupedCount { column }
+        | Projection::GroupedDistinctCount { column, .. } => vec![column.clone(), "count".into()],
+        Projection::GroupedMultiCount { columns }
+        | Projection::GroupedMultiDistinctCount { columns, .. } => {
+            let mut result = columns.clone();
+            result.push("count".into());
+            result
+        }
+        Projection::GroupedAggregate { column, .. } => vec![column.clone(), "#aggregate".into()],
+        Projection::GroupedAggregates { column, items, .. } => {
+            let mut result = vec![column.clone()];
+            result.extend((0..items.len()).map(|index| format!("#aggregate{index}")));
+            result
+        }
+        Projection::GroupedMultiAggregates { columns, items, .. } => {
+            let mut result = columns.clone();
+            result.extend((0..items.len()).map(|index| format!("#aggregate{index}")));
+            result
+        }
+        _ => return Err(ParseError(
+            "ORDER BY ALL requires explicit projected or grouped columns".into(),
+        )),
+    };
+    if columns.is_empty() || columns.len() > 8 {
+        return Err(ParseError("ORDER BY ALL supports at most 8 output columns".into()));
+    }
+    Ok(std::mem::take(&mut columns))
+}
+
+/// Split a terminal ClickHouse FORMAT clause without confusing SQL string
+/// contents or comments with keywords. Return the original SQL when absent.
+/// The caller validates the requested format against supported encodings.
+pub fn split_clickhouse_format(sql: &str) -> Result<(&str, Option<&str>), ParseError> {
+    let trimmed = sql.trim_end();
+    let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
+    let tokens = tokenize(trimmed)?;
+    let (Some(Token::Word(name)), Some(Token::Word(keyword))) =
+        (tokens.last(), tokens.get(tokens.len().saturating_sub(2)))
+    else {
+        return Ok((sql, None));
+    };
+    if !keyword.eq_ignore_ascii_case("FORMAT") {
+        return Ok((sql, None));
+    }
+    let Some(format_start) = trimmed.len().checked_sub(name.len()) else {
+        return Ok((sql, None));
+    };
+    let Some(format_name) = trimmed.get(format_start..) else {
+        return Ok((sql, None));
+    };
+    if !format_name.eq_ignore_ascii_case(name) {
+        return Ok((sql, None));
+    }
+    let before_format = trimmed[..format_start].trim_end();
+    let Some(keyword_start) = before_format.len().checked_sub(6) else {
+        return Ok((sql, None));
+    };
+    if !before_format[keyword_start..].eq_ignore_ascii_case("FORMAT") {
+        return Ok((sql, None));
+    }
+    let statement = before_format[..keyword_start].trim_end();
+    if statement.is_empty() {
+        return Err(ParseError("FORMAT requires a SELECT statement".into()));
+    }
+    Ok((statement, Some(format_name)))
+}
+
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     parse_select_tokens(tokenize(sql)?)
 }
@@ -674,7 +748,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     if !parser.keyword("SELECT") {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
-    let distinct = parser.keyword("DISTINCT");
+    let mut distinct = parser.keyword("DISTINCT");
     let mut literal_alias = None;
 
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
@@ -1247,246 +1321,120 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         return Err(ParseError("literal SELECT does not support FROM".into()));
     }
 
-    let (predicates, or_predicates) = if parser.keyword("WHERE") {
+    // ClickHouse evaluates PREWHERE as an additional filtering stage. Lowering
+    // PREWHERE AND WHERE into the shared bounded DNF preserves OR precedence
+    // and uses the same typed predicate executor for all table sources.
+    let prewhere = if parser.keyword("PREWHERE") {
+        if source.is_none() {
+            return Err(ParseError("PREWHERE requires a table source".into()));
+        }
+        Some(where_parser::parse_where(&mut parser)?)
+    } else {
+        None
+    };
+    let where_clause = if parser.keyword("WHERE") {
         if source.is_none() {
             return Err(ParseError("WHERE requires a table source".into()));
         }
-        let mut branches: Vec<Vec<Predicate>> = vec![Vec::new()];
-        let mut total_conditions = 0usize;
-        loop {
-            if total_conditions == 16 {
-                return Err(ParseError("WHERE supports at most 16 conditions".into()));
-            }
-            let prefix_not = parser.keyword("NOT");
-            let column = parser.word()?;
-            let postfix_not = parser.keyword("NOT");
-            let negate_in = prefix_not ^ postfix_not;
-            if parser.keyword("IS") {
-                if postfix_not {
-                    return Err(ParseError("unexpected NOT before IS".into()));
-                }
-                let negated = parser.keyword("NOT") ^ prefix_not;
-                let predicate = if parser.keyword("DISTINCT") {
-                    if !parser.keyword("FROM") {
-                        return Err(ParseError("IS DISTINCT requires FROM".into()));
-                    }
-                    if parser.keyword("NULL") {
-                        // x IS DISTINCT FROM NULL is x IS NOT NULL.
-                        Predicate::IsNull {
-                            column,
-                            negated: !negated,
-                        }
-                    } else {
-                        Predicate::DistinctFrom {
-                            column,
-                            value: parser.literal()?,
-                            negated,
-                        }
-                    }
-                } else if parser.keyword("NULL") {
-                    Predicate::IsNull { column, negated }
-                } else {
-                    return Err(ParseError("expected NULL or DISTINCT FROM after IS".into()));
-                };
-                branches.last_mut().unwrap().push(predicate);
-                total_conditions += 1;
-            } else if let Some(case_insensitive) = parser.like_keyword() {
-                let pattern = match parser.tokens.get(parser.index) {
-                    Some(Token::String(value)) => value.clone(),
-                    _ => return Err(ParseError("LIKE requires a string literal".into())),
-                };
-                let trailing_escapes = pattern
-                    .as_bytes()
-                    .iter()
-                    .rev()
-                    .take_while(|&&byte| byte == b'\\')
-                    .count();
-                if trailing_escapes % 2 != 0 {
-                    return Err(ParseError("LIKE pattern has a trailing escape".into()));
-                }
-                parser.index += 1;
-                branches.last_mut().unwrap().push(Predicate::Like {
-                    column,
-                    pattern,
-                    case_insensitive,
-                    negated: negate_in,
-                });
-                total_conditions += 1;
-            } else if parser.keyword("BETWEEN") {
-                // BETWEEN is type-checked by the executor, so allow dates and
-                // strings as well as numbers in the lower and upper bounds.
-                let lower = parser.literal()?;
-                if !parser.keyword("AND") {
-                    return Err(ParseError("BETWEEN requires AND".into()));
-                }
-                let upper = parser.literal()?;
-                if negate_in {
-                    branches.last_mut().unwrap().push(Predicate::NotBetween {
-                        column,
-                        lower,
-                        upper,
-                    });
-                    total_conditions += 1;
-                } else {
-                    if total_conditions + 2 > 16 {
-                        return Err(ParseError("WHERE supports at most 16 conditions".into()));
-                    }
-                    branches.last_mut().unwrap().push(Predicate::Comparison {
-                        column: column.clone(),
-                        operator: Operator::Ge,
-                        value: lower,
-                    });
-                    branches.last_mut().unwrap().push(Predicate::Comparison {
-                        column,
-                        operator: Operator::Le,
-                        value: upper,
-                    });
-                    total_conditions += 2;
-                }
-            } else if parser.keyword("IN") {
-                if !parser.take(Token::LParen) {
-                    return Err(ParseError("expected '(' after IN".into()));
-                }
-                let mut values = Vec::new();
-                loop {
-                    // A 64 KiB SELECT bounds total literal bytes. Long lists
-                    // are compiled into hash sets by both numeric and typed
-                    // executors instead of doing a linear search per row.
-                    if values.len() == 4_096 {
-                        return Err(ParseError("IN supports at most 4096 values".into()));
-                    }
-                    values.push(parser.literal()?);
-                    if !parser.take(Token::Comma) {
-                        break;
-                    }
-                }
-                if !parser.take(Token::RParen) {
-                    return Err(ParseError("expected ')' after IN list".into()));
-                }
-                branches.last_mut().unwrap().push(if negate_in {
-                    Predicate::NotIn { column, values }
-                } else {
-                    Predicate::In { column, values }
-                });
-                total_conditions += 1;
-            } else {
-                if postfix_not {
-                    return Err(ParseError(
-                        "NOT after a column requires IN or BETWEEN".into(),
-                    ));
-                }
-                let mut operator = if parser.take(Token::Percent) {
-                    let modulus = parser.number()?;
-                    let modulus = modulus
-                        .parse::<u64>()
-                        .map_err(|_| ParseError("modulus must be a positive UInt64".into()))?;
-                    if modulus == 0 {
-                        return Err(ParseError("modulus must be positive".into()));
-                    }
-                    match parser.operator()? {
-                        Operator::Eq => Operator::Modulo(modulus),
-                        Operator::Ne => Operator::ModuloNe(modulus),
-                        _ => return Err(ParseError("modulo predicates require = or !=".into())),
-                    }
-                } else {
-                    parser.operator()?
-                };
-                if prefix_not {
-                    operator = match operator {
-                        Operator::Eq => Operator::Ne,
-                        Operator::Ne => Operator::Eq,
-                        Operator::Lt => Operator::Ge,
-                        Operator::Le => Operator::Gt,
-                        Operator::Gt => Operator::Le,
-                        Operator::Ge => Operator::Lt,
-                        Operator::Modulo(_) | Operator::ModuloNe(_) => {
-                            return Err(ParseError("NOT modulo predicates are unsupported".into()));
-                        }
-                    };
-                }
-                branches.last_mut().unwrap().push(Predicate::Comparison {
-                    column,
-                    operator,
-                    value: parser.literal()?,
-                });
-                total_conditions += 1;
-            }
-            if parser.keyword("AND") {
-                continue;
-            }
-            if parser.keyword("OR") {
-                branches.push(Vec::new());
-                continue;
-            }
-            break;
-        }
-        let first = branches.remove(0);
-        (first, branches)
+        Some(where_parser::parse_where(&mut parser)?)
     } else {
-        (Vec::new(), Vec::new())
+        None
     };
+    let branches = match (prewhere, where_clause) {
+        (Some(prewhere), Some(where_clause)) => {
+            where_parser::combine_and(prewhere, where_clause)?
+        }
+        (Some(branches), None) | (None, Some(branches)) => branches,
+        (None, None) => Vec::new(),
+    };
+    let mut branches = branches.into_iter();
+    let predicates = branches.next().unwrap_or_default();
+    let or_predicates = branches.collect();
 
     if parser.keyword("GROUP") {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after GROUP".into()));
         }
-        let first_column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
-            let position = parser
-                .number()?
-                .parse::<usize>()
-                .map_err(|_| ParseError("GROUP BY position is too large".into()))?;
+        // ClickHouse GROUP BY ALL groups by every non-aggregate output
+        // expression. In this bounded SELECT dialect those expressions are
+        // either the explicit grouping keys or all plain projected columns.
+        if parser.keyword("ALL") {
             match &projection {
+                Projection::GroupedCount { .. }
+                | Projection::GroupedMultiCount { .. }
+                | Projection::GroupedDistinctCount { .. }
+                | Projection::GroupedMultiDistinctCount { .. }
+                | Projection::GroupedAggregate { .. }
+                | Projection::GroupedAggregates { .. }
+                | Projection::GroupedMultiAggregates { .. } => {}
+                Projection::All | Projection::Columns(_) => distinct = true,
+                Projection::Count
+                | Projection::CountColumn { .. }
+                | Projection::CountDistinct { .. }
+                | Projection::ApproxDistinct { .. }
+                | Projection::ApproxDistinctState { .. }
+                | Projection::Histogram { .. }
+                | Projection::Aggregate { .. }
+                | Projection::MultipleAggregates(_) => {}
+                _ => return Err(ParseError(
+                    "GROUP BY ALL requires columns or aggregate projections".into(),
+                )),
+            }
+        } else {
+            let mut group_columns = Vec::new();
+            loop {
+                if group_columns.len() >= 8 {
+                    return Err(ParseError("GROUP BY supports at most 8 keys".into()));
+                }
+                let column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+                    let position = parser.number()?.parse::<usize>()
+                        .map_err(|_| ParseError("GROUP BY position is too large".into()))?;
+                    match &projection {
+                        Projection::GroupedCount { column }
+                        | Projection::GroupedDistinctCount { column, .. }
+                        | Projection::GroupedAggregate { column, .. }
+                        | Projection::GroupedAggregates { column, .. } if position == 1 => column.clone(),
+                        Projection::GroupedMultiCount { columns }
+                        | Projection::GroupedMultiAggregates { columns, .. }
+                        | Projection::GroupedMultiDistinctCount { columns, .. } => position
+                            .checked_sub(1).and_then(|index| columns.get(index)).cloned()
+                            .ok_or_else(|| ParseError("GROUP BY position is out of range".into()))?,
+                        _ => return Err(ParseError("GROUP BY position is out of range".into())),
+                    }
+                } else {
+                    parser.word()?
+                };
+                group_columns.push(column);
+                if !parser.take(Token::Comma) {
+                    break;
+                }
+            }
+            match &projection {
+                Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
+                Projection::GroupedMultiAggregates { columns, .. }
+                | Projection::GroupedMultiDistinctCount { columns, .. }
+                    if columns == &group_columns => {}
                 Projection::GroupedCount { column }
                 | Projection::GroupedDistinctCount { column, .. }
                 | Projection::GroupedAggregate { column, .. }
                 | Projection::GroupedAggregates { column, .. }
-                    if position == 1 =>
-                {
-                    column.clone()
+                    if group_columns.len() == 1 && column == &group_columns[0] => {}
+                Projection::GroupedCount { .. }
+                | Projection::GroupedDistinctCount { .. }
+                | Projection::GroupedMultiDistinctCount { .. }
+                | Projection::GroupedMultiCount { .. }
+                | Projection::GroupedAggregate { .. }
+                | Projection::GroupedAggregates { .. }
+                | Projection::GroupedMultiAggregates { .. } => {
+                    return Err(ParseError(
+                        "GROUP BY must match selected grouping keys".into(),
+                    ));
                 }
-                Projection::GroupedMultiAggregates { columns, .. }
-                | Projection::GroupedMultiDistinctCount { columns, .. } => position
-                    .checked_sub(1)
-                    .and_then(|index| columns.get(index))
-                    .cloned()
-                    .ok_or_else(|| ParseError("GROUP BY position is out of range".into()))?,
-                _ => return Err(ParseError("GROUP BY position is out of range".into())),
-            }
-        } else {
-            parser.word()?
-        };
-        let mut group_columns = vec![first_column];
-        while parser.take(Token::Comma) {
-            if group_columns.len() >= 8 {
-                return Err(ParseError("GROUP BY supports at most 8 keys".into()));
-            }
-            group_columns.push(parser.word()?);
-        }
-        match &projection {
-            Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
-            Projection::GroupedMultiAggregates { columns, .. }
-            | Projection::GroupedMultiDistinctCount { columns, .. }
-                if columns == &group_columns => {}
-            Projection::GroupedCount { column }
-            | Projection::GroupedDistinctCount { column, .. }
-            | Projection::GroupedAggregate { column, .. }
-            | Projection::GroupedAggregates { column, .. }
-                if group_columns.len() == 1 && column == &group_columns[0] => {}
-            Projection::GroupedCount { .. }
-            | Projection::GroupedDistinctCount { .. }
-            | Projection::GroupedMultiDistinctCount { .. }
-            | Projection::GroupedMultiCount { .. }
-            | Projection::GroupedAggregate { .. }
-            | Projection::GroupedAggregates { .. }
-            | Projection::GroupedMultiAggregates { .. } => {
-                return Err(ParseError(
-                    "GROUP BY must match selected grouping keys".into(),
-                ));
-            }
-            _ => {
-                return Err(ParseError(
-                    "GROUP BY requires SELECT key, aggregate(column)".into(),
-                ));
+                _ => {
+                    return Err(ParseError(
+                        "GROUP BY requires SELECT key, aggregate(column)".into(),
+                    ));
+                }
             }
         }
     } else if matches!(
@@ -1566,23 +1514,29 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     "HAVING must match the selected aggregate".into(),
                 ));
             }
-        } else if let Projection::GroupedAggregates { items, .. }
-        | Projection::GroupedMultiAggregates { items, .. } = &projection {
+        } else if let Projection::GroupedAggregates { items, aliases, .. }
+        | Projection::GroupedMultiAggregates { items, aliases, .. } = &projection {
             let name = parser.word()?;
-            if !parser.take(Token::LParen) {
-                return Err(ParseError("HAVING requires a selected metric".into()));
-            }
-            let column = parser.word()?;
-            if !parser.take(Token::RParen) {
-                return Err(ParseError("expected ')' after HAVING metric".into()));
-            }
-            aggregate_index = Some(items.iter().position(|(function, argument)| {
-                function.name().eq_ignore_ascii_case(&name)
-                    && argument == &column
-                    && matches!(function,
-                        AggregateFunction::Sum | AggregateFunction::Avg
-                        | AggregateFunction::Min | AggregateFunction::Max
-                        | AggregateFunction::Count)
+            // HAVING uses the same aggregate alias resolution as ORDER BY.
+            // Only a projected metric can be filtered, so an alias never
+            // selects a different or previously uncomputed aggregate.
+            let selected = if parser.take(Token::LParen) {
+                let column = parser.word()?;
+                if !parser.take(Token::RParen) {
+                    return Err(ParseError("expected ')' after HAVING metric".into()));
+                }
+                items.iter().position(|(function, argument)| {
+                    function.name().eq_ignore_ascii_case(&name) && argument == &column
+                })
+            } else {
+                aliases.iter().position(|alias| alias.as_ref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(&name)))
+            };
+            aggregate_index = Some(selected.filter(|&index| {
+                matches!(items[index].0,
+                    AggregateFunction::Sum | AggregateFunction::Avg
+                    | AggregateFunction::Min | AggregateFunction::Max
+                    | AggregateFunction::Count)
             }).ok_or_else(|| ParseError("HAVING metric must match SELECT".into()))?);
         } else if let Projection::GroupedDistinctCount { value_column, .. }
         | Projection::GroupedMultiDistinctCount { value_column, .. } = &projection {
@@ -1614,14 +1568,41 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after ORDER".into()));
         }
-        let first = parser.order_term(&projection)?;
-        while parser.take(Token::Comma) {
-            if order_by_extra.len() >= 7 {
-                return Err(ParseError("ORDER BY supports at most 8 columns".into()));
+        if parser.keyword("ALL") {
+            let columns = order_by_all_columns(&projection)?;
+            let descending = if parser.keyword("DESC") {
+                true
+            } else {
+                parser.keyword("ASC");
+                false
+            };
+            let nulls_first = if parser.keyword("NULLS") {
+                if parser.keyword("FIRST") {
+                    Some(true)
+                } else if parser.keyword("LAST") {
+                    Some(false)
+                } else {
+                    return Err(ParseError("NULLS requires FIRST or LAST".into()));
+                }
+            } else {
+                None
+            };
+            let mut terms = columns.into_iter().map(|column| OrderBy {
+                column, descending, nulls_first,
+            });
+            let first = terms.next().expect("ORDER BY ALL has columns");
+            order_by_extra.extend(terms);
+            Some(first)
+        } else {
+            let first = parser.order_term(&projection)?;
+            while parser.take(Token::Comma) {
+                if order_by_extra.len() >= 7 {
+                    return Err(ParseError("ORDER BY supports at most 8 columns".into()));
+                }
+                order_by_extra.push(parser.order_term(&projection)?);
             }
-            order_by_extra.push(parser.order_term(&projection)?);
+            Some(first)
         }
-        Some(first)
     } else {
         None
     };

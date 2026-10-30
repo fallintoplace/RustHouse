@@ -23,6 +23,22 @@ class FixtureTests(unittest.TestCase):
                 (Path(first) / "references" / "q06.tsv").read_text(), expected
             )
 
+    def test_large_fixture_preserves_exact_rows_and_revenue_oracle(self):
+        with tempfile.TemporaryDirectory() as root:
+            report = generate(Path(root), 4097, 21)
+            expected = ["l_shipdate\tl_extendedprice\tl_discount\tl_quantity"]
+            count = revenue = 0
+            for shipdate, price, discount, quantity in row_source(4097, 21):
+                expected.append(f"{shipdate}\t{price}\t{discount}\t{quantity}")
+                if ("1994-01-01" <= shipdate < "1995-01-01"
+                        and 500 <= discount <= 700 and quantity < 24):
+                    count += 1
+                    revenue += price * discount
+            self.assertEqual((Path(root) / "lineitem.tsv").read_text().splitlines(),
+                             expected)
+            self.assertEqual(report["matched_rows"], count)
+            self.assertEqual(report["revenue_bps"], revenue)
+
     def test_rejects_empty_input(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(ValueError):

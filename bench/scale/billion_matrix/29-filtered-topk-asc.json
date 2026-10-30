@@ -1,0 +1,10 @@
+{
+  "name": "filtered-topk-asc",
+  "description": "Filtered ascending top-K page",
+  "kind": "page",
+  "direction": "ASC",
+  "limit": 24,
+  "offset": 1000,
+  "modulus": 2,
+  "residue": 0
+}

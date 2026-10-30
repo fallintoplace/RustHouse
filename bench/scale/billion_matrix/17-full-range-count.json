@@ -1,0 +1,8 @@
+{
+  "name": "full-range-count",
+  "description": "Whole-range explicit predicate count",
+  "kind": "range",
+  "aggregate": "count",
+  "lower_ppm": 0,
+  "upper_ppm": 1000000
+}

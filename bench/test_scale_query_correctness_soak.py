@@ -33,6 +33,10 @@ class CorrectnessSoakTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             soak("x", "x", "x", "none", runs=0)
 
+    def test_rejects_accidental_unbounded_full_table_soak(self):
+        with self.assertRaisesRegex(ValueError, "1000"):
+            soak("x", "x", "select", "none", runs=1000, warmups=1)
+
 
 if __name__ == "__main__":
     unittest.main()

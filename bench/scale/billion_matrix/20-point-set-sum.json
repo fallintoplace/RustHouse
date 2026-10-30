@@ -1,0 +1,13 @@
+{
+  "name": "point-set-sum",
+  "description": "Five sparse point-probe sum",
+  "kind": "membership",
+  "aggregate": "sum",
+  "ids": [
+    0,
+    1,
+    7,
+    1024,
+    65536
+  ]
+}
