@@ -94,5 +94,15 @@ class SourceProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate source probe JSON field"):
             read_json("http://127.0.0.1:8123/capabilities", 3)
 
+class SourceTimeoutTests(unittest.TestCase):
+    def test_source_probe_rejects_invalid_request_timeouts(self):
+        from source_probe import read_json
+        with patch("source_probe.NO_REDIRECT_OPENER") as opener:
+            for value in (True, 0, -1, float("nan"), float("inf"), 301):
+                with self.subTest(timeout=value), self.assertRaisesRegex(ValueError, "timeout"):
+                    read_json("http://127.0.0.1:8123/capabilities", value)
+            opener.open.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
