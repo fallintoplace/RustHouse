@@ -106,6 +106,9 @@ pub(super) fn is_function(name: &str) -> bool {
             | "FROMUNIXTIMESTAMP64MICRO"
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
+            | "TOUINT8"
+            | "TOUINT16"
+            | "TOUINT32"
             | "TOUINT8ORNULL"
             | "TOUINT16ORNULL"
             | "TOUINT32ORNULL"
@@ -3543,6 +3546,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     };
                     ConstantValue::Integer(parsed.unwrap_or(0))
                 }
+            }
+        }
+        "TOUINT8" | "TOUINT16" | "TOUINT32" => {
+            let input = constant_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "unsigned conversion requires one argument")?;
+            let number = match input {
+                ConstantValue::Null => None,
+                ConstantValue::Integer(value) => Some(value as u128),
+                ConstantValue::Text(value) => Some(value.parse::<u128>()
+                    .map_err(|_| ParseError("invalid unsigned integer string".into()))?),
+            };
+            match number {
+                None => ConstantValue::Null,
+                Some(number) => ConstantValue::Integer(match name.as_str() {
+                    "TOUINT8" => i64::from(number as u8),
+                    "TOUINT16" => i64::from(number as u16),
+                    "TOUINT32" => i64::from(number as u32),
+                    _ => unreachable!(),
+                }),
             }
         }
         "TOUINT8ORZERO" | "TOUINT16ORZERO" | "TOUINT32ORZERO" => {
