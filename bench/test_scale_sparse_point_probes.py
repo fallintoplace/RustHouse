@@ -66,5 +66,19 @@ class SparseProbeTests(unittest.TestCase):
         self.assertEqual(counter.draws, 10000)
 
 
+    def test_custom_key_column_is_used_safely_in_sql(self):
+        statements = []
+        def run(statement):
+            statements.append(statement)
+            value = int(statement.rsplit(" = ", 1)[1].split()[0])
+            return f"{value}\n".encode()
+        report = probe("binary", "db", "events", 5, 4, count=2,
+                       execute=run, column="event_id")
+        self.assertEqual(report["column"], "event_id")
+        self.assertTrue(all("SELECT event_id" in sql and "WHERE event_id =" in sql
+                            for sql in statements))
+        with self.assertRaisesRegex(ValueError, "column identifier"):
+            probe("binary", "db", "events", 5, 4, column="id; DELETE")
+
 if __name__ == "__main__":
     unittest.main()

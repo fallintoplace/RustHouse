@@ -67,5 +67,14 @@ class ClusterTests(unittest.TestCase):
                     inspect("http://127.0.0.1:8123", timeout=value)
             opener.open.assert_not_called()
 
+    def test_duplicate_json_keys_fail_closed(self):
+        from cluster_health import inspect
+        from unittest.mock import patch
+        raw = b'{"total":0,"total":1,"healthy":0,"peers":[]}'
+        with patch("cluster_health.NO_REDIRECT_OPENER") as opener:
+            opener.open.return_value.__enter__.return_value.read.return_value = raw
+            with self.assertRaisesRegex(ValueError, "duplicate peer-health JSON field"):
+                inspect("http://127.0.0.1:8123")
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,20 @@ import math
 from pathlib import Path
 
 
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+
+
+def load_report(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("comparison report must be a regular, non-symlinked file")
+    with path.open("rb") as stream:
+        payload = stream.read(MAX_REPORT_BYTES + 1)
+    if len(payload) > MAX_REPORT_BYTES:
+        raise ValueError("comparison report exceeds 2 MiB")
+    return json.loads(payload)
+
+
 VALID = {"passed"}
 
 
@@ -146,8 +160,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         result = compare(
-            json.loads(args.baseline.read_text(encoding="utf-8")),
-            json.loads(args.candidate.read_text(encoding="utf-8")),
+            load_report(args.baseline),
+            load_report(args.candidate),
             args.slowdown_threshold_percent,
         )
     except (OSError, ValueError) as error:

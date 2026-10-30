@@ -65,5 +65,14 @@ class SnapshotFingerprintTests(unittest.TestCase):
                     fingerprint(root)
 
 
+    def test_hash_is_independent_of_configurable_read_block_size(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "payload.bin").write_bytes(b"abcd" * 50_000)
+            small = fingerprint(root, block_size=4096)
+            large = fingerprint(root, block_size=16 * 1024 * 1024)
+            self.assertEqual(small["sha256"], large["sha256"])
+            with self.assertRaisesRegex(ValueError, "block_size"):
+                fingerprint(root, block_size=4095)
+
 if __name__ == "__main__":
     unittest.main()

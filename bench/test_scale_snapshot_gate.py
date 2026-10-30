@@ -1,11 +1,23 @@
 import json
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from bench.scale.snapshot_gate import inspect_snapshot
 
 
 class SnapshotGateTests(unittest.TestCase):
+    def test_failed_default_inspection_spools_stderr(self):
+        def fail(_command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stderr"].write(b"x" * 100_000 + b"reason")
+            return SimpleNamespace(returncode=1)
+        with patch("bench.scale.snapshot_gate.subprocess.run", side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError, "reason") as failure:
+                inspect_snapshot("rusthouse", "part", min_rows=1)
+        self.assertLess(len(str(failure.exception)), 700)
+
+
     def test_accepts_billion_physical_rows(self):
         def run(command, **kwargs):
             self.assertEqual(command[1], "inspect-snapshot")
@@ -74,6 +86,25 @@ class SnapshotGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid rows or parts"):
                 inspect_snapshot("rusthouse", ".", min_rows=1, run=mocked)
 
+
+
+
+class SnapshotMetadataBudgetTests(unittest.TestCase):
+    def test_rejects_oversized_inspection_before_json_parse(self):
+        payload = b" " * (2 * 1024 * 1024 + 1)
+        def run(*_args, **_kwargs):
+            return SimpleNamespace(returncode=0, stdout=payload, stderr=b"")
+        with self.assertRaisesRegex(ValueError, "2 MiB"):
+            inspect_snapshot("rusthouse", "part", run=run)
+
+    def test_normal_metadata_stays_supported(self):
+        result = inspect_snapshot(
+            "rusthouse", "part", min_rows=1,
+            run=lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=0,
+                stdout=b'{"rows":1,"parts":1,"columns":[{"name":"id","type":"UInt64"}]}',
+                stderr=b""))
+        self.assertEqual(result["physical_rows"], 1)
 
 if __name__ == "__main__":
     unittest.main()

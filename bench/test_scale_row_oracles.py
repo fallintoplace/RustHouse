@@ -62,5 +62,16 @@ class RowOracleTests(unittest.TestCase):
                          {"count": 0, "sum": 0})
 
 
+    def test_exact_sum_of_squares_for_ranges_and_strides(self):
+        from bench.scale.row_oracles import sum_squares_range, progression_squares
+        self.assertEqual(sum_squares_range(2, 5), 4 + 9 + 16)
+        self.assertEqual(sum_squares_range(0, 0), 0)
+        self.assertEqual(progression_squares(3, 5, 3), 495)
+        self.assertEqual(make_oracles(5, start=3, step=3)["sum_squares_all"], 495)
+        with self.assertRaisesRegex(ValueError, "UInt64"):
+            sum_squares_range(-1, 2)
+        with self.assertRaisesRegex(ValueError, "overflow"):
+            progression_squares((1 << 64) - 1, 2)
+
 if __name__ == "__main__":
     unittest.main()

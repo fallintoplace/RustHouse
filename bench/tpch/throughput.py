@@ -5,6 +5,7 @@ This is a stress workload. It is not the official TPC-H Throughput Test.
 """
 import argparse
 import concurrent.futures
+import math
 import subprocess
 import time
 import sys
@@ -18,7 +19,10 @@ MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
 
 def read_reference(path):
-    with Path(path).open("rb") as source:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("throughput reference must be a regular, non-symlinked file")
+    with path.open("rb") as source:
         payload = source.read(MAX_REFERENCE_BYTES + 1)
     if len(payload) > MAX_REFERENCE_BYTES:
         raise ValueError("TPC-H throughput reference exceeds 16 MiB")
@@ -32,11 +36,13 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None,
         raise ValueError("clients must be 1..64 and rounds 1..100")
     if not queries:
         raise ValueError("at least one SQL query is required")
-    references = references or {}
+    references = {} if references is None else references
     if not isinstance(references, dict) or any(
             type(number) is not int or type(golden) is not bytes
             for number, golden in references.items()):
         raise ValueError("throughput references must map integer IDs to bytes")
+    if sum(len(golden) for golden in references.values()) > 64 * 1024 * 1024:
+        raise ValueError("throughput references exceed 64 MiB total")
     if require_verified and any(number not in references for number, _ in queries):
         raise ValueError("verified throughput requires a reference for every query")
     # Explicitly cap the planned jobs to avoid runaway CI load.
@@ -59,6 +65,8 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None,
             output = execute(sql)
             if type(output) is not bytes:
                 raise TypeError("SQL execution must return bytes")
+            if len(output) > MAX_REFERENCE_BYTES:
+                raise ValueError("SQL throughput output exceeds 16 MiB")
         except subprocess.TimeoutExpired:
             return {"query": number, "status": "timeout",
                     "seconds": None, "error": "query timed out"}
@@ -110,8 +118,8 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    if args.timeout <= 0:
-        parser.error("--timeout must be positive")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("--timeout must be finite and positive")
     if args.require_verified and args.reference_dir is None:
         parser.error("--require-verified needs --reference-dir")
     try:

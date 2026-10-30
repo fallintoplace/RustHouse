@@ -55,5 +55,36 @@ class InteropParityTests(unittest.TestCase):
             self.assertEqual(req.data, b"SELECT 1")
 
 
+
+
+class ServerStderrBackpressureTests(unittest.TestCase):
+    def test_server_launch_does_not_create_unread_pipe(self):
+        with mock.patch.object(parity.subprocess, "Popen") as popen:
+            parity.launch_server("server", "db", 8123)
+            self.assertEqual(popen.call_args.kwargs["stderr"], parity.subprocess.DEVNULL)
+            self.assertEqual(popen.call_args.kwargs["stdout"], parity.subprocess.DEVNULL)
+            self.assertEqual(popen.call_args.args[0],
+                             ["server", "--database", "db", "--port", "8123"])
+
+
+
+class SchemaResponseLimitTests(unittest.TestCase):
+    def test_oversized_schema_is_rejected_before_json_decode(self):
+        with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:
+            response = opener.open.return_value.__enter__.return_value
+            response.read.return_value = b" " * 1_048_577
+            with self.assertRaisesRegex(ValueError, "exceeds 1 MiB"):
+                parity.fetch_schema(8123)
+            response.read.assert_called_once_with(1_048_577)
+
+    def test_schema_requires_object_and_accepts_normal_json(self):
+        with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:
+            response = opener.open.return_value.__enter__.return_value
+            response.read.return_value = b'[]'
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                parity.fetch_schema(8123)
+            response.read.return_value = b'{"rows":3,"columns":[]}'
+            self.assertEqual(parity.fetch_schema(8123)["rows"], 3)
+
 if __name__ == "__main__":
     unittest.main()
