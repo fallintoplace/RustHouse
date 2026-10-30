@@ -56,6 +56,10 @@ impl QuorumPolicy {
         })
     }
 
+    fn validate(self) -> Result<(), &'static str> {
+        Self::new(self.replicas, self.reads, self.writes).map(|_| ())
+    }
+
     /// Determine availability from actual replica IDs instead of trusting a
     /// caller-supplied acknowledgement count. Duplicate replies never count
     /// as more than one vote. This is planning, not a consensus protocol.
@@ -64,7 +68,7 @@ impl QuorumPolicy {
         members: &[&str],
         acknowledgements: &[&str],
     ) -> Result<QuorumObservation, &'static str> {
-        Self::new(self.replicas, self.reads, self.writes)?;
+        self.validate()?;
         if members.len() != self.replicas || acknowledgements.len() > 256 {
             return Err("quorum membership or acknowledgement count mismatch");
         }
@@ -104,7 +108,7 @@ impl QuorumPolicy {
     }
 
     fn valid_ack_count(self, unique_acks: usize) -> bool {
-        Self::new(self.replicas, self.reads, self.writes).is_ok()
+        self.validate().is_ok()
             && unique_acks <= self.replicas
     }
 
