@@ -32,7 +32,10 @@ HTTP_OPENER = urllib.request.build_opener(NoRedirect())
 
 
 def load_queries(path):
-    with Path(path).open("rb") as source:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("SQL workload must be a regular, non-symlinked file")
+    with path.open("rb") as source:
         payload = source.read(MAX_QUERY_FILE_BYTES + 1)
     if len(payload) > MAX_QUERY_FILE_BYTES:
         raise ValueError("analytics workload file exceeds 4 MiB")
