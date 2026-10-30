@@ -35,22 +35,33 @@ fn reserve_parallel_group(
 }
 
 
-/// Encoded probes borrow decoded text while searching. Only newly discovered
-/// groups retain an encoded key and copied output cells. Conservatively charge
-/// both copies to the shared worker budget before inserting a group.
+/// Encoded probes reuse one buffer on hits. Charge only the owned text
+/// payload on misses, using the same estimate as the previous Key-based
+/// path. Inline numeric encodings fit inside the fixed per-dimension budget.
 fn reserve_parallel_encoded_group(
     budget: &std::sync::atomic::AtomicUsize,
-    dimensions: usize,
-    encoded_bytes: usize,
+    batch: &[TypedColumn],
+    group_indices: &[usize],
+    row: usize,
 ) -> Result<(), ExecutionError> {
     use std::sync::atomic::Ordering;
-    let fixed = dimensions
+    let fixed = group_indices
+        .len()
         .checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
         .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))?;
-    let bytes = encoded_bytes
-        .checked_mul(2)
-        .and_then(|payload| fixed.checked_add(payload))
-        .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))?;
+    let bytes = group_indices.iter().try_fold(fixed, |total, &index| {
+        let payload = match &batch[index] {
+            TypedColumn::Text(values) => values.get(row).map_or(0, |value| value.len()),
+            TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
+                values.get(row).map_or(0, |value| value.len())
+            }
+            _ => 0,
+        };
+        payload
+            .checked_mul(2)
+            .and_then(|bytes| total.checked_add(bytes))
+            .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))
+    })?;
     budget
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             current
@@ -156,8 +167,9 @@ fn parallel_grouped_parts(
                                     }
                                     reserve_parallel_encoded_group(
                                         retained,
-                                        group_indices.len(),
-                                        encoded_probe.len(),
+                                        &batch,
+                                        group_indices,
+                                        row,
                                     )?;
                                     encoded_index.insert(
                                         std::mem::take(&mut encoded_probe),
