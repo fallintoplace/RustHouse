@@ -478,12 +478,12 @@ pub(super) fn append_parts_stream(
 
 /// Rewrite a local table using bounded batches. Keep the previous active
 /// snapshot visible until every replacement part has been written and verified.
-pub(super) fn rewrite_rows(
+/// The caller holds the exclusive write lock before resolving its predicate.
+pub(super) fn rewrite_rows_locked(
     database: &Path,
     table: &str,
     mut transform: impl FnMut(&[TypedColumn], usize, &mut Vec<Option<String>>) -> Result<bool, String>,
 ) -> Result<(usize, usize), String> {
-    let _lock = lock(database)?;
     let cols = columns(database, table)?;
     let (source, _) = validated_parts(database, table, &cols)?;
     let expected = inspect_query_source(&source)
