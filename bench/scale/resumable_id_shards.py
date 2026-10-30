@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import secrets
 from pathlib import Path
 
 MAX_SHARDS = 16_384
@@ -42,10 +43,13 @@ def write_shard(path, start, count):
         raise ValueError(f"refusing symlinked shard: {path}")
     if path.exists():
         return validate_existing(path, start, count), True
-    pending = path.with_name("." + path.name + f".{os.getpid()}.pending")
+    pending = path.with_name(
+        "." + path.name + f".{os.getpid()}.{secrets.token_hex(8)}.pending")
     digest = hashlib.sha256()
+    pending_created = False
     try:
         with pending.open("xb", buffering=1024 * 1024) as output:
+            pending_created = True
             # Amortize writes and SHA256 updates for million-row shards without
             # retaining more than one 4096-row block in memory.
             for first in range(start, start + count, 4096):
@@ -63,7 +67,8 @@ def write_shard(path, start, count):
         pending.unlink()
         return digest.hexdigest(), False
     finally:
-        pending.unlink(missing_ok=True)
+        if pending_created:
+            pending.unlink(missing_ok=True)
 
 
 def create(directory, start, rows, shard_rows):
@@ -93,9 +98,11 @@ def create(directory, start, rows, shard_rows):
         "schema_version": 1, "start": start, "rows": rows,
         "shard_rows": shard_rows, "shards": shards,
     }
-    temporary = directory / f".manifest.{os.getpid()}.pending"
+    temporary = directory / f".manifest.{os.getpid()}.{secrets.token_hex(8)}.pending"
+    manifest_created = False
     try:
         with temporary.open("x", encoding="utf-8") as output:
+            manifest_created = True
             json.dump(manifest, output, indent=2)
             output.write("\n")
             output.flush()
@@ -108,7 +115,8 @@ def create(directory, start, rows, shard_rows):
             finally:
                 os.close(descriptor)
     finally:
-        temporary.unlink(missing_ok=True)
+        if manifest_created:
+            temporary.unlink(missing_ok=True)
     return manifest
 
 
