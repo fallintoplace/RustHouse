@@ -20,7 +20,7 @@ fn metrics_response(requests: u64, errors: u64) -> Response {
         status: "200 OK",
         content_type: "text/plain; version=0.0.4; charset=utf-8",
         body: format!(
-            "# HELP rusthouse_http_requests_total HTTP requests processed by this server.\\n# TYPE rusthouse_http_requests_total counter\\nrusthouse_http_requests_total {requests}\\n# HELP rusthouse_http_errors_total HTTP requests with non-200 results.\\n# TYPE rusthouse_http_errors_total counter\\nrusthouse_http_errors_total {errors}\\n"
+            "# HELP rusthouse_http_requests_total HTTP requests processed by this server.\n# TYPE rusthouse_http_requests_total counter\nrusthouse_http_requests_total {requests}\n# HELP rusthouse_http_errors_total HTTP requests with non-200 results.\n# TYPE rusthouse_http_errors_total counter\nrusthouse_http_errors_total {errors}\n"
         )
         .into_bytes(),
     }
