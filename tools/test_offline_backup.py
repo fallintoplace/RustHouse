@@ -65,6 +65,23 @@ class BackupTests(unittest.TestCase):
             self.assertTrue((base / "backup.partial").exists())
             self.assertFalse((base / "backup").exists())
 
+    def test_syncs_file_and_directory_before_publication(self):
+        from offline_backup import sync_copied_tree
+        import os
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root) / "stage"
+            nested = folder / "parts"
+            nested.mkdir(parents=True)
+            (nested / "count.txt").write_bytes(b"1\\n")
+            calls = []
+            original = os.fsync
+            def counted(fd):
+                calls.append(fd)
+                return original(fd)
+            with patch("offline_backup.os.fsync", side_effect=counted):
+                sync_copied_tree(folder)
+            self.assertGreaterEqual(len(calls), 3 if os.name == "posix" else 1)
+
     def test_allows_fresh_sibling(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "db"
