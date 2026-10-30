@@ -203,6 +203,10 @@ fn block(data: &[u8], compression: PartCompression) -> Result<Vec<u8>, PartError
 }
 
 fn validate_part_columns(columns: &[Column]) -> Result<(), PartError> {
+    // Match the catalog and scan limits for all public wide-part writer callers.
+    if columns.is_empty() || columns.len() > 128 {
+        return Err(invalid("wide-part schema must contain 1..128 columns"));
+    }
     let mut names = HashSet::new();
     for col in columns {
         if col.name.is_empty()
@@ -1064,5 +1068,21 @@ mod numeric_array_writer_tests {
             .is_err()
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod writer_schema_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_zero_and_oversized_column_schemas() {
+        assert!(validate_part_columns(&[]).is_err());
+        let columns = (0..129).map(|index| Column {
+            name: format!("field_{index}"),
+            data_type: "UInt64".into(),
+        }).collect::<Vec<_>>();
+        assert!(validate_part_columns(&columns).is_err());
+        assert!(validate_part_columns(&columns[..128]).is_ok());
     }
 }
