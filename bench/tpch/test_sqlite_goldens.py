@@ -57,6 +57,34 @@ class SQLiteGoldenOutputBudgetTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), b"1\n")
 
 
+    def test_does_not_overwrite_reference_created_after_preflight(self):
+        from sqlite_goldens import write_one
+        from unittest.mock import patch
+        import os
+        with tempfile.TemporaryDirectory() as root:
+            destination = Path(root) / "q01.tsv"
+            original_link = os.link
+
+            def concurrent_create(source, target):
+                destination.write_bytes(b"winner\\n")
+                return original_link(source, target)
+
+            with closing(sqlite3.connect(":memory:")) as connection:
+                with patch("sqlite_goldens.os.link", side_effect=concurrent_create):
+                    with self.assertRaises(FileExistsError):
+                        write_one(connection, "SELECT 1", destination)
+            self.assertEqual(destination.read_bytes(), b"winner\\n")
+            self.assertEqual(list(Path(root).glob("*.tmp")), [])
+
+    def test_explicit_overwrite_replaces_existing_reference(self):
+        from sqlite_goldens import write_one
+        with tempfile.TemporaryDirectory() as root:
+            destination = Path(root) / "q01.tsv"
+            destination.write_bytes(b"old\\n")
+            with closing(sqlite3.connect(":memory:")) as connection:
+                write_one(connection, "SELECT 2", destination, overwrite=True)
+            self.assertEqual(destination.read_bytes(), b"2\\n")
+
     def test_enforces_bytes_and_does_not_publish_partial_reference(self):
         from sqlite_goldens import write_one
         with tempfile.TemporaryDirectory() as root:
