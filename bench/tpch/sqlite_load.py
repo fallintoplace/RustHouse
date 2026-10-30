@@ -14,6 +14,7 @@ from schema import TABLES, names
 
 SQLITE_INT_MAX = 2**63 - 1
 SQLITE_INT_MIN = -(2**63)
+MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 
 def convert_cell(raw, kind):
@@ -55,12 +56,19 @@ def load_table(connection, input_dir, table, batch_size=4096):
     batch = []
     path = Path(input_dir) / (table + ".tsv")
     started = time.perf_counter()
-    with path.open("r", encoding="utf-8", newline="") as source:
-        header = source.readline().rstrip("\r\n").split("\t")
+    with path.open("rb") as source:
+        header_raw = source.readline(MAX_RECORD_BYTES + 1)
+        if len(header_raw) > MAX_RECORD_BYTES:
+            raise ValueError(f"{table}: oversized TSV header")
+        header = header_raw.decode("utf-8").rstrip("\r\n").split("\t")
         if header != names(table):
             raise ValueError(f"{table}: unexpected TSV header")
-        for line_number, line in enumerate(source, 2):
-            values = line.rstrip("\r\n").split("\t")
+        for line_number, raw in enumerate(
+            iter(lambda: source.readline(MAX_RECORD_BYTES + 1), b""), 2
+        ):
+            if len(raw) > MAX_RECORD_BYTES or not raw.endswith(b"\n"):
+                raise ValueError(f"{table}: oversized or truncated TSV row {line_number}")
+            values = raw.decode("utf-8").rstrip("\r\n").split("\t")
             if len(values) != len(fields):
                 raise ValueError(f"{table}: wrong column count on line {line_number}")
             try:
