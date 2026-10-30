@@ -142,6 +142,7 @@ enum BoundExpr {
     Multiply(Box<Self>, Box<Self>),
     Divide(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
+    Case { branches: Vec<(Self, Self)>, else_expr: Option<Box<Self>> },
 }
 
 impl BoundExpr {
@@ -156,6 +157,13 @@ impl BoundExpr {
                 .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {name}")))
         };
         Ok(match expression {
+            ScalarExpr::Case { branches, else_expr } => Self::Case {
+                branches: branches.iter().map(|(condition, value)| {
+                    Ok((Self::bind(condition, indices)?, Self::bind(value, indices)?))
+                }).collect::<Result<Vec<_>, ExecutionError>>()?,
+                else_expr: else_expr.as_ref()
+                    .map(|value| Self::bind(value, indices).map(Box::new)).transpose()?,
+            },
             ScalarExpr::Column(name) => Self::Column(index(name)?),
             ScalarExpr::TextLength(name) => Self::TextLength(index(name)?),
             ScalarExpr::Integer(number) => Self::Integer(*number),
@@ -298,6 +306,21 @@ fn eval_number(
     row: usize,
 ) -> Result<Option<Number>, ExecutionError> {
     match expression {
+        BoundExpr::Case { branches, else_expr } => {
+            for (condition, value) in branches {
+                let truthy = match eval_number(condition, batch, row)? {
+                    Some(Number::Unsigned(value)) => value != 0,
+                    Some(Number::Signed(value)) => value != 0,
+                    Some(Number::Float(value)) => value != 0.0,
+                    None => false,
+                };
+                if truthy { return eval_number(value, batch, row); }
+            }
+            match else_expr {
+                Some(value) => eval_number(value, batch, row),
+                None => Ok(None),
+            }
+        }
         BoundExpr::Column(index) => numeric_argument_at(batch, *index, row),
         BoundExpr::Compare(left, operator, right) => {
             let Some(left) = eval_number(left, batch, row)? else {return Ok(None)};

@@ -21,6 +21,34 @@ fn parse_parenthesized_scalar_expression(
     Ok(result)
 }
 
+fn parse_case(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    if !parser.keyword("CASE") {
+        return Err(ParseError("CASE expression requires CASE".into()));
+    }
+    let mut branches = Vec::new();
+    while parser.keyword("WHEN") {
+        if branches.len() >= 16 {
+            return Err(ParseError("CASE supports at most 16 WHEN branches".into()));
+        }
+        let condition = parse_expression_tokens_at_depth(parser, depth + 1)?;
+        if !parser.keyword("THEN") {
+            return Err(ParseError("CASE WHEN requires THEN".into()));
+        }
+        let value = parse_expression_tokens_at_depth(parser, depth + 1)?;
+        branches.push((condition, value));
+    }
+    if branches.is_empty() {
+        return Err(ParseError("CASE requires WHEN".into()));
+    }
+    let else_expr = if parser.keyword("ELSE") {
+        Some(Box::new(parse_expression_tokens_at_depth(parser, depth + 1)?))
+    } else { None };
+    if !parser.keyword("END") {
+        return Err(ParseError("CASE expression requires END".into()));
+    }
+    Ok(ScalarExpr::Case { branches, else_expr })
+}
+
 pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     if depth >= MAX_EXPRESSION_DEPTH {
         return Err(ParseError("scalar expression exceeds nesting depth of 64".into()));
@@ -43,6 +71,7 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
         {
             parse_length_column(parser)
         }
+        Some(Token::Word(name)) if name.eq_ignore_ascii_case("CASE") => parse_case(parser, depth),
         Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
             let literal = if number.contains('.') {
