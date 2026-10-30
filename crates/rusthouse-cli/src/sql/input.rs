@@ -76,10 +76,13 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             index += 1;
             continue;
         }
-        if !quoted && bytes[index] == b'-' && bytes.get(index + 1) == Some(&b'-') {
+        if !quoted
+            && (bytes[index] == b'#'
+                || (bytes[index] == b'-' && bytes.get(index + 1) == Some(&b'-')))
+        {
             current.push_str(&input[segment..index]);
             current.push(' ');
-            index += 2;
+            index += if bytes[index] == b'#' { 1 } else { 2 };
             while index < bytes.len() && bytes[index] != b'\n' {
                 index += 1;
             }
@@ -162,6 +165,20 @@ mod block_comment_tests {
             split_sql_script(" SELECT 1; SELECT 'a;b'; SELECT 3 ").unwrap(),
             vec!["SELECT 1", "SELECT 'a;b'", "SELECT 3"]
         );
+    }
+
+    #[test]
+    fn hash_comments_do_not_split_scripts_at_internal_semicolons() {
+        assert_eq!(
+            split_sql_script("SELECT 1; # ignored ; ;\nSELECT 2;").unwrap(),
+            vec!["SELECT 1", "SELECT 2"]
+        );
+        assert_eq!(
+            split_sql_script("SELECT '#literal;still' AS value; # trailing ;")
+                .unwrap(),
+            vec!["SELECT '#literal;still' AS value"]
+        );
+        assert!(split_sql_script("# only a comment ; ;").is_err());
     }
 
     #[test]
