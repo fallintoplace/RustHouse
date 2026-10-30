@@ -50,7 +50,7 @@ fn report_staging_entries(
     report: &mut Report,
     table: &str,
     entries: fs::ReadDir,
-    prefix: &str,
+    prefixes: &[&str],
     read_error: &'static str,
     warning: &str,
 ) {
@@ -61,7 +61,7 @@ fn report_staging_entries(
         };
         let filename = entry.file_name();
         let name = filename.to_string_lossy();
-        if name.starts_with(prefix) {
+        if prefixes.iter().any(|prefix| name.starts_with(prefix)) {
             report.warning(table, format!("{warning}: {name}"));
         }
     }
@@ -76,7 +76,7 @@ fn inspect_staging(report: &mut Report, root: &Path, table: &str) {
         report,
         table,
         entries,
-        ".rusthouse-active.tmp-",
+        &[".rusthouse-active.tmp-", ".rusthouse-active.replica-"],
         "cannot inspect table directory entry",
         "unfinished snapshot pointer",
     );
@@ -90,7 +90,7 @@ fn inspect_staging(report: &mut Report, root: &Path, table: &str) {
                 report,
                 table,
                 entries,
-                ".pending-",
+                &[".pending-"],
                 "cannot inspect snapshot generation entry",
                 "unpublished snapshot staging",
             ),
@@ -491,11 +491,12 @@ mod tests {
             std::env::temp_dir().join(format!("rusthouse-doctor-staging-{}", std::process::id()));
         fs::create_dir_all(root.join(".rusthouse-versions")).unwrap();
         fs::write(root.join(".rusthouse-active.tmp-1"), b"").unwrap();
+        fs::write(root.join(".rusthouse-active.replica-2"), b"").unwrap();
         fs::write(root.join(".rusthouse-versions/.pending-1"), b"").unwrap();
 
         let mut report = Report::default();
         inspect_staging(&mut report, &root, "test");
-        assert_eq!(report.warnings, 2);
+        assert_eq!(report.warnings, 3);
         assert_eq!(report.errors, 0);
         fs::remove_dir_all(root).unwrap();
     }
