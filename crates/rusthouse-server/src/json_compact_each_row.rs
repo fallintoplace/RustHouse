@@ -4,6 +4,20 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+fn write_compact_field(output: &mut Vec<u8>, value: &[u8]) -> io::Result<()> {
+    if value == b"\\N" {
+        output.write_all(b"null")?;
+    } else if value.contains(&b'\\') {
+        write_json_string(output, &decode_tsv_value(value)?)?;
+    } else {
+        let text = std::str::from_utf8(value).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field")
+        })?;
+        write_json_string(output, text)?;
+    }
+    Ok(())
+}
+
 fn write_compact_row_into<W: Write>(
     output: &mut W,
     line: &[u8],
@@ -26,18 +40,7 @@ fn write_compact_row_into<W: Write>(
             row.write_all(b",")?;
         }
         width += 1;
-        if value == b"\\N" {
-            row.write_all(b"null")?;
-        } else {
-            if value.contains(&b'\\') {
-                write_json_string(&mut *row, &decode_tsv_value(value)?)?;
-            } else {
-                let text = std::str::from_utf8(value).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field")
-                })?;
-                write_json_string(&mut *row, text)?;
-            }
-        }
+        write_compact_field(row, value)?;
     }
     if width != columns {
         return Err(io::Error::new(
