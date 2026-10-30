@@ -1,11 +1,23 @@
 import json
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from bench.scale.snapshot_gate import inspect_snapshot
 
 
 class SnapshotGateTests(unittest.TestCase):
+    def test_failed_default_inspection_spools_stderr(self):
+        def fail(_command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stderr"].write(b"x" * 100_000 + b"reason")
+            return SimpleNamespace(returncode=1)
+        with patch("bench.scale.snapshot_gate.subprocess.run", side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError, "reason") as failure:
+                inspect_snapshot("rusthouse", "part", min_rows=1)
+        self.assertLess(len(str(failure.exception)), 700)
+
+
     def test_accepts_billion_physical_rows(self):
         def run(command, **kwargs):
             self.assertEqual(command[1], "inspect-snapshot")
