@@ -6,7 +6,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -53,10 +55,24 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
     if type(dry_run) is not bool:
         raise ValueError("dry_run must be a boolean")
     manifest_path = Path(source_dir) / "manifest.json"
-    if manifest_path.is_symlink():
+    before = manifest_path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("refusing a symlinked shard manifest")
-    with manifest_path.open("rb") as stream:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(manifest_path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+            raise ValueError("shard manifest changed before reading")
         payload = stream.read(MAX_MANIFEST_BYTES + 1)
+        finished = os.fstat(stream.fileno())
+        if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+            raise ValueError("shard manifest changed during reading")
+    after = manifest_path.lstat()
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+        raise ValueError("shard manifest changed during reading")
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("shard manifest exceeds 8 MiB")
     manifest = json.loads(payload)
