@@ -49,5 +49,15 @@ class SelectivitySweepTests(unittest.TestCase):
             run_sweep("rusthouse", "part", 1_000_000_000, samples=129)
 
 
+
+
+class SelectivityExecutionBudgetTests(unittest.TestCase):
+    def test_rejects_excessive_sql_runs_before_invoking_runner(self):
+        calls = []
+        with self.assertRaisesRegex(ValueError, "1024 SQL executions"):
+            run_sweep("rusthouse", "part", 1_000_000_000, steps=64, samples=17,
+                      execute=lambda *args, **kwargs: calls.append(args))
+        self.assertEqual(calls, [])
+
 if __name__ == "__main__":
     unittest.main()
