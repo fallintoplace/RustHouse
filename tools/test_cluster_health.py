@@ -58,6 +58,15 @@ class ClusterTests(unittest.TestCase):
                 validate({"total": 1, "healthy": 1,
                           "peers": [{"address": value, "healthy": True}]})
 
+    def test_cluster_health_refuses_invalid_timeouts_without_http(self):
+        from unittest.mock import patch
+        from cluster_health import inspect
+        with patch("cluster_health.NO_REDIRECT_OPENER") as opener:
+            for value in (True, 0, -1, float("nan"), float("inf"), 301):
+                with self.subTest(timeout=value), self.assertRaisesRegex(ValueError, "timeout"):
+                    inspect("http://127.0.0.1:8123", timeout=value)
+            opener.open.assert_not_called()
+
     def test_duplicate_json_keys_fail_closed(self):
         from cluster_health import inspect
         from unittest.mock import patch
