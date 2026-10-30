@@ -21,6 +21,20 @@ fn array_suffix(empty: bool, pretty: bool) -> &'static [u8] {
     }
 }
 
+fn write_array_item<W: Write>(
+    output: &mut W,
+    row: &[u8],
+    first: bool,
+    pretty: bool,
+) -> io::Result<()> {
+    output.write_all(json_array_row_prefix(first, pretty))?;
+    if pretty {
+        write_pretty_json_row(output, row)
+    } else {
+        output.write_all(row)
+    }
+}
+
 /// Convert a stream of JSONL objects to a valid JSON array without buffering all rows.
 struct JsonArraySink<W: Write> {
     output: W,
@@ -40,13 +54,7 @@ impl<W: Write> JsonArraySink<W> {
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
-        self.output
-            .write_all(json_array_row_prefix(self.first, self.pretty))?;
-        if self.pretty {
-            write_pretty_json_row(&mut self.output, &self.row)?;
-        } else {
-            self.output.write_all(&self.row)?;
-        }
+        write_array_item(&mut self.output, &self.row, self.first, self.pretty)?;
         self.row.clear();
         self.first = false;
         Ok(())
@@ -79,13 +87,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                             "JSON object exceeds 4 MiB",
                         ));
                     }
-                    self.output
-                        .write_all(json_array_row_prefix(self.first, self.pretty))?;
-                    if self.pretty {
-                        write_pretty_json_row(&mut self.output, row)?;
-                    } else {
-                        self.output.write_all(row)?;
-                    }
+                    write_array_item(&mut self.output, row, self.first, self.pretty)?;
                     self.first = false;
                     return Ok(bytes.len());
                 }
@@ -105,13 +107,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                 ));
             }
             if has_newline && self.row.is_empty() {
-                self.output
-                    .write_all(json_array_row_prefix(self.first, self.pretty))?;
-                if self.pretty {
-                    write_pretty_json_row(&mut self.output, fragment)?;
-                } else {
-                    self.output.write_all(fragment)?;
-                }
+                write_array_item(&mut self.output, fragment, self.first, self.pretty)?;
                 self.first = false;
                 continue;
             }
