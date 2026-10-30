@@ -152,7 +152,10 @@ impl Capacity {
                 return Err("insufficient replica capacity");
             }
         }
-        self.reserve(bytes)
+        Ok(Self {
+            reserved: self.reserved.checked_add(bytes).ok_or("replica reservation overflow")?,
+            ..self
+        })
     }
 }
 
@@ -213,5 +216,25 @@ mod reclaim_used_tests {
         assert!(initial.reclaim_used(61).is_err());
         assert_eq!(initial.reclaim_used(0).unwrap(), initial);
         assert!(Capacity { total: 1, used: 2, reserved: 0 }.reclaim_used(1).is_err());
+    }
+}
+
+#[cfg(test)]
+mod batch_reservation_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn reserved_bytes_match_single_reservation_for_every_valid_small_state() {
+        for total in 0..=16u64 {
+            for used in 0..=total {
+                for reserved in 0..=total - used {
+                    let capacity = Capacity { total, used, reserved };
+                    for first in 0..=total - used - reserved {
+                        let second = (total - used - reserved) - first;
+                        assert_eq!(capacity.reserve_many(&[first, second]).unwrap(), capacity.reserve(first + second).unwrap());
+                    }
+                }
+            }
+        }
     }
 }

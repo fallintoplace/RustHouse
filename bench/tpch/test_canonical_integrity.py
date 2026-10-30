@@ -7,6 +7,17 @@ from canonical_integrity import git_blob_hash, source_bytes, verify
 
 
 class CanonicalIntegrityTests(unittest.TestCase):
+    def test_oversized_canonical_query_is_rejected(self):
+        from pathlib import Path
+        from canonical_integrity import verify
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "q01.sql"
+            path.write_bytes(b"-- TPC-H Q1\n-- SPDX-License-Identifier: MIT\n"
+                             + b"X" * (64 * 1024))
+            with self.assertRaisesRegex(ValueError, "size bound"):
+                verify(root, expected={"q01.sql": "0" * 40})
+
+
     def test_matches_pinned_hash_after_provenance(self):
         sql = b"SELECT 42;\n"
         header = (b"-- Full TPC-H Q1 validation query. Source: pinned\n"

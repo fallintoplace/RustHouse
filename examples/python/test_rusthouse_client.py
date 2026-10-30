@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-from rusthouse_client import RustHouseClient, RustHouseError, RustHouseHTTPError
+from rusthouse_client import NoRedirect, RustHouseClient, RustHouseError, RustHouseHTTPError
 
 
 class Reply:
@@ -21,6 +21,12 @@ class Reply:
 
 
 class ClientTests(unittest.TestCase):
+    def test_redirect_handler_never_forwards_requests(self):
+        handler = NoRedirect()
+        for target in ("http://example.org/", "http://127.0.0.1:9000/"):
+            self.assertIsNone(handler.redirect_request(None, None, 307, "redirect", {}, target))
+
+
     def test_avoids_exposing_unauthenticated_server(self):
         with self.assertRaises(ValueError):
             RustHouseClient("http://database.example:8123")
