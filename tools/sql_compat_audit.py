@@ -29,6 +29,17 @@ def parse_lines(content):
     return queries
 
 
+MAX_QUERY_FILE_BYTES = 1_048_576
+
+
+def read_queries(path):
+    with path.open("rb") as handle:
+        raw = handle.read(MAX_QUERY_FILE_BYTES + 1)
+    if len(raw) > MAX_QUERY_FILE_BYTES:
+        raise ValueError("SQL audit corpus exceeds 1 MiB")
+    return parse_lines(raw.decode("utf-8"))
+
+
 def audit(binary, queries, run=subprocess.run, fail_fast=False, timeout=10):
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("audit timeout must be positive and finite")
@@ -66,7 +77,7 @@ def main():
                         help="Maximum seconds for each parser-only query")
     args = parser.parse_args()
     try:
-        statements = parse_lines(args.queries.read_text(encoding="utf-8"))
+        statements = read_queries(args.queries)
         result = audit(args.binary, statements, fail_fast=args.fail_fast,
                        timeout=args.timeout)
     except (OSError, UnicodeError, ValueError) as exc:
