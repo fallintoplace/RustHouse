@@ -571,20 +571,26 @@ fn decode_typed_columns(
             .collect();
     }
     let chunk_width = columns.len().div_ceil(workers);
-    let pieces = std::thread::scope(|scope| {
-        let handles = columns.chunks_mut(chunk_width)
-            .map(|chunk| scope.spawn(move || {
-                chunk.iter_mut()
-                    .map(|column| decode_typed_column(column, index, rows))
-                    .collect::<Result<Vec<_>, PartError>>()
-            }))
-            .collect::<Vec<_>>();
-        handles.into_iter()
+    let pieces = std::thread::scope(|scope| -> Result<_, PartError> {
+        let mut handles = Vec::with_capacity(columns.len().div_ceil(chunk_width));
+        for chunk in columns.chunks_mut(chunk_width) {
+            let handle = std::thread::Builder::new()
+                .spawn_scoped(scope, move || {
+                    chunk.iter_mut()
+                        .map(|column| decode_typed_column(column, index, rows))
+                        .collect::<Result<Vec<_>, PartError>>()
+                })
+                .map_err(|error| {
+                    PartError::InvalidScan(format!("cannot start typed decoder worker: {error}"))
+                })?;
+            handles.push(handle);
+        }
+        Ok(handles.into_iter()
             .map(|handle| handle.join().unwrap_or_else(|_| {
                 Err(PartError::InvalidScan("typed mark decoder panicked".into()))
             }))
-            .collect::<Vec<_>>()
-    });
+            .collect::<Vec<_>>())
+    })?;
     let mut batch = Vec::with_capacity(columns.len());
     for piece in pieces {
         batch.extend(piece?);
