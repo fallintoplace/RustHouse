@@ -421,6 +421,11 @@ impl NumericQueryReader {
 
     /// Keep exactly one future part open in the worker's bounded queue.
     fn prefetch_next(&mut self) {
+        // Opening a thread for just two or three parts usually costs more
+        // than opening each tiny part directly. Match typed scan behavior.
+        if self.parts.len() < 4 {
+            return;
+        }
         if self.prefetched || self.next_part >= self.parts.len() {
             return;
         }
@@ -806,6 +811,46 @@ mod active_pointer_length_tests {
         assert_eq!(resolve_active_snapshot(&root).unwrap(), first);
         fs::write(root.join(".rusthouse-active"), b"g100\n").unwrap();
         assert_eq!(resolve_active_snapshot(&root).unwrap(), second);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod numeric_short_snapshot_tests {
+    use super::*;
+    use crate::write_wide_part;
+
+    #[test]
+    fn short_snapshot_avoids_prefetch_thread_without_changing_rows() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-short-numeric-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let columns = [Column { name: "id".into(), data_type: "UInt64".into() }];
+        for index in 0..3u64 {
+            write_wide_part(
+                &root.join(format!("p_{index}_{index}_0")),
+                &columns,
+                &[vec![Some(index.to_string())]],
+            )
+            .unwrap();
+        }
+        let mut reader = NumericQueryReader::open(&root, &["id".to_owned()]).unwrap();
+        let mut values = Vec::new();
+        while let Some(batch) = reader.next_batch().unwrap() {
+            let NumericColumn::UInt64(rows) = &batch[0] else {
+                panic!("expected UInt64 batch");
+            };
+            values.extend_from_slice(rows);
+        }
+        assert_eq!(values, vec![0, 1, 2]);
+        assert_eq!(reader.prefetch_worker_starts, 0);
+        drop(reader);
         fs::remove_dir_all(root).unwrap();
     }
 }
