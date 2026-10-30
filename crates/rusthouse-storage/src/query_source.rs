@@ -158,6 +158,14 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
         let has_count = child.join("count.txt").exists();
         let has_columns = child.join("columns.txt").exists();
         if !has_count && !has_columns {
+            // Known part names are active-data candidates. Never ignore one
+            // just because both metadata files are absent or incomplete.
+            if name.to_str().is_some_and(|name| part_span(name).is_some()) {
+                return Err(PartError::InvalidScan(format!(
+                    "active part is missing metadata: {}",
+                    child.display()
+                )));
+            }
             continue; // e.g. detached/, shadow/ or non-part metadata.
         }
         if has_count != has_columns {
@@ -806,6 +814,30 @@ mod active_pointer_length_tests {
         assert_eq!(resolve_active_snapshot(&root).unwrap(), first);
         fs::write(root.join(".rusthouse-active"), b"g100\n").unwrap();
         assert_eq!(resolve_active_snapshot(&root).unwrap(), second);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod incomplete_named_active_parts_tests {
+    use super::*;
+    use crate::write_wide_part;
+
+    #[test]
+    fn rejects_empty_part_directory_even_with_other_valid_parts() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-incomplete-part-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        write_wide_part(
+            &root.join("all_1_1_0"),
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("1".into())]],
+        ).unwrap();
+        fs::create_dir(root.join("all_2_2_0")).unwrap();
+        assert!(query_parts(&root).is_err());
+        assert!(inspect_query_source(&root).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
