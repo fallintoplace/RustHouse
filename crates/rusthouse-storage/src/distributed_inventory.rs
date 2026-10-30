@@ -118,6 +118,15 @@ fn checksum_inventory_entry(
             "snapshot inventory file changed during hashing".into(),
         ));
     }
+    let finished = file.metadata().map_err(|error| io_error(&path, error))?;
+    if finished.len() != opened.len()
+        || finished.modified().map_err(|error| io_error(&path, error))?
+            != opened.modified().map_err(|error| io_error(&path, error))?
+    {
+        return Err(PartError::InvalidScan(
+            "snapshot inventory file changed during hashing".into(),
+        ));
+    }
     Ok(CheckedInventoryEntry {
         relative_path: entry.relative_path.clone(),
         bytes,
@@ -444,6 +453,33 @@ mod small_checksum_inventory_dispatch_tests {
             assert_eq!(entry.bytes, data.len() as u64);
             assert_eq!(entry.crc32c, crate::distributed_crc32c::crc32c(&data));
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod checksum_source_version_tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    #[test]
+    fn changing_file_mtime_does_not_require_changing_length() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-inventory-mtime-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let path = root.join("source");
+        fs::write(&path, b"abcd").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let before = file.metadata().unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
+        let after = file.metadata().unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_ne!(before.modified().unwrap(), after.modified().unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 }
