@@ -1,6 +1,6 @@
-import subprocess
 """Unit coverage without requiring a live ClickHouse installation."""
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
