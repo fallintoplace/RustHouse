@@ -107,6 +107,18 @@ def summarize(report, min_queries=1, min_geomean=None, min_worst_p90=None):
     }
 
 
+
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+
+
+def _read_bounded_report(path):
+    with path.open("rb") as source:
+        contents = source.read(MAX_REPORT_BYTES + 1)
+    if len(contents) > MAX_REPORT_BYTES:
+        raise ValueError("benchmark JSON report exceeds 16 MiB")
+    return contents.decode("utf-8")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
@@ -117,7 +129,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         audit = summarize(
-            json.loads(args.input.read_text(encoding="utf-8")),
+            json.loads(_read_bounded_report(args.input)),
             min_queries=args.min_queries,
             min_geomean=args.min_geomean,
             min_worst_p90=args.min_worst_p90,
