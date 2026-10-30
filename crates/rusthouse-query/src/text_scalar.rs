@@ -2789,6 +2789,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if name == "TRANSLATEUTF8" && from.chars().count() != to.chars().count() {
                         return Err(ParseError("translateUTF8 requires matching character counts".into()));
                     }
+                    if name == "TRANSLATE"
+                        && (!from.is_ascii() || !to.is_ascii() || from.len() != to.len())
+                    {
+                        return Err(ParseError(
+                            "translate requires equal-length ASCII mappings".into(),
+                        ));
+                    }
                     let mut replacements = std::collections::HashMap::new();
                     let mut to_chars = to.chars();
                     for ch in from.chars() {
