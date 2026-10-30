@@ -6,7 +6,7 @@ import math
 import re
 import sys
 from urllib.parse import quote, urlsplit
-from urllib.request import HTTPRedirectHandler, build_opener
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -47,7 +47,20 @@ def read_json(url, timeout):
     return json.loads(payload, object_pairs_hook=_unique_object_pairs)
 
 
-def probe(base, expected_source, table=None, timeout=5, expected_version=None):
+def scan_rows(base, table, timeout):
+    """Execute a real bounded SELECT to check data-path readiness."""
+    query = f"SELECT count(*) AS rows_checked FROM {table}".encode("ascii")
+    request = Request(base + "/", data=query,
+                      headers={"Content-Type": "text/plain; charset=utf-8"},
+                      method="POST")
+    with NO_REDIRECT_OPENER.open(request, timeout=timeout) as response:
+        body = response.read(129)
+    if len(body) > 128 or not re.fullmatch(rb"rows_checked\n[0-9]{1,20}\n", body):
+        raise ValueError("readiness scan returned invalid SQL count output")
+    return int(body.splitlines()[1])
+
+
+def probe(base, expected_source, table=None, timeout=5, expected_version=None, verify_scan=False):
     base = verify_origin(base)
     data = read_json(base + "/capabilities", timeout)
     if not isinstance(data, dict):
@@ -81,6 +94,10 @@ def probe(base, expected_source, table=None, timeout=5, expected_version=None):
                     or not column["type"].strip() or column["name"] in names):
                 raise ValueError("invalid schema column")
             names.add(column["name"])
+    if verify_scan:
+        if table is None:
+            raise ValueError("--verify-scan requires --table")
+        scan_rows(base, table, timeout)
     return data
 
 
@@ -91,10 +108,13 @@ def main():
     parser.add_argument("--source", choices=("generated", "part", "database"), required=True)
     parser.add_argument("--table")
     parser.add_argument("--expected-version", help="Reject unexpected server versions")
+    parser.add_argument("--verify-scan", action="store_true",
+                        help="Require a real SELECT count(*) to succeed")
     args = parser.parse_args()
     try:
         info = probe(verify_origin(args.url), args.source, args.table,
-                     expected_version=args.expected_version, timeout=args.timeout)
+                     expected_version=args.expected_version, timeout=args.timeout,
+                     verify_scan=args.verify_scan)
     except Exception as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1
