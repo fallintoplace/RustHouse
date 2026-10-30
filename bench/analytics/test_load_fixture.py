@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from fixture import generate
-from load_fixture import load_fixture
+from load_fixture import load_fixture, read_fixture_sql
 
 
 class ClickBenchLoadTests(unittest.TestCase):
@@ -60,6 +60,15 @@ class ClickBenchLoadTimeoutTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "finite"):
                     load_fixture("unused", "db", "no-such-fixture",
                                  timeout=timeout, execute=lambda sql: b"")
+    def test_create_and_copy_sql_source_size_is_bounded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "create.sql"
+            path.write_text("CREATE TABLE t (id UInt64);\n", encoding="utf-8")
+            self.assertEqual(read_fixture_sql(path), "CREATE TABLE t (id UInt64)")
+            path.write_bytes(b"x" * 65_537)
+            with self.assertRaisesRegex(ValueError, "64 KiB"):
+                read_fixture_sql(path)
+
 
 if __name__ == "__main__":
     unittest.main()

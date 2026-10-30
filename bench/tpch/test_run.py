@@ -8,6 +8,22 @@ from unittest import mock
 from run import require_canonical_corpus, benchmark_one, compare_reference, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
 
 class RunnerTests(unittest.TestCase):
+    def test_reference_loader_rejects_oversized_and_symlinked_golden(self):
+        from run import read_reference
+        with tempfile.TemporaryDirectory() as root:
+            file = Path(root) / "q01.tsv"
+            file.write_bytes(b"abc")
+            self.assertEqual(read_reference(file), b"abc")
+            alias = Path(root) / "alias.tsv"
+            alias.symlink_to(file)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                read_reference(alias)
+            file.write_bytes(b"x" * 17)
+            with mock.patch("run.MAX_REFERENCE_BYTES", 16):
+                with self.assertRaisesRegex(ValueError, "16 MiB"):
+                    read_reference(file)
+
+
     def test_real_canonical_sql_passes_and_simplified_sql_fails(self):
         canonical = Path(__file__).resolve().parent / "queries"
         report = require_canonical_corpus(canonical)

@@ -91,5 +91,18 @@ class KeysetExportTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
 
+    def test_atomic_export_fsyncs_parent_directory(self):
+        import os
+        from unittest.mock import patch
+        if os.name != "posix":
+            self.skipTest("POSIX directory fsync required")
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "export.tsv"
+            with patch("bench.scale.keyset_export.os.fsync", wraps=os.fsync) as fsync:
+                export("unused", "unused", "events", output, 0, 2,
+                       execute=lambda _: b"0\n1\n")
+            self.assertEqual(output.read_bytes(), b"0\n1\n")
+            self.assertGreaterEqual(fsync.call_count, 2)
+
 if __name__ == "__main__":
     unittest.main()
