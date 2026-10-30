@@ -7,6 +7,18 @@ from fixture import DATE_KEYS, MAX_FACTS, TABLES, generate
 
 
 class StarFixtureTests(unittest.TestCase):
+    def test_rejects_symlinked_fixture_output_before_writing(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            protected = path / "protected.txt"
+            protected.write_text("keep me")
+            (path / "lineorder.tsv").symlink_to(protected)
+            with self.assertRaisesRegex(ValueError, "symlinked fixture"):
+                generate(path, 12, 3)
+            self.assertEqual(protected.read_text(), "keep me")
+            self.assertFalse((path / "reference.sqlite").exists())
+
+
     def test_table_writer_preserves_records_across_batch_boundary(self):
         from fixture import write_table
         with tempfile.TemporaryDirectory() as root:

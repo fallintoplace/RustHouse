@@ -30,12 +30,12 @@ pub(super) fn read_sql_input(
             "{label} exceeds the {MAX_SQL_BYTES}-byte statement limit"
         ));
     }
-    let input = String::from_utf8(bytes).map_err(|_| format!("{label} must be valid UTF-8"))?;
-    if let Some(without_bom) = input.strip_prefix('\u{feff}') {
-        Ok(without_bom.to_owned())
-    } else {
-        Ok(input)
+    let mut bytes = bytes;
+    if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        // Preserve the original input size limit, but reuse its allocation.
+        bytes.drain(..3);
     }
+    String::from_utf8(bytes).map_err(|_| format!("{label} must be valid UTF-8"))
 }
 
 fn push_sql_statement(statements: &mut Vec<String>, statement: &str) -> Result<(), String> {
@@ -76,10 +76,13 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             index += 1;
             continue;
         }
-        if !quoted && bytes[index] == b'-' && bytes.get(index + 1) == Some(&b'-') {
+        if !quoted
+            && (bytes[index] == b'#'
+                || (bytes[index] == b'-' && bytes.get(index + 1) == Some(&b'-')))
+        {
             current.push_str(&input[segment..index]);
             current.push(' ');
-            index += 2;
+            index += if bytes[index] == b'#' { 1 } else { 2 };
             while index < bytes.len() && bytes[index] != b'\n' {
                 index += 1;
             }
@@ -153,6 +156,25 @@ pub(super) fn read_script(path: &std::path::Path) -> Result<Vec<String>, String>
 }
 
 #[cfg(test)]
+mod sql_bom_input_tests {
+    use super::read_sql_input;
+
+    #[test]
+    fn strips_only_a_leading_bom_and_keeps_utf8_unchanged() {
+        let sql = "SELECT 'café'";
+        assert_eq!(read_sql_input(format!("\u{feff}{sql}").as_bytes(), "stdin", "SQL").unwrap(), sql);
+        assert_eq!(read_sql_input(sql.as_bytes(), "stdin", "SQL").unwrap(), sql);
+        assert_eq!(read_sql_input(b"SELECT \xef\xbb\xbf 1".as_slice(), "stdin", "SQL").unwrap(),
+            "SELECT \u{feff} 1");
+    }
+
+    #[test]
+    fn malformed_utf8_after_bom_remains_an_error() {
+        assert!(read_sql_input(b"\xef\xbb\xbf\xff".as_slice(), "stdin", "SQL").is_err());
+    }
+}
+
+#[cfg(test)]
 mod block_comment_tests {
     use super::split_sql_script;
 
@@ -162,6 +184,20 @@ mod block_comment_tests {
             split_sql_script(" SELECT 1; SELECT 'a;b'; SELECT 3 ").unwrap(),
             vec!["SELECT 1", "SELECT 'a;b'", "SELECT 3"]
         );
+    }
+
+    #[test]
+    fn hash_comments_do_not_split_scripts_at_internal_semicolons() {
+        assert_eq!(
+            split_sql_script("SELECT 1; # ignored ; ;\nSELECT 2;").unwrap(),
+            vec!["SELECT 1", "SELECT 2"]
+        );
+        assert_eq!(
+            split_sql_script("SELECT '#literal;still' AS value; # trailing ;")
+                .unwrap(),
+            vec!["SELECT '#literal;still' AS value"]
+        );
+        assert!(split_sql_script("# only a comment ; ;").is_err());
     }
 
     #[test]

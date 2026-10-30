@@ -8,6 +8,34 @@ from bench.scale.tsv_shards import split_tsv
 
 
 class ShardTests(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "requires no-follow open")
+    def test_refuses_source_swapped_for_symlink_while_opening(self):
+        import os
+        from unittest.mock import patch
+        if not hasattr(os, "O_NOFOLLOW"):
+            self.skipTest("O_NOFOLLOW not available")
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            source = folder / "source.tsv"
+            source.write_bytes(b"1\n")
+            evil = folder / "other.tsv"
+            evil.write_bytes(b"2\n")
+            target = folder / "shards"
+            original_open = os.open
+            swapped = False
+            def swap_open(path, *args, **kwargs):
+                nonlocal swapped
+                if Path(path) == source and not swapped:
+                    swapped = True
+                    source.rename(folder / "saved.tsv")
+                    source.symlink_to(evil)
+                return original_open(path, *args, **kwargs)
+            with patch("bench.scale.tsv_shards.os.open", side_effect=swap_open):
+                with self.assertRaises(OSError):
+                    split_tsv(source, target)
+            self.assertTrue(swapped)
+            self.assertFalse(target.exists())
+
     def test_shards_are_ordered_hashed_and_bounded(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "input.tsv"
@@ -115,6 +143,20 @@ class ShardTests(unittest.TestCase):
                 split_tsv(source, target, max_bytes_per_chunk=10)
             self.assertFalse(target.exists())
 
+
+    def test_total_row_budget_rejects_partial_shards_without_publication(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "ids.tsv"
+            source.write_bytes(b"1\n2\n3\n")
+            destination = Path(root) / "shards"
+            with self.assertRaisesRegex(ValueError, "max_total_rows"):
+                split_tsv(source, destination, rows_per_chunk=1, max_total_rows=2)
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(Path(root).glob(".rusthouse-shards-*")), [])
+            report = split_tsv(source, destination, max_total_rows=3)
+            self.assertEqual(report["total_rows"], 3)
+            with self.assertRaisesRegex(ValueError, "max_total_rows"):
+                split_tsv(source, Path(root) / "invalid", max_total_rows=True)
 
 if __name__ == "__main__":
     unittest.main()

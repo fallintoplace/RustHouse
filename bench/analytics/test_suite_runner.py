@@ -25,6 +25,13 @@ class AnalyticsSuiteTests(unittest.TestCase):
             self.assertEqual(sqlite_reference(oracle, "SELECT COUNT(coupon) FROM events"), b"5\n")
             oracle.close()
 
+    def test_oversize_workload_is_rejected_before_json_parsing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "too-large.json"
+            path.write_bytes(b"x" * 1_048_577)
+            with self.assertRaisesRegex(ValueError, "1 MiB"):
+                load_workload(path)
+
     def test_duplicate_workload_json_fields_are_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "workload.json"

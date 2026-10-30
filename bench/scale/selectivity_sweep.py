@@ -8,6 +8,7 @@ import json
 import math
 import statistics
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -20,28 +21,53 @@ def thresholds(rows, steps=4):
     return sorted({rows * numerator // steps for numerator in range(steps + 1)})
 
 
+MAX_RESULT_BYTES = 64
+
+
+def execute_predicate(command, timeout, runner=None):
+    if runner is not None:
+        result = runner(command, capture_output=True, check=False, timeout=timeout)
+        raw = result.stdout
+        diagnostic = result.stderr[-500:]
+        returncode = result.returncode
+    else:
+        with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+            result = subprocess.run(command, stdout=output, stderr=errors,
+                                    check=False, timeout=timeout)
+            output.seek(0)
+            raw = output.read(MAX_RESULT_BYTES + 1)
+            errors.seek(max(0, errors.tell() - 500))
+            diagnostic = errors.read(500)
+            returncode = result.returncode
+    if len(raw) > MAX_RESULT_BYTES:
+        raise ValueError("predicate sweep result exceeds 64 bytes")
+    return returncode, raw, diagnostic
+
+
 def run_sweep(binary, part, rows, *, samples=3, timeout=600,
               execute=None, steps=4):
     if (type(samples) is not int or not 1 <= samples <= 128
             or type(timeout) not in (int, float) or not math.isfinite(timeout)
             or timeout <= 0):
         raise ValueError("samples must be positive integers and timeout finite and positive")
-    run = execute or subprocess.run
+    selected_thresholds = thresholds(rows, steps)
+    if len(selected_thresholds) * samples > 1_024:
+        raise ValueError("selectivity sweep exceeds 1024 SQL executions")
     results = []
-    for threshold in thresholds(rows, steps):
+    for threshold in selected_thresholds:
         sql = f"SELECT count(*) FROM part WHERE id >= {threshold}"
         expected = f"{rows - threshold}\n".encode()
         durations = []
         for _ in range(samples):
             start = time.perf_counter()
-            completed = run(
+            returncode, observed, diagnostic = execute_predicate(
                 [str(binary), "sql", sql, "--part", str(part), "--format", "tsv-no-header"],
-                capture_output=True, check=False, timeout=timeout,
+                timeout, execute,
             )
             elapsed = time.perf_counter() - start
-            if completed.returncode:
-                raise RuntimeError(f"failed predicate threshold {threshold}: {completed.stderr!r}")
-            if completed.stdout != expected:
+            if returncode:
+                raise RuntimeError(f"failed predicate threshold {threshold}: {diagnostic!r}")
+            if observed != expected:
                 raise ValueError(f"threshold {threshold}: result differs from sequential-id oracle")
             durations.append(elapsed)
         results.append({"threshold": threshold, "expected_count": rows - threshold,

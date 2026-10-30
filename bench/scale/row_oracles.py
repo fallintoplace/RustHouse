@@ -15,6 +15,23 @@ def sum_range(start, stop):
     return count * (start + stop - 1) // 2 if count else 0
 
 
+def sum_squares_range(start, stop):
+    """Exact sum(value*value) for all UInt64 values in [start, stop)."""
+    sum_range(start, stop)
+    def prefix_squares(count):
+        return count * (count - 1) * (2 * count - 1) // 6
+    return prefix_squares(stop) - prefix_squares(start)
+
+
+def progression_squares(start, rows, step=1):
+    """Exact sum of squares for a bounded arithmetic progression."""
+    progression_reference(start, rows, step)
+    indices = rows * (rows - 1) // 2
+    squared_indices = rows * (rows - 1) * (2 * rows - 1) // 6
+    return (rows * start * start + 2 * start * step * indices
+            + step * step * squared_indices)
+
+
 def modulo_reference(rows, modulus, residue):
     if type(rows) is not int or not 0 <= rows <= MAX_UINT64 + 1:
         raise ValueError("invalid UInt64 row count")
@@ -74,6 +91,7 @@ def make_oracles(rows, *, start=0, step=1):
     return {"rows": rows,
             "assumption": f"exactly one id in start={start}, step={step}, rows={rows}",
             "count_all": rows, "sum_all": total["sum"],
+            "sum_squares_all": progression_squares(start, rows, step),
             "even": even, "odd": odd}
 
 
