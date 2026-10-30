@@ -36,15 +36,17 @@ def digest_file(source):
 
 
 def run_sql(binary, database, statement, timeout):
-    with tempfile.TemporaryFile() as sink:
+    with tempfile.TemporaryFile() as sink, tempfile.TemporaryFile() as errors:
         started = time.perf_counter()
         process = subprocess.run(
             [str(binary), "sql", statement, "--database", str(database)],
-            stdout=sink, stderr=subprocess.PIPE, timeout=timeout, check=False,
+            stdout=sink, stderr=errors, timeout=timeout, check=False,
         )
         elapsed = time.perf_counter() - started
         if process.returncode:
-            raise RuntimeError(process.stderr.decode("utf-8", "replace")[-500:])
+            errors.seek(0, 2)
+            errors.seek(max(0, errors.tell() - 500))
+            raise RuntimeError(errors.read(500).decode("utf-8", "replace"))
         sink.seek(0)
         digest, length = digest_file(sink)
         return digest, length, elapsed
