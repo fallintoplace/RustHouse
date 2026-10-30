@@ -2,7 +2,7 @@
 //! Run with writers stopped. No lock file or other database metadata is created.
 use crate::catalog;
 use rusthouse_storage::{
-    Column, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_hashes,
+    Column, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_hashes_full,
     verify_part_file_sizes, verify_wide_part,
 };
 use std::collections::BTreeSet;
@@ -109,7 +109,8 @@ fn verify_active_part(report: &mut Report, table: &str, part: &Path, full_hashes
         report.error(table, format!("invalid part {}: {error}", part.display()));
     }
     let manifest_result = if full_hashes {
-        verify_part_file_hashes(part).map(|_| ())
+        // Include the logical decompressed stream hash, not only stored bytes.
+        verify_part_file_hashes_full(part).map(|_| ())
     } else {
         verify_part_file_sizes(part).map(|_| ())
     };
@@ -435,8 +436,8 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
         report.checked_tables, report.warnings, report.errors
     );
     if full_hashes {
-        println!("Validation includes stored file hashes, block checksums, and manifest sizes.");
-        println!("Uncompressed manifest hashes and power-loss durability are not verified.");
+        println!("Validation includes stored and uncompressed hashes, block checksums, and manifest sizes.");
+        println!("Power-loss durability is not verified.");
     } else {
         println!(
             "Validation includes block checksums and manifest file sizes, not stored file hashes."
