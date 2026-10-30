@@ -3552,9 +3552,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             normalized.push(match byte {
                                 b'-' => b'+',
                                 b'_' => b'/',
-                                b'+' | b'/' => {
-                                    return Err(ParseError("invalid BASE64URLDECODE alphabet".into()));
-                                }
+                                b'+' | b'/' => byte,
                                 byte => byte,
                             });
                         }
