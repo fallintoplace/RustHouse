@@ -5,7 +5,7 @@ use rusthouse_server::{
     Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
 };
 use std::io::{self, BufReader, Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -73,6 +73,20 @@ fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
     Ok((method, target))
 }
 
+/// Only numeric bind addresses (and localhost for loopback) are trusted as
+/// Host values. This prevents DNS rebinding against an unauthenticated server.
+fn host_matches_listener(host: &str, listener: SocketAddr) -> bool {
+    let (name, port) = match host.rsplit_once(':') {
+        Some((name, port)) => (name, Some(port)),
+        None => (host, None),
+    };
+    if port.is_some_and(|port| port.parse::<u16>().ok() != Some(listener.port())) {
+        return false;
+    }
+    name == listener.ip().to_string()
+        || (listener.ip().is_loopback() && name.eq_ignore_ascii_case("localhost"))
+}
+
 fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool), Response> {
     let mut input = BufReader::new(stream);
     let mut head = Vec::new();
@@ -101,11 +115,17 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
     let mut transfer_encoding = false;
     let mut accept_lz4 = false;
     let mut seen_accept = false;
+    let mut host = None;
     for line in lines {
         if line.is_empty() {
             break;
         }
         let (key, value) = parse_header(line)?;
+        if key.eq_ignore_ascii_case("host") {
+            if host.replace(value.trim()).is_some() {
+                return Err(Response::text("400 Bad Request", "duplicate Host header\n"));
+            }
+        }
         if key.eq_ignore_ascii_case("content-length") {
             if size.is_some() {
                 return Err(Response::text(
@@ -134,6 +154,18 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
             seen_accept = true;
             accept_lz4 = value.trim() == "x-rusthouse-lz4";
         }
+    }
+    let listener = input
+        .get_ref()
+        .local_addr()
+        .map_err(|_| Response::text("400 Bad Request", "cannot validate Host\n"))?;
+    if host.is_some_and(|host| !host_matches_listener(host, listener))
+        || (host.is_none() && first.ends_with(" HTTP/1.1"))
+    {
+        return Err(Response::text(
+            "400 Bad Request",
+            "Host does not match listening address\n",
+        ));
     }
     if transfer_encoding {
         return Err(Response::text(
@@ -477,5 +509,28 @@ mod concurrency_capacity_tests {
             assert!(parse_max_connections(invalid).is_err(), "{invalid}");
         }
         assert_eq!(MAX_CONNECTIONS, 16);
+    }
+}
+
+#[cfg(test)]
+mod host_validation_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_bound_address_or_loopback_alias() {
+        let loopback: SocketAddr = "127.0.0.1:8123".parse().unwrap();
+        for valid in ["127.0.0.1", "127.0.0.1:8123", "localhost", "LOCALHOST:8123"] {
+            assert!(host_matches_listener(valid, loopback), "{valid}");
+        }
+        for bad in [
+            "attacker.example", "attacker.example:8123", "127.0.0.1:8124",
+            "localhost:8124", "127.0.0.1:8123@evil.example", "",
+        ] {
+            assert!(!host_matches_listener(bad, loopback), "{bad}");
+        }
+        let private: SocketAddr = "10.1.2.3:8080".parse().unwrap();
+        assert!(host_matches_listener("10.1.2.3:8080", private));
+        assert!(!host_matches_listener("localhost:8080", private));
+        assert!(!host_matches_listener("10.1.2.4:8080", private));
     }
 }
