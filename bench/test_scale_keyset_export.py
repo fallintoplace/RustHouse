@@ -1,6 +1,8 @@
 import tempfile
 import hashlib
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 from bench.scale.keyset_export import export, page_sql
@@ -90,6 +92,27 @@ class KeysetExportTests(unittest.TestCase):
                            max_total_seconds=1, execute=lambda sql: b"0\n")
             self.assertFalse(output.exists())
 
+
+
+
+class SpoolingKeysetQueryTests(unittest.TestCase):
+    def test_rejects_oversized_page_without_pipe_capture(self):
+        from bench.scale.keyset_export import query
+        def run(_command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].truncate(2 * 1024 * 1024 + 1)
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with patch("bench.scale.keyset_export.subprocess.run", side_effect=run):
+            with self.assertRaisesRegex(ValueError, "2 MiB"):
+                query("binary", "db", "SELECT id FROM t", 3)
+
+    def test_preserves_small_exact_page_output(self):
+        from bench.scale.keyset_export import query
+        def run(_command, **kwargs):
+            kwargs["stdout"].write(b"1\n2\n")
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with patch("bench.scale.keyset_export.subprocess.run", side_effect=run):
+            self.assertEqual(query("binary", "db", "SELECT id FROM t", 3), b"1\n2\n")
 
 if __name__ == "__main__":
     unittest.main()

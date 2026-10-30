@@ -35,14 +35,19 @@ def page_sql(table, column, first, count):
 
 
 def query(binary, database, statement, timeout):
-    result = subprocess.run(
-        [str(binary), "sql", statement, "--database", str(database),
-         "--format", "tsv-no-header"],
-        capture_output=True, check=False, timeout=timeout,
-    )
-    if result.returncode:
-        raise RuntimeError(result.stderr.decode("utf-8", "replace")[-500:])
-    return result.stdout
+    with tempfile.TemporaryFile(mode="w+b") as output:
+        result = subprocess.run(
+            [str(binary), "sql", statement, "--database", str(database),
+             "--format", "tsv-no-header"],
+            stdout=output, stderr=subprocess.PIPE, check=False, timeout=timeout,
+        )
+        if result.returncode:
+            raise RuntimeError(result.stderr.decode("utf-8", "replace")[-500:])
+        output.seek(0)
+        payload = output.read(2 * 1024 * 1024 + 1)
+        if len(payload) > 2 * 1024 * 1024:
+            raise ValueError("keyset SQL page output exceeds 2 MiB")
+        return payload
 
 
 def export(binary, database, table, output, start, rows, page_rows=8192, timeout=300,
