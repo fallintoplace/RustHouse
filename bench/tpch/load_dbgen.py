@@ -18,7 +18,10 @@ MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 
 def inspect_tsv(path, table):
-    with Path(path).open("rb") as stream:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{table}: TSV must be a regular, non-symlinked file")
+    with path.open("rb") as stream:
         header = stream.readline(MAX_RECORD_BYTES + 1)
         if len(header) > MAX_RECORD_BYTES:
             raise ValueError(f"{table}: oversized TSV header")
@@ -56,7 +59,10 @@ def load_tables(binary, database, input_dir, selected=None, timeout=3600, execut
         raise ValueError("timeout must be positive")
     sources = {}
     for table in selected:
-        source = (Path(input_dir) / (table + ".tsv")).resolve()
+        raw_source = Path(input_dir) / (table + ".tsv")
+        if raw_source.is_symlink():
+            raise ValueError(f"{table}: TSV must be a non-symlinked file")
+        source = raw_source.resolve()
         sources[table] = (source, inspect_tsv(source, table))
     if execute is None:
         execute = lambda sql: cli_sql(binary, database, sql, timeout)

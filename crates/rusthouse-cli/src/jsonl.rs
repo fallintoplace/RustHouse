@@ -146,7 +146,8 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
     if bytes.len() <= 1024
         && bytes
             .iter()
-            .all(|&byte| (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\')
+            .all(|&byte| !byte.is_ascii_control() && byte != b'"' && byte != b'\\')
+        && (input.is_ascii() || !input.chars().any(char::is_control))
     {
         let mut quoted = [0u8; 1026];
         quoted[0] = b'"';
@@ -317,8 +318,23 @@ mod tests {
             bytes: Vec::new(),
         };
         write_json_string(&mut output, "plain café".as_bytes()).unwrap();
-        assert_eq!(output.calls, 3);
+        assert_eq!(output.calls, 1);
         assert_eq!(output.bytes, "\"plain café\"".as_bytes());
+    }
+
+    #[test]
+    fn short_unicode_jsonl_fields_do_not_need_character_by_character_encoding() {
+        for text in ["東京のデータ", "café", "🙂🙂🙂"] {
+            let mut output = Vec::new();
+            write_json_string(&mut output, text.as_bytes()).unwrap();
+            assert_eq!(output, format!("\"{text}\"").as_bytes());
+        }
+        let mut output = Vec::new();
+        write_json_string(&mut output, "hello\nworld".as_bytes()).unwrap();
+        assert_eq!(output, b"\"hello\\nworld\"");
+        output.clear();
+        write_json_string(&mut output, "\u{0085}".as_bytes()).unwrap();
+        assert_eq!(output, b"\"\\u0085\"");
     }
 
     #[test]
