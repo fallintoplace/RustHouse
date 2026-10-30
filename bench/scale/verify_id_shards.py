@@ -49,6 +49,8 @@ def verify(manifest_path):
         raise ValueError("shard manifest exceeds 8 MiB")
     manifest_path = manifest_path.resolve()
     manifest = json.loads(payload)
+    if not isinstance(manifest, dict):
+        raise ValueError("shard manifest must be a JSON object")
     if manifest.get("schema_version") != 1:
         raise ValueError("unsupported shard manifest version")
     start = require_uint(manifest.get("start"), "start", zero=True)
