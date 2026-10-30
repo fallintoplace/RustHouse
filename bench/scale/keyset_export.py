@@ -35,15 +35,22 @@ def page_sql(table, column, first, count):
 
 
 def query(binary, database, statement, timeout):
-    result = subprocess.run(
-        [str(binary), "sql", statement, "--database", str(database),
-         "--format", "tsv-no-header"],
-        capture_output=True, check=False, timeout=timeout,
-    )
-    if result.returncode:
-        raise RuntimeError(result.stderr.decode("utf-8", "replace")[-500:])
-    return result.stdout
-
+    # The CLI may be noisy. Bound memory for both successful output and errors.
+    with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
+        result = subprocess.run(
+            [str(binary), "sql", statement, "--database", str(database),
+             "--format", "tsv-no-header"],
+            stdout=output, stderr=errors, check=False, timeout=timeout,
+        )
+        if result.returncode:
+            errors.seek(0, os.SEEK_END)
+            errors.seek(max(0, errors.tell() - 500))
+            raise RuntimeError(errors.read(500).decode("utf-8", "replace"))
+        output.seek(0)
+        payload = output.read(2 * 1024 * 1024 + 1)
+        if len(payload) > 2 * 1024 * 1024:
+            raise ValueError("keyset SQL page output exceeds 2 MiB")
+        return payload
 
 def export(binary, database, table, output, start, rows, page_rows=8192, timeout=300,
            column="id", execute=None, max_total_seconds=None,
@@ -104,6 +111,12 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
         if output.exists() or output.is_symlink():
             raise ValueError("refusing to overwrite an existing export")
         os.link(temporary, output)
+        if os.name == "posix":
+            descriptor = os.open(output.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

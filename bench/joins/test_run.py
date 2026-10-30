@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import QUERY, logical_probe_throughput, main, query_for_strictness, verify_result, write_fixture
+from run import QUERY, fixture_copy_sql, logical_probe_throughput, main, query_for_strictness, verify_result, write_fixture
 
 class JoinWorkloadTests(unittest.TestCase):
     def test_join_throughput_rejects_invalid_medians(self):
@@ -110,6 +110,34 @@ class JoinThroughputInputValidationTests(unittest.TestCase):
             with self.subTest(duration=duration):
                 with self.assertRaises(ValueError):
                     logical_probe_throughput(10, duration)
+
+
+
+class FullProbeFixtureBudgetTests(unittest.TestCase):
+    def test_rejects_unsafe_row_and_duplicate_dimensions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for probe_rows, build_rows, factor in (
+                (True, 5, 1), (1.5, 5, 1), (2_000_001, 5, 1),
+                (100, True, 1), (100, 5, True),
+            ):
+                with self.subTest(values=(probe_rows, build_rows, factor)):
+                    with self.assertRaisesRegex(ValueError, "rows|factor"):
+                        write_fixture(folder, probe_rows, build_rows, duplicate_factor=factor)
+            self.assertFalse((Path(folder) / "facts.tsv").exists())
+
+    def test_cli_rejects_excessive_sql_repetitions(self):
+        with self.assertRaises(SystemExit) as outcome:
+            main(["--binary", "missing", "--runs", "100", "--warmups", "1"])
+        self.assertEqual(outcome.exception.code, 2)
+
+class JoinCopyEscapingTests(unittest.TestCase):
+    def test_generated_copy_literal_escapes_apostrophes(self):
+        statement = fixture_copy_sql("facts", Path("/tmp/user's/facts.tsv"))
+        self.assertEqual(statement,
+                         "COPY facts FROM '/tmp/user''s/facts.tsv' WITH (FORMAT TSV, HEADER TRUE)")
+        with self.assertRaisesRegex(ValueError, "unsupported fixture"):
+            fixture_copy_sql("facts; DROP TABLE dimensions", Path("a.tsv"))
+
 
 if __name__ == "__main__":
     unittest.main()

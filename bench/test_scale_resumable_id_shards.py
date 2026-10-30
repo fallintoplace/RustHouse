@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 import tempfile
@@ -8,6 +9,51 @@ from bench.scale.resumable_id_shards import create
 
 
 class ResumableShardsTests(unittest.TestCase):
+    def test_stale_pid_pending_files_are_not_removed(self):
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            folder.mkdir(exist_ok=True)
+            shard = folder / "id-00000000000000000000-00000000000000000001.tsv"
+            old_shard_pending = folder / f".{shard.name}.{os.getpid()}.pending"
+            old_manifest_pending = folder / f".manifest.{os.getpid()}.pending"
+            old_shard_pending.write_bytes(b"stale shard")
+            old_manifest_pending.write_bytes(b"stale manifest")
+            manifest = create(folder, 0, 1, 1)
+            self.assertEqual(manifest["rows"], 1)
+            self.assertEqual(old_shard_pending.read_bytes(), b"stale shard")
+            self.assertEqual(old_manifest_pending.read_bytes(), b"stale manifest")
+
+    def test_random_pending_collision_never_deletes_existing_file(self):
+        from unittest.mock import patch
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            shard = folder / "id-00000000000000000000-00000000000000000001.tsv"
+            pending = folder / f".{shard.name}.{os.getpid()}.collision.pending"
+            pending.write_bytes(b"keep")
+            with patch("bench.scale.resumable_id_shards.secrets.token_hex", return_value="collision"):
+                with self.assertRaises(FileExistsError):
+                    create(folder, 0, 1, 1)
+            self.assertEqual(pending.read_bytes(), b"keep")
+            self.assertFalse(shard.exists())
+
+    @unittest.skipIf(sys.platform == "win32", "Windows CI cannot create symlinks")
+    def test_direct_reuse_verification_refuses_symlinked_input(self):
+        from bench.scale.resumable_id_shards import validate_existing
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            original = folder / "original.tsv"
+            original.write_bytes(b"0\n1\n")
+            alias = folder / "alias.tsv"
+            alias.symlink_to(original)
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                validate_existing(alias, 0, 2)
+            self.assertEqual(
+                validate_existing(original, 0, 2),
+                hashlib.sha256(original.read_bytes()).hexdigest(),
+            )
+
     def test_creates_and_reuses_checked_shards(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -74,6 +120,19 @@ class ResumableShardsTests(unittest.TestCase):
                 create(alias, 0, 3, 2)
             self.assertEqual(list(outside.iterdir()), [])
 
+
+    def test_reuse_verification_detects_corruption_across_batch_boundary(self):
+        with tempfile.TemporaryDirectory() as root:
+            first = create(root, 100, 8193, 8193)
+            path = Path(first["shards"][0]["path"])
+            before = path.read_bytes()
+            reused = create(root, 100, 8193, 8193)
+            self.assertTrue(reused["shards"][0]["reused"])
+            self.assertEqual(reused["shards"][0]["sha256"], first["shards"][0]["sha256"])
+            bad = before.replace(b"4196\n", b"4195\n", 1)
+            path.write_bytes(bad)
+            with self.assertRaisesRegex(ValueError, "invalid or incomplete"):
+                create(root, 100, 8193, 8193)
 
 if __name__ == "__main__":
     unittest.main()

@@ -101,6 +101,22 @@ pub fn retention_candidates_with_pins(
         // Do not hash every candidate when no snapshot has a reader pin.
         return Ok(candidates);
     }
+    if let [pin] = pinned {
+        if known.binary_search(pin).is_err() {
+            return Err("duplicate or unknown pinned generation");
+        }
+        return Ok(candidates.into_iter().filter(|generation| generation != pin).collect());
+    }
+    if pinned.len() <= 4 && candidates.len() <= 128 {
+        for (index, &generation) in pinned.iter().enumerate() {
+            if pinned[..index].contains(&generation) || known.binary_search(&generation).is_err() {
+                return Err("duplicate or unknown pinned generation");
+            }
+        }
+        return Ok(candidates.into_iter()
+            .filter(|generation| !pinned.contains(generation))
+            .collect());
+    }
     let mut pins = std::collections::HashSet::with_capacity(pinned.len());
     for &generation in pinned {
         if !pins.insert(generation) || known.binary_search(&generation).is_err() {
@@ -116,6 +132,16 @@ pub fn retention_candidates_with_pins(
 #[cfg(test)]
 mod pinned_retention_tests {
     use super::*;
+
+    #[test]
+    fn single_pin_avoids_indexing_and_preserves_retention_order() {
+        let generations = (1..=32_u64).rev().collect::<Vec<_>>();
+        let candidates = retention_candidates_with_pins(&generations, 32, 2, &[3]).unwrap();
+        assert_eq!(candidates.first(), Some(&1));
+        assert!(!candidates.contains(&3));
+        assert_eq!(candidates.last(), Some(&30));
+        assert!(retention_candidates_with_pins(&generations, 32, 2, &[99]).is_err());
+    }
 
     #[test]
     fn preserves_backup_pins_and_active_generation() {
@@ -199,6 +225,21 @@ pub fn retention_candidates_with_byte_budget(
     }
     let ids = generations.iter().map(|&(generation, _)| generation).collect::<Vec<_>>();
     let eligible = retention_candidates_with_pins(&ids, active, keep_latest, pinned)?;
+    if eligible.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+    if let [generation] = eligible.as_slice() {
+        // A single eligible generation only needs a lookup, not a full size index.
+        let bytes = generations.iter()
+            .find(|(id, _)| id == generation)
+            .expect("validated generation exists in retention inventory")
+            .1;
+        return if bytes <= byte_budget {
+            Ok((vec![*generation], bytes))
+        } else {
+            Ok((Vec::new(), 0))
+        };
+    }
     let sizes = generations.iter().copied().collect::<std::collections::HashMap<_, _>>();
     let mut selected = Vec::new();
     let mut total = 0u64;
@@ -228,5 +269,55 @@ mod budgeted_retention_tests {
             (vec![1, 2, 4], 21)
         );
         assert!(retention_candidates_with_byte_budget(&generations, 5, 1, &[99], 20).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fully_retained_budget_tests {
+    use super::*;
+
+    #[test]
+    fn fully_retained_generations_have_no_budgeted_work() {
+        let generations = (1..=16_384_u64).map(|id| (id, 4)).collect::<Vec<_>>();
+        assert_eq!(
+            retention_candidates_with_byte_budget(
+                &generations, 16_384, generations.len(), &[], u64::MAX,
+            ).unwrap(),
+            (Vec::<u64>::new(), 0),
+        );
+        assert!(retention_candidates_with_byte_budget(
+            &[(1, 4), (1, 8)], 1, 2, &[], u64::MAX,
+        ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod small_pin_retention_tests {
+    use super::*;
+
+    #[test]
+    fn low_cardinality_pins_preserve_large_path_semantics() {
+        let generations = (1..=130u64).collect::<Vec<_>>();
+        for pins in [vec![], vec![1], vec![1, 3], vec![1, 3, 5, 7], vec![1, 3, 5, 7, 9]] {
+            let small = retention_candidates_with_pins(&generations, 130, 2, &pins).unwrap();
+            assert_eq!(small, (1..=128u64).filter(|id| !pins.contains(id)).collect::<Vec<_>>());
+        }
+        assert!(retention_candidates_with_pins(&generations, 130, 2, &[1, 1]).is_err());
+        assert!(retention_candidates_with_pins(&generations, 130, 2, &[131]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod singleton_retention_budget_tests {
+    use super::*;
+
+    #[test]
+    fn one_eligible_generation_respects_exact_byte_budget() {
+        let sizes = [(4, 100u64), (1, 25), (3, 10), (2, 5)];
+        assert_eq!(retention_candidates_with_byte_budget(&sizes, 4, 3, &[], 24).unwrap(), (vec![], 0));
+        assert_eq!(retention_candidates_with_byte_budget(&sizes, 4, 3, &[], 25).unwrap(), (vec![1], 25));
+        assert_eq!(retention_candidates_with_byte_budget(&sizes, 4, 3, &[], u64::MAX).unwrap(), (vec![1], 25));
+        assert_eq!(retention_candidates_with_byte_budget(&sizes, 4, 3, &[1], u64::MAX).unwrap(), (vec![], 0));
+        assert!(retention_candidates_with_byte_budget(&[(1, 1), (1, 2)], 1, 1, &[], 100).is_err());
     }
 }

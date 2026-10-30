@@ -80,7 +80,7 @@ fn read_bounded_metadata_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, Pa
     ensure_metadata_size(path, metadata.len(), max_bytes)?;
     let file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     let opened = file.metadata().map_err(|source| io_error(path, source))?;
-    if !opened.file_type().is_file() || opened.len() > max_bytes {
+    if !opened.file_type().is_file() || opened.len() != metadata.len() || opened.len() > max_bytes {
         return Err(invalid_metadata(path, "metadata changed before read"));
     }
     #[cfg(unix)]
@@ -292,6 +292,25 @@ mod metadata_identity_tests {
         let replacement = fs::File::open(&second).unwrap().metadata().unwrap();
         assert_eq!(original.len(), replacement.len());
         assert_ne!(original.ino(), replacement.ino());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod bounded_metadata_length_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_metadata_reads_still_reject_changed_file_contents() {
+        let root = std::env::temp_dir().join(format!("rusthouse-metadata-length-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("count.txt");
+        fs::write(&path, b"1234\n").unwrap();
+        assert_eq!(read_bounded_metadata_file(&path, 5).unwrap(), b"1234\n");
+        assert!(read_bounded_metadata_file(&path, 4).is_err());
+        fs::write(&path, b"123456\n").unwrap();
+        assert!(read_bounded_metadata_file(&path, 5).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
