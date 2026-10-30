@@ -46,6 +46,10 @@ pub fn capabilities(peer: Peer) -> Result<PeerResponse, String> {
 
 /// Fetch a named table's schema without accepting arbitrary HTTP paths.
 pub fn schema(peer: Peer, table: &str) -> Result<PeerResponse, String> {
+    // Keep outbound identifiers within the same limit as local table resolution.
+    if table.len() > 128 {
+        return Err("unsupported peer table identifier".into());
+    }
     let mut bytes = table.bytes();
     if !bytes
         .next()
@@ -317,6 +321,19 @@ mod tests {
         for response in malformed {
             assert!(parse_response(response).is_err());
         }
+    }
+
+    #[test]
+    fn rejects_overlong_peer_table_names_before_connecting() {
+        let peer = Peer::parse("127.0.0.1:9").unwrap();
+        assert_eq!(
+            schema(peer, &"a".repeat(129)).unwrap_err(),
+            "unsupported peer table identifier"
+        );
+        assert_eq!(
+            schema(peer, "invalid/table").unwrap_err(),
+            "unsupported peer table identifier"
+        );
     }
 
     #[test]
