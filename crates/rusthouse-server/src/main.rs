@@ -185,9 +185,17 @@ fn respond(stream: &mut TcpStream, response: Response, allow_lz4: bool) -> io::R
     stream.write_all(body)
 }
 
+fn configure_client_timeouts(stream: &TcpStream) -> io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    Ok(())
+}
+
 fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    if configure_client_timeouts(&stream).is_err() {
+        // Never process an unbounded request when socket safeguards fail.
+        return;
+    }
     let request = read_request(&mut stream);
     let accept_lz4 = request.as_ref().is_ok_and(|(_, _, _, encoded)| *encoded);
     let response = match request {
@@ -477,5 +485,21 @@ mod concurrency_capacity_tests {
             assert!(parse_max_connections(invalid).is_err(), "{invalid}");
         }
         assert_eq!(MAX_CONNECTIONS, 16);
+    }
+}
+
+#[cfg(test)]
+mod client_socket_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn client_connections_receive_read_and_write_timeouts() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        configure_client_timeouts(&server).unwrap();
+        assert_eq!(server.read_timeout().unwrap(), Some(Duration::from_secs(5)));
+        assert_eq!(server.write_timeout().unwrap(), Some(Duration::from_secs(5)));
+        drop(client);
     }
 }
