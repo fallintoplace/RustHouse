@@ -23,12 +23,15 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
         return Err(format!("invalid database schema for {table}"));
     }
     let mut content = Vec::new();
-    let file = fs::File::open(&schema)
+    let mut file = fs::File::open(&schema)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
     let opened_schema_metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect opened schema for {table}: {error}"))?;
-    if !opened_schema_metadata.file_type().is_file() || opened_schema_metadata.len() > 32 * 1024 {
+    if !opened_schema_metadata.file_type().is_file()
+        || opened_schema_metadata.len() > 32 * 1024
+        || opened_schema_metadata.len() != schema_metadata.len()
+    {
         return Err(format!("database schema changed before read for {table}"));
     }
     #[cfg(unix)]
@@ -38,9 +41,30 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
             return Err(format!("database schema replaced before read for {table}"));
         }
     }
-    file.take(32 * 1024 + 1)
+    (&mut file).take(32 * 1024 + 1)
         .read_to_end(&mut content)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
+    let final_opened = file.metadata()
+        .map_err(|error| format!("cannot recheck database schema for {table}: {error}"))?;
+    let final_path = fs::symlink_metadata(&schema)
+        .map_err(|error| format!("cannot recheck database schema for {table}: {error}"))?;
+    if !final_path.file_type().is_file()
+        || final_opened.len() != schema_metadata.len()
+        || final_path.len() != schema_metadata.len()
+    {
+        return Err(format!("database schema changed during read for {table}"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if final_opened.dev() != schema_metadata.dev()
+            || final_opened.ino() != schema_metadata.ino()
+            || final_path.dev() != schema_metadata.dev()
+            || final_path.ino() != schema_metadata.ino()
+        {
+            return Err(format!("database schema replaced during read for {table}"));
+        }
+    }
     if content.len() > 32 * 1024 {
         return Err(format!("database schema exceeds size limit for {table}"));
     }
