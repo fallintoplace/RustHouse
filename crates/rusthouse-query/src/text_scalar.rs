@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "HASTOKENORNULL"
             | "NORMALIZEIPV6"
     )
 }
@@ -2911,6 +2912,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                         .any(|word| word == token);
                     ConstantValue::Integer(i64::from(found))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "HASTOKENORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "hasTokenOrNull requires a token")?;
+            let token = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after hasTokenOrNull")?;
+            match (input, token) {
+                (Some(input), Some(token)) => {
+                    let valid = !token.is_empty()
+                        && token.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+                    if !valid {
+                        ConstantValue::Null
+                    } else {
+                        let found = input
+                            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                            .any(|word| word == token);
+                        ConstantValue::Integer(i64::from(found))
+                    }
                 }
                 _ => ConstantValue::Null,
             }
