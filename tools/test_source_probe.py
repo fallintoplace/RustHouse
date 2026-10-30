@@ -19,6 +19,35 @@ class SourceProbeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             probe("http://127.0.0.1:8123", "database")
 
+    @patch("source_probe.scan_rows")
+    @patch("source_probe.read_json")
+    def test_scan_readiness_requires_query_to_succeed(self, read, scan):
+        read.side_effect = [
+            {"source": "database", "read_only": True, "version": "0.6"},
+            {"columns": [{"name": "id", "type": "UInt64"}]},
+        ]
+        probe("http://127.0.0.1:8123", "database", "events",
+              verify_scan=True, timeout=3)
+        scan.assert_called_once_with("http://127.0.0.1:8123", "events", 3)
+
+    @patch("source_probe.read_json")
+    def test_scan_requires_a_table(self, read):
+        read.return_value = {"source": "database", "read_only": True}
+        with self.assertRaisesRegex(ValueError, "requires --table"):
+            probe("http://127.0.0.1:8123", "database", verify_scan=True)
+
+    @patch("source_probe.NO_REDIRECT_OPENER")
+    def test_scan_rejects_wrong_or_oversized_count_output(self, opener):
+        from source_probe import scan_rows
+        for body in (b"bad", b"rows_checked\\n-1\\n", b"x" * 129):
+            opener.open.return_value.__enter__.return_value.read.return_value = body
+            with self.subTest(body=body), self.assertRaisesRegex(ValueError, "scan"):
+                scan_rows("http://127.0.0.1:8123", "events", 3)
+        opener.open.return_value.__enter__.return_value.read.return_value = (
+            b"rows_checked\\n42\\n"
+        )
+        self.assertEqual(scan_rows("http://127.0.0.1:8123", "events", 3), 42)
+
     @patch("source_probe.read_json")
     def test_expected_server_version_guards_deployments(self, read):
         read.return_value = {"source": "generated", "read_only": True,
