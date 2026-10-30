@@ -10,9 +10,15 @@ pub(super) fn literal_bytes(tokens: &[LikeToken]) -> Option<Vec<u8>> {
         .collect()
 }
 
+fn compiled_literal(bytes: Vec<u8>) -> LikeLiteral {
+    // SQL literals do not change between rows. Do the Unicode fold once.
+    let folded = std::str::from_utf8(&bytes).ok().map(str::to_lowercase);
+    LikeLiteral { bytes, folded }
+}
+
 pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError> {
     if !pattern.bytes().any(|byte| matches!(byte, b'%' | b'_' | b'\\')) {
-        return Ok(LikePattern::Exact(pattern.as_bytes().to_vec()));
+        return Ok(LikePattern::Exact(compiled_literal(pattern.as_bytes().to_vec())));
     }
     // Pure prefix/suffix/contains patterns need no wildcard token vector.
     // Escapes and '_' still use the full SQL LIKE compiler below.
@@ -22,17 +28,17 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
             .and_then(|remaining| remaining.strip_suffix('%'))
         {
             if !literal.contains('%') {
-                return Ok(LikePattern::Contains(literal.as_bytes().to_vec()));
+                return Ok(LikePattern::Contains(compiled_literal(literal.as_bytes().to_vec())));
             }
         }
         if let Some(literal) = pattern.strip_suffix('%') {
             if !literal.contains('%') {
-                return Ok(LikePattern::Prefix(literal.as_bytes().to_vec()));
+                return Ok(LikePattern::Prefix(compiled_literal(literal.as_bytes().to_vec())));
             }
         }
         if let Some(literal) = pattern.strip_prefix('%') {
             if !literal.contains('%') {
-                return Ok(LikePattern::Suffix(literal.as_bytes().to_vec()));
+                return Ok(LikePattern::Suffix(compiled_literal(literal.as_bytes().to_vec())));
             }
         }
     }
@@ -62,24 +68,24 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
         }
     }
     if let Some(bytes) = literal_bytes(&tokens) {
-        return Ok(LikePattern::Exact(bytes));
+        return Ok(LikePattern::Exact(compiled_literal(bytes)));
     }
     if tokens.len() >= 2
         && matches!(tokens.first(), Some(LikeToken::Any))
         && matches!(tokens.last(), Some(LikeToken::Any))
     {
         if let Some(bytes) = literal_bytes(&tokens[1..tokens.len() - 1]) {
-            return Ok(LikePattern::Contains(bytes));
+            return Ok(LikePattern::Contains(compiled_literal(bytes)));
         }
     }
     if matches!(tokens.last(), Some(LikeToken::Any)) {
         if let Some(bytes) = literal_bytes(&tokens[..tokens.len() - 1]) {
-            return Ok(LikePattern::Prefix(bytes));
+            return Ok(LikePattern::Prefix(compiled_literal(bytes)));
         }
     }
     if matches!(tokens.first(), Some(LikeToken::Any)) {
         if let Some(bytes) = literal_bytes(&tokens[1..]) {
-            return Ok(LikePattern::Suffix(bytes));
+            return Ok(LikePattern::Suffix(compiled_literal(bytes)));
         }
     }
     let folded_percent = folded_multisegment_pattern(&tokens);
@@ -133,17 +139,37 @@ pub(super) fn equal_like_bytes(left: &[u8], right: &[u8], case_insensitive: bool
     }
 }
 
+fn equal_compiled_like_bytes(value: &[u8], literal: &LikeLiteral, case_insensitive: bool) -> bool {
+    if value == literal.bytes.as_slice() {
+        return true;
+    }
+    if !case_insensitive {
+        return false;
+    }
+    if value.eq_ignore_ascii_case(&literal.bytes) {
+        return true;
+    }
+    if value.is_ascii() && literal.bytes.is_ascii() {
+        return false;
+    }
+    if let (Ok(text), Some(folded)) = (std::str::from_utf8(value), literal.folded.as_deref()) {
+        return text.to_lowercase() == folded;
+    }
+    // Keep the old ASCII fallback for invalid UTF-8 binary rows.
+    false
+}
+
 fn unicode_folded_match(
     value: &[u8],
-    literal: &[u8],
+    literal: &LikeLiteral,
     compare: impl FnOnce(&str, &str) -> bool,
 ) -> Option<bool> {
-    if value.is_ascii() && literal.is_ascii() {
+    if value.is_ascii() && literal.bytes.is_ascii() {
         return None;
     }
     let value = std::str::from_utf8(value).ok()?;
-    let literal = std::str::from_utf8(literal).ok()?;
-    Some(compare(&value.to_lowercase(), &literal.to_lowercase()))
+    let folded = literal.folded.as_deref()?;
+    Some(compare(&value.to_lowercase(), folded))
 }
 
 /// Rebuild literal runs after Unicode case folding while keeping LIKE wildcards.
@@ -174,8 +200,9 @@ fn folded_multisegment_pattern(pattern: &[LikeToken]) -> Option<Vec<LikeToken>> 
 
 pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive: bool) -> bool {
     match pattern {
-        LikePattern::Exact(bytes) => equal_like_bytes(value, bytes, case_insensitive),
-        LikePattern::Prefix(bytes) => {
+        LikePattern::Exact(literal) => equal_compiled_like_bytes(value, literal, case_insensitive),
+        LikePattern::Prefix(literal) => {
+            let bytes = &literal.bytes;
             // Most matching prefixes differ only in ASCII case. Test the
             // short prefix before inspecting or folding the full UTF-8 row.
             if case_insensitive
@@ -191,7 +218,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             }
             if case_insensitive {
                 if let Some(matches) =
-                    unicode_folded_match(value, bytes, |input, prefix| input.starts_with(prefix))
+                    unicode_folded_match(value, literal, |input, prefix| input.starts_with(prefix))
                 {
                     return matches;
                 }
@@ -200,7 +227,8 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 .get(..bytes.len())
                 .is_some_and(|prefix| equal_like_bytes(prefix, bytes, case_insensitive))
         }
-        LikePattern::Suffix(bytes) => {
+        LikePattern::Suffix(literal) => {
+            let bytes = &literal.bytes;
             // Do not Unicode-fold or inspect an entire long string when its
             // trailing ASCII bytes already satisfy the LIKE suffix.
             if case_insensitive
@@ -216,7 +244,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             }
             if case_insensitive {
                 if let Some(matches) =
-                    unicode_folded_match(value, bytes, |input, suffix| input.ends_with(suffix))
+                    unicode_folded_match(value, literal, |input, suffix| input.ends_with(suffix))
                 {
                     return matches;
                 }
@@ -225,7 +253,8 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 .get(value.len().saturating_sub(bytes.len())..)
                 .is_some_and(|suffix| equal_like_bytes(suffix, bytes, case_insensitive))
         }
-        LikePattern::Contains(bytes) => {
+        LikePattern::Contains(literal) => {
+            let bytes = &literal.bytes;
             // '%' matches every non-null String. Do not Unicode-fold every row.
             if bytes.is_empty() {
                 return true;
@@ -258,7 +287,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             }
             if case_insensitive {
                 if let Some(matches) =
-                    unicode_folded_match(value, bytes, |input, needle| input.contains(needle))
+                    unicode_folded_match(value, literal, |input, needle| input.contains(needle))
                 {
                     return matches;
                 }
@@ -508,13 +537,13 @@ mod simple_like_compile_tests {
     #[test]
     fn common_literal_patterns_skip_wildcard_tokenization() {
         assert!(matches!(compile_like("hello%").unwrap(),
-            LikePattern::Prefix(bytes) if bytes == b"hello"));
+            LikePattern::Prefix(literal) if literal.bytes == b"hello"));
         assert!(matches!(compile_like("%world").unwrap(),
-            LikePattern::Suffix(bytes) if bytes == b"world"));
+            LikePattern::Suffix(literal) if literal.bytes == b"world"));
         assert!(matches!(compile_like("%middle%").unwrap(),
-            LikePattern::Contains(bytes) if bytes == b"middle"));
+            LikePattern::Contains(literal) if literal.bytes == b"middle"));
         assert!(matches!(compile_like("%").unwrap(),
-            LikePattern::Prefix(bytes) if bytes.is_empty()));
+            LikePattern::Prefix(literal) if literal.bytes.is_empty()));
         assert!(matches!(compile_like("h_llo%").unwrap(),
             LikePattern::Wildcard { .. }));
         assert!(like_matches(b"hello WORLD", &compile_like("%world").unwrap(), true));

@@ -328,11 +328,17 @@ enum LikeToken {
     Byte(u8),
 }
 
+struct LikeLiteral {
+    bytes: Vec<u8>,
+    // None for escaped patterns that do not form valid UTF-8.
+    folded: Option<String>,
+}
+
 enum LikePattern {
-    Exact(Vec<u8>),
-    Prefix(Vec<u8>),
-    Suffix(Vec<u8>),
-    Contains(Vec<u8>),
+    Exact(LikeLiteral),
+    Prefix(LikeLiteral),
+    Suffix(LikeLiteral),
+    Contains(LikeLiteral),
     Wildcard {
         tokens: Vec<LikeToken>,
         folded_percent: Option<Vec<LikeToken>>,
@@ -2018,7 +2024,7 @@ mod predicate_order_tests {
             Condition {
                 index: 0,
                 test: Test::Like {
-                    pattern: LikePattern::Exact(b"match".to_vec()),
+                    pattern: compile_like("match").unwrap(),
                     case_insensitive: false,
                     negated: false,
                 },
