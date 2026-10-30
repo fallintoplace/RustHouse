@@ -11,6 +11,7 @@ pub(super) fn is_function(name: &str) -> bool {
         name.to_ascii_uppercase().as_str(),
         "TOSTARTOFHALFHOUR"
             | "ADDDAYS"
+            | "TOMINUTE"
             | "TOHOUR"
             | "TORELATIVEMONTHNUM"
             | "TORELATIVEWEEKNUM"
@@ -180,6 +181,9 @@ pub(super) fn parse_after_open(
         }),
         "TORELATIVESECONDNUM" => unary_date(parser, depth, |value| {
             Ok(ConstantValue::Integer(value.seconds))
+        }),
+        "TOMINUTE" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.rem_euclid(3_600) / 60))
         }),
         "TOHOUR" => unary_date(parser, depth, |value| {
             Ok(ConstantValue::Integer(value.seconds.rem_euclid(DAY_SECONDS) / 3_600))
