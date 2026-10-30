@@ -141,15 +141,16 @@ impl ResumeMap {
 
     pub fn decode(text: &str) -> Result<Self, &'static str> {
         let mut result = Self::new(text.len())?;
-        for (index, byte) in text.bytes().enumerate() {
-            match byte {
-                b'0' => {}
-                b'1' => {
-                    let (byte, mask) = Self::bit_position(index);
-                    result.completed[byte] |= mask;
+        for (byte_index, group) in text.as_bytes().chunks(8).enumerate() {
+            let mut flags = 0u8;
+            for (bit, &value) in group.iter().enumerate() {
+                match value {
+                    b'0' => {}
+                    b'1' => flags |= 1u8 << bit,
+                    _ => return Err("invalid resume map byte"),
                 }
-                _ => return Err("invalid resume map byte"),
             }
+            result.completed[byte_index] = flags;
         }
         Ok(result)
     }
@@ -421,6 +422,24 @@ mod popcount_progress_tests {
                 progress.completed[byte] & mask != 0
             }).count();
             assert_eq!(progress.completed_count(), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod grouped_ascii_resume_decoder_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_bit_patterns_in_eight_character_groups() {
+        for length in [0, 1, 7, 8, 9, 15, 16, 17, 511, 512, 513, 65_536] {
+            let encoded = (0..length).map(|index| if index % 5 < 2 { '1' } else { '0' }).collect::<String>();
+            let map = ResumeMap::decode(&encoded).unwrap();
+            assert_eq!(map.encode(), encoded);
+            assert_eq!(map.completed_count(), (0..length).filter(|i| i % 5 < 2).count());
+        }
+        for encoded in ["10x", "00000000x", "11111111\u{00a0}"] {
+            assert!(ResumeMap::decode(encoded).is_err());
         }
     }
 }
