@@ -41,7 +41,10 @@ def load_workload(path):
             fields[name] = value
         return fields
 
-    with Path(path).open("rb") as source:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("analytics workload must be a regular, non-symlinked file")
+    with path.open("rb") as source:
         raw = source.read(1_048_577)
     if len(raw) > 1_048_576:
         raise ValueError("analytics workload exceeds 1 MiB")
