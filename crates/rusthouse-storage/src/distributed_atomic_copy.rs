@@ -14,7 +14,7 @@ fn same_source_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
 }
 
 fn stream_bounded_copy(
-    input: &mut File,
+    input: &mut impl Read,
     output: &mut File,
     expected_bytes: u64,
     max_bytes: u64,
@@ -28,7 +28,11 @@ fn stream_bounded_copy(
             .saturating_sub(total)
             .saturating_add(1)
             .min(buffer.len() as u64) as usize;
-        let len = input.read(&mut buffer[..available])?;
+        let len = match input.read(&mut buffer[..available]) {
+            Ok(len) => len,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if len == 0 {
             break;
         }
@@ -219,5 +223,45 @@ mod checked_copy_tests {
         assert_eq!(fs::read(&target).unwrap(), b"verified");
         assert!(copy_immutable_file_checked(&source, &target, 100, checksum).is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod interrupted_replica_copy_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    struct InterruptOnce<'a> {
+        input: Cursor<&'a [u8]>,
+        interrupted: bool,
+    }
+
+    impl Read for InterruptOnce<'_> {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            if self.interrupted {
+                self.interrupted = false;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.input.read(output)
+        }
+    }
+
+    #[test]
+    fn retries_interrupted_source_reads_without_publishing_partial_data() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-interrupted-replica-copy-{}", std::process::id()
+        ));
+        let mut output = File::create(&path).unwrap();
+        let mut input = InterruptOnce {
+            input: Cursor::new(b"frozen bytes".as_slice()),
+            interrupted: true,
+        };
+        assert_eq!(
+            stream_bounded_copy(&mut input, &mut output, 12, 12).unwrap(),
+            12
+        );
+        drop(output);
+        assert_eq!(fs::read(&path).unwrap(), b"frozen bytes");
+        fs::remove_file(path).unwrap();
     }
 }
