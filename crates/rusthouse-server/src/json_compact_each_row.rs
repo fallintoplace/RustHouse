@@ -10,13 +10,8 @@ fn write_compact_row_into<W: Write>(
     columns: usize,
     row: &mut Vec<u8>,
 ) -> io::Result<()> {
-    let width = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
-    if width != columns {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "JSON row width differs from header",
-        ));
-    }
+    // The private staging buffer keeps malformed rows out of the output.
+    // Validate the column count while encoding to avoid rescanning the input.
     // Reserve framing for common unescaped fields before writing quotes.
     row.clear();
     row.reserve(
@@ -25,10 +20,12 @@ fn write_compact_row_into<W: Write>(
             .saturating_add(3),
     );
     row.write_all(b"[")?;
-    for (index, value) in line.split(|byte| *byte == b'\t').enumerate() {
-        if index > 0 {
+    let mut width = 0;
+    for value in line.split(|byte| *byte == b'\t') {
+        if width > 0 {
             row.write_all(b",")?;
         }
+        width += 1;
         if value == b"\\N" {
             row.write_all(b"null")?;
         } else {
@@ -41,6 +38,12 @@ fn write_compact_row_into<W: Write>(
                 write_json_string(&mut *row, text)?;
             }
         }
+    }
+    if width != columns {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "JSON row width differs from header",
+        ));
     }
     row.write_all(b"]\n")?;
     output.write_all(row)
@@ -197,6 +200,21 @@ mod tests {
         let mut output = Vec::new();
         assert!(write_compact_row(&mut output, b"ok\tbad\\q", 2).is_err());
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn one_pass_width_validation_does_not_emit_failed_rows() {
+        let mut output = b"prefix".to_vec();
+        for (line, columns) in [
+            (b"a\tb".as_slice(), 3usize),
+            (b"a\tb\tc".as_slice(), 2),
+            (b"a\tb".as_slice(), 0),
+        ] {
+            assert!(write_compact_row(&mut output, line, columns).is_err());
+            assert_eq!(output, b"prefix");
+        }
+        write_compact_row(&mut output, b"a\tb", 2).unwrap();
+        assert_eq!(output, b"prefix[\"a\",\"b\"]\n");
     }
 
     #[test]
