@@ -55,5 +55,16 @@ class InteropParityTests(unittest.TestCase):
             self.assertEqual(req.data, b"SELECT 1")
 
 
+
+
+class ServerStderrBackpressureTests(unittest.TestCase):
+    def test_server_launch_does_not_create_unread_pipe(self):
+        with mock.patch.object(parity.subprocess, "Popen") as popen:
+            parity.launch_server("server", "db", 8123)
+            self.assertEqual(popen.call_args.kwargs["stderr"], parity.subprocess.DEVNULL)
+            self.assertEqual(popen.call_args.kwargs["stdout"], parity.subprocess.DEVNULL)
+            self.assertEqual(popen.call_args.args[0],
+                             ["server", "--database", "db", "--port", "8123"])
+
 if __name__ == "__main__":
     unittest.main()
