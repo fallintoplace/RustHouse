@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from schema import TABLES, names
 
+MAX_RECORD_BYTES = 8 * 1024 * 1024
+
 
 def matches_q6(parts, indexes):
     date = parts[indexes["l_shipdate"]]
@@ -16,20 +18,33 @@ def matches_q6(parts, indexes):
     )
 
 
-def profile_table(path, table):
+def profile_table(path, table, *, max_record_bytes=MAX_RECORD_BYTES):
     if table not in TABLES:
         raise ValueError(f"unknown table: {table}")
+    if (type(max_record_bytes) is not int or
+            not 1 <= max_record_bytes <= MAX_RECORD_BYTES):
+        raise ValueError("max_record_bytes must be in 1..8388608")
+    path = Path(path)
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("expected a regular, non-symlinked TPC-H input file")
     digest = hashlib.sha256()
     rows, bytes_read, q6_matches = 0, 0, 0
     min_shipdate = max_shipdate = None
     with Path(path).open("rb") as stream:
-        header = stream.readline()
+        header = stream.readline(max_record_bytes + 1)
+        if len(header) > max_record_bytes or not header.endswith(b"\n"):
+            raise ValueError(f"{table}: oversized or truncated TSV header")
         digest.update(header)
         bytes_read += len(header)
         if header.decode("utf-8").rstrip("\r\n").split("\t") != names(table):
             raise ValueError(f"{table}: TSV header mismatch")
         indexes = {name: position for position, name in enumerate(names(table))}
-        for line in stream:
+        while True:
+            line = stream.readline(max_record_bytes + 1)
+            if not line:
+                break
+            if len(line) > max_record_bytes:
+                raise ValueError(f"{table}: TSV record exceeds max_record_bytes")
             if not line.endswith(b"\n"):
                 raise ValueError(f"{table}: truncated TSV data record")
             bytes_read += len(line)
@@ -53,13 +68,14 @@ def profile_table(path, table):
     return result
 
 
-def profile_directory(directory, selected=None):
+def profile_directory(directory, selected=None, *, max_record_bytes=MAX_RECORD_BYTES):
     selected = tuple(TABLES if selected is None else selected)
     if not selected or len(set(selected)) != len(selected) or any(
         table not in TABLES for table in selected
     ):
         raise ValueError("select a nonempty unique set of known TPC-H tables")
-    profiles = [profile_table(Path(directory) / (table + ".tsv"), table)
+    profiles = [profile_table(Path(directory) / (table + ".tsv"), table,
+                              max_record_bytes=max_record_bytes)
                 for table in selected]
     return {"workload": "tpch-input-profile", "certified": False,
             "total_rows": sum(item["rows"] for item in profiles),
@@ -71,10 +87,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--table", action="append", choices=tuple(TABLES))
+    parser.add_argument("--max-record-bytes", type=int, default=MAX_RECORD_BYTES)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = profile_directory(args.input_dir, args.table)
+        report = profile_directory(args.input_dir, args.table,
+                                   max_record_bytes=args.max_record_bytes)
     except (OSError, ValueError, UnicodeError) as error:
         parser.exit(1, f"TPC-H profile failed: {error}\n")
     content = json.dumps(report, indent=2) + "\n"

@@ -64,8 +64,9 @@ def compare_text(baseline, candidate):
         previous = before[aggregate]
         current = after[aggregate]
         change = 100 * (current / previous - 1)
+        label = f"{change:+.1f}%" if math.isfinite(change) else "N/A (ratio overflow)"
         lines.append(
-            f"| {aggregate} | {previous:.3f} | {current:.3f} | {change:+.1f}% |"
+            f"| {aggregate} | {previous:.3f} | {current:.3f} | {label} |"
         )
     lines.extend([
         "",

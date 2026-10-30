@@ -2,10 +2,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bench.tpch.paired_duckdb import ABBA, BAAB, benchmark_pair, command, compare
+from bench.tpch.paired_duckdb import ABBA, BAAB, benchmark_pair, command, compare, load_paired_queries
 
 
 class PairedDuckDbTests(unittest.TestCase):
+    def test_strict_full_sql_rejects_simplified_queries_duckdb(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            for number in range(1, 23):
+                (path / f"q{number:02d}.sql").write_text(f"SELECT {number};")
+            self.assertEqual(len(load_paired_queries(path)), 22)
+            with self.assertRaises(ValueError):
+                load_paired_queries(path, require_canonical=True)
+
     def test_commands_do_not_use_a_shell_and_keep_sql_as_one_argument(self):
         sql = "SELECT 'a b' AS value"
         rust = command("rusthouse", "rusthouse", "/tmp/rh", sql)
@@ -62,6 +71,34 @@ class PairedDuckDbTests(unittest.TestCase):
                            lambda engine, statement: (b"B\nA\nA\n", 0.001),
                            1, 0, comparison="unordered")
 
+    def test_cli_output_is_spooled_and_capped(self):
+        import subprocess
+        from unittest import mock
+        from bench.tpch import paired_duckdb as runner
+
+        def fake_run(command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            kwargs["stdout"].write(b"12345")
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+
+        with mock.patch.object(runner.subprocess, "run", side_effect=fake_run), \
+             mock.patch.object(runner, "MAX_OUTPUT_BYTES", 4):
+            with self.assertRaisesRegex(ValueError, "16 MiB"):
+                runner.invoke(["fake"], 5)
+
+    def test_oversized_reference_is_not_executed(self):
+        from unittest import mock
+        from bench.tpch import paired_duckdb as runner
+
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "q01.tsv").write_bytes(b"12345")
+            with mock.patch.object(runner, "MAX_OUTPUT_BYTES", 4), \
+                 mock.patch.object(runner, "invoke", side_effect=AssertionError("executed")):
+                report = compare("unused", "db", "duckdb", "ddb",
+                                 [(1, "SELECT 1")], Path(directory), 1, 0, 10)
+            self.assertFalse(report["all_queries_verified"])
+            self.assertIn("exceeds 16 MiB", report["results"][0]["error"])
+
     def test_missing_reference_never_claims_speedup(self):
         with tempfile.TemporaryDirectory() as root:
             report = compare("unused", "db", "duckdb", "ddb",
@@ -70,6 +107,25 @@ class PairedDuckDbTests(unittest.TestCase):
         self.assertIsNone(report["speedup_geomean_duckdb_over_rusthouse"])
         self.assertEqual(report["results"][0]["status"], "error")
 
+
+
+class PairedDuckDBReferenceSymlinkTests(unittest.TestCase):
+    def test_symlink_reference_is_rejected_without_running_queries(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.tsv"
+            source.write_bytes(b"1\\n")
+            link = root / "q01.tsv"
+            try:
+                link.symlink_to(source)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            with mock.patch("bench.tpch.paired_duckdb.invoke", side_effect=AssertionError("executed")):
+                result = compare("rusthouse", "db", "duckdb", "db",
+                                 [(1, "SELECT 1")], root, 1, 0, 10)
+            self.assertFalse(result["all_queries_verified"])
+            self.assertIn("unsafe", result["results"][0]["error"])
 
 if __name__ == "__main__":
     unittest.main()

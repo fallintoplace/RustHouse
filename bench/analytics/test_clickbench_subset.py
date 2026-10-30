@@ -51,5 +51,22 @@ class VerifiedClickBenchTests(unittest.TestCase):
             self.assertEqual(bad["results"][0]["status"], "mismatch")
 
 
+    def test_reference_comparison_is_not_in_timed_sample(self):
+        from unittest import mock
+        import clickbench_subset as runner
+        clock = [1.0]
+        def execute(sql):
+            clock[0] += 0.05
+            return b"1\n"
+        def compare(*args, **kwargs):
+            clock[0] += 10.0
+        with mock.patch.object(runner, "sqlite_query", return_value=[(1,)]), \
+             mock.patch.object(runner, "assert_matches", side_effect=compare), \
+             mock.patch.object(runner.time, "perf_counter", side_effect=lambda: clock[0]):
+            report = run_subset("fake", "db", "unused.sqlite", only="1", runs=1,
+                                warmups=0, execute=execute)
+        self.assertEqual(report["verified_queries"], 1)
+        self.assertAlmostEqual(report["results"][0]["timings_seconds"][0], 0.05, places=6)
+
 if __name__ == "__main__":
     unittest.main()

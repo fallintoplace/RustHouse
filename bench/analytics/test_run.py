@@ -50,6 +50,22 @@ class AnalyticsRunnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.select_indices("4-2", 43)
 
+    def test_invalid_timing_inputs_fail_without_running_sql(self):
+        def do_not_run(*_):
+            self.fail("invalid benchmark parameters reached query execution")
+        for runs, warmups, timeout in (
+            (True, 0, 1),
+            (1, False, 1),
+            (1, 0, float("nan")),
+            (1, 0, float("inf")),
+            (1000, 1, 1),
+            (1, 0, True),
+        ):
+            with self.subTest(runs=runs, warmups=warmups, timeout=timeout):
+                with self.assertRaisesRegex(ValueError, "timing parameters"):
+                    runner.run_benchmark(["SELECT 1"], [0], runs, timeout,
+                                         do_not_run, warmups=warmups)
+
     def test_unknown_output_is_never_marked_verified(self):
         results = runner.run_benchmark(["SELECT 1"], [0], 3, 1, lambda _sql, _timeout: b"1\n")
         self.assertEqual(results[0]["status"], "unverified")
@@ -109,6 +125,7 @@ class AnalyticsRunnerTests(unittest.TestCase):
             clock[0] += 5_000_000_000
             return None
         with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / "q01.tsv").write_bytes(b"ok\n")
             with mock.patch.object(runner.time, "perf_counter_ns", side_effect=lambda: clock[0]), \
                  mock.patch.object(runner, "reference_failure", side_effect=verify):
                 item = runner.run_benchmark(
@@ -152,6 +169,68 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in results], ["error", "unverified"])
         self.assertEqual(results[1]["seconds"].__len__(), 3)
 
+
+    def test_load_queries_rejects_mutations_and_multiple_statements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "queries.sql"
+            for sql in ("DROP TABLE hits;", "SELECT 1; DELETE FROM hits;",
+                        "SELECT " + "0" * 65_537):
+                with self.subTest(sql=sql[:35]):
+                    path.write_text(sql + "\n")
+                    with self.assertRaisesRegex(ValueError, "bounded SELECT"):
+                        runner.load_queries(path)
+
+    def test_http_query_refuses_redirects_and_limits_results(self):
+        self.assertIsNone(runner.NoRedirect().redirect_request(
+            None, None, 302, "Found", {}, "http://example.org/query"))
+        with mock.patch.object(runner, "HTTP_OPENER") as opener:
+            response = opener.open.return_value.__enter__.return_value
+            response.read.return_value = b"1\\n"
+            self.assertEqual(runner.execute_http("http://127.0.0.1:8123/", "SELECT 1", 2),
+                             b"1\\n")
+            response.read.assert_called_once_with(runner.MAX_BENCHMARK_OUTPUT_BYTES + 1)
+            response.read.return_value = b"x" * (runner.MAX_BENCHMARK_OUTPUT_BYTES + 1)
+            with self.assertRaisesRegex(ValueError, "16 MiB"):
+                runner.execute_http("http://127.0.0.1:8123/", "SELECT 1", 2)
+
+    def test_http_format_parameter_is_unique(self):
+        from urllib.parse import parse_qs, urlsplit
+        target = runner.http_target(
+            "http://127.0.0.1:8123/?query_id=q1&format=csv&format=json")
+        params = parse_qs(urlsplit(target).query)
+        self.assertEqual(params["format"], ["tsv-no-header"])
+        self.assertEqual(params["query_id"], ["q1"])
+
+    def test_missing_and_oversized_references_do_not_run_queries(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "q01.tsv"
+            invoked = []
+            execute = lambda sql, timeout: invoked.append(sql)
+            missing = runner.run_benchmark(["SELECT 1"], [0], 1, 2, execute, Path(temp))
+            self.assertEqual(missing[0]["status"], "missing_reference")
+            path.write_bytes(b"oversized")
+            with mock.patch.object(runner, "MAX_REFERENCE_BYTES", 4):
+                large = runner.run_benchmark(["SELECT 1"], [0], 1, 2, execute, Path(temp))
+                self.assertEqual(large[0]["status"], "reference_too_large")
+                self.assertEqual(runner.reference_failure(path, b"")[0], "reference_too_large")
+            self.assertEqual(invoked, [])
+
+    def test_per_query_validation_errors_do_not_abort_benchmark(self):
+        def execute(sql, timeout):
+            if sql == "invalid":
+                raise ValueError("bad URL")
+            return b"ok\\n"
+        rows = runner.run_benchmark(["invalid", "SELECT 1"], [0, 1], 1, 3, execute)
+        self.assertEqual([row["status"] for row in rows], ["error", "unverified"])
+
+class AnalyticsWorkloadFileSizeTests(unittest.TestCase):
+    def test_rejects_oversized_sql_workload_before_parsing(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "queries.sql"
+            source.write_bytes(b"SELECT 1\n" * 20)
+            with mock.patch.object(runner, "MAX_QUERY_FILE_BYTES", 32):
+                with self.assertRaisesRegex(ValueError, "exceeds 4 MiB"):
+                    runner.load_queries(source)
 
 if __name__ == "__main__":
     unittest.main()

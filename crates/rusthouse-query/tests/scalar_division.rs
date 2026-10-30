@@ -13,6 +13,8 @@ fn division_is_signed_truncating_and_has_multiplicative_precedence() {
     assert_eq!(evaluate("SELECT -7 / 2").unwrap(), "-3\n-3\n");
     assert_eq!(evaluate("SELECT 7 / -2").unwrap(), "-3\n-3\n");
     assert_eq!(evaluate("SELECT 8 / 2 % 3").unwrap(), "1\n1\n");
+    assert_eq!(evaluate("SELECT -9223372036854775808 % -1 AS rem").unwrap(), "rem\n0\n");
+    assert!(evaluate("SELECT 2 % 0").is_err());
     assert_eq!(evaluate("SELECT 1 + 10 / (2 + 3)").unwrap(), "3\n3\n");
 }
 

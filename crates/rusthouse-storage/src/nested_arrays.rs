@@ -85,7 +85,7 @@ impl Error for NestedArrayReadError {
     }
 }
 
-fn numeric_leaf_type(data_type: &str) -> Result<&str, NestedArrayReadError> {
+fn validated_nested_numeric_leaf_type(data_type: &str) -> Result<&str, NestedArrayReadError> {
     let leaf_type = data_type
         .strip_prefix("Array(Array(")
         .and_then(|inner| inner.strip_suffix("))"))
@@ -111,7 +111,7 @@ pub fn read_nested_numeric_array_column<O: Read, I: Read, D: Read>(
     inner_encoding: ArrayOffsetsEncoding,
 ) -> Result<NestedNumericArrayColumn, NestedArrayReadError> {
     // Reject invalid leaf types before consuming either offset stream.
-    let leaf_type = numeric_leaf_type(data_type)?;
+    let leaf_type = validated_nested_numeric_leaf_type(data_type)?;
     let outer = read_array_offsets(outer_stream, rows, outer_encoding)
         .map_err(NestedArrayReadError::OuterOffsets)?;
     let inner = read_array_offsets(inner_stream, outer.element_count(), inner_encoding)

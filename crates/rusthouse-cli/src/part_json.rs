@@ -29,26 +29,26 @@ pub(crate) fn print_columns_json(columns: &[rusthouse_storage::Column]) {
 }
 
 pub(crate) fn json_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('"');
+    let mut escaped_json = String::with_capacity(value.len() + 2);
+    escaped_json.push('"');
     for character in value.chars() {
         match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            '\u{08}' => escaped.push_str("\\b"),
-            '\u{0c}' => escaped.push_str("\\f"),
+            '"' => escaped_json.push_str("\\\""),
+            '\\' => escaped_json.push_str("\\\\"),
+            '\n' => escaped_json.push_str("\\n"),
+            '\r' => escaped_json.push_str("\\r"),
+            '\t' => escaped_json.push_str("\\t"),
+            '\u{08}' => escaped_json.push_str("\\b"),
+            '\u{0c}' => escaped_json.push_str("\\f"),
             character if character <= '\u{1f}' => {
-                write!(&mut escaped, "\\u{:04x}", character as u32)
+                write!(&mut escaped_json, "\\u{:04x}", character as u32)
                     .expect("writing to String cannot fail");
             }
-            character => escaped.push(character),
+            character => escaped_json.push(character),
         }
     }
-    escaped.push('"');
-    escaped
+    escaped_json.push('"');
+    escaped_json
 }
 
 #[cfg(test)]

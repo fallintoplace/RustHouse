@@ -7,6 +7,7 @@ This is query-level validation, not a compliant TPC-H benchmark score.
 """
 import argparse
 import csv
+import math
 import sys
 from pathlib import Path
 
@@ -47,7 +48,10 @@ def expected_revenue(path):
 
 
 def run_q6(binary, database, lineitem, runs=5, warmups=1, timeout=120, execute=None):
-    if runs < 1 or warmups < 0 or timeout <= 0:
+    if (type(runs) is not int or runs < 1
+            or type(warmups) is not int or warmups < 0
+            or type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("invalid runs, warmups, or timeout")
     expected, matched = expected_revenue_details(lineitem)
     # SQL SUM returns NULL for empty inputs, not nonempty zero sums.

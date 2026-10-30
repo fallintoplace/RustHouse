@@ -35,6 +35,11 @@ class ConcurrentReadersTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "1 MiB"):
             run_readers("binary", "part", "SELECT 1", b"x" * (1024 * 1024 + 1))
 
+    def test_rejects_mutations_and_multistatement_sql(self):
+        for sql in ("DELETE FROM part", "SELECT 1; DROP TABLE events"):
+            with self.assertRaisesRegex(ValueError, "read-only"):
+                run_readers("rusthouse", "part", sql, b"1\n")
+
 
 if __name__ == "__main__":
     unittest.main()

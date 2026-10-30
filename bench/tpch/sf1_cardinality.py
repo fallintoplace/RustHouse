@@ -2,6 +2,7 @@
 """Verify the eight SF1 dbgen table cardinalities before full TPC-H queries."""
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -22,8 +23,9 @@ SF1_ROWS = {
 
 
 def verify(binary, database, timeout=120, execute=None):
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
+    if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or timeout <= 0):
+        raise ValueError("timeout must be finite and positive")
     if execute is None:
         execute = lambda sql: cli_sql(binary, database, sql, timeout)
     checked = []

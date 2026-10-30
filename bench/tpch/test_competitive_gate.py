@@ -40,6 +40,18 @@ class CompetitiveGateTests(unittest.TestCase):
         self.assertEqual(report["worst_p90_clickhouse_over_rusthouse"], 2.0)
         self.assertFalse(summarize(verified_report(), min_geomean=3)["meets_speedup_target"])
 
+    def test_independent_worst_tail_budget_catches_outliers(self):
+        self.assertTrue(
+            summarize(verified_report(), min_geomean=1.5,
+                      min_worst_p90=1.9)["meets_speedup_target"]
+        )
+        self.assertFalse(
+            summarize(verified_report(), min_geomean=1.5,
+                      min_worst_p90=2.1)["meets_speedup_target"]
+        )
+        with self.assertRaisesRegex(ValueError, "worst p90"):
+            summarize(verified_report(), min_worst_p90=float("nan"))
+
     def test_rejects_missing_coverage_or_duplicate_queries(self):
         with self.assertRaisesRegex(ValueError, "coverage"):
             summarize(verified_report(), min_queries=22)

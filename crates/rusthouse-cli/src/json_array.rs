@@ -4,7 +4,7 @@ use std::io::{self, Write};
 
 const MAX_JSON_ROW_BYTES: usize = 4 * 1024 * 1024;
 
-fn array_prefix(first: bool, pretty: bool) -> &'static [u8] {
+fn json_array_row_prefix(first: bool, pretty: bool) -> &'static [u8] {
     match (first, pretty) {
         (true, true) => b"[\n  ",
         (true, false) => b"[",
@@ -41,7 +41,7 @@ impl<W: Write> JsonArraySink<W> {
 
     fn finish_row(&mut self) -> io::Result<()> {
         self.output
-            .write_all(array_prefix(self.first, self.pretty))?;
+            .write_all(json_array_row_prefix(self.first, self.pretty))?;
         if self.pretty {
             write_pretty_json_row(&mut self.output, &self.row)?;
         } else {
@@ -80,7 +80,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                         ));
                     }
                     self.output
-                        .write_all(array_prefix(self.first, self.pretty))?;
+                        .write_all(json_array_row_prefix(self.first, self.pretty))?;
                     if self.pretty {
                         write_pretty_json_row(&mut self.output, row)?;
                     } else {
@@ -92,8 +92,8 @@ impl<W: Write> Write for JsonArraySink<W> {
             }
         }
         for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
-            let complete = chunk.last() == Some(&b'\n');
-            let fragment = if complete {
+            let has_newline = chunk.last() == Some(&b'\n');
+            let fragment = if has_newline {
                 &chunk[..chunk.len() - 1]
             } else {
                 chunk
@@ -104,9 +104,9 @@ impl<W: Write> Write for JsonArraySink<W> {
                     "JSON object exceeds 4 MiB",
                 ));
             }
-            if complete && self.row.is_empty() {
+            if has_newline && self.row.is_empty() {
                 self.output
-                    .write_all(array_prefix(self.first, self.pretty))?;
+                    .write_all(json_array_row_prefix(self.first, self.pretty))?;
                 if self.pretty {
                     write_pretty_json_row(&mut self.output, fragment)?;
                 } else {
@@ -116,7 +116,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                 continue;
             }
             self.row.extend_from_slice(fragment);
-            if complete {
+            if has_newline {
                 self.finish_row()?;
             }
         }
@@ -191,10 +191,10 @@ mod tests {
 
     #[test]
     fn framing_handles_empty_compact_and_pretty_arrays() {
-        assert_eq!(array_prefix(true, false), &b"["[..]);
-        assert_eq!(array_prefix(false, false), &b","[..]);
-        assert_eq!(array_prefix(true, true), &b"[\n  "[..]);
-        assert_eq!(array_prefix(false, true), &b",\n  "[..]);
+        assert_eq!(json_array_row_prefix(true, false), &b"["[..]);
+        assert_eq!(json_array_row_prefix(false, false), &b","[..]);
+        assert_eq!(json_array_row_prefix(true, true), &b"[\n  "[..]);
+        assert_eq!(json_array_row_prefix(false, true), &b",\n  "[..]);
         assert_eq!(array_suffix(true, false), &b"[]\n"[..]);
         assert_eq!(array_suffix(true, true), &b"[]\n"[..]);
         assert_eq!(array_suffix(false, false), &b"]\n"[..]);

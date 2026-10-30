@@ -22,19 +22,27 @@ def tsv_cell(value, null_token="NULL"):
             .replace("\n", "\\n").replace("\r", "\\r"))
 
 
-def write_one(connection, sql, destination, max_rows=100_000, null_token="NULL"):
-    if max_rows < 1:
+def write_one(connection, sql, destination, max_rows=100_000, null_token="NULL",
+              max_output_bytes=16 * 1024 * 1024):
+    if type(max_rows) is not int or max_rows < 1:
         raise ValueError("max_rows must be positive")
+    if type(max_output_bytes) is not int or max_output_bytes < 1:
+        raise ValueError("max_output_bytes must be positive")
     destination = Path(destination)
     temporary = destination.with_name(destination.name + ".tmp")
     count = 0
+    written = 0
     try:
         cursor = connection.execute(sql)
         with temporary.open("w", encoding="utf-8", newline="\n") as output:
             for row in cursor:
                 if count >= max_rows:
                     raise ValueError(f"reference exceeds {max_rows} output rows")
-                output.write("\t".join(tsv_cell(value, null_token) for value in row) + "\n")
+                rendered = "\t".join(tsv_cell(value, null_token) for value in row) + "\n"
+                written += len(rendered.encode("utf-8"))
+                if written > max_output_bytes:
+                    raise ValueError("reference exceeds output byte limit")
+                output.write(rendered)
                 count += 1
         temporary.replace(destination)
     finally:
@@ -44,6 +52,8 @@ def write_one(connection, sql, destination, max_rows=100_000, null_token="NULL")
 
 def generate(database, queries_dir, output_dir, only=None,
              max_rows=100_000, overwrite=False, null_token="NULL"):
+    if type(max_rows) is not int or max_rows < 1:
+        raise ValueError("max_rows must be a positive integer")
     database = Path(database)
     if not database.is_file():
         raise ValueError("SQLite reference database does not exist")

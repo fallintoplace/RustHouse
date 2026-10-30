@@ -1,0 +1,8 @@
+{
+  "name": "tail-range-sum",
+  "description": "Trailing 1 percent range sum",
+  "kind": "range",
+  "aggregate": "sum",
+  "lower_ppm": 990000,
+  "upper_ppm": 1000000
+}

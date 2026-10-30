@@ -256,6 +256,90 @@ fn stage_existing_parts_with_workers(
     workers: usize,
 ) -> Result<(), String> {
     if workers <= 1 || existing.len() < 16 {
+        for source in existing {
+            stage_existing_part(source, staging)?;
+        }
+        return Ok(());
+    }
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let completed = std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                let next = &next;
+                scope.spawn(move || -> Result<(), String> {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        if index >= existing.len() {
+                            return Ok(());
+                        }
+                        stage_existing_part(&existing[index], staging)?;
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("immutable part staging worker panicked".into()))
+            })
+            .collect::<Vec<_>>()
+    });
+    for result in completed {
+        result?;
+    }
+    Ok(())
+}
+
+fn stage_existing_parts(
+    existing: &[std::path::PathBuf],
+    staging: &Path,
+) -> Result<(), String> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |available| available.get())
+        .min(4);
+    stage_existing_parts_with_workers(existing, staging, workers)
+}
+
+/// Append multiple new parts as one snapshot generation. Reuse immutable
+/// existing part files through checked hard links, never partial live renames.
+pub(super) fn append_parts(
+    database: &Path,
+    table: &str,
+    cols: &[Column],
+    existing: &[std::path::PathBuf],
+    rows: &[Vec<Option<String>>],
+) -> Result<(), String> {
+    let count = rows.len().div_ceil(PART_ROWS);
+    if existing
+        .len()
+        .checked_add(count)
+        .is_none_or(|parts| parts > 16_384)
+    {
+        return Err("database table would exceed its 16384-part limit".into());
+    }
+    let mut last = 0u64;
+    for part in existing {
+        let name = part
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("invalid stored part filename")?;
+        let (first, second) = name
+            .strip_prefix("all_")
+            .and_then(|name| name.strip_suffix("_0"))
+            .and_then(|name| name.split_once('_'))
+            .ok_or_else(|| format!("unexpected stored part name: {name}"))?;
+        let first = first.parse::<u64>().map_err(|_| "invalid part number")?;
+        let second = second.parse::<u64>().map_err(|_| "invalid part number")?;
+        if first != second {
+            return Err("non-local part block ranges cannot be appended".into());
+        }
+        last = last.max(first);
+    }
+
+    publish_snapshot_with(database, table, |staging| {
         stage_existing_parts(existing, staging)?;
         for (index, chunk) in rows.chunks(PART_ROWS).enumerate() {
             let next = last
@@ -508,7 +592,10 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
     let mut reader = TypedQueryReader::open(&source, &names).map_err(|error| error.to_string())?;
     let mut scanned = 0u64;
     publish_snapshot_with(database, table, |staging| {
-        let mut buffer = Vec::with_capacity(PART_ROWS);
+        // Keep the existing 4 MiB row-byte ceiling, but allow narrow rows
+        // to fill the writer's 262,144-row part limit. This reduces the part
+        // count for large numeric tables without increasing retained bytes.
+        let mut buffer = Vec::with_capacity(STREAMED_PART_ROWS);
         let mut buffered_bytes = 0usize;
         let mut part_number = 0u64;
         let mut flush =
@@ -540,7 +627,7 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
                         .ok_or_else(|| "compaction row size overflow".to_string())
                 })?;
                 if !buffer.is_empty()
-                    && (buffer.len() >= PART_ROWS
+                    && (buffer.len() >= STREAMED_PART_ROWS
                         || buffered_bytes
                             .checked_add(row_bytes)
                             .is_none_or(|bytes| bytes > MAX_PART_BUFFER_BYTES))

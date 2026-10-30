@@ -37,6 +37,18 @@ class InputProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "truncated"):
                 profile_table(source, "region")
 
+    def test_rejects_oversized_tsv_records_with_bounded_reads(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            header = "\t".join(names("region")) + "\n"
+            path.write_bytes(header.encode() + b"1\tEUROPE\t" + b"x" * 100 + b"\n")
+            with self.assertRaisesRegex(ValueError, "max_record_bytes"):
+                profile_table(path, "region", max_record_bytes=80)
+            with self.assertRaisesRegex(ValueError, "max_record_bytes"):
+                profile_table(path, "region", max_record_bytes=0)
+            path.write_bytes(header.encode() + b"1\tEUROPE\tshort\n")
+            self.assertEqual(profile_table(path, "region", max_record_bytes=80)["rows"], 1)
+
     def test_rejects_wrong_schema(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "region.tsv"

@@ -10,6 +10,18 @@ class CapacityPlanTests(unittest.TestCase):
         self.assertEqual(result["parts_required"], 15259)
         self.assertEqual(result["minimum_rows_per_part_to_fit"], 61036)
 
+    def test_reserved_part_headroom_changes_feasibility(self):
+        plan_without_reserve = plan(100, rows_per_part=10, max_parts=10)
+        self.assertTrue(plan_without_reserve["part_limit_fit"])
+        reserved = plan(100, rows_per_part=10, max_parts=10, reserved_parts=2)
+        self.assertFalse(reserved["part_limit_fit"])
+        self.assertEqual(reserved["parts_available"], 8)
+        self.assertEqual(reserved["parts_reserved"], 2)
+        self.assertEqual(reserved["minimum_rows_per_part_to_fit"], 13)
+        for invalid in (True, -1, 10):
+            with self.assertRaisesRegex(ValueError, "reserved_parts"):
+                plan(100, max_parts=10, reserved_parts=invalid)
+
     def test_flags_excess_parts(self):
         result = plan(1_000_000_000, rows_per_part=4096)
         self.assertFalse(result["part_limit_fit"])
@@ -20,11 +32,34 @@ class CapacityPlanTests(unittest.TestCase):
         self.assertFalse(result["disk_budget_fit"])
         self.assertEqual(result["estimated_uncompressed_bytes"], 2000)
 
+    def test_compressed_row_width_changes_peak_disk_budget(self):
+        actual = plan(100, bytes_per_row=20, stored_bytes_per_row=5,
+                      disk_budget_bytes=1000, disk_copies=2)
+        self.assertEqual(actual["estimated_uncompressed_bytes"], 2000)
+        self.assertEqual(actual["estimated_stored_bytes"], 500)
+        self.assertEqual(actual["estimated_peak_disk_bytes"], 1000)
+        self.assertTrue(actual["disk_budget_fit"])
+        with self.assertRaisesRegex(ValueError, "stored_bytes_per_row"):
+            plan(100, stored_bytes_per_row=0)
+        with self.assertRaisesRegex(ValueError, "stored_bytes_per_row"):
+            plan(100, stored_bytes_per_row=True)
+
     def test_rejects_negative_and_oversized_options(self):
         with self.assertRaisesRegex(ValueError, "rows"):
             plan(0)
         with self.assertRaisesRegex(ValueError, "max_parts"):
             plan(5, max_parts=16385)
+
+    def test_peak_ingest_budget_includes_staging_data(self):
+        insufficient = plan(100, bytes_per_row=20, disk_budget_bytes=3000)
+        self.assertEqual(insufficient["estimated_uncompressed_bytes"], 2000)
+        self.assertEqual(insufficient["estimated_peak_disk_bytes"], 4000)
+        self.assertFalse(insufficient["disk_budget_fit"])
+        enough = plan(100, bytes_per_row=20, disk_budget_bytes=3000,
+                      disk_copies=1)
+        self.assertTrue(enough["disk_budget_fit"])
+        with self.assertRaisesRegex(ValueError, "disk_copies"):
+            plan(100, disk_copies=0)
 
 
 if __name__ == "__main__":
