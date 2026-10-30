@@ -39,6 +39,17 @@ pub fn copy_frozen_snapshot(
     max_parts: usize,
     max_bytes: u64,
 ) -> Result<SnapshotCopy, PartError> {
+    copy_frozen_snapshot_with_file_limit(source, destination, max_parts, usize::MAX, max_bytes)
+}
+
+/// Copy a frozen snapshot with a maximum staged file count and byte budget.
+pub fn copy_frozen_snapshot_with_file_limit(
+    source: &Path,
+    destination: &Path,
+    max_parts: usize,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<SnapshotCopy, PartError> {
     let active = resolve_active_snapshot(source)?;
     let parts = query_parts(&active)?;
     if parts.len() > max_parts || max_parts > 16_384 {
@@ -107,16 +118,21 @@ pub fn copy_frozen_snapshot(
                 if report.bytes > max_bytes {
                     return Err(PartError::InvalidScan("copy exceeds byte cap".into()));
                 }
-                let copied_bytes = fs::copy(&source_file, &destination_file)
-                    .map_err(|error| io_error(&destination_file, error))?;
+                if report.files >= max_files {
+                    return Err(PartError::InvalidScan("snapshot copy exceeds file limit".into()));
+                }
+                let copied_bytes = crate::distributed_atomic_copy::copy_immutable_file(
+                    &source_file,
+                    &destination_file,
+                    bytes,
+                )
+                .map_err(|error| io_error(&destination_file, error))?;
                 if copied_bytes != bytes {
                     return Err(PartError::InvalidScan(
                         "source size changed during snapshot copy".into(),
                     ));
                 }
-                File::open(&destination_file)
-                    .and_then(|file| file.sync_all())
-                    .map_err(|error| io_error(&destination_file, error))?;
+                // The immutable copy helper already syncs each published file.
                 report.files += 1;
             }
             verify_part_file_hashes(&copy)?;
@@ -135,6 +151,10 @@ pub fn copy_frozen_snapshot(
             return Err(error);
         }
     };
+    if !source_generation_unchanged(source, &active) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(PartError::InvalidScan("source snapshot changed during copy".into()));
+    }
     if destination.exists() {
         let _ = fs::remove_dir_all(&staging);
         return Err(PartError::InvalidScan(
@@ -148,6 +168,35 @@ pub fn copy_frozen_snapshot(
     #[cfg(unix)]
     sync_directory(parent)?;
     Ok(report)
+}
+
+/// Check a frozen snapshot and report exact copy requirements without writing files.
+pub fn preview_frozen_snapshot(
+    source: &Path,
+    max_parts: usize,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<SnapshotCopy, PartError> {
+    let active = resolve_active_snapshot(source)?;
+    let parts = query_parts(&active)?;
+    if parts.len() > max_parts || max_parts > 16_384 {
+        return Err(PartError::InvalidScan("snapshot preview exceeds part limit".into()));
+    }
+    inspect_query_source(&active)?;
+    let files = crate::distributed_inventory::inventory_snapshot(source, max_files, max_bytes)?;
+    let bytes = files.iter().try_fold(0u64, |total, file| {
+        total.checked_add(file.bytes)
+            .ok_or_else(|| PartError::InvalidScan("snapshot preview byte overflow".into()))
+    })?;
+    for part in &parts {
+        verify_part_file_hashes(part)?;
+        verify_wide_part(part)?;
+    }
+    Ok(SnapshotCopy {
+        parts: parts.len(),
+        files: files.len(),
+        bytes,
+    })
 }
 
 #[cfg(test)]
@@ -204,35 +253,6 @@ mod tests {
     }
 }
 
-/// Check a frozen snapshot and report exact copy requirements without writing files.
-pub fn preview_frozen_snapshot(
-    source: &Path,
-    max_parts: usize,
-    max_files: usize,
-    max_bytes: u64,
-) -> Result<SnapshotCopy, PartError> {
-    let active = resolve_active_snapshot(source)?;
-    let parts = query_parts(&active)?;
-    if parts.len() > max_parts || max_parts > 16_384 {
-        return Err(PartError::InvalidScan("snapshot preview exceeds part limit".into()));
-    }
-    inspect_query_source(&active)?;
-    let files = crate::distributed_inventory::inventory_snapshot(source, max_files, max_bytes)?;
-    let bytes = files.iter().try_fold(0u64, |total, file| {
-        total.checked_add(file.bytes)
-            .ok_or_else(|| PartError::InvalidScan("snapshot preview byte overflow".into()))
-    })?;
-    for part in &parts {
-        verify_part_file_hashes(part)?;
-        verify_wide_part(part)?;
-    }
-    Ok(SnapshotCopy {
-        parts: parts.len(),
-        files: files.len(),
-        bytes,
-    })
-}
-
 #[cfg(test)]
 mod snapshot_preflight_tests {
     use super::*;
@@ -261,6 +281,97 @@ mod snapshot_preflight_tests {
             preview
         );
         assert!(preview_frozen_snapshot(&source, 0, 32, 1_000_000).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod immutable_snapshot_copy_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn copy_does_not_leave_replica_staging_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-staging-clean-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir_all(&source).unwrap();
+        write_wide_part(
+            &source.join("all_0_0_0"),
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[vec![Some("8".into())]],
+        )
+        .unwrap();
+        copy_frozen_snapshot(&source, &target, 1, 1_000_000).unwrap();
+        for entry in fs::read_dir(target.join("all_0_0_0")).unwrap() {
+            let name = entry.unwrap().file_name();
+            assert!(!name.to_string_lossy().starts_with(".rusthouse-replica-"));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Catch accidental source snapshot switches before publishing the copied directory.
+fn source_generation_unchanged(source: &Path, expected: &Path) -> bool {
+    matches!(resolve_active_snapshot(source), Ok(active) if active == expected)
+}
+
+#[cfg(test)]
+mod source_generation_stability_tests {
+    use super::*;
+
+    #[test]
+    fn detects_pointer_switch_before_copy_publication() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-generation-switch-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let versions = root.join(".rusthouse-versions");
+        let first = versions.join("g1");
+        let second = versions.join("g2");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        fs::write(&pointer, "g1\n").unwrap();
+        assert!(source_generation_unchanged(&root, &first));
+        fs::write(&pointer, "g2\n").unwrap();
+        assert!(!source_generation_unchanged(&root, &first));
+        assert!(source_generation_unchanged(&root, &second));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod copy_file_budget_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn refuses_to_publish_a_copy_beyond_its_file_budget() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-file-budget-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        write_wide_part(
+            &source.join("all_0_0_0"),
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("1".into())]],
+        ).unwrap();
+        assert!(copy_frozen_snapshot_with_file_limit(&source, &destination, 1, 1, 1_000_000).is_err());
+        assert!(!destination.exists());
+        let copied = copy_frozen_snapshot_with_file_limit(&source, &destination, 1, 32, 1_000_000).unwrap();
+        assert!(copied.files > 1);
         fs::remove_dir_all(root).unwrap();
     }
 }
