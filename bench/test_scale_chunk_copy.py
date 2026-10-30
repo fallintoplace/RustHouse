@@ -74,6 +74,23 @@ class ChunkCopyTests(unittest.TestCase):
                             execute=lambda *a, **k: calls.append(a))
             self.assertEqual(calls, [])
 
+    def test_direct_shard_verification_rejects_symlink_sources(self):
+        import os
+        from bench.scale.chunk_copy import verify_shard
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            source = folder / "part-000001.tsv"
+            source.write_bytes(b"42\\n")
+            link = folder / "part-000000.tsv"
+            try:
+                os.symlink(source, link)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink creation unavailable")
+            entry = {"rows": 1, "bytes": 3, "sha256": hashlib.sha256(b"42\\n").hexdigest()}
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                verify_shard(link, entry)
+            verify_shard(source, entry)
+
     def test_fails_closed_on_bad_manifest(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "manifest.json"
