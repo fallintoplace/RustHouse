@@ -2,13 +2,14 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 
 def profile(path, *, columns=1, header=False, min_rows=1,
-            verify_sorted_uint64=False):
+            verify_sorted_uint64=False, expected_sha256=None):
     if type(columns) is not int or not 1 <= columns <= 1024:
         raise ValueError("columns must be in 1..1024")
     if type(min_rows) is not int or min_rows < 1:
@@ -17,6 +18,10 @@ def profile(path, *, columns=1, header=False, min_rows=1,
         raise ValueError("header must be a boolean")
     if type(verify_sorted_uint64) is not bool or (verify_sorted_uint64 and columns != 1):
         raise ValueError("sorted UInt64 verification requires one column")
+    if expected_sha256 is not None and (
+            not isinstance(expected_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
+        raise ValueError("expected_sha256 must be a lowercase SHA256 hash")
     previous = None
     digest = hashlib.sha256()
     records = 0
@@ -56,8 +61,14 @@ def profile(path, *, columns=1, header=False, min_rows=1,
     rows = records - int(header)
     if rows < min_rows:
         raise ValueError(f"input has {rows} data rows; require {min_rows}")
-    return {"format": "tsv", "rows": rows, "header": header, "columns": columns,
-            "bytes": bytes_read, "sha256": digest.hexdigest()}
+    actual_sha256 = digest.hexdigest()
+    if expected_sha256 is not None and actual_sha256 != expected_sha256:
+        raise ValueError("TSV fingerprint differs from expected_sha256")
+    result = {"format": "tsv", "rows": rows, "header": header, "columns": columns,
+              "bytes": bytes_read, "sha256": actual_sha256}
+    if expected_sha256 is not None:
+        result["sha256_verified"] = True
+    return result
 
 
 def main(argv=None):
@@ -67,12 +78,14 @@ def main(argv=None):
     parser.add_argument("--header", action="store_true")
     parser.add_argument("--min-rows", type=int, default=1)
     parser.add_argument("--verify-sorted-uint64", action="store_true")
+    parser.add_argument("--expected-sha256")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         result = profile(args.input, columns=args.columns, header=args.header,
                          min_rows=args.min_rows,
-                         verify_sorted_uint64=args.verify_sorted_uint64)
+                         verify_sorted_uint64=args.verify_sorted_uint64,
+                         expected_sha256=args.expected_sha256)
         content = json.dumps(result, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
