@@ -9,6 +9,15 @@ from pathlib import Path
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 
 
+def reject_duplicate_keys(pairs):
+    data = {}
+    for key, value in pairs:
+        if key in data:
+            raise ValueError(f"duplicate benchmark manifest key: {key}")
+        data[key] = value
+    return data
+
+
 def load_manifest(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -17,7 +26,7 @@ def load_manifest(path):
         payload = source.read(MAX_MANIFEST_BYTES + 1)
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("manifest exceeds 2 MiB")
-    return json.loads(payload)
+    return json.loads(payload, object_pairs_hook=reject_duplicate_keys)
 
 
 
