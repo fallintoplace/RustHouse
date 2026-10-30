@@ -57,6 +57,24 @@ class ClickBenchLoadTests(unittest.TestCase):
                              execute=lambda sql: called.append(sql))
             self.assertEqual(called, [])
 
+    def test_reference_sqlite_is_read_only_and_cannot_be_symlinked(self):
+        import sqlite3
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            generate(root, rows=4, seed=3)
+            def execute(sql):
+                return b"4\n" if sql.startswith("SELECT COUNT") else b""
+            with patch("load_fixture.sqlite3.connect", wraps=sqlite3.connect) as connect:
+                load_fixture("fake", Path(root) / "db", root, execute=execute)
+            self.assertIn("?mode=ro", str(connect.call_args.args[0]))
+            self.assertTrue(connect.call_args.kwargs["uri"])
+            database = Path(root) / "hits.sqlite"
+            backup = Path(root) / "original.sqlite"
+            database.rename(backup)
+            database.symlink_to(backup)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                load_fixture("fake", Path(root) / "db", root, execute=execute)
+
     def test_detects_wrong_engine_count(self):
         with tempfile.TemporaryDirectory() as root:
             generate(root, rows=12, seed=3)
