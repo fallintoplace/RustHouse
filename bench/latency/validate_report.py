@@ -51,6 +51,17 @@ def validate_report(report, *, rows, runs, warmups):
     return len(results)
 
 
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+
+
+def _read_bounded_report(path):
+    with path.open("rb") as source:
+        body = source.read(MAX_REPORT_BYTES + 1)
+    if len(body) > MAX_REPORT_BYTES:
+        raise ValueError("latency report exceeds 16 MiB")
+    return body.decode("utf-8")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path)
@@ -59,7 +70,7 @@ def main(argv=None):
     parser.add_argument("--warmups", type=int, required=True)
     args = parser.parse_args(argv)
     try:
-        report = json.loads(args.report.read_text(encoding="utf-8"))
+        report = json.loads(_read_bounded_report(args.report))
         count = validate_report(report, rows=args.rows, runs=args.runs, warmups=args.warmups)
     except (OSError, ValueError) as error:
         print(f"SQL latency report validation failed: {error}", file=sys.stderr)
