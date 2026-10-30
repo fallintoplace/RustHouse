@@ -22,7 +22,7 @@ class InputProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
             original = directory / "original.tsv"
-            original.write_bytes(b"1\\n")
+            original.write_bytes(b"1\n")
             alias = directory / "alias.tsv"
             try:
                 os.symlink(original, alias)
