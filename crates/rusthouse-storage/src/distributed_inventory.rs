@@ -40,7 +40,7 @@ pub fn inventory_snapshot(
     inventory_active_snapshot(&active, max_files, max_bytes)
 }
 
-fn inventory_active_snapshot(
+pub(crate) fn inventory_active_snapshot(
     active: &Path,
     max_files: usize,
     max_bytes: u64,
