@@ -62,6 +62,9 @@ MAX_REPORT_BYTES = 16 * 1024 * 1024
 
 
 def _read_bounded_report(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("canonical report must be a regular, non-symlinked file")
     with path.open("rb") as source:
         contents = source.read(MAX_REPORT_BYTES + 1)
     if len(contents) > MAX_REPORT_BYTES:
