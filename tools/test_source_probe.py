@@ -49,6 +49,15 @@ class SourceProbeTests(unittest.TestCase):
 
 
     @patch("source_probe.read_json")
+    def test_rejects_schema_exceeding_catalog_bounds(self, read):
+        read.side_effect = [
+            {"source": "database", "read_only": True},
+            {"columns": [{"name": f"field_{i}", "type": "UInt64"} for i in range(129)]},
+        ]
+        with self.assertRaisesRegex(ValueError, "1..128"):
+            probe("http://127.0.0.1:8123", "database", "events")
+
+    @patch("source_probe.read_json")
     def test_rejects_invalid_schema_descriptors(self, read):
         for columns in ([], [{"name": "id"}], [{"name": "", "type": "UInt64"}],
                         [{"name": "id", "type": " " }], [
