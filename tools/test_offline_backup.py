@@ -1,7 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
-from offline_backup import preflight
+from offline_backup import backup, preflight
+from unittest.mock import patch
+from types import SimpleNamespace
 
 class BackupTests(unittest.TestCase):
     def test_rejects_nested_destination(self):
@@ -45,6 +47,23 @@ class BackupTests(unittest.TestCase):
             os.mkfifo(source / "reads.fifo")
             with self.assertRaisesRegex(ValueError, "regular files"):
                 preflight(source, Path(root) / "backup")
+
+    def test_failed_doctor_spools_and_bounds_stderr(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            source = base / "db"
+            source.mkdir()
+            (source / "part.bin").write_bytes(b"data")
+            def reject(_command, **kwargs):
+                self.assertEqual(kwargs["stdout"], __import__("subprocess").DEVNULL)
+                kwargs["stderr"].write(b"x" * 100_000 + b"reason")
+                return SimpleNamespace(returncode=1)
+            with patch("offline_backup.subprocess.run", side_effect=reject):
+                with self.assertRaisesRegex(RuntimeError, "reason") as raised:
+                    backup(source, base / "backup")
+            self.assertLess(len(str(raised.exception)), 2300)
+            self.assertTrue((base / "backup.partial").exists())
+            self.assertFalse((base / "backup").exists())
 
     def test_allows_fresh_sibling(self):
         with tempfile.TemporaryDirectory() as root:
