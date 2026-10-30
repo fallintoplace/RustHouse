@@ -304,10 +304,17 @@ fn preflight_shard(
     table: &str,
 ) -> Result<(usize, remote::PeerResponse), String> {
     let (cap, schema) = std::thread::scope(|scope| {
-        let cap = scope.spawn(|| shard_row_cap(peer));
-        let schema = scope.spawn(|| remote::schema(peer, table));
-        let cap = cap.join().unwrap_or_else(|_| Err("peer capabilities panicked".into()));
-        let schema = schema.join().unwrap_or_else(|_| Err("peer schema lookup panicked".into()));
+        // One scoped worker is enough to overlap both metadata requests.
+        // If the OS refuses to create it, perform the same checks serially.
+        let cap_worker = std::thread::Builder::new()
+            .spawn_scoped(scope, || shard_row_cap(peer));
+        let schema = remote::schema(peer, table);
+        let cap = match cap_worker {
+            Ok(worker) => worker
+                .join()
+                .unwrap_or_else(|_| Err("peer capabilities panicked".into())),
+            Err(_) => shard_row_cap(peer),
+        };
         (cap, schema)
     });
     Ok((cap?, schema?))
