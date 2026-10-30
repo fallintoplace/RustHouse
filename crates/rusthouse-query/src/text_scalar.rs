@@ -2922,9 +2922,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let suffix = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "expected ')' after endsWithCaseInsensitiveUTF8")?;
             match (input, suffix) {
-                (Some(input), Some(suffix)) => ConstantValue::Integer(i64::from(
-                    input.to_lowercase().ends_with(&suffix.to_lowercase())
-                )),
+                (Some(input), Some(suffix)) => {
+                    let matched = input.to_lowercase().ends_with(&suffix.to_lowercase());
+                    ConstantValue::Integer(i64::from(matched))
+                }
                 _ => ConstantValue::Null,
             }
         }
