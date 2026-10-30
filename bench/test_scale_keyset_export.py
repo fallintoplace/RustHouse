@@ -104,5 +104,48 @@ class KeysetExportTests(unittest.TestCase):
             self.assertEqual(output.read_bytes(), b"0\n1\n")
             self.assertGreaterEqual(fsync.call_count, 2)
 
+class SpoolingKeysetQueryTests(unittest.TestCase):
+    def test_rejects_oversized_page_without_pipe_capture(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.keyset_export import query
+
+        def run(_command, **kwargs):
+            self.assertNotIn("capture_output", kwargs)
+            self.assertTrue(hasattr(kwargs["stderr"], "write"))
+            kwargs["stdout"].truncate(2 * 1024 * 1024 + 1)
+            return SimpleNamespace(returncode=0)
+
+        with patch("bench.scale.keyset_export.subprocess.run", side_effect=run):
+            with self.assertRaisesRegex(ValueError, "2 MiB"):
+                query("binary", "db", "SELECT id FROM t", 3)
+
+    def test_failed_query_keeps_only_stderr_tail(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.keyset_export import query
+
+        def run(_command, **kwargs):
+            kwargs["stderr"].write(b"x" * 10000 + b"last error")
+            return SimpleNamespace(returncode=2)
+
+        with patch("bench.scale.keyset_export.subprocess.run", side_effect=run):
+            with self.assertRaisesRegex(RuntimeError, "last error") as raised:
+                query("binary", "db", "SELECT id FROM t", 3)
+        self.assertLess(len(str(raised.exception)), 550)
+
+    def test_preserves_small_exact_page_output(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.keyset_export import query
+
+        def run(_command, **kwargs):
+            kwargs["stdout"].write(b"1\n2\n")
+            return SimpleNamespace(returncode=0)
+
+        with patch("bench.scale.keyset_export.subprocess.run", side_effect=run):
+            self.assertEqual(query("binary", "db", "SELECT id FROM t", 3), b"1\n2\n")
+
+
 if __name__ == "__main__":
     unittest.main()
