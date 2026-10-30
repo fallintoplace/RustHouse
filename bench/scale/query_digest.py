@@ -38,7 +38,7 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
         raise ValueError("digest requires one read-only SELECT")
     execute = run or subprocess.run
     started = time.perf_counter()
-    with tempfile.TemporaryFile(mode="w+b") as output:
+    with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
         command = [str(binary), "sql", sql, "--part", str(part), "--format",
                    "tsv-no-header", "--max-rows", str(max_rows)]
         extra = {}
@@ -50,7 +50,7 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
                          else min(max_output_bytes, hard))
                 resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
             extra["preexec_fn"] = cap_output_file
-        result = execute(command, stdout=output, stderr=subprocess.PIPE,
+        result = execute(command, stdout=output, stderr=errors,
                          check=False, timeout=timeout, **extra)
         elapsed = time.perf_counter() - started
         if result.returncode:
@@ -58,7 +58,12 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
             output.seek(0, os.SEEK_END)
             if output.tell() >= max_output_bytes:
                 raise ValueError("SQL output exceeds max_output_bytes")
-            raise RuntimeError(f"query failed: {result.stderr.decode('utf-8', 'replace')[-500:]}")
+            errors.flush()
+            errors.seek(0, os.SEEK_END)
+            length = errors.tell()
+            errors.seek(max(0, length - 500))
+            diagnostic = errors.read(500).decode("utf-8", "replace")
+            raise RuntimeError(f"query failed: {diagnostic}")
         output.flush()
         output.seek(0)
         digest = hashlib.sha256()

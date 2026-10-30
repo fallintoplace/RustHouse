@@ -5,6 +5,7 @@ This is a stress workload. It is not the official TPC-H Throughput Test.
 """
 import argparse
 import concurrent.futures
+import math
 import subprocess
 import time
 import sys
@@ -18,7 +19,10 @@ MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
 
 def read_reference(path):
-    with Path(path).open("rb") as source:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("throughput reference must be a regular, non-symlinked file")
+    with path.open("rb") as source:
         payload = source.read(MAX_REFERENCE_BYTES + 1)
     if len(payload) > MAX_REFERENCE_BYTES:
         raise ValueError("TPC-H throughput reference exceeds 16 MiB")
@@ -114,8 +118,8 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    if args.timeout <= 0:
-        parser.error("--timeout must be positive")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error("--timeout must be finite and positive")
     if args.require_verified and args.reference_dir is None:
         parser.error("--require-verified needs --reference-dir")
     try:

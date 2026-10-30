@@ -62,6 +62,13 @@ def write_fixture(directory, probe_rows, build_rows, disjoint=False, duplicate_f
                      start=start, duplicate_factor=duplicate_factor)
     return expected_labels
 
+def fixture_copy_sql(table, path):
+    if table not in ("facts", "dimensions"):
+        raise ValueError("unsupported fixture table")
+    literal = str(path).replace("'", "''")
+    return f"COPY {table} FROM '{literal}' WITH (FORMAT TSV, HEADER TRUE)"
+
+
 def execute(binary, database, sql, timeout):
     return cli_sql(binary, database, sql, timeout)
 
@@ -136,8 +143,8 @@ def main(argv=None):
         statements = [
             "CREATE TABLE facts (id UInt64, amount UInt64)",
             "CREATE TABLE dimensions (id UInt64, label String)",
-            f"COPY facts FROM '{root / 'facts.tsv'}' WITH (FORMAT TSV, HEADER TRUE)",
-            f"COPY dimensions FROM '{root / 'dimensions.tsv'}' WITH (FORMAT TSV, HEADER TRUE)",
+            fixture_copy_sql("facts", root / "facts.tsv"),
+            fixture_copy_sql("dimensions", root / "dimensions.tsv"),
         ]
         for statement in statements:
             run(statement)

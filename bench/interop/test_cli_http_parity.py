@@ -57,6 +57,17 @@ class InteropParityTests(unittest.TestCase):
 
 
 
+class ServerStderrBackpressureTests(unittest.TestCase):
+    def test_server_launch_does_not_create_unread_pipe(self):
+        with mock.patch.object(parity.subprocess, "Popen") as popen:
+            parity.launch_server("server", "db", 8123)
+            self.assertEqual(popen.call_args.kwargs["stderr"], parity.subprocess.DEVNULL)
+            self.assertEqual(popen.call_args.kwargs["stdout"], parity.subprocess.DEVNULL)
+            self.assertEqual(popen.call_args.args[0],
+                             ["server", "--database", "db", "--port", "8123"])
+
+
+
 class SchemaResponseLimitTests(unittest.TestCase):
     def test_oversized_schema_is_rejected_before_json_decode(self):
         with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:

@@ -5,6 +5,11 @@ from feature_gaps import analyze, classify, load_report
 
 
 class FeatureGapTests(unittest.TestCase):
+    def test_empty_gap_report_cannot_claim_coverage(self):
+        with self.assertRaisesRegex(ValueError, "nonempty"):
+            analyze({"results": []})
+
+
     def test_grouping_labels_and_verified_coverage(self):
         report = {"results": [
             {"query": 1, "status": "passed"},

@@ -98,6 +98,22 @@ pub fn plan_missing_chunks(
     Ok(selected)
 }
 
+fn build_chunk_window(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    start_index: usize,
+    requested: usize,
+) -> Vec<IndexedChunk> {
+    let mut page = Vec::with_capacity(requested);
+    for index in start_index..start_index + requested {
+        page.push(IndexedChunk {
+            index,
+            chunk: chunk_at_index(total_bytes, chunk_bytes, index),
+        });
+    }
+    page
+}
+
 /// Page through a transfer plan without allocating the entire chunk list.
 pub fn plan_chunk_window(
     total_bytes: u64,
@@ -110,14 +126,7 @@ pub fn plan_chunk_window(
     if start_index > count || requested > count - start_index {
         return Err("transfer chunk window exceeds bounds");
     }
-    let mut page = Vec::with_capacity(requested);
-    for index in start_index..start_index + requested {
-        page.push(IndexedChunk {
-            index,
-            chunk: chunk_at_index(total_bytes, chunk_bytes, index),
-        });
-    }
-    Ok(page)
+    Ok(build_chunk_window(total_bytes, chunk_bytes, start_index, requested))
 }
 
 /// Return up to requested chunks, stopping at the end of the transfer.
@@ -136,13 +145,12 @@ pub fn plan_chunk_window_clamped(
     if start_index > count {
         return Err("transfer chunk window exceeds bounds");
     }
-    plan_chunk_window(
+    Ok(build_chunk_window(
         total_bytes,
         chunk_bytes,
-        max_chunks,
         start_index,
         requested.min(count - start_index),
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -355,5 +363,24 @@ mod skipped_chunk_budget_tests {
         );
         assert!(plan_missing_chunks(10, 4, 3, &[0, 2], 1, 2).unwrap().is_empty());
         assert_eq!(plan_missing_chunks(10, 4, 3, &[0, 1, 2], 6, 3).unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod clamped_window_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn strict_and_clamped_windows_match_within_bounds() {
+        for total in [0, 1, 7, 8, 9, 33, 127, 256, 1025] {
+            let count = total.div_ceil(7);
+            for start in 0..=count {
+                for request in 0..=count - start {
+                    let strict = plan_chunk_window(total, 7, 65536, start as usize, request as usize).unwrap();
+                    let clamped = plan_chunk_window_clamped(total, 7, 65536, start as usize, request as usize).unwrap();
+                    assert_eq!(strict, clamped);
+                }
+            }
+        }
     }
 }

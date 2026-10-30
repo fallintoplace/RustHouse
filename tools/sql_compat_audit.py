@@ -29,6 +29,17 @@ def parse_lines(content):
     return queries
 
 
+MAX_QUERY_FILE_BYTES = 1_048_576
+
+
+def read_queries(path):
+    with path.open("rb") as handle:
+        raw = handle.read(MAX_QUERY_FILE_BYTES + 1)
+    if len(raw) > MAX_QUERY_FILE_BYTES:
+        raise ValueError("SQL audit corpus exceeds 1 MiB")
+    return parse_lines(raw.decode("utf-8"))
+
+
 def audit(binary, queries, run=subprocess.run, fail_fast=False, timeout=10):
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("audit timeout must be positive and finite")
@@ -36,10 +47,24 @@ def audit(binary, queries, run=subprocess.run, fail_fast=False, timeout=10):
     with tempfile.TemporaryDirectory(prefix="rusthouse-sql-audit-") as database:
         for line, query in queries:
             try:
-                result = run([str(binary), "sql", query, "--database", database, "--explain"],
-                             capture_output=True, text=True, timeout=timeout, check=False)
-                status = result.returncode == 0
-                reason = "" if status else result.stderr[:500].strip()
+                # Keep noisy SQL CLI output out of process memory.
+                with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                    result = run(
+                        [str(binary), "sql", query, "--database", database, "--explain"],
+                        stdout=stdout, stderr=stderr, timeout=timeout, check=False,
+                    )
+                    status = result.returncode == 0
+                    stderr.seek(0)
+                    raw = stderr.read(500)
+                    reason = "" if status else raw.decode("utf-8", "replace").strip()
+                    # Preserve compatibility with injected test runners which
+                    # return a stderr value instead of writing to the file.
+                    if not status and not raw:
+                        reported = getattr(result, "stderr", None)
+                        if isinstance(reported, bytes):
+                            reason = reported[:500].decode("utf-8", "replace").strip()
+                        elif isinstance(reported, str):
+                            reason = reported[:500].strip()
             except (OSError, subprocess.TimeoutExpired) as exc:
                 status = False
                 reason = str(exc)[:500]
@@ -66,7 +91,7 @@ def main():
                         help="Maximum seconds for each parser-only query")
     args = parser.parse_args()
     try:
-        statements = parse_lines(args.queries.read_text(encoding="utf-8"))
+        statements = read_queries(args.queries)
         result = audit(args.binary, statements, fail_fast=args.fail_fast,
                        timeout=args.timeout)
     except (OSError, UnicodeError, ValueError) as exc:

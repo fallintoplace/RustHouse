@@ -32,6 +32,17 @@ def verify(directory, manifest):
 
 
 class ValidateBenchmarkManifestTests(unittest.TestCase):
+    def test_rejects_oversized_manifest_before_parsing(self):
+        from unittest.mock import patch
+        from bench.validate_benchmark import load_manifest
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "manifest.json"
+            path.write_bytes(b"X" * 17)
+            with patch("bench.validate_benchmark.MAX_MANIFEST_BYTES", 16):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    load_manifest(path)
+
+
     def test_accepts_four_complete_suites(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
