@@ -1,10 +1,12 @@
 """Tests for the CI latency report completeness gate."""
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from bench.common import latency_summary
 from bench.latency.run import make_cases
-from bench.latency.validate_report import validate_report
+from bench.latency.validate_report import load_report, validate_report
 
 
 def good_report():
@@ -78,6 +80,22 @@ class ValidateLatencyReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected rows"):
             self.verify(report)
 
+
+
+
+class BoundedLatencyReportReadTests(unittest.TestCase):
+    def test_rejects_oversized_json_before_parsing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "oversized.json"
+            path.write_bytes(b" " * (2 * 1024 * 1024 + 1))
+            with self.assertRaisesRegex(ValueError, "exceeds 2 MiB"):
+                load_report(path)
+
+    def test_loads_small_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.json"
+            path.write_text('{"suite":"generated-sql-latency"}', encoding="utf-8")
+            self.assertEqual(load_report(path)["suite"], "generated-sql-latency")
 
 if __name__ == "__main__":
     unittest.main()
