@@ -30,6 +30,18 @@ class DoctorReportTests(unittest.TestCase):
         self.assertEqual(item["stderr"], "failure")
         self.assertTrue(item["truncated"])
 
+    def test_doctor_failure_retains_last_diagnostic(self):
+        from unittest.mock import patch
+        from doctor_report import run
+        def fail(command, **kwargs):
+            kwargs["stderr"].write(b"x" * 100_000 + b"FATAL: checksum mismatch")
+            return type("Completed", (), {"returncode": 1})()
+        with patch("doctor_report.subprocess.run", side_effect=fail):
+            result = run("rusthouse", "db")
+        self.assertIn("FATAL: checksum mismatch", result["stderr"])
+        self.assertLessEqual(len(result["stderr"]), 32_768)
+        self.assertTrue(result["truncated"])
+
     def test_custom_doctor_timeout_is_forwarded(self):
         from unittest.mock import patch
         from doctor_report import run
