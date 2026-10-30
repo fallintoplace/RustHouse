@@ -223,6 +223,11 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
             | "BIN"
+            | "ISNOTNULL"
+            | "ISNULL"
+            | "ISVALIDASCII"
+            | "TRIMRIGHT"
+            | "STARTSWITHUTF8"
             | "RIGHTPADUTF8"
             | "NORMALIZEIPV6"
     )
@@ -295,7 +300,9 @@ fn simple_json_path(path: &str) -> Result<Option<String>, ParseError> {
 }
 
 fn binary_string(bytes: &[u8]) -> Result<String, ParseError> {
-    let len = bytes.len().checked_mul(8)
+    let len = bytes
+        .len()
+        .checked_mul(8)
         .ok_or_else(|| ParseError("bin result is too large".into()))?;
     if len > MAX_TEXT_BYTES {
         return Err(ParseError("bin result is too large".into()));
@@ -1621,7 +1628,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "IS_ASCII" => {
+        "IS_ASCII" | "ISVALIDASCII" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "IS_ASCII requires one argument")?;
             match input {
@@ -2920,7 +2927,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "RTRIM" => {
+        "RTRIM" | "TRIMRIGHT" => {
             let input = text_arg(parser, depth + 1)?;
             let characters = if parser.take(Token::Comma) {
                 Some(text_arg(parser, depth + 1)?)
@@ -3164,6 +3171,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "ISNULL" => {
+            let value = constant_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isNull requires one argument")?;
+            ConstantValue::Integer(i64::from(matches!(value, ConstantValue::Null)))
+        }
+        "ISNOTNULL" => {
+            let value = constant_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isNotNull requires one argument")?;
+            ConstantValue::Integer(i64::from(!matches!(value, ConstantValue::Null)))
+        }
         "BIN" => {
             let value = constant_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "bin requires one argument")?;
@@ -3199,7 +3216,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "STARTS_WITH" | "STARTSWITH" => {
+        "STARTS_WITH" | "STARTSWITH" | "STARTSWITHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STARTS_WITH requires a prefix")?;
             let prefix = text_arg(parser, depth + 1)?;
