@@ -18,7 +18,10 @@ MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
 
 def read_reference(path):
-    with Path(path).open("rb") as source:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("throughput reference must be a regular, non-symlinked file")
+    with path.open("rb") as source:
         payload = source.read(MAX_REFERENCE_BYTES + 1)
     if len(payload) > MAX_REFERENCE_BYTES:
         raise ValueError("TPC-H throughput reference exceeds 16 MiB")

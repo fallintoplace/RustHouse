@@ -41,8 +41,11 @@ def load_workload(path):
             fields[name] = value
         return fields
 
-    data = json.loads(Path(path).read_text(encoding="utf-8"),
-                      object_pairs_hook=unique_fields)
+    with Path(path).open("rb") as source:
+        raw = source.read(1_048_577)
+    if len(raw) > 1_048_576:
+        raise ValueError("analytics workload exceeds 1 MiB")
+    data = json.loads(raw, object_pairs_hook=unique_fields)
     if not isinstance(data, dict) or not isinstance(data.get("name"), str) or not data["name"].strip():
         raise ValueError("workload must have a nonempty name")
     max_rows = data.get("max_rows", 200_000)

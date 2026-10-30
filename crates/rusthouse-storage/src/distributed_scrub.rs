@@ -54,12 +54,19 @@ pub fn scrub_snapshot_with_byte_limit(
         crate::distributed_inventory::inventory_snapshot(&active, 1_048_576, max_bytes)?;
     }
     const PARALLEL_THRESHOLD: usize = 16;
+    let mut report = ScrubReport::default();
+    if parts.len() < PARALLEL_THRESHOLD {
+        for part in &parts {
+            let checked = scrub_part(part)?;
+            report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
+        }
+        return Ok(report);
+    }
     const MAX_SCRUB_WORKERS: usize = 4;
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())
         .min(MAX_SCRUB_WORKERS);
-    let mut report = ScrubReport::default();
-    if parts.len() < PARALLEL_THRESHOLD || workers == 1 {
+    if workers == 1 {
         for part in &parts {
             let checked = scrub_part(part)?;
             report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;

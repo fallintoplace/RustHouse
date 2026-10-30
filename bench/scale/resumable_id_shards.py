@@ -7,6 +7,8 @@ import argparse
 import hashlib
 import json
 import os
+import stat
+import secrets
 from pathlib import Path
 
 MAX_SHARDS = 16_384
@@ -20,9 +22,16 @@ def positive(value, name, *, allow_zero=False):
 
 def validate_existing(path, start, count):
     digest = hashlib.sha256()
-    with path.open("rb") as source:
-        # Compare 4096 exact UInt64 records at once instead of doing a
-        # Python readline, byte allocation and hash update per row.
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"reused shard is not a regular file: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+            raise ValueError(f"reused shard changed before opening: {path}")
         for offset in range(0, count, 4096):
             batch_rows = min(4096, count - offset)
             expected = "".join(
@@ -34,18 +43,27 @@ def validate_existing(path, start, count):
             digest.update(actual)
         if source.read(1):
             raise ValueError(f"unexpected trailing rows in {path}")
+        finished = os.fstat(source.fileno())
+        if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+            raise ValueError(f"reused shard changed while reading: {path}")
+    after = path.lstat()
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+        raise ValueError(f"reused shard changed while reading: {path}")
     return digest.hexdigest()
-
 
 def write_shard(path, start, count):
     if path.is_symlink():
         raise ValueError(f"refusing symlinked shard: {path}")
     if path.exists():
         return validate_existing(path, start, count), True
-    pending = path.with_name("." + path.name + f".{os.getpid()}.pending")
+    pending = path.with_name(
+        "." + path.name + f".{os.getpid()}.{secrets.token_hex(8)}.pending")
     digest = hashlib.sha256()
+    pending_created = False
     try:
         with pending.open("xb", buffering=1024 * 1024) as output:
+            pending_created = True
             # Amortize writes and SHA256 updates for million-row shards without
             # retaining more than one 4096-row block in memory.
             for first in range(start, start + count, 4096):
@@ -63,7 +81,8 @@ def write_shard(path, start, count):
         pending.unlink()
         return digest.hexdigest(), False
     finally:
-        pending.unlink(missing_ok=True)
+        if pending_created:
+            pending.unlink(missing_ok=True)
 
 
 def create(directory, start, rows, shard_rows):
@@ -93,9 +112,11 @@ def create(directory, start, rows, shard_rows):
         "schema_version": 1, "start": start, "rows": rows,
         "shard_rows": shard_rows, "shards": shards,
     }
-    temporary = directory / f".manifest.{os.getpid()}.pending"
+    temporary = directory / f".manifest.{os.getpid()}.{secrets.token_hex(8)}.pending"
+    manifest_created = False
     try:
         with temporary.open("x", encoding="utf-8") as output:
+            manifest_created = True
             json.dump(manifest, output, indent=2)
             output.write("\n")
             output.flush()
@@ -108,7 +129,8 @@ def create(directory, start, rows, shard_rows):
             finally:
                 os.close(descriptor)
     finally:
-        temporary.unlink(missing_ok=True)
+        if manifest_created:
+            temporary.unlink(missing_ok=True)
     return manifest
 
 

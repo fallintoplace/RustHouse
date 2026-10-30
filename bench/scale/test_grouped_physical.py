@@ -2,7 +2,7 @@
 import io
 import unittest
 
-from bench.scale.grouped_physical import emit, expected_tsv, reference, region_at
+from bench.scale.grouped_physical import _verification_failure, emit, expected_tsv, reference, region_at
 
 
 class GroupedPhysicalReferenceTests(unittest.TestCase):
@@ -82,6 +82,13 @@ class GroupedPhysicalReferenceTests(unittest.TestCase):
             emit(io.StringIO(), 1_000_000_000, 4096, batch_rows=1_000_000_000)
         with self.assertRaisesRegex(ValueError, "batch_rows"):
             emit(io.StringIO(), 5, 2, batch_rows=0)
+
+    def test_failed_doctor_message_stays_bounded(self):
+        from types import SimpleNamespace
+        completed = SimpleNamespace(stdout=b"x" * 100_000, stderr=b"y" * 100_000 + b"critical error")
+        message = _verification_failure(completed)
+        self.assertLess(len(message), 1000)
+        self.assertIn("critical error", message)
 
 
 if __name__ == "__main__":
