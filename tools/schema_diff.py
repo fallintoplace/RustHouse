@@ -43,12 +43,16 @@ def columns(payload):
     result = payload.get("columns")
     if not isinstance(result, list) or not result:
         raise ValueError("response has no nonempty columns list")
+    if len(result) > 128:
+        raise ValueError("schema exceeds the 128-column catalog limit")
     output = []
     seen = set()
     for col in result:
         if not isinstance(col, dict) or not isinstance(col.get("name"), str) or not isinstance(col.get("type"), str):
             raise ValueError("malformed column")
-        if not col["name"].strip() or not col["type"].strip() or col["name"] in seen:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", col["name"]):
+            raise ValueError("invalid schema column identifier")
+        if not col["type"].strip() or col["name"] in seen:
             raise ValueError("empty or duplicate schema column")
         seen.add(col["name"])
         output.append((col["name"], col["type"]))
