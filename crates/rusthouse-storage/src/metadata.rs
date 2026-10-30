@@ -78,7 +78,7 @@ fn read_bounded_metadata_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, Pa
         return Err(invalid_metadata(path, "metadata must be a regular file"));
     }
     ensure_metadata_size(path, metadata.len(), max_bytes)?;
-    let file = fs::File::open(path).map_err(|source| io_error(path, source))?;
+    let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     let opened = file.metadata().map_err(|source| io_error(path, source))?;
     if !opened.file_type().is_file() || opened.len() != metadata.len() || opened.len() > max_bytes {
         return Err(invalid_metadata(path, "metadata changed before read"));
@@ -91,10 +91,18 @@ fn read_bounded_metadata_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, Pa
         }
     }
     let mut bytes = Vec::with_capacity(opened.len() as usize);
-    file.take(max_bytes + 1)
+    (&mut file)
+        .take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| io_error(path, source))?;
     ensure_metadata_size(path, bytes.len() as u64, max_bytes)?;
+    let finished = file.metadata().map_err(|source| io_error(path, source))?;
+    if finished.len() != opened.len()
+        || finished.modified().map_err(|source| io_error(path, source))?
+            != opened.modified().map_err(|source| io_error(path, source))?
+    {
+        return Err(invalid_metadata(path, "metadata changed during read"));
+    }
     Ok(bytes)
 }
 
