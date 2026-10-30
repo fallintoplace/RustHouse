@@ -20,6 +20,7 @@ fn valid_key(key: &str) -> bool {
         return false;
     }
     let mut segment_start = true;
+    let mut segment_length = 0usize;
     let mut previous_dot = false;
     for &byte in bytes {
         if byte == b'/' {
@@ -27,8 +28,13 @@ fn valid_key(key: &str) -> bool {
                 return false;
             }
             segment_start = true;
+            segment_length = 0;
             previous_dot = false;
             continue;
+        }
+        segment_length += 1;
+        if segment_length > 128 {
+            return false;
         }
         if (segment_start && !byte.is_ascii_alphanumeric())
             || (!byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'-' | b'.'))
@@ -355,5 +361,26 @@ mod immutable_collision_tests {
         assert!(plan_replica_copy_batch(&source, &conflicting, 100, 10).is_err());
         assert!(plan_replica_copy_batch(&source, &source, 100, 10).unwrap().is_empty());
         assert_eq!(plan_replica_copy_batch(&source, &[], 100, 10).unwrap(), vec![source[0].clone()]);
+    }
+}
+
+#[cfg(test)]
+mod inventory_component_budget_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_oversized_path_components_without_rejecting_long_valid_keys() {
+        for key in [
+            "x".repeat(129),
+            format!("prefix/{}", "a".repeat(129)),
+            format!("{}/suffix", "z".repeat(129)),
+        ] {
+            let meta = ObjectMetadata { key, bytes: 1, crc32c: 0 };
+            assert!(plan_replica_copies(&[meta.clone()], &[]).is_err());
+            assert!(plan_replica_copy_batch(&[meta], &[], 1, 1).is_err());
+        }
+        let key = format!("{}/{}", "a".repeat(128), "b".repeat(128));
+        let meta = ObjectMetadata { key, bytes: 1, crc32c: 0 };
+        assert_eq!(plan_replica_copies(&[meta.clone()], &[]).unwrap(), vec![meta]);
     }
 }
