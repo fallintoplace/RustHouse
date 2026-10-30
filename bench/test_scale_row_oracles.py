@@ -1,6 +1,6 @@
 import unittest
 
-from bench.scale.row_oracles import make_oracles, modulo_reference, sum_range, progression_reference, progression_modulo_reference
+from bench.scale.row_oracles import make_oracles, modulo_reference, sum_range, progression_reference
 
 
 class RowOracleTests(unittest.TestCase):
@@ -62,10 +62,20 @@ class RowOracleTests(unittest.TestCase):
                          {"count": 0, "sum": 0})
 
 
-
+    def test_exact_sum_of_squares_for_ranges_and_strides(self):
+        from bench.scale.row_oracles import sum_squares_range, progression_squares
+        self.assertEqual(sum_squares_range(2, 5), 4 + 9 + 16)
+        self.assertEqual(sum_squares_range(0, 0), 0)
+        self.assertEqual(progression_squares(3, 5, 3), 495)
+        self.assertEqual(make_oracles(5, start=3, step=3)["sum_squares_all"], 495)
+        with self.assertRaisesRegex(ValueError, "UInt64"):
+            sum_squares_range(-1, 2)
+        with self.assertRaisesRegex(ValueError, "overflow"):
+            progression_squares((1 << 64) - 1, 2)
 
 class ProgressionModuloTests(unittest.TestCase):
     def test_reduced_modular_inverse_matches_small_bruteforce(self):
+        from bench.scale.row_oracles import progression_modulo_reference
         for modulus in range(1, 16):
             for residue in range(modulus):
                 for start in (0, 1, 8, 14):
@@ -80,23 +90,25 @@ class ProgressionModuloTests(unittest.TestCase):
                         )
 
     def test_non_coprime_and_full_uint64_values(self):
-        self.assertEqual(
-            progression_modulo_reference(1, 100, 6, 12, 0),
-            {"count": 0, "sum": 0})
+        from bench.scale.row_oracles import progression_modulo_reference
+        self.assertEqual(progression_modulo_reference(1, 100, 6, 12, 0),
+                         {"count": 0, "sum": 0})
         top = (1 << 64) - 1
-        self.assertEqual(
-            progression_modulo_reference(top - 2, 2, 2, 2, 1),
-            {"count": 2, "sum": 2 * top - 2})
+        self.assertEqual(progression_modulo_reference(top - 2, 2, 2, 2, 1),
+                         {"count": 2, "sum": 2 * top - 2})
 
     def test_custom_cli_oracle_fields_are_opt_in(self):
+        from bench.scale.row_oracles import progression_modulo_reference
         result = make_oracles(20, start=3, step=2, modulus=5, residue=1)
         self.assertEqual(result["modulo"],
                          progression_modulo_reference(3, 20, 2, 5, 1))
         self.assertNotIn("modulo", make_oracles(20))
+        self.assertIn("sum_squares_all", result)
         with self.assertRaisesRegex(ValueError, "requires modulus"):
             make_oracles(3, residue=1)
         with self.assertRaisesRegex(ValueError, "modulus"):
             make_oracles(3, modulus=True)
+
 
 if __name__ == "__main__":
     unittest.main()

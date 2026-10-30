@@ -50,7 +50,9 @@ pub fn read_object_range(
     }
     let (mut file, file_length) = open_verified_object(path)?;
     validate_range(offset, length, file_length)?;
-    file.seek(SeekFrom::Start(offset))?;
+    if offset != 0 {
+        file.seek(SeekFrom::Start(offset))?;
+    }
     let mut bytes = vec![0; length];
     file.read_exact(&mut bytes)?;
     Ok(bytes)
@@ -82,7 +84,9 @@ pub fn read_object_ranges(
     if let [(offset, length)] = ranges {
         // A single range needs neither interval sorting nor a second copy.
         let mut data = vec![0u8; *length];
-        file.seek(SeekFrom::Start(*offset))?;
+        if *offset != 0 {
+            file.seek(SeekFrom::Start(*offset))?;
+        }
         file.read_exact(&mut data)?;
         return Ok(vec![data]);
     }
@@ -116,12 +120,16 @@ pub fn read_object_ranges(
             // buffer. There is no reason to copy it through a temporary.
             let index = ordered[cursor].0;
             let mut range = vec![0u8; bytes];
-            file.seek(SeekFrom::Start(start))?;
+            if start != 0 {
+                file.seek(SeekFrom::Start(start))?;
+            }
             file.read_exact(&mut range)?;
             output[index] = range;
         } else {
             let mut chunk = vec![0u8; bytes];
-            file.seek(SeekFrom::Start(start))?;
+            if start != 0 {
+                file.seek(SeekFrom::Start(start))?;
+            }
             file.read_exact(&mut chunk)?;
             for &(index, offset, item_end) in &ordered[cursor..tail] {
                 let from = (offset - start) as usize;
@@ -254,6 +262,23 @@ mod multi_range_tests {
         assert!(read_object_ranges(&path, &[(0, 3), (8, 2)], 4).is_err());
         assert!(read_object_ranges(&path, &[(9, 2)], 8).is_err());
         assert!(read_object_ranges(&path, &[(u64::MAX, 2)], 8).is_err());
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod zero_offset_object_ranges_tests {
+    use super::*;
+
+    #[test]
+    fn reads_prefix_and_nonzero_offsets_in_both_range_apis() {
+        let path = std::env::temp_dir().join(format!("rusthouse-range-zero-seek-{}", std::process::id()));
+        fs::write(&path, b"abcdefghijkl").unwrap();
+        assert_eq!(read_object_range(&path, 0, 4, 12).unwrap(), b"abcd");
+        assert_eq!(read_object_range(&path, 4, 4, 12).unwrap(), b"efgh");
+        assert_eq!(read_object_ranges(&path, &[(0, 4)], 4).unwrap(), vec![b"abcd".to_vec()]);
+        assert_eq!(read_object_ranges(&path, &[(8, 2), (0, 3)], 5).unwrap(), vec![b"ij".to_vec(), b"abc".to_vec()]);
+        assert_eq!(read_object_ranges(&path, &[(0, 6), (3, 6)], 12).unwrap(), vec![b"abcdef".to_vec(), b"defghi".to_vec()]);
         fs::remove_file(path).unwrap();
     }
 }

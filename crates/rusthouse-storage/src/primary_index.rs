@@ -156,18 +156,18 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
         return Err(invalid(path, "primary index must be a regular file"));
     }
     let file = File::open(path).map_err(|source| io_error(path, source))?;
+    let opened = file.metadata().map_err(|source| io_error(path, source))?;
+    if !opened.file_type().is_file() || opened.len() != original.len() {
+        return Err(invalid(path, "primary index changed before read"));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let opened = file.metadata().map_err(|source| io_error(path, source))?;
-        if !opened.is_file() || original.dev() != opened.dev() || original.ino() != opened.ino() {
+        if original.dev() != opened.dev() || original.ino() != opened.ino() {
             return Err(invalid(path, "primary index replaced during open"));
         }
     }
-    let size = file
-        .metadata()
-        .map_err(|source| io_error(path, source))?
-        .len();
+    let size = opened.len();
     if size > MAX_INDEX_BYTES as u64 {
         return Err(invalid(path, "index exceeds the 256 MiB limit"));
     }
@@ -627,5 +627,21 @@ mod raw_index_link_tests {
         assert!(read_fixed_primary_index(&link, &[8]).is_err());
         assert_eq!(read_fixed_primary_index(&real, &[8]).unwrap().len(), 1);
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod primary_index_size_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn raw_indexes_remain_bounded_and_exact() {
+        let path = std::env::temp_dir().join(format!("rusthouse-raw-index-size-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        fs::write(&path, [42u8; 48]).unwrap();
+        assert_eq!(read_raw(&path).unwrap(), vec![42; 48]);
+        fs::write(&path, [43u8; 16]).unwrap();
+        assert_eq!(read_raw(&path).unwrap(), vec![43; 16]);
+        fs::remove_file(&path).unwrap();
     }
 }
