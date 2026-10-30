@@ -139,9 +139,6 @@ pub(super) fn read_rows(
 // Build the probe key directly from its batch columns so misses never
 // materialize the full row, which may contain wide String payloads.
 
-/// Retain only join keys, projected build-side columns and the optional
-/// post-join filter. All other columns are read neither from disk nor into
-/// the hash build. Slot indices remain in the full table schema.
 fn selected_header(selected: &[(usize, String, Option<usize>)]) -> String {
     let mut header = String::new();
     for (index, (_, name, _)) in selected.iter().enumerate() {
@@ -153,6 +150,9 @@ fn selected_header(selected: &[(usize, String, Option<usize>)]) -> String {
     header
 }
 
+/// Retain only join keys, projected build-side columns and the optional
+/// post-join filter. All other columns are read neither from disk nor into
+/// the hash build. Slot indices remain in the full table schema.
 fn retained_build_columns(
     names: &[String],
     keys: &[usize],
