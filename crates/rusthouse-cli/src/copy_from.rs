@@ -296,6 +296,16 @@ impl CsvRecords {
                 .checked_sub(self.buffer.len())
                 .ok_or("COPY CSV record exceeds 8 MiB")?;
             if remaining == 0 {
+                // A record of exactly 8 MiB is valid at EOF without a final newline.
+                // Check EOF without consuming a byte from the next record.
+                let eof = self
+                    .reader
+                    .fill_buf()
+                    .map_err(|error| format!("cannot read COPY CSV record: {error}"))?
+                    .is_empty();
+                if eof {
+                    break;
+                }
                 return Err("COPY CSV record exceeds 8 MiB".into());
             }
             // Append directly into the reusable record buffer. COPY can
@@ -690,5 +700,34 @@ mod csv_large_ingest_allocation_tests {
             vec![Some("1".into()), Some("alpha\nbeta".into()), Some("9".into())]);
         assert_eq!(reader.next_record().unwrap().unwrap(),
             vec![Some("2".into()), Some("a\"b".into()), Some("10".into())]);
+    }
+}
+
+#[cfg(test)]
+mod csv_record_eof_budget_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn reader(bytes: Vec<u8>) -> CsvRecords {
+        CsvRecords {
+            reader: BufReader::new(Box::new(Cursor::new(bytes))),
+            buffer: Vec::new(),
+            first: true,
+        }
+    }
+
+    #[test]
+    fn accepts_an_exactly_maximum_sized_csv_record_at_eof() {
+        let mut input = reader(vec![b'x'; MAX_CSV_RECORD_BYTES]);
+        let row = input.next_record().unwrap().unwrap();
+        assert_eq!(row.len(), 1);
+        assert_eq!(row[0].as_ref().unwrap().len(), MAX_CSV_RECORD_BYTES);
+        assert!(input.next_record().unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_a_record_one_byte_over_budget() {
+        let mut input = reader(vec![b'x'; MAX_CSV_RECORD_BYTES + 1]);
+        assert!(input.next_record().is_err());
     }
 }
