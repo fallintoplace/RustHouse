@@ -222,6 +222,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "ENDSWITHCASEINSENSITIVE"
             | "STARTSWITHCASEINSENSITIVE"
             | "BIN"
             | "ISNOTNULL"
@@ -3212,6 +3213,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .as_bytes()
                         .get(..prefix.len())
                         .is_some_and(|bytes| bytes.eq_ignore_ascii_case(prefix.as_bytes()));
+                    ConstantValue::Integer(i64::from(matched))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "ENDSWITHCASEINSENSITIVE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "endsWithCaseInsensitive requires a suffix")?;
+            let suffix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after endsWithCaseInsensitive")?;
+            match (input, suffix) {
+                (Some(input), Some(suffix)) => {
+                    let matched = input.len() >= suffix.len()
+                        && input.as_bytes()[input.len() - suffix.len()..]
+                            .eq_ignore_ascii_case(suffix.as_bytes());
                     ConstantValue::Integer(i64::from(matched))
                 }
                 _ => ConstantValue::Null,
