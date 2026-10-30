@@ -136,18 +136,36 @@ pub fn plan_chunk_window_clamped(
     if start_index > count {
         return Err("transfer chunk window exceeds bounds");
     }
-    plan_chunk_window(
-        total_bytes,
-        chunk_bytes,
-        max_chunks,
-        start_index,
-        requested.min(count - start_index),
-    )
+    let end = start_index + requested.min(count - start_index);
+    Ok((start_index..end)
+        .map(|index| IndexedChunk {
+            index,
+            chunk: chunk_at_index(total_bytes, chunk_bytes, index),
+        })
+        .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamped_chunk_windows_match_strict_windows_for_valid_ranges() {
+        for chunks in [0usize, 1, 3, 16, 128] {
+            for start in 0..=chunks {
+                for requested in [0, 1, 2, 16, usize::MAX] {
+                    let total_bytes = chunks as u64;
+                    let expected = plan_chunk_window(
+                        total_bytes, 1, 128, start, requested.min(chunks - start),
+                    ).unwrap();
+                    let actual = plan_chunk_window_clamped(
+                        total_bytes, 1, 128, start, requested,
+                    ).unwrap();
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
 
     #[test]
     fn clamped_windows_return_partial_final_pages() {
