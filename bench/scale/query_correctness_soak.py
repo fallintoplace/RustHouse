@@ -73,7 +73,13 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
         actual, bytes_written, seconds = execute()
         if (actual, bytes_written) != (reference, size):
             raise ValueError(f"query output drift on iteration {attempt + 1}")
-        if not math.isfinite(seconds) or seconds < 0:
+        if type(seconds) not in (int, float) or seconds < 0:
+            raise ValueError("invalid elapsed query time")
+        try:
+            finite = math.isfinite(seconds)
+        except OverflowError:
+            finite = False
+        if not finite:
             raise ValueError("invalid elapsed query time")
         if attempt >= warmups:
             samples.append(seconds)
