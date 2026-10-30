@@ -334,7 +334,7 @@ fn parallel_numeric_filtered_count(
                 let columns = &columns;
                 let branches = &branches;
                 let next = &next;
-                scope.spawn(move || -> Result<u64, ExecutionError> {
+                std::thread::Builder::new().spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
                     let mut partial = 0u64;
                     while let Some(index) = next_part_index(next, parts.len()) {
                         let mut reader =
@@ -348,9 +348,11 @@ fn parallel_numeric_filtered_count(
                         }
                     }
                     Ok(partial)
-                })
+                }).map_err(|error| ExecutionError::Invalid(format!(
+                    "cannot start parallel COUNT worker: {error}"
+                )))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let mut total = 0u64;
         for handle in handles {
             let partial = handle
@@ -433,7 +435,7 @@ fn parallel_single_part_filtered_count(
                 let end = (begin + chunk).min(marks);
                 let columns = &columns;
                 let branches = &branches;
-                scope.spawn(move || -> Result<u64, ExecutionError> {
+                std::thread::Builder::new().spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
                     let mut reader = rusthouse_storage::NumericPartReader::open(part, columns)?;
                     reader.seek_to_mark(begin)?;
                     let mut subtotal = 0u64;
@@ -447,9 +449,11 @@ fn parallel_single_part_filtered_count(
                         }
                     }
                     Ok(subtotal)
-                })
+                }).map_err(|error| ExecutionError::Invalid(format!(
+                    "cannot start parallel COUNT worker: {error}"
+                )))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let mut total = 0u64;
         for handle in handles {
             let subtotal = handle
@@ -510,7 +514,7 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
             .map(|_| {
                 let next = &next;
                 let parts = &parts;
-                scope.spawn(move || -> Result<u64, ExecutionError> {
+                std::thread::Builder::new().spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
                     let mut sum = 0u64;
                     let mut buffer = Vec::new();
                     while let Some(index) = next_part_index(next, parts.len()) {
@@ -544,9 +548,11 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
                         })?;
                     }
                     Ok(sum)
-                })
+                }).map_err(|error| ExecutionError::Invalid(format!(
+                    "cannot start parallel COUNT worker: {error}"
+                )))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         let mut total = 0u64;
         for handle in handles {
             let partial = handle
