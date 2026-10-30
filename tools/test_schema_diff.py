@@ -51,5 +51,14 @@ class SchemaTests(unittest.TestCase):
             with self.subTest(malformed=malformed), self.assertRaises(ValueError):
                 columns({"columns": [malformed]})
 
+    def test_schema_fetch_rejects_invalid_timeouts_before_network(self):
+        from unittest.mock import patch
+        from schema_diff import fetch
+        with patch("schema_diff.NO_REDIRECT_OPENER") as opener:
+            for value in (True, 0, -1, float("nan"), float("inf"), 301):
+                with self.subTest(timeout=value), self.assertRaisesRegex(ValueError, "timeout"):
+                    fetch("http://127.0.0.1:8123", "items", timeout=value)
+            opener.open.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
