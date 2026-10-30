@@ -1,5 +1,6 @@
 """Unit coverage without requiring a live ClickHouse installation."""
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -199,6 +200,17 @@ class ClickHouseDifferentialTests(unittest.TestCase):
         wrong = encode(list(reference_rows[:-1]) + [{"region": "unexpected", "coupon": "promo"}])
         with self.assertRaisesRegex(ValueError, "multiset"):
             assert_clickhouse_json_parity(wrong, reference, unordered=True)
+
+    def test_clickhouse_large_stderr_is_spooled(self):
+        def fail(command, **kwargs):
+            self.assertNotEqual(kwargs["stderr"], subprocess.PIPE)
+            kwargs["stderr"].write(b"x" * 100_000 + b"last diagnostic")
+            return mock.Mock(returncode=7)
+        with mock.patch("bench.analytics.clickhouse_parity.subprocess.run", side_effect=fail):
+            with self.assertRaises(RuntimeError) as raised:
+                cli_clickhouse("clickhouse-client", "localhost", 9000, "SELECT 1", 10)
+        self.assertIn("last diagnostic", str(raised.exception))
+        self.assertLess(len(str(raised.exception)), 1040)
 
     def test_clickhouse_reference_output_is_bounded_during_capture(self):
         def fake_run(command, **kwargs):
