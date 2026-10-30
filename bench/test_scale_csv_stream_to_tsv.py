@@ -12,11 +12,11 @@ class CsvToTsvTests(unittest.TestCase):
             folder = Path(temp)
             source = folder / "input.csv"
             output = folder / "out.tsv"
-            source.write_bytes(b"1,hello\\n")
+            source.write_bytes(b"1,hello\n")
             old_pending = folder / f".out.tsv.{os.getpid()}.pending"
             old_pending.write_bytes(b"must survive")
             convert(source, output)
-            self.assertEqual(output.read_text(), "1\\thello\\n")
+            self.assertEqual(output.read_text(), "1\thello\n")
             self.assertEqual(old_pending.read_bytes(), b"must survive")
 
     def test_random_pending_name_collision_is_not_deleted(self):
@@ -26,7 +26,7 @@ class CsvToTsvTests(unittest.TestCase):
             folder = Path(temp)
             source = folder / "input.csv"
             output = folder / "out.tsv"
-            source.write_bytes(b"1,hello\\n")
+            source.write_bytes(b"1,hello\n")
             collision = folder / f".out.tsv.{os.getpid()}.collision.pending"
             collision.write_bytes(b"existing")
             with patch("bench.scale.csv_stream_to_tsv.secrets.token_hex", return_value="collision"):
