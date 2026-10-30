@@ -52,7 +52,8 @@ def validate(payload, *, min_healthy=None):
         if type(min_healthy) is not int or not 1 <= min_healthy <= total:
             raise ValueError("min_healthy must be within the reported peer count")
         return healthy >= min_healthy
-    return total == healthy
+    # A coordinator without peers is not a healthy *cluster*.
+    return total > 0 and total == healthy
 
 
 def inspect(origin, timeout=5, min_healthy=None):
