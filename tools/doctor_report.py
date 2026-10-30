@@ -35,13 +35,19 @@ def run(binary, database, full_hashes=True, timeout=600):
             result = subprocess.run(command, stdout=output, stderr=errors,
                                     timeout=timeout, check=False)
             output.seek(0)
-            errors.seek(0)
             out = output.read(32_769)
+            errors.seek(0, 2)
+            error_bytes = errors.tell()
+            if result.returncode:
+                # Surface the final fatal message rather than early progress lines.
+                errors.seek(max(0, error_bytes - 32_768))
+            else:
+                errors.seek(0)
             err = errors.read(32_769)
         result_report = report(result.returncode, out.decode("utf-8", "replace"),
                                err.decode("utf-8", "replace"),
                                time.monotonic() - start, full_hashes)
-        if len(out) > 32_768 or len(err) > 32_768:
+        if len(out) > 32_768 or error_bytes > 32_768:
             result_report["truncated"] = True
         return result_report
     except subprocess.TimeoutExpired:
