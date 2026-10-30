@@ -61,8 +61,9 @@ fn read_mark_bytes_cow_cached<'a, R: Read + Seek>(
     // A borrowed slice is returned only after all possible mutations have finished.
     if cached_granule_bytes(cached, mark, offset, byte_count).is_none() {
         reader.seek_to_block(mark.compressed_offset)?;
+        let recycled = cached.take().map_or_else(Vec::new, |block| block.data);
         let first = reader
-            .next_decoded()
+            .next_decoded_reusing(recycled)
             .ok_or_else(|| invalid_mark(mark, "column stream ends before granule"))??;
         if offset >= first.data.len() {
             return Err(invalid_mark(mark, "decompressed offset is outside block"));
@@ -79,12 +80,12 @@ fn read_mark_bytes_cow_cached<'a, R: Read + Seek>(
                 }
                 let count = (byte_count - result.len()).min(block.data.len() - position);
                 result.extend_from_slice(&block.data[position..position + count]);
-                *cached = Some(block);
                 if result.len() == byte_count {
+                    *cached = Some(block);
                     break;
                 }
                 block = reader
-                    .next_decoded()
+                    .next_decoded_reusing(block.data)
                     .ok_or_else(|| invalid_mark(mark, "column stream ends before granule"))??;
                 position = 0;
             }
@@ -242,6 +243,61 @@ mod tests {
         ).unwrap();
         assert!(matches!(bytes, Cow::Owned(_)));
         assert_eq!(bytes.as_ref(), first.as_slice());
+    }
+
+    #[test]
+    fn reuses_decoded_storage_between_numeric_marks() {
+        let first_data = [7u64, 8]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect::<Vec<_>>();
+        let second_data = [9u64, 10]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect::<Vec<_>>();
+        let first_frame = checked_block(0x82, &first_data);
+        let second_offset = first_frame.len() as u64;
+        let bytes = [first_frame.clone(), checked_block(0x82, &second_data)].concat();
+        let mut reader = reader(bytes);
+        let mut cached = None;
+
+        assert_eq!(
+            read_numeric_granule_cached(&mut reader, &mark(0, 0, Some(2)), "UInt64", &mut cached)
+                .unwrap(),
+            NumericColumn::UInt64(vec![7, 8])
+        );
+        let address = cached.as_ref().unwrap().data.as_ptr();
+        assert_eq!(
+            read_numeric_granule_cached(
+                &mut reader,
+                &mark(second_offset, 0, Some(2)),
+                "UInt64",
+                &mut cached
+            )
+            .unwrap(),
+            NumericColumn::UInt64(vec![9, 10])
+        );
+        assert_eq!(cached.as_ref().unwrap().data.as_ptr(), address);
+
+        // Recycling must not skip validation when the next block is corrupt.
+        let mut corrupt = checked_block(0x82, &second_data);
+        corrupt[0] ^= 1;
+        let mut reader = reader([first_frame, corrupt].concat());
+        let mut cached = None;
+        read_numeric_granule_cached(&mut reader, &mark(0, 0, Some(2)), "UInt64", &mut cached)
+            .unwrap();
+        assert!(matches!(
+            read_numeric_granule_cached(
+                &mut reader,
+                &mark(second_offset, 0, Some(2)),
+                "UInt64",
+                &mut cached
+            ),
+            Err(PartError::InvalidCompressedBlock {
+                reason: "checksum mismatch",
+                ..
+            })
+        ));
     }
 
     #[test]
