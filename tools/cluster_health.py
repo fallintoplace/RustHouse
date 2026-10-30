@@ -28,7 +28,7 @@ def _unique_object_pairs(pairs):
     return result
 
 
-def validate(payload, *, min_healthy=None):
+def validate(payload, *, min_healthy=None, expected_peers=None):
     if not isinstance(payload, dict):
         raise ValueError("expected JSON object")
     total, healthy, peers = payload.get("total"), payload.get("healthy"), payload.get("peers")
@@ -48,6 +48,12 @@ def validate(payload, *, min_healthy=None):
         actual += peer["healthy"]
     if actual != healthy:
         raise ValueError("peer count inconsistent with details")
+    if expected_peers is not None:
+        if (not isinstance(expected_peers, (list, tuple)) or not expected_peers or
+                any(not isinstance(peer, str) or not peer.strip() for peer in expected_peers) or
+                len(set(expected_peers)) != len(expected_peers) or
+                set(expected_peers) != seen):
+            raise ValueError("unexpected cluster membership")
     if min_healthy is not None:
         if type(min_healthy) is not int or not 1 <= min_healthy <= total:
             raise ValueError("min_healthy must be within the reported peer count")
@@ -55,7 +61,7 @@ def validate(payload, *, min_healthy=None):
     return total == healthy
 
 
-def inspect(origin, timeout=5, min_healthy=None):
+def inspect(origin, timeout=5, min_healthy=None, expected_peers=None):
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 300:
         raise ValueError("timeout must be finite and in (0, 300] seconds")
     url = urlsplit(origin)
@@ -73,7 +79,7 @@ def inspect(origin, timeout=5, min_healthy=None):
     if len(raw) > 1_048_576:
         raise ValueError("peer-health response too large")
     payload = json.loads(raw, object_pairs_hook=_unique_object_pairs)
-    return validate(payload, min_healthy=min_healthy), payload
+    return validate(payload, min_healthy=min_healthy, expected_peers=expected_peers), payload
 
 
 def main():
@@ -82,9 +88,13 @@ def main():
     parser.add_argument("--timeout", type=float, default=5)
     parser.add_argument("--min-healthy", type=int,
                         help="Require at least this many reachable peers")
+    parser.add_argument("--expected-peers",
+                        help="Comma-separated exact peer addresses for deployment verification")
     args = parser.parse_args()
     try:
-        all_healthy, info = inspect(args.url, min_healthy=args.min_healthy, timeout=args.timeout)
+        expected = args.expected_peers.split(",") if args.expected_peers is not None else None
+        all_healthy, info = inspect(args.url, min_healthy=args.min_healthy,
+                                    expected_peers=expected, timeout=args.timeout)
     except Exception as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1
