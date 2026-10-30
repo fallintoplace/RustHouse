@@ -13,6 +13,10 @@ use std::time::Duration;
 
 const MAX_CONFIGURED_CONNECTIONS: usize = 64;
 
+fn retryable_accept_error(kind: io::ErrorKind) -> bool {
+    matches!(kind, io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted)
+}
+
 /// Bound concurrent read-only analytical requests to avoid unbounded
 /// thread, decoded-block and response-buffer amplification.
 fn parse_max_connections(value: &str) -> io::Result<usize> {
@@ -316,10 +320,7 @@ fn main() -> io::Result<()> {
     for accepted in listener.incoming() {
         let stream = match accepted {
             Ok(stream) => stream,
-            Err(error) if matches!(
-                error.kind(),
-                io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted
-            ) => continue,
+            Err(error) if retryable_accept_error(error.kind()) => continue,
             Err(error) => return Err(error),
         };
         let mut count = active.load(Ordering::Relaxed);
@@ -443,15 +444,16 @@ mod request_line_spacing_regressions {
 
 #[cfg(test)]
 mod accept_error_policy_tests {
+    use super::retryable_accept_error;
     use std::io;
 
     #[test]
     fn only_expected_transient_accept_errors_are_retryable() {
         for kind in [io::ErrorKind::Interrupted, io::ErrorKind::ConnectionAborted] {
-            assert!(matches!(kind, io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted));
+            assert!(retryable_accept_error(kind));
         }
         for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
-            assert!(!matches!(kind, io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted));
+            assert!(!retryable_accept_error(kind));
         }
     }
 }
