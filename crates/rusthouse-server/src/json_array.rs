@@ -13,6 +13,14 @@ fn validate_complete_object(row: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+fn emit_json_row<W: Write>(output: &mut W, row: &[u8], pretty: bool) -> io::Result<()> {
+    if pretty {
+        write_pretty_json_row(output, row)
+    } else {
+        output.write_all(row)
+    }
+}
+
 pub(super) struct JsonArraySink<W: Write> {
     output: W,
     row: Vec<u8>,
@@ -64,11 +72,7 @@ impl<W: Write> JsonArraySink<W> {
     fn finish_row(&mut self) -> io::Result<()> {
         validate_complete_object(&self.row)?;
         self.write_row_prefix()?;
-        if self.pretty {
-            write_pretty_json_row(&mut self.output, &self.row)?;
-        } else {
-            self.output.write_all(&self.row)?;
-        }
+        emit_json_row(&mut self.output, &self.row, self.pretty)?;
         self.row.clear();
         Ok(())
     }
@@ -107,11 +111,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                     }
                     validate_complete_object(row)?;
                     self.write_row_prefix()?;
-                    if self.pretty {
-                        write_pretty_json_row(&mut self.output, row)?;
-                    } else {
-                        self.output.write_all(row)?;
-                    }
+                    emit_json_row(&mut self.output, row, self.pretty)?;
                     return Ok(buf.len());
                 }
             }
@@ -132,11 +132,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                 }
                 validate_complete_object(fragment)?;
                 self.write_row_prefix()?;
-                if self.pretty {
-                    write_pretty_json_row(&mut self.output, fragment)?;
-                } else {
-                    self.output.write_all(fragment)?;
-                }
+                emit_json_row(&mut self.output, fragment, self.pretty)?;
                 continue;
             }
             self.append_row_fragment(fragment)?;
