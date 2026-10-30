@@ -65,10 +65,11 @@ fn valid_schema_line<'a>(line: &'a str, names: &mut HashSet<&'a str>) -> bool {
     let Some((name, data_type)) = line.split_once('\t') else {
         return false;
     };
+    if !identifier(name) || !names.insert(name) {
+        return false;
+    }
     let ddl = format!("CREATE TABLE _check ({name} {data_type})");
-    identifier(name)
-        && names.insert(name)
-        && matches!(parse_ddl(&ddl), Ok(Some(Ddl::CreateTable { .. })))
+    matches!(parse_ddl(&ddl), Ok(Some(Ddl::CreateTable { .. })))
 }
 
 fn valid_schema_contents(contents: &str) -> bool {
@@ -174,6 +175,18 @@ pub(super) fn handle(method: &str, body: &[u8], config: &Config) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_and_duplicate_schema_names_are_rejected_before_parsing_ddl() {
+        assert!(!valid_schema_contents("rusthouse-schema-v1\n!invalid\tUInt64\n"));
+        assert!(!valid_schema_contents(
+            "rusthouse-schema-v1\nid\tUInt64\nid\tUInt128\n"
+        ));
+        assert!(valid_schema_contents(
+            "rusthouse-schema-v1\nid\tUInt64\nname\tString\n"
+        ));
+    }
+
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT_DB: AtomicUsize = AtomicUsize::new(0);
