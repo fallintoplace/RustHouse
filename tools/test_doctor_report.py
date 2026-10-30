@@ -30,5 +30,14 @@ class DoctorReportTests(unittest.TestCase):
         self.assertEqual(item["stderr"], "failure")
         self.assertTrue(item["truncated"])
 
+    def test_doctor_runner_rejects_invalid_timeouts(self):
+        from unittest.mock import patch
+        from doctor_report import run
+        with patch("doctor_report.subprocess.run") as spawn:
+            for value in (True, 0, -1, float("nan"), float("inf"), 3601):
+                with self.subTest(timeout=value), self.assertRaisesRegex(ValueError, "timeout"):
+                    run("rusthouse", "db", timeout=value)
+            spawn.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
