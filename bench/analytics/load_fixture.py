@@ -41,9 +41,10 @@ def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
                 raise ValueError(f"hits TSV row {expected + 1} has an invalid column count")
             expected += 1
     reference_path = root / "hits.sqlite"
-    if not reference_path.is_file():
-        raise ValueError("SQLite fixture reference is missing")
-    with closing(sqlite3.connect(reference_path)) as reference:
+    if reference_path.is_symlink() or not reference_path.is_file():
+        raise ValueError("SQLite fixture reference must be a regular, non-symlinked file")
+    reference_uri = reference_path.resolve(strict=True).as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(reference_uri, uri=True)) as reference:
         sqlite_rows = reference.execute("SELECT COUNT(*) FROM hits").fetchone()[0]
         if expected < 1 or sqlite_rows != expected:
             raise ValueError(f"source row count {expected} differs from SQLite {sqlite_rows}")
