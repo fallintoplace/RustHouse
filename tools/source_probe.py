@@ -36,6 +36,7 @@ def read_json(url, timeout):
 
 
 def probe(base, expected_source, table=None, timeout=5, expected_version=None):
+    base = verify_origin(base)
     data = read_json(base + "/capabilities", timeout)
     if not isinstance(data, dict):
         raise ValueError("invalid capabilities response")
