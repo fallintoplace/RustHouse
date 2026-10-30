@@ -51,6 +51,10 @@ fn read_schema_bytes(path: &Path) -> Option<Vec<u8>> {
     {
         return None;
     }
+    let finished = file.metadata().ok()?;
+    if finished.len() != opened.len() || finished.modified().ok()? != opened.modified().ok()? {
+        return None;
+    }
     Some(bytes)
 }
 
@@ -295,6 +299,31 @@ mod tests {
             },
         );
         assert_eq!(part.status, "400 Bad Request");
+    }
+}
+
+#[cfg(test)]
+mod mutable_schema_version_tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    #[test]
+    fn schema_metadata_distinguishes_equal_length_rewrites() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-server-schema-version-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let path = root.join("schema");
+        fs::write(&path, b"rusthouse-schema-v1\nid\tUInt64\n").unwrap();
+        assert!(read_schema_bytes(&path).is_some());
+        let opened = fs::File::open(&path).unwrap();
+        let before = opened.metadata().unwrap();
+        opened.set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH)).unwrap();
+        let after = opened.metadata().unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_ne!(before.modified().unwrap(), after.modified().unwrap());
+        fs::remove_dir_all(root).unwrap();
     }
 }
 

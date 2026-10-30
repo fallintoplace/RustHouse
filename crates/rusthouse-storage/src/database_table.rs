@@ -54,6 +54,20 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     {
         return Err(format!("database schema changed during read for {table}"));
     }
+    let final_path = fs::symlink_metadata(&schema)
+        .map_err(|error| format!("cannot inspect database schema path after read for {table}: {error}"))?;
+    if !final_path.file_type().is_file() || final_path.len() != schema_metadata.len() {
+        return Err(format!("database schema changed during read for {table}"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if final_path.dev() != schema_metadata.dev()
+            || final_path.ino() != schema_metadata.ino()
+        {
+            return Err(format!("database schema replaced during read for {table}"));
+        }
+    }
     if content.len() > 32 * 1024 {
         return Err(format!("database schema exceeds size limit for {table}"));
     }
