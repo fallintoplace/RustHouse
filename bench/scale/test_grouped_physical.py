@@ -2,7 +2,7 @@
 import io
 import unittest
 
-from bench.scale.grouped_physical import emit, expected_tsv, reference, region_at
+from bench.scale.grouped_physical import _verification_failure, emit, expected_tsv, reference, region_at
 
 
 class GroupedPhysicalReferenceTests(unittest.TestCase):
@@ -16,6 +16,29 @@ class GroupedPhysicalReferenceTests(unittest.TestCase):
                     expected_counts[key] += 1
                     expected_sums[key] += 1 + row % 97
                 counts, sums = reference(rows, groups)
+                self.assertEqual(counts, expected_counts, (rows, groups))
+                self.assertEqual(sums, expected_sums, (rows, groups))
+
+    def test_full_uint16_group_domain_preserves_exact_totals(self):
+        rows = 1_000_000_000
+        groups = 65_536
+        counts, sums = reference(rows, groups)
+        self.assertEqual(len(counts), groups)
+        self.assertEqual(sum(counts), rows)
+        cycles, tail = divmod(rows, 97)
+        self.assertEqual(sum(sums), cycles * 4753 + tail * (tail + 1) // 2)
+        self.assertEqual(counts[0], 900_000_000)
+
+    def test_modular_prefixes_agree_across_cycle_lengths(self):
+        for groups in (2, 3, 97, 98, 99, 195):
+            for rows in (1, 9, 10, 11, 98, 1_000, 10_000):
+                counts, sums = reference(rows, groups)
+                expected_counts = [0] * groups
+                expected_sums = [0] * groups
+                for row in range(rows):
+                    key = region_at(row, groups)
+                    expected_counts[key] += 1
+                    expected_sums[key] += 1 + row % 97
                 self.assertEqual(counts, expected_counts, (rows, groups))
                 self.assertEqual(sums, expected_sums, (rows, groups))
 
@@ -59,6 +82,13 @@ class GroupedPhysicalReferenceTests(unittest.TestCase):
             emit(io.StringIO(), 1_000_000_000, 4096, batch_rows=1_000_000_000)
         with self.assertRaisesRegex(ValueError, "batch_rows"):
             emit(io.StringIO(), 5, 2, batch_rows=0)
+
+    def test_failed_doctor_message_stays_bounded(self):
+        from types import SimpleNamespace
+        completed = SimpleNamespace(stdout=b"x" * 100_000, stderr=b"y" * 100_000 + b"critical error")
+        message = _verification_failure(completed)
+        self.assertLess(len(message), 1000)
+        self.assertIn("critical error", message)
 
 
 if __name__ == "__main__":

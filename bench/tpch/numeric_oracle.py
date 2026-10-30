@@ -4,6 +4,19 @@ import argparse
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+MAX_INPUT_BYTES = 16 * 1024 * 1024
+
+
+def read_input(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("oracle input must be a regular, non-symlinked file")
+    with path.open("rb") as source:
+        payload = source.read(MAX_INPUT_BYTES + 1)
+    if len(payload) > MAX_INPUT_BYTES:
+        raise ValueError("numeric oracle input exceeds 16 MiB")
+    return payload
+
 
 def parse_tolerance(value):
     try:
@@ -69,7 +82,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         tolerance = parse_tolerance(args.absolute_tolerance)
-        passed = compare_tsv(args.actual.read_bytes(), args.reference.read_bytes(), tolerance)
+        passed = compare_tsv(read_input(args.actual), read_input(args.reference), tolerance)
     except (OSError, ValueError) as error:
         parser.exit(2, f"comparison failed: {error}\n")
     print("passed" if passed else "mismatch")

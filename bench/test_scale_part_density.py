@@ -82,5 +82,18 @@ class PartDensityTests(unittest.TestCase):
                 part_density(root)
 
 
+    def test_reports_exact_fractions_above_float_precision(self):
+        with tempfile.TemporaryDirectory() as root:
+            values = (2**53 + 1, 2**53 + 2)
+            for index, value in enumerate(values):
+                part = Path(root) / f"all_{index}_{index}_0"
+                part.mkdir()
+                (part / "count.txt").write_text(f"{value}\n")
+            report = part_density(root)
+            self.assertEqual(report["median_rows_per_part_exact_numerator"], sum(values))
+            self.assertEqual(report["median_rows_per_part_exact_denominator"], 2)
+            self.assertEqual(report["mean_rows_per_part_exact_numerator"], sum(values))
+            self.assertEqual(report["mean_rows_per_part_exact_denominator"], 2)
+
 if __name__ == "__main__":
     unittest.main()

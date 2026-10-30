@@ -8,6 +8,18 @@ from schema import names
 
 
 class DataManifestTests(unittest.TestCase):
+    def test_rejects_symlinked_table_input(self):
+        from pathlib import Path
+        from data_manifest import inspect_table
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / "target.tsv"
+            target.write_bytes(b"data\n")
+            link = Path(root) / "lineitem.tsv"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                inspect_table(link, "lineitem")
+
+
     def test_hashes_exact_input_bytes_with_row_counts(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "region.tsv"

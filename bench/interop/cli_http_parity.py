@@ -93,6 +93,26 @@ def wait_ready(process, port):
     raise RuntimeError("HTTP server was not ready within 10 seconds")
 
 
+def fetch_schema(port):
+    url = f"http://127.0.0.1:{port}/schema?table=events"
+    with NO_REDIRECT_OPENER.open(url, timeout=10) as response:
+        payload = response.read(1_048_577)
+    if len(payload) > 1_048_576:
+        raise ValueError("HTTP parity schema response exceeds 1 MiB")
+    schema = json.loads(payload)
+    if not isinstance(schema, dict):
+        raise ValueError("HTTP parity schema must be a JSON object")
+    return schema
+
+
+def launch_server(server, directory, port):
+    # Never leave a PIPE unread while the server is accepting HTTP requests.
+    return subprocess.Popen(
+        [str(server), "--database", str(directory), "--port", str(port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
 def check_parity(binary, server):
     with tempfile.TemporaryDirectory(prefix="rusthouse-cli-http-parity-") as temporary:
         directory = Path(temporary) / "database"
@@ -100,17 +120,11 @@ def check_parity(binary, server):
         cli(binary, directory, "INSERT INTO events VALUES (1, 'Ada'), (2, NULL), (3, 'Bob')")
 
         port = unused_loopback_port()
-        process = subprocess.Popen(
-            [str(server), "--database", str(directory), "--port", str(port)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
+        process = launch_server(server, directory, port)
         try:
             wait_ready(process, port)
             verify_server_identity(port)
-            schema_url = f"http://127.0.0.1:{port}/schema?table=events"
-            with NO_REDIRECT_OPENER.open(schema_url, timeout=10) as response:
-                schema = json.load(response)
+            schema = fetch_schema(port)
             if schema.get("rows") != 3:
                 raise ValueError(f"unexpected HTTP schema row count: {schema!r}")
             if [column["name"] for column in schema["columns"]] != ["id", "name"]:

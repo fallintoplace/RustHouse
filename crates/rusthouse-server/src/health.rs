@@ -27,38 +27,36 @@ fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
     })
 }
 
-fn render_peer_health_entries(cluster: &Cluster, healthy: &[bool]) -> String {
-    let mut details = String::new();
-    for (index, (peer, &alive)) in cluster.peers().iter().zip(healthy).enumerate() {
-        if index != 0 {
-            details.push(',');
-        }
-        write!(
-            &mut details,
-            "{{\"address\":\"{}\",\"healthy\":{alive}}}",
-            peer.address()
-        )
-        .expect("writing to String cannot fail");
-    }
-    details
-}
-
 fn render_health_response(cluster: &Cluster, healthy: &[bool]) -> Response {
     let healthy_peer_count = healthy.iter().filter(|&&alive| alive).count();
-    let details = render_peer_health_entries(cluster, healthy);
     let status = if healthy_peer_count == healthy.len() {
         "200 OK"
     } else {
         "503 Service Unavailable"
     };
+    let mut body = String::with_capacity(48 + healthy.len() * 64);
+    write!(
+        &mut body,
+        "{{\"total\":{},\"healthy\":{healthy_peer_count},\"peers\":[",
+        healthy.len()
+    )
+    .expect("writing to String cannot fail");
+    for (index, (peer, &alive)) in cluster.peers().iter().zip(healthy).enumerate() {
+        if index != 0 {
+            body.push(',');
+        }
+        write!(
+            &mut body,
+            "{{\"address\":\"{}\",\"healthy\":{alive}}}",
+            peer.address()
+        )
+        .expect("writing to String cannot fail");
+    }
+    body.push_str("]}\n");
     Response {
         status,
         content_type: "application/json; charset=utf-8",
-        body: format!(
-            "{{\"total\":{},\"healthy\":{healthy_peer_count},\"peers\":[{details}]}}\n",
-            healthy.len()
-        )
-        .into_bytes(),
+        body: body.into_bytes(),
     }
 }
 
@@ -79,6 +77,17 @@ mod tests {
     use crate::cluster::Peer;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn single_buffer_health_response_keeps_exact_peer_order() {
+        let cluster = Cluster::new(vec![
+            Peer::parse("127.0.0.1:45231").unwrap(),
+            Peer::parse("127.0.0.1:45232").unwrap(),
+        ]).unwrap();
+        let response = render_health_response(&cluster, &[true, false]);
+        assert_eq!(response.status, "503 Service Unavailable");
+        assert_eq!(response.body, b"{\"total\":2,\"healthy\":1,\"peers\":[{\"address\":\"127.0.0.1:45231\",\"healthy\":true},{\"address\":\"127.0.0.1:45232\",\"healthy\":false}]}\n");
+    }
 
     #[test]
     fn reports_empty_cluster_without_peer_allocations() {

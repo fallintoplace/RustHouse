@@ -7,6 +7,7 @@ import argparse
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -49,6 +50,11 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
             type(max_read_mib) not in (int, float)
             or not math.isfinite(max_read_mib) or max_read_mib <= 0):
         raise ValueError("max physical read budget must be positive and finite")
+    if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
+        raise ValueError("resource profiler requires a bounded read-only SELECT")
+    statement = sql.strip().removesuffix(";").rstrip()
+    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
+        raise ValueError("resource profiler requires one read-only SELECT")
     started = time.perf_counter()
     stderr_file = tempfile.TemporaryFile(mode="w+b")
     try:

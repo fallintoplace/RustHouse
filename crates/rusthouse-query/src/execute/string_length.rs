@@ -2,7 +2,7 @@ use super::ExecutionError;
 use super::typed;
 use crate::Select;
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -41,14 +41,13 @@ fn append_length_line(buffer: &mut Vec<u8>, length: Option<usize>) -> std::io::R
 
 fn projection_columns(query: &Select, column: &str) -> Vec<String> {
     let mut names = vec![column.to_owned()];
-    let mut seen = HashSet::from([column]);
     for predicate in query
         .predicates
         .iter()
         .chain(query.or_predicates.iter().flatten())
     {
         let predicate_column = predicate.column();
-        if seen.insert(predicate_column) {
+        if !names.iter().any(|name| name == predicate_column) {
             names.push(predicate_column.to_owned());
         }
     }
@@ -166,6 +165,12 @@ pub(super) fn execute<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn length_projection_without_predicates_uses_one_column() {
+        let query = crate::parse_select("SELECT length(name) FROM data").unwrap();
+        assert_eq!(projection_columns(&query, "name"), vec!["name"]);
+    }
 
     #[test]
     fn batched_length_output_preserves_nulls_and_integer_extremes() {
