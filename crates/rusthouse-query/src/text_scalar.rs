@@ -1318,8 +1318,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(value) => {
                     let seconds = rusthouse_storage::parse_datetime(&value)
-                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
-                    ConstantValue::Integer(i64::from(seconds))
+                        .map(i64::from)
+                        .or_else(|| {
+                            rusthouse_storage::parse_date(&value)
+                                .map(|days| i64::from(days) * 86_400)
+                        })
+                        .ok_or_else(|| ParseError("invalid UTC Date or DateTime argument".into()))?;
+                    ConstantValue::Integer(seconds)
                 }
                 None => ConstantValue::Null,
             }
