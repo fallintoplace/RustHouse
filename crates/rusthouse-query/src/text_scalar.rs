@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6UNIQUELOCAL"
             | "ISIPV6LOOPBACK"
             | "ISIPV6MULTICAST"
+            | "HASSUBSEQUENCECASEINSENSITIVEUTF8"
             | "NORMALIZEIPV6"
     )
 }
@@ -2911,6 +2912,31 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                         .any(|word| word == token);
                     ConstantValue::Integer(i64::from(found))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "HASSUBSEQUENCECASEINSENSITIVEUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "hasSubsequenceCaseInsensitiveUTF8 requires a needle")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after hasSubsequenceCaseInsensitiveUTF8",
+            )?;
+            match (input, needle) {
+                (Some(input), Some(needle)) => {
+                    let input = input.to_lowercase();
+                    let needle = needle.to_lowercase();
+                    let mut required = needle.chars();
+                    let mut next = required.next();
+                    for character in input.chars() {
+                        if next == Some(character) {
+                            next = required.next();
+                        }
+                    }
+                    ConstantValue::Integer(i64::from(next.is_none()))
                 }
                 _ => ConstantValue::Null,
             }
