@@ -19,6 +19,17 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(invoked, [])
 
 
+    def test_preserves_comment_like_lines_inside_sql_literals(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "q01.sql"
+            source.write_text(
+                "-- provenance\nSELECT 'first\n-- literal value\nlast' AS text;"
+            )
+            self.assertEqual(
+                clean_sql(source),
+                "SELECT 'first\n-- literal value\nlast' AS text",
+            )
+
     def test_missing_queries_remain_explicit_and_unverified_is_not_a_pass(self):
         with tempfile.TemporaryDirectory() as root:
             queries = Path(root)
