@@ -91,6 +91,18 @@ struct ResponseHead {
     compressed: bool,
 }
 
+fn decode_compressed_peer_body(compressed: &[u8]) -> Result<Vec<u8>, String> {
+    if compressed.len() < 4 {
+        return Err("truncated compressed peer response".into());
+    }
+    let size = u32::from_le_bytes(compressed[..4].try_into().unwrap()) as usize;
+    if size > MAX_RESPONSE_BYTES {
+        return Err("decompressed peer response exceeds 16 MiB".into());
+    }
+    lz4_flex::decompress_size_prepended(compressed)
+        .map_err(|_| "invalid compressed peer response".to_owned())
+}
+
 /// Parse a complete HTTP response head without waiting for the peer to close
 /// its connection. The advertised body length is untrusted and remains bounded.
 fn response_head(raw: &[u8]) -> Result<Option<ResponseHead>, String> {
@@ -137,18 +149,7 @@ pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
     let body = if head.compressed {
-        let compressed = &raw[head.body_start..];
-        if compressed.len() < 4 {
-            return Err("truncated compressed peer response".into());
-        }
-        // Bound the uncompressed size before any allocation. The wire length
-        // alone cannot protect against a decompression bomb.
-        let size = u32::from_le_bytes(compressed[..4].try_into().unwrap()) as usize;
-        if size > MAX_RESPONSE_BYTES {
-            return Err("decompressed peer response exceeds 16 MiB".into());
-        }
-        lz4_flex::decompress_size_prepended(compressed)
-            .map_err(|_| "invalid compressed peer response".to_owned())?
+        decode_compressed_peer_body(&raw[head.body_start..])?
     } else {
         raw[head.body_start..].to_vec()
     };
@@ -167,16 +168,7 @@ pub(super) fn parse_response_owned(mut raw: Vec<u8>) -> Result<PeerResponse, Str
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
     let body = if head.compressed {
-        let compressed = &raw[head.body_start..];
-        if compressed.len() < 4 {
-            return Err("truncated compressed peer response".into());
-        }
-        let size = u32::from_le_bytes(compressed[..4].try_into().unwrap()) as usize;
-        if size > MAX_RESPONSE_BYTES {
-            return Err("decompressed peer response exceeds 16 MiB".into());
-        }
-        lz4_flex::decompress_size_prepended(compressed)
-            .map_err(|_| "invalid compressed peer response".to_owned())?
+        decode_compressed_peer_body(&raw[head.body_start..])?
     } else {
         raw.copy_within(head.body_start.., 0);
         raw.truncate(head.body_length);
