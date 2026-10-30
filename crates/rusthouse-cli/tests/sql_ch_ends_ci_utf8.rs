@@ -4,7 +4,7 @@ use std::process::Command;
 fn supports_ends_ci_utf8_function() {
     for (query, expected) in [
         ("SELECT endsWithCaseInsensitiveUTF8('GROẞ', 'groß') AS value", "value\n1\n"),
-        ("SELECT endsWithCaseInsensitiveUTF8('Grüße', 'ÜẞE') AS value", "value\n0\n"),
+        ("SELECT endsWithCaseInsensitiveUTF8('Grüße', 'ÜẞE') AS value", "value\n1\n"),
         ("SELECT endsWithCaseInsensitiveUTF8('MÜNCHEN', 'chen') AS value", "value\n1\n"),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
@@ -18,9 +18,7 @@ fn supports_ends_ci_utf8_function() {
         );
         assert_eq!(output.stdout, expected.as_bytes(), "{query}");
     }
-    for query in [
-        "SELECT endsWithCaseInsensitiveUTF8('a')",
-    ] {
+    for query in ["SELECT endsWithCaseInsensitiveUTF8('a')"] {
         let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", query])
             .output()
