@@ -107,6 +107,16 @@ pub fn retention_candidates_with_pins(
         }
         return Ok(candidates.into_iter().filter(|generation| generation != pin).collect());
     }
+    if pinned.len() <= 4 && candidates.len() <= 128 {
+        for (index, &generation) in pinned.iter().enumerate() {
+            if pinned[..index].contains(&generation) || known.binary_search(&generation).is_err() {
+                return Err("duplicate or unknown pinned generation");
+            }
+        }
+        return Ok(candidates.into_iter()
+            .filter(|generation| !pinned.contains(generation))
+            .collect());
+    }
     let mut pins = std::collections::HashSet::with_capacity(pinned.len());
     for &generation in pinned {
         if !pins.insert(generation) || known.binary_search(&generation).is_err() {
@@ -278,6 +288,22 @@ mod fully_retained_budget_tests {
         assert!(retention_candidates_with_byte_budget(
             &[(1, 4), (1, 8)], 1, 2, &[], u64::MAX,
         ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod small_pin_retention_tests {
+    use super::*;
+
+    #[test]
+    fn low_cardinality_pins_preserve_large_path_semantics() {
+        let generations = (1..=130u64).collect::<Vec<_>>();
+        for pins in [vec![], vec![1], vec![1, 3], vec![1, 3, 5, 7], vec![1, 3, 5, 7, 9]] {
+            let small = retention_candidates_with_pins(&generations, 130, 2, &pins).unwrap();
+            assert_eq!(small, (1..=128u64).filter(|id| !pins.contains(id)).collect::<Vec<_>>());
+        }
+        assert!(retention_candidates_with_pins(&generations, 130, 2, &[1, 1]).is_err());
+        assert!(retention_candidates_with_pins(&generations, 130, 2, &[131]).is_err());
     }
 }
 
