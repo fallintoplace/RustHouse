@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_JSONL_COLUMNS: usize = 64;
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -24,7 +25,7 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<String>> {
         if name.is_empty() {
             return Err(invalid("JSONL header name must not be empty"));
         }
-        if headers.len() >= 64 {
+        if headers.len() >= MAX_JSONL_COLUMNS {
             return Err(invalid("JSONL supports at most 64 columns"));
         }
         if !seen.insert(name) {
@@ -45,6 +46,10 @@ fn decoded_row_field(field: &[u8]) -> io::Result<Cow<'_, str>> {
     }
 }
 
+fn row_width_error() -> io::Error {
+    invalid("JSONL row does not match header column count")
+}
+
 fn write_json_row_into<W: Write>(
     output: &mut W,
     headers: &[Vec<u8>],
@@ -54,16 +59,16 @@ fn write_json_row_into<W: Write>(
     let mut fields = line.split(|byte| *byte == b'\t');
     row.clear();
     row.reserve(line.len() + headers.len() * 8 + 3);
-    row.write_all(b"{")?;
+    row.push(b'{');
     for (index, header) in headers.iter().enumerate() {
         let field = fields
             .next()
-            .ok_or_else(|| invalid("JSONL row does not match header column count"))?;
+            .ok_or_else(row_width_error)?;
         if index != 0 {
-            row.write_all(b",")?;
+            row.push(b',');
         }
-        row.write_all(header)?;
-        row.write_all(b":")?;
+        row.extend_from_slice(header);
+        row.push(b':');
         if field == b"\\N" {
             row.write_all(b"null")?;
         } else {
@@ -72,9 +77,9 @@ fn write_json_row_into<W: Write>(
         }
     }
     if fields.next().is_some() {
-        return Err(invalid("JSONL row does not match header column count"));
+        return Err(row_width_error());
     }
-    row.write_all(b"}\n")?;
+    row.extend_from_slice(b"}\n");
     output.write_all(row)
 }
 
@@ -143,6 +148,19 @@ impl<W: Write> Write for JsonlWriter<W> {
             if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
                 return Err(invalid("JSONL row exceeds 1 MiB"));
             }
+            // Complete data rows are already contiguous in the input.
+            // Forward them into the reusable JSON encoder without copying.
+            if complete && self.line.is_empty() {
+                if let Some(headers) = self.headers.as_ref() {
+                    write_json_row_into(
+                        &mut self.output,
+                        headers,
+                        fragment,
+                        &mut self.encoded,
+                    )?;
+                    continue;
+                }
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -159,6 +177,20 @@ impl<W: Write> Write for JsonlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_data_rows_bypass_the_line_buffer() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let before = writer.line.capacity();
+        let value = "x".repeat(16 * 1024);
+        writer.write_all(format!("{value}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        assert_eq!(
+            writer.output,
+            format!("{{\"value\":\"{value}\"}}\n").as_bytes()
+        );
+    }
 
     #[test]
     fn reuses_jsonl_response_buffer() {

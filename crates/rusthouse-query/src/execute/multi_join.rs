@@ -1,4 +1,6 @@
 //! Bounded left-deep execution for chained joins over persistent tables.
+
+mod streaming;
 use super::{ExecutionError, typed};
 use crate::{JoinColumn, JoinSelect, JoinStep, JoinType};
 use rusthouse_storage::inspect_query_source;
@@ -7,12 +9,40 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use super::join::{
-    MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key,
-    read_rows,
+    MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES,
+    multi_join_row_key as row_key, multi_join_row_key_into as row_key_into, read_rows,
 };
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
 const MAX_CHAIN_COLUMNS: usize = 128;
+const MAX_CHAIN_HASH_BYTES: usize = MAX_CHAIN_BYTES;
+
+/// Hash table keys are owned again after the build-side rows are decoded.
+/// Include duplicate row index lists, which are separate from row retention.
+fn charge_hash_bytes(used: &mut usize, additional: usize) -> Result<(), ExecutionError> {
+    let next = used.checked_add(additional)
+        .ok_or_else(|| invalid("JOIN hash memory estimate overflow"))?;
+    if next > MAX_CHAIN_HASH_BYTES {
+        return Err(invalid("JOIN hash keys exceed retained memory budget"));
+    }
+    *used = next;
+    Ok(())
+}
+
+fn hash_key_bytes(key: &[typed::Key]) -> Result<usize, ExecutionError> {
+    let fixed = key.len().checked_mul(std::mem::size_of::<typed::Key>())
+        .and_then(|n| n.checked_add(std::mem::size_of::<(Vec<typed::Key>, Bucket)>()))
+        .ok_or_else(|| invalid("JOIN hash memory estimate overflow"))?;
+    key.iter().try_fold(fixed, |bytes, value| {
+        let payload = match value {
+            typed::Key::Text(value) => value.len(),
+            typed::Key::Uuid(value) => value.len(),
+            _ => 0,
+        };
+        bytes.checked_add(payload)
+            .ok_or_else(|| invalid("JOIN hash memory estimate overflow"))
+    })
+}
 
 fn write_join_header<W: Write>(
     output: &mut W,
@@ -133,6 +163,22 @@ fn push_row(
     Ok(())
 }
 
+/// Drop filtered final-stage rows before charging the bounded intermediate.
+/// An anti-join can otherwise reject a large valid result before WHERE runs.
+fn push_visible_row(
+    rows: &mut Vec<Vec<typed::Cell>>,
+    row: Vec<typed::Cell>,
+    retained: &mut usize,
+    filter: Option<(usize, bool)>,
+) -> Result<(), ExecutionError> {
+    if filter.is_some_and(|(index, not_null)| {
+        matches!(row[index], typed::Cell::Null) == not_null
+    }) {
+        return Ok(());
+    }
+    push_row(rows, row, retained)
+}
+
 /// Resolve USING only when exactly one existing input supplies that key.
 /// Ambiguous names must use qualified ON instead.
 fn using_column_pair(relations: &[Relation], name: &str) -> Result<(usize, usize), ExecutionError> {
@@ -168,7 +214,7 @@ fn step_keys(
         let (left, right) = using_column_pair(relations, name)?;
         let left_type = column_type(relations, left);
         let right_type = column_type(relations, right);
-        if base_type(left_type) != base_type(right_type) {
+        if !super::join::compatible_join_types(left_type, right_type) {
             return Err(invalid(format!(
                 "JOIN key types differ: {left_type} and {right_type}"
             )));
@@ -194,7 +240,7 @@ fn step_keys(
         };
         let left_type = column_type(relations, left);
         let right_type = column_type(relations, right);
-        if base_type(left_type) != base_type(right_type) {
+        if !super::join::compatible_join_types(left_type, right_type) {
             return Err(invalid(format!(
                 "JOIN key types differ: {left_type} and {right_type}"
             )));
@@ -320,7 +366,9 @@ pub fn execute_multi_join<W: Write>(
         using_keys: query.using_keys.clone(),
     };
     // Validate the complete output schema without materializing rows.
-    if query.limit == Some(0) || (query.aggregate.is_some() && query.offset > 0) {
+    if query.limit == Some(0)
+        || (query.aggregate == Some(crate::JoinAggregate::CountStar) && query.offset > 0)
+    {
         for (index, join) in std::iter::once(&initial_step)
             .chain(query.steps.iter())
             .enumerate()
@@ -334,7 +382,7 @@ pub fn execute_multi_join<W: Write>(
         for (column, _, _) in &query.order_by {
             column_index(&relations, column)?;
         }
-        if query.aggregate.is_some() {
+        if query.aggregate == Some(crate::JoinAggregate::CountStar) {
             output.write_all(b"count\n")?;
         } else {
             let selected = output_columns(query, &relations, &initial_step)?;
@@ -343,6 +391,23 @@ pub fn execute_multi_join<W: Write>(
         return Ok(());
     }
 
+    // A left-deep INNER chain can stream its large fact side when each
+    // right-hand build table fits the shared chain memory budget.
+    if query.kind == JoinType::Inner
+        && query.steps.iter().all(|step| step.kind == JoinType::Inner)
+        && query.order_by.is_empty()
+        && query.aggregate.is_none()
+    {
+        return streaming::execute(query, paths, &relations, &initial_step, output);
+    }
+
+    // Resolve the WHERE column across all relations before materialization.
+    // Filtering early is safe only at the final JOIN, after null extension.
+    let output_filter = query.where_null.as_ref()
+        .map(|(column, not_null)| {
+            column_index(&relations, column).map(|index| (index, *not_null))
+        })
+        .transpose()?;
     let mut rows = read_rows(
         &paths[0],
         &relations[0].names,
@@ -374,31 +439,41 @@ pub fn execute_multi_join<W: Write>(
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
+        let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::new();
+        let mut hash_bytes = 0usize;
         for (index, row) in right_rows.iter().enumerate() {
             if let Some(key) = row_key(row, &right_keys) {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
+                use std::collections::hash_map::Entry;
+                match hash.entry(key) {
+                    Entry::Occupied(mut entry) => {
+                        // Duplicate key index lists may grow independently of the rows.
+                        charge_hash_bytes(&mut hash_bytes, std::mem::size_of::<usize>() * 2)?;
+                        entry.get_mut().push(index);
+                    }
+                    Entry::Vacant(entry) => {
+                        charge_hash_bytes(&mut hash_bytes, hash_key_bytes(entry.key())?)?;
+                        entry.insert(Bucket::One(index));
+                    }
+                }
             }
         }
-        // COUNT(*) over an INNER join chain never needs to materialize the
-        // final product. Count bucket multiplicities directly, avoiding the
-        // intermediate result-row cap on high-fanout last joins.
-        if query.aggregate.is_some() && step_index == query.steps.len() {
+        // COUNT(*) over a validated all-INNER chain needs only the final
+        // hash-bucket multiplicities. No final joined rows are retained.
+        if query.aggregate == Some(crate::JoinAggregate::CountStar)
+            && step_index == query.steps.len()
+        {
             let mut count = 0u64;
             for row in &rows {
                 if let Some(key) = row_key(row, &left_keys) {
                     if let Some(matches) = hash.get(&key) {
-                        let multiplicity = if step.any { 1 } else { matches.iter().len() };
-                        let multiplicity = u64::try_from(multiplicity)
-                            .map_err(|_| invalid("JOIN count overflow"))?;
-                        count = count.checked_add(multiplicity)
+                        let multiplicity = if step.any { 1usize } else { matches.iter().len() };
+                        count = count.checked_add(u64::try_from(multiplicity)
+                            .map_err(|_| invalid("JOIN count overflow"))?)
                             .ok_or_else(|| invalid("JOIN count overflow"))?;
                     }
                 }
             }
-            write!(output, "count\n{count}\n")?;
+            writeln!(output, "count\n{count}")?;
             return Ok(());
         }
         // Most fact-to-dimension joins preserve the incoming row count.
@@ -406,10 +481,16 @@ pub fn execute_multi_join<W: Write>(
         let mut retained = 0usize;
         let mut matched_right = matches!(step.kind, JoinType::Right | JoinType::Full)
             .then(|| vec![false; right_rows.len()]);
+        let filter = if step_index == query.steps.len() {
+            output_filter
+        } else {
+            None
+        };
+        let mut probe_key = Vec::with_capacity(left_keys.len());
         for row in &rows {
             let mut matched = false;
-            if let Some(key) = row_key(row, &left_keys) {
-                if let Some(matches) = hash.get(&key) {
+            if row_key_into(row, &left_keys, &mut probe_key) {
+                if let Some(matches) = hash.get(probe_key.as_slice()) {
                     for &match_index in
                         matches
                             .iter()
@@ -435,7 +516,7 @@ pub fn execute_multi_join<W: Write>(
                             Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
                         joined.extend_from_slice(&right_rows[match_index]);
-                        push_row(&mut next, joined, &mut retained)?;
+                        push_visible_row(&mut next, joined, &mut retained, filter)?;
                     }
                 }
             }
@@ -443,7 +524,7 @@ pub fn execute_multi_join<W: Write>(
                 let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
                 joined.extend_from_slice(row);
                 joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
-                push_row(&mut next, joined, &mut retained)?;
+                push_visible_row(&mut next, joined, &mut retained, filter)?;
             }
         }
         if let Some(matched_right) = matched_right {
@@ -451,23 +532,13 @@ pub fn execute_multi_join<W: Write>(
                 if !matched {
                     let mut joined = vec![typed::Cell::Null; left_width];
                     joined.extend_from_slice(&right_rows[right_index]);
-                    push_row(&mut next, joined, &mut retained)?;
+                    push_visible_row(&mut next, joined, &mut retained, filter)?;
                 }
             }
         }
         rows = next;
     }
 
-    // An empty intermediate on an all-INNER chain yields a zero count.
-    if query.aggregate.is_some() {
-        output.write_all(b"count\n0\n")?;
-        return Ok(());
-    }
-
-    if let Some((column, not_null)) = &query.where_null {
-        let index = column_index(&relations, column)?;
-        rows.retain(|row| matches!(row[index], typed::Cell::Null) != *not_null);
-    }
     if !query.order_by.is_empty() {
         let ordering_columns = query
             .order_by
@@ -490,6 +561,13 @@ pub fn execute_multi_join<W: Write>(
             }
             std::cmp::Ordering::Equal
         });
+    }
+    if query.aggregate == Some(crate::JoinAggregate::CountStar) {
+        output.write_all(b"count\n")?;
+        if query.offset == 0 {
+            writeln!(output, "{}", rows.len())?;
+        }
+        return Ok(());
     }
     let selected = output_columns(query, &relations, &initial_step)?;
     write_join_header(output, &selected)?;
@@ -515,15 +593,9 @@ pub fn execute_multi_join<W: Write>(
 }
 
 #[cfg(test)]
-mod bucket_tests {
-    use super::*;
+#[path = "multi_join/bucket_tests.rs"]
+mod bucket_tests;
 
-    #[test]
-    fn singleton_bucket_promotes_to_duplicate_matches_in_input_order() {
-        let mut bucket = Bucket::One(3);
-        assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![3]);
-        bucket.push(7);
-        bucket.push(9);
-        assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![3, 7, 9]);
-    }
-}
+#[cfg(test)]
+#[path = "multi_join/chained_join_reusable_probe_tests.rs"]
+mod chained_join_reusable_probe_tests;

@@ -14,19 +14,42 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json, latency_summary
 from run import load_queries, select_queries
 
+MAX_REFERENCE_BYTES = 16 * 1024 * 1024
+
+
+def read_reference(path):
+    with Path(path).open("rb") as source:
+        payload = source.read(MAX_REFERENCE_BYTES + 1)
+    if len(payload) > MAX_REFERENCE_BYTES:
+        raise ValueError("TPC-H throughput reference exceeds 16 MiB")
+    return payload
+
 
 def run_throughput(queries, execute, clients=2, rounds=2, references=None,
                    require_verified=False):
-    if not 1 <= clients <= 64 or not 1 <= rounds <= 100:
+    if (type(clients) is not int or type(rounds) is not int
+            or not 1 <= clients <= 64 or not 1 <= rounds <= 100):
         raise ValueError("clients must be 1..64 and rounds 1..100")
     if not queries:
         raise ValueError("at least one SQL query is required")
     references = references or {}
+    if not isinstance(references, dict) or any(
+            type(number) is not int or type(golden) is not bytes
+            for number, golden in references.items()):
+        raise ValueError("throughput references must map integer IDs to bytes")
     if require_verified and any(number not in references for number, _ in queries):
         raise ValueError("verified throughput requires a reference for every query")
     # Explicitly cap the planned jobs to avoid runaway CI load.
     if len(queries) * rounds > 2200:
         raise ValueError("no more than 2200 query executions per run")
+    seen = set()
+    for entry in queries:
+        if (not isinstance(entry, (tuple, list)) or len(entry) != 2
+                or type(entry[0]) is not int or entry[0] < 1
+                or entry[0] in seen or not isinstance(entry[1], str)
+                or not entry[1].strip()):
+            raise ValueError("queries need distinct positive IDs and nonempty SQL")
+        seen.add(entry[0])
     tasks = [(number, sql) for _ in range(rounds) for number, sql in queries]
 
     def once(task):
@@ -34,10 +57,12 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None,
         started = time.perf_counter()
         try:
             output = execute(sql)
+            if type(output) is not bytes:
+                raise TypeError("SQL execution must return bytes")
         except subprocess.TimeoutExpired:
             return {"query": number, "status": "timeout",
                     "seconds": None, "error": "query timed out"}
-        except (OSError, RuntimeError, ValueError) as error:
+        except (OSError, RuntimeError, ValueError, TypeError) as error:
             return {"query": number, "status": "error",
                     "seconds": None, "error": str(error)[:1000]}
         duration = time.perf_counter() - started
@@ -97,7 +122,7 @@ def main(argv=None):
                 path = args.reference_dir / f"q{number:02}.tsv"
                 if not path.is_file():
                     raise ValueError(f"missing reference file {path}")
-                references[number] = path.read_bytes()
+                references[number] = read_reference(path)
         report = run_throughput(
             queries,
             lambda sql: cli_sql(args.binary, args.database, sql, args.timeout),

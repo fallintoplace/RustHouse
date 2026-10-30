@@ -203,6 +203,10 @@ fn main() -> ExitCode {
     }
 }
 
+const MAX_PREVIEW_MARKS: usize = 16;
+const MAX_PREVIEW_FIELDS: usize = 8;
+const MAX_PREVIEW_FIELD_BYTES: usize = 16;
+
 fn inspect_primary_index_and_print(
     path: OsString,
     widths: impl Iterator<Item = OsString>,
@@ -228,27 +232,27 @@ fn inspect_primary_index_and_print(
     println!("Marks: {}", index.len());
     println!("Fields: {}", widths.len());
     // Keep inspection output bounded even for large or adversarial indices.
-    for mark in 0..index.len().min(16) {
+    for mark in 0..index.len().min(MAX_PREVIEW_MARKS) {
         print!("Mark {mark}:");
-        for field in 0..widths.len().min(8) {
+        for field in 0..widths.len().min(MAX_PREVIEW_FIELDS) {
             let bytes = index
                 .field(mark, field)
                 .expect("validated fixed-width tuple");
             print!(" ");
-            for byte in bytes.iter().take(16) {
+            for byte in bytes.iter().take(MAX_PREVIEW_FIELD_BYTES) {
                 print!("{byte:02x}");
             }
-            if bytes.len() > 16 {
+            if bytes.len() > MAX_PREVIEW_FIELD_BYTES {
                 print!("...");
             }
         }
-        if widths.len() > 8 {
-            print!(" ... ({} more fields)", widths.len() - 8);
+        if widths.len() > MAX_PREVIEW_FIELDS {
+            print!(" ... ({} more fields)", widths.len() - MAX_PREVIEW_FIELDS);
         }
         println!();
     }
-    if index.len() > 16 {
-        println!("... {} more marks", index.len() - 16);
+    if index.len() > MAX_PREVIEW_MARKS {
+        println!("... {} more marks", index.len() - MAX_PREVIEW_MARKS);
     }
     Ok(())
 }

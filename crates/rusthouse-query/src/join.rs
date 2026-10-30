@@ -37,9 +37,14 @@ pub struct JoinStep {
     pub using_keys: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinAggregate {
     CountStar,
+    CountColumn(JoinColumn),
+    Numeric {
+        function: crate::AggregateFunction,
+        column: JoinColumn,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,15 +94,42 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     parser.keyword("SELECT");
     let aggregate = if parser.keyword("COUNT") {
-        if !parser.take(Token::LParen)
-            || !parser.take(Token::Star)
-            || !parser.take(Token::RParen)
-        {
-            return Err(ParseError("JOIN COUNT requires COUNT(*)".into()));
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("JOIN COUNT requires '('".into()));
         }
-        Some(JoinAggregate::CountStar)
+        let result = if parser.take(Token::Star) {
+            JoinAggregate::CountStar
+        } else {
+            JoinAggregate::CountColumn(qualified(&mut parser)?)
+        };
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("JOIN COUNT requires ')'".into()));
+        }
+        Some(result)
     } else {
-        None
+        let function = if parser.keyword("SUM") {
+            Some(crate::AggregateFunction::Sum)
+        } else if parser.keyword("AVG") {
+            Some(crate::AggregateFunction::Avg)
+        } else if parser.keyword("MIN") {
+            Some(crate::AggregateFunction::Min)
+        } else if parser.keyword("MAX") {
+            Some(crate::AggregateFunction::Max)
+        } else {
+            None
+        };
+        if let Some(function) = function {
+            if !parser.take(Token::LParen) {
+                return Err(ParseError("JOIN aggregate requires '('".into()));
+            }
+            let column = qualified(&mut parser)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("JOIN aggregate requires ')'".into()));
+            }
+            Some(JoinAggregate::Numeric { function, column })
+        } else {
+            None
+        }
     };
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
@@ -424,6 +456,13 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             || relation == right_alias
             || steps.iter().any(|step| step.alias == relation)
     };
+    if let Some(JoinAggregate::CountColumn(column) | JoinAggregate::Numeric { column, .. }) = &aggregate {
+        if !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}", column.relation
+            )));
+        }
+    }
     if let Some(columns) = &columns {
         for column in columns {
             if !known_qualifier(&column.relation) {
@@ -473,13 +512,31 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
-    if aggregate.is_some() &&
-        (kind != JoinType::Inner || !order_by.is_empty()
-            || (!steps.is_empty()
-                && (steps.iter().any(|step| step.kind != JoinType::Inner)
-                    || where_null.is_some()))) {
+    // The streaming COUNT(column) executor currently covers exactly two INNER sources.
+    if matches!(aggregate.as_ref(), Some(JoinAggregate::CountColumn(_)))
+        && (kind != JoinType::Inner || !steps.is_empty())
+    {
+        return Err(ParseError("JOIN COUNT(column) requires a two-table INNER JOIN".into()));
+    }
+    // Chained numeric/column aggregates and OUTER or filtered chained COUNT
+    // lack a matching streaming semantics implementation. Reject them.
+    if !steps.is_empty() && aggregate.is_some()
+        && (!matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))
+            || kind != JoinType::Inner
+            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || where_null.is_some())
+    {
         return Err(ParseError(
-            "streamed JOIN COUNT requires INNER joins without ORDER BY or chained WHERE".into()
+            "chained JOIN COUNT requires all INNER joins and no post-join NULL filter".into(),
+        ));
+    }
+    if aggregate.is_some()
+        && (!order_by.is_empty()
+            || (steps.is_empty() && kind != JoinType::Inner
+                && !matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))))
+    {
+        return Err(ParseError(
+            "JOIN aggregates require no ORDER BY; two-table OUTER JOIN supports COUNT(*) only".into(),
         ));
     }
     Ok(Some(JoinSelect {
@@ -566,8 +623,16 @@ pub fn explain_join(query: &JoinSelect) -> String {
     }
     plan.push_str(&format!(
         "\nProject: {}\nLimit: {}",
-        if query.aggregate.is_some() {
-            "count(*)".to_owned()
+        if let Some(aggregate) = &query.aggregate {
+            match aggregate {
+                JoinAggregate::CountStar => "count(*)".to_owned(),
+                JoinAggregate::CountColumn(column) => {
+                    format!("count({}.{})", column.relation, column.name)
+                }
+                JoinAggregate::Numeric { function, column } => {
+                    format!("{}({}.{})", function.name(), column.relation, column.name)
+                }
+            }
         } else { query.columns.as_ref().map_or("*".to_owned(), |columns| {
             columns
                 .iter()
