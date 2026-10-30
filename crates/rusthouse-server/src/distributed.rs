@@ -407,7 +407,22 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
             header = Some(shard_header);
         }
         let rows = &body[header_end + 1..];
-        let shard_rows = rows.iter().filter(|&&b| b == b'\n').count();
+        let required_tabs = shard_header.iter().filter(|&&byte| byte == b'\t').count();
+        let mut shard_rows = 0usize;
+        let mut row_tabs = 0usize;
+        // TSV field separators are literal tabs; tabs inside fields are escaped.
+        // Validate column counts rather than passing malformed remote rows through.
+        for &byte in rows {
+            if byte == b'\t' {
+                row_tabs += 1;
+            } else if byte == b'\n' {
+                if row_tabs != required_tabs {
+                    return Err(MergeError::InvalidResponse);
+                }
+                row_tabs = 0;
+                shard_rows += 1;
+            }
+        }
         if *cap == 0 || shard_rows >= *cap {
             return Err(MergeError::ShardRowLimit);
         }
@@ -2427,5 +2442,25 @@ mod shard_dispatch_wave_tests {
             .flat_map(|wave| wave.iter().copied()).collect();
         assert_eq!(selected, peers);
         assert_eq!(peers.chunks(8).count(), 4);
+    }
+}
+
+#[cfg(test)]
+mod distributed_scan_tsv_shape_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_incomplete_and_excess_tsv_fields() {
+        for row in ["1\n", "1\ttwo\tthree\n"] {
+            let body = format!("id\tvalue\n{row}").into_bytes();
+            assert_eq!(
+                merge_tsv(&[(10, body)], 10),
+                Err(MergeError::InvalidResponse),
+            );
+        }
+        assert_eq!(
+            merge_tsv(&[(10, b"id\tvalue\n1\t\n".to_vec())], 10).unwrap(),
+            b"id\tvalue\n1\t\n",
+        );
     }
 }
