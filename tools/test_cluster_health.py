@@ -6,6 +6,9 @@ class ClusterTests(unittest.TestCase):
         self.assertTrue(validate({"total": 1, "healthy": 1,
                                   "peers": [{"address": "127.0.0.1:8124", "healthy": True}]}))
 
+    def test_empty_cluster_is_not_ready(self):
+        self.assertFalse(validate({"total": 0, "healthy": 0, "peers": []}))
+
     def test_exact_membership_required_even_if_all_reported_healthy(self):
         payload = {"total": 2, "healthy": 2, "peers": [
             {"address": "127.0.0.1:9001", "healthy": True},
@@ -56,7 +59,7 @@ class ClusterTests(unittest.TestCase):
         with patch("cluster_health.NO_REDIRECT_OPENER") as opener:
             opener.open.return_value.__enter__.return_value.read.return_value = payload
             healthy, info = inspect("http://127.0.0.1:8123", timeout=3)
-            self.assertTrue(healthy)
+            self.assertFalse(healthy)
             self.assertEqual(info["total"], 0)
             opener.open.assert_called_once_with("http://127.0.0.1:8123/cluster/health", timeout=3)
 

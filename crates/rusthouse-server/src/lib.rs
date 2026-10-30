@@ -446,8 +446,10 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     }
     let mut writer = LimitedWriter::new();
     let result = match format {
-        QueryFormat::Tsv | QueryFormat::TsvNoHeader => {
-            execute(&select, part.as_deref(), &mut writer)
+        QueryFormat::Tsv => execute(&select, part.as_deref(), &mut writer),
+        QueryFormat::TsvNoHeader => {
+            let mut without_header = WithoutHeader::new(&mut writer);
+            execute(&select, part.as_deref(), &mut without_header)
         }
         QueryFormat::Csv => {
             let mut csv = CsvWriter::new(&mut writer);
@@ -497,14 +499,6 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             })
         }
     };
-    if result.is_ok() && matches!(format, QueryFormat::TsvNoHeader) {
-        let header_bytes = writer
-            .data
-            .iter()
-            .position(|&byte| byte == b'\n')
-            .map_or(writer.data.len(), |index| index + 1);
-        writer.data.drain(..header_bytes);
-    }
     match result {
         Ok(()) => Response {
             status: "200 OK",
@@ -1210,6 +1204,23 @@ mod inline_clickhouse_format_tests {
         let config = Config { part: None, database: None, max_rows: 100 };
         assert_eq!(handle_request("POST", "/?format=csv", b"SELECT 1 FORMAT CSV", &config).status, "400 Bad Request");
         assert_eq!(handle_request("POST", "/", b"SELECT 1 FORMAT JSONEachRow", &config).status, "400 Bad Request");
+    }
+}
+
+#[cfg(test)]
+mod streaming_tsv_header_tests {
+    use super::*;
+
+    #[test]
+    fn suppresses_split_tsv_header_without_buffering_or_draining_rows() {
+        let mut output = LimitedWriter::new();
+        {
+            let mut without_header = WithoutHeader::new(&mut output);
+            without_header.write_all(b"first\tsecond").unwrap();
+            without_header.write_all(b"\n1\tone\n2\ttwo\n").unwrap();
+        }
+        assert_eq!(output.data, b"1\tone\n2\ttwo\n");
+        assert!(!output.exceeded);
     }
 }
 
