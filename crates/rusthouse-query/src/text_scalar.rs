@@ -70,6 +70,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "QUOTE_LITERAL"
             | "FROMUNIXTIMESTAMP64MILLI"
             | "CUTQUERYSTRINGANDFRAGMENT"
+            | "THROWIF"
             | "COALESCE"
             | "SUBTRACTHOURS"
             | "CONCAT_WS"
@@ -1842,6 +1843,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 }
                 _ => ConstantValue::Null,
             }
+        }
+        "THROWIF" => {
+            let condition = integer_arg(parser, depth + 1)?;
+            let message = if parser.take(Token::Comma) {
+                text_arg(parser, depth + 1)?
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "throwIf expects one or two arguments")?;
+            if condition.is_some_and(|value| value != 0) {
+                return Err(ParseError(
+                    message.unwrap_or_else(|| "throwIf condition is true".into()),
+                ));
+            }
+            ConstantValue::Integer(0)
         }
         "COALESCE" => {
             let mut first = ConstantValue::Null;
@@ -4828,5 +4844,35 @@ mod clickhouse_crc32_tests {
                 if values.len() == 1 && values[0].value == ConstantValue::Null
         ));
         assert!(parse_select("SELECT CRC32('a', 'b')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod constant_throw_if_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn false_and_null_conditions_yield_zero() {
+        for sql in [
+            "SELECT throwIf(0)",
+            "SELECT throwIf(NULL)",
+            "SELECT throwIf(0, 'unused')",
+        ] {
+            assert!(
+                matches!(
+                    parse_select(sql).unwrap().projection,
+                    Projection::Constants(ref values)
+                        if values.len() == 1 && values[0].value == ConstantValue::Integer(0)
+                ),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn true_condition_returns_a_parser_error() {
+        assert!(parse_select("SELECT throwIf(1, 'custom guard')").is_err());
+        assert!(parse_select("SELECT throwIf(1)").is_err());
+        assert!(parse_select("SELECT throwIf(0, 'ok', 3)").is_err());
     }
 }
