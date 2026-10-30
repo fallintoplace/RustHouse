@@ -81,11 +81,12 @@ pub fn scrub_snapshot_with_byte_limit(
     let mut slots: Vec<Option<Result<ScrubReport, PartError>>> =
         (0..parts.len()).map(|_| None).collect();
     std::thread::scope(|scope| -> Result<(), PartError> {
-        let handles = (0..workers)
-            .map(|_| {
-                let cursor = &cursor;
-                let parts = &parts;
-                scope.spawn(move || {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let cursor = &cursor;
+            let parts = &parts;
+            let handle = std::thread::Builder::new()
+                .spawn_scoped(scope, move || {
                     let mut completed = Vec::new();
                     loop {
                         let index = cursor.fetch_add(1, Ordering::Relaxed);
@@ -96,8 +97,11 @@ pub fn scrub_snapshot_with_byte_limit(
                     }
                     completed
                 })
-            })
-            .collect::<Vec<_>>();
+                .map_err(|error| {
+                    PartError::InvalidScan(format!("cannot start scrub worker: {error}"))
+                })?;
+            handles.push(handle);
+        }
         for handle in handles {
             let completed = handle.join().map_err(|_| {
                 PartError::InvalidScan("snapshot scrub worker panicked".into())
