@@ -2,6 +2,7 @@
 //! The caller must hold the local database write lock.
 use crate::{
     PartError, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_hashes,
+    verify_wide_part,
 };
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
@@ -80,6 +81,9 @@ pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), 
     inspect_query_source(&target)?;
     for part in query_parts(&target)? {
         verify_part_file_hashes(&part)?;
+        // Checksums cover declared files only. Validate stream/mark structure
+        // as well before exposing the generation to readers.
+        verify_wide_part(&part)?;
     }
     let pointer = root.join(".rusthouse-active");
     validate_fresh_generation(&pointer, generation)?;
@@ -181,6 +185,33 @@ mod tests {
         assert!(activate_verified_generation(&root, 0).is_err());
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn refuses_generation_with_unverified_extra_streams() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-activate-unlisted-stream-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let part = root.join(".rusthouse-versions/g1/all_0_0_0");
+        fs::create_dir_all(part.parent().unwrap()).unwrap();
+        write_wide_part(
+            &part,
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[vec![Some("12".into())]],
+        ).unwrap();
+        // A file outside checksums.txt passes the manifest's stored-file check.
+        fs::write(part.join("extra.bin"), b"bad-block").unwrap();
+        fs::write(part.join("extra.mrk2"), b"bad-mark").unwrap();
+        assert!(verify_part_file_hashes(&part).is_ok());
+        assert!(verify_wide_part(&part).is_err());
+        assert!(activate_verified_generation(&root, 1).is_err());
+        assert!(!root.join(".rusthouse-active").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn corrupted_generation_does_not_publish_active_pointer() {
         let root =
