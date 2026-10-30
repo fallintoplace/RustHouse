@@ -2668,7 +2668,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 (Some(input), Some(needle)) => {
                     let index = input
                         .find(needle.as_str())
-                        .map(|byte_index| input[..byte_index].chars().count() + 1)
+                        .map(|byte_index| {
+                            if name == "STRPOS" {
+                                byte_index + 1
+                            } else {
+                                input[..byte_index].chars().count() + 1
+                            }
+                        })
                         .unwrap_or(0);
                     ConstantValue::Integer(
                         i64::try_from(index)
