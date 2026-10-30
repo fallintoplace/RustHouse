@@ -98,6 +98,9 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         validate_lock_identity(&path, &file)?;
         advisory::try_lock(&file, exclusive)
             .map_err(|error| format_database_lock_error("acquire", lock_kind, &path, error))?;
+        // A concurrent replacement between open() and flock() must not let
+        // two writers lock different inodes under the same path.
+        validate_lock_identity(&path, &file)?;
     }
 
     #[cfg(not(unix))]
@@ -112,4 +115,31 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         #[cfg(not(unix))]
         path,
     })
+}
+
+#[cfg(all(test, unix))]
+mod lock_identity_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn detects_replaced_lock_path_after_open() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-lock-swap-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join(".rusthouse-write.lock");
+        fs::write(&path, b"").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        validate_lock_identity(&path, &file).unwrap();
+
+        fs::rename(&path, dir.join("old-lock")).unwrap();
+        fs::write(&path, b"").unwrap();
+        assert!(validate_lock_identity(&path, &file).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
