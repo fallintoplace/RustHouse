@@ -11,6 +11,7 @@ use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use crate::{MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, Response};
 use rusthouse_query::{AggregateFunction, Having, Operator, Projection, Select, Source, parse_select};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
@@ -42,7 +43,7 @@ enum MergeError {
 fn merge_distinct_counts(shards: &[(usize, Vec<u8>)], column: &str) -> Result<Vec<u8>, MergeError> {
     const MAX_KEYS: usize = 100_000;
     let expected_header = format!("{column}\n");
-    let mut values: HashSet<&[u8]> = HashSet::new();
+    let mut values: HashSet<Cow<'_, [u8]>> = HashSet::new();
     for (cap, body) in shards {
         if !body.ends_with(b"\n") || !body.starts_with(expected_header.as_bytes()) {
             return Err(MergeError::InvalidDistinctCount);
@@ -61,10 +62,20 @@ fn merge_distinct_counts(shards: &[(usize, Vec<u8>)], column: &str) -> Result<Ve
                     return Err(MergeError::ShardRowLimit);
                 }
                 if value != b"\\N" {
-                    if values.len() >= MAX_KEYS && !values.contains(value) {
+                    // Distinct values are logical TSV cells, not wire encodings.
+                    // Borrow unescaped fields; allocate only when decoding escapes.
+                    let normalized: Cow<'_, [u8]> = if value.contains(&b'\\') {
+                        Cow::Owned(
+                            rusthouse_format::decode_tsv_field(value)
+                                .map_err(|_| MergeError::InvalidDistinctCount)?,
+                        )
+                    } else {
+                        Cow::Borrowed(value)
+                    };
+                    if values.len() >= MAX_KEYS && !values.contains(normalized.as_ref()) {
                         return Err(MergeError::CoordinatorLimit);
                     }
-                    values.insert(value);
+                    values.insert(normalized);
                 }
             }
         }
@@ -740,6 +751,24 @@ fn merge_integer_extrema(
     Ok(output)
 }
 
+#[derive(Hash, PartialEq, Eq)]
+enum NormalizedGroupKey<'a> {
+    Null,
+    Value(Cow<'a, [u8]>),
+}
+
+fn normalized_group_key(raw: &[u8]) -> Result<NormalizedGroupKey<'_>, ()> {
+    if raw == b"\\N" {
+        return Ok(NormalizedGroupKey::Null);
+    }
+    if raw.contains(&b'\\') {
+        let decoded = rusthouse_format::decode_tsv_field(raw).map_err(|_| ())?;
+        Ok(NormalizedGroupKey::Value(Cow::Owned(decoded)))
+    } else {
+        Ok(NormalizedGroupKey::Value(Cow::Borrowed(raw)))
+    }
+}
+
 fn merge_grouped_integer_sums(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -763,7 +792,7 @@ fn merge_grouped_integer_sums_query(
         .strip_prefix("Nullable(")
         .unwrap_or(kind)
         .starts_with("UInt");
-    let mut positions = HashMap::<&[u8], usize>::new();
+    let mut positions = HashMap::<NormalizedGroupKey<'_>, usize>::new();
     let mut groups = Vec::<(&[u8], Option<i128>, Option<u128>)>::new();
     for (cap, body) in shards {
         if *cap == 0 || !body.ends_with(b"\n") {
@@ -796,13 +825,15 @@ fn merge_grouped_integer_sums_query(
                 .position(|&byte| byte == b'\t')
                 .ok_or(MergeError::InvalidGroupedSum)?;
             let key = &row[..delimiter];
+            let normalized = normalized_group_key(key)
+                .map_err(|_| MergeError::InvalidGroupedSum)?;
             let value = &row[delimiter + 1..];
             let partial = if value == b"NULL" {
                 None
             } else {
                 Some(std::str::from_utf8(value).map_err(|_| MergeError::InvalidGroupedSum)?)
             };
-            let index = if let Some(&index) = positions.get(key) {
+            let index = if let Some(&index) = positions.get(&normalized) {
                 index
             } else {
                 // Output caps apply after global HAVING, sorting and pagination.
@@ -812,7 +843,7 @@ fn merge_grouped_integer_sums_query(
                     return Err(MergeError::CoordinatorLimit);
                 }
                 let index = groups.len();
-                positions.insert(key, index);
+                positions.insert(normalized, index);
                 groups.push((key, None, None));
                 index
             };
@@ -1007,7 +1038,7 @@ fn merge_grouped_counts_query(
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
     let mut expected_header: Option<&[u8]> = None;
-    let mut positions = HashMap::<&[u8], usize>::new();
+    let mut positions = HashMap::<NormalizedGroupKey<'_>, usize>::new();
     let mut groups = Vec::<(&[u8], u64)>::new();
     for (cap, body) in shards {
         if !body.ends_with(b"\n") || *cap == 0 {
@@ -1052,6 +1083,8 @@ fn merge_grouped_counts_query(
                 .position(|&byte| byte == b'\t')
                 .ok_or(MergeError::InvalidGroupedCount)?;
             let key = &row[..delimiter];
+            let normalized = normalized_group_key(key)
+                .map_err(|_| MergeError::InvalidGroupedCount)?;
             let digits = &row[delimiter + 1..];
             if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
                 return Err(MergeError::InvalidGroupedCount);
@@ -1060,7 +1093,7 @@ fn merge_grouped_counts_query(
                 .map_err(|_| MergeError::InvalidGroupedCount)?
                 .parse::<u64>()
                 .map_err(|_| MergeError::CountOverflow)?;
-            if let Some(&index) = positions.get(key) {
+            if let Some(&index) = positions.get(&normalized) {
                 let previous = &mut groups[index].1;
                 *previous = previous
                     .checked_add(count)
@@ -1070,7 +1103,7 @@ fn merge_grouped_counts_query(
                 if groups.len() >= max_groups {
                     return Err(MergeError::CoordinatorLimit);
                 }
-                positions.insert(key, groups.len());
+                positions.insert(normalized, groups.len());
                 groups.push((key, count));
             }
         }
@@ -2478,6 +2511,73 @@ mod shard_dispatch_wave_tests {
             .flat_map(|wave| wave.iter().copied()).collect();
         assert_eq!(selected, peers);
         assert_eq!(peers.chunks(8).count(), 4);
+    }
+}
+
+#[cfg(test)]
+mod distributed_normalized_group_key_tests {
+    use super::*;
+
+    #[test]
+    fn equivalent_tsv_escapes_merge_as_one_count_group() {
+        let shards = [
+            (10, b"key\tcount\nfirst\\tsecond\t2\n".to_vec()),
+            (10, b"key\tcount\nfirst\\x09second\t3\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_counts(&shards, 10).unwrap(),
+            b"key\tcount\nfirst\\tsecond\t5\n",
+        );
+    }
+
+    #[test]
+    fn null_group_keys_do_not_collide_with_literal_backslash_n() {
+        let shards = [
+            (10, b"key\tcount\n\\N\t1\n".to_vec()),
+            (10, b"key\tcount\n\\\\N\t2\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_counts(&shards, 10).unwrap(),
+            b"key\tcount\n\\N\t1\n\\\\N\t2\n",
+        );
+    }
+
+    #[test]
+    fn equivalent_tsv_escapes_merge_grouped_sums() {
+        let shards = [
+            (10, b"key\tsum(amount)\nfirst\\tsecond\t2\n".to_vec()),
+            (10, b"key\tsum(amount)\nfirst\\x09second\t3\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums(&shards, 10, "Int64", "key", "amount").unwrap(),
+            b"key\tsum(amount)\nfirst\\tsecond\t5\n",
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_distinct_escape_normalization_tests {
+    use super::*;
+
+    #[test]
+    fn counts_equivalent_tsv_escapes_only_once_across_shards() {
+        let shards = [
+            (10, b"word\nfirst\\tsecond\n".to_vec()),
+            (10, b"word\nfirst\\x09second\n".to_vec()),
+            (10, b"word\n\\N\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_distinct_counts(&shards, "word").unwrap(),
+            b"count(DISTINCT word)\n1\n",
+        );
+    }
+
+    #[test]
+    fn refuses_malformed_tsv_escapes_in_distinct_values() {
+        assert_eq!(
+            merge_distinct_counts(&[(10, b"word\ninvalid\\q\n".to_vec())], "word"),
+            Err(MergeError::InvalidDistinctCount),
+        );
     }
 }
 
