@@ -192,10 +192,17 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
         }
         let entry = entry.map_err(|e| io_error(path, e))?;
         let file_type = entry.file_type().map_err(|e| io_error(&entry.path(), e))?;
-        if !file_type.is_dir() {
-            continue; // Symlinks are deliberately not followed.
-        }
         let name = entry.file_name();
+        if !file_type.is_dir() {
+            // A named active part cannot silently disappear from the snapshot
+            // just because its directory was replaced by a file or symlink.
+            if name.to_str().is_some_and(|name| part_span(name).is_some()) {
+                return Err(PartError::InvalidScan(format!(
+                    "active part is not a real directory: {}", entry.path().display()
+                )));
+            }
+            continue; // Ordinary metadata files are not active parts.
+        }
         // Older local writers staged data inside the active parts directory.
         // Never expose those incomplete, unpublished parts to SQL reads.
         if name
@@ -991,5 +998,44 @@ mod active_pointer_stability_tests {
         assert_eq!(original.modified().unwrap(), altered.modified().unwrap());
         assert!(!pointer_unchanged(&original, &altered));
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod disguised_active_part_tests {
+    use super::*;
+
+    fn test_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-active-part-type-{}-{}-{:?}",
+            label,
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        fs::create_dir(&root).unwrap();
+        let good = root.join("all_0_0_0");
+        fs::create_dir(&good).unwrap();
+        fs::write(good.join("count.txt"), b"1\n").unwrap();
+        fs::write(good.join("columns.txt"), b"schema").unwrap();
+        root
+    }
+
+    #[test]
+    fn rejects_regular_file_disguised_as_active_part() {
+        let root = test_root("regular");
+        assert_eq!(query_parts(&root).unwrap().len(), 1);
+        fs::write(root.join("all_1_1_0"), b"not a directory").unwrap();
+        assert!(query_parts(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_disguised_as_active_part() {
+        use std::os::unix::fs::symlink;
+        let root = test_root("symlink");
+        symlink("all_0_0_0", root.join("all_1_1_0")).unwrap();
+        assert!(query_parts(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
