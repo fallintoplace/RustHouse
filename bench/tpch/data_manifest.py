@@ -3,22 +3,36 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+import stat
 
 from schema import TABLES, names, explain_scaling
 
 MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 
+def _identity(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
 def inspect_table(path, table):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"{table}: converted TSV must be a regular, non-symlinked file: {path}")
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"{table}: converted TSV must be a regular file: {path}")
     expected = "\t".join(names(table)).encode("utf-8")
     digest = hashlib.sha256()
     rows = 0
     expected_columns = len(TABLES[table])
-    with path.open("rb") as source:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or _identity(opened) != _identity(before):
+            raise ValueError(f"{table}: converted TSV changed while opening: {path}")
         header = source.readline(len(expected) + 3)
         if header not in (expected + b"\n", expected + b"\r\n"):
             raise ValueError(f"{table}: unexpected TSV header")
@@ -32,12 +46,18 @@ def inspect_table(path, table):
                 raise ValueError(f"{table}: malformed or truncated TSV record")
             digest.update(record)
             rows += 1
+        finished = os.fstat(source.fileno())
+    after = path.lstat()
+    if (not stat.S_ISREG(after.st_mode) or
+            _identity(before) != _identity(finished) or
+            _identity(before) != _identity(after)):
+        raise ValueError(f"{table}: converted TSV changed during hashing: {path}")
     if rows == 0:
         raise ValueError(f"{table}: no data rows")
     return {
         "name": table,
         "rows": rows,
-        "bytes": path.stat().st_size,
+        "bytes": finished.st_size,
         "sha256": digest.hexdigest(),
         "columns": [{"name": name, "type": kind, "scale": scale}
                     for name, kind, scale in TABLES[table]],
