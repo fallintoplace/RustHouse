@@ -239,10 +239,12 @@ mod tests {
         struct Bytewise<R>(R);
         impl<R: Read> Read for Bytewise<R> {
             fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-                self.0.read(&mut bytes[..bytes.len().min(1)])
+                let count = bytes.len().min(1);
+                self.0.read(&mut bytes[..count])
             }
         }
-        let mut reader = Bytewise(&42u16.to_le_bytes()[..]);
+        let encoded = 42u16.to_le_bytes();
+        let mut reader = Bytewise(&encoded[..]);
         assert_eq!(read_numeric_column(&mut reader, "UInt16", 1).unwrap(),
             NumericColumn::UInt16(vec![42]));
         assert!(matches!(
