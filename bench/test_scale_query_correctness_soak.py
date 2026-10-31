@@ -15,6 +15,12 @@ class CorrectnessSoakTests(unittest.TestCase):
                              (hashlib.sha256(b"count\n2\n").hexdigest(), 8))
         self.assertEqual(percentile([3, 1, 2], 95), 3)
 
+    def test_percentile_rejects_invalid_duration_samples(self):
+        for values in ([float("nan")], [float("inf")], [-1], [True], ["0.1"]):
+            with self.subTest(values=values), self.assertRaisesRegex(ValueError, "invalid sample"):
+                percentile(values, 95)
+        self.assertEqual(percentile([0.0, 0.1], 95), 0.1)
+
     def test_matches_each_iteration_and_rejects_drift(self):
         with tempfile.TemporaryDirectory() as temp:
             oracle = Path(temp) / "expected.tsv"
