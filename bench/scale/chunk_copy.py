@@ -28,7 +28,7 @@ def unique_manifest_fields(pairs):
 
 
 def copy_sql(table, path):
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
         raise ValueError("table must be an unquoted SQL identifier")
     escaped = str(Path(path).resolve()).replace("'", "''")
     return f"COPY {table} FROM '{escaped}' WITH (FORMAT TSV)"
@@ -94,6 +94,8 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         raise ValueError("timeout must be finite and positive")
     if type(dry_run) is not bool:
         raise ValueError("dry_run must be a boolean")
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
+        raise ValueError("table must be an unquoted SQL identifier")
     manifest_path = Path(source_dir) / "manifest.json"
     before = manifest_path.lstat()
     if not stat.S_ISREG(before.st_mode):

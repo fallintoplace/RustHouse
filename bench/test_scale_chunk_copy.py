@@ -38,6 +38,11 @@ class ChunkCopyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "identifier"):
             copy_sql("events; DROP TABLE users", "data.tsv")
 
+    def test_preflights_invalid_table_names_even_for_dry_run(self):
+        for table in ("a" * 129, None, "bad;query"):
+            with self.subTest(table=table), self.assertRaisesRegex(ValueError, "identifier"):
+                load_chunks("rusthouse", "db", table, "/no-manifest", dry_run=True)
+
     def test_loads_ordered_chunks(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)
