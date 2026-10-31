@@ -19,6 +19,7 @@ fn appends_character_only_when_missing() {
             "https://example.com/",
         ),
         ("SELECT appendTrailingCharIfAbsent('', '/')", ""),
+        ("SELECT appendTrailingCharIfAbsent('', '☃')", ""),
         ("SELECT appendTrailingCharIfAbsent('雪', '☃')", "雪☃"),
     ] {
         assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
