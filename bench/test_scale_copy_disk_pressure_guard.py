@@ -44,6 +44,19 @@ class DiskGuardTests(unittest.TestCase):
                 guard("unused", "unused", "events", fake, temp,
                       poll_seconds=0.001)
 
+    @unittest.skipIf(sys.platform == "win32", "Windows CI may disallow symlinks")
+    def test_rejects_symlinked_source_before_spawning_copy(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "real.tsv"
+            source.write_bytes(b"1\n")
+            alias = Path(root) / "alias.tsv"
+            alias.symlink_to(source)
+            with patch("bench.scale.copy_disk_pressure_guard.subprocess.Popen") as launch:
+                with self.assertRaisesRegex(ValueError, "source TSV must not be a symlink"):
+                    guard("unused", Path(root) / "db", "events", alias, root,
+                          min_free_gib=0.000001)
+                launch.assert_not_called()
+
     def test_rejects_wrong_device_before_creating_a_new_database(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
