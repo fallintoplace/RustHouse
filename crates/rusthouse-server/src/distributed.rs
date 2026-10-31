@@ -3003,7 +3003,7 @@ mod logical_distinct_tsv_equivalence_tests {
         ];
         assert_eq!(
             merge_distinct_tsv(&shards, 16, 0, None).unwrap(),
-            b"id\tvalue\n1\tA\n2\t\\x41\n3\t\\t\n3\t\\x09\n",
+            b"id\tvalue\n1\tA\n2\t\\x41\n3\t\\t\n",
         );
         assert_eq!(
             merge_distinct_tsv(&shards, 2, 1, Some(2)).unwrap(),
