@@ -17,7 +17,7 @@ class StrictCsvReportJsonTests(unittest.TestCase):
     def test_rejects_nonstandard_json_numbers(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "report.json"
-            for number in ("NaN", "Infinity", "-Infinity"):
+            for number in ("NaN", "Infinity", "-Infinity", "1e10000", "-1e10000"):
                 with self.subTest(number=number):
                     path.write_text('{"results":[],"value":' + number + '}', encoding="utf-8")
                     with self.assertRaisesRegex(ValueError, "invalid"):
