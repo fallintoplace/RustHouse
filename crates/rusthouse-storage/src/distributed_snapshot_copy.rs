@@ -35,6 +35,25 @@ fn create_private_staging_directory(path: &Path) -> io::Result<()> {
     directory.create(path)
 }
 
+// Crashed copies may leave a stage directory behind. A reused PID must
+// not prevent a later, independent snapshot from being copied.
+fn create_snapshot_staging_with(
+    mut candidate: impl FnMut() -> PathBuf,
+) -> io::Result<PathBuf> {
+    for _ in 0..32 {
+        let path = candidate();
+        match create_private_staging_directory(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "snapshot staging namespace exhausted",
+    ))
+}
+
 fn sync_directory(path: &Path) -> Result<(), PartError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
@@ -282,13 +301,14 @@ pub fn copy_frozen_snapshot_with_file_limit(
             "snapshot copy destination must be outside the source tree".into(),
         ));
     }
-    let staging = parent.join(format!(
-        ".rusthouse-snapshot-copy-{}-{}",
-        std::process::id(),
-        NEXT_COPY.fetch_add(1, Ordering::Relaxed)
-    ));
-    create_private_staging_directory(&staging)
-        .map_err(|error| io_error(&staging, error))?;
+    let staging = create_snapshot_staging_with(|| {
+        parent.join(format!(
+            ".rusthouse-snapshot-copy-{}-{}",
+            std::process::id(),
+            NEXT_COPY.fetch_add(1, Ordering::Relaxed)
+        ))
+    })
+    .map_err(|error| io_error(parent, error))?;
     let copied = copy_snapshot_parts(&parts, &staging, max_files, max_bytes)
         .and_then(|report| {
             inspect_query_source(&staging)?;
@@ -352,6 +372,34 @@ pub fn preview_frozen_snapshot(
         files: files.len(),
         bytes,
     })
+}
+
+#[cfg(test)]
+mod snapshot_staging_collision_tests {
+    use super::*;
+
+    #[test]
+    fn retries_abandoned_directory_without_touching_its_contents() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-snapshot-staging-collision-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let orphan = root.join("old");
+        let new = root.join("new");
+        fs::create_dir(&orphan).unwrap();
+        fs::write(orphan.join("keep"), b"old copy").unwrap();
+        let mut attempts = 0;
+        let created = create_snapshot_staging_with(|| {
+            attempts += 1;
+            if attempts == 1 { orphan.clone() } else { new.clone() }
+        }).unwrap();
+        assert_eq!(attempts, 2);
+        assert_eq!(created, new);
+        assert_eq!(fs::read(orphan.join("keep")).unwrap(), b"old copy");
+        assert!(fs::metadata(created).unwrap().is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(test)]
