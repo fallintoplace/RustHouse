@@ -138,8 +138,8 @@ def load(duckdb, database, source_dir, selected=None, timeout=3600, execute=None
             if check.returncode or check.stdout.strip() != str(rows).encode("ascii"):
                 raise ValueError(f"{table}: DuckDB imported a different number of rows")
             results.append({"table": table, "rows": rows})
-        # A failed table import never publishes a partial reference database.
-        os.replace(staging_db, database)
+        # An import failure or a concurrent publisher must not replace a reference database.
+        os.link(staging_db, database)
     return {
         "engine": "duckdb", "native_decimal_types": True,
         "official_tpch_score": False, "tables": results,
