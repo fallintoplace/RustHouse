@@ -25,6 +25,20 @@ class AnalyticsSuiteTests(unittest.TestCase):
             self.assertEqual(sqlite_reference(oracle, "SELECT COUNT(coupon) FROM events"), b"5\n")
             oracle.close()
 
+    def test_fixture_writer_rejects_symlinked_targets(self):
+        for name in ("events.tsv", "accounts.tsv"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                directory = Path(root) / "fixture"
+                directory.mkdir()
+                protected = Path(root) / "protected"
+                protected.write_text("keep")
+                (directory / name).symlink_to(protected)
+                with self.assertRaisesRegex(ValueError, "symlinked analytics suite"):
+                    make_fixture(directory, 3)
+                self.assertEqual(protected.read_text(), "keep")
+                other = "accounts.tsv" if name == "events.tsv" else "events.tsv"
+                self.assertFalse((directory / other).exists())
+
     def test_oversize_workload_is_rejected_before_json_parsing(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "too-large.json"
