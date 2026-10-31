@@ -11,6 +11,7 @@ fn signed_unsigned_join_keys_match_by_value_without_reinterpreting_negatives() {
         "rusthouse-mixed-join-{}-{}",
         std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
     ));
+    fs::create_dir_all(&root).unwrap();
     let a = root.join("a");
     let b = root.join("b");
     let c = root.join("c");
