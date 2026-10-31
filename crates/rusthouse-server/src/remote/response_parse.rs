@@ -275,14 +275,14 @@ mod bounded_response_header_scan_tests {
     #[test]
     fn header_terminator_must_fit_inside_header_cap() {
         let valid_head = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n";
-        let padding = MAX_HEADER_BYTES - valid_head.len() - 4;
+        let padding = MAX_HEADER_BYTES - valid_head.len() - b"X-Pad: ".len() - 4;
         let mut valid = valid_head.to_vec();
+        valid.extend_from_slice(b"X-Pad: ");
         valid.extend(std::iter::repeat_n(b'X', padding));
         valid.extend_from_slice(b"\r\n\r\n");
-        // Long header extension is syntactically rejected, but the
-        // byte-boundary check must still recognize the terminator.
+        // The entire header, including the terminator, fits exactly.
         assert_eq!(valid.len(), MAX_HEADER_BYTES);
-        assert!(response_head(&valid).is_err());
+        assert_eq!(expected_wire_length(&valid).unwrap(), Some(valid.len()));
         let mut malicious = vec![b'a'; MAX_HEADER_BYTES + 1_000_000];
         malicious.extend_from_slice(b"\r\n\r\n");
         assert!(response_head(&malicious).is_err());
