@@ -74,13 +74,22 @@ def request(port, statement):
         return payload
 
 
+def _unique_object_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate HTTP parity JSON field: {key}")
+        result[key] = value
+    return result
+
+
 def verify_server_identity(port):
     """Require the intended RustHouse database-mode read-only endpoint."""
     with NO_REDIRECT_OPENER.open(f"http://127.0.0.1:{port}/capabilities", timeout=5) as response:
         body = response.read(1_048_577)
     if len(body) > 1_048_576:
         raise ValueError("HTTP parity capabilities response exceeds 1 MiB")
-    data = json.loads(body)
+    data = json.loads(body, object_pairs_hook=_unique_object_pairs)
     if (not isinstance(data, dict) or data.get("name") != "RustHouse"
             or data.get("source") != "database" or data.get("read_only") is not True):
         raise ValueError("HTTP parity server capabilities do not match RustHouse database mode")
@@ -107,7 +116,7 @@ def fetch_schema(port):
         payload = response.read(1_048_577)
     if len(payload) > 1_048_576:
         raise ValueError("HTTP parity schema response exceeds 1 MiB")
-    schema = json.loads(payload)
+    schema = json.loads(payload, object_pairs_hook=_unique_object_pairs)
     if not isinstance(schema, dict):
         raise ValueError("HTTP parity schema must be a JSON object")
     return schema
