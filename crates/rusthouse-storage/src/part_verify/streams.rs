@@ -58,12 +58,24 @@ pub(super) fn validate_adaptive_stream(
         .unwrap_or("stream");
     layout
         .validate(name, &marks.marks, expected_rows)
-        .map_err(|error| match error {
-            PartError::InvalidScan(message)
-                if message.starts_with("mark row counts do not match count.txt") => {
-                    invalid(data, "mark row counts do not match count.txt")
-                }
-            _ => invalid(data, "adaptive streams have mismatched granule boundaries"),
+        .map_err(|error| {
+            if matches!(&error, PartError::InvalidScan(message)
+                if message.starts_with("mark row counts do not match count.txt"))
+            {
+                return invalid(data, "mark row counts do not match count.txt");
+            }
+            // Preserve the old error precedence on malformed streams. A
+            // boundary mismatch can be found before the layout has counted
+            // all marks. Retry the row sum only on this error path; valid
+            // streams never traverse their marks twice.
+            let total_rows = marks.marks.iter().try_fold(0u64, |total, mark| {
+                total.checked_add(mark.rows.unwrap_or(0))
+            });
+            if total_rows != Some(expected_rows) {
+                invalid(data, "mark row counts do not match count.txt")
+            } else {
+                invalid(data, "adaptive streams have mismatched granule boundaries")
+            }
         })
 }
 
