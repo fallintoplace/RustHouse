@@ -176,6 +176,22 @@ pub fn read_array_offsets<O: Read>(
     let mut offsets = Vec::with_capacity(rows + 1);
     offsets.push(0);
 
+    // Decode small Array marks without clearing the 64 KiB scratch buffer.
+    // A complete 64-row offset batch fits in 512 bytes.
+    const SMALL_ROWS: usize = 64;
+    if rows <= SMALL_ROWS {
+        let mut scratch = [0u8; SMALL_ROWS * OFFSET_ENTRY_BYTES];
+        let bytes = rows * OFFSET_ENTRY_BYTES;
+        offset_stream
+            .read_exact(&mut scratch[..bytes])
+            .map_err(ArrayReadError::Offsets)?;
+        for (row, record) in scratch[..bytes].chunks_exact(OFFSET_ENTRY_BYTES).enumerate() {
+            let encoded = u64::from_le_bytes(record.try_into().unwrap());
+            append_array_offset(encoding, base, &mut absolute, encoded, row, &mut offsets)?;
+        }
+        return Ok(ArrayOffsets { offsets, last_absolute_offset: absolute });
+    }
+
     let mut buffer = [0u8; 64 * 1024];
     let mut row = 0;
     while row < rows {
@@ -251,6 +267,32 @@ mod tests {
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect()
+    }
+
+    #[test]
+    fn small_array_marks_keep_absolute_bases_and_input_position() {
+        use std::io::Cursor;
+        for rows in [0usize, 1, 32, 63, 64, 65] {
+            let mut data = (1..=rows as u64).map(|row| 100 + row)
+                .flat_map(u64::to_le_bytes).collect::<Vec<_>>();
+            data.extend_from_slice(&9999u64.to_le_bytes());
+            let mut input = Cursor::new(data);
+            let values = read_array_offsets(
+                &mut input, rows,
+                ArrayOffsetsEncoding::Absolute { previous_offset: 100 },
+            ).unwrap();
+            assert_eq!(values.len(), rows);
+            assert_eq!(values.element_count(), rows);
+            assert_eq!(values.last_absolute_offset(), 100 + rows as u64);
+            assert_eq!(input.position(), (rows * 8) as u64);
+            let mut trailing = [0u8; 8];
+            input.read_exact(&mut trailing).unwrap();
+            assert_eq!(u64::from_le_bytes(trailing), 9999);
+        }
+        assert!(matches!(
+            read_array_offsets(&mut &[0u8; 7][..], 1, ArrayOffsetsEncoding::Sizes),
+            Err(ArrayReadError::Offsets(error)) if error.kind() == io::ErrorKind::UnexpectedEof
+        ));
     }
 
     #[test]
