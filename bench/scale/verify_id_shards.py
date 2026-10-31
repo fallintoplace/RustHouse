@@ -18,6 +18,11 @@ def require_uint(value, name, *, zero=False):
 
 
 def verify_file(path, start, rows, step=1):
+    if (type(start) is not int or type(rows) is not int or type(step) is not int
+            or not 0 <= start <= (1 << 64) - 1
+            or rows < 1 or not 1 <= step <= (1 << 64) - 1
+            or (rows - 1) > ((1 << 64) - 1 - start) // step):
+        raise ValueError("invalid UInt64 shard verification interval")
     digest = hashlib.sha256()
     with Path(path).open("rb") as source:
         # Read exact bounded blocks rather than one readline and digest update
