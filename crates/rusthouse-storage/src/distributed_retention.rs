@@ -568,6 +568,7 @@ mod combined_replica_retention_tests {
             .collect::<Vec<_>>();
         let ids = inventory.iter().map(|&(id, _)| id).collect::<Vec<_>>();
         let pinned = [4, 20, 509, 800];
+        let sizes = inventory.iter().copied().collect::<std::collections::HashMap<_, _>>();
         for active in [1, 513, 1024] {
             for keep in [1usize, 5, 128, 1024, usize::MAX] {
                 for floors in [&[1u64, 800][..], &[257, 1024][..], &[u64::MAX][..]] {
@@ -579,7 +580,7 @@ mod combined_replica_retention_tests {
                         let mut bytes = 0u64;
                         let mut expected = Vec::new();
                         for &id in &permitted {
-                            let size = inventory.iter().find(|(key, _)| *key == id).unwrap().1;
+                            let size = sizes[&id];
                             if size <= budget - bytes {
                                 bytes += size;
                                 expected.push(id);
