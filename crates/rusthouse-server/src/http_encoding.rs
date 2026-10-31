@@ -100,7 +100,35 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
     let mut buffer = [0u8; 4096];
     buffer[0] = b'"';
     let mut used = 1;
-    for &byte in bytes {
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        // JSON-special bytes are ASCII. Copy ordinary UTF-8 spans in bulk
+        // instead of branching and copying each byte independently.
+        let span = remaining
+            .iter()
+            .position(|&byte| byte < 0x20 || byte == b'"' || byte == b'\\')
+            .unwrap_or(remaining.len());
+        if span != 0 {
+            let plain = &remaining[..span];
+            if plain.len() >= buffer.len() {
+                writer.write_all(&buffer[..used])?;
+                writer.write_all(plain)?;
+                used = 0;
+            } else {
+                if buffer.len() - used < plain.len() {
+                    writer.write_all(&buffer[..used])?;
+                    used = 0;
+                }
+                buffer[used..used + plain.len()].copy_from_slice(plain);
+                used += plain.len();
+            }
+            remaining = &remaining[span..];
+        }
+        if remaining.is_empty() {
+            break;
+        }
+        let byte = remaining[0];
+        remaining = &remaining[1..];
         let mut unicode_escape = [0u8; 6];
         let encoded: &[u8] = match byte {
             b'"' => br#"\""#,
@@ -228,5 +256,34 @@ mod sparse_percent_span_tests {
     fn handles_consecutive_escapes_and_empty_spans() {
         assert_eq!(decode_url("%41%42++%43").unwrap(), "AB  C");
         assert_eq!(decode_url("%00").unwrap().as_bytes(), &[0]);
+    }
+}
+
+#[cfg(test)]
+mod sparse_json_escape_span_tests {
+    use super::*;
+
+    #[test]
+    fn long_plain_runs_around_escapes_preserve_utf8_and_control_bytes() {
+        let left = "é".repeat(3000);
+        let right = "猫".repeat(1800);
+        let mut input = left.clone();
+        input.push('\n');
+        input.push('\u{0001}');
+        input.push('\\');
+        input.push('"');
+        input.push_str(&right);
+        input.push('\t');
+        let mut expected = vec![b'"'];
+        expected.extend_from_slice(left.as_bytes());
+        expected.extend_from_slice(&[
+            b'\\', b'n', b'\\', b'u', b'0', b'0', b'0', b'1',
+            b'\\', b'\\', b'\\', b'"',
+        ]);
+        expected.extend_from_slice(right.as_bytes());
+        expected.extend_from_slice(&[b'\\', b't', b'"']);
+        let mut output = Vec::new();
+        write_json_string(&mut output, &input).unwrap();
+        assert_eq!(output, expected);
     }
 }
