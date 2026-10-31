@@ -114,9 +114,12 @@ pub(super) fn execute<W: Write>(
         )?;
     }
     let mut rows = groups.into_values().collect::<Vec<_>>();
-    let order = query.order_by.first().map(|(_, desc, nulls)| (*desc, *nulls));
+    let (desc, nulls) = query
+        .order_by
+        .first()
+        .map(|(_, desc, nulls)| (*desc, *nulls))
+        .unwrap_or((false, Some(false)));
     rows.sort_by(|(left, _), (right, _)| {
-        let (desc, nulls) = order.unwrap_or((false, Some(false)));
         typed::compare_order_cells(left, right, desc, nulls)
     });
     writeln!(output, "{group_name}\tcount")?;

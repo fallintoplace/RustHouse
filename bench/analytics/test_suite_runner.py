@@ -25,6 +25,20 @@ class AnalyticsSuiteTests(unittest.TestCase):
             self.assertEqual(sqlite_reference(oracle, "SELECT COUNT(coupon) FROM events"), b"5\n")
             oracle.close()
 
+    def test_fixture_writer_rejects_symlinked_targets(self):
+        for name in ("events.tsv", "accounts.tsv"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                directory = Path(root) / "fixture"
+                directory.mkdir()
+                protected = Path(root) / "protected"
+                protected.write_text("keep")
+                (directory / name).symlink_to(protected)
+                with self.assertRaisesRegex(ValueError, "symlinked analytics suite"):
+                    make_fixture(directory, 3)
+                self.assertEqual(protected.read_text(), "keep")
+                other = "accounts.tsv" if name == "events.tsv" else "events.tsv"
+                self.assertFalse((directory / other).exists())
+
     def test_oversize_workload_is_rejected_before_json_parsing(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "too-large.json"
@@ -168,6 +182,13 @@ class AnalyticsSuiteParameterTests(unittest.TestCase):
             with self.subTest(rows=rows):
                 with self.assertRaisesRegex(ValueError, "integer"):
                     make_fixture("unused", rows)
+
+    def test_rejects_excessive_analytics_repetitions(self):
+        workload = {"name": "test", "queries": [{"name": "q", "sql": "SELECT 1"}]}
+        for runs, warmups in ((101, 0), (100, 1), (1, 100)):
+            with self.subTest(runs=runs, warmups=warmups):
+                with self.assertRaisesRegex(ValueError, "runs and timeout"):
+                    run_suite("unused", workload, rows=10, runs=runs, warmups=warmups)
 
     def test_nonfinite_timing_controls_are_rejected(self):
         workload = {"name": "test", "queries": [{"name": "q", "sql": "SELECT 1"}]}

@@ -18,6 +18,11 @@ def temperature_tenths(row):
 
 def write_input(path, rows, stations, delimiter="\t", batch_rows=4096):
     """Create an input file and return its min, max, and sum oracle."""
+    if (type(rows) is not int or type(stations) is not int
+            or not 1 <= stations <= rows):
+        raise ValueError("rows and stations must be positive integer counts")
+    if delimiter not in ("\t", ";"):
+        raise ValueError("unsupported measurement delimiter")
     if type(batch_rows) is not int or not 1 <= batch_rows <= 65536:
         raise ValueError("batch_rows must be in 1..65536")
     minimum = 10**9
@@ -90,6 +95,10 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name,
         minimum, maximum, total = write_input(source, rows, stations, delimiter,
                                               batch_rows=fixture_batch_rows)
         size = source.stat().st_size
+        copy = (
+            f"COPY measurements FROM '{source}' "
+            f"WITH (FORMAT {format_name})"
+        )
         timings = []
         for index in range(warmups + runs):
             database = root / f"database-{index}"
@@ -99,10 +108,6 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name,
                 database,
                 "CREATE TABLE measurements (station String, temperature Float64)",
                 timeout,
-            )
-            copy = (
-                f"COPY measurements FROM '{source}' "
-                f"WITH (FORMAT {format_name})"
             )
             start = time.perf_counter_ns()
             sql(binary, database, copy, timeout)

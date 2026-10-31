@@ -2,7 +2,6 @@
 import argparse
 import json
 import math
-import statistics
 from pathlib import Path
 
 from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
@@ -62,8 +61,11 @@ def compare(baseline, candidate, *, max_slowdown_percent=10,
             if ("runs" in report and
                     (type(report["runs"]) is not int or len(raw) != report["runs"])):
                 raise ValueError(f"{name}: sample count disagrees with measured runs")
-            raw_median = statistics.median(raw)
-            raw_p90 = sorted(raw)[math.ceil(0.9 * len(raw)) - 1]
+            ordered = sorted(raw)
+            middle = len(ordered) // 2
+            raw_median = (ordered[middle] if len(ordered) % 2
+                          else (ordered[middle - 1] + ordered[middle]) / 2)
+            raw_p90 = ordered[math.ceil(0.9 * len(ordered)) - 1]
             reported_median, reported_p90 = item.get("median_seconds"), item.get("p90_seconds")
             if (type(reported_median) not in (int, float)
                     or not math.isclose(reported_median, raw_median, rel_tol=1e-9)
@@ -103,7 +105,22 @@ def compare(baseline, candidate, *, max_slowdown_percent=10,
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 
 
+def _unique_fields(pairs):
+    values = {}
+    for key, value in pairs:
+        if key in values:
+            raise ValueError(f"duplicate physical comparison JSON field: {key}")
+        values[key] = value
+    return values
+
+
+def parse_report(path):
+    return json.loads(_read_bounded_report(path), object_pairs_hook=_unique_fields)
+
+
 def _read_bounded_report(path):
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("physical comparison report must be a regular non-symlinked file")
     with path.open("rb") as source:
         contents = source.read(MAX_REPORT_BYTES + 1)
     if len(contents) > MAX_REPORT_BYTES:
@@ -120,8 +137,8 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = compare(json.loads(_read_bounded_report(args.baseline)),
-                         json.loads(_read_bounded_report(args.candidate)),
+        report = compare(parse_report(args.baseline),
+                         parse_report(args.candidate),
                          max_slowdown_percent=args.max_slowdown_percent,
                          max_tail_slowdown_percent=args.max_tail_slowdown_percent)
         rendered = json.dumps(report, indent=2) + "\n"

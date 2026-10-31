@@ -33,12 +33,16 @@ def progression_squares(start, rows, step=1):
             + step * step * squared_indices)
 
 
-def modulo_reference(rows, modulus, residue):
-    if type(rows) is not int or not 0 <= rows <= MAX_UINT64 + 1:
-        raise ValueError("invalid UInt64 row count")
+def validate_modulo_args(modulus, residue):
     if (type(modulus) is not int or type(residue) is not int
             or not 1 <= modulus <= MAX_UINT64 or not 0 <= residue < modulus):
         raise ValueError("invalid modulus or residue")
+
+
+def modulo_reference(rows, modulus, residue):
+    if type(rows) is not int or not 0 <= rows <= MAX_UINT64 + 1:
+        raise ValueError("invalid UInt64 row count")
+    validate_modulo_args(modulus, residue)
     count = 0 if residue >= rows else (rows - 1 - residue) // modulus + 1
     total = count * residue + modulus * count * (count - 1) // 2
     return {"count": count, "sum": total}
@@ -86,9 +90,7 @@ def parity_progression(start, rows, step, parity):
 def progression_modulo_reference(start, rows, step, modulus, residue):
     """Exact COUNT and SUM for a residue in a bounded UInt64 progression."""
     progression_reference(start, rows, step)
-    if (type(modulus) is not int or type(residue) is not int
-            or not 1 <= modulus <= MAX_UINT64 or not 0 <= residue < modulus):
-        raise ValueError("invalid modulus or residue")
+    validate_modulo_args(modulus, residue)
     divisor = math.gcd(step, modulus)
     if (residue - start) % divisor:
         return {"count": 0, "sum": 0}

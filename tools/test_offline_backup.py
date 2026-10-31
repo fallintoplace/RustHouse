@@ -6,6 +6,18 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 class BackupTests(unittest.TestCase):
+    def test_directory_walk_errors_abort_validation_and_sync(self):
+        from offline_backup import sync_copied_tree, validate_tree
+        def incomplete_walk(*_args, **kwargs):
+            kwargs["onerror"](PermissionError("unreadable child directory"))
+            yield ()
+        with patch("offline_backup.os.walk", side_effect=incomplete_walk):
+            for operation in (validate_tree, sync_copied_tree):
+                with self.subTest(operation=operation), self.assertRaisesRegex(
+                    PermissionError, "unreadable child directory"
+                ):
+                    operation(Path("/unreadable"))
+
     def test_rejects_nested_destination(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root)

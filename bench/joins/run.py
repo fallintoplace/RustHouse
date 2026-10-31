@@ -49,7 +49,12 @@ def write_fixture(directory, probe_rows, build_rows, disjoint=False, duplicate_f
             or build_rows % duplicate_factor):
         raise ValueError("duplicate factor must evenly divide build rows")
     directory = Path(directory)
+    if directory.is_symlink():
+        raise ValueError("JOIN fixture directory must not be a symlink")
     directory.mkdir(parents=True, exist_ok=True)
+    for name in ("facts.tsv", "dimensions.tsv"):
+        if (directory / name).is_symlink():
+            raise ValueError(f"refusing symlinked JOIN fixture output: {name}")
     unique_build_rows = build_rows // duplicate_factor
     step = max(1, probe_rows // unique_build_rows)
     start = probe_rows if disjoint else 0
@@ -148,10 +153,11 @@ def main(argv=None):
         ]
         for statement in statements:
             run(statement)
+        query = query_for_strictness(args.strictness)
         elapsed = []
         for iteration in range(-args.warmups, args.runs):
             start = time.perf_counter() if iteration >= 0 else None
-            output = run(query_for_strictness(args.strictness))
+            output = run(query)
             if start is not None:
                 elapsed.append(time.perf_counter() - start)
             verify_result(output, expected,

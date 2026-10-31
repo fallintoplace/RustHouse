@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 def sql_for(table, source):
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", table):
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", table):
         raise ValueError("unsafe table identifier")
     path = str(Path(source).resolve())
     if len(path.encode("utf-8")) > 32768:
@@ -47,8 +47,8 @@ def guard(binary, database, table, source, watch_dir, min_free_gib=5,
     if max_source_bytes is not None and (
             type(max_source_bytes) is not int or max_source_bytes < 1):
         raise ValueError("max_source_bytes must be a positive integer")
-    if not Path(source).is_file():
-        raise ValueError("source TSV is missing")
+    if Path(source).is_symlink() or not Path(source).is_file():
+        raise ValueError("source TSV must be a regular non-symlinked file")
     if max_source_bytes is not None and Path(source).stat().st_size > max_source_bytes:
         raise ValueError("COPY source exceeds max_source_bytes")
     if not Path(watch_dir).is_dir():

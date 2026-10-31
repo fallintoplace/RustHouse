@@ -46,7 +46,10 @@ def source_bytes(raw):
 
 
 def git_blob_hash(data):
-    return hashlib.sha1(b"blob " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest()
+    digest = hashlib.sha1()
+    digest.update(b"blob " + str(len(data)).encode("ascii") + b"\0")
+    digest.update(data)
+    return digest.hexdigest()
 
 
 def verify(directory, expected=None):

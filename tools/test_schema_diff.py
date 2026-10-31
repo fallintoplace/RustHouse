@@ -6,6 +6,14 @@ class SchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "loopback"):
             fetch("http://example.com", "events")
 
+    def test_fetch_rejects_invalid_table_names_before_http(self):
+        from unittest.mock import patch
+        with patch("schema_diff.NO_REDIRECT_OPENER") as opener:
+            for table in ("", "events; DROP TABLE users", "a" * 129, 12):
+                with self.subTest(table=table), self.assertRaisesRegex(ValueError, "table name"):
+                    fetch("http://127.0.0.1:8123", table)
+            opener.open.assert_not_called()
+
     def test_order_and_types_are_retained(self):
         self.assertEqual(columns({"columns": [{"name": "id", "type": "UInt64"},
                                                {"name": "s", "type": "String"}]}),

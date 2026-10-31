@@ -24,12 +24,13 @@ def expected(start, count):
 
 
 def sql_for(table, first, count, column="id"):
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", table):
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", table):
         raise ValueError("unsafe table name")
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", column):
+    if not isinstance(column, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", column):
         raise ValueError("unsafe column name")
     expected(first, count)
-    upper = (f"{column} < {first + count}" if first + count < 2**64
+    end = first + count
+    upper = (f"{column} < {end}" if end < 2**64
              else f"{column} <= {2**64 - 1}")
     return (f"SELECT count(*), sum({column}) FROM {table} WHERE "
             f"{column} >= {first} AND {upper}")

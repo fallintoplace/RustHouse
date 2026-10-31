@@ -56,7 +56,7 @@ def fact_records(rows, seed):
 
 
 def generate(root, rows=2000, seed=42):
-    if not 1 <= rows <= MAX_FACTS:
+    if type(rows) is not int or not 1 <= rows <= MAX_FACTS:
         raise ValueError(f"lineorder rows must be 1..{MAX_FACTS}")
     if type(seed) is not int or not 0 <= seed <= (1 << 64) - 1:
         raise ValueError("seed must be UInt64")

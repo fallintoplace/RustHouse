@@ -15,6 +15,20 @@ def example(rows=1_000_000_000, median=1.0):
 
 
 class PhysicalGateTests(unittest.TestCase):
+    def test_report_loader_rejects_symlinks_and_duplicate_members(self):
+        from bench.scale.physical_gate import parse_report
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "data.json"
+            path.write_text('{"verified":false,"verified":true}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate physical gate JSON field"):
+                parse_report(path)
+            link = Path(root) / "link.json"
+            link.symlink_to(path)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                parse_report(link)
+
     def test_optional_samples_produce_no_spread(self):
         result = validate(example())
         self.assertTrue(result["all_passed"])

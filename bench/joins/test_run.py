@@ -34,6 +34,19 @@ class JoinWorkloadTests(unittest.TestCase):
             self.assertEqual(len(build), 4097)
             self.assertEqual(build[-1], "4095\tgroup-5")
 
+    def test_rejects_symlinked_join_fixture_outputs(self):
+        for name in ("facts.tsv", "dimensions.tsv"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                directory = Path(root) / "fixture"
+                directory.mkdir()
+                protected = Path(root) / "protected"
+                protected.write_text("keep")
+                (directory / name).symlink_to(protected)
+                with self.assertRaisesRegex(ValueError, "symlinked JOIN"):
+                    write_fixture(directory, 4, 2)
+                self.assertEqual(protected.read_text(), "keep")
+                self.assertFalse((directory / ("dimensions.tsv" if name == "facts.tsv" else "facts.tsv")).exists())
+
     def test_small_fixture_and_matches(self):
         with tempfile.TemporaryDirectory() as directory:
             expected = write_fixture(Path(directory), 20, 5)

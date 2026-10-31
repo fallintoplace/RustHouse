@@ -57,7 +57,7 @@ class PartDensityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             part = Path(root) / "all_1_1_0"
             part.mkdir()
-            for payload in ("١٢\n", "10\n\n", " 10\n"):
+            for payload in ("١٢\n", "10\n\n", " 10\n", "01\n"):
                 (part / "count.txt").write_text(payload)
                 with self.assertRaisesRegex(ValueError, "invalid"):
                     part_density(root)

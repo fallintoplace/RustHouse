@@ -292,9 +292,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                     return matches;
                 }
             }
-            if bytes.is_empty() {
-                true
-            } else if bytes.len() == 1 && !case_insensitive {
+            if bytes.len() == 1 && !case_insensitive {
                 // Avoid a substring search for the common LIKE '%x%' case.
                 value.contains(&bytes[0])
             } else if !case_insensitive {
@@ -616,5 +614,19 @@ mod ascii_contains_fast_path_tests {
     fn non_ascii_values_still_use_unicode_case_folding() {
         let pattern = compile_like("%CAFÉ%").unwrap();
         assert!(like_matches("un café au lait".as_bytes(), &pattern, true));
+    }
+}
+
+#[cfg(test)]
+mod empty_contains_tests {
+    use super::*;
+
+    #[test]
+    fn consecutive_percent_wildcards_match_empty_and_nonempty_strings() {
+        let pattern = compile_like("%%").unwrap();
+        for value in [b"".as_slice(), b"one".as_slice()] {
+            assert!(like_matches(value, &pattern, false));
+            assert!(like_matches(value, &pattern, true));
+        }
     }
 }

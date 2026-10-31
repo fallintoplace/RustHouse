@@ -60,6 +60,14 @@ class SnapshotGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "columns"):
                 inspect_snapshot("rusthouse", "/frozen/parts", run=run)
 
+    def test_rejects_snapshot_with_more_than_128_columns(self):
+        columns = [{"name": f"field_{index}", "type": "UInt64"} for index in range(129)]
+        payload = json.dumps({"rows": 100, "parts": 1, "columns": columns}).encode()
+        with self.assertRaisesRegex(ValueError, "columns"):
+            inspect_snapshot("rusthouse", "part", min_rows=1,
+                             run=lambda *_a, **_k: SimpleNamespace(
+                                 returncode=0, stdout=payload, stderr=b""))
+
     def test_failure_propagates(self):
         def run(command, **kwargs):
             return SimpleNamespace(returncode=1, stdout=b"", stderr=b"overlapping")

@@ -35,7 +35,9 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
     };
     let mut layout = ScanLayout::default();
     for data in data_files {
-        let marks_path = mark_files.remove(&data).unwrap();
+        let marks_path = mark_files
+            .remove(&data)
+            .ok_or_else(|| invalid(&data, "missing wide mark file during verification"))?;
         let marks = read_wide_marks(marks_path)?;
         validate_adaptive_stream(&data, &marks, metadata.rows, &mut layout)?;
         validate_wide_marks(&marks, CompressedBlockReader::open(&data)?)?;

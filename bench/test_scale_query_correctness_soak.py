@@ -15,6 +15,12 @@ class CorrectnessSoakTests(unittest.TestCase):
                              (hashlib.sha256(b"count\n2\n").hexdigest(), 8))
         self.assertEqual(percentile([3, 1, 2], 95), 3)
 
+    def test_percentile_rejects_invalid_duration_samples(self):
+        for values in ([float("nan")], [float("inf")], [-1], [True], ["0.1"]):
+            with self.subTest(values=values), self.assertRaisesRegex(ValueError, "invalid sample"):
+                percentile(values, 95)
+        self.assertEqual(percentile([0.0, 0.1], 95), 0.1)
+
     def test_matches_each_iteration_and_rejects_drift(self):
         with tempfile.TemporaryDirectory() as temp:
             oracle = Path(temp) / "expected.tsv"
@@ -45,6 +51,16 @@ class CorrectnessSoakTests(unittest.TestCase):
                 run_sql("rusthouse", "db", "SELECT 1", 1)
         self.assertIn("last error", str(caught.exception))
         self.assertLessEqual(len(str(caught.exception)), 500)
+
+    def test_refuses_symlinked_expected_output_before_query(self):
+        with tempfile.TemporaryDirectory() as root:
+            original = Path(root) / "reference.tsv"
+            original.write_bytes(b"count\\n1\\n")
+            alias = Path(root) / "reference-link.tsv"
+            alias.symlink_to(original)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                soak("rusthouse", "db", "SELECT 1", alias,
+                     runs=1, warmups=0, execute=lambda: self.fail("must not query"))
 
     def test_rejects_invalid_run_counts(self):
         with self.assertRaises(ValueError):

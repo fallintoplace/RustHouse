@@ -17,6 +17,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 NO_REDIRECT_OPENER = build_opener(NoRedirect())
+MAX_PEERS = 32
 
 
 def _unique_object_pairs(pairs):
@@ -34,7 +35,7 @@ def validate(payload, *, min_healthy=None, expected_peers=None):
     total, healthy, peers = payload.get("total"), payload.get("healthy"), payload.get("peers")
     if (type(total) is not int or type(healthy) is not int or
             not isinstance(peers, list) or total != len(peers) or
-            not 0 <= healthy <= total):
+            not 0 <= healthy <= total or total > MAX_PEERS):
         raise ValueError("invalid peer-health metadata")
     actual = 0
     seen = set()

@@ -16,6 +16,7 @@ from run import benchmark_one, summarize_coverage, query_fingerprint
 
 MAX_REFERENCE_BYTES = 64 * 1024 * 1024
 MAX_QUERY_FILE_BYTES = 64 * 1024
+TPCH_QUERY_COUNT = 22
 
 
 def clean_sql(path):
@@ -44,14 +45,14 @@ def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
             or runs < 1 or warmups < 0
             or type(timeout) not in (int, float)
             or not math.isfinite(timeout) or timeout <= 0
-            or type(jobs) is not int or not 1 <= jobs <= 22):
+            or type(jobs) is not int or not 1 <= jobs <= TPCH_QUERY_COUNT):
         raise ValueError("invalid timing parameters")
     if execute is None:
         execute = lambda sql: cli_sql(binary, database, sql, timeout)
-    results = [None] * 22
+    results = [None] * TPCH_QUERY_COUNT
     executed_sql = []
     pending = []
-    for number in range(1, 23):
+    for number in range(1, TPCH_QUERY_COUNT + 1):
         path = Path(query_dir) / f"q{number:02d}.sql"
         if not path.is_file():
             results[number - 1] = {"query": number, "status": "missing_query",

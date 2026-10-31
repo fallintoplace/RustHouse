@@ -66,11 +66,21 @@ def select_queries(queries, selected):
     return [(number, sql) for number, sql in queries if number in identifiers]
 
 
+def _unique_projection_pairs(pairs):
+    fields = {}
+    for key, value in pairs:
+        if key in fields:
+            raise ValueError(f"duplicate projection JSON field: {key}")
+        fields[key] = value
+    return fields
+
+
 def load_projection(path):
     """Never guess required columns by tokenizing SQL expressions."""
     if path is None:
         return None
-    document = json.loads(read_bounded_text(path, MAX_PROJECTION_BYTES))
+    document = json.loads(read_bounded_text(path, MAX_PROJECTION_BYTES),
+                          object_pairs_hook=_unique_projection_pairs)
     if not isinstance(document, dict):
         raise ValueError("projection manifest must be a JSON object")
     available = document.get("available_columns")

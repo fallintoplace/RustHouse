@@ -58,7 +58,7 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
     if max_parts is not None and parts > max_parts:
         raise ValueError(f"snapshot parts {parts} above max_parts {max_parts}")
     columns = data.get("columns")
-    if (not isinstance(columns, list) or not columns or any(
+    if (not isinstance(columns, list) or not 1 <= len(columns) <= 128 or any(
         not isinstance(column, dict)
         or not isinstance(column.get("name"), str) or not column["name"]
         or not isinstance(column.get("type"), str) or not column["type"]

@@ -26,13 +26,15 @@ fn valid_delete_scope(select: &Select) -> bool {
 
 /// Supported only for persistent local tables. No ordering or LIMIT is accepted.
 pub fn parse_delete(sql: &str) -> Result<Option<Select>, ParseError> {
-    let Some(rest) = keyword(sql, "DELETE") else {
+    if keyword(sql, "DELETE").is_none() {
         return Ok(None);
-    };
-    keyword(rest, "FROM").ok_or_else(|| ParseError("DELETE requires FROM table".into()))?;
+    }
     // Work on the original tokens so a valid 65536-byte DELETE is not rejected
     // just because the SELECT projection is two bytes longer.
     let mut select_tokens = tokenize(sql)?;
+    if !matches!(select_tokens.get(1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("FROM")) {
+        return Err(ParseError("DELETE requires FROM table".into()));
+    }
     select_tokens.splice(..1, [Token::Word("SELECT".into()), Token::Star]);
     let select = parse_select_tokens(select_tokens)?;
     if !valid_delete_scope(&select) {
@@ -82,5 +84,17 @@ mod tests {
         ] {
             assert!(parse_delete(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod delete_comment_tests {
+    use super::*;
+
+    #[test]
+    fn comment_before_from_is_tokenized_as_whitespace() {
+        assert!(parse_delete("DELETE /* maintenance */ FROM data WHERE id = 1").unwrap().is_some());
+        assert!(parse_delete("DELETE -- maintenance\nFROM data WHERE id = 1").unwrap().is_some());
+        assert!(parse_delete("DELETE /* comment */ data").is_err());
     }
 }
