@@ -45,6 +45,11 @@ class ConcurrentReadersTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     run_readers("binary", "part", "SELECT 1", b"1\n", **kwargs)
 
+    def test_rejects_nontext_sql_before_spawning_workers(self):
+        for sql in (None, 123, b"SELECT 1", ["SELECT 1"]):
+            with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "SQL must be"):
+                run_readers("binary", "part", sql, b"1")
+
     def test_caps_total_jobs_and_output_bytes(self):
         with self.assertRaisesRegex(ValueError, "256"):
             run_readers("binary", "part", "SELECT 1", b"", clients=64, rounds=5)
