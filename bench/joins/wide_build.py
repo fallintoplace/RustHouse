@@ -21,8 +21,12 @@ def write_dimensions(directory, rows, payload_bytes):
             or rows * payload_bytes > 128 * 1024 * 1024):
         raise ValueError("wide payload exceeds the 128 MiB fixture budget")
     directory = Path(directory)
+    if directory.is_symlink():
+        raise ValueError("wide JOIN fixture directory must not be a symlink")
     narrow = directory / "narrow.tsv"
     wide = directory / "wide.tsv"
+    if narrow.is_symlink() or wide.is_symlink():
+        raise ValueError("refusing symlinked wide JOIN fixture output")
     payload = "x" * payload_bytes
     with narrow.open("w", encoding="ascii") as small, wide.open("w", encoding="ascii") as large:
         small.write("id\n")

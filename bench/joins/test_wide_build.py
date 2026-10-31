@@ -20,6 +20,19 @@ class WideJoinFixtureTests(unittest.TestCase):
                              [int(x.split("\t")[0]) for x in large[1:]])
             self.assertTrue(all(len(x.split("\t")[1]) == 1536 for x in large[1:]))
 
+    def test_rejects_symlinked_wide_join_outputs(self):
+        for name in ("narrow.tsv", "wide.tsv"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                directory = Path(root) / "fixture"
+                directory.mkdir()
+                protected = Path(root) / "protected"
+                protected.write_text("keep")
+                (directory / name).symlink_to(protected)
+                with self.assertRaisesRegex(ValueError, "symlinked wide JOIN"):
+                    write_dimensions(directory, 10, 10)
+                self.assertEqual(protected.read_text(), "keep")
+                self.assertFalse((directory / ("wide.tsv" if name == "narrow.tsv" else "narrow.tsv")).exists())
+
     def test_limits_prevent_unbounded_fixture_disk_use(self):
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaises(ValueError):
