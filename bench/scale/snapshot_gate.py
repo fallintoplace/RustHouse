@@ -5,6 +5,7 @@ Metadata describes rows on disk, but a COUNT(*) may use metadata-only paths.
 import argparse
 import json
 import math
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -23,11 +24,27 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
         raise ValueError("max_parts must be in 1..16384")
     command = [str(binary), "inspect-snapshot", str(path), "--json"]
     if run is None:
+        extra = {}
+        if os.name == "posix":
+            import resource
+
+            def limit_child_files():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                cap = MAX_SNAPSHOT_REPORT_BYTES + 1
+                if hard != resource.RLIM_INFINITY:
+                    cap = min(cap, hard)
+                resource.setrlimit(resource.RLIMIT_FSIZE, (cap, hard))
+
+            extra["preexec_fn"] = limit_child_files
+
         with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile() as errors:
             result = subprocess.run(
                 command, stdout=output, stderr=errors,
-                check=False, timeout=timeout,
+                check=False, timeout=timeout, **extra,
             )
+            output.seek(0, os.SEEK_END)
+            if output.tell() > MAX_SNAPSHOT_REPORT_BYTES:
+                raise ValueError("snapshot report exceeds 2 MiB")
             output.seek(0)
             payload = output.read(MAX_SNAPSHOT_REPORT_BYTES + 1)
             errors.seek(max(0, errors.tell() - 600))
