@@ -3,7 +3,6 @@
 import json
 import math
 import os
-import statistics
 import tempfile
 import subprocess
 import sys
@@ -60,9 +59,12 @@ def latency_summary(seconds):
         if not finite:
             raise ValueError("timing samples must be finite nonnegative numbers")
     ordered = sorted(seconds)
+    middle = len(ordered) // 2
+    median = (ordered[middle] if len(ordered) % 2
+              else (ordered[middle - 1] + ordered[middle]) / 2)
     return {
         "min_seconds": ordered[0],
-        "median_seconds": statistics.median(ordered),
+        "median_seconds": median,
         "p90_seconds": ordered[math.ceil(0.9 * len(ordered)) - 1],
         "max_seconds": ordered[-1],
     }
