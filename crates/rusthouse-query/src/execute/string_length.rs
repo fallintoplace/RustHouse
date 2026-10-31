@@ -61,6 +61,13 @@ pub(super) fn execute<W: Write>(
     column: &str,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    // This streaming projection does not retain sortable rows. Returning
+    // physical scan order for ORDER BY would silently produce wrong results.
+    if query.order_by.is_some() || !query.order_by_extra.is_empty() {
+        return Err(ExecutionError::Invalid(
+            "ORDER BY is not supported for streaming LENGTH projections".into(),
+        ));
+    }
     let metadata = inspect_query_source(part)?;
     let kind = metadata
         .columns
@@ -262,6 +269,30 @@ mod distinct_length_integration_tests {
         let mut plain = Vec::new();
         execute(&query, &root, "name", &mut plain).unwrap();
         assert_eq!(plain, b"length(name)\n1\n1\n\\N\n5\n\\N\n2\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod unsupported_length_sort_tests {
+    use super::*;
+    use rusthouse_storage::{Column, write_wide_part};
+
+    #[test]
+    fn rejects_order_by_instead_of_silently_returning_scan_order() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-length-order-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let columns = [Column { name: "name".into(), data_type: "String".into() }];
+        let rows = [vec![Some("longer".into())], vec![Some("a".into())]];
+        write_wide_part(&root, &columns, &rows).unwrap();
+        let query = crate::parse_select("SELECT LENGTH(name) FROM part ORDER BY name ASC").unwrap();
+        let mut output = Vec::new();
+        let err = execute(&query, &root, "name", &mut output).unwrap_err();
+        assert!(err.to_string().contains("ORDER BY"));
+        assert!(output.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 }
