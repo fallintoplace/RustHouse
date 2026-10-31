@@ -11,6 +11,14 @@ class ResourceProfileTests(unittest.TestCase):
         self.assertEqual(parse_rss("Name:\trusthouse\nVmRSS:\t1234 kB\n"), 1234 * 1024)
         self.assertEqual(parse_rss("Name:\tshort\n"), 0)
 
+    def test_malformed_rss_field_does_not_hide_valid_counter(self):
+        self.assertEqual(parse_rss(
+            "VmHWM:\tinvalid kB\nVmRSS:\t1234 kB\n"
+        ), 1234 * 1024)
+        self.assertEqual(parse_rss(
+            "VmRSS:\t3 kB\nVmHWM:\t-1 kB\n"
+        ), 3 * 1024)
+
     def test_physical_io_fields(self):
         self.assertEqual(parse_io("rchar: 300\nread_bytes: 5000\nwrite_bytes: 7\n"),
                          {"read_bytes": 5000, "write_bytes": 7})
