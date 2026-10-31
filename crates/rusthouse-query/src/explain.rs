@@ -134,9 +134,7 @@ fn describe_sort_term(column: &str, descending: bool, nulls_first: Option<bool>)
 }
 
 fn describe_sort(query: &Select) -> String {
-    query
-        .order_terms()
-        .map(|order| {
+    format_comma_separated_labels(query.order_terms().map(|order| {
             let label = if order.column == "#aggregate" {
                 if let Projection::GroupedAggregate {
                     function,
@@ -152,9 +150,7 @@ fn describe_sort(query: &Select) -> String {
                 order.column.clone()
             };
             describe_sort_term(&label, order.descending, order.nulls_first)
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
+    }))
 }
 
 fn describe_filter(query: &Select) -> Option<String> {
@@ -298,5 +294,21 @@ mod label_join_tests {
             format_comma_separated_labels(["one".to_owned(), "".to_owned(), "three".to_owned()].into_iter()),
             "one, , three"
         );
+    }
+}
+
+#[cfg(test)]
+mod streamed_sort_label_tests {
+    use super::*;
+    use crate::parse_select;
+
+    #[test]
+    fn retains_empty_and_explicit_null_sort_labels() {
+        let plain = parse_select("SELECT number FROM numbers(3)").unwrap();
+        assert_eq!(describe_sort(&plain), "");
+        let sorted = parse_select(
+            "SELECT number FROM numbers(3) ORDER BY number DESC NULLS LAST"
+        ).unwrap();
+        assert_eq!(describe_sort(&sorted), "number DESC NULLS LAST");
     }
 }
