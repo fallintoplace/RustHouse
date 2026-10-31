@@ -129,5 +129,18 @@ class SnapshotMetadataBudgetTests(unittest.TestCase):
                 stderr=b""))
         self.assertEqual(result["physical_rows"], 1)
 
+    def test_noncanonical_column_identifiers_cannot_pass_a_snapshot_gate(self):
+        for name in ("1bad", "has.dot", "a b", "café", "x" * 129):
+            payload = json.dumps({
+                "rows": 1_000_000_001, "parts": 1,
+                "columns": [{"name": name, "type": "UInt64"}],
+            }).encode()
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "columns"):
+                inspect_snapshot(
+                    "rusthouse", "parts",
+                    run=lambda *_a, **_k: SimpleNamespace(
+                        returncode=0, stdout=payload, stderr=b""),
+                )
+
 if __name__ == "__main__":
     unittest.main()
