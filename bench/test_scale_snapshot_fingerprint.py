@@ -65,6 +65,24 @@ class SnapshotFingerprintTests(unittest.TestCase):
                     fingerprint(root)
 
 
+    def test_regular_files_are_opened_with_nofollow_on_posix(self):
+        import os
+        if not getattr(os, "O_NOFOLLOW", 0):
+            self.skipTest("O_NOFOLLOW unavailable")
+        real_open = os.open
+        checked = []
+
+        def nofollow_open(path, flags, *args, **kwargs):
+            if Path(path).name == "data.bin":
+                checked.append(bool(flags & os.O_NOFOLLOW))
+            return real_open(path, flags, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "data.bin").write_bytes(b"payload")
+            with patch("bench.scale.snapshot_fingerprint.os.open", side_effect=nofollow_open):
+                fingerprint(root)
+        self.assertEqual(checked, [True])
+
     def test_hash_is_independent_of_configurable_read_block_size(self):
         with tempfile.TemporaryDirectory() as root:
             (Path(root) / "payload.bin").write_bytes(b"abcd" * 50_000)
