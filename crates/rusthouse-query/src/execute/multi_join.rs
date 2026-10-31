@@ -544,9 +544,10 @@ pub fn execute_multi_join<W: Write>(
             && step_index == query.steps.len()
         {
             let mut count = 0u64;
+            let mut count_probe = Vec::with_capacity(left_keys.len());
             for row in &rows {
-                if let Some(key) = row_key(row, &left_keys) {
-                    if let Some(matches) = hash.get(&key) {
+                if row_key_into(row, &left_keys, &mut count_probe) {
+                    if let Some(matches) = hash.get(count_probe.as_slice()) {
                         let multiplicity = if step.any { 1usize } else { matches.iter().len() };
                         count = count.checked_add(u64::try_from(multiplicity)
                             .map_err(|_| invalid("JOIN count overflow"))?)
