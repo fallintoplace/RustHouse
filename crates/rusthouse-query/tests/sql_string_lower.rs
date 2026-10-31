@@ -51,3 +51,15 @@ fn lower_folds_unicode_and_checks_expanded_result_size() {
     );
     assert!(parse_select("SELECT LOWER(REPEAT('İ', 500000))").is_err());
 }
+
+#[test]
+fn lower_keeps_unicode_case_expansion_with_nested_expressions() {
+    assert_eq!(
+        value("SELECT LOWER(UPPER('München Straße'))"),
+        ConstantValue::Text("münchen strasse".into())
+    );
+    assert_eq!(
+        value("SELECT LOWER('İ')"),
+        ConstantValue::Text("i\u{307}".into())
+    );
+}
