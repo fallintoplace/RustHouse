@@ -7,6 +7,8 @@ import argparse
 from bisect import bisect_left
 import json
 import math
+import os
+import stat
 from pathlib import Path
 
 
@@ -27,7 +29,14 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
             raise ValueError(f"refusing symlinked count.txt: {child.name}")
         if not child.is_dir() or not count_file.is_file():
             continue
-        with count_file.open("rb") as source:
+        before = count_file.lstat()
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(count_file, flags)
+        with os.fdopen(fd, "rb") as source:
+            opened = os.fstat(source.fileno())
+            if (not stat.S_ISREG(opened.st_mode) or
+                    (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+                raise ValueError(f"count.txt changed while opening: {child.name}")
             payload = source.read(23)
         if len(payload) > 22:
             raise ValueError(f"invalid oversized count.txt in {child.name}")

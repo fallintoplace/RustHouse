@@ -82,6 +82,29 @@ class PartDensityTests(unittest.TestCase):
                 part_density(root)
 
 
+    def test_rejects_count_file_replaced_after_path_validation(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            part = root / "all_1_1_0"
+            part.mkdir()
+            count = part / "count.txt"
+            count.write_text("10\n")
+            replacement = part / "replacement.txt"
+            replacement.write_text("99\n")
+            real_open = os.open
+
+            def swap_before_open(path, flags, *args, **kwargs):
+                if Path(path) == count:
+                    count.unlink()
+                    replacement.rename(count)
+                return real_open(path, flags, *args, **kwargs)
+
+            with patch("bench.scale.part_density.os.open", side_effect=swap_before_open):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    part_density(root)
+
     def test_reports_exact_fractions_above_float_precision(self):
         with tempfile.TemporaryDirectory() as root:
             values = (2**53 + 1, 2**53 + 2)
