@@ -95,9 +95,17 @@ fn stream_bounded_copy(
     mut checksum: Option<&mut crate::distributed_crc32c::Crc32cState>,
 ) -> io::Result<u64> {
     let mut total = 0u64;
-    // Small files avoid allocating a large buffer; large copies reduce syscall count.
+    // Most replica metadata files fit in 4 KiB. Use stack storage for
+    // these copies and retain the 256 KiB heap buffer for large files.
     let buffer_bytes = expected_bytes.clamp(1, 256 * 1024) as usize;
-    let mut buffer = vec![0u8; buffer_bytes];
+    let mut inline = [0u8; 4096];
+    let mut allocated = Vec::new();
+    let buffer: &mut [u8] = if buffer_bytes <= inline.len() {
+        &mut inline[..buffer_bytes]
+    } else {
+        allocated.resize(buffer_bytes, 0);
+        &mut allocated
+    };
     loop {
         let available = max_bytes
             .saturating_sub(total)
@@ -499,5 +507,54 @@ mod source_open_metadata_tests {
         assert_eq!(before.len(), after.len());
         assert!(!source_unchanged(&before, &after));
         fs::remove_file(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod small_replica_copy_stack_buffer_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn stack_and_heap_copy_boundaries_preserve_bytes_and_streamed_crc() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-small-copy-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        for size in [0usize, 1, 127, 4095, 4096, 4097, 262_144, 262_145] {
+            let payload = (0..size).map(|index| (index % 251) as u8).collect::<Vec<_>>();
+            let mut input = Cursor::new(payload.as_slice());
+            let target = directory.join(format!("target-{size}"));
+            let mut output = File::create(&target).unwrap();
+            let mut state = crate::distributed_crc32c::Crc32cState::new();
+            assert_eq!(
+                stream_bounded_copy(
+                    &mut input, &mut output, size as u64, size as u64,
+                    Some(&mut state),
+                ).unwrap(),
+                size as u64,
+            );
+            drop(output);
+            assert_eq!(fs::read(&target).unwrap(), payload);
+            assert_eq!(state.checksum(), crate::distributed_crc32c::crc32c(&payload));
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn small_copy_still_rejects_unexpected_extra_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-small-copy-extra-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        let mut input = Cursor::new(b"12345".as_slice());
+        let mut output = File::create(&path).unwrap();
+        assert!(stream_bounded_copy(&mut input, &mut output, 4, 4, None).is_err());
+        assert_eq!(input.position(), 5);
+        assert_eq!(output.metadata().unwrap().len(), 4);
+        drop(output);
+        fs::remove_file(path).unwrap();
     }
 }
