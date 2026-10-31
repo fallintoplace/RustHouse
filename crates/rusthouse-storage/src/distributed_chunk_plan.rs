@@ -246,12 +246,31 @@ pub fn plan_missing_chunks_from_resume(
     byte_budget: u64,
     max_batch_chunks: usize,
 ) -> Result<Vec<IndexedChunk>, &'static str> {
+    plan_missing_chunks_from_resume_after(
+        total_bytes, chunk_bytes, max_chunks, progress, 0, byte_budget, max_batch_chunks
+    )
+}
+
+/// Resume planning from an inclusive chunk cursor without scanning earlier
+/// completion bits. Validation remains strict even for empty page budgets.
+pub fn plan_missing_chunks_from_resume_after(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    progress: &crate::distributed_resume_map::ResumeMap,
+    start_index: usize,
+    byte_budget: u64,
+    max_batch_chunks: usize,
+) -> Result<Vec<IndexedChunk>, &'static str> {
     if max_batch_chunks > 65_536 {
         return Err("transfer batch chunk limit exceeds bound");
     }
     let chunk_count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
     if progress.len() != chunk_count {
         return Err("resume checkpoint does not match transfer layout");
+    }
+    if start_index > chunk_count {
+        return Err("resume cursor exceeds transfer layout");
     }
     if byte_budget == 0 || max_batch_chunks == 0 {
         return Ok(Vec::new());
@@ -262,17 +281,17 @@ pub fn plan_missing_chunks_from_resume(
     // positions for every page, producing quadratic planning work.
     // For large pages, count remaining bits to avoid over-allocating when
     // a nearly complete transfer has only a few holes.
-    let reserve_limit = progress.len()
+    let reserve_limit = (progress.len() - start_index)
         .min(max_batch_chunks)
         .min(usize::try_from(max_by_budget.saturating_add(1)).unwrap_or(usize::MAX));
     let reserve = if reserve_limit <= 64 {
         reserve_limit
     } else {
-        reserve_limit.min(progress.remaining_count())
+        reserve_limit.min(progress.remaining_indices_from(start_index).count())
     };
     let mut selected = Vec::with_capacity(reserve);
     let mut remaining_bytes = byte_budget;
-    for index in progress.remaining_indices() {
+    for index in progress.remaining_indices_from(start_index) {
         if selected.len() == max_batch_chunks || remaining_bytes == 0 {
             break;
         }
@@ -633,6 +652,41 @@ mod tiny_checkpoint_page_tests {
                 ).unwrap();
                 assert_eq!(actual, expected, "page_limit={page_limit} budget={byte_budget}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod paged_resume_planner_tests {
+    use super::*;
+    use crate::distributed_resume_map::ResumeMap;
+
+    #[test]
+    fn cursored_pages_match_original_planner_on_filtered_missing_indexes() {
+        for bytes in [0u64, 1, 5, 8, 9, 63, 64, 4097] {
+            let chunks = bytes.div_ceil(5) as usize;
+            let mut map = ResumeMap::new(chunks).unwrap();
+            for index in (0..chunks).step_by(3) {
+                map.mark_complete(index).unwrap();
+            }
+            for start in [0, 1, 7, 8, chunks / 2, chunks] {
+                let subset = map.remaining().into_iter().filter(|&index| index >= start)
+                    .collect::<Vec<_>>();
+                for budget in [0, 1, 4, 5, 9, 100] {
+                    for limit in [0, 1, 2, 16, 128] {
+                        let expected = plan_missing_chunks(
+                            bytes, 5, 65_536, &subset, budget, limit
+                        ).unwrap();
+                        let actual = plan_missing_chunks_from_resume_after(
+                            bytes, 5, 65_536, &map, start, budget, limit
+                        ).unwrap();
+                        assert_eq!(actual, expected);
+                    }
+                }
+            }
+            assert!(plan_missing_chunks_from_resume_after(
+                bytes, 5, 65_536, &map, chunks + 1, 0, 0
+            ).is_err());
         }
     }
 }
