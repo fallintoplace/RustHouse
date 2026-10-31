@@ -23,7 +23,11 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     error_message: &'static str,
     decode: impl Fn([u8; WIDTH]) -> T,
 ) -> io::Result<Vec<T>> {
-    if WIDTH == 0 || WIDTH > MAX_ELEMENT_WIDTH || rows > MAX_BATCH_BYTES / WIDTH {
+    if WIDTH == 0
+        || WIDTH > MAX_ELEMENT_WIDTH
+        || rows > MAX_BATCH_BYTES / WIDTH
+        || rows > MAX_BATCH_BYTES / std::mem::size_of::<T>().max(1)
+    {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, error_message));
     }
     // Empty batches are common at mark and part boundaries. Avoid entering
@@ -133,5 +137,24 @@ mod small_mark_tests {
         ).unwrap();
         assert_eq!(second, vec![7]);
         assert!(input.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod decoded_memory_budget_tests {
+    use super::*;
+
+    #[test]
+    fn refuses_large_decoded_elements_before_reading() {
+        // A one-byte physical field can decode into a much larger Rust value.
+        // Bound both physical I/O and the Vec allocation.
+        let error = read_fixed_width::<_, [u8; 1024], 1>(
+            &mut io::empty(),
+            MAX_BATCH_BYTES / 1024 + 1,
+            "decoded values exceed 64 MiB",
+            |_| [0; 1024],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }
