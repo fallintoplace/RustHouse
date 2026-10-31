@@ -280,6 +280,15 @@ fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: u
     }
     let mut counts = vec![0u64; bins];
     let layout = BucketLayout::new(min, max, bins);
+    // With many output bins and few generated values, a binary search for
+    // every bin is much more work than visiting each value once. Both paths
+    // use the exact same float bucket layout and retain O(bins) memory.
+    if count <= u64::try_from(bins).unwrap_or(u64::MAX).saturating_mul(4) {
+        for relative in 0..count {
+            counts[layout.bucket(value(relative))] += 1;
+        }
+        return to_bins(min, max, &counts);
+    }
     let mut start_row = 0u64;
     for (bin, slot) in counts.iter_mut().enumerate() {
         if start_row == count {
@@ -540,5 +549,39 @@ mod wide_range_execution_tests {
         assert!(rendered.ends_with(")]\n"));
         assert!(!rendered.to_ascii_lowercase().contains("inf"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod sparse_generated_histogram_tests {
+    use super::*;
+
+    #[test]
+    fn large_bin_counts_with_sparse_generated_values_are_exact() {
+        for (start, lower, count, step, bins) in [
+            (0u64, 0u64, 1u64, 1u64, 1024usize),
+            (123, 3, 17, 5, 4096),
+            (9_007_199_254_740_992, 11, 127, 3, 1024),
+            (0, 0, 256, 7, 64),
+            (1, 0, 400, 1, 100),
+        ] {
+            let actual = uniform_generated_bins(start, lower, count, step, bins);
+            let value = |relative: u64| {
+                (u128::from(start) + u128::from(lower + relative) * u128::from(step)) as f64
+            };
+            let min = value(0);
+            let max = value(count - 1);
+            let layout = BucketLayout::new(min, max, bins);
+            let mut expected = vec![0u64; bins];
+            for relative in 0..count {
+                expected[layout.bucket(value(relative))] += 1;
+            }
+            let expected = to_bins(min, max, &expected);
+            assert_eq!(
+                actual.iter().map(|bin| (bin.min, bin.max, bin.count)).collect::<Vec<_>>(),
+                expected.iter().map(|bin| (bin.min, bin.max, bin.count)).collect::<Vec<_>>(),
+                "count={count} bins={bins}",
+            );
+        }
     }
 }
