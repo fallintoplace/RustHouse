@@ -71,6 +71,19 @@ fn index(objects: &[ObjectMetadata]) -> Result<HashMap<&str, &ObjectMetadata>, &
     Ok(indexed)
 }
 
+fn reject_immutable_conflicts(
+    source: &HashMap<&str, &ObjectMetadata>,
+    destination: &HashMap<&str, &ObjectMetadata>,
+) -> Result<(), &'static str> {
+    if source.iter().any(|(key, object)| {
+        destination.get(*key)
+            .is_some_and(|existing| !object.same_contents(existing))
+    }) {
+        return Err("replica copy conflicts with an existing immutable object");
+    }
+    Ok(())
+}
+
 fn needs_copy(meta: &ObjectMetadata, destination: &HashMap<&str, &ObjectMetadata>) -> bool {
     destination
         .get(meta.key.as_str())
@@ -85,6 +98,9 @@ pub fn plan_replica_copies(
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
     let source = index(source)?;
     let destination = index(destination)?;
+    // A generation-scoped key is immutable: returning it for a conflicting
+    // copy would ask the transport to overwrite an existing object.
+    reject_immutable_conflicts(&source, &destination)?;
     let mut changed: Vec<ObjectMetadata> = source
         .into_values()
         .filter(|meta| needs_copy(meta, &destination))
@@ -110,13 +126,7 @@ pub fn plan_replica_copy_batch(
     // the bounded batch rather than the entire changed inventory.
     let source_index = index(source)?;
     let destination_index = index(destination)?;
-    // A generation-scoped immutable object must never be overwritten in place.
-    if source_index.iter().any(|(key, object)| {
-        destination_index.get(*key)
-            .is_some_and(|existing| !object.same_contents(existing))
-    }) {
-        return Err("replica copy conflicts with an existing immutable object");
-    }
+    reject_immutable_conflicts(&source_index, &destination_index)?;
     if max_objects == 0 {
         return Ok(Vec::new());
     }
@@ -156,7 +166,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plans_only_missing_and_mismatched_objects() {
+    fn plans_missing_objects_but_rejects_immutable_conflicts() {
         let objects = vec![
             ObjectMetadata {
                 key: "s/g1/a".into(),
@@ -172,11 +182,6 @@ mod tests {
         let existing = vec![
             objects[0].clone(),
             ObjectMetadata {
-                key: "s/g1/b".into(),
-                bytes: 6,
-                crc32c: 3,
-            },
-            ObjectMetadata {
                 key: "s/g0/old".into(),
                 bytes: 1,
                 crc32c: 0,
@@ -186,6 +191,14 @@ mod tests {
             plan_replica_copies(&objects, &existing).unwrap(),
             vec![objects[1].clone()]
         );
+        let mut conflicting = existing;
+        conflicting.push(ObjectMetadata {
+            key: "s/g1/b".into(),
+            bytes: 6,
+            crc32c: 3,
+        });
+        assert!(plan_replica_copies(&objects, &conflicting).is_err());
+        assert!(plan_replica_copy_batch(&objects, &conflicting, 100, 2).is_err());
         assert!(plan_replica_copies(&objects, &objects).unwrap().is_empty());
     }
 
