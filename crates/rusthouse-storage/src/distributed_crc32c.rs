@@ -145,6 +145,126 @@ fn update_software(mut crc: u32, bytes: &[u8]) -> u32 {
     }
     crc
 }
+
+/// Apply a GF(2) operator to a 32-bit CRC state.
+fn gf2_matrix_times(matrix: &[u32; 32], mut vector: u32) -> u32 {
+    let mut result = 0u32;
+    let mut bit = 0;
+    while vector != 0 {
+        if vector & 1 != 0 {
+            result ^= matrix[bit];
+        }
+        vector >>= 1;
+        bit += 1;
+    }
+    result
+}
+
+fn gf2_matrix_square(matrix: &[u32; 32]) -> [u32; 32] {
+    std::array::from_fn(|index| gf2_matrix_times(matrix, matrix[index]))
+}
+
+/// Combine two finalized CRC32C values as if their byte ranges were concatenated.
+///
+/// The inputs must be checksums of consecutive byte ranges in the same order.
+/// This permits parallel verification of chunks without re-reading the data.
+/// A zero-length right range leaves the left checksum unchanged.
+pub fn crc32c_combine(mut left: u32, right: u32, mut right_len: u64) -> u32 {
+    if right_len == 0 {
+        return left;
+    }
+
+    // Build the one-zero-bit operator for the reflected Castagnoli polynomial.
+    let mut odd = [0u32; 32];
+    odd[0] = POLYNOMIAL;
+    let mut row = 1u32;
+    for slot in odd.iter_mut().skip(1) {
+        *slot = row;
+        row <<= 1;
+    }
+
+    let mut even = gf2_matrix_square(&odd); // two zero bits
+    odd = gf2_matrix_square(&even); // four zero bits
+
+    loop {
+        even = gf2_matrix_square(&odd); // one zero byte, then powers of four bytes
+        if right_len & 1 != 0 {
+            left = gf2_matrix_times(&even, left);
+        }
+        right_len >>= 1;
+        if right_len == 0 {
+            break;
+        }
+        odd = gf2_matrix_square(&even);
+        if right_len & 1 != 0 {
+            left = gf2_matrix_times(&odd, left);
+        }
+        right_len >>= 1;
+        if right_len == 0 {
+            break;
+        }
+    }
+    left ^ right
+}
+
+#[cfg(test)]
+mod parallel_crc_combine_tests {
+    use super::*;
+
+    #[test]
+    fn combining_chunks_matches_single_pass_for_every_split() {
+        let data = (0..8193).map(|i| (i * 37 % 251) as u8).collect::<Vec<_>>();
+        let expected = crc32c(&data);
+        for split in 0..=data.len() {
+            assert_eq!(
+                crc32c_combine(
+                    crc32c(&data[..split]),
+                    crc32c(&data[split..]),
+                    (data.len() - split) as u64,
+                ),
+                expected,
+                "split {split}",
+            );
+        }
+    }
+
+    #[test]
+    fn combines_independent_parallel_chunks_associatively() {
+        let data = (0..131_075).map(|i| (i * 97 % 253) as u8).collect::<Vec<_>>();
+        let partitions = [0, 1, 17, 4096, 8192, 131_074, 131_075];
+        let mut reduced = crc32c(b"");
+        let mut previous = 0;
+        for &end in partitions.iter().skip(1) {
+            reduced = crc32c_combine(
+                reduced, crc32c(&data[previous..end]), (end - previous) as u64
+            );
+            previous = end;
+        }
+        assert_eq!(reduced, crc32c(&data));
+
+        let left = crc32c(&data[..17]);
+        let middle = crc32c(&data[17..4096]);
+        let right = crc32c(&data[4096..]);
+        let lhs = crc32c_combine(
+            crc32c_combine(left, middle, 4096 - 17),
+            right, (data.len() - 4096) as u64,
+        );
+        let rhs = crc32c_combine(
+            left,
+            crc32c_combine(middle, right, (data.len() - 4096) as u64),
+            (data.len() - 17) as u64,
+        );
+        assert_eq!(lhs, crc32c(&data));
+        assert_eq!(rhs, lhs);
+    }
+
+    #[test]
+    fn zero_length_right_range_does_not_shift_checksum() {
+        assert_eq!(crc32c_combine(0x1234_5678, 0, 0), 0x1234_5678);
+        assert_eq!(crc32c_combine(0, crc32c(b"payload"), 7), crc32c(b"payload"));
+    }
+}
+
 /// Stream a file, reading at most one byte past max_bytes to detect oversized input.
 /// Returns (length, checksum).
 pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64, u32)> {

@@ -90,6 +90,9 @@ pub fn scrub_snapshot_with_byte_limit(
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let cursor = AtomicUsize::new(0);
+    // Keep the lowest failing index. Work already claimed before a failure
+    // finishes normally; unclaimed later parts do not need to be scanned.
+    let first_failure = AtomicUsize::new(usize::MAX);
     // The atomic index gives each part one owner. Keep only one result slot
     // per part instead of also retaining a full vector inside every worker.
     let slots: Vec<OnceLock<Result<ScrubReport, PartError>>> =
@@ -100,15 +103,20 @@ pub fn scrub_snapshot_with_byte_limit(
             let cursor = &cursor;
             let parts = &parts;
             let slots = &slots;
+            let first_failure = &first_failure;
             let handle = std::thread::Builder::new()
                 .spawn_scoped(scope, move || {
                     loop {
                         let index = cursor.fetch_add(1, Ordering::Relaxed);
-                        if index >= parts.len() {
+                        if index >= parts.len() || index > first_failure.load(Ordering::Acquire) {
                             break;
                         }
+                        let result = scrub_part(&parts[index]);
+                        if result.is_err() {
+                            first_failure.fetch_min(index, Ordering::AcqRel);
+                        }
                         slots[index]
-                            .set(scrub_part(&parts[index]))
+                            .set(result)
                             .unwrap_or_else(|_| unreachable!("scrub index claimed twice"));
                     }
                 })
@@ -124,7 +132,14 @@ pub fn scrub_snapshot_with_byte_limit(
         }
         Ok(())
     })?;
-    for slot in slots {
+    // Every index below the first failure was already claimed because the
+    // cursor grows monotonically. Once all workers have joined, report that
+    // earliest failure and ignore intentionally unclaimed later indexes.
+    let first_failure = first_failure.load(Ordering::Acquire);
+    for (index, slot) in slots.into_iter().enumerate() {
+        if index > first_failure {
+            break;
+        }
         let checked = slot.into_inner()
             .ok_or_else(|| PartError::InvalidScan("missing snapshot scrub result".into()))??;
         report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
@@ -317,6 +332,36 @@ mod scrub_generation_stability_tests {
         assert!(require_unchanged_snapshot(&root, &first).is_ok());
         fs::write(&pointer, "g2\n").unwrap();
         assert!(require_unchanged_snapshot(&root, &first).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod fail_fast_scrub_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn returns_earliest_corrupt_part_with_parallel_workers() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-fail-fast-scrub-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..32 {
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[vec![Some(index.to_string())]],
+            ).unwrap();
+        }
+        assert_eq!(scrub_snapshot(&root, 32).unwrap().parts, 32);
+        fs::write(root.join("all_1_1_0/count.txt"), "999\n").unwrap();
+        fs::write(root.join("all_31_31_0/count.txt"), "888\n").unwrap();
+        let error = scrub_snapshot(&root, 32).unwrap_err();
+        // A corrupted part must never produce a successful full scrub.
+        assert!(!format!("{error:?}").is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -6,6 +6,7 @@ use rusthouse_storage::{
     write_wide_part,
 };
 use std::fs::{self, OpenOptions};
+use std::io;
 use std::io::Write;
 use std::path::Path;
 
@@ -105,6 +106,53 @@ fn generations_dir(database: &Path, table: &str) -> Result<std::path::PathBuf, S
     }
 }
 
+/// Publish a fresh immutable generation without overwriting a concurrent
+/// destination. On Linux the destination absence check and rename are atomic.
+#[cfg(target_os = "linux")]
+fn publish_new_generation(staging: &Path, destination: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_int, c_uint};
+    use std::os::unix::ffi::OsStrExt;
+
+    unsafe extern "C" {
+        fn renameat2(
+            olddirfd: c_int,
+            oldpath: *const c_char,
+            newdirfd: c_int,
+            newpath: *const c_char,
+            flags: c_uint,
+        ) -> c_int;
+    }
+    const AT_FDCWD: c_int = -100;
+    const RENAME_NOREPLACE: c_uint = 1;
+    let path_cstring = |path: &Path| {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in snapshot path"))
+    };
+    let source = path_cstring(staging)?;
+    let target = path_cstring(destination)?;
+    let code = unsafe {
+        renameat2(
+            AT_FDCWD, source.as_ptr(), AT_FDCWD, target.as_ptr(), RENAME_NOREPLACE,
+        )
+    };
+    if code == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Other platforms retain the exclusive database writer-lock requirement.
+#[cfg(not(target_os = "linux"))]
+fn publish_new_generation(staging: &Path, destination: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(destination) {
+        Ok(_) => Err(io::Error::new(io::ErrorKind::AlreadyExists, "snapshot generation exists")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => fs::rename(staging, destination),
+        Err(error) => Err(error),
+    }
+}
+
 /// Publish a verified immutable generation and atomically swap its pointer.
 /// The staging writer may stream parts without holding the whole table in memory.
 /// Caller must hold the database write lock and validate the existing table.
@@ -155,7 +203,7 @@ fn publish_snapshot_with(
         return Err("snapshot generation already exists".into());
     }
     let published = fail_publication_at("snapshot-before-generation-rename").and_then(|_| {
-        fs::rename(&staging, &destination)
+        publish_new_generation(&staging, &destination)
             .map_err(|error| format!("cannot publish database generation: {error}"))
     });
     if let Err(error) = published {
@@ -726,6 +774,56 @@ mod parallel_snapshot_staging_tests {
             let original = fs::read(source.join("count.txt")).unwrap();
             assert_eq!(fs::read(copied.join("count.txt")).unwrap(), original);
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod no_replace_generation_tests {
+    use super::*;
+
+    #[test]
+    fn never_replaces_destination_created_after_preflight() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-generation-no-replace-{}-{}",
+            std::process::id(),
+            super::NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        fs::create_dir(&root).unwrap();
+        let staging = root.join("staging");
+        let destination = root.join("generation");
+        fs::create_dir(&staging).unwrap();
+
+        assert!(!destination.exists());
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("sentinel"), b"do not overwrite").unwrap();
+        assert!(publish_new_generation(&staging, &destination).is_err());
+        assert!(staging.is_dir());
+        assert_eq!(fs::read(destination.join("sentinel")).unwrap(), b"do not overwrite");
+
+        fs::remove_dir_all(&destination).unwrap();
+        publish_new_generation(&staging, &destination).unwrap();
+        assert!(!staging.exists());
+        assert!(destination.is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn also_refuses_existing_empty_destination_atomically() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-generation-empty-{}-{}",
+            std::process::id(),
+            super::NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        fs::create_dir(&root).unwrap();
+        let staging = root.join("staging");
+        let destination = root.join("generation");
+        fs::create_dir(&staging).unwrap();
+        fs::create_dir(&destination).unwrap();
+        assert!(publish_new_generation(&staging, &destination).is_err());
+        assert!(staging.is_dir());
+        assert!(destination.is_dir());
         fs::remove_dir_all(root).unwrap();
     }
 }

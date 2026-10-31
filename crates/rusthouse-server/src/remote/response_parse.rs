@@ -194,10 +194,12 @@ mod owned_response_parser_tests {
         let body = b"compressed peer payload";
         let encoded = lz4_flex::compress_prepend_size(body);
         let mut wire = format!(
-            "HTTP/1.1 200 OK\\r\\nContent-Length: {}\\r\\nContent-Type: text/plain\\r\\nContent-Encoding: X-RUSTHOUSE-LZ4\\r\\n\\r\\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nContent-Encoding: X-RUSTHOUSE-LZ4\r\n\r\n",
             encoded.len(),
         ).into_bytes();
         wire.extend_from_slice(&encoded);
+        assert_eq!(expected_wire_length(&wire).unwrap(), Some(wire.len()));
+        assert_eq!(parse_response(&wire).unwrap().body, body);
         assert_eq!(parse_response_owned(wire).unwrap().body, body);
     }
 
