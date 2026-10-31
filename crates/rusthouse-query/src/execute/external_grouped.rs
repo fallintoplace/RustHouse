@@ -232,6 +232,15 @@ impl ExternalGroupCount64 {
             .ok_or_else(|| invalid("too many GROUP BY spill runs"))?;
         Ok(self.scratch.as_ref().unwrap().0.join(format!("run-{index:08}.bin")))
     }
+    fn preflight_disk(&self, additional: u64) -> Result<(), ExecutionError> {
+        if self.disk_bytes.checked_add(additional)
+            .is_none_or(|bytes| bytes > MAX_DISK_BYTES)
+        {
+            return Err(invalid("GROUP BY exceeded the 32 GiB temporary disk budget"));
+        }
+        Ok(())
+    }
+
     fn reserve_disk(&mut self, path: &Path) -> Result<(), ExecutionError> {
         self.disk_bytes = self.disk_bytes.checked_add(fs::metadata(path)?.len())
             .ok_or_else(|| invalid("GROUP BY spill byte overflow"))?;
@@ -254,6 +263,17 @@ impl ExternalGroupCount64 {
     fn flush(&mut self) -> Result<(), ExecutionError> {
         if self.keys.is_empty() { return Ok(()); }
         sort_run_keys(&mut self.keys);
+        // Exact canonical varint size, including run-length encoded counts.
+        // Reject a spill that would exceed the quota before opening its file.
+        let mut required = 0u64;
+        for run in self.keys.chunk_by(|left, right| left == right) {
+            let count = u64::try_from(run.len())
+                .map_err(|_| invalid("GROUP BY spill run length overflow"))?;
+            let width = |value: u64| u64::from((64 - value.leading_zeros()).div_ceil(7).max(1));
+            required = required.checked_add(width(run[0]) + width(count))
+                .ok_or_else(|| invalid("GROUP BY spill byte overflow"))?;
+        }
+        self.preflight_disk(required)?;
         let path = self.next_path()?;
         let mut stream = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
             .write(true).create_new(true).open(&path)?);
@@ -285,6 +305,13 @@ impl ExternalGroupCount64 {
                 let previous = std::mem::take(&mut self.runs);
                 let mut reduced = Vec::new();
                 for chunk in previous.chunks(FAN_IN) {
+                    // Compacting canonical counts never produces more bytes
+                    // than the combined input runs.
+                    let bytes = chunk.iter().try_fold(0u64, |total, file| {
+                        total.checked_add(fs::metadata(file)?.len())
+                            .ok_or_else(|| invalid("GROUP BY spill merge size overflow"))
+                    })?;
+                    self.preflight_disk(bytes)?;
                     let path = self.next_path()?;
                     let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
                         .create_new(true).write(true).open(&path)?);
@@ -560,5 +587,38 @@ mod packed_grouped_varint_tests {
             assert_eq!(read_varint(&mut input, false).unwrap(), Some(expected));
         }
         assert!(input.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod spill_preflight_quota_tests {
+    use super::*;
+
+    #[test]
+    fn preflight_counts_exact_varint_bytes_before_creating_run() {
+        let mut group = ExternalGroupCount64::new(false, false);
+        group.keys.extend([1, 1, 127, 128, u64::MAX]);
+        group.flush().unwrap();
+        assert_eq!(fs::metadata(&group.runs[0]).unwrap().len(), 18);
+        let mut limited = ExternalGroupCount64::new(false, false);
+        limited.keys.push(42);
+        limited.disk_bytes = MAX_DISK_BYTES - 1;
+        assert!(limited.flush().is_err());
+        assert!(limited.scratch.is_none());
+    }
+
+    #[test]
+    fn multi_pass_compaction_checks_space_before_writing() {
+        let mut group = ExternalGroupCount64::new(false, false);
+        for key in 0..=FAN_IN {
+            group.keys.push(key as u64);
+            group.flush().unwrap();
+        }
+        let directory = group.scratch.as_ref().unwrap().0.clone();
+        let created = fs::read_dir(&directory).unwrap().count();
+        assert_eq!(created, FAN_IN + 1);
+        group.disk_bytes = MAX_DISK_BYTES;
+        assert!(group.compact_runs().is_err());
+        assert_eq!(fs::read_dir(directory).unwrap().count(), created);
     }
 }
