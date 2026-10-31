@@ -52,6 +52,17 @@ class GroupedPhysicalReferenceTests(unittest.TestCase):
         self.assertEqual(sum(count > 0 for count in counts), 4096)
         self.assertEqual(expected_tsv(counts).splitlines()[0], b"0\t900000000")
 
+    def test_hot_row_cache_preserves_every_tsv_byte_across_batches(self):
+        for groups in (2, 13, 4096):
+            for rows in (1, 9, 10, 11, 98, 999):
+                sink = io.StringIO()
+                emit(sink, rows, groups, batch_rows=7)
+                expected = "".join(
+                    f"{region_at(index, groups)}\\t{1 + index % 97}\\n"
+                    for index in range(rows)
+                )
+                self.assertEqual(sink.getvalue(), expected)
+
     def test_emitted_csv_and_oracle_agree_for_uneven_prefix(self):
         sink = io.StringIO()
         emit(sink, 1111, 101, batch_rows=7)
