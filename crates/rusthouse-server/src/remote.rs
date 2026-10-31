@@ -86,6 +86,15 @@ fn read_peer_chunk(reader: &mut impl Read, buffer: &mut [u8]) -> Result<Option<u
     }
 }
 
+/// Search only the newly received bytes plus the previous three bytes.
+/// An untrusted peer can trickle its header one byte at a time; rescanning
+/// the complete prefix after every read would make framing quadratic.
+fn new_header_terminator(raw: &[u8], scan_from: &mut usize) -> bool {
+    let found = raw[*scan_from..].windows(4).any(|window| window == b"\r\n\r\n");
+    *scan_from = raw.len().saturating_sub(3);
+    found
+}
+
 /// A deadline on the entire response, not on each individual read.
 /// A peer that trickles one byte per read must not keep a coordinator thread alive.
 fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u8>, String> {
@@ -95,6 +104,7 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
     // The response header is immutable after its terminator. Parse it once,
     // then compare subsequent network reads against the cached wire length.
     let mut expected_length = None;
+    let mut header_scan_from = 0;
     let mut buffer = [0u8; 8192];
     loop {
         let remaining = timeout
@@ -118,7 +128,10 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
             break;
         }
         raw.extend_from_slice(&buffer[..size]);
-        if expected_length.is_none() {
+        if expected_length.is_none()
+            && (new_header_terminator(&raw, &mut header_scan_from)
+                || raw.len() >= MAX_HEADER_BYTES)
+        {
             expected_length = expected_wire_length(&raw)?;
         }
         // Content-Length is authoritative for this restricted peer protocol.
@@ -405,6 +418,48 @@ mod data_plane_deadline_tests {
             ("GET", "/"), ("POST", "/unrelated"),
         ] {
             assert_eq!(response_timeout(method, path), Duration::from_secs(3));
+        }
+    }
+}
+
+#[cfg(test)]
+mod incremental_peer_header_tests {
+    use super::*;
+
+    #[test]
+    fn one_byte_network_chunks_find_split_delimiters_exactly_once() {
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nX-Extra: {}\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\n",
+            "x".repeat(4096)
+        );
+        let wire = [header.as_bytes(), b"OK"].concat();
+        let mut scan_from = 0;
+        let mut detections = Vec::new();
+        for end in 1..=wire.len() {
+            if new_header_terminator(&wire[..end], &mut scan_from) {
+                detections.push(end);
+                assert_eq!(expected_wire_length(&wire[..end]).unwrap(), Some(wire.len()));
+            }
+        }
+        assert_eq!(detections, vec![header.len()]);
+    }
+
+    #[test]
+    fn coarse_and_fine_chunking_use_the_same_content_length() {
+        let body = b"1234567890";
+        let mut wire = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nContent-Type: text/plain\r\n\r\n".to_vec();
+        wire.extend_from_slice(body);
+        for chunk_size in [1, 2, 3, 4, 7, 16, 4096] {
+            let mut scan_from = 0;
+            let mut length = None;
+            for end in (1..=wire.len()).step_by(chunk_size)
+                .chain(std::iter::once(wire.len()))
+            {
+                if length.is_none() && new_header_terminator(&wire[..end], &mut scan_from) {
+                    length = expected_wire_length(&wire[..end]).unwrap();
+                }
+            }
+            assert_eq!(length, Some(wire.len()), "chunk size {chunk_size}");
         }
     }
 }
