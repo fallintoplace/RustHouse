@@ -377,7 +377,7 @@ pub fn rank_quorum_snapshot_replicas(
     let mut seen = 0u16;
     let mut acknowledgements = Vec::with_capacity(replicas.len());
     for replica in replicas {
-        let index = members.iter().position(|&member| member == replica.node)
+        let index = members.iter().position(|&member| member == replica.node.as_str())
             .ok_or("snapshot from unknown replica")?;
         let bit = 1u16 << index;
         if seen & bit != 0 {
