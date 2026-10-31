@@ -5,7 +5,6 @@ use crate::{
     Column, NumericColumn, NumericPartReader, PartError, PartMetadata, inspect_part,
     read_part_row_count,
 };
-use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -142,15 +141,20 @@ fn part_span(name: &str) -> Option<(String, u64, u64)> {
     }
 }
 
-fn validate_block_ranges(ranges: &mut HashMap<String, Vec<(u64, u64)>>) -> Result<(), PartError> {
-    for spans in ranges.values_mut() {
-        spans.sort_unstable();
-        for pair in spans.windows(2) {
-            if pair[0].1 >= pair[1].0 {
-                return Err(PartError::InvalidScan(
-                    "overlapping part block ranges: provide a frozen active-part snapshot".into(),
-                ));
-            }
+fn sort_and_validate_part_ranges(
+    parts: &mut [(String, u64, u64, PathBuf)],
+) -> Result<(), PartError> {
+    // Each partition's block ranges become adjacent after sorting. Validate
+    // overlaps in the same pass without copying partition names into a map
+    // and allocating a separate sortable range list per partition.
+    parts.sort_unstable_by(|left, right| {
+        (&left.0, left.1, left.2, &left.3).cmp(&(&right.0, right.1, right.2, &right.3))
+    });
+    for adjacent in parts.windows(2) {
+        if adjacent[0].0 == adjacent[1].0 && adjacent[0].2 >= adjacent[1].1 {
+            return Err(PartError::InvalidScan(
+                "overlapping part block ranges: provide a frozen active-part snapshot".into(),
+            ));
         }
     }
     Ok(())
@@ -178,7 +182,6 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
     // Keep parsed numeric block bounds for physical ordering, instead of
     // lexicographically placing part 10 before part 2.
     let mut parts = Vec::<(String, u64, u64, PathBuf)>::new();
-    let mut ranges: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
     let mut scanned_entries = 0usize;
     for entry in fs::read_dir(path).map_err(|e| io_error(path, e))? {
         scanned_entries += 1;
@@ -227,7 +230,6 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
         let (partition, min, max) = part_span(name).ok_or_else(|| {
             PartError::InvalidScan(format!("not a standard active part name: {name}"))
         })?;
-        ranges.entry(partition.clone()).or_default().push((min, max));
         parts.push((partition, min, max, child));
         if parts.len() > MAX_TABLE_PARTS {
             return Err(PartError::InvalidScan(
@@ -240,10 +242,7 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
             "no active wide MergeTree parts found in snapshot".into(),
         ));
     }
-    validate_block_ranges(&mut ranges)?;
-    parts.sort_unstable_by(|left, right| {
-        (&left.0, left.1, left.2, &left.3).cmp(&(&right.0, right.1, right.2, &right.3))
-    });
+    sort_and_validate_part_ranges(&mut parts)?;
     Ok(parts.into_iter().map(|(_, _, _, path)| path).collect())
 }
 
@@ -785,14 +784,22 @@ mod tests {
     }
     #[test]
     fn checks_overlapping_block_ranges_independently_of_directory_order() {
-        let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (3, 5)])]);
+        let mut ranges = vec![
+            ("all".to_owned(), 10, 12, PathBuf::from("all_10")),
+            ("all".to_owned(), 1, 3, PathBuf::from("all_1")),
+            ("all".to_owned(), 3, 5, PathBuf::from("all_3")),
+        ];
         assert!(matches!(
-            validate_block_ranges(&mut ranges),
+            sort_and_validate_part_ranges(&mut ranges),
             Err(PartError::InvalidScan(_))
         ));
 
-        let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (4, 5)])]);
-        validate_block_ranges(&mut ranges).unwrap();
+        ranges[1].1 = 4;
+        sort_and_validate_part_ranges(&mut ranges).unwrap();
+        assert_eq!(ranges.iter().map(|part| part.1).collect::<Vec<_>>(), [1, 4, 10]);
+
+        ranges.push(("west".to_owned(), 1, 20, PathBuf::from("west")));
+        sort_and_validate_part_ranges(&mut ranges).unwrap();
     }
 }
 
