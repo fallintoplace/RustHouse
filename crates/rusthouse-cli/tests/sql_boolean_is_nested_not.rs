@@ -32,8 +32,14 @@ fn negating_is_boolean_keeps_null_rows_in_sql_where() {
     ));
     fs::create_dir_all(&db).unwrap();
 
-    ok(&db, "CREATE TABLE events (id UInt64, value Nullable(UInt64))");
-    ok(&db, "INSERT INTO events VALUES (1, NULL), (2, 0), (3, 1), (4, 2)");
+    ok(
+        &db,
+        "CREATE TABLE events (id UInt64, value Nullable(UInt64))",
+    );
+    ok(
+        &db,
+        "INSERT INTO events VALUES (1, NULL), (2, 0), (3, 1), (4, 2)",
+    );
 
     for (predicate, expected) in [
         ("value IS TRUE", 2),
