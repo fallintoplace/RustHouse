@@ -39,8 +39,61 @@ fn is_empty_json_container_pair(open: u8, close: u8) -> bool {
     matches!((open, close), (b'{', b'}') | (b'[', b']'))
 }
 
+// Batch punctuation-heavy JSON output without a heap allocation per row.
+struct RowWriter<'a, W: Write> {
+    output: &'a mut W,
+    buffer: [u8; 4096],
+    used: usize,
+}
+
+impl<'a, W: Write> RowWriter<'a, W> {
+    fn new(output: &'a mut W) -> Self {
+        Self {
+            output,
+            buffer: [0; 4096],
+            used: 0,
+        }
+    }
+
+    fn finish(self) -> io::Result<()> {
+        self.output.write_all(&self.buffer[..self.used])
+    }
+
+    fn drain(&mut self) -> io::Result<()> {
+        self.output.write_all(&self.buffer[..self.used])?;
+        self.used = 0;
+        Ok(())
+    }
+}
+
+impl<W: Write> Write for RowWriter<'_, W> {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        if input.len() > self.buffer.len() - self.used {
+            self.drain()?;
+        }
+        if input.len() >= self.buffer.len() {
+            self.output.write_all(input)?;
+        } else {
+            self.buffer[self.used..self.used + input.len()].copy_from_slice(input);
+            self.used += input.len();
+        }
+        Ok(input.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.drain()?;
+        self.output.flush()
+    }
+}
+
 /// Pretty-print a validated JSON row, preserving punctuation inside strings.
 pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
+    let mut writer = RowWriter::new(output);
+    write_pretty_json_row_into(&mut writer, row)?;
+    writer.finish()
+}
+
+fn write_pretty_json_row_into<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
     let mut inside_json_string = false;
     let mut previous_byte_was_escape = false;
     let mut depth = 0usize;
@@ -318,5 +371,51 @@ mod long_pretty_json_key_batch_tests {
             rendered,
             format!("{{\n    \"{key}\": 1\n  }}").as_bytes()
         );
+    }
+}
+
+#[cfg(test)]
+mod row_write_batch_tests {
+    use super::*;
+
+    struct Counted {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn punctuation_heavy_json_uses_bounded_output_writes() {
+        let row = format!(
+            "{{\"values\":[{}]}}",
+            (0..200).map(|index| format!("{{\"key\":{index}}}")).collect::<Vec<_>>().join(",")
+        );
+        let mut expected = Vec::new();
+        write_pretty_json_row_into(&mut expected, row.as_bytes()).unwrap();
+        let mut counted = Counted { calls: 0, bytes: Vec::new() };
+        write_pretty_json_row(&mut counted, row.as_bytes()).unwrap();
+        assert_eq!(counted.bytes, expected);
+        assert!(counted.calls <= 2, "writes: {}", counted.calls);
+    }
+
+    #[test]
+    fn batch_writer_preserves_long_literals_and_escaped_strings() {
+        let row = format!("{{\"text\":\"{}\",\"escape\":\"a\\\\b\\\"c\"}}", "x".repeat(20_000));
+        let mut expected = Vec::new();
+        write_pretty_json_row_into(&mut expected, row.as_bytes()).unwrap();
+        let mut actual = Vec::new();
+        write_pretty_json_row(&mut actual, row.as_bytes()).unwrap();
+        assert_eq!(actual, expected);
     }
 }
