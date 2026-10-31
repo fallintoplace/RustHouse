@@ -66,6 +66,16 @@ class ChunkCopyTests(unittest.TestCase):
             self.assertEqual(len(commands), 2)
             self.assertIn("part-000000.tsv", commands[0][2])
 
+    def test_rejects_unhashable_shard_path_as_validation_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "manifest.json"
+            path.write_text(json.dumps({
+                "format": "rusthouse-tsv-shards-v1", "header": False,
+                "shards": [{"path": []}],
+            }))
+            with self.assertRaisesRegex(ValueError, "invalid shard path"):
+                load_chunks("rusthouse", "db", "events", root, dry_run=True)
+
     def test_dry_run_checks_manifest_without_copying(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
