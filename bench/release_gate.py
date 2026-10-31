@@ -111,6 +111,12 @@ def verify_latency_baseline(candidate, baseline, required, max_slowdown=1.25):
         raise ValueError("max slowdown must be a finite ratio >= 1")
     verify(candidate, required)
     verify(baseline, required)
+    for field in ("workload", "engine", "rows", "seed", "timing_scope",
+                  "query_sha256", "comparison", "distribution", "suite",
+                  "source", "projection_manifest", "official_benchmark"):
+        old, new = baseline.get(field), candidate.get(field)
+        if type(old) is not type(new) or old != new:
+            raise ValueError(f"cannot compare different {field} values")
     prior = {row["query"]: row for row in baseline["results"]}
     for row in candidate["results"]:
         number = row["query"]
