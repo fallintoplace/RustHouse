@@ -38,7 +38,9 @@ impl<'a> JsonValue<'a> {
                 "true" | "false" => "Bool",
                 "null" => "Null",
                 text if text.as_bytes().iter().any(|byte| matches!(byte, b'.' | b'e' | b'E')) => "Double",
-                text if text.starts_with('-') || text.parse::<i64>().is_ok() => "Int64",
+                // A JSON integer outside the physical integer range must
+                // not be advertised as an Int64/UInt64 value that cannot hold it.
+                text if text.parse::<i64>().is_ok() => "Int64",
                 text if text.parse::<u64>().is_ok() => "UInt64",
                 _ => "Double",
             },
@@ -401,5 +403,36 @@ mod tests {
         assert!(parse_json(&" ".repeat(1_048_577)).is_err());
         let value = parse_json(r#"{"x":1,"x":2}"#).unwrap();
         assert_eq!(value.at_path("x").unwrap().raw(), "2");
+    }
+}
+
+#[cfg(test)]
+mod json_integer_range_type_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_only_representable_integers_as_int64_or_uint64() {
+        let value = parse_json(concat!(
+            "{\"i_min\":-9223372036854775808,",
+            "\"i_low\":-9223372036854775809,",
+            "\"i_max\":9223372036854775807,",
+            "\"u_start\":9223372036854775808,",
+            "\"u_max\":18446744073709551615,",
+            "\"u_over\":18446744073709551616,",
+            "\"huge_negative\":-99999999999999999999999999,",
+            "\"decimal\":1.0}"
+        )).unwrap();
+        for (field, expected) in [
+            ("i_min", "Int64"),
+            ("i_low", "Double"),
+            ("i_max", "Int64"),
+            ("u_start", "UInt64"),
+            ("u_max", "UInt64"),
+            ("u_over", "Double"),
+            ("huge_negative", "Double"),
+            ("decimal", "Double"),
+        ] {
+            assert_eq!(value.at_path(field).unwrap().type_name(), expected, "{field}");
+        }
     }
 }
