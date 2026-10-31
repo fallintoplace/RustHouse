@@ -345,11 +345,40 @@ impl TypedExternalSort {
         Ok(())
     }
 
+    fn preflight_flush(&self) -> Result<(), ExecutionError> {
+        let bytes = self.buffer.iter().try_fold(0u64, |total, entry| {
+            let row = &entry.row;
+            let payload = row.values.iter().chain(row.sort_keys.iter())
+                .try_fold(12u64, |sum, cell| {
+                    let size = match cell {
+                        Cell::Null => 1,
+                        Cell::Numeric(Number::Unsigned(_) | Number::Signed(_)) => 17,
+                        Cell::Numeric(Number::Float(_)) => 9,
+                        Cell::Text(value) => u64::try_from(value.len()).ok()
+                            .and_then(|len| len.checked_add(5))
+                            .ok_or_else(|| invalid("typed sort run size overflow"))?,
+                        Cell::Uuid(value) => u64::try_from(value.len()).ok()
+                            .and_then(|len| len.checked_add(5))
+                            .ok_or_else(|| invalid("typed sort run size overflow"))?,
+                    };
+                    sum.checked_add(size)
+                        .ok_or_else(|| invalid("typed sort run size overflow"))
+                })?;
+            total.checked_add(payload)
+                .ok_or_else(|| invalid("typed sort run size overflow"))
+        })?;
+        if self.disk_bytes.checked_add(bytes).is_none_or(|sum| sum > MAX_TEMP_BYTES) {
+            return Err(invalid("typed sort spill exceeds 32 GiB budget"));
+        }
+        Ok(())
+    }
+
     fn flush(&mut self) -> Result<(), ExecutionError> {
         if self.buffer.is_empty() {
             return Ok(());
         }
         self.sort_buffer();
+        self.preflight_flush()?;
         let path = self.next_path()?;
         let mut output = BufWriter::with_capacity(64 * 1024, File::create(&path)?);
         for entry in &self.buffer {
@@ -616,5 +645,41 @@ mod typed_sort_scratch_permissions_tests {
         let scratch = Scratch::new().unwrap();
         let permissions = fs::metadata(&scratch.0).unwrap().permissions();
         assert_eq!(permissions.mode() & 0o077, 0);
+    }
+}
+
+#[cfg(test)]
+mod typed_spill_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn preflight_uses_real_cell_encoding_before_creating_run() {
+        let mut sort = TypedExternalSort::new(0, 0, 0);
+        sort.push(Row {
+            values: vec![
+                Cell::Text(b"abc".to_vec()),
+                Cell::Numeric(Number::Unsigned(11)),
+            ],
+            sort_keys: vec![Cell::Null],
+        }).unwrap();
+        // 12-byte row header + 8-byte text + 17-byte integer + 1-byte NULL.
+        sort.disk_bytes = MAX_TEMP_BYTES - 37;
+        assert!(sort.flush().is_err());
+        assert!(sort.scratch.is_none());
+        assert_eq!(sort.buffer.len(), 1);
+
+        sort.disk_bytes = 0;
+        sort.flush().unwrap();
+        let bytes = fs::metadata(&sort.runs[0]).unwrap().len();
+        assert_eq!(bytes, 38);
+        assert_eq!(sort.disk_bytes, bytes);
+    }
+
+    #[test]
+    fn empty_flush_does_not_consume_scratch_disk() {
+        let mut sort = TypedExternalSort::new(0, 0, 0);
+        sort.disk_bytes = MAX_TEMP_BYTES;
+        sort.flush().unwrap();
+        assert!(sort.scratch.is_none());
     }
 }
