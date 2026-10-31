@@ -104,8 +104,9 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
                     raise TimeoutError("total export deadline exceeded")
                 # Compare the complete expected page in one operation.
                 # Avoid one Python bytes allocation and one splitline per ID.
-                expected = "".join(f"{number}\n" for number in
-                                   range(first, first + count)).encode("ascii")
+                # Convert whole integer ranges with map(str) rather than
+                # dispatching an f-string for every row in billion-ID exports.
+                expected = ("\n".join(map(str, range(first, first + count))) + "\n").encode("ascii")
                 if data != expected:
                     raise ValueError(f"missing, duplicated or unordered ID near {first}")
                 sink.write(data)
