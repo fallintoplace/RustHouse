@@ -48,16 +48,29 @@ pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
     let mut decoded = Vec::with_capacity(bytes.len().min(MAX_QUERY_BYTES));
     let mut index = 0;
     while index < bytes.len() {
-        let ch = bytes[index];
-        if ch == b'%' {
+        // Copy ordinary UTF-8 spans in bulk. Only percent escapes and '+'
+        // need individual decoding, even for long URL-encoded SQL queries.
+        let span = bytes[index..]
+            .iter()
+            .position(|&byte| byte == b'%' || byte == b'+')
+            .unwrap_or(bytes.len() - index);
+        if span > MAX_QUERY_BYTES - decoded.len() {
+            return Err("SQL statement exceeds 4096 bytes");
+        }
+        decoded.extend_from_slice(&bytes[index..index + span]);
+        index += span;
+        if index == bytes.len() {
+            break;
+        }
+        if decoded.len() == MAX_QUERY_BYTES {
+            return Err("SQL statement exceeds 4096 bytes");
+        }
+        if bytes[index] == b'%' {
             decoded.push(decode_percent_triplet(bytes, index)?);
             index += 3;
         } else {
-            decoded.push(if ch == b'+' { b' ' } else { ch });
+            decoded.push(b' ');
             index += 1;
-        }
-        if decoded.len() > MAX_QUERY_BYTES {
-            return Err("SQL statement exceeds 4096 bytes");
         }
     }
     String::from_utf8(decoded).map_err(|_| "SQL query must be valid UTF-8")
@@ -183,5 +196,37 @@ mod medium_json_string_write_tests {
         let mut out = Vec::new();
         write_json_string(&mut out, "start\n\"quoted\"").unwrap();
         assert_eq!(out, b"\"start\\n\\\"quoted\\\"\"");
+    }
+}
+
+#[cfg(test)]
+mod sparse_percent_span_tests {
+    use super::*;
+
+    #[test]
+    fn copies_long_plain_runs_around_escapes_and_plus_signs() {
+        let first = "x".repeat(2048);
+        let second = "y".repeat(2044);
+        let encoded = format!("{first}%20+{second}");
+        let decoded = decode_url(&encoded).unwrap();
+        assert_eq!(decoded, format!("{first}  {second}"));
+        assert_eq!(decoded.len(), 4094);
+    }
+
+    #[test]
+    fn respects_exact_decoded_limit_and_utf8_validation() {
+        let value = "v".repeat(MAX_QUERY_BYTES - 1);
+        assert_eq!(decode_url(&format!("{value}%20")).unwrap().len(), MAX_QUERY_BYTES);
+        assert!(decode_url(&format!("{value}%20x")).is_err());
+        assert_eq!(decode_url("caf%C3%A9+bar").unwrap(), "café bar");
+        assert!(decode_url("%FF").is_err());
+        assert!(decode_url("%").is_err());
+        assert!(decode_url("%G1").is_err());
+    }
+
+    #[test]
+    fn handles_consecutive_escapes_and_empty_spans() {
+        assert_eq!(decode_url("%41%42++%43").unwrap(), "AB  C");
+        assert_eq!(decode_url("%00").unwrap().as_bytes(), &[0]);
     }
 }
