@@ -20,6 +20,8 @@ FIELDS = (
     ("MobilePhoneModel", "String", "TEXT"),
 )
 
+INSERT_HITS_SQL = "INSERT INTO hits VALUES (" + ",".join("?" for _ in FIELDS) + ")"
+
 
 def records(count, seed):
     rng = random.Random(seed)
@@ -35,10 +37,7 @@ def records(count, seed):
 
 
 def insert_batch(connection, batch):
-    connection.executemany(
-        "INSERT INTO hits VALUES (" + ",".join("?" for _ in FIELDS) + ")",
-        batch,
-    )
+    connection.executemany(INSERT_HITS_SQL, batch)
 
 
 def generate(directory, rows=10000, seed=42):
