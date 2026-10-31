@@ -150,7 +150,7 @@ fn write_tracked_file(
     part: &Path,
     name: &str,
     bytes: &[u8],
-    uncompressed: Option<&[u8]>,
+    uncompressed: Option<UncompressedChecksum>,
     files: &mut Vec<FileChecksum>,
 ) -> Result<(), PartError> {
     write_file(&part.join(name), bytes)?;
@@ -158,10 +158,7 @@ fn write_tracked_file(
         name: name.to_owned(),
         size: bytes.len() as u64,
         hash: checksum_hash(bytes),
-        uncompressed: uncompressed.map(|data| UncompressedChecksum {
-            size: data.len() as u64,
-            hash: checksum_hash(data),
-        }),
+        uncompressed,
     });
     Ok(())
 }
@@ -377,7 +374,10 @@ pub fn write_wide_part_with_compression(
                     }).filter(|&size| size <= MAX_STREAM_BYTES)
                         .ok_or_else(|| invalid("part column exceeds 8 MiB"))?;
                     let mut encoded = Vec::new();
-                    let mut uncompressed = Vec::with_capacity(uncompressed_size);
+                    // Hash the decoded stream across granules without retaining a
+                    // second full-width copy of the encoded column.
+                    let mut decoded_bytes = 0usize;
+                    let mut decoded_checksum = StreamingChecksum::new();
                     let mut marks = Vec::with_capacity(24 * granules.len());
                     // Pack adjacent marks into larger compressed blocks, while each
                     // mark retains its exact intra-block decompressed byte offset.
@@ -386,7 +386,7 @@ pub fn write_wide_part_with_compression(
                     for (index, data) in granules.iter().enumerate() {
                         // Empty Array and Map streams retain an unexposed pad byte.
                         let data: &[u8] = if data.is_empty() { &[0] } else { data };
-                        if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
+                        if data.len() > MAX_STREAM_BYTES - decoded_bytes {
                             return Err(invalid("part column exceeds 8 MiB"));
                         }
                         if !pending.is_empty()
@@ -400,7 +400,8 @@ pub fn write_wide_part_with_compression(
                         let row_count = (rows.len() - index * GRANULE_ROWS).min(GRANULE_ROWS);
                         marks.extend_from_slice(&(row_count as u64).to_le_bytes());
                         pending.extend_from_slice(data);
-                        uncompressed.extend_from_slice(data);
+                        decoded_bytes += data.len();
+                        decoded_checksum.update(data);
                     }
                     if !pending.is_empty() {
                         encoded.extend_from_slice(&block(&pending, compression)?);
@@ -409,7 +410,10 @@ pub fn write_wide_part_with_compression(
                         part,
                         &format!("{name}.bin"),
                         &encoded,
-                        Some(&uncompressed),
+                        Some(UncompressedChecksum {
+                            size: decoded_bytes as u64,
+                            hash: decoded_checksum.finish(),
+                        }),
                         &mut files,
                     )?;
                     write_tracked_file(part, &format!("{name}.mrk2"), &marks, None, &mut files)?;
