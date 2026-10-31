@@ -1,5 +1,9 @@
 use super::*;
 
+fn is_ascii_decimal(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 pub(super) fn parse_http_status(status_line: &str) -> Result<u16, String> {
     let mut status_parts = status_line.splitn(3, ' ');
     let version = status_parts.next().ok_or("invalid peer HTTP status")?;
@@ -7,7 +11,7 @@ pub(super) fn parse_http_status(status_line: &str) -> Result<u16, String> {
     let reason = status_parts.next().ok_or("invalid peer HTTP status")?;
     if !matches!(version, "HTTP/1.1" | "HTTP/1.0")
         || code.len() != 3
-        || !code.bytes().all(|byte| byte.is_ascii_digit())
+        || !is_ascii_decimal(code)
         || reason.bytes().any(|byte| byte.is_ascii_control())
     {
         return Err("invalid peer HTTP status".into());
@@ -37,7 +41,7 @@ pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
 }
 
 pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !is_ascii_decimal(value) {
         return Err("invalid peer Content-Length".into());
     }
     value

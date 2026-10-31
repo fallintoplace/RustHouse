@@ -13,6 +13,12 @@ class VerifiedClickBenchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "within"):
             parse_ids("10")
 
+    def test_explicitly_empty_selection_is_not_all_queries(self):
+        self.assertEqual(parse_ids(None), list(range(1, 10)))
+        for spec in ("", "  ", False, 0):
+            with self.subTest(spec=spec), self.assertRaisesRegex(ValueError, "cannot be empty"):
+                parse_ids(spec)
+
     def test_rejects_invalid_timing_controls_before_loading_queries(self):
         invalid = [
             {"runs": True}, {"runs": 1.5}, {"runs": 0},

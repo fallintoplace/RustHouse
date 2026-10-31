@@ -78,22 +78,23 @@ fn to_bins(min: f64, max: f64, counts: &[u64]) -> Vec<Bin> {
         }];
     }
     let span = max - min;
+    let bin_count = counts.len() as f64;
     counts
         .iter()
         .enumerate()
         .map(|(index, &count)| Bin {
             min: if span.is_finite() {
-                min + span * (index as f64 / counts.len() as f64)
+                min + span * (index as f64 / bin_count)
             } else {
-                let t = index as f64 / counts.len() as f64;
+                let t = index as f64 / bin_count;
                 min * (1.0 - t) + max * t
             },
             max: if index + 1 == counts.len() {
                 max
             } else if span.is_finite() {
-                min + span * ((index + 1) as f64 / counts.len() as f64)
+                min + span * ((index + 1) as f64 / bin_count)
             } else {
-                let t = (index + 1) as f64 / counts.len() as f64;
+                let t = (index + 1) as f64 / bin_count;
                 min * (1.0 - t) + max * t
             },
             count,

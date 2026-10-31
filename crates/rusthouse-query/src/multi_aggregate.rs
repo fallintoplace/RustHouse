@@ -1,6 +1,7 @@
 use crate::expression::parse_expression_tokens;
 use crate::lexer::Token;
 use crate::{AggregateFunction, ParseError, Parser, ScalarExpr};
+use std::fmt::Write as _;
 
 const MAX_AGGREGATE_ITEMS: usize = 128;
 
@@ -36,10 +37,12 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Case { branches, else_expr } => {
             let mut result = String::from("CASE");
             for (condition, value) in branches {
-                result.push_str(&format!(" WHEN {} THEN {}", render_expr(condition), render_expr(value)));
+                write!(&mut result, " WHEN {} THEN {}", render_expr(condition), render_expr(value))
+                    .expect("writing to String cannot fail");
             }
             if let Some(value) = else_expr {
-                result.push_str(&format!(" ELSE {}", render_expr(value)));
+                write!(&mut result, " ELSE {}", render_expr(value))
+                    .expect("writing to String cannot fail");
             }
             result.push_str(" END");
             result

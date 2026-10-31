@@ -58,7 +58,7 @@ def run_readers(binary, part, sql, expected, *, clients=4, rounds=3,
         raise ValueError("timeout must be finite and positive")
     if not isinstance(expected, bytes) or len(expected) > 1024 * 1024:
         raise ValueError("expected result must be at most 1 MiB")
-    if not sql.strip() or len(sql.encode("utf-8")) > 65536:
+    if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65536:
         raise ValueError("SQL must be nonempty and at most 64 KiB")
     statement = sql.strip()
     if statement.endswith(";"):

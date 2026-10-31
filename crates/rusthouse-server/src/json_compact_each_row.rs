@@ -36,6 +36,12 @@ fn write_compact_row_into<W: Write>(
     row.write_all(b"[")?;
     let mut width = 0;
     for value in line.split(|byte| *byte == b'\t') {
+        if width >= columns {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSON row width differs from header",
+            ));
+        }
         if width > 0 {
             row.write_all(b",")?;
         }
@@ -259,5 +265,21 @@ mod tests {
         let mut output = Vec::new();
         write_compact_row(&mut output, b"a\tb\tc", 3).unwrap();
         assert_eq!(output, b"[\"a\",\"b\",\"c\"]\n");
+    }
+}
+
+#[cfg(test)]
+mod overwide_row_tests {
+    use super::*;
+
+    #[test]
+    fn overwide_compact_rows_leave_the_output_untouched() {
+        let mut output = Vec::new();
+        let mut row = Vec::new();
+        let error = write_compact_row_into(&mut output, b"one\ttwo", 1, &mut row).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(output.is_empty());
+        write_compact_row_into(&mut output, b"one", 1, &mut row).unwrap();
+        assert_eq!(output, b"[\"one\"]\n");
     }
 }

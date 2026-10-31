@@ -9,6 +9,12 @@ from collections import Counter
 from pathlib import Path
 from contextlib import closing
 
+SIMPLE_TSV_ESCAPES = {
+    ord("t"): 9, ord("n"): 10, ord("r"): 13,
+    ord("0"): 0, ord("b"): 8, ord("f"): 12,
+    ord("v"): 11, ord("\\"): 92,
+}
+
 
 def decode_tsv_value(raw):
     """Decode ClickHouse-style TSV escapes without conflating NULL and '\\N' text.
@@ -22,11 +28,6 @@ def decode_tsv_value(raw):
         return raw
     encoded = raw.encode("utf-8")
     output = bytearray()
-    simple = {
-        ord("t"): 9, ord("n"): 10, ord("r"): 13,
-        ord("0"): 0, ord("b"): 8, ord("f"): 12,
-        ord("v"): 11, ord("\\"): 92,
-    }
     index = 0
     while index < len(encoded):
         char = encoded[index]
@@ -44,8 +45,8 @@ def decode_tsv_value(raw):
                 raise ValueError("invalid TSV hex escape")
             output.append(int(pair, 16))
             index += 3
-        elif char in simple:
-            output.append(simple[char])
+        elif char in SIMPLE_TSV_ESCAPES:
+            output.append(SIMPLE_TSV_ESCAPES[char])
             index += 1
         else:
             raise ValueError("unsupported TSV escape")

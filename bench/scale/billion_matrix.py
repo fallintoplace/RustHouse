@@ -8,6 +8,7 @@ claim can be made without the full report and machine/dataset description.
 """
 import argparse
 import json
+import itertools
 import math
 import os
 import platform
@@ -22,6 +23,7 @@ from bench.scale.row_oracles import modulo_reference, sum_range
 
 MAX_ROWS = 4_000_000_000  # SUM(id) stays within UInt64 for this range.
 CASE_DIRECTORY = Path(__file__).with_name("billion_matrix")
+MAX_CASES = 256
 IDENTIFIER = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 
 
@@ -180,8 +182,21 @@ def execute_case(binary, database, case, rows, *, runs=3, warmups=1,
             "within_target": max_p90_seconds is None or p90 <= max_p90_seconds}
 
 
+def unique_case_fields(pairs):
+    values = {}
+    for key, value in pairs:
+        if key in values:
+            raise ValueError(f"duplicate benchmark case JSON field: {key}")
+        values[key] = value
+    return values
+
+
 def load_cases(directory):
-    paths = sorted(Path(directory).glob("[0-9][0-9]-*.json"))
+    paths = sorted(itertools.islice(
+        Path(directory).glob("[0-9][0-9]-*.json"), MAX_CASES + 1
+    ))
+    if len(paths) > MAX_CASES:
+        raise ValueError("benchmark case count exceeds 256")
     if not paths:
         raise ValueError("no numbered cases found")
     names = set()
@@ -191,7 +206,8 @@ def load_cases(directory):
             raise ValueError(f"unsafe benchmark case file: {path}")
         if path.stat().st_size > 64 * 1024:
             raise ValueError(f"benchmark case JSON exceeds 64 KiB: {path}")
-        case = json.loads(path.read_text(encoding="utf-8"))
+        case = json.loads(path.read_text(encoding="utf-8"),
+                          object_pairs_hook=unique_case_fields)
         if (not isinstance(case, dict) or not isinstance(case.get("name"), str)
                 or case["name"] in names):
             raise ValueError(f"duplicate or malformed case: {path}")

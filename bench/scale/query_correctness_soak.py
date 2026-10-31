@@ -18,7 +18,10 @@ from pathlib import Path
 
 def percentile(samples, percentile):
     if (not samples or type(percentile) not in (int, float)
-            or not math.isfinite(percentile) or not 0 < percentile <= 100):
+            or not math.isfinite(percentile) or not 0 < percentile <= 100
+            or any(type(sample) not in (int, float)
+                   or not math.isfinite(sample) or sample < 0
+                   for sample in samples)):
         raise ValueError("invalid sample count or percentile")
     return sorted(samples)[math.ceil(len(samples) * percentile / 100) - 1]
 
@@ -65,7 +68,10 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
     statement = sql.strip().removesuffix(";").rstrip()
     if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
         raise ValueError("soak requires one read-only SELECT")
-    with Path(expected_file).open("rb") as source:
+    expected_file = Path(expected_file)
+    if expected_file.is_symlink() or not expected_file.is_file():
+        raise ValueError("expected output must be a regular non-symlinked file")
+    with expected_file.open("rb") as source:
         reference, size = digest_file(source)
     execute = execute or (lambda: run_sql(binary, database, sql, timeout))
     samples = []
@@ -73,7 +79,13 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
         actual, bytes_written, seconds = execute()
         if (actual, bytes_written) != (reference, size):
             raise ValueError(f"query output drift on iteration {attempt + 1}")
-        if not math.isfinite(seconds) or seconds < 0:
+        if type(seconds) not in (int, float) or seconds < 0:
+            raise ValueError("invalid elapsed query time")
+        try:
+            finite = math.isfinite(seconds)
+        except OverflowError:
+            finite = False
+        if not finite:
             raise ValueError("invalid elapsed query time")
         if attempt >= warmups:
             samples.append(seconds)

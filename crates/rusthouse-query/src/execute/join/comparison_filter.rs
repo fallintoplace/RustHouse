@@ -144,11 +144,13 @@ pub(super) fn execute<W: Write>(
         operator: *operator,
         literal,
     };
-    let header = selected
-        .iter()
-        .map(|(_, name, _)| name.as_str())
-        .collect::<Vec<_>>()
-        .join("\t");
+    let mut header = String::new();
+    for (index, (_, name, _)) in selected.iter().enumerate() {
+        if index != 0 {
+            header.push('\t');
+        }
+        header.push_str(name);
+    }
     if query.limit == Some(0) {
         writeln!(output, "{header}")?;
         return Ok(());

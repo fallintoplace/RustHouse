@@ -10,7 +10,6 @@ import os
 import hashlib
 import json
 import math
-import statistics
 import subprocess
 import tempfile
 import time
@@ -81,10 +80,15 @@ def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact
         for engine in order:
             samples[engine].append(checked(engine))
 
-    medians = {name: statistics.median(times) for name, times in samples.items()}
-    # Nearest-rank p90 exposes tail regressions hidden by median alone.
-    p90 = {name: sorted(times)[math.ceil(len(times) * 0.9) - 1]
-           for name, times in samples.items()}
+    medians = {}
+    p90 = {}
+    for name, times in samples.items():
+        ordered = sorted(times)
+        middle = len(ordered) // 2
+        medians[name] = (ordered[middle] if len(ordered) % 2
+                         else (ordered[middle - 1] + ordered[middle]) / 2)
+        # Nearest-rank p90 exposes tail regressions hidden by median alone.
+        p90[name] = ordered[math.ceil(len(ordered) * 0.9) - 1]
     ratio = medians["duckdb"] / medians["rusthouse"]
     if not math.isfinite(ratio) or ratio <= 0:
         raise ValueError("paired speed ratio is not finite and positive")

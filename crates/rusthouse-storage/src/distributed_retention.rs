@@ -4,7 +4,7 @@ const MAX_RETENTION_GENERATIONS: usize = 16_384;
 fn validated_generations(generations: &[u64], active: u64) -> Result<Vec<u64>, &'static str> {
     let mut sorted_generations = generations.to_vec();
     sorted_generations.sort_unstable();
-    if sorted_generations[0] == 0
+    if sorted_generations.first().is_none_or(|generation| *generation == 0)
         || sorted_generations.windows(2).any(|pair| pair[0] == pair[1])
         || sorted_generations.binary_search(&active).is_err()
     {
@@ -323,5 +323,15 @@ mod singleton_retention_budget_tests {
         assert_eq!(retention_candidates_with_byte_budget(&sizes, 4, 3, &[], u64::MAX).unwrap(), (vec![1], 25));
         assert_eq!(retention_candidates_with_byte_budget(&sizes, 4, 3, &[1], u64::MAX).unwrap(), (vec![], 0));
         assert!(retention_candidates_with_byte_budget(&[(1, 1), (1, 2)], 1, 1, &[], 100).is_err());
+    }
+}
+
+#[cfg(test)]
+mod empty_generation_validation_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_generation_history_without_panicking() {
+        assert!(validated_generations(&[], 1).is_err());
     }
 }

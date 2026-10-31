@@ -43,6 +43,22 @@ class OfflineVacuumTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unexpected"):
                 plan(root)
 
+    def test_generation_limit_fails_before_scanning_remaining_entries(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            _parts, versions = self.fixture(root)
+            real_iterdir = Path.iterdir
+            def bounded_entries(path):
+                for index, entry in enumerate(real_iterdir(path)):
+                    if path == versions and index >= 3:
+                        raise AssertionError("generation scan exceeded early bound")
+                    yield entry
+            with patch("offline_vacuum.MAX_GENERATIONS", 2), patch(
+                "offline_vacuum.Path.iterdir", autospec=True, side_effect=bounded_entries
+            ):
+                with self.assertRaisesRegex(ValueError, "invalid generation inventory"):
+                    plan(root, keep=2)
+
     def test_execute_needs_explicit_offline_confirmation(self):
         with tempfile.TemporaryDirectory() as root:
             self.fixture(root)

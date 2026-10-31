@@ -24,10 +24,24 @@ class ChunkCopyTests(unittest.TestCase):
         self.assertLessEqual(len(diagnostic), 500)
 
 
+    def test_rejects_ambiguous_manifest_before_copy(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "manifest.json"
+            for payload in (b'{"format":"one","format":"two"}', b"[]"):
+                path.write_bytes(payload)
+                with self.subTest(payload=payload), self.assertRaises(ValueError):
+                    load_chunks("rusthouse", "db", "events", root,
+                                execute=lambda *_a, **_k: self.fail("must not COPY"))
+
     def test_escapes_path_and_rejects_identifier_injection(self):
         self.assertIn("WITH (FORMAT TSV)", copy_sql("events", "events.tsv"))
         with self.assertRaisesRegex(ValueError, "identifier"):
             copy_sql("events; DROP TABLE users", "data.tsv")
+
+    def test_preflights_invalid_table_names_even_for_dry_run(self):
+        for table in ("a" * 129, None, "bad;query"):
+            with self.subTest(table=table), self.assertRaisesRegex(ValueError, "identifier"):
+                load_chunks("rusthouse", "db", table, "/no-manifest", dry_run=True)
 
     def test_loads_ordered_chunks(self):
         with tempfile.TemporaryDirectory() as root:
@@ -51,6 +65,16 @@ class ChunkCopyTests(unittest.TestCase):
             self.assertEqual(report["rows_reported_by_manifest"], 2)
             self.assertEqual(len(commands), 2)
             self.assertIn("part-000000.tsv", commands[0][2])
+
+    def test_rejects_unhashable_shard_path_as_validation_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "manifest.json"
+            path.write_text(json.dumps({
+                "format": "rusthouse-tsv-shards-v1", "header": False,
+                "shards": [{"path": []}],
+            }))
+            with self.assertRaisesRegex(ValueError, "invalid shard path"):
+                load_chunks("rusthouse", "db", "events", root, dry_run=True)
 
     def test_dry_run_checks_manifest_without_copying(self):
         with tempfile.TemporaryDirectory() as root:

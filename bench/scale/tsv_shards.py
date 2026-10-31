@@ -44,6 +44,13 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536,
             current["sha256"].update(pending)
             pending.clear()
 
+    def finish_current():
+        flush_pending()
+        current["file"].flush()
+        os.fsync(current["file"].fileno())
+        current["file"].close()
+        del current["file"]
+
     try:
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(source, flags)
@@ -70,11 +77,7 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536,
                         or (max_bytes_per_chunk is not None and
                             current["bytes"] + len(record) > max_bytes_per_chunk)):
                     if current is not None:
-                        flush_pending()
-                        current["file"].flush()
-                        os.fsync(current["file"].fileno())
-                        current["file"].close()
-                        del current["file"]
+                        finish_current()
                     if len(shards) >= MAX_SHARDS:
                         raise ValueError("shard count exceeds RustHouse's 16384-part limit")
                     filename = f"part-{len(shards):06}.tsv"
@@ -98,11 +101,7 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536,
                     source_after.st_size, source_after.st_mtime_ns)):
             raise ValueError("TSV source changed while splitting")
         if current is not None:
-            flush_pending()
-            current["file"].flush()
-            os.fsync(current["file"].fileno())
-            current["file"].close()
-            del current["file"]
+            finish_current()
         if not shards:
             raise ValueError("input TSV has no records")
         for shard in shards:

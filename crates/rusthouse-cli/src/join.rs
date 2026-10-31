@@ -127,10 +127,9 @@ pub(super) fn run(
     } else {
         None
     };
-    let mut paths = vec![
-        crate::database::select_source(database, &query.left)?,
-        crate::database::select_source(database, &query.right)?,
-    ];
+    let mut paths = Vec::with_capacity(query.steps.len() + 2);
+    paths.push(crate::database::select_source(database, &query.left)?);
+    paths.push(crate::database::select_source(database, &query.right)?);
     for step in &query.steps {
         paths.push(crate::database::select_source(database, &step.table)?);
     }

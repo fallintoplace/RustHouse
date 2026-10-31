@@ -5,7 +5,9 @@ Usage: python -m bench.scale.verify_id_shards /data/shards/manifest.json
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
 from pathlib import Path
 
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
@@ -23,8 +25,18 @@ def verify_file(path, start, rows, step=1):
             or rows < 1 or not 1 <= step <= (1 << 64) - 1
             or (rows - 1) > ((1 << 64) - 1 - start) // step):
         raise ValueError("invalid UInt64 shard verification interval")
+    path = Path(path)
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("shard must be a regular non-symlinked file")
     digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("shard changed before verification")
         # Read exact bounded blocks rather than one readline and digest update
         # per UInt64 ID. An oversized/malformed line also fails without an
         # unbounded readline allocation.
@@ -86,12 +98,13 @@ def verify(manifest_path):
         if not isinstance(path, str) or not path:
             raise ValueError("shard path is missing")
         shard_file = Path(path)
-        if not shard_file.is_absolute():
+        is_relative = not shard_file.is_absolute()
+        if is_relative:
             shard_file = manifest_path.parent / shard_file
         if shard_file.is_symlink():
             raise ValueError("shard manifest must not contain symlink paths")
         resolved = shard_file.resolve()
-        if not Path(path).is_absolute() and not resolved.is_relative_to(manifest_path.parent):
+        if is_relative and not resolved.is_relative_to(manifest_path.parent):
             raise ValueError("relative shard path escapes manifest directory")
         canonical = str(resolved)
         if canonical in seen_paths:

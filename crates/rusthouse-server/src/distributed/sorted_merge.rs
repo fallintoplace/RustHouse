@@ -96,6 +96,9 @@ pub(super) fn merge_sorted_integer_page(
     let header_len = header.len();
     let unsigned = kind.starts_with("UInt");
     let prefix = offset.checked_add(limit).ok_or(MergeError::CoordinatorLimit)?;
+    if shards.is_empty() {
+        return Err(MergeError::InvalidSortedScan);
+    }
     let mut first_keys = Vec::with_capacity(shards.len());
     for (cap, body) in shards {
         if *cap <= prefix || !body.ends_with(b"\n") || !body.starts_with(header.as_bytes()) {
@@ -121,9 +124,6 @@ pub(super) fn merge_sorted_integer_page(
             cursor = next;
         }
         first_keys.push(first);
-    }
-    if shards.is_empty() {
-        return Err(MergeError::InvalidSortedScan);
     }
     let mut heap = BinaryHeap::new();
     for (shard, first) in first_keys.into_iter().enumerate() {

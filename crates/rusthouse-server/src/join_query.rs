@@ -35,8 +35,8 @@ pub(super) fn handle(
         Ok(lock) => lock,
         Err(error) => return Response::text("409 Conflict", &format!("{error}\n")),
     };
-    let tables = std::iter::once(&query.left)
-        .chain(std::iter::once(&query.right))
+    let tables = [&query.left, &query.right]
+        .into_iter()
         .chain(query.steps.iter().map(|step| &step.table));
     let mut paths = Vec::with_capacity(query.steps.len() + 2);
     for table in tables {

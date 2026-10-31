@@ -41,7 +41,9 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
             if not stat.S_ISREG(before.st_mode):
                 raise ValueError("snapshot contains a nonregular file")
             digest = hashlib.sha256()
-            with path.open("rb") as stream:
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags)
+            with os.fdopen(fd, "rb") as stream:
                 opened = os.fstat(stream.fileno())
                 if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
                     raise ValueError(f"snapshot file replaced while opening: {path}")
@@ -55,9 +57,11 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
                     != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
                 raise ValueError(f"snapshot file changed while hashing: {path}")
             rel = path.relative_to(root).as_posix()
-            aggregate.update(rel.encode("utf-8") + b"\0"
-                             + str(before.st_size).encode("ascii") + b"\0"
-                             + digest.digest())
+            aggregate.update(rel.encode("utf-8"))
+            aggregate.update(b"\0")
+            aggregate.update(str(before.st_size).encode("ascii"))
+            aggregate.update(b"\0")
+            aggregate.update(digest.digest())
             count += 1
             total_bytes += before.st_size
             if count > max_files:

@@ -83,7 +83,8 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|column| (column.name.clone(), column.data_type.clone()))
         .collect();
-    let mut conditions = vec![typed::compile(&query.predicates, &indices, &types)?];
+    let mut conditions = Vec::with_capacity(query.or_predicates.len() + 1);
+    conditions.push(typed::compile(&query.predicates, &indices, &types)?);
     for branch in &query.or_predicates {
         conditions.push(typed::compile(branch, &indices, &types)?);
     }

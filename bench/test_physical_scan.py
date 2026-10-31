@@ -22,6 +22,11 @@ class PhysicalScanReferenceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 even_reference(rows)
 
+    def test_oracle_rejects_rows_beyond_uint64(self):
+        with self.assertRaisesRegex(ValueError, "UInt64"):
+            even_reference(1 << 64)
+        self.assertEqual(even_reference((1 << 64) - 1)[0], 1 << 63)
+
     def test_rejects_invalid_direct_benchmark_parameters(self):
         for rows, runs, warmups, timeout in (
             (True, 1, 0, 1), (1.0, 1, 0, 1), (1_000_000_001, 1, 0, 1),

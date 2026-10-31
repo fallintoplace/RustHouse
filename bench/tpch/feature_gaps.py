@@ -36,6 +36,8 @@ def load_report(path):
     return json.loads(payload)
 
 
+REQUIRED_QUERY_IDS = frozenset(range(1, 23))
+
 KNOWN_STATUSES = frozenset((
     "passed", "unverified", "missing_query", "missing_reference",
     "unsupported_query", "mismatch", "timeout", "reference_error",
@@ -78,7 +80,7 @@ def analyze(report, require_all_22=False):
             raise ValueError("query result status must be a string")
         seen.add(number)
         groups[classify(item)].append(number)
-    if require_all_22 and seen != set(range(1, 23)):
+    if require_all_22 and seen != REQUIRED_QUERY_IDS:
         raise ValueError("report must include each query ID from 1 to 22")
     executed = sum(len(groups[label]) for label in ("passed", "unverified"))
     verified = len(groups["passed"])

@@ -84,11 +84,12 @@ impl ObjectKey {
 
     /// All segments are validated before they reach the filesystem.
     pub fn relative_path(&self) -> PathBuf {
-        PathBuf::from(&self.cluster)
-            .join(&self.shard)
-            .join(format!("g{}", self.generation))
-            .join(&self.part)
-            .join(&self.file)
+        let mut path = PathBuf::from(self.cluster.as_str());
+        path.push(self.shard.as_str());
+        path.push(format!("g{}", self.generation));
+        path.push(self.part.as_str());
+        path.push(self.file.as_str());
+        path
     }
 
     /// Parse a generation-scoped key from five safe relative path components.

@@ -16,6 +16,20 @@ def report(median=1.0, rows=1_000_000_000):
 
 
 class ComparePhysicalTests(unittest.TestCase):
+    def test_report_loader_rejects_duplicate_json_and_symlinks(self):
+        from bench.scale.compare_physical import parse_report
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "result.json"
+            source.write_text('{"rows":1,"rows":2}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate physical comparison JSON"):
+                parse_report(source)
+            alias = Path(root) / "alias.json"
+            alias.symlink_to(source)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                parse_report(alias)
+
     def test_within_budget(self):
         result = compare(report(), report(1.05), max_slowdown_percent=6)
         self.assertTrue(result["all_within_budget"])
