@@ -107,7 +107,7 @@ class IngestBenchmarkTests(unittest.TestCase):
             runner.write_input(path, 1602, 17)
             actual = path.read_text(encoding="utf-8")
             expected = "".join(
-                f"station-{row % 17:05}\\t{runner.temperature_tenths(row) / 10:.1f}\\n"
+                f"station-{row % 17:05}\t{runner.temperature_tenths(row) / 10:.1f}\n"
                 for row in range(1602)
             )
             self.assertEqual(actual, expected)
