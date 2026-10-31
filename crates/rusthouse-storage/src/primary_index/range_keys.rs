@@ -103,17 +103,20 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     if ranges.windows(2).any(|pair| pair[0].start > pair[1].start) {
         ranges.sort_unstable_by_key(|range| range.start);
     }
-    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
-    for range in ranges {
-        if let Some(previous) = merged.last_mut() {
-            if range.start <= previous.end {
-                previous.end = previous.end.max(range.end);
-                continue;
-            }
+    // Compact sorted ranges inside the existing allocation. IN and OR can
+    // yield thousands of intervals, so avoid a second Vec of the same size.
+    let mut kept = 0usize;
+    for read in 0..ranges.len() {
+        let range = ranges[read].clone();
+        if kept != 0 && range.start <= ranges[kept - 1].end {
+            ranges[kept - 1].end = ranges[kept - 1].end.max(range.end);
+        } else {
+            ranges[kept] = range;
+            kept += 1;
         }
-        merged.push(range);
     }
-    Some(merged)
+    ranges.truncate(kept);
+    Some(ranges)
 }
 
 fn key_bytes(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<[u8; 8]> {
@@ -173,5 +176,40 @@ mod unbounded_range_tests {
             &intervals,
         );
         assert_eq!(merged, Some(std::iter::once(0..17).collect::<Vec<_>>()));
+    }
+}
+
+#[cfg(test)]
+mod in_place_range_compaction_tests {
+    use super::*;
+
+    #[test]
+    fn merges_thousands_of_overlapping_and_disjoint_disjuncts() {
+        let mut input = (0..4096u64).map(|index| {
+            let key = (index / 4) * 8;
+            (Bound::Included(key), Bound::Included(key + 5))
+        }).collect::<Vec<_>>();
+        let expected = candidate_mark_ranges(
+            8192, |mark| Some(mark as u64), &input
+        ).unwrap();
+        assert_eq!(expected.len(), 1024);
+        for (i, range) in expected.iter().enumerate() {
+            let start = i * 8;
+            assert_eq!(range.clone(), start.saturating_sub(1)..start + 6);
+        }
+        input.reverse();
+        assert_eq!(candidate_mark_ranges(8192, |mark| Some(mark as u64), &input).unwrap(), expected);
+    }
+
+    #[test]
+    fn empty_and_fully_overlapping_intervals_keep_conservative_predecessors() {
+        let input = [
+            (Bound::Included(100u64), Bound::Included(100)),
+            (Bound::Included(101), Bound::Excluded(101)),
+            (Bound::Included(100), Bound::Included(102)),
+            (Bound::Included(100), Bound::Included(100)),
+        ];
+        let ranges = candidate_mark_ranges(200, |mark| Some(mark as u64), &input).unwrap();
+        assert_eq!(ranges, vec![99..103]);
     }
 }
