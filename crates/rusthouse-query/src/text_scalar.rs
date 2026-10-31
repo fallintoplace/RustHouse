@@ -847,10 +847,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         host_port
                             .split_once("]:")
                             .and_then(|(_, port)| port.parse::<u16>().ok())
-                    } else {
+                    } else if host_port.as_bytes().iter().filter(|&&byte| byte == b':').count() == 1 {
+                        // Bare IPv6 literals are not host:port authorities.
+                        // IPv6 URLs must use [address]:port to be unambiguous.
                         host_port
                             .rsplit_once(':')
                             .and_then(|(_, port)| port.parse::<u16>().ok())
+                    } else {
+                        None
                     };
                     ConstantValue::Integer(i64::from(number.unwrap_or(fallback)))
                 }
@@ -5256,5 +5260,34 @@ mod common_affix_edit_distance_tests {
         let right = "y".repeat(2048);
         assert!(bounded_edit_distance(left.as_bytes(), right.as_bytes()).is_err());
         assert!(bounded_utf8_edit_distance(&left, &right).is_err());
+    }
+}
+
+#[cfg(test)]
+mod port_ipv6_authority_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn port_requires_brackets_for_ipv6_authorities() {
+        for (sql, expected) in [
+            ("SELECT port('http://2001:db8::80/')", 0),
+            ("SELECT port('http://2001:db8::80/', 1234)", 1234),
+            ("SELECT port('http://[2001:db8::1]:8123/path')", 8123),
+            ("SELECT port('http://[2001:db8::1]/path', 2345)", 2345),
+            ("SELECT port('http://example.com:8123/path')", 8123),
+            ("SELECT port('example.com:80:90', 1234)", 1234),
+            ("SELECT port('http://user:pass@example.com:443/')", 443),
+            ("SELECT port('http://[::1]:0/')", 0),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
     }
 }
