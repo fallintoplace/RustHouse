@@ -236,7 +236,7 @@ mod tests {
 
         let first_block = checked_block(0x82, &first[..8]);
         let second_block = checked_block(0x82, &first[8..]);
-        let mut reader = reader([first_block, second_block].concat());
+        let mut reader = self::reader([first_block, second_block].concat());
         let mut cache = None;
         let bytes = read_mark_bytes_cow_cached(
             &mut reader, &mark(0, 0, Some(2)), 16, &mut cache,
@@ -282,7 +282,7 @@ mod tests {
         // Recycling must not skip validation when the next block is corrupt.
         let mut corrupt = checked_block(0x82, &second_data);
         corrupt[0] ^= 1;
-        let mut reader = reader([first_frame, corrupt].concat());
+        let mut reader = self::reader([first_frame, corrupt].concat());
         let mut cached = None;
         read_numeric_granule_cached(&mut reader, &mark(0, 0, Some(2)), "UInt64", &mut cached)
             .unwrap();

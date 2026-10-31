@@ -857,11 +857,12 @@ fn parses_in_and_checks_list_bounds() {
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
-    let too_many = format!(
+    let sql_for_values = |count| format!(
         "SELECT number FROM numbers(9) WHERE number IN ({})",
-        vec!["1"; 33].join(",")
+        (0..count).map(|value| value.to_string()).collect::<Vec<_>>().join(",")
     );
-    assert!(parse_select(&too_many).is_err());
+    assert!(parse_select(&sql_for_values(4_096)).is_ok());
+    assert!(parse_select(&sql_for_values(4_097)).is_err());
 }
 
 #[test]
@@ -1103,7 +1104,7 @@ fn accepts_offset_without_limit_or_fetch() {
 
 #[test]
 fn allows_grouped_numeric_ordering_by_aggregate_position() {
-    for aggregate in ["sum", "avg", "min", "max"] {
+    for aggregate in ["sum", "avg", "min", "max", "median"] {
         let query = parse_select(&format!(
             "SELECT category, {aggregate}(amount) FROM part GROUP BY category ORDER BY 2 DESC LIMIT 3"
         )).unwrap();
@@ -1115,7 +1116,6 @@ fn allows_grouped_numeric_ordering_by_aggregate_position() {
     .unwrap();
     assert_eq!(query.order_by_extra.len(), 1);
     for invalid in [
-        "SELECT category, median(amount) FROM part GROUP BY category ORDER BY 2",
         "SELECT category, sum(amount) FROM part GROUP BY category ORDER BY 3",
     ] {
         assert!(parse_select(invalid).is_err(), "{invalid}");

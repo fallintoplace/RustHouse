@@ -255,7 +255,9 @@ mod tests {
         sketch.add(0);
         assert_eq!(sketch.registers[0], (64 - PRECISION + 1) as u8);
         let encoded = sketch.encode_state();
-        assert!(HyperLogLog::decode_state(&encoded).is_ok());
+        let mut decoded = HyperLogLog::default();
+        decoded.merge_hex_state(&encoded).unwrap();
+        assert_eq!(decoded.registers, sketch.registers);
     }
 
     #[test]
@@ -326,7 +328,7 @@ mod state_tests {
     fn repeated_shards_reuse_union_storage_and_reject_late_invalid_states() {
         let mut sketch = HyperLogLog::default();
         for value in 0..20_000u64 {
-            sketch.observe_number(Number::Unsigned(value));
+            sketch.observe_number(Number::Unsigned(u128::from(value)));
         }
         let encoded = sketch.encode_state();
         let repeated = vec![encoded.as_str(); 256];

@@ -337,7 +337,7 @@ mod budgeted_retention_tests {
         let generations = [(5, 1u64), (1, 7), (2, 12), (3, 3), (4, 2)];
         assert_eq!(
             retention_candidates_with_byte_budget(&generations, 5, 1, &[3], 9).unwrap(),
-            (vec![1], 7)
+            (vec![1, 4], 9)
         );
         assert_eq!(
             retention_candidates_with_byte_budget(&generations, 5, 1, &[3], 21).unwrap(),

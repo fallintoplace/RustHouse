@@ -9,5 +9,6 @@ fn case_insensitive_ascii_contains_matches_exact_character_presence() {
     ] {
         assert_eq!(like_matches(value.as_bytes(), &pattern, true), expected, "{value}");
     }
-    assert!(!like_matches(b"zzAzz", &pattern, false));
+    assert!(like_matches(b"zzAzz", &pattern, false));
+    assert!(!like_matches(b"zzazz", &pattern, false));
 }

@@ -546,7 +546,7 @@ mod parallel_key_budget_tests {
         let count = std::thread::scope(|scope| {
             let handles = (0..64).map(|_| scope.spawn(|| reserve_parallel_group(&used, &group).is_ok()))
                 .collect::<Vec<_>>();
-            handles.into_iter().filter(|task| task.join().unwrap()).count()
+            handles.into_iter().map(|task| task.join().unwrap()).filter(|joined| *joined).count()
         });
         assert!(count > 0 && count < 64);
         assert!(used.load(Ordering::Relaxed) <= MAX_PARALLEL_KEY_BYTES);

@@ -24,8 +24,9 @@ fn streaming_inner_joins_can_emit_more_than_the_materialized_row_cap() {
     let mut output = std::io::sink();
     let mut state = OutputState::default();
     let mut row = vec![fact];
+    let mut scratch_keys = (0..stages.len()).map(|_| Vec::new()).collect::<Vec<_>>();
     for _ in 0..131_100 {
-        visit(0, &mut row, &stages, &spec, &mut state, &mut output).unwrap();
+        visit(0, &mut row, &stages, &mut scratch_keys, &spec, &mut state, &mut output).unwrap();
     }
     assert_eq!(state.seen, 131_100);
     assert_eq!(state.emitted, 131_100);
@@ -55,8 +56,9 @@ fn streaming_inner_join_still_respects_explicit_limit() {
     let mut state = OutputState::default();
     let mut row = vec![fact];
     let mut output = std::io::sink();
+    let mut scratch_keys = (0..stages.len()).map(|_| Vec::new()).collect::<Vec<_>>();
     for _ in 0..100 {
-        visit(0, &mut row, &stages, &spec, &mut state, &mut output).unwrap();
+        visit(0, &mut row, &stages, &mut scratch_keys, &spec, &mut state, &mut output).unwrap();
     }
     assert_eq!(state.emitted, 2);
 }

@@ -1152,8 +1152,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
     };
 
-    if distinct && !matches!(projection, Projection::All | Projection::Columns(_)) {
-        return Err(ParseError("DISTINCT supports only row projections".into()));
+    if distinct && !matches!(projection, Projection::All | Projection::Columns(_) | Projection::StringLength { .. }) {
+        return Err(ParseError("DISTINCT supports only row projections or LENGTH".into()));
     }
     let rename = if parser.keyword("RENAME") {
         if !matches!(projection, Projection::All) {

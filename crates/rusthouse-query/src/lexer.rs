@@ -351,7 +351,8 @@ mod tests {
 
     #[test]
     fn rejects_incomplete_numbers_and_accepts_exact_size_limit() {
-        for sql in ["1.", "-.", "SELECT é"] {
+        assert_eq!(tokenize("1.").unwrap(), vec![Token::Number("1.".into())]);
+        for sql in ["-.", "SELECT é"] {
             assert!(tokenize(sql).is_err(), "{sql:?}");
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());

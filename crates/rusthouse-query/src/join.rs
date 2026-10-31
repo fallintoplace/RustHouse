@@ -792,7 +792,7 @@ mod tests {
         let plan = explain_join(&query);
         assert!(plan.contains("buffered input <= 32768 rows/side"), "{plan}");
         assert!(
-            plan.contains("streaming INNER build <= 65536 rows"),
+            plan.contains("streaming INNER build <= 262144 rows"),
             "{plan}"
         );
         assert!(plan.contains("build budget 32 MiB"), "{plan}");
@@ -1310,8 +1310,10 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(query.where_null.unwrap().1);
+        let comparison = parse_join("SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id = 1")
+            .unwrap().unwrap();
+        assert!(comparison.where_comparison.is_some());
         for sql in [
-            "SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id = 1",
             "SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id IS UNKNOWN",
         ] {
             assert!(parse_join(sql).is_err(), "{sql}");

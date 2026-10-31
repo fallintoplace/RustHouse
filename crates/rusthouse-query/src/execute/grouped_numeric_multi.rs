@@ -505,7 +505,7 @@ mod cached_multimetric_median_sort_tests {
         });
         let mut positions = (0..keys.len()).collect::<Vec<_>>();
         positions.sort_unstable_by(|&a, &b| {
-            typed::compare_order_cells(&keys[a], &keys[b], false, false)
+            typed::compare_order_cells(&keys[a], &keys[b], false, None)
         });
         assert_eq!(positions, [2, 0, 3, 1]);
     }

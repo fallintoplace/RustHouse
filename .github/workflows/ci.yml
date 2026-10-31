@@ -1,6 +1,13 @@
 name: Rust CI
 
 on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/ci.yml'
   push:
     branches: [main]
   workflow_dispatch:
@@ -12,12 +19,12 @@ permissions:
 
 concurrency:
   group: rust-ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 jobs:
   main-check:
-    name: Latest main Linux check
-    if: github.event_name == 'push'
+    name: Linux compile and library regressions
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -25,6 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: latest-main
+          save-if: ${{ github.event_name == 'push' }}
       - name: Check workspace targets
         run: cargo check --workspace --lib --bins --locked
       - name: Verify query and storage library regressions
