@@ -39,6 +39,12 @@ def generate(output, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
             stream.flush()
             os.fsync(stream.fileno())
         os.link(temporary, output)
+        if os.name == "posix":
+            descriptor = os.open(output.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     finally:
         if temporary:
             temporary.unlink(missing_ok=True)
