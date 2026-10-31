@@ -82,6 +82,14 @@ class StarFixtureTests(unittest.TestCase):
                     generate(output, rows=rows)
                 self.assertFalse(output.exists())
 
+    def test_rejects_invalid_seed_types_before_creating_fixture(self):
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "fixture"
+            for seed in (True, 1.5, "7", -1, 1 << 64):
+                with self.subTest(seed=seed), self.assertRaisesRegex(ValueError, "seed"):
+                    generate(output, rows=12, seed=seed)
+                self.assertFalse(output.exists())
+
     def test_seed_is_deterministic_and_input_bounded(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             generate(a, 70, 14)
