@@ -8,6 +8,7 @@ import argparse
 import csv
 import os
 import secrets
+import stat
 from pathlib import Path
 
 
@@ -33,8 +34,10 @@ def utf8_length(value):
 def convert(source, destination, *, header=False, empty_as_null=False,
             max_field_bytes=8 * 1024 * 1024, skip_header=False,
             expected_columns=None):
-    if Path(source).is_symlink():
-        raise ValueError("CSV source must not be a symlink")
+    source = Path(source)
+    before = source.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("CSV source must be a regular non-symlinked file")
     if Path(source).resolve() == Path(destination).resolve():
         raise ValueError("input and output must be different files")
     if skip_header and not header:
@@ -57,7 +60,15 @@ def convert(source, destination, *, header=False, empty_as_null=False,
     try:
         if destination.exists():
             raise ValueError("refusing to overwrite an existing output")
-        with open(source, "r", encoding="utf-8-sig", newline="") as input_file:
+        # The preflight can race with an input replacement. Open by descriptor
+        # without following a final symlink, then compare the opened inode.
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(source, flags)
+        with os.fdopen(descriptor, "r", encoding="utf-8-sig", newline="") as input_file:
+            opened = os.fstat(input_file.fileno())
+            if ((opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                    or not stat.S_ISREG(opened.st_mode)):
+                raise ValueError("CSV source changed while opening")
             with pending.open("x", encoding="utf-8", newline="") as output_file:
                 pending_created = True
                 reader = csv.reader(input_file, strict=True)
@@ -83,6 +94,17 @@ def convert(source, destination, *, header=False, empty_as_null=False,
                     count += 1
                 output_file.flush()
                 os.fsync(output_file.fileno())
+            finished = os.fstat(input_file.fileno())
+            after = source.lstat()
+            identity = lambda metadata: (
+                metadata.st_dev, metadata.st_ino, metadata.st_size,
+                metadata.st_mtime_ns, metadata.st_ctime_ns,
+            )
+            if identity(before) != identity(opened) or (
+                identity(opened) != identity(finished)
+                or identity(finished) != identity(after)
+            ):
+                raise ValueError("CSV source changed during conversion")
         if destination.exists():
             raise ValueError("refusing to overwrite an existing output")
         os.link(pending, destination)
