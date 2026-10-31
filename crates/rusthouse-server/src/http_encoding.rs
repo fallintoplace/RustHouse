@@ -88,6 +88,9 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
         if bytes.len() <= 4094 {
             return write_plain_json_string::<4096, _>(writer, bytes);
         }
+        if bytes.len() <= 8190 {
+            return write_plain_json_string::<8192, _>(writer, bytes);
+        }
         writer.write_all(b"\"")?;
         writer.write_all(bytes)?;
         return writer.write_all(b"\"");
@@ -285,5 +288,43 @@ mod sparse_json_escape_span_tests {
         let mut output = Vec::new();
         write_json_string(&mut output, &input).unwrap();
         assert_eq!(output, expected);
+    }
+}
+
+#[cfg(test)]
+mod eight_kib_plain_json_tests {
+    use super::*;
+
+    struct Counting {
+        calls: usize,
+        data: Vec<u8>,
+    }
+
+    impl Write for Counting {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.data.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn medium_plain_json_strings_use_one_write() {
+        for width in [4095usize, 8190] {
+            let mut writer = Counting {
+                calls: 0,
+                data: Vec::new(),
+            };
+            write_json_string(&mut writer, &"x".repeat(width)).unwrap();
+            assert_eq!(writer.calls, 1, "width={width}");
+            assert_eq!(writer.data.len(), width + 2);
+            assert_eq!(writer.data[0], b'"');
+            assert_eq!(writer.data[width + 1], b'"');
+            assert!(writer.data[1..width + 1].iter().all(|&byte| byte == b'x'));
+        }
     }
 }
