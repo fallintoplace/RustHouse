@@ -166,7 +166,7 @@ pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
         content_type: head.content_type.to_owned(),
         body,
     })
-
+}
 
 /// Decode a response when the caller owns the network buffer. Plain bodies
 /// are shifted in place rather than cloning up to 16 MiB of uncompressed TSV.
