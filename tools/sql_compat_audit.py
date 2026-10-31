@@ -64,6 +64,10 @@ def parse_lines(content):
 MAX_QUERY_FILE_BYTES = 1_048_576
 
 
+def _file_version(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
 def read_queries(path):
     path = Path(path)
     before = path.lstat()
@@ -73,10 +77,15 @@ def read_queries(path):
     fd = os.open(path, flags)
     with os.fdopen(fd, "rb") as handle:
         opened = os.fstat(handle.fileno())
-        if (not stat.S_ISREG(opened.st_mode) or
-                (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+        if not stat.S_ISREG(opened.st_mode) or _file_version(before) != _file_version(opened):
             raise ValueError("SQL audit corpus changed while opening")
         raw = handle.read(MAX_QUERY_FILE_BYTES + 1)
+        finished = os.fstat(handle.fileno())
+    after = path.lstat()
+    if (not stat.S_ISREG(after.st_mode) or
+            _file_version(before) != _file_version(finished) or
+            _file_version(before) != _file_version(after)):
+        raise ValueError("SQL audit corpus changed while reading")
     if len(raw) > MAX_QUERY_FILE_BYTES:
         raise ValueError("SQL audit corpus exceeds 1 MiB")
     return parse_lines(raw.decode("utf-8"))
