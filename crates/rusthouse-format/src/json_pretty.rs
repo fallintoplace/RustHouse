@@ -68,15 +68,20 @@ impl<'a, W: Write> RowWriter<'a, W> {
 
 impl<W: Write> Write for RowWriter<'_, W> {
     fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        // Large spans already have useful writer granularity. Forward
+        // them intact to avoid copying and preserve long-key write shapes.
+        if input.len() >= 1024 {
+            if self.used != 0 {
+                self.drain()?;
+            }
+            self.output.write_all(input)?;
+            return Ok(input.len());
+        }
         if input.len() > self.buffer.len() - self.used {
             self.drain()?;
         }
-        if input.len() >= self.buffer.len() {
-            self.output.write_all(input)?;
-        } else {
-            self.buffer[self.used..self.used + input.len()].copy_from_slice(input);
-            self.used += input.len();
-        }
+        self.buffer[self.used..self.used + input.len()].copy_from_slice(input);
+        self.used += input.len();
         Ok(input.len())
     }
 
