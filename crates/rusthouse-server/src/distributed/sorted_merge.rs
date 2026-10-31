@@ -224,7 +224,7 @@ mod schema_width_regression_tests {
             ("Nullable(UInt64)", "18446744073709551616"),
             ("UInt128", "-1"),
         ] {
-            let wire = format!("id\\n{value}\\n").replace("\\n", "\n").into_bytes();
+            let wire = format!("id\n{value}\n").into_bytes();
             assert_eq!(
                 merge_sorted_integer_page(&[(4, wire)], "id", kind, false, 0, 1, 1),
                 Err(MergeError::InvalidSortedScan), "{kind}: {value}"
@@ -243,12 +243,12 @@ mod schema_width_regression_tests {
             ("UInt128", "340282366920938463463374607431768211455"),
             ("Nullable(UInt128)", "340282366920938463463374607431768211455"),
         ] {
-            let wire = format!("id\\n{value}\\n").replace("\\n", "\n").into_bytes();
+            let wire = format!("id\n{value}\n").into_bytes();
             assert!(merge_sorted_integer_page(&[(4, wire)], "id", kind, false, 0, 1, 1).is_ok(),
                 "{kind}: {value}");
         }
         assert_eq!(
-            merge_sorted_integer_page(&[(4, b"id\\n1\\n".to_vec())], "id", "Unknown", false, 0, 1, 1),
+            merge_sorted_integer_page(&[(4, b"id\n1\n".to_vec())], "id", "Unknown", false, 0, 1, 1),
             Err(MergeError::InvalidSortedScan)
         );
     }
