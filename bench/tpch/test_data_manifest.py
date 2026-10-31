@@ -1,4 +1,6 @@
 import hashlib
+import os
+from unittest.mock import patch
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +37,38 @@ class DataManifestTests(unittest.TestCase):
             path.write_bytes(data.replace(b"EUROPE", b"EUROPX"))
             self.assertNotEqual(build_manifest(root, ["region"])["tables"][0]["sha256"],
                                 table["sha256"])
+
+    def test_rejects_same_length_source_mutation_while_opening(self):
+        from data_manifest import inspect_table
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            header = "\t".join(names("region")).encode() + b"\n"
+            path.write_bytes(header + b"1\tEUROPE\tcomment\n")
+            original_open = os.open
+            def mutate_then_open(name, flags, *args, **kwargs):
+                path.write_bytes(header + b"1\tAFRICA\tcomment\n")
+                return original_open(name, flags, *args, **kwargs)
+            with patch("data_manifest.os.open", side_effect=mutate_then_open):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    inspect_table(path, "region")
+
+    def test_rejects_symlink_swapped_in_during_open(self):
+        from data_manifest import inspect_table
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            other = Path(root) / "external.tsv"
+            header = "\t".join(names("region")).encode() + b"\n"
+            payload = header + b"1\tEUROPE\tcomment\n"
+            path.write_bytes(payload)
+            other.write_bytes(payload)
+            original_open = os.open
+            def replace_then_open(name, flags, *args, **kwargs):
+                path.unlink()
+                path.symlink_to(other)
+                return original_open(name, flags, *args, **kwargs)
+            with patch("data_manifest.os.open", side_effect=replace_then_open):
+                with self.assertRaises((ValueError, OSError)):
+                    inspect_table(path, "region")
 
     def test_oversized_unterminated_tsv_record_is_rejected(self):
         with tempfile.TemporaryDirectory() as root:
