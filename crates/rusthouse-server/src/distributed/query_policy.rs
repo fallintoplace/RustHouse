@@ -288,7 +288,7 @@ pub(super) fn is_safe_sorted_scan(select: &Select) -> bool {
         && select.having.is_none()
         && select.order_by_extra.is_empty()
         && order.nulls_first.is_none()
-        && columns.len() == 1
+        && (1..=16).contains(&columns.len())
         && columns[0] == order.column
         && select.offset.unwrap_or(0)
             .checked_add(limit)
