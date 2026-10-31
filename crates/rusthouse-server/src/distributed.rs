@@ -561,12 +561,22 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
         let required_tabs = shard_header.iter().filter(|&&byte| byte == b'\t').count();
         let mut shard_rows = 0usize;
         let mut row_tabs = 0usize;
-        // TSV field separators are literal tabs; tabs inside fields are escaped.
-        // Validate column counts rather than passing malformed remote rows through.
-        for &byte in rows {
+        let mut field_start = 0usize;
+        // Validate every wire field before forwarding rows, even after pagination.
+        for (position, &byte) in rows.iter().enumerate() {
+            if byte != b'\t' && byte != b'\n' {
+                continue;
+            }
+            let field = &rows[field_start..position];
+            // A bare \N is the TSV null marker, not an escape sequence.
+            if field != br"\N" {
+                rusthouse_format::validate_tsv_field(field)
+                    .map_err(|_| MergeError::InvalidResponse)?;
+            }
+            field_start = position + 1;
             if byte == b'\t' {
                 row_tabs += 1;
-            } else if byte == b'\n' {
+            } else {
                 if row_tabs != required_tabs {
                     return Err(MergeError::InvalidResponse);
                 }
@@ -644,6 +654,12 @@ fn merge_distinct_tsv(
                 if row.iter().filter(|&&byte| byte == b'\t').count() != required_tabs {
                     return Err(MergeError::InvalidResponse);
                 }
+                for field in row.split(|&byte| byte == b'\t') {
+                    if field != br"\N" {
+                        rusthouse_format::validate_tsv_field(field)
+                            .map_err(|_| MergeError::InvalidResponse)?;
+                    }
+                }
                 shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
                 if unique.insert(row) {
                     if unique.len() > MAX_DISTINCT_ROWS {
@@ -719,14 +735,22 @@ fn merge_tsv_page(
         let mut shard_rows = 0usize;
         let mut row_start = 0usize;
         let mut row_tabs = 0usize;
+        let mut field_start = 0usize;
         let mut selected_start = None;
         let mut selected_end = 0usize;
         for (position, &byte) in rows.iter().enumerate() {
-            if byte == b'\t' {
-                row_tabs += 1;
+            if byte != b'\t' && byte != b'\n' {
                 continue;
             }
-            if byte != b'\n' {
+            let field = &rows[field_start..position];
+            // A bare \N is the TSV null marker, not an escape sequence.
+            if field != br"\N" {
+                rusthouse_format::validate_tsv_field(field)
+                    .map_err(|_| MergeError::InvalidResponse)?;
+            }
+            field_start = position + 1;
+            if byte == b'\t' {
+                row_tabs += 1;
                 continue;
             }
             if row_tabs != required_tabs {
@@ -2921,5 +2945,47 @@ mod global_distinct_row_tests {
         assert!(!is_safe_distinct_scan(&parse_select(
             "SELECT id FROM events"
         ).unwrap()));
+    }
+}
+
+#[cfg(test)]
+mod malformed_distributed_tsv_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_corrupt_wire_escapes_in_all_rows_including_skipped_pages() {
+        let invalid = vec![
+            (16, b"name\nfirst\nsecond\\q\n".to_vec()),
+        ];
+        assert_eq!(merge_tsv(&invalid, 16), Err(MergeError::InvalidResponse));
+        assert_eq!(merge_distinct_tsv(&invalid, 16, 0, None), Err(MergeError::InvalidResponse));
+        assert_eq!(
+            merge_tsv_page(&invalid, 16, 0, Some(1)),
+            Err(MergeError::InvalidResponse),
+        );
+        assert_eq!(
+            merge_tsv_page(&invalid, 16, 2, Some(0)),
+            Err(MergeError::InvalidResponse),
+        );
+    }
+
+    #[test]
+    fn null_marker_is_not_a_malformed_escape() {
+        let shard = vec![(16, b"id\tvalue\n1\t\\N\n2\t\\\\N\n".to_vec())];
+        assert_eq!(merge_tsv(&shard, 16).unwrap(), shard[0].1);
+        assert_eq!(
+            merge_tsv_page(&shard, 16, 1, Some(1)).unwrap(),
+            b"id\tvalue\n2\t\\\\N\n",
+        );
+    }
+
+    #[test]
+    fn accepts_valid_escaped_tab_newline_and_hex_sequences() {
+        let body = vec![(16, b"name\tvalue\na\\tb\tx\\x41\na\\nb\t\\\\\n".to_vec())];
+        assert_eq!(merge_tsv(&body, 16).unwrap(), body[0].1);
+        assert_eq!(
+            merge_tsv_page(&body, 16, 1, Some(1)).unwrap(),
+            b"name\tvalue\na\\nb\t\\\\\n"
+        );
     }
 }
