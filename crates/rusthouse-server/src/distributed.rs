@@ -282,8 +282,119 @@ fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     Ok(cap)
 }
 
-/// Fetch a column type for distributed aggregate validation.
-/// Simple ASCII identifiers cannot inject JSON or an HTTP request target.
+/// Validate the complete peer schema structure rather than accepting
+/// column-looking substrings inside malformed JSON or unrelated fields.
+/// Schema identifiers and physical types are ASCII and do not need JSON escapes.
+struct PeerSchema {
+    columns: Vec<(String, String)>,
+}
+
+struct SchemaCursor<'a> {
+    bytes: &'a [u8],
+    index: usize,
+}
+
+impl SchemaCursor<'_> {
+    fn whitespace(&mut self) {
+        while self.bytes.get(self.index).is_some_and(u8::is_ascii_whitespace) {
+            self.index += 1;
+        }
+    }
+
+    fn byte(&mut self, expected: u8) -> Result<(), String> {
+        self.whitespace();
+        if self.bytes.get(self.index) != Some(&expected) {
+            return Err("invalid peer schema JSON".into());
+        }
+        self.index += 1;
+        Ok(())
+    }
+
+    fn string(&mut self) -> Result<String, String> {
+        self.byte(b'"')?;
+        let start = self.index;
+        while let Some(&byte) = self.bytes.get(self.index) {
+            if byte == b'"' {
+                let value = std::str::from_utf8(&self.bytes[start..self.index])
+                    .map_err(|_| "invalid UTF-8 in peer schema")?;
+                self.index += 1;
+                return Ok(value.to_owned());
+            }
+            // The local schema producer uses validated unescaped identifiers
+            // and type declarations; reject noncanonical encodings.
+            if byte < b' ' || byte == b'\\' {
+                return Err("invalid string in peer schema".into());
+            }
+            self.index += 1;
+        }
+        Err("unterminated peer schema string".into())
+    }
+
+    fn unsigned_count(&mut self) -> Result<u64, String> {
+        self.whitespace();
+        let start = self.index;
+        while self.bytes.get(self.index).is_some_and(u8::is_ascii_digit) {
+            self.index += 1;
+        }
+        let digits = &self.bytes[start..self.index];
+        if digits.is_empty() || (digits.len() > 1 && digits[0] == b'0') {
+            return Err("invalid peer row count".into());
+        }
+        std::str::from_utf8(digits)
+            .map_err(|_| "invalid peer row count".to_owned())?
+            .parse::<u64>()
+            .map_err(|_| "invalid peer row count".to_owned())
+    }
+}
+
+fn parse_peer_schema(bytes: &[u8]) -> Result<PeerSchema, String> {
+    let mut cursor = SchemaCursor { bytes, index: 0 };
+    cursor.byte(b'{')?;
+    if cursor.string()? != "rows" { return Err("peer schema has no rows".into()); }
+    cursor.byte(b':')?;
+    cursor.unsigned_count()?;
+    cursor.byte(b',')?;
+    if cursor.string()? != "columns" { return Err("peer schema has no columns".into()); }
+    cursor.byte(b':')?;
+    cursor.byte(b'[')?;
+    let mut columns = Vec::new();
+    let mut names = HashSet::new();
+    cursor.whitespace();
+    if cursor.bytes.get(cursor.index) != Some(&b']') {
+        loop {
+            if columns.len() >= 1024 {
+                return Err("peer schema has too many columns".into());
+            }
+            cursor.byte(b'{')?;
+            if cursor.string()? != "name" { return Err("invalid peer column name key".into()); }
+            cursor.byte(b':')?;
+            let name = cursor.string()?;
+            cursor.byte(b',')?;
+            if cursor.string()? != "type" { return Err("invalid peer column type key".into()); }
+            cursor.byte(b':')?;
+            let kind = cursor.string()?;
+            cursor.byte(b'}')?;
+            if name.is_empty() || kind.is_empty() || !names.insert(name.clone()) {
+                return Err("invalid or duplicate peer schema column".into());
+            }
+            columns.push((name, kind));
+            cursor.whitespace();
+            if cursor.bytes.get(cursor.index) != Some(&b',') {
+                break;
+            }
+            cursor.index += 1;
+        }
+    }
+    cursor.byte(b']')?;
+    cursor.byte(b'}')?;
+    cursor.whitespace();
+    if cursor.index != bytes.len() || columns.is_empty() {
+        return Err("trailing data or empty peer schema".into());
+    }
+    Ok(PeerSchema { columns })
+}
+
+/// Resolve a column type from an independently validated peer schema.
 fn shard_column_kind(response: &remote::PeerResponse, column: &str) -> Result<String, String> {
     let mut bytes = column.bytes();
     if !bytes
@@ -296,19 +407,10 @@ fn shard_column_kind(response: &remote::PeerResponse, column: &str) -> Result<St
     if response.status != 200 || !response.content_type.starts_with("application/json") {
         return Err("peer schema lookup failed".into());
     }
-    let contents =
-        std::str::from_utf8(&response.body).map_err(|_| "peer schema response is not UTF-8")?;
-    let needle = format!("\"name\":\"{column}\",\"type\":\"");
-    let (_, tail) = contents
-        .split_once(needle.as_str())
-        .ok_or("aggregate column missing from peer schema")?;
-    let (kind, trailing) = tail
-        .split_once('"')
-        .ok_or("invalid peer schema column type")?;
-    if !trailing.starts_with('}') {
-        return Err("invalid peer schema column type".into());
-    }
-    Ok(kind.to_owned())
+    let schema = parse_peer_schema(&response.body)?;
+    schema.columns.into_iter()
+        .find_map(|(name, kind)| (name == column).then_some(kind))
+        .ok_or_else(|| "aggregate column missing from peer schema".into())
 }
 
 fn shard_integer_kind(response: &remote::PeerResponse, column: &str) -> Result<String, String> {
@@ -319,34 +421,23 @@ fn shard_integer_kind(response: &remote::PeerResponse, column: &str) -> Result<S
     Ok(kind)
 }
 
-/// Compare column names, types, and order, not row counts. Each shard
-/// independently reports its own row count and should differ on real clusters.
+/// Signatures ignore row counts but preserve physical type and column order.
 fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> {
     if response.status != 200 || response.content_type != "application/json; charset=utf-8" {
         return Err("peer schema request failed".into());
     }
-    let body = std::str::from_utf8(&response.body).map_err(|_| "peer schema is not UTF-8")?;
-    let body = body
-        .strip_suffix("}\n")
-        .ok_or("invalid peer schema response")?;
-    let (rows, columns) = body
-        .split_once(",\"columns\":")
-        .ok_or("peer schema has no columns")?;
-    let count = rows
-        .strip_prefix("{\"rows\":")
-        .ok_or("peer schema has no row count")?;
-    if count.is_empty()
-        || !count.bytes().all(|b| b.is_ascii_digit())
-        || (count.len() > 1 && count.starts_with('0'))
-        || count.parse::<u64>().is_err()
-        || !columns.starts_with('[')
-        || !columns.ends_with(']')
-        || !columns.contains("\"name\":")
-        || !columns.contains("\"type\":")
-    {
-        return Err("invalid peer schema response".into());
+    let schema = parse_peer_schema(&response.body)?;
+    let mut signature = String::from("[");
+    for (index, (name, kind)) in schema.columns.iter().enumerate() {
+        if index > 0 { signature.push(','); }
+        signature.push_str("{\"name\":\"");
+        signature.push_str(name);
+        signature.push_str("\",\"type\":\"");
+        signature.push_str(kind);
+        signature.push_str("\"}");
     }
-    Ok(columns.as_bytes().to_vec())
+    signature.push(']');
+    Ok(signature.into_bytes())
 }
 
 /// Fetch independent control-plane metadata concurrently per shard, rather
@@ -519,6 +610,81 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
     let mut output = Vec::with_capacity(total_bytes);
     for bytes in chunks {
         output.extend_from_slice(bytes);
+    }
+    Ok(output)
+}
+
+/// Apply global SELECT DISTINCT over complete validated shard rows. Retain
+/// borrowed slices into bounded peer bodies rather than cloning row payloads.
+/// No shard-local pagination is allowed: it could hide globally unique rows.
+fn merge_distinct_tsv(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<Vec<u8>, MergeError> {
+    const MAX_DISTINCT_ROWS: usize = 250_000;
+    let mut header: Option<&[u8]> = None;
+    let mut unique = HashSet::<&[u8]>::new();
+    let mut output = Vec::new();
+    let mut returned = 0usize;
+    for (cap, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidResponse);
+        }
+        let header_end = body.iter().position(|&b| b == b'\n')
+            .ok_or(MergeError::InvalidResponse)?;
+        let shard_header = &body[..=header_end];
+        if shard_header.len() <= 1 {
+            return Err(MergeError::InvalidResponse);
+        }
+        if let Some(expected) = header {
+            if expected != shard_header {
+                return Err(MergeError::SchemaMismatch);
+            }
+        } else {
+            header = Some(shard_header);
+            output.extend_from_slice(shard_header);
+        }
+        let required_tabs = shard_header.iter().filter(|&&byte| byte == b'\t').count();
+        let rows = &body[header_end + 1..];
+        let mut shard_rows = 0usize;
+        if !rows.is_empty() {
+            for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+                if row.iter().filter(|&&byte| byte == b'\t').count() != required_tabs {
+                    return Err(MergeError::InvalidResponse);
+                }
+                for field in row.split(|&byte| byte == b'\t') {
+                    if field != br"\N" {
+                        rusthouse_format::validate_tsv_field(field)
+                            .map_err(|_| MergeError::InvalidResponse)?;
+                    }
+                }
+                shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
+                if unique.insert(row) {
+                    if unique.len() > MAX_DISTINCT_ROWS {
+                        return Err(MergeError::CoordinatorLimit);
+                    }
+                    if unique.len() > offset && limit.is_none_or(|limit| returned < limit) {
+                        returned = returned.checked_add(1)
+                            .filter(|&count| count <= max_rows)
+                            .ok_or(MergeError::CoordinatorLimit)?;
+                        let next = output.len().checked_add(row.len() + 1)
+                            .filter(|&size| size <= MAX_RESPONSE_BYTES)
+                            .ok_or(MergeError::CoordinatorLimit)?;
+                        output.reserve(next - output.len());
+                        output.extend_from_slice(row);
+                        output.push(b'\n');
+                    }
+                }
+            }
+        }
+        if *cap == 0 || shard_rows >= *cap {
+            return Err(MergeError::ShardRowLimit);
+        }
+    }
+    if header.is_none() {
+        return Err(MergeError::InvalidResponse);
     }
     Ok(output)
 }
@@ -1247,6 +1413,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Ok(select)
             if is_safe_scan(&select)
                 || is_safe_count(&select)
+                || is_safe_distinct_scan(&select)
                 || is_safe_count_distinct(&select)
                 || is_safe_uniq(&select)
                 || is_safe_sorted_scan(&select)
@@ -1270,6 +1437,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         select.offset.unwrap_or(0) + select.limit.unwrap_or(0)
     });
     let count_query = is_safe_count(&select) || is_safe_count_if(&select);
+    let distinct_rows_query = is_safe_distinct_scan(&select);
     let distinct_count_column = match &select.projection {
         Projection::CountDistinct { column } => Some(column.as_str()),
         _ => None,
@@ -1282,6 +1450,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match sorted_scan_sql(sql, &select) {
             Some(query) => query,
             None => return Response::text("400 Bad Request", "unsupported distributed sort\n"),
+        }
+    } else if distinct_rows_query {
+        match unpaged_scan_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported distributed DISTINCT pagination\n"),
         }
     } else if is_safe_scan(&select) {
         match bounded_scan_sql(sql, &select) {
@@ -1374,7 +1547,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     // Bound concurrency without wave barriers: a fast peer immediately
     // claims the next pending shard, even if an earlier peer is still slow.
     const MAX_INFLIGHT_SHARDS: usize = 8;
-    let results = dispatch::map_peers_bounded(cluster.peers(), MAX_INFLIGHT_SHARDS, |peer| {
+    let results = dispatch::map_peers_bounded_failfast(cluster.peers(), MAX_INFLIGHT_SHARDS, |peer| {
         read_shard(
             peer, shard_sql.as_str(), sum_schema, group_schema, table,
             sorted_prefix, &retained_input,
@@ -1489,12 +1662,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if sorted_query {
         let order = select.order_by.as_ref().expect("validated bounded sort");
         let Projection::Columns(columns) = &select.projection else {
-            unreachable!("validated single-column bounded sort");
+            unreachable!("validated bounded sort");
         };
         sum_type.as_deref().map_or(Err(MergeError::InvalidSortedScan), |kind| {
-            merge_sorted_integer_page(
+            let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
+            merge_sorted_integer_rows_page(
                 &shards,
-                &columns[0],
+                &names,
                 kind,
                 order.descending,
                 select.offset.unwrap_or(0),
@@ -1502,6 +1676,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 max_rows.min(250_000),
             )
         })
+    } else if distinct_rows_query {
+        merge_distinct_tsv(
+            &shards,
+            max_rows.min(250_000),
+            select.offset.unwrap_or(0),
+            select.limit,
+        )
     } else if select.limit.is_some() || select.offset.is_some() {
         merge_tsv_page(
             &shards,
@@ -2694,6 +2875,80 @@ mod distributed_scan_tsv_shape_tests {
 }
 
 #[cfg(test)]
+mod structured_peer_schema_tests {
+    use super::*;
+
+    fn peer(body: &str) -> remote::PeerResponse {
+        remote::PeerResponse {
+            status: 200,
+            content_type: "application/json; charset=utf-8".into(),
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn accepts_whitespace_without_changing_the_column_signature() {
+        let compact = peer(r#"{"rows":1,"columns":[{"name":"id","type":"UInt64"}]}"#);
+        let spaced = peer(" { \"rows\" : 999 , \"columns\" : [ { \"name\" : \"id\", \"type\" : \"UInt64\" } ] }\n");
+        assert_eq!(schema_signature(&compact).unwrap(), schema_signature(&spaced).unwrap());
+        assert_eq!(shard_column_kind(&spaced, "id").unwrap(), "UInt64");
+    }
+
+    #[test]
+    fn rejects_duplicate_columns_and_trailing_or_embedded_json() {
+        for bad in [
+            r#"{"rows":1,"columns":[{"name":"id","type":"UInt64"},{"name":"id","type":"String"}]}"#,
+            r#"{"rows":1,"columns":[{"name":"id","type":"UInt64"}],"ignored":1}"#,
+            r#"{"rows":1,"columns":[{"name":"id","type":"UInt64"}]} true"#,
+            r#"{"rows":1,"columns":[{"name":"id","type":"UInt64"}"#,
+        ] {
+            assert!(schema_signature(&peer(bad)).is_err(), "{bad}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod global_distinct_row_tests {
+    use super::*;
+
+    fn shard(cap: usize, body: &str) -> (usize, Vec<u8>) {
+        (cap, body.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn exact_distinct_rows_preserve_multi_column_and_null_semantics() {
+        let shards = [
+            shard(8, "id\tregion\n1\teu\n2\t\\N\n1\teu\n"),
+            shard(8, "id\tregion\n2\t\\N\n3\tus\n"),
+        ];
+        assert_eq!(
+            merge_distinct_tsv(&shards, 10, 0, None).unwrap(),
+            b"id\tregion\n1\teu\n2\t\\N\n3\tus\n"
+        );
+        assert_eq!(
+            merge_distinct_tsv(&shards, 1, 1, Some(1)).unwrap(),
+            b"id\tregion\n2\t\\N\n"
+        );
+        assert!(merge_distinct_tsv(&shards, 2, 0, None).is_err());
+        assert!(merge_distinct_tsv(&[shard(2, "id\n1\n2\n")], 2, 0, None).is_err());
+        assert!(merge_distinct_tsv(&[shard(10, "id\tname\n1\n")], 10, 0, None).is_err());
+    }
+
+    #[test]
+    fn distributed_distinct_policy_accepts_only_unordered_rows() {
+        assert!(is_safe_distinct_scan(&parse_select(
+            "SELECT DISTINCT id, region FROM events LIMIT 10 OFFSET 2"
+        ).unwrap()));
+        assert!(!is_safe_distinct_scan(&parse_select(
+            "SELECT DISTINCT id FROM events ORDER BY id LIMIT 10"
+        ).unwrap()));
+        assert!(!is_safe_distinct_scan(&parse_select(
+            "SELECT id FROM events"
+        ).unwrap()));
+    }
+}
+
+#[cfg(test)]
 mod malformed_distributed_tsv_tests {
     use super::*;
 
@@ -2703,6 +2958,7 @@ mod malformed_distributed_tsv_tests {
             (16, b"name\nfirst\nsecond\\q\n".to_vec()),
         ];
         assert_eq!(merge_tsv(&invalid, 16), Err(MergeError::InvalidResponse));
+        assert_eq!(merge_distinct_tsv(&invalid, 16, 0, None), Err(MergeError::InvalidResponse));
         assert_eq!(
             merge_tsv_page(&invalid, 16, 0, Some(1)),
             Err(MergeError::InvalidResponse),
