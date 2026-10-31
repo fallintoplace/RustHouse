@@ -161,8 +161,9 @@ fn read_compressed_wide_marks<R: Read + Seek>(
     let mut fragment = [0u8; 24];
     let mut fragment_len = 0;
     let mut decoded_bytes = 0usize;
+    let mut decoded_scratch = Vec::new();
 
-    while let Some(block) = reader.next_decoded() {
+    while let Some(block) = reader.next_decoded_reusing(std::mem::take(&mut decoded_scratch)) {
         let data = block?.data;
         if data.len() > MAX_MARKS_BYTES - decoded_bytes {
             return Err(marks_too_large(path));
@@ -182,6 +183,7 @@ fn read_compressed_wide_marks<R: Read + Seek>(
             fragment_len += take;
             bytes = &bytes[take..];
             if fragment_len < record_size {
+                decoded_scratch = data;
                 continue;
             }
             marks.push(parse_mark_record(&fragment[..record_size], format));
@@ -196,6 +198,7 @@ fn read_compressed_wide_marks<R: Read + Seek>(
         let remainder = chunks.remainder();
         fragment[..remainder.len()].copy_from_slice(remainder);
         fragment_len = remainder.len();
+        decoded_scratch = data;
     }
 
     let size = decoded_bytes;
@@ -605,5 +608,47 @@ mod immutable_raw_marks_tests {
         assert_eq!(altered.modified().unwrap(), before.modified().unwrap());
         assert!(!marks_file_unchanged(&before, &altered));
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod recycled_compressed_mark_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn plain_block(payload: &[u8]) -> Vec<u8> {
+        let mut frame = vec![0u8; 16];
+        frame.push(0x02);
+        frame.extend_from_slice(&(payload.len() as u32 + 9).to_le_bytes());
+        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame.extend_from_slice(payload);
+        let hash = u128::from(ch_cityhash102::cityhash128(&frame[16..])).to_le_bytes();
+        frame[..16].copy_from_slice(&hash);
+        frame
+    }
+
+    #[test]
+    fn parses_records_split_across_many_decoded_blocks() {
+        let mut expected = Vec::new();
+        let mut raw = Vec::new();
+        for index in 0..256u64 {
+            raw.extend_from_slice(&(index * 32).to_le_bytes());
+            raw.extend_from_slice(&0u64.to_le_bytes());
+            raw.extend_from_slice(&1u64.to_le_bytes());
+            expected.push(WideMark {
+                compressed_offset: index * 32,
+                decompressed_offset: 0,
+                rows: Some(1),
+            });
+        }
+        let mut frames = Vec::new();
+        for fragment in raw.chunks(7) {
+            frames.extend(plain_block(fragment));
+        }
+        let reader = CompressedBlockReader::new(Cursor::new(frames), "marks.cmrk2").unwrap();
+        let actual = read_compressed_wide_marks(
+            reader, Path::new("marks.cmrk2"), WideMarkFormat::Adaptive
+        ).unwrap();
+        assert_eq!(actual, expected);
     }
 }
