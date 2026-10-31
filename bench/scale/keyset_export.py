@@ -75,7 +75,7 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
     output = Path(output)
     if output.exists() or output.is_symlink():
         raise ValueError("refusing to overwrite an existing export")
-    execute = execute or (lambda statement: query(binary, database, statement, timeout))
+    use_default_query = execute is None
     temporary = None
     digest = hashlib.sha256()
     pages = 0
@@ -87,11 +87,18 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
         ) as sink:
             temporary = Path(sink.name)
             for first in range(start, start + rows, page_rows):
-                if (max_total_seconds is not None
-                        and time.monotonic() - started > max_total_seconds):
-                    raise TimeoutError("total export deadline exceeded")
+                remaining = None
+                if max_total_seconds is not None:
+                    remaining = max_total_seconds - (time.monotonic() - started)
+                    if remaining <= 0:
+                        raise TimeoutError("total export deadline exceeded")
                 count = min(page_rows, start + rows - first)
-                data = execute(page_sql(table, column, first, count))
+                statement = page_sql(table, column, first, count)
+                if use_default_query:
+                    page_timeout = min(timeout, remaining) if remaining is not None else timeout
+                    data = query(binary, database, statement, page_timeout)
+                else:
+                    data = execute(statement)
                 if (max_total_seconds is not None
                         and time.monotonic() - started > max_total_seconds):
                     raise TimeoutError("total export deadline exceeded")

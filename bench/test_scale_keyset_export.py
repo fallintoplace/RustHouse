@@ -64,6 +64,19 @@ class KeysetExportTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertEqual(list(Path(temp).glob("*.pending")), [])
 
+    def test_default_query_uses_remaining_total_deadline(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "export.tsv"
+            with patch("bench.scale.keyset_export.query", return_value=b"0\n") as query:
+                with patch("bench.scale.keyset_export.time.monotonic",
+                           side_effect=[100.0, 100.25, 100.3]):
+                    result = export("binary", "db", "events", output, 0, 1,
+                                    timeout=30, max_total_seconds=1)
+            self.assertEqual(result["pages"], 1)
+            self.assertEqual(output.read_bytes(), b"0\n")
+            self.assertEqual(query.call_args.args[3], 0.75)
+
     def test_detects_duplicates_and_leaves_no_visible_file(self):
         with tempfile.TemporaryDirectory() as temp:
             dest = Path(temp) / "out.tsv"
