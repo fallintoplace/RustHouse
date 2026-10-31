@@ -5,7 +5,7 @@ import json
 import math
 import sys
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 from urllib.error import HTTPError
 
 
@@ -16,7 +16,7 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-NO_REDIRECT_OPENER = build_opener(NoRedirect())
+NO_REDIRECT_OPENER = build_opener(ProxyHandler({}), NoRedirect())
 MAX_PEERS = 32
 
 
