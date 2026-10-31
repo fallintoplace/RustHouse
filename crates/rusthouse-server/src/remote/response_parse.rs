@@ -175,18 +175,22 @@ pub(super) fn parse_response_owned(mut raw: Vec<u8>) -> Result<PeerResponse, Str
     if raw.len() != head.body_start + head.body_length {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
-    // Only completed responses need an owned Content-Type. Release the
-    // borrowed header before compacting or moving the receive buffer.
+    // Only completed responses need an owned Content-Type. Copy all fields
+    // needed after compacting before releasing the network-buffer borrow.
     let content_type = head.content_type.to_owned();
-    let body = if head.compressed {
-        decode_compressed_peer_body(&raw[head.body_start..])?
+    let status = head.status;
+    let body_start = head.body_start;
+    let body_length = head.body_length;
+    let compressed = head.compressed;
+    let body = if compressed {
+        decode_compressed_peer_body(&raw[body_start..])?
     } else {
-        raw.copy_within(head.body_start.., 0);
-        raw.truncate(head.body_length);
+        raw.copy_within(body_start.., 0);
+        raw.truncate(body_length);
         raw
     };
     Ok(PeerResponse {
-        status: head.status,
+        status,
         content_type,
         body,
     })
