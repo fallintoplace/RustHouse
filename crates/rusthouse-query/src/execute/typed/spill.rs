@@ -689,6 +689,18 @@ mod typed_spill_preflight_tests {
 mod heap_root_regression_tests {
     use super::*;
 
+    // This module cannot access the private fixture in the sibling tests
+    // module. Keep the integration case self-contained for cargo test.
+    fn row(text: &str, value: u64) -> Row {
+        Row {
+            values: vec![
+                Cell::Text(text.as_bytes().to_vec()),
+                Cell::Numeric(Number::Unsigned(u128::from(value))),
+            ],
+            sort_keys: vec![Cell::Numeric(Number::Unsigned(u128::from(value)))],
+        }
+    }
+
     #[test]
     fn multi_run_root_replacement_preserves_stable_rows_and_global_page() {
         for descending in [false, true] {
