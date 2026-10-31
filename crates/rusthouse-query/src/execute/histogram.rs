@@ -425,7 +425,9 @@ mod tests {
             }
             fn flush(&mut self) -> io::Result<()> { Ok(()) }
         }
-        let query = crate::parse_select("SELECT histogram(10000)(number) FROM numbers(10000)").unwrap();
+        // The SQL grammar caps queries at 256 bins. Stress the private
+        // output renderer with synthetic bins to exercise its chunk flush.
+        let query = crate::parse_select("SELECT histogram(256)(number) FROM numbers(10000)").unwrap();
         let bins = (0..10_000).map(|value| Bin {
             min: value as f64,
             max: value as f64 + 1.0,
