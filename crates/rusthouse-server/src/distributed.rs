@@ -183,18 +183,14 @@ mod sparse_distinct_bitmap_regression_tests {
             .collect::<Vec<_>>();
         keys.extend((0..1_500u32).map(|n| (7 << 16) | n));
         let expected = keys.iter().copied().collect::<HashSet<_>>().len();
-        let first = format!("key\\n{}\\n", keys.iter().map(u32::to_string).collect::<Vec<_>>().join("\\n"))
-            .replace("\\n", "\n")
-            .into_bytes();
+        let first = format!("key\n{}\n", keys.iter().map(u32::to_string).collect::<Vec<_>>().join("\n")).into_bytes();
         keys.reverse();
-        let second = format!("key\\n{}\\n", keys.iter().map(u32::to_string).collect::<Vec<_>>().join("\\n"))
-            .replace("\\n", "\n")
-            .into_bytes();
+        let second = format!("key\n{}\n", keys.iter().map(u32::to_string).collect::<Vec<_>>().join("\n")).into_bytes();
         let merged = merge_distinct_bitmap32(
             &[(keys.len() + 1, first), (keys.len() + 1, second)],
             "key", false,
         ).unwrap();
-        assert_eq!(merged, format!("count(DISTINCT key)\\n{expected}\\n").replace("\\n", "\n").into_bytes());
+        assert_eq!(merged, format!("count(DISTINCT key)\n{expected}\n").into_bytes());
     }
 }
 
