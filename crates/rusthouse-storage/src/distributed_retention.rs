@@ -3,6 +3,17 @@
 use std::borrow::Cow;
 
 const MAX_RETENTION_GENERATIONS: usize = 16_384;
+
+fn ordered_generation_sizes(generations: &[(u64, u64)]) -> Cow<'_, [(u64, u64)]> {
+    if generations.windows(2).all(|pair| pair[0].0 <= pair[1].0) {
+        Cow::Borrowed(generations)
+    } else {
+        let mut ordered = generations.to_vec();
+        ordered.sort_unstable_by_key(|&(generation, _)| generation);
+        Cow::Owned(ordered)
+    }
+}
+
 fn validated_generations(generations: &[u64], active: u64) -> Result<Cow<'_, [u64]>, &'static str> {
     // Snapshot inventory is often already chronological. Borrow it without
     // copying or sorting; retain the old sorting path for unordered inputs.
@@ -244,8 +255,7 @@ pub fn retention_candidates_with_byte_budget(
     // Sort generation sizes together. The previous path sorted an ID copy,
     // materialized eligible IDs, and then built a second hash table just
     // to look up each candidate's byte cost.
-    let mut ordered = generations.to_vec();
-    ordered.sort_unstable_by_key(|&(generation, _)| generation);
+    let ordered = ordered_generation_sizes(generations);
     if ordered[0].0 == 0
         || ordered.windows(2).any(|pair| pair[0].0 == pair[1].0)
         || ordered.binary_search_by_key(&active, |&(id, _)| id).is_err()
@@ -686,5 +696,33 @@ mod large_inventory_few_pins_tests {
         assert!(retention_candidates_with_pins(
             &generations, 16_384, 2, &[1, 17, 8_192, 16_385],
         ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod borrowed_budgeted_retention_tests {
+    use super::*;
+
+    #[test]
+    fn sorted_generation_sizes_borrow_and_unsorted_sizes_sort() {
+        let sorted = (1..=2048u64).map(|id| (id, id % 37)).collect::<Vec<_>>();
+        let reversed = sorted.iter().copied().rev().collect::<Vec<_>>();
+        assert!(matches!(ordered_generation_sizes(&sorted), Cow::Borrowed(_)));
+        assert!(matches!(ordered_generation_sizes(&reversed), Cow::Owned(_)));
+        assert_eq!(ordered_generation_sizes(&reversed).as_ref(), sorted.as_slice());
+        for budget in [0, 1, 100, 10_000, u64::MAX] {
+            for keep_latest in [1, 2, 512, 2048, usize::MAX] {
+                assert_eq!(
+                    retention_candidates_with_byte_budget(&sorted, 2048, keep_latest, &[1, 9, 37], budget),
+                    retention_candidates_with_byte_budget(&reversed, 2048, keep_latest, &[1, 9, 37], budget),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn already_sorted_duplicate_generations_still_fail_validation() {
+        assert!(matches!(ordered_generation_sizes(&[(1, 1), (1, 2)]), Cow::Borrowed(_)));
+        assert!(retention_candidates_with_byte_budget(&[(1, 1), (1, 2)], 1, 1, &[], 100).is_err());
     }
 }
