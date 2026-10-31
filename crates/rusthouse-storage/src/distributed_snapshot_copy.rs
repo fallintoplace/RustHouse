@@ -6,7 +6,7 @@ use crate::{
 };
 use std::fs::{self, File};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_COPY: AtomicU64 = AtomicU64::new(0);
@@ -95,6 +95,127 @@ fn publish_snapshot_no_replace(staging: &Path, destination: &Path) -> io::Result
     }
 }
 
+// One part is an independent unit of immutable copy and verification.
+// It writes only to its own staging subdirectory and never publishes the root.
+fn copy_snapshot_part(
+    part: &Path,
+    staging: &Path,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<SnapshotCopy, PartError> {
+    verify_part_file_hashes(part)?;
+    let name = part
+        .file_name()
+        .ok_or_else(|| PartError::InvalidScan("part has no name".into()))?;
+    let copy = staging.join(name);
+    fs::create_dir(&copy).map_err(|error| io_error(&copy, error))?;
+    let mut report = SnapshotCopy { parts: 1, files: 0, bytes: 0 };
+    for entry in fs::read_dir(part).map_err(|error| io_error(part, error))? {
+        let entry = entry.map_err(|error| io_error(part, error))?;
+        let source_file = entry.path();
+        if !entry.file_type().map_err(|error| io_error(&source_file, error))?.is_file() {
+            return Err(PartError::InvalidScan("part contains non-file entries".into()));
+        }
+        let destination_file = copy.join(entry.file_name());
+        let bytes = entry.metadata().map_err(|error| io_error(&source_file, error))?.len();
+        report.bytes = report.bytes.checked_add(bytes)
+            .filter(|&total| total <= max_bytes)
+            .ok_or_else(|| PartError::InvalidScan("copy exceeds byte cap".into()))?;
+        if report.files >= max_files {
+            return Err(PartError::InvalidScan("snapshot copy exceeds file limit".into()));
+        }
+        let copied_bytes = crate::distributed_atomic_copy::copy_immutable_file(
+            &source_file, &destination_file, bytes,
+        ).map_err(|error| io_error(&destination_file, error))?;
+        if copied_bytes != bytes {
+            return Err(PartError::InvalidScan("source size changed during snapshot copy".into()));
+        }
+        report.files += 1;
+    }
+    verify_part_file_hashes(&copy)?;
+    verify_wide_part(&copy)?;
+    sync_directory(&copy)?;
+    Ok(report)
+}
+
+fn combine_copy_report(
+    total: &mut SnapshotCopy,
+    part: SnapshotCopy,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<(), PartError> {
+    total.parts += part.parts;
+    total.files = total.files.checked_add(part.files)
+        .filter(|&files| files <= max_files)
+        .ok_or_else(|| PartError::InvalidScan("snapshot copy exceeds file limit".into()))?;
+    total.bytes = total.bytes.checked_add(part.bytes)
+        .filter(|&bytes| bytes <= max_bytes)
+        .ok_or_else(|| PartError::InvalidScan("copy exceeds byte cap".into()))?;
+    Ok(())
+}
+
+/// Copy independent part directories concurrently on multicore hosts, with
+/// the same ordered error and atomic-publication behavior as serial copying.
+fn copy_snapshot_parts(
+    parts: &[PathBuf],
+    staging: &Path,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<SnapshotCopy, PartError> {
+    const PARALLEL_THRESHOLD: usize = 16;
+    const MAX_COPY_WORKERS: usize = 4;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |available| available.get())
+        .min(MAX_COPY_WORKERS);
+    let mut report = SnapshotCopy { parts: 0, files: 0, bytes: 0 };
+    if parts.len() < PARALLEL_THRESHOLD || workers == 1 {
+        for part in parts {
+            combine_copy_report(
+                &mut report, copy_snapshot_part(part, staging, max_files, max_bytes)?,
+                max_files, max_bytes,
+            )?;
+        }
+        return Ok(report);
+    }
+    use std::sync::OnceLock;
+    use std::sync::atomic::AtomicUsize;
+    let cursor = AtomicUsize::new(0);
+    let slots: Vec<OnceLock<Result<SnapshotCopy, PartError>>> =
+        (0..parts.len()).map(|_| OnceLock::new()).collect();
+    std::thread::scope(|scope| -> Result<(), PartError> {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let cursor = &cursor;
+            let slots = &slots;
+            let handle = std::thread::Builder::new()
+                .spawn_scoped(scope, move || loop {
+                    let index = cursor.fetch_add(1, Ordering::Relaxed);
+                    if index >= parts.len() {
+                        break;
+                    }
+                    let result = copy_snapshot_part(&parts[index], staging, max_files, max_bytes);
+                    assert!(slots[index].set(result).is_ok(), "part copied more than once");
+                })
+                .map_err(|error| {
+                    PartError::InvalidScan(format!("cannot start snapshot worker: {error}"))
+                })?;
+            handles.push(handle);
+        }
+        for handle in handles {
+            handle.join().map_err(|_| {
+                PartError::InvalidScan("snapshot copy worker panicked".into())
+            })?;
+        }
+        Ok(())
+    })?;
+    for slot in slots {
+        let part = slot.into_inner()
+            .ok_or_else(|| PartError::InvalidScan("missing snapshot copy result".into()))??;
+        combine_copy_report(&mut report, part, max_files, max_bytes)?;
+    }
+    Ok(report)
+}
+
 /// Copy a complete active generation into a new directory and validate it
 /// before rename. Does not copy catalog schemas or create remote connections.
 pub fn copy_frozen_snapshot(
@@ -155,69 +276,12 @@ pub fn copy_frozen_snapshot_with_file_limit(
     ));
     create_private_staging_directory(&staging)
         .map_err(|error| io_error(&staging, error))?;
-    let copied = (|| -> Result<SnapshotCopy, PartError> {
-        let mut report = SnapshotCopy {
-            parts: 0,
-            files: 0,
-            bytes: 0,
-        };
-        for part in &parts {
-            verify_part_file_hashes(part)?;
-            let name = part
-                .file_name()
-                .ok_or_else(|| PartError::InvalidScan("part has no name".into()))?;
-            let copy = staging.join(name);
-            fs::create_dir(&copy).map_err(|error| io_error(&copy, error))?;
-            for entry in fs::read_dir(part).map_err(|error| io_error(part, error))? {
-                let entry = entry.map_err(|error| io_error(part, error))?;
-                let source_file = entry.path();
-                if !entry
-                    .file_type()
-                    .map_err(|error| io_error(&source_file, error))?
-                    .is_file()
-                {
-                    return Err(PartError::InvalidScan(
-                        "part contains non-file entries".into(),
-                    ));
-                }
-                let destination_file = copy.join(entry.file_name());
-                let bytes = entry
-                    .metadata()
-                    .map_err(|error| io_error(&source_file, error))?
-                    .len();
-                report.bytes = report
-                    .bytes
-                    .checked_add(bytes)
-                    .ok_or_else(|| PartError::InvalidScan("copy size overflow".into()))?;
-                if report.bytes > max_bytes {
-                    return Err(PartError::InvalidScan("copy exceeds byte cap".into()));
-                }
-                if report.files >= max_files {
-                    return Err(PartError::InvalidScan("snapshot copy exceeds file limit".into()));
-                }
-                let copied_bytes = crate::distributed_atomic_copy::copy_immutable_file(
-                    &source_file,
-                    &destination_file,
-                    bytes,
-                )
-                .map_err(|error| io_error(&destination_file, error))?;
-                if copied_bytes != bytes {
-                    return Err(PartError::InvalidScan(
-                        "source size changed during snapshot copy".into(),
-                    ));
-                }
-                // The immutable copy helper already syncs each published file.
-                report.files += 1;
-            }
-            verify_part_file_hashes(&copy)?;
-            verify_wide_part(&copy)?;
-            sync_directory(&copy)?;
-            report.parts += 1;
-        }
-        inspect_query_source(&staging)?;
-        sync_directory(&staging)?;
-        Ok(report)
-    })();
+    let copied = copy_snapshot_parts(&parts, &staging, max_files, max_bytes)
+        .and_then(|report| {
+            inspect_query_source(&staging)?;
+            sync_directory(&staging)?;
+            Ok(report)
+        });
     let report = match copied {
         Ok(report) => report,
         Err(error) => {
@@ -275,6 +339,38 @@ pub fn preview_frozen_snapshot(
         files: files.len(),
         bytes,
     })
+}
+
+#[cfg(test)]
+mod parallel_snapshot_copy_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn many_immutable_parts_copy_as_one_atomic_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-parallel-copy-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        for index in 0..20 {
+            write_wide_part(
+                &source.join(format!("all_{index}_{index}_0")),
+                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[vec![Some(index.to_string())]],
+            ).unwrap();
+        }
+        let preview = preview_frozen_snapshot(&source, 20, 256, 4_000_000).unwrap();
+        let copied = copy_frozen_snapshot_with_file_limit(
+            &source, &destination, 20, 256, 4_000_000,
+        ).unwrap();
+        assert_eq!(copied, preview);
+        assert_eq!(copied.parts, 20);
+        assert_eq!(query_parts(&destination).unwrap().len(), 20);
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(test)]
