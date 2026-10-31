@@ -1,9 +1,18 @@
 //! Conservative generation-retention planning; no files are deleted.
 
+use std::borrow::Cow;
+
 const MAX_RETENTION_GENERATIONS: usize = 16_384;
-fn validated_generations(generations: &[u64], active: u64) -> Result<Vec<u64>, &'static str> {
-    let mut sorted_generations = generations.to_vec();
-    sorted_generations.sort_unstable();
+fn validated_generations(generations: &[u64], active: u64) -> Result<Cow<'_, [u64]>, &'static str> {
+    // Snapshot inventory is often already chronological. Borrow it without
+    // copying or sorting; retain the old sorting path for unordered inputs.
+    let sorted_generations = if generations.windows(2).all(|pair| pair[0] < pair[1]) {
+        Cow::Borrowed(generations)
+    } else {
+        let mut owned = generations.to_vec();
+        owned.sort_unstable();
+        Cow::Owned(owned)
+    };
     if sorted_generations.first().is_none_or(|generation| *generation == 0)
         || sorted_generations.windows(2).any(|pair| pair[0] == pair[1])
         || sorted_generations.binary_search(&active).is_err()
@@ -17,11 +26,11 @@ fn known_generation(generations: &[u64], generation: u64) -> bool {
     generations.binary_search(&generation).is_ok()
 }
 
-fn planned_retention(
-    generations: &[u64],
+fn planned_retention<'a>(
+    generations: &'a [u64],
     active: u64,
     keep_latest: usize,
-) -> Result<(Vec<u64>, Vec<u64>), &'static str> {
+) -> Result<(Vec<u64>, Cow<'a, [u64]>), &'static str> {
     if generations.is_empty() || generations.len() > MAX_RETENTION_GENERATIONS || keep_latest == 0 || active == 0 {
         return Err("invalid generation retention configuration");
     }
@@ -483,6 +492,41 @@ mod multiple_replica_floor_tests {
         assert!(retention_candidates_for_replica_floors(&generations, 4, 1, &[], &[1; 65]).is_err());
         assert!(retention_candidates_for_replica_floors(&generations, 4, 5, &[99], &[1]).is_err());
         assert!(retention_candidates_for_replica_floors(&generations, 4, 1, &[2, 2], &[4]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod borrowed_sorted_retention_tests {
+    use super::*;
+
+    #[test]
+    fn sorted_inventory_avoids_copying_and_unsorted_inventory_still_sorts() {
+        let ordered = (1..=16_384u64).collect::<Vec<_>>();
+        let unordered = ordered.iter().rev().copied().collect::<Vec<_>>();
+        assert!(matches!(validated_generations(&ordered, 42).unwrap(), Cow::Borrowed(_)));
+        assert!(matches!(validated_generations(&unordered, 42).unwrap(), Cow::Owned(_)));
+
+        for active in [1, 1000, 16_384] {
+            for keep in [1, 2, 1024, 16_384, usize::MAX] {
+                assert_eq!(
+                    retention_candidates(&ordered, active, keep).unwrap(),
+                    retention_candidates(&unordered, active, keep).unwrap(),
+                );
+            }
+        }
+        let pins = [1, 15, 8192, 16384];
+        assert_eq!(
+            retention_candidates_with_pins(&ordered, 16_384, 1, &pins).unwrap(),
+            retention_candidates_with_pins(&unordered, 16_384, 1, &pins).unwrap(),
+        );
+    }
+
+    #[test]
+    fn borrowed_path_still_rejects_invalid_generation_inventories() {
+        assert!(validated_generations(&[], 1).is_err());
+        assert!(validated_generations(&[0, 1, 2], 2).is_err());
+        assert!(validated_generations(&[1, 2, 3], 4).is_err());
+        assert!(validated_generations(&[2, 2, 3], 3).is_err());
     }
 }
 
