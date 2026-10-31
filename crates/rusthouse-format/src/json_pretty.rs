@@ -240,7 +240,7 @@ mod tests {
             let key = "k".repeat(length);
             let row = format!("{{\"{key}\":0}}");
             let mut output = Writes(Vec::new());
-            write_pretty_json_row(&mut output, row.as_bytes()).unwrap();
+            write_pretty_json_row_into(&mut output, row.as_bytes()).unwrap();
             let wanted = format!("\"{key}\": ");
             assert!(
                 output.0.iter().any(|chunk| chunk.as_slice() == wanted.as_bytes()),
@@ -263,7 +263,7 @@ mod tests {
             let key = "a".repeat(length);
             let input = format!("{{\"{key}\":1}}");
             let mut output = Calls(Vec::new());
-            write_pretty_json_row(&mut output, input.as_bytes()).unwrap();
+            write_pretty_json_row_into(&mut output, input.as_bytes()).unwrap();
             let encoded = format!("\"{key}\": ");
             assert!(
                 output.0.iter().any(|bytes| bytes == encoded.as_bytes()),
@@ -285,7 +285,7 @@ mod tests {
             }
         }
         let mut output = Calls(Vec::new());
-        write_pretty_json_row(&mut output, br#"{"a":1}"#).unwrap();
+        write_pretty_json_row_into(&mut output, br#"{"a":1}"#).unwrap();
         assert!(output.0.iter().any(|chunk| chunk.as_slice() == b"\"a\": "));
         assert_eq!(output.0.concat(), b"{\n    \"a\": 1\n  }");
     }
@@ -356,7 +356,7 @@ mod long_pretty_json_key_batch_tests {
             let key = "k".repeat(length);
             let source = format!("{{\"{key}\":42}}");
             let mut writer = Calls(Vec::new());
-            write_pretty_json_row(&mut writer, source.as_bytes()).unwrap();
+            write_pretty_json_row_into(&mut writer, source.as_bytes()).unwrap();
             let colon = format!("\"{key}\": ");
             assert!(writer.0.iter().any(|call| call == colon.as_bytes()), "{length}");
             assert_eq!(
