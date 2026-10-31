@@ -89,9 +89,27 @@ pub fn read_enum_column<R: Read>(
         _ => unreachable!("Enum storage is Int8 or Int16"),
     };
 
-    for (row, &code) in codes.iter().enumerate() {
-        if !variants.contains_key(&code) {
-            return Err(EnumReadError::UnknownValue { row, code });
+    // Wide Enum scans can validate a million rows. Use direct bit probes
+    // instead of walking the ordered variant map for each row. Small inputs
+    // retain map lookup so they do not pay to clear an 8 KiB bitmap.
+    if rows > 32 && variants.len() > 4 {
+        let mut allowed = [0u64; 1024]; // Full signed Enum16 domain.
+        let mask = if width == 8 { 255 } else { 65_535 };
+        for &code in variants.keys() {
+            let slot = (code as u16 as usize) & mask;
+            allowed[slot / 64] |= 1u64 << (slot % 64);
+        }
+        for (row, &code) in codes.iter().enumerate() {
+            let slot = (code as u16 as usize) & mask;
+            if allowed[slot / 64] & (1u64 << (slot % 64)) == 0 {
+                return Err(EnumReadError::UnknownValue { row, code });
+            }
+        }
+    } else {
+        for (row, &code) in codes.iter().enumerate() {
+            if !variants.contains_key(&code) {
+                return Err(EnumReadError::UnknownValue { row, code });
+            }
         }
     }
 
@@ -252,6 +270,32 @@ mod tests {
             let count = buffer.len().min(1);
             self.0.read(&mut buffer[..count])
         }
+    }
+
+    #[test]
+    fn validates_large_signed_enum_batches_with_bitmap() {
+        let typ8 = "Enum8('a' = -128, 'b' = -1, 'c' = 0, 'd' = 1, 'e' = 127)";
+        let data8 = [128u8, 255, 0, 1, 127].repeat(200);
+        let values = read_enum_column(&mut data8.as_slice(), typ8, 1000).unwrap();
+        assert_eq!(values.codes()[0], -128);
+        assert_eq!(values.name(999), Some("e"));
+        let mut corrupted = data8.clone();
+        corrupted[731] = 42;
+        assert!(matches!(
+            read_enum_column(&mut corrupted.as_slice(), typ8, 1000),
+            Err(EnumReadError::UnknownValue { row: 731, code: 42 })
+        ));
+
+        let typ16 = "Enum16('a' = -32768, 'b' = -1, 'c' = 0, 'd' = 1, 'e' = 32767)";
+        let signed = [i16::MIN, -1, 0, 1, i16::MAX].repeat(200);
+        let mut encoded = signed.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
+        assert_eq!(read_enum_column(&mut encoded.as_slice(), typ16, 1000)
+            .unwrap().codes(), signed.as_slice());
+        encoded[2 * 511..2 * 511 + 2].copy_from_slice(&42i16.to_le_bytes());
+        assert!(matches!(
+            read_enum_column(&mut encoded.as_slice(), typ16, 1000),
+            Err(EnumReadError::UnknownValue { row: 511, code: 42 })
+        ));
     }
 
     #[test]
