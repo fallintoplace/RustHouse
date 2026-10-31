@@ -14,7 +14,7 @@ mod masked_prefix_tests {
     fn radix_histograms_match_distinct_and_shared_prefixes() {
         let column = NumericColumn::UInt64(vec![0, 1, 2, 3, 4, 5]);
         let mut separate = [[0u64; 256]; 2];
-        count_column(&column, None, None, 64, 0, 1, &[0, 1], &mut separate).unwrap();
+        count_column(&column, None, |_| true, 64, 0, 1, &[0, 1], &mut separate).unwrap();
         assert_eq!(separate[0][0], 1);
         assert_eq!(separate[0][2], 1);
         assert_eq!(separate[0][4], 1);
@@ -22,7 +22,7 @@ mod masked_prefix_tests {
         assert_eq!(separate[1][3], 1);
         assert_eq!(separate[1][5], 1);
         let mut shared = [[0u64; 256]; 2];
-        count_column(&column, None, None, 64, 0, 1, &[0, 0], &mut shared).unwrap();
+        count_column(&column, None, |_| true, 64, 0, 1, &[0, 0], &mut shared).unwrap();
         assert_eq!(shared[0], shared[1]);
         assert_eq!(shared[0][0], 1);
         assert_eq!(shared[0][1], 0);
@@ -97,7 +97,7 @@ fn render_middle_pair(low_key: u128, high_key: u128, bits: usize, signed: bool) 
 fn count_column(
     column: &NumericColumn,
     nulls: Option<&[u8]>,
-    included: Option<&[bool]>,
+    mut included: impl FnMut(usize) -> bool,
     bits: usize,
     shift: usize,
     prefix_mask: u128,
@@ -107,22 +107,25 @@ fn count_column(
     let targets = [prefixes[0] & prefix_mask, prefixes[1] & prefix_mask];
     let shared_prefix = targets[0] == targets[1];
     let mut visit = |value: u128, row: usize| {
-        if nulls.is_some_and(|map| map[row] != 0)
-            || included.is_some_and(|mask| !mask[row])
-        {
+        if nulls.is_some_and(|map| map[row] != 0) {
             return;
         }
         let masked = value & prefix_mask;
-        if shared_prefix {
-            if masked == targets[0] {
-                histogram[0][((value >> shift) & 255) as usize] += 1;
-            }
-        } else {
-            for side in 0..2 {
-                if masked == targets[side] {
-                    histogram[side][((value >> shift) & 255) as usize] += 1;
-                }
-            }
+        if masked != targets[0] && masked != targets[1] {
+            return;
+        }
+        // Filtering is expensive for LIKE/IN predicates. Only evaluate rows
+        // that may contribute to either rank at this radix level, and never
+        // allocate a per-batch boolean inclusion bitmap.
+        if !included(row) {
+            return;
+        }
+        let bucket = ((value >> shift) & 255) as usize;
+        if masked == targets[0] {
+            histogram[0][bucket] += 1;
+        }
+        if !shared_prefix && masked == targets[1] {
+            histogram[1][bucket] += 1;
         }
     };
     macro_rules! unsigned {
@@ -168,7 +171,7 @@ mod shared_histogram_tests {
     fn shared_prefixes_count_both_median_ranks_exactly() {
         let values = NumericColumn::UInt16(vec![1, 2, 257, 258]);
         let mut result = [[0u64; 256]; 2];
-        count_column(&values, None, None, 16, 8, 0, &[0, 0], &mut result).unwrap();
+        count_column(&values, None, |_| true, 16, 8, 0, &[0, 0], &mut result).unwrap();
         assert_eq!(result[0], result[1]);
         assert_eq!(result[0][0], 2);
         assert_eq!(result[0][1], 2);
@@ -178,7 +181,7 @@ mod shared_histogram_tests {
     fn divergent_prefixes_keep_independent_counts() {
         let values = NumericColumn::UInt16(vec![1, 2, 257, 258]);
         let mut result = [[0u64; 256]; 2];
-        count_column(&values, None, None, 16, 0, u128::MAX << 8, &[0, 256], &mut result).unwrap();
+        count_column(&values, None, |_| true, 16, 0, u128::MAX << 8, &[0, 256], &mut result).unwrap();
         assert_eq!(result[0][1], 1);
         assert_eq!(result[0][2], 1);
         assert_eq!(result[1][1], 1);
@@ -230,25 +233,21 @@ fn median_inner(
                         "nullable radix input changed type".into()
                     ));
                 };
-                let selected = typed_filtered.map(|(_, conditions)| {
-                    (0..batch[0].len())
-                        .map(|row| typed::passes(&batch, row, conditions))
-                        .collect::<Vec<_>>()
-                });
-                count_column(values, Some(nulls), selected.as_deref(),
-                    bits, shift, prefix_mask, &keys, &mut histogram)?;
+                count_column(values, Some(nulls), |row| {
+                    typed_filtered.is_none_or(|(_, conditions)| {
+                        typed::passes(&batch, row, conditions)
+                    })
+                }, bits, shift, prefix_mask, &keys, &mut histogram)?;
             }
         } else {
             let scan_columns = filtered.map_or(names.as_slice(), |(columns, _)| columns);
             let mut reader = NumericQueryReader::open_with_metadata(part, scan_columns, metadata)?;
             while let Some(batch) = reader.next_batch()? {
-                let selected = filtered.map(|(_, conditions)| {
-                    (0..batch[0].len())
-                        .map(|row| batch_matches(&batch, row, conditions))
-                        .collect::<Vec<_>>()
-                });
-                count_column(&batch[0], None, selected.as_deref(),
-                    bits, shift, prefix_mask, &keys, &mut histogram)?;
+                count_column(&batch[0], None, |row| {
+                    filtered.is_none_or(|(_, conditions)| {
+                        batch_matches(&batch, row, conditions)
+                    })
+                }, bits, shift, prefix_mask, &keys, &mut histogram)?;
             }
         }
         for side in 0..2 {
@@ -375,5 +374,42 @@ mod tests {
         assert!(encoded.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(render_key(encoded[0], 32, true), "-20");
         assert_eq!(render_key(encoded[4], 32, true), "100");
+    }
+}
+
+#[cfg(test)]
+mod lazy_radix_filter_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn probes_predicates_only_for_live_non_null_prefixes() {
+        let column = NumericColumn::UInt16(vec![2, 257, 258, 513, 2]);
+        let nulls = [0, 0, 1, 0, 0];
+        let calls = Cell::new(0);
+        let mut histogram = [[0u64; 256]; 2];
+        count_column(&column, Some(&nulls), |row| {
+            calls.set(calls.get() + 1);
+            row != 4
+        }, 16, 0, u128::MAX << 8, &[0, 256], &mut histogram).unwrap();
+        assert_eq!(calls.get(), 3);
+        assert_eq!(histogram[0][2], 1);
+        assert_eq!(histogram[1][1], 1);
+        assert_eq!(histogram[0].iter().sum::<u64>(), 1);
+        assert_eq!(histogram[1].iter().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn shared_prefixes_evaluate_filter_only_once_per_eligible_row() {
+        let values = NumericColumn::UInt16(vec![1, 256, 2, 513]);
+        let calls = Cell::new(0);
+        let mut histogram = [[0u64; 256]; 2];
+        count_column(&values, None, |row| {
+            calls.set(calls.get() + 1);
+            row != 2
+        }, 16, 0, u128::MAX << 8, &[0, 0], &mut histogram).unwrap();
+        assert_eq!(calls.get(), 2);
+        assert_eq!(histogram[0], histogram[1]);
+        assert_eq!(histogram[0][1], 1);
     }
 }
