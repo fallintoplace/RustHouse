@@ -138,6 +138,7 @@ fn next_row(
     data: &[u8],
     start: usize,
     kind: IntegerType,
+    column_count: usize,
 ) -> Result<Option<(IntegerKey, usize)>, MergeError> {
     if start == data.len() {
         return Ok(None);
@@ -146,11 +147,19 @@ fn next_row(
         .position(|&byte| byte == b'\n')
         .ok_or(MergeError::InvalidSortedScan)?;
     let end = start + newline + 1;
-    let value = &data[start..end - 1];
-    if value.contains(&b'\t') || value == b"NULL" {
+    let row = &data[start..end - 1];
+    // Only the first projected column is the sort key. The remaining fields
+    // are opaque TSV values and are returned together with the original row.
+    // Strict column counts prevent partial or injected peer rows.
+    if row.iter().filter(|&&byte| byte == b'\t').count() != column_count - 1 {
         return Err(MergeError::InvalidSortedScan);
     }
-    Ok(Some((parse_integer_sort_key(value, kind)?, end)))
+    let key = row.split(|&byte| byte == b'\t').next()
+        .ok_or(MergeError::InvalidSortedScan)?;
+    if key == b"NULL" {
+        return Err(MergeError::InvalidSortedScan);
+    }
+    Ok(Some((parse_integer_sort_key(key, kind)?, end)))
 }
 
 /// Validate the full sorted shard streams before returning any rows.
@@ -165,7 +174,26 @@ pub(super) fn merge_sorted_integer_page(
     limit: usize,
     max_rows: usize,
 ) -> Result<Vec<u8>, MergeError> {
-    let header = format!("{column}\n");
+    merge_sorted_integer_rows_page(
+        shards, &[column], kind, descending, offset, limit, max_rows,
+    )
+}
+
+/// Merge sorted shard prefixes while preserving complete projected rows.
+/// The first column is an exact, non-nullable integer ORDER BY key.
+pub(super) fn merge_sorted_integer_rows_page(
+    shards: &[(usize, Vec<u8>)],
+    columns: &[&str],
+    kind: &str,
+    descending: bool,
+    offset: usize,
+    limit: usize,
+    max_rows: usize,
+) -> Result<Vec<u8>, MergeError> {
+    if !(1..=16).contains(&columns.len()) {
+        return Err(MergeError::InvalidSortedScan);
+    }
+    let header = format!("{}\n", columns.join("\t"));
     let header_len = header.len();
     let kind = IntegerType::from_schema(kind)?;
     let prefix = offset.checked_add(limit).ok_or(MergeError::CoordinatorLimit)?;
@@ -182,7 +210,7 @@ pub(super) fn merge_sorted_integer_page(
         let mut rows = 0usize;
         let mut previous = None;
         let mut first = None;
-        while let Some((key, next)) = next_row(data, cursor, kind)? {
+        while let Some((key, next)) = next_row(data, cursor, kind, columns.len())? {
             if previous.is_some_and(|prior| if descending { prior < key } else { prior > key }) {
                 return Err(MergeError::InvalidSortedScan);
             }
@@ -227,7 +255,7 @@ pub(super) fn merge_sorted_integer_page(
         if returned >= limit {
             break;
         }
-        if let Some((key, next_position)) = next_row(body, end, kind)? {
+        if let Some((key, next_position)) = next_row(body, end, kind, columns.len())? {
             heap.push(cursor.advance(key, next_position));
         }
     }
@@ -319,6 +347,59 @@ mod schema_width_regression_tests {
         assert_eq!(
             merge_sorted_integer_page(&[(4, b"id\n1\n".to_vec())], "id", "Unknown", false, 0, 1, 1),
             Err(MergeError::InvalidSortedScan)
+        );
+    }
+}
+
+#[cfg(test)]
+mod multicolumn_sorted_merge_tests {
+    use super::*;
+
+    #[test]
+    fn merges_full_rows_and_preserves_stable_ties_across_peers() {
+        let shards = [
+            (16, b"id\tname\n1\tb\n4\tz\n7\tlast\n".to_vec()),
+            (16, b"id\tname\n1\ta\n2\tc\\td\n8\tn\n".to_vec()),
+        ];
+        let page = merge_sorted_integer_rows_page(
+            &shards, &["id", "name"], "UInt64", false, 1, 3, 3,
+        ).unwrap();
+        assert_eq!(page, b"id\tname\n1\ta\n2\tc\\td\n4\tz\n");
+    }
+
+    #[test]
+    fn checks_all_shard_fields_even_after_page_is_full() {
+        for invalid in [
+            b"id\tname\n1\n".as_slice(),
+            b"id\tname\n1\tok\textra\n".as_slice(),
+            b"id\tname\n1\tok\n0\tout-of-order\n".as_slice(),
+        ] {
+            assert_eq!(
+                merge_sorted_integer_rows_page(
+                    &[(16, invalid.to_vec())], &["id", "name"], "UInt64", false, 0, 1, 1,
+                ),
+                Err(MergeError::InvalidSortedScan),
+            );
+        }
+        assert_eq!(
+            merge_sorted_integer_rows_page(
+                &[(16, b"id\tname\n".to_vec())], &[], "UInt64", false, 0, 1, 1,
+            ),
+            Err(MergeError::InvalidSortedScan),
+        );
+    }
+
+    #[test]
+    fn signed_descending_multirow_merge_supports_pagination() {
+        let shards = [
+            (10, b"id\tlabel\n9\tfirst\n2\tsecond\n".to_vec()),
+            (10, b"id\tlabel\n8\tother\n-4\tnegative\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_sorted_integer_rows_page(
+                &shards, &["id", "label"], "Int64", true, 1, 2, 2,
+            ).unwrap(),
+            b"id\tlabel\n8\tother\n2\tsecond\n",
         );
     }
 }
