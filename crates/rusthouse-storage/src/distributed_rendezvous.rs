@@ -297,6 +297,93 @@ pub fn zone_aware_replicas_for(
     Ok(selected)
 }
 
+/// Rank only eligible replica nodes, without silently assigning a full node.
+///
+/// This is placement planning, not an allocation or an on-disk reservation.
+/// The transfer executor must reserve capacity again before copying.
+pub fn capacity_aware_replicas_for(
+    shard: &str,
+    members: &[crate::distributed_membership::Member],
+    capacities: &[(&str, crate::distributed_capacity::Capacity)],
+    object_bytes: u64,
+    replicas: usize,
+) -> Result<Vec<String>, &'static str> {
+    crate::distributed_membership::validate_membership(members)?;
+    if replicas == 0 || replicas > members.len() || capacities.len() != members.len() {
+        return Err("invalid capacity-aware replica configuration");
+    }
+    let mut by_node = std::collections::HashMap::with_capacity(capacities.len());
+    for &(node, capacity) in capacities {
+        if by_node.insert(node, capacity).is_some() {
+            return Err("duplicate replica capacity entry");
+        }
+    }
+    let mut eligible = Vec::with_capacity(members.len());
+    for member in members {
+        let capacity = by_node.get(member.node.as_str())
+            .ok_or("missing replica capacity")?;
+        if capacity.available()? >= object_bytes {
+            eligible.push(member.clone());
+        }
+    }
+    if eligible.len() < replicas {
+        return Err("insufficient replica capacity for requested redundancy");
+    }
+    zone_aware_replicas_for(shard, &eligible, replicas)
+}
+
+#[cfg(test)]
+mod capacity_aware_replica_tests {
+    use super::*;
+    use crate::distributed_capacity::Capacity;
+    use crate::distributed_membership::parse_membership;
+
+    fn capacity(free: u64) -> Capacity {
+        Capacity { total: 100, used: 100 - free, reserved: 0 }
+    }
+
+    #[test]
+    fn placement_matches_zone_rank_after_excluding_full_nodes() {
+        let members = parse_membership("a z1 9\nb z2 4\nc z3 2\nd z1 1\n")
+            .unwrap();
+        let capacities = [
+            ("c", capacity(10)), ("a", capacity(1)),
+            ("d", capacity(10)), ("b", capacity(10)),
+        ];
+        for shard in ["logs", "metrics", "events"] {
+            let expected = zone_aware_replicas_for(shard, &members[1..], 3).unwrap();
+            let chosen = capacity_aware_replicas_for(
+                shard, &members, &capacities, 2, 3
+            ).unwrap();
+            assert_eq!(chosen, expected);
+            let all = [("a", capacity(10)), ("b", capacity(10)),
+                ("c", capacity(10)), ("d", capacity(10))];
+            assert_eq!(
+                capacity_aware_replicas_for(shard, &members, &all, 2, 2).unwrap(),
+                zone_aware_replicas_for(shard, &members, 2).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_duplicate_and_overcommitted_capacity_data() {
+        let members = parse_membership("a z1 1\nb z2 1\n").unwrap();
+        assert!(capacity_aware_replicas_for(
+            "x", &members, &[("a", capacity(1)), ("b", capacity(1))], 2, 1
+        ).is_err());
+        assert!(capacity_aware_replicas_for(
+            "x", &members, &[("a", capacity(10)), ("a", capacity(10))], 1, 1
+        ).is_err());
+        assert!(capacity_aware_replicas_for(
+            "x", &members, &[("a", capacity(10)), ("unknown", capacity(10))], 1, 1
+        ).is_err());
+        let invalid = Capacity { total: 10, used: 9, reserved: 2 };
+        assert!(capacity_aware_replicas_for(
+            "x", &members, &[("a", invalid), ("b", capacity(10))], 1, 1
+        ).is_err());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
