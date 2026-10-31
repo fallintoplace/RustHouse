@@ -8,6 +8,7 @@ claim can be made without the full report and machine/dataset description.
 """
 import argparse
 import json
+import itertools
 import math
 import os
 import platform
@@ -22,6 +23,7 @@ from bench.scale.row_oracles import modulo_reference, sum_range
 
 MAX_ROWS = 4_000_000_000  # SUM(id) stays within UInt64 for this range.
 CASE_DIRECTORY = Path(__file__).with_name("billion_matrix")
+MAX_CASES = 256
 IDENTIFIER = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 
 
@@ -190,7 +192,11 @@ def unique_case_fields(pairs):
 
 
 def load_cases(directory):
-    paths = sorted(Path(directory).glob("[0-9][0-9]-*.json"))
+    paths = sorted(itertools.islice(
+        Path(directory).glob("[0-9][0-9]-*.json"), MAX_CASES + 1
+    ))
+    if len(paths) > MAX_CASES:
+        raise ValueError("benchmark case count exceeds 256")
     if not paths:
         raise ValueError("no numbered cases found")
     names = set()
