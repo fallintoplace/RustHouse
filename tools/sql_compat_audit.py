@@ -85,9 +85,17 @@ def read_queries(path):
 def audit(binary, queries, run=subprocess.run, fail_fast=False, timeout=10):
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("audit timeout must be positive and finite")
+    safe_queries = []
+    for line, query in queries:
+        if type(line) is not int or line < 1 or not isinstance(query, str):
+            raise ValueError("invalid SQL audit entry")
+        parsed = parse_lines(query)
+        if len(parsed) != 1:
+            raise ValueError("one bounded SELECT is required per audit entry")
+        safe_queries.append((line, parsed[0][1]))
     results = []
     with tempfile.TemporaryDirectory(prefix="rusthouse-sql-audit-") as database:
-        for line, query in queries:
+        for line, query in safe_queries:
             try:
                 # Keep noisy SQL CLI output out of process memory.
                 with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
@@ -117,8 +125,8 @@ def audit(binary, queries, run=subprocess.run, fail_fast=False, timeout=10):
         "schema_version": 1,
         "scope": "parser-only, no data read or SQL execution",
         "total": len(results),
-        "requested": len(queries),
-        "stopped_early": len(results) < len(queries),
+        "requested": len(safe_queries),
+        "stopped_early": len(results) < len(safe_queries),
         "accepted": sum(row["parser_accepted"] for row in results),
         "results": results,
     }
