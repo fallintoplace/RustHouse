@@ -41,6 +41,9 @@ def load_workload(path):
             fields[name] = value
         return fields
 
+    def reject_nonstandard_number(value):
+        raise ValueError(f"nonstandard workload JSON number: {value}")
+
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise ValueError("analytics workload must be a regular, non-symlinked file")
@@ -48,7 +51,8 @@ def load_workload(path):
         raw = source.read(1_048_577)
     if len(raw) > 1_048_576:
         raise ValueError("analytics workload exceeds 1 MiB")
-    data = json.loads(raw, object_pairs_hook=unique_fields)
+    data = json.loads(raw, object_pairs_hook=unique_fields,
+                      parse_constant=reject_nonstandard_number)
     if not isinstance(data, dict) or not isinstance(data.get("name"), str) or not data["name"].strip():
         raise ValueError("workload must have a nonempty name")
     max_rows = data.get("max_rows", 200_000)
