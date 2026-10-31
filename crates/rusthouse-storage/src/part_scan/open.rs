@@ -63,9 +63,9 @@ mod mark_path_validation_tests {
         let plain = dir.join("id.mrk2");
         let compressed = dir.join("id.cmrk2");
         assert_eq!(numeric_marks_path(&dir, "id").unwrap(), plain);
-        std::fs::write(&compressed, []).unwrap();
+        std::fs::write(&compressed, b"").unwrap();
         assert_eq!(numeric_marks_path(&dir, "id").unwrap(), compressed);
-        std::fs::write(&plain, []).unwrap();
+        std::fs::write(&plain, b"").unwrap();
         assert!(numeric_marks_path(&dir, "id").is_err());
         std::fs::remove_file(&plain).unwrap();
         std::fs::remove_file(&compressed).unwrap();
@@ -84,7 +84,7 @@ mod mark_path_validation_tests {
             std::thread::current().id()
         ));
         std::fs::create_dir(&dir).unwrap();
-        std::fs::write(dir.join("id.mrk2"), []).unwrap();
+        std::fs::write(dir.join("id.mrk2"), b"").unwrap();
         symlink("nonexistent", dir.join("id.cmrk2")).unwrap();
         assert!(numeric_marks_path(&dir, "id").is_err());
         std::fs::remove_dir_all(dir).unwrap();
