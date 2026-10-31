@@ -521,13 +521,14 @@ mod short_json_each_row_key_tests {
     fn small_and_large_field_sets_preserve_all_values() {
         for count in [0, 1, 2, 8, 9, 128] {
             let json = format!("{{{}}}", (0..count)
-                .map(|index| format!("\\\"k{index}\\\":{index}"))
+                .map(|index| format!("\"k{index}\":{index}"))
                 .collect::<Vec<_>>().join(","));
             let fields = parse_json_each_row_fields(&json).unwrap();
             assert_eq!(fields.len(), count);
             for (index, (key, value)) in fields.iter().enumerate() {
                 assert_eq!(key, &format!("k{index}"));
-                assert_eq!(value.as_deref(), Some(index.to_string().as_str()));
+                let expected = index.to_string();
+                assert_eq!(value.as_deref(), Some(expected.as_str()));
             }
         }
     }
@@ -536,12 +537,12 @@ mod short_json_each_row_key_tests {
     fn rejects_duplicate_and_invalid_names_at_both_paths() {
         for count in [8, 9] {
             let mut fields = (0..count - 1)
-                .map(|index| format!("\\\"k{index}\\\":0"))
+                .map(|index| format!("\"k{index}\":0"))
                 .collect::<Vec<_>>();
-            fields.push("\\\"k0\\\":1".into());
+            fields.push("\"k0\":1".into());
             assert!(parse_json_each_row_fields(&format!("{{{}}}", fields.join(","))).is_err());
         }
         assert!(parse_json_each_row_fields(r#"{"":1}"#).is_err());
-        assert!(parse_json_each_row_fields(&format!("{{\\\"{}\\\":1}}", "x".repeat(129))).is_err());
+        assert!(parse_json_each_row_fields(&format!("{{\"{}\":1}}", "x".repeat(129))).is_err());
     }
 }
