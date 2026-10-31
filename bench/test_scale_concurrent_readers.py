@@ -69,8 +69,8 @@ class ConcurrentReadersTests(unittest.TestCase):
         for statement in (
             "SELECT 1 /* hidden ; */",
             "SELECT /* outer /* inner ; */ tail ; */ 1",
-            "SELECT 1 -- ignored ;\\r\\n + 2",
-            "SELECT 1 # ignored ;\\n + 2",
+            "SELECT 1 -- ignored ;\r\n + 2",
+            "SELECT 1 # ignored ;\n + 2",
             "SELECT `table;name`",
             "SELECT 'literal;inside' AS name",
         ):
@@ -79,13 +79,13 @@ class ConcurrentReadersTests(unittest.TestCase):
             "SELECT 1 /* comment */ ; DELETE FROM data",
             "SELECT 1 /* unclosed ;",
             "SELECT 1 /* " * 33 + " */" * 33,
-            "SELECT 1 # comment\\n; SELECT 2",
+            "SELECT 1 # comment\n; SELECT 2",
         ):
             self.assertTrue(_has_separator(statement), statement)
         report = run_readers(
-            "rusthouse", "part", "SELECT 1 /* ; */", b"1\\n",
+            "rusthouse", "part", "SELECT 1 /* ; */", b"1\n",
             clients=1, rounds=1, execute=lambda *_a, **_k:
-            SimpleNamespace(returncode=0, stdout=b"1\\n", stderr=b""),
+            SimpleNamespace(returncode=0, stdout=b"1\n", stderr=b""),
         )
         self.assertTrue(report["all_verified"])
 
