@@ -57,6 +57,17 @@ fn decode_escape(field: &[u8], index: &mut usize) -> io::Result<u8> {
     }
 }
 
+/// Check TSV escape syntax without allocating a decoded field.
+/// Use this when forwarding peer rows without materializing their values.
+pub fn validate_tsv_field(field: &[u8]) -> io::Result<()> {
+    let mut cursor = 0;
+    while let Some(relative) = field[cursor..].iter().position(|&byte| byte == b'\\') {
+        cursor += relative;
+        decode_escape(field, &mut cursor)?;
+    }
+    Ok(())
+}
+
 pub fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
     let Some(first_escape) = field.iter().position(|&byte| byte == b'\\') else {
         return Ok(field.to_vec());
@@ -143,5 +154,32 @@ mod tests {
         assert_eq!(&decoded[65_536..65_538], b"\t\n");
         assert_eq!(decoded[0], b'z');
         assert_eq!(*decoded.last().unwrap(), b'y');
+    }
+}
+
+#[cfg(test)]
+mod zero_allocation_validation_tests {
+    use super::*;
+
+    #[test]
+    fn validates_exactly_the_same_escape_grammar_as_the_decoder() {
+        for field in [
+            br"simple".as_slice(), br"".as_slice(), br"\t\n\r\0".as_slice(),
+            br"a\x00b\x7F\\c".as_slice(), br"\b\f\v".as_slice(),
+        ] {
+            validate_tsv_field(field).unwrap();
+            decode_tsv_field(field).unwrap();
+        }
+        for field in [
+            br"\q".as_slice(), br"ending\".as_slice(),
+            br"\x0".as_slice(), br"\xGG".as_slice(), br"hi\x".as_slice(),
+        ] {
+            assert!(validate_tsv_field(field).is_err());
+            assert!(decode_tsv_field(field).is_err());
+        }
+        let mut long = vec![b'z'; 128 * 1024];
+        long.extend_from_slice(br"\t");
+        long.extend_from_slice(&vec![b'y'; 128 * 1024]);
+        validate_tsv_field(&long).unwrap();
     }
 }

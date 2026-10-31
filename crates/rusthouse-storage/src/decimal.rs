@@ -147,6 +147,17 @@ fn parse_decimal_type(data_type: &str) -> Option<(u8, u8, &'static str)> {
     parse_general_decimal(inner)
 }
 
+/// Reuse the exact decoder type grammar when verifying physical part widths.
+pub(crate) fn decimal_stream_width(data_type: &str) -> Option<u64> {
+    let (_, _, storage) = parse_decimal_type(data_type)?;
+    match storage {
+        "Int32" => Some(4),
+        "Int64" => Some(8),
+        "Int128" => Some(16),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,7 +207,9 @@ mod tests {
         assert_eq!(column.scale(), 3);
         assert_eq!(column.unscaled_values(), &NumericColumn::Int64(vec![-13]));
 
-        let value = i128::MIN;
+        // Decimal128 supports 38 digits, not the full 128-bit signed
+        // integer range. Test the last valid negative value explicitly.
+        let value = -(10i128.pow(38) - 1);
         let column =
             read_decimal_column(&mut value.to_le_bytes().as_slice(), "Decimal128(9)", 1).unwrap();
         assert_eq!(column.precision(), 38);
@@ -205,6 +218,10 @@ mod tests {
             column.unscaled_values(),
             &NumericColumn::Int128(vec![value])
         );
+        assert!(matches!(
+            read_decimal_column(&mut i128::MIN.to_le_bytes().as_slice(), "Decimal128(9)", 1),
+            Err(DecimalReadError::ValueExceedsPrecision { row: 0, precision: 38 })
+        ));
     }
 
     #[test]

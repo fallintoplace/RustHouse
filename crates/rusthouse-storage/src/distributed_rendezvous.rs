@@ -512,3 +512,102 @@ mod portable_shard_identifier_tests {
         }
     }
 }
+
+/**
+ * Deterministic movement plan for a placement configuration change.
+ * Incoming replicas must be verified before a coordinator considers retiring
+ * outgoing replicas. This only computes sets; it does not copy or delete data.
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaRebalance {
+    /// Desired placement order after the membership change.
+    pub new_placement: Vec<String>,
+    /// New destinations in desired placement order.
+    pub incoming: Vec<String>,
+    /// Nodes retained by both placements, in new placement order.
+    pub retained: Vec<String>,
+    /// Old destinations no longer selected, in previous placement order.
+    pub outgoing: Vec<String>,
+}
+
+pub fn plan_zone_aware_rebalance(
+    shard: &str,
+    previous_members: &[crate::distributed_membership::Member],
+    next_members: &[crate::distributed_membership::Member],
+    replicas: usize,
+) -> Result<ReplicaRebalance, &'static str> {
+    let previous = zone_aware_replicas_for(shard, previous_members, replicas)?;
+    let next = zone_aware_replicas_for(shard, next_members, replicas)?;
+    let previous_set = previous.iter().map(String::as_str).collect::<HashSet<_>>();
+    let next_set = next.iter().map(String::as_str).collect::<HashSet<_>>();
+    let incoming = next.iter()
+        .filter(|node| !previous_set.contains(node.as_str()))
+        .cloned().collect::<Vec<_>>();
+    let retained = next.iter()
+        .filter(|node| previous_set.contains(node.as_str()))
+        .cloned().collect::<Vec<_>>();
+    let outgoing = previous.iter()
+        .filter(|node| !next_set.contains(node.as_str()))
+        .cloned().collect::<Vec<_>>();
+    Ok(ReplicaRebalance {
+        new_placement: next,
+        incoming,
+        retained,
+        outgoing,
+    })
+}
+
+#[cfg(test)]
+mod replica_rebalance_tests {
+    use super::*;
+    use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn movement_sets_exactly_partition_old_and_new_replica_placements() {
+        let old = parse_membership("a west 5\nb east 3\nc north 2\n").unwrap();
+        let new = parse_membership("a west 5\nc north 2\nd south 8\ne east 1\n").unwrap();
+        for replica_count in 1..=3 {
+            for index in 0..128 {
+                let shard = format!("shard_{index}");
+                let previous = zone_aware_replicas_for(&shard, &old, replica_count).unwrap();
+                let desired = zone_aware_replicas_for(&shard, &new, replica_count).unwrap();
+                let plan = plan_zone_aware_rebalance(&shard, &old, &new, replica_count).unwrap();
+                assert_eq!(plan.new_placement, desired);
+                assert_eq!(plan.incoming.iter().chain(plan.retained.iter()).count(), replica_count);
+                assert_eq!(plan.outgoing.len() + plan.retained.len(), replica_count);
+                for node in &plan.incoming {
+                    assert!(desired.contains(node));
+                    assert!(!previous.contains(node));
+                }
+                for node in &plan.outgoing {
+                    assert!(previous.contains(node));
+                    assert!(!desired.contains(node));
+                }
+                for node in &plan.retained {
+                    assert!(previous.contains(node));
+                    assert!(desired.contains(node));
+                }
+                let reversed = plan_zone_aware_rebalance(&shard, &new, &old, replica_count).unwrap();
+                let mut reversed_add = reversed.incoming.clone();
+                let mut removed = plan.outgoing.clone();
+                reversed_add.sort();
+                removed.sort();
+                assert_eq!(reversed_add, removed);
+            }
+        }
+    }
+
+    #[test]
+    fn unchanged_membership_needs_no_transfers_even_if_input_is_reversed() {
+        let members = parse_membership("a west 2\nb east 3\nc north 4\n").unwrap();
+        let reversed = members.iter().rev().cloned().collect::<Vec<_>>();
+        for count in 1..=3 {
+            let plan = plan_zone_aware_rebalance("stable", &members, &reversed, count).unwrap();
+            assert!(plan.incoming.is_empty());
+            assert!(plan.outgoing.is_empty());
+            assert_eq!(plan.retained, plan.new_placement);
+        }
+        assert!(plan_zone_aware_rebalance("stable", &members, &[], 1).is_err());
+        assert!(plan_zone_aware_rebalance("stable", &members, &members, 0).is_err());
+    }
+}

@@ -27,7 +27,7 @@ pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
 pub use join::{JoinAggregate, JoinColumn, JoinSelect, JoinStep, JoinType, explain_join, parse_join};
 pub use multi_aggregate::AggregateItem;
-pub use update::{Update, parse_update};
+pub use update::{Update, UpdateValue, parse_update};
 
 use std::error::Error;
 use std::fmt;
