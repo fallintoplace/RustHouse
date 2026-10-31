@@ -318,15 +318,22 @@ pub fn parse_json_each_row_fields(text: &str) -> Result<Vec<(String, Option<Stri
     if fields.len() > 128 {
         return Err("JSONEachRow supports at most 128 fields".into());
     }
-    let mut seen = std::collections::HashSet::with_capacity(fields.len());
+    // Validate by borrowing the existing parsed keys. The old loop cloned
+    // every String into the duplicate-key set, then moved the originals to
+    // the result, causing one extra allocation per column on every row.
+    {
+        let mut seen = std::collections::HashSet::with_capacity(fields.len());
+        for (key, _) in &fields {
+            if key.is_empty() || key.len() > 128 {
+                return Err("JSONEachRow field names must be between 1 and 128 bytes".into());
+            }
+            if !seen.insert(key.as_str()) {
+                return Err(format!("duplicate JSONEachRow field: {key}"));
+            }
+        }
+    }
     let mut converted = Vec::with_capacity(fields.len());
     for (key, cell) in fields {
-        if key.is_empty() || key.len() > 128 {
-            return Err("JSONEachRow field names must be between 1 and 128 bytes".into());
-        }
-        if !seen.insert(key.clone()) {
-            return Err(format!("duplicate JSONEachRow field: {key}"));
-        }
         let value = match cell.kind {
             JsonKind::Text(text) => Some(text),
             JsonKind::Primitive if cell.raw == "null" => None,
@@ -434,5 +441,37 @@ mod json_integer_range_type_tests {
         ] {
             assert_eq!(value.at_path(field).unwrap().type_name(), expected, "{field}");
         }
+    }
+}
+
+#[cfg(test)]
+mod borrowed_json_each_row_field_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_insertion_order_nulls_unicode_and_nested_literals() {
+        let result = parse_json_each_row_fields(
+            r#"{"café":"mémoire","id":42,"empty":null,"nested":[1,true],"flag":false}"#
+        ).unwrap();
+        assert_eq!(result, vec![
+            ("café".into(), Some("mémoire".into())),
+            ("id".into(), Some("42".into())),
+            ("empty".into(), None),
+            ("nested".into(), Some("[1,true]".into())),
+            ("flag".into(), Some("false".into())),
+        ]);
+    }
+
+    #[test]
+    fn validates_all_keys_before_converting_many_columns() {
+        let wide = format!("{{{}}}", (0..128).map(|index| format!(
+            "\"column_{index}\":{index}"
+        )).collect::<Vec<_>>().join(","));
+        assert_eq!(parse_json_each_row_fields(&wide).unwrap().len(), 128);
+        let duplicated = format!("{},\"column_3\":88}}", &wide[..wide.len() - 1]);
+        assert!(parse_json_each_row_fields(&duplicated).unwrap_err()
+            .starts_with("duplicate JSONEachRow field:"));
+        assert!(parse_json_each_row_fields(r#"{"":1}"#).is_err());
+        assert!(parse_json_each_row_fields(r#"{"a":1,"a":2}"#).is_err());
     }
 }
