@@ -163,7 +163,7 @@ fn checksum_work_order(entries: &[InventoryEntry], workers: usize) -> Option<Vec
         largest = largest.max(entry.bytes);
     }
     if total_bytes == 0
-        || u128::from(largest) * entries.len() as u128 <= total_bytes * 4
+        || u128::from(largest) * entries.len() as u128 <= total_bytes * 3
     {
         return None;
     }
