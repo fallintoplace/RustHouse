@@ -17,24 +17,30 @@ fn bad_expansion() -> ParseError {
 
 /// Normalize structurally identical predicates before execution. SQL filters
 /// have no side effects, so exact duplicate AND/OR terms never change rows.
+fn branch_contains_all(superset: &[Predicate], subset: &[Predicate]) -> bool {
+    subset.len() <= superset.len()
+        && subset.iter().all(|predicate| superset.contains(predicate))
+}
+
+// Boolean absorption: A OR (A AND B) is A. All supported predicates are
+// pure filters, so removing a stronger redundant branch preserves SQL NULL
+// behavior as well as results. Retain the order of surviving branches.
 fn unique_branches(mut branches: Branches) -> Branches {
-    for branch in &mut branches {
-        let mut distinct = Vec::with_capacity(branch.len());
+    let mut distinct: Branches = Vec::with_capacity(branches.len());
+    for mut branch in branches.drain(..) {
+        let mut unique = Vec::with_capacity(branch.len());
         for predicate in branch.drain(..) {
-            if !distinct.contains(&predicate) {
-                distinct.push(predicate);
+            if !unique.contains(&predicate) {
+                unique.push(predicate);
             }
         }
-        *branch = distinct;
-    }
-    let mut distinct: Branches = Vec::with_capacity(branches.len());
-    for branch in branches {
-        if !distinct.iter().any(|existing| {
-            existing.len() == branch.len()
-                && branch.iter().all(|predicate| existing.contains(predicate))
-        }) {
-            distinct.push(branch);
+        // An existing less-restrictive branch already covers this one.
+        if distinct.iter().any(|existing| branch_contains_all(&unique, existing)) {
+            continue;
         }
+        // This branch may subsume earlier stronger branches.
+        distinct.retain(|existing| !branch_contains_all(existing, &unique));
+        distinct.push(unique);
     }
     distinct
 }
@@ -325,9 +331,8 @@ fn parse_or(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Result
     let mut branches = parse_and(parser, conditions, depth)?;
     while parser.keyword("OR") {
         let next = parse_and(parser, conditions, depth)?;
-        if branches.len().checked_add(next.len()).is_none_or(|n| n > MAX_BRANCHES) {
-            return Err(bad_expansion());
-        }
+        // Both sides were individually bounded. Let equivalent or absorbed
+        // branches collapse before rejecting the 64-branch final limit.
         branches.extend(next);
         branches = unique_branches(branches);
         check_expansion(&branches)?;
@@ -411,8 +416,10 @@ mod tests {
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
-        let groups = (0..7).map(|_| "(number = 1 OR number = 2)")
-            .collect::<Vec<_>>().join(" AND ");
+        // Independent branches still trigger the bounded DNF guard.
+        let groups = (0..7).map(|index| {
+            format!("(number > {index} OR number < {index})")
+        }).collect::<Vec<_>>().join(" AND ");
         let sql = format!("SELECT number FROM numbers(8) WHERE {groups}");
         assert!(parse_select(&sql).is_err());
     }
@@ -489,5 +496,67 @@ mod boolean_is_predicate_tests {
             "number\n"
         );
         assert!(parse_select("SELECT number FROM numbers(3) WHERE number IS MAYBE").is_err());
+    }
+}
+
+#[cfg(test)]
+mod boolean_absorption_tests {
+    use super::*;
+    use crate::{execute, parse_select};
+
+    fn rows(where_clause: &str) -> Vec<u8> {
+        let sql = format!(
+            "SELECT number FROM numbers(20) WHERE {where_clause} ORDER BY number"
+        );
+        let query = parse_select(&sql).unwrap();
+        let mut output = Vec::new();
+        execute(&query, None, &mut output).unwrap();
+        output
+    }
+
+    #[test]
+    fn redundant_disjunctions_and_conjunctions_keep_exact_rows() {
+        for base in ["number = 2", "number >= 3", "number % 2 = 0"] {
+            assert_eq!(
+                rows(base),
+                rows(&format!("({base}) OR (({base}) AND number < 7)")),
+            );
+            assert_eq!(
+                rows(base),
+                rows(&format!("(({base}) AND number < 7) OR ({base})")),
+            );
+            assert_eq!(
+                rows(&format!("NOT ({base})")),
+                rows(&format!("NOT (({base}) OR (({base}) AND number < 7))")),
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_factors_no_longer_explode_the_dnf_limit() {
+        let groups = (0..7).map(|_| "(number = 1 OR number = 2)")
+            .collect::<Vec<_>>().join(" AND ");
+        let sql = format!("SELECT number FROM numbers(8) WHERE {groups} ORDER BY number");
+        let select = parse_select(&sql).unwrap();
+        assert!(select.or_predicates.len() <= 1);
+        let mut output = Vec::new();
+        execute(&select, None, &mut output).unwrap();
+        assert_eq!(output, b"number\n1\n2\n");
+    }
+
+    #[test]
+    fn empty_and_distinct_branches_preserve_boolean_identities() {
+        let eq_one = Predicate::Comparison {
+            column: "number".into(), operator: Operator::Eq, value: "1".into(),
+        };
+        let eq_two = Predicate::Comparison {
+            column: "number".into(), operator: Operator::Eq, value: "2".into(),
+        };
+        assert_eq!(unique_branches(vec![
+            vec![eq_one.clone(), eq_two.clone()], vec![eq_one.clone()],
+        ]), vec![vec![eq_one]]);
+        assert_eq!(unique_branches(vec![
+            vec![eq_two], vec![],
+        ]), vec![Vec::<Predicate>::new()]);
     }
 }
