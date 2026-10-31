@@ -17,6 +17,14 @@ class DiskGuardTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sql_for("events; DROP TABLE", path)
 
+    def test_refuses_oversized_and_nontext_table_identifiers(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "part.tsv"
+            source.write_text("1\\n")
+            for table in ("a" * 129, None):
+                with self.subTest(table=table), self.assertRaisesRegex(ValueError, "identifier"):
+                    sql_for(table, source)
+
     def test_large_stderr_does_not_deadlock_copy_guard(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "data.tsv"

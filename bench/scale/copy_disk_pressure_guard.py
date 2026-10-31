@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 def sql_for(table, source):
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", table):
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", table):
         raise ValueError("unsafe table identifier")
     path = str(Path(source).resolve())
     if len(path.encode("utf-8")) > 32768:
