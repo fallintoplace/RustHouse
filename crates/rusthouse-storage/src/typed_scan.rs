@@ -273,6 +273,18 @@ impl StorageKind {
 }
 
 fn wrap_null_map(values: TypedColumn, nulls: Option<Vec<u8>>) -> Result<TypedColumn, PartError> {
+    if let Some(ref nulls) = nulls {
+        if nulls.len() != values.len() {
+            return Err(PartError::InvalidScan(
+                "nullable column null-map length mismatch".into(),
+            ));
+        }
+        if nulls.iter().any(|&value| value > 1) {
+            return Err(PartError::InvalidScan(
+                "nullable column contains non-canonical null-map bytes".into(),
+            ));
+        }
+    }
     match (values, nulls) {
         (TypedColumn::Numeric(values), Some(nulls)) => {
             Ok(TypedColumn::NullableNumeric { values, nulls })
@@ -1529,5 +1541,30 @@ mod parallel_wide_decode_tests {
             }
         }
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod strict_null_map_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_noncanonical_and_mismatched_nullable_bitmaps() {
+        assert!(wrap_null_map(
+            TypedColumn::Numeric(NumericColumn::UInt8(vec![1, 2])),
+            Some(vec![0, 2]),
+        ).is_err());
+        assert!(wrap_null_map(
+            TypedColumn::Numeric(NumericColumn::UInt8(vec![1, 2])),
+            Some(vec![0]),
+        ).is_err());
+        let result = wrap_null_map(
+            TypedColumn::Numeric(NumericColumn::UInt8(vec![1, 2])),
+            Some(vec![0, 1]),
+        ).unwrap();
+        assert!(matches!(
+            result,
+            TypedColumn::NullableNumeric { nulls, .. } if nulls == vec![0, 1]
+        ));
     }
 }
