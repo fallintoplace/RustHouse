@@ -36,6 +36,10 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
             if (Path(directory) / name).is_symlink():
                 raise ValueError("snapshot contains a symlink")
         for name in files:
+            # Enforce file-count budgets before hashing the first out-of-budget
+            # payload, which may be many gigabytes.
+            if count >= max_files:
+                raise ValueError("snapshot exceeds max_files")
             path = Path(directory) / name
             before = path.lstat()
             if not stat.S_ISREG(before.st_mode):
@@ -47,14 +51,20 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
                 opened = os.fstat(stream.fileno())
                 if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
                     raise ValueError(f"snapshot file replaced while opening: {path}")
+                if ((opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+                        != (before.st_size, before.st_mtime_ns, before.st_ctime_ns)):
+                    raise ValueError(f"snapshot file changed before hashing: {path}")
                 for block in iter(lambda: stream.read(block_size), b""):
                     digest.update(block)
                 finished = os.fstat(stream.fileno())
-                if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+                if ((opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+                        != (finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns)):
                     raise ValueError(f"snapshot file changed during hashing: {path}")
             after = path.lstat()
-            if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            if ((before.st_dev, before.st_ino, before.st_size,
+                 before.st_mtime_ns, before.st_ctime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size,
+                        after.st_mtime_ns, after.st_ctime_ns)):
                 raise ValueError(f"snapshot file changed while hashing: {path}")
             rel = path.relative_to(root).as_posix()
             aggregate.update(rel.encode("utf-8"))
