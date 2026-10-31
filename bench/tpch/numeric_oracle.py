@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify TSV reference rows using exact text or arbitrary-precision numbers."""
 import argparse
-from decimal import Decimal, DecimalException, InvalidOperation
+from decimal import Decimal, DecimalException, InvalidOperation, localcontext
 from pathlib import Path
 
 MAX_INPUT_BYTES = 16 * 1024 * 1024
@@ -45,8 +45,19 @@ def numeric_equal(left, right, tolerance=Decimal("0")):
     if tolerance == 0:
         # Subtraction can underflow tiny, unequal values to zero.
         return lhs == rhs
+    # Decimal subtraction uses the process-wide default precision (28 digits).
+    # That can round the absolute difference across a tolerance threshold.
+    # Keep enough digits to align the full coefficients before comparing.
+    low_exponent = min(lhs.as_tuple().exponent, rhs.as_tuple().exponent)
+    needed = max(lhs.adjusted(), rhs.adjusted()) - low_exponent + 2
+    if needed > 4096:
+        # Fail closed instead of letting hostile exponent gaps allocate huge
+        # intermediary decimal coefficients or silently round to a match.
+        return False
     try:
-        return abs(lhs - rhs) <= tolerance
+        with localcontext() as context:
+            context.prec = max(28, needed)
+            return abs(lhs - rhs) <= tolerance
     except DecimalException:
         # Exponents outside the active decimal context must not crash the oracle.
         return False
