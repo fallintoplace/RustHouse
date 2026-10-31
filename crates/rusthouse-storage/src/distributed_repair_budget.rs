@@ -81,7 +81,7 @@ fn select_repairs(
 // Work with borrowed jobs until the scheduler knows which ones fit.
 // This avoids cloning every pending job when only a small batch is selected.
 fn plan_ranked_repairs<'a>(
-    jobs: impl Iterator<Item = &'a RepairJob>,
+    jobs: impl Iterator<Item = &'a RepairJob> + Clone,
     byte_budget: u64,
     job_limit: usize,
 ) -> Vec<RepairJob> {
@@ -95,6 +95,23 @@ fn plan_ranked_repairs<'a>(
             .cloned()
             .into_iter()
             .collect();
+    }
+    if job_limit == 2 {
+        // Select the first priority, then re-scan only jobs affordable after
+        // that reservation. A two-job poll needs no sorting or reference Vec.
+        let Some(first) = eligible.clone().min_by(|left, right| repair_priority(left, right)) else {
+            return Vec::new();
+        };
+        let remaining = byte_budget - first.bytes;
+        let second = eligible
+            .filter(|job| job.shard != first.shard && job.bytes <= remaining)
+            .min_by(|left, right| repair_priority(left, right));
+        let mut selected = Vec::with_capacity(2);
+        selected.push(first.clone());
+        if let Some(second) = second {
+            selected.push(second.clone());
+        }
+        return selected;
     }
     let mut ranked: Vec<&RepairJob> = eligible.collect();
     if job_limit.saturating_mul(4) < ranked.len() {
@@ -725,5 +742,60 @@ mod small_in_flight_batch_tests {
         }
         assert!(plan_repairs_excluding(&jobs, &["shard_1", "shard_1"], 100, 3).is_err());
         assert!(plan_repairs_excluding(&jobs, &["shard_1", "../invalid"], 100, 3).is_err());
+    }
+}
+
+#[cfg(test)]
+mod linear_two_repair_selection_tests {
+    use super::*;
+
+    fn full_sort(jobs: &[RepairJob], byte_budget: u64) -> Vec<RepairJob> {
+        let mut ranked = jobs.iter().collect::<Vec<_>>();
+        ranked.sort_unstable_by(|left, right| repair_priority(left, right));
+        let mut remaining = byte_budget;
+        let mut selected = Vec::new();
+        for job in ranked {
+            if job.bytes <= remaining {
+                remaining -= job.bytes;
+                selected.push(job.clone());
+                if selected.len() == 2 {
+                    break;
+                }
+            }
+        }
+        selected
+    }
+
+    #[test]
+    fn exactly_two_picks_match_full_priority_order_for_skewed_budgets() {
+        let jobs = (0..2048).map(|index| RepairJob {
+            shard: format!("shard_{index:04}"),
+            bytes: if index % 11 == 0 { 0 } else { (index * 131 % 2047) as u64 },
+            missing_replicas: (1 + index % 9) as u8,
+        }).collect::<Vec<_>>();
+        for budget in [0u64, 1, 7, 30, 500, 2047, 10_000, u64::MAX] {
+            assert_eq!(plan_repairs(&jobs, budget, 2).unwrap(), full_sort(&jobs, budget));
+            let excluded = ["shard_0000", "shard_0001", "shard_0002"];
+            let filtered = jobs.iter().filter(|job| !excluded.contains(&job.shard.as_str()))
+                .cloned().collect::<Vec<_>>();
+            assert_eq!(
+                plan_repairs_excluding(&jobs, &excluded, budget, 2).unwrap(),
+                full_sort(&filtered, budget),
+            );
+        }
+    }
+
+    #[test]
+    fn larger_candidate_can_leave_no_budget_for_second_repair() {
+        let jobs = [
+            RepairJob { shard: "first".into(), bytes: 100, missing_replicas: 3 },
+            RepairJob { shard: "cannot_fit".into(), bytes: 5, missing_replicas: 2 },
+            RepairJob { shard: "zero".into(), bytes: 0, missing_replicas: 1 },
+        ];
+        assert_eq!(
+            plan_repairs(&jobs, 100, 2).unwrap().iter().map(|job| job.shard.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "zero"],
+        );
     }
 }
