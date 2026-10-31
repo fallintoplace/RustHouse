@@ -114,12 +114,28 @@ fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) 
     Ok(())
 }
 
+fn write_framed_plain_cell<const N: usize, W: Write>(
+    output: &mut W,
+    open: &[u8],
+    field: &str,
+    close: &[u8],
+) -> io::Result<()> {
+    let mut framed = [0u8; N];
+    framed[..open.len()].copy_from_slice(open);
+    let body_end = open.len() + field.len();
+    framed[open.len()..body_end].copy_from_slice(field.as_bytes());
+    framed[body_end..body_end + close.len()].copy_from_slice(close);
+    output.write_all(&framed[..body_end + close.len()])
+}
+
 fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::Result<()> {
     let (open, close) = cell_tags(header);
     for field in line.split('\t') {
-        // Short UTF-8 cells without HTML metacharacters or controls can
-        // use one framed write. Check non-ASCII Unicode controls by character.
-        let unescaped = if field.is_ascii() {
+        // For very large cells, the escaping writer makes one scanning pass.
+        // Small and medium safe UTF-8 cells get one framed output write.
+        let unescaped = if field.len() > 4096 {
+            false
+        } else if field.is_ascii() {
             field.bytes().all(|byte| {
                 !byte.is_ascii_control()
                     && !matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
@@ -129,13 +145,10 @@ fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::
                 !ch.is_control() && !matches!(ch, '&' | '<' | '>' | '"' | '\'')
             })
         };
-        if field.len() <= 256 && unescaped {
-            let mut framed = [0u8; 265];
-            framed[..open.len()].copy_from_slice(open);
-            let body_end = open.len() + field.len();
-            framed[open.len()..body_end].copy_from_slice(field.as_bytes());
-            framed[body_end..body_end + close.len()].copy_from_slice(close);
-            output.write_all(&framed[..body_end + close.len()])?;
+        if unescaped && field.len() <= 256 {
+            write_framed_plain_cell::<265, _>(output, open, field, close)?;
+        } else if unescaped {
+            write_framed_plain_cell::<4105, _>(output, open, field, close)?;
         } else {
             output.write_all(open)?;
             write_cell(output, field)?;
@@ -447,5 +460,54 @@ mod html_bulk_perf_tests {
         let mut output = Vec::new();
         write_cell(&mut output, "ab<&>é\u{0001}z").unwrap();
         assert_eq!(output, "ab&lt;&amp;&gt;é&#1;z".as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod medium_html_framing_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Counting {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for Counting {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn safe_one_to_four_kibibyte_cells_need_one_write() {
+        for length in [257, 1024, 2048, 4096] {
+            let mut output = Counting::default();
+            write_plain_cells(&mut output, &"A".repeat(length), false).unwrap();
+            assert_eq!(output.calls, 1, "length={length}");
+            assert_eq!(output.bytes.len(), length + 9);
+            assert!(output.bytes.starts_with(b"<td>"));
+            assert!(output.bytes.ends_with(b"</td>"));
+        }
+        let mut output = Counting::default();
+        let unicode = "é".repeat(2048);
+        write_plain_cells(&mut output, &unicode, true).unwrap();
+        assert_eq!(output.calls, 1);
+        assert_eq!(&output.bytes[4..output.bytes.len()-5], unicode.as_bytes());
+    }
+
+    #[test]
+    fn long_cells_and_special_html_characters_keep_escaping() {
+        let mut output = Vec::new();
+        let input = format!("{}<&", "x".repeat(4096));
+        write_plain_cells(&mut output, &input, false).unwrap();
+        assert_eq!(output, format!("<td>{}&lt;&amp;</td>", "x".repeat(4096)).as_bytes());
+        let mut output = Vec::new();
+        write_plain_cells(&mut output, &"z".repeat(4097), false).unwrap();
+        assert_eq!(output.len(), 4097 + 9);
     }
 }
