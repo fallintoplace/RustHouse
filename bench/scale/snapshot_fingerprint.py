@@ -12,13 +12,15 @@ from pathlib import Path
 
 
 def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
-                expected_sha256=None):
+                expected_sha256=None, max_total_bytes=None):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected an offline snapshot directory")
     if (type(max_files) is not int or type(block_size) is not int
             or max_files < 1 or not 4096 <= block_size <= 16 * 1024 * 1024):
         raise ValueError("invalid max_files or block_size")
+    if max_total_bytes is not None and (type(max_total_bytes) is not int or max_total_bytes < 1):
+        raise ValueError("max_total_bytes must be a positive integer")
     if expected_sha256 is not None and (
             not isinstance(expected_sha256, str)
             or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
@@ -40,6 +42,12 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
             before = path.lstat()
             if not stat.S_ISREG(before.st_mode):
                 raise ValueError("snapshot contains a nonregular file")
+            count += 1
+            if count > max_files:
+                raise ValueError("snapshot exceeds max_files")
+            total_bytes += before.st_size
+            if max_total_bytes is not None and total_bytes > max_total_bytes:
+                raise ValueError("snapshot exceeds max_total_bytes")
             digest = hashlib.sha256()
             flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
             fd = os.open(path, flags)
@@ -63,10 +71,6 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
             aggregate.update(str(before.st_size).encode("ascii"))
             aggregate.update(b"\0")
             aggregate.update(digest.digest())
-            count += 1
-            total_bytes += before.st_size
-            if count > max_files:
-                raise ValueError("snapshot exceeds max_files")
     if count == 0:
         raise ValueError("snapshot has no files")
     actual = aggregate.hexdigest()
@@ -84,6 +88,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--max-files", type=int, default=1_000_000)
+    parser.add_argument("--max-total-bytes", type=int)
     parser.add_argument("--block-size-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--expected-sha256")
     parser.add_argument("--output", type=Path)
@@ -91,7 +96,8 @@ def main(argv=None):
     try:
         report = fingerprint(args.part, max_files=args.max_files,
                              block_size=args.block_size_bytes,
-                             expected_sha256=args.expected_sha256)
+                             expected_sha256=args.expected_sha256,
+                             max_total_bytes=args.max_total_bytes)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
