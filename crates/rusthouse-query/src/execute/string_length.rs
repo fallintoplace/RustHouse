@@ -34,7 +34,22 @@ const MAX_DISTINCT_LENGTHS: usize = 100_000;
 
 fn append_length_line(buffer: &mut Vec<u8>, length: Option<usize>) -> std::io::Result<()> {
     match length {
-        Some(length) => writeln!(buffer, "{length}")?,
+        Some(mut length) => {
+            // LENGTH is one integer per selected row. Encode decimal digits
+            // straight into the reused output batch without fmt machinery.
+            let mut digits = [0u8; 20]; // 64-bit usize::MAX has 20 digits.
+            let mut start = digits.len();
+            loop {
+                start -= 1;
+                digits[start] = b'0' + (length % 10) as u8;
+                length /= 10;
+                if length == 0 {
+                    break;
+                }
+            }
+            buffer.extend_from_slice(&digits[start..]);
+            buffer.push(b'\n');
+        }
         None => buffer.extend_from_slice(b"\\N\n"),
     }
     Ok(())
@@ -194,6 +209,18 @@ mod tests {
         }
         assert_eq!(String::from_utf8(bytes).unwrap(),
             format!("0\n\\N\n17\n{}\n", usize::MAX));
+    }
+
+    #[test]
+    fn decimal_length_output_keeps_power_of_ten_boundaries() {
+        let mut output = Vec::new();
+        for value in [0, 1, 9, 10, 99, 100, 999, 1000, usize::MAX] {
+            append_length_line(&mut output, Some(value)).unwrap();
+        }
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            format!("0\n1\n9\n10\n99\n100\n999\n1000\n{}\n", usize::MAX)
+        );
     }
 
     #[test]
