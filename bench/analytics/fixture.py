@@ -26,13 +26,17 @@ INSERT_HITS_SQL = "INSERT INTO hits VALUES (" + ",".join("?" for _ in FIELDS) + 
 def records(count, seed):
     rng = random.Random(seed)
     start = date(2013, 7, 1)
+    dates = tuple((start + timedelta(days=day)).isoformat() for day in range(31))
+    phrases = tuple(f"term-{value}" for value in range(97))
+    models = tuple(f"model-{value}" for value in range(8))
+    user_id_bound = max(2, count // 3)
     for index in range(count):
         engine = rng.randrange(0, 5)
         yield (
             engine, rng.choice((320, 768, 1024, 1440, 1920)),
-            rng.randrange(1, max(2, count // 3)), f"term-{rng.randrange(0, 97)}",
-            (start + timedelta(days=rng.randrange(31))).isoformat(),
-            rng.randrange(0, 10), f"model-{rng.randrange(0, 8)}",
+            rng.randrange(1, user_id_bound), phrases[rng.randrange(0, 97)],
+            dates[rng.randrange(31)],
+            rng.randrange(0, 10), models[rng.randrange(0, 8)],
         )
 
 
