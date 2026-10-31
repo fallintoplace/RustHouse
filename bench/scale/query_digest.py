@@ -54,7 +54,7 @@ def _has_unquoted_separator(sql):
             if depth:
                 return True
             continue
-        elif char in ("'", '"', "\`"):
+        elif char in ("'", '"', "`"):
             quote = char
         elif char == ";":
             return True
