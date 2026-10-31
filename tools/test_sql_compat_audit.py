@@ -40,6 +40,20 @@ class AuditTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "changed while opening"):
                     read_queries(corpus)
 
+    def test_audit_detects_same_inode_rewrite_between_preflight_and_open(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            corpus = Path(root) / "queries.sql"
+            corpus.write_text("SELECT 1\n")
+            original_open = os.open
+            def rewrite(path, flags):
+                corpus.write_text("SELECT 2\n")
+                return original_open(path, flags)
+            with patch("sql_compat_audit.os.open", side_effect=rewrite):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    read_queries(corpus)
+
     def test_audit_file_fails_early_on_large_input(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "queries.sql"
