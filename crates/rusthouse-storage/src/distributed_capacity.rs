@@ -202,6 +202,20 @@ impl Capacity {
             ..self
         })
     }
+
+    /// Apply a verified batch of object deletions as one capacity transition.
+    /// Invalid original states, oversized batches and arithmetic overflows are
+    /// rejected before returning a new accounting state.
+    pub fn reclaim_used_many(self, object_sizes: &[u64]) -> Result<Self, &'static str> {
+        if object_sizes.len() > MAX_RESERVATION_OBJECTS {
+            return Err("replica object batch exceeds limit");
+        }
+        self.available()?;
+        let reclaimed = object_sizes.iter().try_fold(0u64, |total, &bytes| {
+            total.checked_add(bytes).ok_or("replica batch size overflow")
+        })?;
+        self.reclaim_used(reclaimed)
+    }
 }
 
 #[cfg(test)]
@@ -313,5 +327,43 @@ mod atomic_batch_capacity_tests {
         assert!(state.commit_many(&vec![0; 65_537]).is_err());
         assert!(state.release_many(&vec![0; 65_537]).is_err());
         assert_eq!(state.commit_many(&[]).unwrap(), state);
+    }
+}
+
+#[cfg(test)]
+mod atomic_committed_reclaim_tests {
+    use super::*;
+
+    #[test]
+    fn batch_deletions_preserve_reservations_and_capacity_invariants() {
+        for total in 0..=20u64 {
+            for used in 0..=total {
+                for reserved in 0..=total - used {
+                    let capacity = Capacity { total, used, reserved };
+                    for first in 0..=used {
+                        let second = used - first;
+                        let expected = capacity.reclaim_used(first).unwrap()
+                            .reclaim_used(second).unwrap();
+                        let batched = capacity.reclaim_used_many(&[first, second]).unwrap();
+                        assert_eq!(batched, expected);
+                        assert_eq!(batched.reserved, reserved);
+                        assert_eq!(batched.available().unwrap(), total - reserved);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn detects_overflow_unaccounted_deletion_and_bad_state() {
+        let state = Capacity { total: 100, used: 50, reserved: 20 };
+        assert_eq!(state.reclaim_used_many(&[20, 10]).unwrap(),
+            Capacity { total: 100, used: 20, reserved: 20 });
+        assert!(state.reclaim_used_many(&[30, 21]).is_err());
+        assert!(state.reclaim_used_many(&[u64::MAX, 1]).is_err());
+        assert!(state.reclaim_used_many(&vec![0; 65_537]).is_err());
+        assert_eq!(state.reclaim_used_many(&[]).unwrap(), state);
+        assert!(Capacity { total: 1, used: 2, reserved: 0 }
+            .reclaim_used_many(&[]).is_err());
     }
 }
