@@ -379,10 +379,23 @@ fn parse_readable_size_bytes(input: &str) -> Option<i64> {
     i64::try_from(rounded).ok()
 }
 
+// Equal prefixes and suffixes cannot contribute to Levenshtein distance.
+// Remove them before enforcing the quadratic work budget. Long values with a
+// small changed region remain cheap without weakening the worst-case bound.
+fn trim_common_edges<'a, T: Eq>(left: &'a [T], right: &'a [T]) -> (&'a [T], &'a [T]) {
+    let prefix = left.iter().zip(right.iter()).take_while(|(a, b)| a == b).count();
+    let left = &left[prefix..];
+    let right = &right[prefix..];
+    let suffix = left.iter().rev().zip(right.iter().rev())
+        .take_while(|(a, b)| a == b).count();
+    (&left[..left.len() - suffix], &right[..right.len() - suffix])
+}
+
 fn bounded_edit_distance<T: Eq>(left: &[T], right: &[T]) -> Result<i64, ParseError> {
     if left == right {
         return Ok(0);
     }
+    let (left, right) = trim_common_edges(left, right);
     if left.is_empty() {
         return i64::try_from(right.len())
             .map_err(|_| ParseError("editDistance exceeds Int64".into()));
@@ -420,6 +433,7 @@ fn bounded_utf8_edit_distance(left: &str, right: &str) -> Result<i64, ParseError
     }
     let left: Vec<char> = left.chars().collect();
     let right: Vec<char> = right.chars().collect();
+    let (left, right) = trim_common_edges(&left, &right);
     if left.is_empty() {
         return Ok(right.len() as i64);
     }
@@ -5145,5 +5159,49 @@ mod mac_oui_parser_reuse_tests {
             );
         }
         assert!(parse_select("SELECT MACStringToOUI('AA:BB:CC:DD:EE:FF', 1)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod common_affix_edit_distance_tests {
+    use super::*;
+
+    #[test]
+    fn long_common_prefix_and_suffix_do_not_exhaust_the_work_budget() {
+        let prefix = "a".repeat(65_536);
+        let suffix = "z".repeat(65_536);
+        let left = format!("{prefix}X{suffix}");
+        let right = format!("{prefix}Y{suffix}");
+        assert_eq!(bounded_edit_distance(left.as_bytes(), right.as_bytes()).unwrap(), 1);
+        assert_eq!(bounded_edit_distance(right.as_bytes(), left.as_bytes()).unwrap(), 1);
+
+        let prefix = "🚀".repeat(8192);
+        let suffix = "é".repeat(8192);
+        let left = format!("{prefix}猫{suffix}");
+        let right = format!("{prefix}犬{suffix}");
+        assert_eq!(bounded_utf8_edit_distance(&left, &right).unwrap(), 1);
+    }
+
+    #[test]
+    fn common_edge_trimming_preserves_insertions_and_deletions() {
+        for (left, right, distance) in [
+            ("abcdef", "abcXdef", 1),
+            ("abcXdef", "abcdef", 1),
+            ("kitten", "sitting", 3),
+            ("", "three", 5),
+            ("foobarbaz", "foobaz", 3),
+            ("aaaa", "aaa", 1),
+        ] {
+            assert_eq!(bounded_edit_distance(left.as_bytes(), right.as_bytes()).unwrap(), distance);
+            assert_eq!(bounded_utf8_edit_distance(left, right).unwrap(), distance);
+        }
+    }
+
+    #[test]
+    fn completely_different_large_strings_keep_the_work_limit() {
+        let left = "x".repeat(2048);
+        let right = "y".repeat(2048);
+        assert!(bounded_edit_distance(left.as_bytes(), right.as_bytes()).is_err());
+        assert!(bounded_utf8_edit_distance(&left, &right).is_err());
     }
 }
