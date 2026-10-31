@@ -1,5 +1,10 @@
 use super::*;
 
+const RESERVED_ALIAS_KEYWORDS: &[&str] = &[
+    "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "USING", "WHERE",
+    "GROUP", "ORDER", "LIMIT", "OFFSET", "ANY", "ALL",
+];
+
 fn qualified_relation(parser: &mut Parser) -> Result<String, ParseError> {
     let relation = parser.word()?;
     if !parser.take(Token::Dot) {
@@ -33,11 +38,7 @@ pub(super) fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseErr
     match parser.tokens.get(parser.index) {
         Some(Token::QuotedWord(_)) => parser.word(),
         Some(Token::Word(word))
-            if ![
-                "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "USING", "WHERE",
-                "GROUP", "ORDER", "LIMIT", "OFFSET", "ANY", "ALL",
-            ]
-            .iter()
+            if !RESERVED_ALIAS_KEYWORDS.iter()
             .any(|keyword| word.eq_ignore_ascii_case(keyword)) =>
         {
             parser.word()
