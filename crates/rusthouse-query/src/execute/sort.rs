@@ -132,6 +132,14 @@ fn merge_runs(
     directions: &Arc<[bool]>,
     mut output: impl FnMut(&SortedRow) -> Result<bool, ExecutionError>,
 ) -> Result<(), ExecutionError> {
+    // The common one-run case is already ordered and needs no heap.
+    if let [path] = inputs {
+        let mut source = BufReader::with_capacity(64 * 1024, File::open(path)?);
+        while let Some(row) = read_sorted_row(&mut source, descending, directions)? {
+            if !output(&row)? { break; }
+        }
+        return Ok(());
+    }
     let mut streams = inputs.iter().map(File::open)
         .map(|source| source.map(|file| BufReader::with_capacity(64 * 1024, file)))
         .collect::<Result<Vec<_>, _>>()?;
@@ -141,15 +149,94 @@ fn merge_runs(
             heap.push(Reverse((row, index)));
         }
     }
-    while let Some(Reverse((row, index))) = heap.pop() {
-        if !output(&row)? { break; }
-        if let Some(next) = read_sorted_row(&mut streams[index], descending, directions)? {
-            heap.push(Reverse((next, index)));
+    // Replace the winning heap root in place. A pop followed by a push
+    // sifts the heap twice for every row in an external ORDER BY merge.
+    while let Some(mut top) = heap.peek_mut() {
+        let Reverse((row, index)) = &mut *top;
+        if !output(row)? { break; }
+        if let Some(next) = read_sorted_row(&mut streams[*index], descending, directions)? {
+            *row = next;
+        } else {
+            std::collections::binary_heap::PeekMut::pop(top);
         }
     }
     Ok(())
 }
 
+
+#[cfg(test)]
+mod merge_root_replacement_tests {
+    use super::*;
+
+    #[test]
+    fn replaces_heap_root_without_changing_global_stable_order() {
+        for descending in [false, true] {
+            let directions = Arc::<[bool]>::from(Vec::<bool>::new());
+            let scratch = SortScratch::new().unwrap();
+            let mut paths = Vec::new();
+            let mut expected = Vec::new();
+            for (shard, mut keys) in [
+                vec![0u128, 4, 4, 9],
+                vec![0, 2, 4, 7],
+                vec![1, 2, 4, 8],
+                vec![],
+            ].into_iter().enumerate() {
+                if descending { keys.reverse(); }
+                let path = scratch.0.join(format!("merge-{shard}.bin"));
+                let mut writer = BufWriter::new(File::create(&path).unwrap());
+                for (position, key) in keys.into_iter().enumerate() {
+                    let sequence = shard * 100 + position;
+                    let row = SortedRow {
+                        key: Number::Unsigned(key),
+                        extra_keys: Vec::new(),
+                        values: vec![Number::Unsigned(key)],
+                        sequence, descending,
+                        extra_descending: directions.clone(),
+                    };
+                    write_sorted_row(&mut writer, &row).unwrap();
+                    expected.push((key, sequence));
+                }
+                writer.flush().unwrap();
+                paths.push(path);
+            }
+            expected.sort_by(|left, right| {
+                (if descending { right.0.cmp(&left.0) } else { left.0.cmp(&right.0) })
+                    .then_with(|| left.1.cmp(&right.1))
+            });
+            let mut actual = Vec::new();
+            merge_runs(&paths, descending, &directions, |row| {
+                let Number::Unsigned(key) = row.key else { panic!("unexpected key") };
+                actual.push((key, row.sequence));
+                Ok(true)
+            }).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn a_single_run_stops_before_decoding_unused_truncated_rows() {
+        let directions = Arc::<[bool]>::from(Vec::<bool>::new());
+        let scratch = SortScratch::new().unwrap();
+        let path = scratch.0.join("one.bin");
+        let mut writer = File::create(&path).unwrap();
+        let row = SortedRow {
+            key: Number::Unsigned(7),
+            extra_keys: Vec::new(),
+            values: vec![Number::Unsigned(7)],
+            sequence: 0, descending: false,
+            extra_descending: directions.clone(),
+        };
+        write_sorted_row(&mut writer, &row).unwrap();
+        writer.write_all(&[1, 2, 3]).unwrap();
+        drop(writer);
+        let mut seen = 0;
+        merge_runs(&[path], false, &directions, |_| {
+            seen += 1;
+            Ok(false)
+        }).unwrap();
+        assert_eq!(seen, 1);
+    }
+}
 
 struct SortedRow {
     key: Number,
