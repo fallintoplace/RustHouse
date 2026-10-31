@@ -11,6 +11,7 @@ fn chained_inner_count_scans_last_bucket_without_retaining_join_product() {
         "rusthouse-chain-count-{}-{}",
         std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
     ));
+    fs::create_dir_all(&root).unwrap();
     let schema = [Column { name: "id".into(), data_type: "UInt64".into() }];
     let mut paths = Vec::new();
     for (name, n) in [("a", 2), ("b", 2), ("c", 5)] {
@@ -51,6 +52,7 @@ fn chained_count_reuses_string_key_probe_and_keeps_duplicate_multiplicities() {
         "rusthouse-string-chain-count-{}-{}",
         std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
     ));
+    fs::create_dir_all(&root).unwrap();
     let schema = [Column { name: "id".into(), data_type: "String".into() }];
     let mut paths = Vec::new();
     for (name, ids) in [
