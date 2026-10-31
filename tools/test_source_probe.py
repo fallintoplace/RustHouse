@@ -14,6 +14,21 @@ class SourceProbeTests(unittest.TestCase):
         read.assert_not_called()
 
     @patch("source_probe.read_json")
+    def test_invalid_probe_options_fail_before_network(self, read):
+        origin = "http://127.0.0.1:8123"
+        cases = (
+            ("source", {"expected_source": "unknown"}),
+            ("expected_version", {"expected_source": "generated", "expected_version": ""}),
+            ("invalid table", {"expected_source": "database", "table": "x; DROP"}),
+            ("requires database", {"expected_source": "part", "table": "events"}),
+            ("requires --table", {"expected_source": "database", "verify_scan": True}),
+        )
+        for message, options in cases:
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
+                probe(origin, **options)
+        read.assert_not_called()
+
+    @patch("source_probe.read_json")
     def test_detects_source_mismatch(self, read):
         read.return_value = {"source": "generated", "read_only": True}
         with self.assertRaises(ValueError):
