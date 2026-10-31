@@ -74,6 +74,32 @@ class BackupTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "regular files"):
                 preflight(source, Path(root) / "backup")
 
+    def test_regular_copy_detects_source_replacement_during_open(self):
+        import os
+        from offline_backup import copy_regular_file
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "data.bin"
+            source.write_bytes(b"trusted")
+            replacement = root / "replacement.bin"
+            replacement.write_bytes(b"other")
+            target = root / "copied.bin"
+            real_open = os.open
+
+            def replace_file(path, flags, *args):
+                if Path(path) == source:
+                    source.unlink()
+                    replacement.rename(source)
+                return real_open(path, flags, *args)
+
+            with patch("offline_backup.os.open", side_effect=replace_file):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    copy_regular_file(source, target)
+            self.assertFalse(target.exists())
+            self.assertEqual(copy_regular_file(source, target), target)
+            self.assertEqual(target.read_bytes(), b"other")
+
     def test_failed_doctor_spools_and_bounds_stderr(self):
         with tempfile.TemporaryDirectory() as root:
             base = Path(root)

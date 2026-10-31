@@ -71,6 +71,34 @@ def validate_tree(root, max_bytes=None, max_entries=1_000_000):
     return total_bytes
 
 
+def copy_regular_file(source, destination):
+    """Copy only the exact regular inode checked before opening."""
+    source = Path(source)
+    before = source.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("backup source file is not regular")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(source, flags)
+    with os.fdopen(fd, "rb") as reader:
+        opened = os.fstat(reader.fileno())
+        if (not stat.S_ISREG(opened.st_mode) or
+                (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("backup source changed while opening")
+        with open(destination, "xb") as writer:
+            shutil.copyfileobj(reader, writer, 1024 * 1024)
+        finished = os.fstat(reader.fileno())
+        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
+                finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
+            raise ValueError("backup source changed during copying")
+    after = source.lstat()
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+            before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size,
+                                   after.st_mtime_ns, after.st_ctime_ns):
+        raise ValueError("backup source changed during copying")
+    shutil.copystat(source, destination, follow_symlinks=False)
+    return destination
+
+
 def sync_copied_tree(root):
     """Persist copied files and directory entries before backup publication."""
     for directory, _subdirs, files in os.walk(root, topdown=False, followlinks=False, onerror=raise_walk_error):
@@ -131,7 +159,7 @@ def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeo
     )
     with refuse_live_database(source):
         # Preserve all generations, including hidden files and lock metadata.
-        shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
+        shutil.copytree(source, stage, symlinks=True, copy_function=copy_regular_file)
         # The copied tree may have changed after source preflight.
         validate_tree(stage, max_bytes, max_entries)
         try:
@@ -174,7 +202,7 @@ def main():
                         max_bytes=args.max_backup_bytes,
                         doctor_timeout=args.doctor_timeout,
                         max_entries=args.max_backup_entries)
-    except (ValueError, OSError, RuntimeError) as exc:
+    except (ValueError, OSError, RuntimeError, shutil.Error) as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1
     print("Verified cold backup: " + str(target))
