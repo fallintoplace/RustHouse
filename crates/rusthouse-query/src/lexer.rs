@@ -71,15 +71,31 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                // Track nested block comments without recursively parsing
+                // user-supplied SQL or stopping at an inner close marker.
                 index += 2;
-                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
-                {
-                    index += 1;
+                let mut depth = 1usize;
+                while depth != 0 {
+                    if index + 1 >= bytes.len() {
+                        return Err(ParseError("unterminated block comment".into()));
+                    }
+                    match (bytes[index], bytes[index + 1]) {
+                        (b'/', b'*') => {
+                            depth += 1;
+                            if depth > 32 {
+                                return Err(ParseError(
+                                    "SQL block comment nesting exceeds 32 levels".into(),
+                                ));
+                            }
+                            index += 2;
+                        }
+                        (b'*', b'/') => {
+                            depth -= 1;
+                            index += 2;
+                        }
+                        _ => index += 1,
+                    }
                 }
-                if index + 1 >= bytes.len() {
-                    return Err(ParseError("unterminated block comment".into()));
-                }
-                index += 2;
                 continue;
             }
             b'*' | b'/' | b'%' | b'+' | b',' | b'.' | b'(' | b')' | b';' => {
@@ -457,5 +473,23 @@ mod line_comment_scanning_tests {
         let plain = tokenize("SELECT 1 FROM numbers(2)").unwrap();
         assert_eq!(tokenize("SELECT 1 -- ignored\nFROM numbers(2)").unwrap(), plain);
         assert_eq!(tokenize("SELECT 1 # ignored\r\nFROM numbers(2)").unwrap(), plain);
+    }
+}
+
+#[cfg(test)]
+mod nested_block_comment_tests {
+    use super::*;
+
+    #[test]
+    fn nested_comments_are_ignored_without_misreading_the_outer_close() {
+        assert_eq!(
+            tokenize("SELECT /* outer /* inner */ still outer */ 42").unwrap(),
+            vec![Token::Word("SELECT".into()), Token::Number("42".into())]
+        );
+        assert!(tokenize("SELECT /* outer /* inner */").is_err());
+        let accepted = format!("/*{}*/SELECT 1", "/*".repeat(31) + &"*/".repeat(31));
+        assert!(tokenize(&accepted).is_ok());
+        let oversized = format!("{}{}", "/*".repeat(33), "*/".repeat(33));
+        assert!(tokenize(&oversized).is_err());
     }
 }
