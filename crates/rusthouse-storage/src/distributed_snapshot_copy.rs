@@ -180,6 +180,9 @@ fn copy_snapshot_parts(
     use std::sync::OnceLock;
     use std::sync::atomic::AtomicUsize;
     let cursor = AtomicUsize::new(0);
+    // No need to start additional expensive part copies once an earlier
+    // worker has observed a nonrecoverable immutable-source failure.
+    let first_failure = AtomicUsize::new(usize::MAX);
     let slots: Vec<OnceLock<Result<SnapshotCopy, PartError>>> =
         (0..parts.len()).map(|_| OnceLock::new()).collect();
     std::thread::scope(|scope| -> Result<(), PartError> {
@@ -187,13 +190,17 @@ fn copy_snapshot_parts(
         for _ in 0..workers {
             let cursor = &cursor;
             let slots = &slots;
+            let first_failure = &first_failure;
             let handle = std::thread::Builder::new()
                 .spawn_scoped(scope, move || loop {
                     let index = cursor.fetch_add(1, Ordering::Relaxed);
-                    if index >= parts.len() {
+                    if index >= parts.len() || index > first_failure.load(Ordering::Acquire) {
                         break;
                     }
                     let result = copy_snapshot_part(&parts[index], staging, max_files, max_bytes);
+                    if result.is_err() {
+                        first_failure.fetch_min(index, Ordering::AcqRel);
+                    }
                     assert!(slots[index].set(result).is_ok(), "part copied more than once");
                 })
                 .map_err(|error| {
@@ -208,7 +215,13 @@ fn copy_snapshot_parts(
         }
         Ok(())
     })?;
-    for slot in slots {
+    // Monotonic claiming guarantees every index up to the earliest failure
+    // was processed. Later slots may intentionally remain uninitialized.
+    let first_failure = first_failure.load(Ordering::Acquire);
+    for (index, slot) in slots.into_iter().enumerate() {
+        if index > first_failure {
+            break;
+        }
         let part = slot.into_inner()
             .ok_or_else(|| PartError::InvalidScan("missing snapshot copy result".into()))??;
         combine_copy_report(&mut report, part, max_files, max_bytes)?;
@@ -693,6 +706,38 @@ mod atomic_publish_tests {
         publish_snapshot_no_replace(&staging, &destination).unwrap();
         assert!(!staging.exists());
         assert!(destination.is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod parallel_copy_failfast_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn failed_source_part_does_not_publish_a_partial_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-cancellation-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source");
+        fs::create_dir(&source).unwrap();
+        for index in 0..20 {
+            let part = source.join(format!("all_{index}_{index}_0"));
+            write_wide_part(
+                &part,
+                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[vec![Some(index.to_string())]],
+            ).unwrap();
+        }
+        let parts = query_parts(&source).unwrap();
+        let staging = root.join("staging");
+        fs::create_dir(&staging).unwrap();
+        fs::write(source.join("all_1_1_0/count.txt"), "9999\n").unwrap();
+        assert!(copy_snapshot_parts(&parts, &staging, 10_000, u64::MAX).is_err());
+        assert!(!root.join("published").exists());
         fs::remove_dir_all(root).unwrap();
     }
 }
