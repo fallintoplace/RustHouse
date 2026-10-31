@@ -57,7 +57,7 @@ class GeneratedQueryTests(unittest.TestCase):
                 case = next(case for case in runner.make_cases(rows)
                             if case.name == "series-top-desc")
                 last = ((rows - 1) // 21) * 21
-                expected = "".join(f"{last - 21 * index}\\n" for index in range(20))
+                expected = "".join(f"{last - 21 * index}\n" for index in range(20))
                 self.assertEqual(case.expected, expected.encode("ascii"))
 
     def test_query_selection_has_stable_ids_and_rejects_invalid_ranges(self):
