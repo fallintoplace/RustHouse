@@ -245,11 +245,9 @@ pub(super) fn execute_part<W: Write>(
             min, max, count: rows,
         }]);
     }
-    if !(max - min).is_finite() {
-        return Err(ExecutionError::Invalid(
-            "histogram numeric range exceeds Float64 precision".into(),
-        ));
-    }
+    // Both BucketLayout and to_bins use overflow-safe interpolation for
+    // finite extrema whose difference is not representable as Float64.
+    // The inputs themselves were validated by finite_number_as_f64.
     let mut counts = vec![0u64; *bins];
     let layout = BucketLayout::new(min, max, *bins);
     visit_part(part, &metadata, &names, &indices, column, &conditions, no_filters, |value| {
@@ -509,5 +507,38 @@ mod finite_extreme_histogram_tests {
         assert_eq!(bins.last().unwrap().max, max);
         assert!(bins.iter().all(|bin| bin.min.is_finite() && bin.max.is_finite()));
         assert!(bins.windows(2).all(|pair| pair[0].max <= pair[1].min));
+    }
+}
+
+#[cfg(test)]
+mod wide_range_execution_tests {
+    use super::*;
+    use rusthouse_storage::{Column, write_wide_part};
+
+    #[test]
+    fn physical_histogram_accepts_finite_extrema_with_infinite_difference() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-histogram-extrema-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let columns = [Column { name: "value".into(), data_type: "Float64".into() }];
+        let rows = [
+            vec![Some("-1e308".into())],
+            vec![Some("-5e307".into())],
+            vec![Some("0".into())],
+            vec![Some("5e307".into())],
+            vec![Some("1e308".into())],
+        ];
+        write_wide_part(&root, &columns, &rows).unwrap();
+        let query = crate::parse_select("SELECT histogram(4)(value) FROM part").unwrap();
+        let mut output = Vec::new();
+        execute_part(&query, &root, &mut output).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("histogram(4)(value)"));
+        assert!(rendered.ends_with(")]\n"));
+        assert!(!rendered.to_ascii_lowercase().contains("inf"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
