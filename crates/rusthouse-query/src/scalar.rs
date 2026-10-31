@@ -735,35 +735,71 @@ fn parse_triangular(parser: &mut Parser, depth: usize) -> Result<i64, ParseError
     i64::try_from(value * (value + 1) / 2).map_err(|_| overflow())
 }
 
-/// Test primality with bounded 6k +/- 1 trial division.
+/// Binary exponentiation with exact UInt128 intermediates for 64-bit residues.
+fn pow_mod(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
+    let mut result = 1u64;
+    while exponent > 0 {
+        if exponent & 1 != 0 {
+            result = ((u128::from(result) * u128::from(base))
+                % u128::from(modulus)) as u64;
+        }
+        exponent >>= 1;
+        if exponent != 0 {
+            base = ((u128::from(base) * u128::from(base))
+                % u128::from(modulus)) as u64;
+        }
+    }
+    result
+}
+
+/// Deterministic Miller-Rabin for every UInt64 value, using seven proven
+/// witnesses. The scalar SQL argument is limited to signed Int64.
+fn prime_u64(value: u64) -> bool {
+    const SMALL_PRIMES: [u64; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
+    if value < 2 {
+        return false;
+    }
+    for prime in SMALL_PRIMES {
+        if value == prime {
+            return true;
+        }
+        if value % prime == 0 {
+            return false;
+        }
+    }
+    let shifts = (value - 1).trailing_zeros();
+    let odd = (value - 1) >> shifts;
+    for base in [2u64, 325, 9375, 28178, 450775, 9780504, 1795265022] {
+        let residue = base % value;
+        if residue == 0 {
+            continue;
+        }
+        let mut power = pow_mod(residue, odd, value);
+        if power == 1 || power == value - 1 {
+            continue;
+        }
+        let mut witnessed_nontrivial_root = false;
+        for _ in 1..shifts {
+            power = ((u128::from(power) * u128::from(power))
+                % u128::from(value)) as u64;
+            if power == value - 1 {
+                witnessed_nontrivial_root = true;
+                break;
+            }
+        }
+        if !witnessed_nontrivial_root {
+            return false;
+        }
+    }
+    true
+}
+
+/// Test primality for any signed Int64 constant without trial-division spikes.
 fn parse_is_prime(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "IS_PRIME requires '('")?;
     let value = expression(parser, depth + 1)?;
     require_token(parser, Token::RParen, "IS_PRIME requires ')'")?;
-    if value < 2 {
-        return Ok(0);
-    }
-    if value > 1_000_000_000_000 {
-        return Err(ParseError(
-            "IS_PRIME supports values up to 1000000000000".into(),
-        ));
-    }
-    let value = u64::try_from(value)
-        .map_err(|_| ParseError("IS_PRIME requires a nonnegative integer".into()))?;
-    if value % 2 == 0 {
-        return Ok(i64::from(value == 2));
-    }
-    if value % 3 == 0 {
-        return Ok(i64::from(value == 3));
-    }
-    let mut divisor = 5_u64;
-    while divisor <= value / divisor {
-        if value % divisor == 0 || value % (divisor + 2) == 0 {
-            return Ok(0);
-        }
-        divisor += 6;
-    }
-    Ok(1)
+    Ok(i64::from(prime_u64(value.try_into().unwrap_or(0))))
 }
 
 /// Compute n choose k exactly for n up to 66.
@@ -1419,6 +1455,37 @@ mod clickhouse_tobool_int64_tests {
         }
         for sql in ["SELECT toBool()", "SELECT toBool(1, 2)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod deterministic_primality_tests {
+    use super::*;
+    use crate::{parse_select, Projection};
+
+    #[test]
+    fn agrees_with_trial_division_on_small_integer_domain() {
+        for value in 0..=20_000u64 {
+            let reference = value >= 2 && !(2..=value / 2)
+                .take_while(|&divisor| divisor <= value / divisor)
+                .any(|divisor| value % divisor == 0);
+            assert_eq!(prime_u64(value), reference, "{value}");
+        }
+    }
+
+    #[test]
+    fn distinguishes_large_primes_and_strong_pseudoprimes() {
+        for (value, expected) in [
+            (-1i64, 0), (0, 0), (1, 0), (2, 1), (3, 1), (4, 0),
+            (1_000_000_000_039, 1),
+            (341_550_071_728_321, 0),
+            (2_305_843_009_213_693_951, 1),
+            (9_223_372_036_854_775_783, 1),
+            (i64::MAX, 0),
+        ] {
+            let sql = format!("SELECT is_prime({value})");
+            assert_eq!(parse_select(&sql).unwrap().projection, Projection::Literal(expected), "{sql}");
         }
     }
 }

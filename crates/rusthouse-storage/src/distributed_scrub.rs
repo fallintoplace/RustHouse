@@ -151,8 +151,11 @@ pub fn scrub_snapshot_with_byte_limit(
 /// Verify one frozen wide part without scanning unrelated snapshot parts.
 /// The caller must stop writers and provide a trusted local part path.
 pub fn scrub_part(part: &Path) -> Result<ScrubReport, PartError> {
-    let physical = verify_wide_part(part)?;
+    // Check immutable stored bytes before decoding compressed blocks or
+    // interpreting their metadata. Corrupt replicas fail fast and do not
+    // feed known-bad input into the more expensive structural verifier.
     let hashes = verify_part_file_hashes(part)?;
+    let physical = verify_wide_part(part)?;
     let mut report = ScrubReport::default();
     report.record_part(hashes.files, hashes.total_bytes, physical.blocks)?;
     Ok(report)
@@ -362,6 +365,39 @@ mod fail_fast_scrub_tests {
         let error = scrub_snapshot(&root, 32).unwrap_err();
         // A corrupted part must never produce a successful full scrub.
         assert!(!format!("{error:?}").is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod hash_first_scrub_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn corrupted_stream_fails_hash_validation_before_decoding() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-scrub-hash-first-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let part = root.join("all_0_0_0");
+        write_wide_part(
+            &part,
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("7".into())], vec![Some("8".into())]],
+        ).unwrap();
+        assert!(scrub_part(&part).is_ok());
+        let stream = part.join("id.bin");
+        let mut content = fs::read(&stream).unwrap();
+        assert!(!content.is_empty());
+        content[0] ^= 0xff;
+        fs::write(&stream, content).unwrap();
+        assert!(matches!(
+            scrub_part(&part),
+            Err(PartError::InvalidChecksums { .. }),
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 }
