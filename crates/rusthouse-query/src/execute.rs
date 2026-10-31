@@ -165,7 +165,25 @@ fn remember_distinct(
     values: &[Number],
 ) -> Result<bool, ExecutionError> {
     let key: Vec<NumberKey> = values.iter().copied().map(NumberKey::from).collect();
-    // Duplicate rows do not allocate persistent state, even at the limits.
+    let added = values.len()
+        .checked_mul(std::mem::size_of::<NumberKey>())
+        .and_then(|size| size.checked_add(std::mem::size_of::<Vec<NumberKey>>() + 32))
+        .ok_or_else(|| ExecutionError::Invalid("DISTINCT retained size overflow".into()))?;
+    let next = retained_bytes.checked_add(added)
+        .filter(|&bytes| bytes <= MAX_DISTINCT_KEY_BYTES);
+    // Common case: insertion has room. Hash only once, using insert() to
+    // determine novelty, rather than contains() followed by insert().
+    if seen.len() < MAX_DISTINCT_ROWS {
+        if let Some(next) = next {
+            if seen.insert(key) {
+                *retained_bytes = next;
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+    }
+    // At either budget edge duplicates still succeed, but genuinely new
+    // keys must be rejected before modifying the state.
     if seen.contains(&key) {
         return Ok(false);
     }
@@ -174,18 +192,9 @@ fn remember_distinct(
             "DISTINCT supports at most 200000 unique rows".into(),
         ));
     }
-    let added = values.len()
-        .checked_mul(std::mem::size_of::<NumberKey>())
-        .and_then(|size| size.checked_add(std::mem::size_of::<Vec<NumberKey>>() + 32))
-        .ok_or_else(|| ExecutionError::Invalid("DISTINCT retained size overflow".into()))?;
-    let next = retained_bytes.checked_add(added)
-        .filter(|&bytes| bytes <= MAX_DISTINCT_KEY_BYTES)
-        .ok_or_else(|| ExecutionError::Invalid(
-            "DISTINCT exceeds 64 MiB retained key budget".into()
-        ))?;
-    seen.insert(key);
-    *retained_bytes = next;
-    Ok(true)
+    Err(ExecutionError::Invalid(
+        "DISTINCT exceeds 64 MiB retained key budget".into(),
+    ))
 }
 
 fn write_header<W: Write>(
@@ -2523,5 +2532,58 @@ mod exact_grouped_median_text_tests {
             state.update(higher).unwrap();
             assert_eq!(state.render(), expected);
         }
+    }
+}
+
+
+#[cfg(test)]
+mod distinct_single_hash_budget_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_rows_do_not_charge_the_memory_budget() {
+        let mut seen = HashSet::new();
+        let mut retained_bytes = 0usize;
+        for value in 0..10_000u128 {
+            assert!(remember_distinct(
+                &mut seen, &mut retained_bytes, &[Number::Unsigned(value)]
+            ).unwrap());
+        }
+        let original = retained_bytes;
+        for value in (0..10_000u128).rev() {
+            assert!(!remember_distinct(
+                &mut seen, &mut retained_bytes, &[Number::Unsigned(value)]
+            ).unwrap());
+        }
+        assert_eq!(retained_bytes, original);
+        assert_eq!(seen.len(), 10_000);
+    }
+
+    #[test]
+    fn new_keys_are_rejected_but_duplicates_survive_at_budget_edge() {
+        let mut seen = HashSet::new();
+        seen.insert(vec![NumberKey::Unsigned(7)]);
+        let mut charged = MAX_DISTINCT_KEY_BYTES;
+        assert!(!remember_distinct(&mut seen, &mut charged,
+            &[Number::Unsigned(7)]).unwrap());
+        assert!(remember_distinct(&mut seen, &mut charged,
+            &[Number::Unsigned(8)]).is_err());
+        assert_eq!(seen.len(), 1);
+        assert_eq!(charged, MAX_DISTINCT_KEY_BYTES);
+    }
+
+    #[test]
+    fn the_row_cap_does_not_reject_existing_rows() {
+        let mut seen = HashSet::new();
+        for value in 0..MAX_DISTINCT_ROWS as u128 {
+            seen.insert(vec![NumberKey::Unsigned(value)]);
+        }
+        let mut bytes = 0usize;
+        assert!(!remember_distinct(&mut seen, &mut bytes,
+            &[Number::Unsigned(1)]).unwrap());
+        assert!(remember_distinct(&mut seen, &mut bytes,
+            &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]).is_err());
+        assert_eq!(seen.len(), MAX_DISTINCT_ROWS);
+        assert_eq!(bytes, 0);
     }
 }
