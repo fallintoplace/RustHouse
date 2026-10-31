@@ -33,7 +33,12 @@ fn probe_peers_with(peers: &[Peer], ping: impl Fn(Peer) -> bool + Sync) -> Vec<b
                     if index >= peers.len() {
                         break;
                     }
-                    results[index].store(ping(peers[index]), Ordering::Relaxed);
+                    // A single failed probe must not abandon remaining peers.
+                    // The old per-peer join path treated panics as unhealthy.
+                    let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        ping(peers[index])
+                    })).unwrap_or(false);
+                    results[index].store(healthy, Ordering::Relaxed);
                 }
             }));
         }
@@ -218,5 +223,30 @@ mod dynamic_health_workers_tests {
         assert_eq!(health, peers.iter().map(|peer| peer.address().port() % 2 == 0)
             .collect::<Vec<_>>());
         assert!(probe_peers_with(&[], |_| true).is_empty());
+    }
+}
+
+
+#[cfg(test)]
+mod worker_panic_isolation_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn failing_one_peer_still_probes_every_other_peer() {
+        let peers = (0..24usize)
+            .map(|index| Peer::parse(&format!("127.0.0.1:{}", 49000 + index)).unwrap())
+            .collect::<Vec<_>>();
+        let calls = AtomicUsize::new(0);
+        let results = probe_peers_with(&peers, |peer| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            if peer.address().port() == 49003 {
+                panic!("simulated failed probe");
+            }
+            true
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), peers.len());
+        assert_eq!(results.iter().filter(|&&healthy| !healthy).count(), 1);
+        assert!(!results[3]);
     }
 }
