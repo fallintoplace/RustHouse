@@ -74,7 +74,7 @@ def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact
         if not compare_reference(output, reference, comparison):
             raise ValueError(f"{engine} result differs from the reference TSV")
         if (type(seconds) not in (int, float) or seconds <= 0
-                or (isinstance(seconds, int) and seconds.bit_length() > 1024)
+                or (isinstance(seconds, int) and seconds.bit_length() >= 1024)
                 or not math.isfinite(seconds)):
             raise ValueError("timings must be finite and positive")
         return seconds
