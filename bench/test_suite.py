@@ -44,8 +44,14 @@ class BenchmarkEntryPointTests(unittest.TestCase):
                 subprocess.CompletedProcess([], 0, "workload,median_ms\ncount,1.2\n", ""),
                 subprocess.CompletedProcess([], 17, "partial output\n", "failed query\n"),
             ]
+            def complete(_command, **kwargs):
+                response = responses.pop(0)
+                kwargs["stdout"].write(response.stdout.encode())
+                kwargs["stderr"].write(response.stderr.encode())
+                return response
+
             with mock.patch.object(runner, "optional_version", return_value="pinned"), \
-                 mock.patch.object(runner.subprocess, "run", side_effect=responses) as process:
+                 mock.patch.object(runner.subprocess, "run", side_effect=complete) as process:
                 result = runner.benchmark(
                     ("parts-sorted", "grouped"), 65536, 7, 413, Path(directory)
                 )
@@ -57,6 +63,27 @@ class BenchmarkEntryPointTests(unittest.TestCase):
             self.assertEqual(report["results"][1]["exit_code"], 17)
             self.assertIn("count,1.2", (Path(directory) / "parts-sorted.csv").read_text())
             self.assertEqual((Path(directory) / "grouped.stderr.txt").read_text(), "failed query\n")
+
+    def test_suite_output_is_spooled_and_limited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def noisy(_command, **kwargs):
+                self.assertNotIn("capture_output", kwargs)
+                self.assertNotIn("text", kwargs)
+                kwargs["stdout"].write(b"x" * 65)
+                kwargs["stderr"].write(b"normal diagnostic")
+                return subprocess.CompletedProcess([], 0)
+
+            with mock.patch.object(runner, "MAX_SUITE_OUTPUT_BYTES", 64), \
+                 mock.patch.object(runner, "optional_version", return_value=None), \
+                 mock.patch.object(runner.subprocess, "run", side_effect=noisy):
+                self.assertEqual(runner.benchmark(
+                    ("queries",), 65536, 7, 413, directory
+                ), 1)
+            root = Path(directory)
+            self.assertEqual((root / "queries.txt").read_bytes(), b"x" * 64)
+            self.assertIn("exceeds 4 MiB", (root / "queries.stderr.txt").read_text())
+            manifest = json.loads((root / "manifest.json").read_text())
+            self.assertEqual(manifest["results"][0]["status"], "failed")
 
     def test_suite_timeout_records_a_failure_in_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
