@@ -10,7 +10,7 @@ class WorkloadStrictJsonTests(unittest.TestCase):
     def test_rejects_nonstandard_numeric_tokens(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "workload.json"
-            for value in ("NaN", "Infinity", "-Infinity"):
+            for value in ("NaN", "Infinity", "-Infinity", "1e10000", "-1e10000"):
                 with self.subTest(value=value):
                     source.write_text(
                         '{"name":"small","queries":[{"name":"q1","sql":"SELECT 1"}],"extra":'
