@@ -44,8 +44,10 @@ def verify(binary, part, rows, *, timeout=600, execute=None,
                 import resource
 
                 def cap_spooled_output():
-                    _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
                     limit = 1024 * 1024 + 1
+                    if soft != resource.RLIM_INFINITY:
+                        limit = min(limit, soft)
                     if hard != resource.RLIM_INFINITY:
                         limit = min(limit, hard)
                     resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
