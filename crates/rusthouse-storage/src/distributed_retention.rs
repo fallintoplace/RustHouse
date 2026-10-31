@@ -224,37 +224,99 @@ pub fn retention_candidates_with_byte_budget(
     pinned: &[u64],
     byte_budget: u64,
 ) -> Result<(Vec<u64>, u64), &'static str> {
-    if generations.is_empty() || generations.len() > 16_384 {
+    if generations.is_empty() || generations.len() > MAX_RETENTION_GENERATIONS {
         return Err("invalid generation retention inventory");
     }
-    let ids = generations.iter().map(|&(generation, _)| generation).collect::<Vec<_>>();
-    let eligible = retention_candidates_with_pins(&ids, active, keep_latest, pinned)?;
-    if eligible.is_empty() {
-        return Ok((Vec::new(), 0));
+    if keep_latest == 0 || active == 0 || pinned.len() > MAX_RETENTION_GENERATIONS {
+        return Err("invalid generation retention configuration");
     }
-    if let [generation] = eligible.as_slice() {
-        // A single eligible generation only needs a lookup, not a full size index.
-        let bytes = generations.iter()
-            .find(|(id, _)| id == generation)
-            .expect("validated generation exists in retention inventory")
-            .1;
-        return if bytes <= byte_budget {
-            Ok((vec![*generation], bytes))
+    // Sort generation sizes together. The previous path sorted an ID copy,
+    // materialized eligible IDs, and then built a second hash table just
+    // to look up each candidate's byte cost.
+    let mut ordered = generations.to_vec();
+    ordered.sort_unstable_by_key(|&(generation, _)| generation);
+    if ordered[0].0 == 0
+        || ordered.windows(2).any(|pair| pair[0].0 == pair[1].0)
+        || ordered.binary_search_by_key(&active, |&(id, _)| id).is_err()
+    {
+        return Err("duplicate, missing, or invalid generation");
+    }
+    // Validate every pin even if no generation can be reclaimed.
+    let mut pin_set = (pinned.len() > 4)
+        .then(|| std::collections::HashSet::with_capacity(pinned.len()));
+    for (index, &generation) in pinned.iter().enumerate() {
+        let duplicate = if let Some(seen) = pin_set.as_mut() {
+            !seen.insert(generation)
         } else {
-            Ok((Vec::new(), 0))
+            pinned[..index].contains(&generation)
         };
+        if duplicate || ordered.binary_search_by_key(&generation, |&(id, _)| id).is_err() {
+            return Err("duplicate or unknown pinned generation");
+        }
     }
-    let sizes = generations.iter().copied().collect::<std::collections::HashMap<_, _>>();
+    let candidates = ordered.len().saturating_sub(keep_latest);
     let mut selected = Vec::new();
     let mut total = 0u64;
-    for generation in eligible {
-        let bytes = sizes[&generation];
+    for &(generation, bytes) in ordered.iter().take(candidates) {
+        if generation == active
+            || (pin_set.as_ref().map_or_else(
+                || pinned.contains(&generation),
+                |pins| pins.contains(&generation),
+            ))
+        {
+            continue;
+        }
         if bytes <= byte_budget - total {
             total += bytes;
             selected.push(generation);
         }
     }
     Ok((selected, total))
+}
+
+#[cfg(test)]
+mod fused_budgeted_retention_tests {
+    use super::*;
+
+    #[test]
+    fn fused_budget_matches_existing_pinned_eligibility_at_scale() {
+        let generations = (1..=4096u64).rev()
+            .map(|id| (id, (id * 31) % 997))
+            .collect::<Vec<_>>();
+        let ids = generations.iter().map(|&(id, _)| id).collect::<Vec<_>>();
+        let pinned = [3, 11, 121, 2048, 4095];
+        let eligible = retention_candidates_with_pins(&ids, 4096, 100, &pinned).unwrap();
+        let mut sizes = generations.clone();
+        sizes.sort_unstable_by_key(|&(id, _)| id);
+        for budget in [0u64, 10, 512, 20_000, u64::MAX] {
+            let mut used = 0u64;
+            let mut expected = Vec::new();
+            for &id in &eligible {
+                let bytes = sizes.binary_search_by_key(&id, |&(generation, _)| generation)
+                    .map(|index| sizes[index].1).unwrap();
+                if bytes <= budget - used {
+                    used += bytes;
+                    expected.push(id);
+                }
+            }
+            assert_eq!(
+                retention_candidates_with_byte_budget(
+                    &generations, 4096, 100, &pinned, budget,
+                ).unwrap(),
+                (expected, used),
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_pins_even_when_every_generation_is_kept() {
+        assert!(retention_candidates_with_byte_budget(
+            &[(1, 4), (2, 8)], 2, 2, &[1, 1], 100,
+        ).is_err());
+        assert!(retention_candidates_with_byte_budget(
+            &[(1, 4), (2, 8)], 2, 2, &[3], 100,
+        ).is_err());
+    }
 }
 
 #[cfg(test)]
