@@ -67,6 +67,8 @@ def compatible_columns(left, right, *, allow_additive=False):
 
 
 def fetch(base, table, timeout=5):
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
+        raise ValueError("invalid table name")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 300:
         raise ValueError("timeout must be finite and in (0, 300] seconds")
     base = validate_url(base)
@@ -87,8 +89,6 @@ def main():
     parser.add_argument("--timeout", type=float, default=5)
     args = parser.parse_args()
     try:
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", args.table):
-            raise ValueError("invalid table name")
         left = fetch(validate_url(args.left), args.table, timeout=args.timeout)
         right = fetch(validate_url(args.right), args.table, timeout=args.timeout)
         if not compatible_columns(left, right, allow_additive=args.allow_additive):

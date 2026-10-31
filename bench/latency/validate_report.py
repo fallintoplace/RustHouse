@@ -9,12 +9,24 @@ from pathlib import Path
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 
 
+def unique_object_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate SQL latency report key: {key}")
+        result[key] = value
+    return result
+
+
 def load_report(path):
-    with Path(path).open("rb") as source:
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("SQL latency report must be a regular non-symlinked file")
+    with path.open("rb") as source:
         payload = source.read(MAX_REPORT_BYTES + 1)
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("SQL latency report exceeds 2 MiB")
-    return json.loads(payload.decode("utf-8"))
+    return json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object_pairs)
 
 
 from bench.common import latency_summary

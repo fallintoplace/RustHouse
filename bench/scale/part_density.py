@@ -7,7 +7,6 @@ import argparse
 from bisect import bisect_left
 import json
 import math
-import statistics
 from pathlib import Path
 
 
@@ -34,7 +33,8 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
             raise ValueError(f"invalid oversized count.txt in {child.name}")
         raw = payload.decode("ascii")
         digits = raw.removesuffix("\n").removesuffix("\r")
-        if not digits or not digits.isascii() or not digits.isdecimal():
+        if (not digits or not digits.isascii() or not digits.isdecimal()
+                or (len(digits) > 1 and digits.startswith("0"))):
             raise ValueError(f"invalid count.txt in {child.name}")
         count = int(digits)
         if count <= 0 or count > (1 << 64) - 1:
@@ -62,7 +62,8 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
     median_denominator = 1 if len(rows) % 2 else 2
     return {"workload": "part-density-report", "part_count": len(rows),
             "rows": total, "min_rows_per_part": rows[0],
-            "median_rows_per_part": statistics.median(rows),
+            "median_rows_per_part": (median_numerator if median_denominator == 1
+                                     else median_numerator / 2),
             "median_rows_per_part_exact_numerator": median_numerator,
             "median_rows_per_part_exact_denominator": median_denominator,
             "max_rows_per_part": rows[-1],

@@ -36,6 +36,15 @@ class AnalyticsRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "non-symlinked"):
                 runner.load_queries(alias)
 
+    def test_empty_or_comment_only_sql_workload_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "queries.sql"
+            for content in ("", "  \n -- comment\n\n"):
+                with self.subTest(content=content):
+                    path.write_text(content)
+                    with self.assertRaisesRegex(ValueError, "no SELECT queries"):
+                        runner.load_queries(path)
+
     def test_pinned_queries_are_all_present(self):
         queries = runner.load_queries(ROOT / "queries.sql")
         self.assertEqual(len(queries), 43)

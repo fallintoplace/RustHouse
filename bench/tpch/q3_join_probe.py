@@ -6,6 +6,7 @@ Full-size Q3 additionally needs a three-table join and aggregation.
 """
 import argparse
 import csv
+from heapq import nsmallest
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -42,13 +43,15 @@ def oracle(orders_path, customers_path):
         if value in customers:
             raise ValueError("duplicate customer primary key")
         customers.add(value)
-    matched = []
-    for row in read_table(orders_path, "o_orderkey"):
-        key = int(row["o_custkey"])
-        if key in customers:
-            matched.append((int(row["o_orderkey"]), key))
-    matched.sort()
-    return "".join(f"{order}\t{customer}\n" for order, customer in matched[:20]).encode()
+    def matches():
+        for row in read_table(orders_path, "o_orderkey"):
+            key = int(row["o_custkey"])
+            if key in customers:
+                yield int(row["o_orderkey"]), key
+
+    return "".join(
+        f"{order}\t{customer}\n" for order, customer in nsmallest(20, matches())
+    ).encode()
 
 
 def benchmark(binary, database, orders, customers, runs=3, warmups=1, timeout=120, execute=None):

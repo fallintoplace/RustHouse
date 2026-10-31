@@ -241,16 +241,10 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
             parser.operator()?
         };
         if prefix_not {
-            operator = match operator {
-                Operator::Eq => Operator::Ne,
-                Operator::Ne => Operator::Eq,
-                Operator::Lt => Operator::Ge,
-                Operator::Le => Operator::Gt,
-                Operator::Gt => Operator::Le,
-                Operator::Ge => Operator::Lt,
-                Operator::Modulo(_) | Operator::ModuloNe(_) =>
-                    return Err(ParseError("NOT modulo predicates are unsupported".into())),
-            };
+            if matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
+                return Err(ParseError("NOT modulo predicates are unsupported".into()));
+            }
+            operator = inverse_comparison_operator(&operator);
         }
         predicates.push(Predicate::Comparison {
             column, operator, value: parser.literal()?,
@@ -299,6 +293,14 @@ mod tests {
         let mut output = Vec::new();
         execute(&query, None, &mut output).unwrap();
         String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn prefix_not_comparisons_share_the_parenthesized_inversion() {
+        assert_eq!(
+            run("SELECT number FROM numbers(5) WHERE NOT number > 3 ORDER BY number"),
+            "number\n0\n1\n2\n3\n"
+        );
     }
 
     #[test]

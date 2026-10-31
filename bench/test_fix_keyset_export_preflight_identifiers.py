@@ -17,6 +17,12 @@ class KeysetIdentifierPreflightTests(unittest.TestCase):
                                column=column, execute=lambda sql: self.fail("SQL executed"))
                     self.assertEqual(list(folder.iterdir()), [])
 
+    def test_rejects_oversized_or_nontext_identifiers(self):
+        for table, column in (("a" * 129, "id"), ("events", "a" * 129),
+                              (None, "id")):
+            with self.subTest(table=table, column=column), self.assertRaisesRegex(ValueError, "identifiers"):
+                page_sql(table, column, 0, 1)
+
     def test_valid_identifiers_preserve_page_sql(self):
         self.assertIn("FROM events_2026", page_sql("events_2026", "id", 10, 2))
 

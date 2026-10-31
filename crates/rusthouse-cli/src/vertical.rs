@@ -108,7 +108,7 @@ impl<W: Write> VerticalWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        if self.headers.is_none() {
+        let Some(headers) = self.headers.as_ref() else {
             self.headers = Some(
                 self.line
                     .split(|&byte| byte == b'\t')
@@ -117,9 +117,7 @@ impl<W: Write> VerticalWriter<W> {
             );
             self.line.clear();
             return Ok(());
-        }
-
-        let headers = self.headers.as_ref().unwrap();
+        };
         if let Err(error) = validate_row_width(headers, &self.line) {
             self.line.clear();
             return Err(error);

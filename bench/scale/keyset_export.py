@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 def identifier(value):
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", value):
         raise ValueError("table and column names must be simple SQL identifiers")
     return value
 

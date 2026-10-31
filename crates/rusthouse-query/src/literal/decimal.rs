@@ -27,13 +27,15 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     {
         return Err(ParseError("invalid decimal constant".into()));
     }
-    let digits = format!("{whole}{fraction}");
-    let signed = if negative {
-        format!("-{digits}").parse::<i128>()
-    } else {
-        digits.parse::<i128>()
+    let mut digits = String::with_capacity(whole.len() + fraction.len() + usize::from(negative));
+    if negative {
+        digits.push('-');
     }
-    .map_err(|_| ParseError("decimal constant exceeds Int128".into()))?;
+    digits.push_str(whole);
+    digits.push_str(fraction);
+    let signed = digits
+        .parse::<i128>()
+        .map_err(|_| ParseError("decimal constant exceeds Int128".into()))?;
     // Zero remains exact under any finite decimal exponent. Avoid rejecting
     // it merely because a redundant power of ten exceeds Int128.
     if signed == 0 {

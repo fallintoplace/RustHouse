@@ -10,13 +10,12 @@ import json
 import math
 import os
 import platform
-import statistics
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from .physical_scan import invoke, p90
+from .physical_scan import invoke
 
 
 COUNT_SQL = "SELECT region, count(*) FROM events GROUP BY region ORDER BY region"
@@ -105,10 +104,14 @@ def scan(binary, directory, sql, golden, *, runs, warmups, timeout):
             )
         if attempt >= warmups:
             samples.append(seconds)
+    ordered = sorted(samples)
+    middle = len(ordered) // 2
+    median = (ordered[middle] if len(ordered) % 2
+              else (ordered[middle - 1] + ordered[middle]) / 2)
     return {
         "verified": True,
-        "median_seconds": statistics.median(samples),
-        "p90_seconds": p90(samples),
+        "median_seconds": median,
+        "p90_seconds": ordered[math.ceil(0.9 * len(ordered)) - 1],
         "samples_seconds": samples,
     }
 

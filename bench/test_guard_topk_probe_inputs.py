@@ -16,6 +16,12 @@ class TopKInputsTests(unittest.TestCase):
                 probe("rusthouse", ".", 8, limit=limit,
                       execute=lambda *a, **kw: self.fail("query executed"))
 
+    def test_rejects_oversized_and_nontext_column_names(self):
+        for column in ("a" * 129, 42):
+            with self.subTest(column=column), self.assertRaisesRegex(ValueError, "identifier"):
+                probe("rusthouse", ".", 8, column=column,
+                      execute=lambda *a, **kw: self.fail("query executed"))
+
     def test_rejects_invalid_timeouts_before_query(self):
         for timeout in (math.nan, math.inf, -math.inf, True, 0, -1):
             with self.subTest(timeout=timeout), self.assertRaisesRegex(ValueError, "timeout"):

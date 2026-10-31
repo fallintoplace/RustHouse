@@ -30,7 +30,6 @@ pub(super) fn read_sql_input(
             "{label} exceeds the {MAX_SQL_BYTES}-byte statement limit"
         ));
     }
-    let mut bytes = bytes;
     if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
         // Preserve the original input size limit, but reuse its allocation.
         bytes.drain(..3);

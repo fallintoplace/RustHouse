@@ -18,8 +18,17 @@ MAX_SHARDS = 16_384
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
+def unique_manifest_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate shard manifest JSON field: {key}")
+        result[key] = value
+    return result
+
+
 def copy_sql(table, path):
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
         raise ValueError("table must be an unquoted SQL identifier")
     escaped = str(Path(path).resolve()).replace("'", "''")
     return f"COPY {table} FROM '{escaped}' WITH (FORMAT TSV)"
@@ -85,6 +94,8 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         raise ValueError("timeout must be finite and positive")
     if type(dry_run) is not bool:
         raise ValueError("dry_run must be a boolean")
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
+        raise ValueError("table must be an unquoted SQL identifier")
     manifest_path = Path(source_dir) / "manifest.json"
     before = manifest_path.lstat()
     if not stat.S_ISREG(before.st_mode):
@@ -106,7 +117,9 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         raise ValueError("shard manifest changed during reading")
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("shard manifest exceeds 8 MiB")
-    manifest = json.loads(payload)
+    manifest = json.loads(payload, object_pairs_hook=unique_manifest_fields)
+    if not isinstance(manifest, dict):
+        raise ValueError("shard manifest must be a JSON object")
     if manifest.get("format") != "rusthouse-tsv-shards-v1" or manifest.get("header") is not False:
         raise ValueError("expected a headerless rusthouse-tsv-shards-v1 manifest")
     shards = manifest.get("shards")
@@ -121,17 +134,18 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         if not isinstance(entry, dict):
             raise ValueError("invalid shard manifest entry")
         name = entry.get("path")
+        if not isinstance(name, str) or not re.fullmatch(r"part-[0-9]{6}\.tsv", name):
+            raise ValueError("invalid shard path")
         if name in seen_names:
             raise ValueError(f"duplicate shard path: {name}")
         seen_names.add(name)
-        if not isinstance(name, str) or not re.fullmatch(r"part-[0-9]{6}\.tsv", name):
-            raise ValueError("invalid shard path")
         path = Path(source_dir) / name
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"missing or unsafe shard: {name}")
         verify_shard(path, entry)
         paths.append(path)
-    if manifest.get("total_rows") != sum(e["rows"] for e in shards):
+    total_rows = sum(e["rows"] for e in shards)
+    if manifest.get("total_rows") != total_rows:
         raise ValueError("total rows mismatch in shard manifest")
     if manifest.get("total_bytes") != sum(e["bytes"] for e in shards):
         raise ValueError("total bytes mismatch in shard manifest")
@@ -139,7 +153,7 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         return {"workload": "tsv-shard-copy", "atomic_batch": False,
                 "dry_run": True, "preflight_verified": True,
                 "shards_loaded": 0, "shards_planned": len(paths),
-                "rows_reported_by_manifest": sum(s["rows"] for s in shards),
+                "rows_reported_by_manifest": total_rows,
                 "results": []}
     completed = []
     for entry, path in zip(shards, paths):

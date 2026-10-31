@@ -68,7 +68,9 @@ def plan(database, keep=3):
             if int(entry.name[1:]) > (1 << 64) - 1:
                 raise ValueError("generation number exceeds u64")
             labels.append(entry.name)
-        if len(labels) > MAX_GENERATIONS or active not in labels:
+            if len(labels) > MAX_GENERATIONS:
+                raise ValueError(f"invalid generation inventory: {versions}")
+        if active not in labels:
             raise ValueError(f"invalid generation inventory: {versions}")
         labels.sort(key=lambda label: int(label[1:]))
         retained = set(labels[-keep:])

@@ -51,6 +51,15 @@ class GeneratedQueryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.make_cases(1_000_001)
 
+    def test_series_top_desc_reference_uses_exact_last_twenty_values(self):
+        for rows in (512, 1000, 1_000_000):
+            with self.subTest(rows=rows):
+                case = next(case for case in runner.make_cases(rows)
+                            if case.name == "series-top-desc")
+                last = ((rows - 1) // 21) * 21
+                expected = "".join(f"{last - 21 * index}\n" for index in range(20))
+                self.assertEqual(case.expected, expected.encode("ascii"))
+
     def test_make_cases_rejects_noninteger_row_counts(self):
         for rows in (True, 512.5, "512", None):
             with self.subTest(rows=rows), self.assertRaisesRegex(ValueError, "--rows"):

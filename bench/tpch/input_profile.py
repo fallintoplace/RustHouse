@@ -30,15 +30,16 @@ def profile_table(path, table, *, max_record_bytes=MAX_RECORD_BYTES):
     digest = hashlib.sha256()
     rows, bytes_read, q6_matches = 0, 0, 0
     min_shipdate = max_shipdate = None
+    column_names = names(table)
     with Path(path).open("rb") as stream:
         header = stream.readline(max_record_bytes + 1)
         if len(header) > max_record_bytes or not header.endswith(b"\n"):
             raise ValueError(f"{table}: oversized or truncated TSV header")
         digest.update(header)
         bytes_read += len(header)
-        if header.decode("utf-8").rstrip("\r\n").split("\t") != names(table):
+        if header.decode("utf-8").rstrip("\r\n").split("\t") != column_names:
             raise ValueError(f"{table}: TSV header mismatch")
-        indexes = {name: position for position, name in enumerate(names(table))}
+        indexes = {name: position for position, name in enumerate(column_names)}
         while True:
             line = stream.readline(max_record_bytes + 1)
             if not line:

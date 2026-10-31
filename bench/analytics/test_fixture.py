@@ -41,6 +41,29 @@ class ClickBenchFixtureTests(unittest.TestCase):
 
 
 class SyntheticFixtureParameterTests(unittest.TestCase):
+    def test_rejects_symlinked_outputs_before_writing(self):
+        for name in ("hits.tsv", "hits.sqlite", "create.sql", "copy.sql"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                directory = Path(root) / "fixture"
+                directory.mkdir()
+                protected = Path(root) / "protected.txt"
+                protected.write_text("keep me")
+                (directory / name).symlink_to(protected)
+                with self.assertRaisesRegex(ValueError, "symlinked fixture output"):
+                    generate(directory, rows=5)
+                self.assertEqual(protected.read_text(), "keep me")
+                self.assertFalse((directory / ("hits.sqlite" if name != "hits.sqlite" else "hits.tsv")).exists())
+
+    def test_rejects_symlinked_fixture_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "real"
+            directory.mkdir()
+            link = Path(root) / "alias"
+            link.symlink_to(directory, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "fixture root"):
+                generate(link, rows=5)
+            self.assertEqual(list(directory.iterdir()), [])
+
     def test_invalid_row_and_seed_controls_fail_without_creating_files(self):
         with tempfile.TemporaryDirectory() as root:
             folder = Path(root) / "fixture"

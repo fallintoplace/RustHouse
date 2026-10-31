@@ -60,7 +60,6 @@ pub(super) fn valid_name(name: &str) -> bool {
         && name
             .split('/')
             .all(valid_path_segment)
-        && !name.starts_with('/')
 }
 
 pub(super) fn invalid(path: &Path, reason: &'static str) -> PartError {

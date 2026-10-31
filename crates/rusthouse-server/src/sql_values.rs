@@ -53,6 +53,9 @@ fn encode_values_row(line: &[u8], columns: usize, values: &mut Vec<u8>) -> io::R
     let mut count = 0;
     values.push(b'(');
     for field in line.split(|&byte| byte == b'\t') {
+        if count >= columns {
+            return Err(invalid("SQL VALUES row width differs from the header"));
+        }
         if count > 0 {
             values.extend_from_slice(b", ");
         }
@@ -276,5 +279,18 @@ mod tests {
         assert!(render(b"id\nbad\\xg0\n").is_err());
         assert!(render(b"a\tb\n1\n").is_err());
         assert!(render(b"id\n1").is_err());
+    }
+}
+
+#[cfg(test)]
+mod overwide_values_tests {
+    use super::*;
+
+    #[test]
+    fn extra_fields_do_not_write_partial_values_output() {
+        let mut values = Vec::new();
+        assert!(encode_values_row(b"first\tsecond", 1, &mut values).is_err());
+        encode_values_row(b"first", 1, &mut values).unwrap();
+        assert_eq!(values, b"('first')");
     }
 }

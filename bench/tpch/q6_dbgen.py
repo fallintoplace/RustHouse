@@ -35,11 +35,11 @@ def expected_revenue_details(path):
         for row in reader:
             if None in row or any(row[name] is None for name in fields):
                 raise ValueError("Q6 input contains missing or extra data fields")
-            if ("1994-01-01" <= row["l_shipdate"] < "1995-01-01"
-                    and 500 <= int(row["l_discount"]) <= 700
-                    and int(row["l_quantity"]) < 2400):
-                total += int(row["l_extendedprice"]) * int(row["l_discount"])
-                matched += 1
+            if "1994-01-01" <= row["l_shipdate"] < "1995-01-01":
+                discount = int(row["l_discount"])
+                if 500 <= discount <= 700 and int(row["l_quantity"]) < 2400:
+                    total += int(row["l_extendedprice"]) * discount
+                    matched += 1
     return total, matched
 
 

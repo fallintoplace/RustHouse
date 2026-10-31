@@ -16,6 +16,13 @@ class SparseProbeInputsTests(unittest.TestCase):
                 probe("rusthouse", "db", "events", 0, 10, count=1,
                       timeout=timeout, execute=lambda sql: self.fail("query executed"))
 
+    def test_rejects_oversized_and_nontext_sql_identifiers(self):
+        for table, column in (("x" * 129, "id"), ("events", "x" * 129),
+                              (None, "id")):
+            with self.subTest(table=table, column=column), self.assertRaisesRegex(ValueError, "identifier"):
+                probe("rusthouse", "db", table, 0, 10, count=1, column=column,
+                      execute=lambda sql: self.fail("query executed"))
+
     def test_preserves_deterministic_sampling(self):
         self.assertEqual(choose_ids(0, 10, 3, 42), choose_ids(0, 10, 3, 42))
         self.assertEqual(len(choose_ids(0, 10, 3, 42)), 3)

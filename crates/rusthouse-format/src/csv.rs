@@ -62,12 +62,11 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
     // Short quote-free fields dominate tabular output. Emit both quotes and
     // the payload in a single write without a heap allocation.
     let has_quote = field.contains(&b'"');
-    if field.len() <= 2048 && !has_quote {
-        // Medium-size quote-free strings are frequent in JSON and text
-        // exports. Keep quote + payload + quote in one buffered write.
-        return write_buffered_unescaped_field::<2050, _>(output, field);
-    }
     if !has_quote {
+        if field.len() <= 2048 {
+            // Keep the most common unescaped fields in one buffered write.
+            return write_buffered_unescaped_field::<2050, _>(output, field);
+        }
         if field.len() <= 4094 {
             return write_buffered_unescaped_field::<4096, _>(output, field);
         }
@@ -345,6 +344,24 @@ mod eight_kib_csv_field_tests {
             assert_eq!(&output.bytes[1..width + 1], input.as_slice());
             assert_eq!(output.bytes[0], b'"');
             assert_eq!(output.bytes[width + 1], b'"');
+        }
+    }
+}
+
+#[cfg(test)]
+mod quote_free_threshold_tests {
+    use super::*;
+
+    #[test]
+    fn all_unescaped_buffer_boundaries_preserve_csv_quoting() {
+        for width in [2048, 2049, 4094, 4095, 8190, 8191] {
+            let field = vec![b'a'; width];
+            let mut output = Vec::new();
+            write_quoted_csv_field(&mut output, &field).unwrap();
+            assert_eq!(output.len(), width + 2);
+            assert_eq!(output.first(), Some(&b'"'));
+            assert_eq!(output.last(), Some(&b'"'));
+            assert_eq!(&output[1..output.len() - 1], field.as_slice());
         }
     }
 }

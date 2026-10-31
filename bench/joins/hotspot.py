@@ -22,6 +22,10 @@ def fact_id(index, build_rows, hot_percent):
     return 1 + (index % (build_rows - 1))
 
 
+def group_label(key):
+    return f"group-{key % 10}"
+
+
 def write_fixture(directory, probe_rows, build_rows, hot_percent):
     if type(probe_rows) is not int or not 1 <= probe_rows <= 131072:
         raise ValueError("probe rows must be in 1..131072")
@@ -30,18 +34,23 @@ def write_fixture(directory, probe_rows, build_rows, hot_percent):
     if type(hot_percent) is not int or not 0 <= hot_percent <= 100:
         raise ValueError("hot percent must be 0..100")
     directory = Path(directory)
+    if directory.is_symlink():
+        raise ValueError("hotspot fixture root must not be a symlink")
     directory.mkdir(parents=True, exist_ok=True)
+    for name in ("facts.tsv", "dimensions.tsv"):
+        if (directory / name).is_symlink():
+            raise ValueError(f"refusing symlinked hotspot fixture: {name}")
     expected = Counter()
     with (directory / "facts.tsv").open("w", encoding="utf-8") as facts:
         facts.write("id\tamount\n")
         for index in range(probe_rows):
             key = fact_id(index, build_rows, hot_percent)
             facts.write(f"{key}\t{index % 100}\n")
-            expected[(key, f"group-{key % 10}")] += 1
+            expected[(key, group_label(key))] += 1
     with (directory / "dimensions.tsv").open("w", encoding="utf-8") as dimensions:
         dimensions.write("id\tlabel\n")
         for key in range(build_rows):
-            dimensions.write(f"{key}\tgroup-{key % 10}\n")
+            dimensions.write(f"{key}\t{group_label(key)}\n")
     return expected
 
 
