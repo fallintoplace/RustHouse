@@ -136,7 +136,9 @@ impl ResumeMap {
         // Completed transfers have long stretches of full bytes. Check eight
         // bytes together and skip all 64 verified chunks in one iteration.
         // Use little-endian words to preserve chunk index order on all CPUs.
-        let full_words = self.completed.len() / 8;
+        // Count complete logical words, not allocated bytes: a final
+        // 63-bit word contains one padding bit that must not be returned.
+        let full_words = self.chunks / 64;
         let words = self.completed[..full_words * 8]
             .chunks_exact(8).enumerate().flat_map(|(word_index, bytes)| {
                 let mut missing = !u64::from_le_bytes(
