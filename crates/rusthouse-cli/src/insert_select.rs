@@ -17,18 +17,29 @@ impl Drop for Spool {
     }
 }
 
+fn open_insert_spool_candidates(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Result<(Spool, File), String> {
+    for path in paths {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((Spool(path), file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("cannot create INSERT SELECT spool: {error}")),
+        }
+    }
+    Err("cannot create INSERT SELECT spool: no unique temporary filename".into())
+}
+
 fn create_insert_spool(database: &Path) -> Result<(Spool, File), String> {
-    let path = database.join(format!(
-        ".rusthouse-insert-select-{}-{}.tmp",
-        std::process::id(),
-        NEXT_SPOOL.fetch_add(1, Ordering::Relaxed)
-    ));
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|error| format!("cannot create INSERT SELECT spool: {error}"))?;
-    Ok((Spool(path), file))
+    // Stale files from a crashed process or reused PID must not block
+    // subsequent INSERT SELECT queries. Never overwrite an existing spool.
+    open_insert_spool_candidates((0..64).map(|_| {
+        database.join(format!(
+            ".rusthouse-insert-select-{}-{}.tmp",
+            std::process::id(),
+            NEXT_SPOOL.fetch_add(1, Ordering::Relaxed)
+        ))
+    }))
 }
 
 fn decode_field(value: &str) -> Result<Option<String>, String> {
@@ -162,6 +173,30 @@ pub(super) fn run(database: &Path, statement: &InsertSelect) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retries_occupied_spool_names_without_replacing_existing_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-spool-collision-{}-{}",
+            std::process::id(),
+            NEXT_SPOOL.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let occupied = directory.join("occupied.tmp");
+        let available = directory.join("available.tmp");
+        fs::write(&occupied, b"keep-original").unwrap();
+        let (spool, mut file) = open_insert_spool_candidates([
+            occupied.clone(),
+            available.clone(),
+        ]).unwrap();
+        file.write_all(b"new").unwrap();
+        drop(file);
+        assert_eq!(fs::read(&available).unwrap(), b"new");
+        drop(spool);
+        assert_eq!(fs::read(&occupied).unwrap(), b"keep-original");
+        assert!(!available.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn streamed_records_preserve_nulls_escapes_and_line_boundaries() {
