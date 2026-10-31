@@ -16,15 +16,51 @@ pub struct VerticalWriter<W: Write> {
 }
 
 fn write_terminal_safe<W: Write>(output: &mut W, bytes: &[u8]) -> io::Result<()> {
-    let mut start = 0;
-    for (index, &byte) in bytes.iter().enumerate() {
-        if byte.is_ascii_control() {
-            output.write_all(&bytes[start..index])?;
-            write!(output, "\\x{byte:02X}")?;
-            start = index + 1;
+    // Most fields are already terminal-safe. Preserve a single direct write
+    // for those values and only pay for buffering when escaping is needed.
+    if !bytes.iter().any(|byte| byte.is_ascii_control()) {
+        return output.write_all(bytes);
+    }
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut buffer = [0u8; 4096];
+    let mut used = 0;
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        let span = remaining
+            .iter()
+            .position(|byte| byte.is_ascii_control())
+            .unwrap_or(remaining.len());
+        let mut plain = &remaining[..span];
+        while !plain.is_empty() {
+            if used == buffer.len() {
+                output.write_all(&buffer)?;
+                used = 0;
+            }
+            let count = plain.len().min(buffer.len() - used);
+            buffer[used..used + count].copy_from_slice(&plain[..count]);
+            used += count;
+            plain = &plain[count..];
+        }
+        remaining = &remaining[span..];
+        if let Some((&byte, rest)) = remaining.split_first() {
+            if buffer.len() - used < 4 {
+                output.write_all(&buffer[..used])?;
+                used = 0;
+            }
+            buffer[used..used + 4].copy_from_slice(&[
+                b'\\',
+                b'x',
+                HEX[usize::from(byte >> 4)],
+                HEX[usize::from(byte & 0x0f)],
+            ]);
+            used += 4;
+            remaining = rest;
         }
     }
-    output.write_all(&bytes[start..])
+    if used != 0 {
+        output.write_all(&buffer[..used])?;
+    }
+    Ok(())
 }
 
 fn write_vertical_field<W: Write>(output: &mut W, header: &[u8], field: &[u8]) -> io::Result<()> {
@@ -337,5 +373,55 @@ mod decoded_vertical_regressions {
         writer.write_all(b"value\n").unwrap();
         assert!(writer.write_all(b"bad\\q\n").is_err());
         assert!(writer.output.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod batched_terminal_escape_tests {
+    use super::*;
+
+    struct CountWrites {
+        calls: usize,
+        data: Vec<u8>,
+    }
+
+    impl Write for CountWrites {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.data.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn control_heavy_values_use_bounded_writes_and_preserve_all_bytes() {
+        let input = [vec![b'a'; 8_192], vec![0x1b; 8_192], "café".as_bytes().to_vec()].concat();
+        let mut expected = vec![b'a'; 8_192];
+        for _ in 0..8_192 {
+            expected.extend_from_slice(br"\x1B");
+        }
+        expected.extend_from_slice("café".as_bytes());
+        let mut output = CountWrites {
+            calls: 0,
+            data: Vec::new(),
+        };
+        write_terminal_safe(&mut output, &input).unwrap();
+        assert_eq!(output.data, expected);
+        assert!(output.calls <= 12, "writes={}", output.calls);
+    }
+
+    #[test]
+    fn safe_unicode_values_keep_the_single_write_fast_path() {
+        let mut output = CountWrites {
+            calls: 0,
+            data: Vec::new(),
+        };
+        write_terminal_safe(&mut output, "café 漢字".as_bytes()).unwrap();
+        assert_eq!(output.calls, 1);
+        assert_eq!(output.data, "café 漢字".as_bytes());
     }
 }
