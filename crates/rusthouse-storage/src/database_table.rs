@@ -6,6 +6,18 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
+fn same_schema_identity_and_change_time(
+    before: &fs::Metadata,
+    after: &fs::Metadata,
+) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.dev() == after.dev()
+        && before.ino() == after.ino()
+        && before.ctime() == after.ctime()
+        && before.ctime_nsec() == after.ctime_nsec()
+}
+
 /// Resolve only catalog-visible, on-disk tables. Never expose orphaned
 /// data directories or symlinks that the local database would not accept.
 pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, String> {
@@ -35,9 +47,8 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-        if schema_metadata.dev() != opened_schema_metadata.dev() || schema_metadata.ino() != opened_schema_metadata.ino() {
-            return Err(format!("database schema replaced before read for {table}"));
+        if !same_schema_identity_and_change_time(&schema_metadata, &opened_schema_metadata) {
+            return Err(format!("database schema changed before read for {table}"));
         }
     }
     let mut content = Vec::with_capacity(opened_schema_metadata.len() as usize);
@@ -51,6 +62,12 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     if finished_schema_metadata.len() != opened_schema_metadata.len()
         || finished_schema_metadata.modified().map_err(|error| error.to_string())?
             != opened_schema_metadata.modified().map_err(|error| error.to_string())?
+        || cfg!(unix) && {
+            #[cfg(unix)]
+            { !same_schema_identity_and_change_time(&opened_schema_metadata, &finished_schema_metadata) }
+            #[cfg(not(unix))]
+            { false }
+        }
     {
         return Err(format!("database schema changed during read for {table}"));
     }
@@ -61,11 +78,8 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-        if final_path.dev() != schema_metadata.dev()
-            || final_path.ino() != schema_metadata.ino()
-        {
-            return Err(format!("database schema replaced during read for {table}"));
+        if !same_schema_identity_and_change_time(&schema_metadata, &final_path) {
+            return Err(format!("database schema changed during read for {table}"));
         }
     }
     if content.len() > 32 * 1024 {
@@ -182,5 +196,29 @@ mod schema_version_tests {
         assert_eq!(initial.len(), finished.len());
         assert_ne!(initial.modified().unwrap(), finished.modified().unwrap());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod schema_change_time_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn same_size_rewrite_with_restored_mtime_changes_schema_identity() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-ctime-schema-{}-{}", std::process::id(), line!()
+        ));
+        fs::write(&path, b"schema1").unwrap();
+        let before = fs::metadata(&path).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        fs::write(&path, b"schema2").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(before.modified().unwrap())).unwrap();
+        let after = file.metadata().unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        assert!(!same_schema_identity_and_change_time(&before, &after));
+        fs::remove_file(path).unwrap();
     }
 }
