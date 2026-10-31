@@ -125,6 +125,16 @@ class BenchmarkComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "distribution"):
             compare(before, after)
 
+    def test_explicit_unverified_reports_cannot_produce_speedups(self):
+        base = {"reference_checked": False, "results": [result(1, "passed", 2.0)]}
+        next_report = {"reference_checked": False, "results": [result(1, "passed", 1.0)]}
+        with self.assertRaisesRegex(ValueError, "reference_checked"):
+            compare(base, next_report)
+        base["reference_checked"] = None
+        next_report["reference_checked"] = None
+        with self.assertRaisesRegex(ValueError, "reference_checked"):
+            compare(base, next_report)
+
     def test_overflowing_integer_latency_is_not_measurable(self):
         immense = 10 ** 400
         self.assertIsNone(elapsed(result(1, "passed", immense)))

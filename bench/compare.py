@@ -120,6 +120,9 @@ def compare(baseline, candidate, slowdown_threshold_percent=10):
     if not isinstance(baseline, dict) or not isinstance(candidate, dict):
         raise ValueError("baseline and candidate reports must be JSON objects")
     ensure_compatible_reports(baseline, candidate)
+    for name, report in (("baseline", baseline), ("candidate", candidate)):
+        if "reference_checked" in report and report["reference_checked"] is not True:
+            raise ValueError(f"{name} reference_checked must be true when supplied")
     left = index(baseline.get("results"))
     right = index(candidate.get("results"))
     if left.keys() != right.keys():
