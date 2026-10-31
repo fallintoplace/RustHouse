@@ -188,7 +188,10 @@ pub(super) fn unpaged_scan_sql(sql: &str, select: &Select) -> Option<String> {
     let mut expected = select.clone();
     expected.limit = None;
     expected.offset = None;
-    for (index, _) in sql.char_indices() {
+    // Start at the trailing SQL clauses. A long quoted WHERE literal can
+    // contain thousands of fake keywords; reparsing each leftmost prefix
+    // would otherwise perform quadratic work before the real boundary.
+    for (index, _) in sql.char_indices().rev() {
         let suffix = &sql[index..];
         let keyword = ["LIMIT", "OFFSET"].iter().any(|keyword| {
             suffix
@@ -243,7 +246,10 @@ pub(super) fn grouped_count_shard_sql(sql: &str, select: &Select) -> Option<Stri
     if expected == *select {
         return Some(sql.to_owned());
     }
-    for (index, _) in sql.char_indices() {
+    // Start at the trailing SQL clauses. A long quoted WHERE literal can
+    // contain thousands of fake keywords; reparsing each leftmost prefix
+    // would otherwise perform quadratic work before the real boundary.
+    for (index, _) in sql.char_indices().rev() {
         if index == 0 || !sql.as_bytes()[index - 1].is_ascii_whitespace() {
             continue;
         }
@@ -303,3 +309,33 @@ pub(super) fn sorted_scan_sql(sql: &str, select: &Select) -> Option<String> {
 #[cfg(test)]
 #[path = "query_policy/sorted_scan_policy_tests.rs"]
 mod sorted_scan_policy_tests;
+
+
+#[cfg(test)]
+mod reverse_clause_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn quoted_limit_decoys_do_not_require_reparsing_each_prefix() {
+        let payload = " LIMIT ".repeat(500);
+        let bare = format!("SELECT name FROM events WHERE name = '{payload}'");
+        let sql = format!("{bare} LIMIT 2 OFFSET 3");
+        let parsed = parse_select(&sql).unwrap();
+        assert_eq!(unpaged_scan_sql(&sql, &parsed).as_deref(), Some(bare.as_str()));
+        assert_eq!(
+            bounded_scan_sql(&sql, &parsed).as_deref(),
+            Some(format!("{bare} LIMIT 5").as_str()),
+        );
+    }
+
+    #[test]
+    fn grouped_rewrite_ignores_clause_words_in_where_literals() {
+        let payload = " HAVING ORDER LIMIT ".repeat(150);
+        let bare = format!(
+            "SELECT name, COUNT(*) FROM events WHERE name = '{payload}' GROUP BY name"
+        );
+        let sql = format!("{bare} LIMIT 3");
+        let parsed = parse_select(&sql).unwrap();
+        assert_eq!(grouped_count_shard_sql(&sql, &parsed).as_deref(), Some(bare.as_str()));
+    }
+}
