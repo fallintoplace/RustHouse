@@ -6,7 +6,6 @@ cross-engine benchmark claims. Targets are user-supplied, not CI defaults.
 import argparse
 import json
 import math
-import statistics
 from pathlib import Path
 
 from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
@@ -62,8 +61,11 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
                                      or len(samples) != report["runs"]):
                 raise ValueError(f"{query}: timing sample count differs from runs")
         if samples is not None:
-            measured_median = statistics.median(samples)
-            measured_p90 = sorted(samples)[math.ceil(0.9 * len(samples)) - 1]
+            ordered = sorted(samples)
+            middle = len(ordered) // 2
+            measured_median = (ordered[middle] if len(ordered) % 2
+                               else (ordered[middle - 1] + ordered[middle]) / 2)
+            measured_p90 = ordered[math.ceil(0.9 * len(ordered)) - 1]
             if (not math.isclose(median, measured_median, rel_tol=1e-9, abs_tol=0.0)
                     or not math.isclose(p90, measured_p90, rel_tol=1e-9, abs_tol=0.0)):
                 raise ValueError(f"{query}: timing summary differs from raw samples")
