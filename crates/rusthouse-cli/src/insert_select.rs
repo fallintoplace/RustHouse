@@ -110,7 +110,7 @@ fn decode_row(record: &[u8]) -> Result<Vec<Option<String>>, String> {
         .strip_suffix(b"\n")
         .ok_or("incomplete SELECT result record")?;
     let record = std::str::from_utf8(record).map_err(|_| "invalid UTF-8 in SELECT result")?;
-    if record.split('\t').count() > 128 {
+    if record.split('\t').nth(128).is_some() {
         return Err("INSERT SELECT supports at most 128 columns".into());
     }
     record
@@ -213,5 +213,18 @@ mod tests {
         })
         .unwrap();
         fs::remove_dir_all(database).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+
+    #[test]
+    fn spool_rows_accept_128_columns_but_reject_129() {
+        let within_limit = format!("{}\n", vec!["x"; 128].join("\t"));
+        assert_eq!(decode_row(within_limit.as_bytes()).unwrap().len(), 128);
+        let over_limit = format!("{}\n", vec!["x"; 129].join("\t"));
+        assert!(decode_row(over_limit.as_bytes()).is_err());
     }
 }
