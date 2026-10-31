@@ -12,6 +12,25 @@ fn low_bit_mask(bits: usize) -> u8 {
     ((1u16 << bits) - 1) as u8
 }
 
+// Count completion flags a machine word at a time, rather than emitting
+// one popcount for every byte in large resumable transfer checkpoints.
+fn popcount_full_bytes(bytes: &[u8]) -> usize {
+    let mut words = bytes.chunks_exact(8);
+    let count = words.by_ref().map(|chunk| {
+        u64::from_ne_bytes(chunk.try_into().expect("eight-byte chunk")).count_ones() as usize
+    }).sum::<usize>();
+    count + words.remainder().iter()
+        .map(|byte| byte.count_ones() as usize)
+        .sum::<usize>()
+}
+
+fn all_full_bytes_set(bytes: &[u8]) -> bool {
+    let mut words = bytes.chunks_exact(8);
+    words.by_ref().all(|chunk| {
+        u64::from_ne_bytes(chunk.try_into().expect("eight-byte chunk")) == u64::MAX
+    }) && words.remainder().iter().all(|&byte| byte == u8::MAX)
+}
+
 impl ResumeMap {
     pub fn new(chunks: usize) -> Result<Self, &'static str> {
         if chunks > 65_536 {
@@ -39,10 +58,7 @@ impl ResumeMap {
     /// Ignore unused bits in the final partially populated bitmap byte.
     pub fn completed_count(&self) -> usize {
         let full_bytes = self.chunks / 8;
-        let count = self.completed[..full_bytes]
-            .iter()
-            .map(|byte| byte.count_ones() as usize)
-            .sum::<usize>();
+        let count = popcount_full_bytes(&self.completed[..full_bytes]);
         let remainder = self.chunks % 8;
         if remainder == 0 {
             count
@@ -113,10 +129,7 @@ impl ResumeMap {
 
     pub fn complete(&self) -> bool {
         let full_bytes = self.chunks / 8;
-        if !self.completed[..full_bytes]
-            .iter()
-            .all(|&byte| byte == u8::MAX)
-        {
+        if !all_full_bytes_set(&self.completed[..full_bytes]) {
             return false;
         }
         let remainder = self.chunks % 8;
@@ -199,6 +212,31 @@ impl ResumeMap {
             return Err("resume checkpoint has invalid tail bits");
         }
         Ok(map)
+    }
+}
+
+#[cfg(test)]
+mod word_progress_tests {
+    use super::*;
+
+    #[test]
+    fn word_popcounts_and_full_checks_match_bitwise_reference() {
+        for bits in [0, 1, 7, 8, 9, 63, 64, 65, 511, 512, 513, 65_535, 65_536] {
+            let mut progress = ResumeMap::new(bits).unwrap();
+            for index in 0..bits {
+                if index % 7 != 2 && index % 11 != 3 {
+                    progress.mark_complete(index).unwrap();
+                }
+            }
+            let expected = (0..bits)
+                .filter(|&index| index % 7 != 2 && index % 11 != 3)
+                .count();
+            assert_eq!(progress.completed_count(), expected, "bits={bits}");
+            assert_eq!(progress.complete(), expected == bits, "bits={bits}");
+            progress.mark_complete_range(0, bits).unwrap();
+            assert_eq!(progress.completed_count(), bits);
+            assert!(progress.complete());
+        }
     }
 }
 
