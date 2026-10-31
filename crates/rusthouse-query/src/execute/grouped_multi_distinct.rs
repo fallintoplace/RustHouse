@@ -187,32 +187,59 @@ pub(super) fn execute<W: Write>(
             )
         });
     }
+    let mut bounded_order = None;
     if query.order_by.is_some() {
-        let terms=query.order_terms().map(|term|{
-            let index=columns.iter().position(|key|key==&term.column);
-            (index,term.descending,term.nulls_first)
+        let terms = query.order_terms().map(|term| {
+            let index = columns.iter().position(|key| key == &term.column);
+            (index, term.descending, term.nulls_first)
         }).collect::<Vec<_>>();
-        groups.sort_by(|a,b|{
-            for &(index,desc,nulls_first) in &terms {
-                let comparison=if let Some(index)=index {
-                    typed::compare_order_cells(&a.keys[index],&b.keys[index],desc,nulls_first)
+        let compare = |a: &Group, b: &Group| {
+            for &(index, desc, nulls_first) in &terms {
+                let comparison = if let Some(index) = index {
+                    typed::compare_order_cells(&a.keys[index], &b.keys[index], desc, nulls_first)
                 } else {
-                    let order=a.cardinality().cmp(&b.cardinality());
-                    if desc {order.reverse()} else {order}
+                    let order = a.cardinality().cmp(&b.cardinality());
+                    if desc { order.reverse() } else { order }
                 };
-                if comparison!=Ordering::Equal {return comparison;}
+                if comparison != Ordering::Equal {
+                    return comparison;
+                }
             }
             Ordering::Equal
-        });
-    }
-    let output_types=columns.iter().map(|column|types[column].as_str()).collect::<Vec<_>>();
-    for group in groups.iter().skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX)) {
-        for (index,cell) in group.keys.iter().enumerate() {
-            if index>0 {write!(output,"\t")?;}
-            typed::write_typed_value(output,cell,output_types[index])?;
+        };
+        // Keep only OFFSET + LIMIT positions when the requested page is
+        // smaller than the group set. Stable position ties preserve the
+        // original full-sort ordering without an O(G log G) sort.
+        if let Some(end) = query.limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit))
+            .filter(|&end| end < groups.len())
+        {
+            bounded_order = Some(super::sorted_group_positions(&groups, end, compare));
+        } else {
+            groups.sort_by(compare);
         }
-        writeln!(output,"\t{}",group.cardinality())?;
+    }
+    let output_types = columns.iter()
+        .map(|column| types[column].as_str()).collect::<Vec<_>>();
+    let write_group = |group: &Group, output: &mut W| -> Result<(), ExecutionError> {
+        for (index, cell) in group.keys.iter().enumerate() {
+            if index > 0 { write!(output, "\t")?; }
+            typed::write_typed_value(output, cell, output_types[index])?;
+        }
+        writeln!(output, "\t{}", group.cardinality())?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index], output)?;
+        }
+    } else {
+        for group in groups.iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(group, output)?;
+        }
     }
     Ok(())
 }
@@ -259,5 +286,56 @@ mod bounded_payload_tests {
         assert_eq!(retained, MAX_RETAINED_BYTES - 17);
         charge_bytes(&mut retained, 17).unwrap();
         assert_eq!(retained, MAX_RETAINED_BYTES);
+    }
+}
+
+#[cfg(test)]
+mod grouped_distinct_bounded_topk_tests {
+    use super::*;
+    use rusthouse_storage::{Column, write_wide_part};
+
+    #[test]
+    fn bounded_pages_match_stable_full_sort_for_multiple_order_terms() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-grouped-distinct-page-{}-{}",
+            std::process::id(), line!(),
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let columns = [
+            Column { name: "a".into(), data_type: "String".into() },
+            Column { name: "b".into(), data_type: "UInt8".into() },
+            Column { name: "v".into(), data_type: "UInt8".into() },
+        ];
+        let rows = [
+            ("a", 1, 1), ("a", 1, 2), ("a", 2, 1),
+            ("b", 1, 1), ("b", 1, 2), ("b", 1, 3),
+            ("b", 2, 1), ("c", 2, 2), ("c", 2, 3),
+        ].into_iter().map(|(a, b, v)| {
+            vec![Some(a.to_owned()), Some(b.to_string()), Some(v.to_string())]
+        }).collect::<Vec<_>>();
+        write_wide_part(&root, &columns, &rows).unwrap();
+
+        for order in ["count DESC", "count DESC, a DESC, b DESC", "a ASC, count DESC"] {
+            let base = format!(
+                "SELECT a, b, COUNT(DISTINCT v) FROM part GROUP BY a, b ORDER BY {order}"
+            );
+            let mut full = Vec::new();
+            execute(&crate::parse_select(&base).unwrap(),
+                &root, &["a".into(), "b".into()], "v", &mut full).unwrap();
+            let full = String::from_utf8(full).unwrap();
+            let all = full.lines().skip(1).collect::<Vec<_>>();
+            for (offset, limit) in [(0, 1), (1, 2), (2, 1), (3, 2)] {
+                let query = crate::parse_select(&format!(
+                    "{base} LIMIT {limit} OFFSET {offset}"
+                )).unwrap();
+                let mut page = Vec::new();
+                execute(&query, &root, &["a".into(), "b".into()], "v", &mut page).unwrap();
+                let page = String::from_utf8(page).unwrap();
+                assert_eq!(page.lines().skip(1).collect::<Vec<_>>(),
+                    all.iter().skip(offset).take(limit).copied().collect::<Vec<_>>(),
+                    "{order}: OFFSET {offset} LIMIT {limit}");
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

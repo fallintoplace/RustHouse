@@ -206,8 +206,11 @@ pub fn inventory_snapshot_crc32c(
     // Hash each file independently with bounded concurrency. Keep original
     // inventory order, including deterministic first-error reporting.
     use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let cursor = AtomicUsize::new(0);
+    // An invalid immutable file makes the whole inventory unusable.
+    // Avoid starting further expensive streams after a failed checksum.
+    let cancelled = AtomicBool::new(false);
     let work_order = checksum_work_order(&entries, workers);
     // Each cursor index belongs to exactly one worker. Write directly to its
     // one-time result slot instead of buffering another full result vector
@@ -218,6 +221,7 @@ pub fn inventory_snapshot_crc32c(
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
             let cursor = &cursor;
+            let cancelled = &cancelled;
             let entries = &entries;
             let active = &active;
             let slots = &slots;
@@ -226,12 +230,16 @@ pub fn inventory_snapshot_crc32c(
                 .spawn_scoped(scope, move || {
                     loop {
                         let position = cursor.fetch_add(1, Ordering::Relaxed);
-                        if position >= entries.len() {
+                        if position >= entries.len() || cancelled.load(Ordering::Acquire) {
                             break;
                         }
                         let index = work_order.map_or(position, |order| order[position]);
+                        let result = checksum_inventory_entry(active, &entries[index]);
+                        if result.is_err() {
+                            cancelled.store(true, Ordering::Release);
+                        }
                         slots[index]
-                            .set(checksum_inventory_entry(active, &entries[index]))
+                            .set(result)
                             .unwrap_or_else(|_| unreachable!("checksum index claimed twice"));
                     }
                 })
@@ -247,12 +255,16 @@ pub fn inventory_snapshot_crc32c(
         }
         Ok(())
     })?;
+    // The checksum work order can be size-prioritized rather than lexical.
+    // Read result slots in original inventory order for deterministic errors.
+    // On failure, intentionally unclaimed slots have no value.
     let result = slots
         .into_iter()
-        .map(|slot| slot.into_inner().ok_or_else(|| {
-            PartError::InvalidScan("missing snapshot checksum result".into())
-        })?)
+        .filter_map(|slot| slot.into_inner())
         .collect::<Result<Vec<_>, _>>()?;
+    if result.len() != entries.len() {
+        return Err(PartError::InvalidScan("missing snapshot checksum result".into()));
+    }
     require_unchanged_generation(root, &active)?;
     Ok(result)
 }
@@ -601,6 +613,37 @@ mod inventory_generation_stability_tests {
         assert!(require_unchanged_generation(&root, &first).is_ok());
         fs::write(&pointer, "g2\n").unwrap();
         assert!(require_unchanged_generation(&root, &first).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cancellable_inventory_regression_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn large_inventory_still_checksums_every_file_in_lexical_order() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-cancellable-inventory-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..35 {
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[vec![Some((index as u64 * 7).to_string())]],
+            ).unwrap();
+        }
+        let inventory = inventory_snapshot_crc32c(&root, 1024, 64 * 1024 * 1024).unwrap();
+        assert!(inventory.len() >= 64);
+        assert!(inventory.windows(2).all(|pair| pair[0].relative_path < pair[1].relative_path));
+        for entry in &inventory {
+            assert_eq!(entry.crc32c, crate::distributed_crc32c::crc32c(
+                &fs::read(root.join(&entry.relative_path)).unwrap(),
+            ));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }

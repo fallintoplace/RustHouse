@@ -188,3 +188,68 @@ mod full_width_mixed_multiply_tests {
             Ok(Number::Signed(-1))));
     }
 }
+
+/// SQL remainder preserves the dividend sign and avoids narrowing UInt128.
+pub(super) fn checked_remainder(left: Number, right: Number) -> Result<Number, ExecutionError> {
+    if matches!(left, Number::Float(_)) || matches!(right, Number::Float(_)) {
+        let dividend = number_as_float(left);
+        let divisor = number_as_float(right);
+        if divisor == 0.0 {
+            return Err(ExecutionError::Invalid("modulo by zero in aggregate expression".into()));
+        }
+        let remainder = dividend % divisor;
+        if !remainder.is_finite() {
+            return Err(ExecutionError::Invalid("non-finite aggregate remainder".into()));
+        }
+        return Ok(Number::Float(remainder));
+    }
+    match (left, right) {
+        (Number::Unsigned(a), Number::Unsigned(b)) => a.checked_rem(b)
+            .map(Number::Unsigned).ok_or_else(|| {
+                ExecutionError::Invalid("modulo by zero in aggregate expression".into())
+            }),
+        (Number::Signed(a), Number::Signed(b)) => a.checked_rem(b)
+            .map(Number::Signed).ok_or_else(|| {
+                ExecutionError::Invalid("invalid signed aggregate remainder".into())
+            }),
+        (Number::Unsigned(a), Number::Signed(b)) => {
+            a.checked_rem(b.unsigned_abs()).map(Number::Unsigned).ok_or_else(|| {
+                ExecutionError::Invalid("modulo by zero in aggregate expression".into())
+            })
+        }
+        (Number::Signed(a), Number::Unsigned(b)) => {
+            let magnitude = a.unsigned_abs().checked_rem(b)
+                .ok_or_else(|| ExecutionError::Invalid("modulo by zero in aggregate expression".into()))?;
+            if a < 0 { mixed_negative(magnitude) } else { Ok(mixed_positive(magnitude)) }
+        }
+        _ => unreachable!("float operands handled above"),
+    }
+}
+
+#[cfg(test)]
+mod full_width_remainder_tests {
+    use super::*;
+
+    #[test]
+    fn remainder_preserves_uint128_and_negative_dividend() {
+        assert!(matches!(
+            checked_remainder(Number::Unsigned(u128::MAX), Number::Signed(3)),
+            Ok(Number::Unsigned(value)) if value == u128::MAX % 3
+        ));
+        assert!(matches!(
+            checked_remainder(Number::Signed(-7), Number::Unsigned(3)),
+            Ok(Number::Signed(-1))
+        ));
+        assert!(matches!(
+            checked_remainder(Number::Unsigned(7), Number::Signed(-3)),
+            Ok(Number::Unsigned(1))
+        ));
+        assert!(matches!(
+            checked_remainder(Number::Signed(i128::MIN), Number::Unsigned(u128::MAX)),
+            Ok(Number::Signed(i128::MIN))
+        ));
+        assert!(checked_remainder(Number::Unsigned(1), Number::Unsigned(0)).is_err());
+        assert!(checked_remainder(Number::Signed(i128::MIN), Number::Signed(-1)).is_err());
+        assert!(checked_remainder(Number::Float(1.5), Number::Float(0.0)).is_err());
+    }
+}

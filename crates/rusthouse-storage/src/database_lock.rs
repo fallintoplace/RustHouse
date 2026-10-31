@@ -33,7 +33,10 @@ mod advisory {
 
 /// Hold this guard until a query finishes consuming its active snapshot.
 pub struct DatabaseLock {
+    #[cfg(unix)]
     _file: fs::File,
+    #[cfg(not(unix))]
+    _file: Option<fs::File>,
     #[cfg(not(unix))]
     path: PathBuf,
 }
@@ -42,6 +45,9 @@ pub struct DatabaseLock {
 #[cfg(not(unix))]
 impl Drop for DatabaseLock {
     fn drop(&mut self) {
+        // Windows may refuse deletion while this process still has the
+        // create_new lock handle open. Close it before unlinking the lock.
+        drop(self._file.take());
         let _ = fs::remove_file(&self.path);
     }
 }
@@ -135,7 +141,10 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         .map_err(|error| format_database_lock_error("acquire", lock_kind, &path, error))?;
 
     Ok(DatabaseLock {
+        #[cfg(unix)]
         _file: file,
+        #[cfg(not(unix))]
+        _file: Some(file),
         #[cfg(not(unix))]
         path,
     })
@@ -194,6 +203,35 @@ mod read_only_lock_tests {
         drop(second_reader);
 
         fs::set_permissions(&path, fs::Permissions::from_mode(original_mode)).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod non_unix_lock_release_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn guard_closes_handle_before_unlinking_lock_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-windows-lock-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let lock = acquire_database_lock(&directory, true).unwrap();
+        let path = directory.join(".rusthouse-write.lock");
+        assert!(path.exists());
+        assert!(acquire_database_lock(&directory, true).is_err());
+        drop(lock);
+        assert!(!path.exists(), "a closed lock must be removable on Windows");
+
+        let retry = acquire_database_lock(&directory, true).unwrap();
+        drop(retry);
+        assert!(!path.exists());
         fs::remove_dir_all(directory).unwrap();
     }
 }

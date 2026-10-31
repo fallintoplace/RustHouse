@@ -17,6 +17,7 @@ pub enum ScalarExpr {
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
     Divide(Box<ScalarExpr>, Box<ScalarExpr>),
+    Modulo(Box<ScalarExpr>, Box<ScalarExpr>),
     Compare(Box<ScalarExpr>, Operator, Box<ScalarExpr>),
     Case { branches: Vec<(ScalarExpr, ScalarExpr)>, else_expr: Option<Box<ScalarExpr>> },
 }
@@ -48,6 +49,7 @@ impl ScalarExpr {
             | Self::Subtract(left, right)
             | Self::Multiply(left, right)
             | Self::Divide(left, right)
+            | Self::Modulo(left, right)
             | Self::Compare(left, _, right) => {
                 left.collect_unique_referenced_columns(out, seen);
                 right.collect_unique_referenced_columns(out, seen);
@@ -105,6 +107,7 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
             | ScalarExpr::Subtract(left, right)
             | ScalarExpr::Multiply(left, right)
             | ScalarExpr::Divide(left, right)
+            | ScalarExpr::Modulo(left, right)
             | ScalarExpr::Compare(left, _, right) => {
                 pending.push((right, depth + 1));
                 pending.push((left, depth + 1));

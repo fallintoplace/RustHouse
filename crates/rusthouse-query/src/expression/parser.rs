@@ -104,10 +104,12 @@ pub(super) fn product(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
     let mut expr = primary(parser, depth)?;
     let mut operators = 0usize;
     loop {
-        let is_multiplication = if parser.take(Token::Star) {
-            true
+        let operator = if parser.take(Token::Star) {
+            Token::Star
         } else if parser.take(Token::Slash) {
-            false
+            Token::Slash
+        } else if parser.take(Token::Percent) {
+            Token::Percent
         } else {
             break;
         };
@@ -116,10 +118,11 @@ pub(super) fn product(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
             return Err(ParseError("multiplicative operator chain exceeds 128 terms".into()));
         }
         let right = Box::new(primary(parser, depth)?);
-        expr = if is_multiplication {
-            ScalarExpr::Multiply(Box::new(expr), right)
-        } else {
-            ScalarExpr::Divide(Box::new(expr), right)
+        expr = match operator {
+            Token::Star => ScalarExpr::Multiply(Box::new(expr), right),
+            Token::Slash => ScalarExpr::Divide(Box::new(expr), right),
+            Token::Percent => ScalarExpr::Modulo(Box::new(expr), right),
+            _ => unreachable!("multiplicative operator"),
         };
     }
     Ok(expr)
@@ -140,5 +143,29 @@ mod scientific_expression_tests {
         }
         assert!(super::super::parse_scalar_expression("1e309").is_err());
         assert!(super::super::parse_scalar_expression("1e").is_err());
+    }
+}
+
+#[cfg(test)]
+mod modulo_expression_tests {
+    use super::*;
+
+    #[test]
+    fn modulo_uses_multiplicative_precedence() {
+        let expression = super::super::parse_scalar_expression("amount % 5 * 2 + 1").unwrap();
+        assert_eq!(
+            expression,
+            ScalarExpr::Add(
+                Box::new(ScalarExpr::Multiply(
+                    Box::new(ScalarExpr::Modulo(
+                        Box::new(ScalarExpr::Column("amount".into())),
+                        Box::new(ScalarExpr::Integer(5)),
+                    )),
+                    Box::new(ScalarExpr::Integer(2)),
+                )),
+                Box::new(ScalarExpr::Integer(1)),
+            )
+        );
+        assert!(super::super::parse_scalar_expression("amount %").is_err());
     }
 }

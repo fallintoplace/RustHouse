@@ -240,3 +240,114 @@ mod invalid_version_comparison_tests {
         }
     }
 }
+
+/**
+ * Select the highest snapshot version observed at the configured write
+ * quorum. A minority advertisement of a newer generation is not enough.
+ * This is an acknowledgement planner, not proof of a valid ancestry,
+ * consensus round, or committed snapshot.
+ */
+pub fn highest_quorum_observed_snapshot(
+    policy: crate::distributed_quorum::QuorumPolicy,
+    members: &[&str],
+    observations: &[(&str, SnapshotVersion)],
+) -> Result<Option<SnapshotVersion>, &'static str> {
+    // This validates replica IDs, unique membership and a safe quorum policy.
+    policy.observe(members, &[])?;
+    if observations.len() > members.len() {
+        return Err("too many observed snapshot versions");
+    }
+    let mut observed_nodes = 0u16;
+    let mut epoch = None;
+    let mut groups = std::collections::BTreeMap::<u64, (u128, usize)>::new();
+    for &(member, version) in observations {
+        let index = members.iter().position(|&known| member == known)
+            .ok_or("snapshot observation from unknown replica")?;
+        let bit = 1u16 << index;
+        if observed_nodes & bit != 0 {
+            return Err("duplicate snapshot observation");
+        }
+        observed_nodes |= bit;
+        if !valid_version(version) {
+            return Err("invalid snapshot version");
+        }
+        if epoch.is_some_and(|previous| previous != version.epoch) {
+            return Err("mismatched snapshot epoch");
+        }
+        epoch = Some(version.epoch);
+        let group = groups.entry(version.generation).or_insert((version.fingerprint, 0));
+        if group.0 != version.fingerprint {
+            return Err("conflicting snapshot fingerprint");
+        }
+        group.1 += 1;
+    }
+    Ok(groups.into_iter().rev().find_map(|(generation, (fingerprint, count))| {
+        (count >= policy.writes).then_some(SnapshotVersion {
+            epoch: epoch.expect("nonempty groups have an epoch"),
+            generation,
+            fingerprint,
+        })
+    }))
+}
+
+#[cfg(test)]
+mod quorum_snapshot_selection_tests {
+    use super::*;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    #[test]
+    fn minority_newer_generation_does_not_displace_quorum_snapshot() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let old = SnapshotVersion { epoch: 1, generation: 9, fingerprint: 99 };
+        let new = SnapshotVersion { epoch: 1, generation: 10, fingerprint: 101 };
+        let members = ["a", "b", "c"];
+        assert_eq!(
+            highest_quorum_observed_snapshot(policy, &members,
+                &[("a", new), ("b", old), ("c", old)]).unwrap(),
+            Some(old),
+        );
+        assert_eq!(
+            highest_quorum_observed_snapshot(policy, &members,
+                &[("a", new), ("b", new), ("c", old)]).unwrap(),
+            Some(new),
+        );
+        assert_eq!(
+            highest_quorum_observed_snapshot(policy, &members, &[("a", new)]).unwrap(),
+            None,
+        );
+    }
+
+    #[test]
+    fn rejects_conflicts_duplicate_votes_foreign_epochs_and_nodes() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let members = ["a", "b", "c"];
+        let version = SnapshotVersion { epoch: 5, generation: 7, fingerprint: 19 };
+        assert!(highest_quorum_observed_snapshot(policy, &members, &[
+            ("a", version), ("b", SnapshotVersion { fingerprint: 20, ..version })
+        ]).is_err());
+        assert!(highest_quorum_observed_snapshot(policy, &members, &[
+            ("a", version), ("a", version)
+        ]).is_err());
+        assert!(highest_quorum_observed_snapshot(policy, &members, &[
+            ("a", version), ("b", SnapshotVersion { epoch: 6, ..version })
+        ]).is_err());
+        assert!(highest_quorum_observed_snapshot(policy, &members, &[
+            ("unknown", version)
+        ]).is_err());
+        assert!(highest_quorum_observed_snapshot(policy, &members, &[
+            ("a", SnapshotVersion { generation: 0, ..version })
+        ]).is_err());
+        assert!(highest_quorum_observed_snapshot(policy, &["a", "a", "c"], &[]).is_err());
+    }
+
+    #[test]
+    fn many_replica_quorum_requires_distinct_observations() {
+        let policy = QuorumPolicy::new(16, 9, 9).unwrap();
+        let names = (0..16).map(|i| format!("node_{i}")).collect::<Vec<_>>();
+        let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+        let version = SnapshotVersion { epoch: 2, generation: 7, fingerprint: 99 };
+        let observed = members.iter().take(9).map(|&id| (id, version)).collect::<Vec<_>>();
+        assert_eq!(highest_quorum_observed_snapshot(policy, &members, &observed).unwrap(), Some(version));
+        assert_eq!(highest_quorum_observed_snapshot(policy, &members, &observed[..8]).unwrap(), None);
+    }
+}
