@@ -53,6 +53,12 @@ pub fn plan_retry_delays(
         retry_delay(0, base_ms, max_ms, seed)?;
         return Ok(Vec::new());
     }
+    // Jitter never falls below ceil(base / 2). A smaller total budget
+    // cannot fit even the first retry, so avoid allocating its schedule.
+    if budget < Duration::from_millis(base_ms.div_ceil(2)) {
+        retry_delay(0, base_ms, max_ms, seed)?;
+        return Ok(Vec::new());
+    }
     let mut elapsed = Duration::ZERO;
     let mut delays = Vec::with_capacity(attempts as usize);
     for attempt in 0..attempts {
@@ -209,5 +215,25 @@ mod planned_retry_consistency_tests {
             let limited = plan_retry_delays(33, 125, 10_000, seed, budget).unwrap();
             assert_eq!(limited, planned[..4]);
         }
+    }
+}
+
+#[cfg(test)]
+mod subminimum_retry_budget_tests {
+    use super::*;
+
+    #[test]
+    fn early_exit_preserves_configuration_validation() {
+        for seed in [0, 17, u64::MAX] {
+            assert!(plan_retry_delays(33, 100, 1000, seed, Duration::from_millis(49))
+                .unwrap().is_empty());
+        }
+        assert!(plan_retry_delays(1, 0, 1000, 0, Duration::ZERO).is_err());
+        assert!(plan_retry_delays(34, 100, 1000, 0, Duration::ZERO).is_err());
+        let first = retry_delay(0, 100, 1000, 17).unwrap();
+        assert_eq!(
+            plan_retry_delays(1, 100, 1000, 17, first).unwrap(),
+            vec![first]
+        );
     }
 }
