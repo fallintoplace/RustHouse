@@ -129,9 +129,10 @@ pub fn newest_consistent_snapshot(
         return Err("invalid snapshot candidate count");
     }
     let epoch = versions[0].epoch;
-    if versions.len() <= 8 {
-        // The normal replica set is small. Validate generations in-place
-        // without constructing a temporary fingerprint hash map.
+    if versions.len() <= 16 {
+        // Replica groups are bounded to 16 members by the quorum policy.
+        // Inspect previous generation fingerprints directly without a
+        // temporary hash table for the common consensus-sized candidate set.
         let mut newest = versions[0];
         for (index, &version) in versions.iter().enumerate() {
             if !valid_epoch_member(version, epoch) {
@@ -416,5 +417,61 @@ mod stack_quorum_snapshot_tests {
             ("a", version), ("a", version),
         ]).is_err());
         assert_eq!(highest_quorum_observed_snapshot(policy, &members, &[]).unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod consensus_sized_snapshot_selection_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn hash_reference(versions: &[SnapshotVersion]) -> Result<SnapshotVersion, &'static str> {
+        if versions.is_empty() || versions.len() > 4096 {
+            return Err("invalid snapshot candidate count");
+        }
+        let epoch = versions[0].epoch;
+        let mut seen = HashMap::new();
+        let mut latest = versions[0];
+        for &version in versions {
+            if !valid_epoch_member(version, epoch) {
+                return Err("invalid or mismatched snapshot epoch");
+            }
+            if seen.insert(version.generation, version.fingerprint)
+                .is_some_and(|previous| previous != version.fingerprint)
+            {
+                return Err("conflicting snapshot fingerprint");
+            }
+            if version.generation > latest.generation {
+                latest = version;
+            }
+        }
+        Ok(latest)
+    }
+
+    #[test]
+    fn candidate_limits_preserve_exact_large_path_semantics() {
+        for count in [1, 2, 8, 9, 15, 16, 17, 128] {
+            let versions = (0..count).map(|index| SnapshotVersion {
+                epoch: 4,
+                generation: (index % 11 + 1) as u64,
+                fingerprint: ((index % 11) * 71 + 3) as u128,
+            }).collect::<Vec<_>>();
+            assert_eq!(newest_consistent_snapshot(&versions), hash_reference(&versions));
+            let mut conflicting = versions.clone();
+            conflicting.push(SnapshotVersion {
+                fingerprint: u128::MAX,
+                ..versions[0]
+            });
+            assert_eq!(
+                newest_consistent_snapshot(&conflicting),
+                hash_reference(&conflicting)
+            );
+            let mut wrong_epoch = versions;
+            wrong_epoch.push(SnapshotVersion { epoch: 9, ..wrong_epoch[0] });
+            assert_eq!(
+                newest_consistent_snapshot(&wrong_epoch),
+                hash_reference(&wrong_epoch)
+            );
+        }
     }
 }
