@@ -307,12 +307,21 @@ pub fn observe_joint_quorum(
     next_members: &[&str],
     acknowledgements: &[&str],
 ) -> Result<JointQuorumObservation, &'static str> {
-    // Validate both configurations even if all acknowledgements are empty or
-    // only originate from members outside one configuration.
-    previous.observe(previous_members, &[])?;
-    next.observe(next_members, &[])?;
+    // Large batches index both memberships together below. Validate their
+    // policies here, but avoid building two temporary membership hash maps.
+    previous.validate()?;
+    next.validate()?;
+    if previous_members.len() != previous.replicas || next_members.len() != next.replicas {
+        return Err("quorum membership or acknowledgement count mismatch");
+    }
     if acknowledgements.len() > 256 {
         return Err("quorum acknowledgement count exceeds bound");
+    }
+    if acknowledgements.len() <= 32 {
+        // Small acknowledgement batches use borrowed linear probes. Validate
+        // both memberships even when no acknowledgements were received.
+        previous.observe(previous_members, &[])?;
+        next.observe(next_members, &[])?;
     }
     let mut previous_mask = 0u16;
     let mut next_mask = 0u16;
@@ -324,10 +333,24 @@ pub fn observe_joint_quorum(
             previous_members.len() + next_members.len(),
         );
         for (index, &member) in previous_members.iter().enumerate() {
-            positions.entry(member).or_default().0 |= 1u16 << index;
+            if !valid_member(member) {
+                return Err("invalid or duplicate quorum member");
+            }
+            let entry = positions.entry(member).or_default();
+            if entry.0 != 0 {
+                return Err("invalid or duplicate quorum member");
+            }
+            entry.0 = 1u16 << index;
         }
         for (index, &member) in next_members.iter().enumerate() {
-            positions.entry(member).or_default().1 |= 1u16 << index;
+            if !valid_member(member) {
+                return Err("invalid or duplicate quorum member");
+            }
+            let entry = positions.entry(member).or_default();
+            if entry.1 != 0 {
+                return Err("invalid or duplicate quorum member");
+            }
+            entry.1 = 1u16 << index;
         }
         for &member in acknowledgements {
             let &(old, new) = positions.get(member)
@@ -462,5 +485,32 @@ mod joint_quorum_large_ack_index_tests {
         let mut bad = vec!["node_08"; 40];
         bad.push("stranger");
         assert!(observe_joint_quorum(policy, &old, policy, &new, &bad).is_err());
+    }
+}
+
+#[cfg(test)]
+mod indexed_joint_membership_validation_tests {
+    use super::*;
+
+    #[test]
+    fn large_ack_batches_validate_both_memberships_and_count_unique_votes() {
+        let policy = QuorumPolicy::new(9, 5, 5).unwrap();
+        let previous = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+        let next = ["b", "c", "d", "e", "f", "g", "h", "i", "j"];
+        let acks = (0..128).map(|index| if index % 2 == 0 { "a" } else { "j" })
+            .collect::<Vec<_>>();
+        let observed = observe_joint_quorum(policy, &previous, policy, &next, &acks).unwrap();
+        assert_eq!(observed.previous.distinct_acks, 1);
+        assert_eq!(observed.next.distinct_acks, 1);
+        assert!(!observed.can_write);
+        let mut invalid_old = previous;
+        invalid_old[8] = "a";
+        assert!(observe_joint_quorum(policy, &invalid_old, policy, &next, &acks).is_err());
+        let mut invalid_new = next;
+        invalid_new[8] = "b";
+        assert!(observe_joint_quorum(policy, &previous, policy, &invalid_new, &acks).is_err());
+        let mut bad_ack = acks;
+        bad_ack[127] = "unknown";
+        assert!(observe_joint_quorum(policy, &previous, policy, &next, &bad_ack).is_err());
     }
 }
