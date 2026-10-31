@@ -18,6 +18,29 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
+fn create_pending_pointer_with(
+    mut candidate: impl FnMut() -> std::path::PathBuf,
+) -> Result<(std::path::PathBuf, fs::File), PartError> {
+    for _ in 0..32 {
+        let path = candidate();
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(io_error(&path, error)),
+        }
+    }
+    Err(PartError::InvalidScan(
+        "active pointer staging namespace exhausted".into(),
+    ))
+}
+
 fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), PartError> {
     match fs::symlink_metadata(pointer) {
         Ok(meta) => {
@@ -117,24 +140,20 @@ pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), 
     }
     let pointer = root.join(".rusthouse-active");
     validate_fresh_generation(&pointer, generation)?;
-    let pending = root.join(format!(
-        ".rusthouse-active.replica-{}-{}",
-        std::process::id(),
-        NEXT_PENDING.fetch_add(1, Ordering::Relaxed)
-    ));
-    let prepared = (|| -> Result<(), PartError> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&pending)
-            .map_err(|error| io_error(&pending, error))?;
-        file.write_all(format!("g{generation}\n").as_bytes())
-            .and_then(|_| file.sync_all())
-            .map_err(|error| io_error(&pending, error))
-    })();
+    let (pending, mut file) = create_pending_pointer_with(|| {
+        root.join(format!(
+            ".rusthouse-active.replica-{}-{}",
+            std::process::id(),
+            NEXT_PENDING.fetch_add(1, Ordering::Relaxed)
+        ))
+    })?;
+    let prepared = file
+        .write_all(format!("g{generation}\n").as_bytes())
+        .and_then(|_| file.sync_all());
+    drop(file);
     if let Err(error) = prepared {
         let _ = fs::remove_file(&pending);
-        return Err(error);
+        return Err(io_error(&pending, error));
     }
     if let Err(error) = fs::rename(&pending, &pointer) {
         let _ = fs::remove_file(&pending);
@@ -193,6 +212,35 @@ pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
         return Err(PartError::InvalidScan("noncanonical active generation pointer".into()));
     }
     Ok(Some(generation))
+}
+
+#[cfg(test)]
+mod pointer_stage_collision_tests {
+    use super::*;
+
+    #[test]
+    fn stale_pending_pointer_is_never_truncated_or_reused() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-active-stage-collision-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let orphan = root.join("pending-old");
+        let fresh = root.join("pending-new");
+        fs::write(&orphan, b"g999\n").unwrap();
+        let mut attempts = 0;
+        let (created, mut file) = create_pending_pointer_with(|| {
+            attempts += 1;
+            if attempts == 1 { orphan.clone() } else { fresh.clone() }
+        }).unwrap();
+        file.write_all(b"g2\n").unwrap();
+        drop(file);
+        assert_eq!(attempts, 2);
+        assert_eq!(created, fresh);
+        assert_eq!(fs::read(&orphan).unwrap(), b"g999\n");
+        assert_eq!(fs::read(&fresh).unwrap(), b"g2\n");
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(test)]

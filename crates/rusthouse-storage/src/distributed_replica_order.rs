@@ -347,3 +347,130 @@ mod freshness_floor_validation_tests {
         );
     }
 }
+
+/**
+ * Replica metadata used to avoid selecting an inconsistent snapshot during
+ * read planning. An observation is not proof of consensus or data integrity.
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaSnapshotStatus {
+    pub node: String,
+    pub snapshot: crate::distributed_lineage::SnapshotVersion,
+    pub healthy: bool,
+}
+
+/// Find a quorum-observed generation, then rank only healthy peers serving
+/// that exact epoch, generation and fingerprint. Unlike comparing generation
+/// numbers alone, a minority's newer snapshot cannot displace the quorum.
+///
+/// This is a pure planning helper. Callers must still verify all returned
+/// replica data, and separately establish valid snapshot ancestry.
+pub fn rank_quorum_snapshot_replicas(
+    members: &[&str],
+    policy: crate::distributed_quorum::QuorumPolicy,
+    replicas: &[ReplicaSnapshotStatus],
+) -> Result<(crate::distributed_lineage::SnapshotVersion, Vec<String>), &'static str> {
+    policy.observe(members, &[])?;
+    if replicas.len() > members.len() {
+        return Err("too many replica snapshot observations");
+    }
+    let mut seen = 0u16;
+    let mut acknowledgements = Vec::with_capacity(replicas.len());
+    for replica in replicas {
+        let index = members.iter().position(|&member| member == replica.node.as_str())
+            .ok_or("snapshot from unknown replica")?;
+        let bit = 1u16 << index;
+        if seen & bit != 0 {
+            return Err("duplicate replica snapshot observation");
+        }
+        seen |= bit;
+        if replica.snapshot.epoch == 0 || replica.snapshot.generation == 0 {
+            return Err("invalid replica snapshot version");
+        }
+        if replica.healthy {
+            acknowledgements.push((replica.node.as_str(), replica.snapshot));
+        }
+    }
+    let snapshot = crate::distributed_lineage::highest_quorum_observed_snapshot(
+        policy, members, &acknowledgements,
+    )?.ok_or("no quorum-observed healthy snapshot")?;
+    let mut nodes = replicas.iter()
+        .filter(|status| status.healthy && status.snapshot == snapshot)
+        .map(|status| status.node.clone())
+        .collect::<Vec<_>>();
+    nodes.sort_unstable();
+    Ok((snapshot, nodes))
+}
+
+#[cfg(test)]
+mod quorum_snapshot_read_tests {
+    use super::*;
+    use crate::distributed_lineage::SnapshotVersion;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    #[test]
+    fn a_minoritys_newer_generation_cannot_redirect_quorum_reads() {
+        let members = ["a", "b", "c"];
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let older = SnapshotVersion { epoch: 2, generation: 7, fingerprint: 40 };
+        let newer = SnapshotVersion { epoch: 2, generation: 8, fingerprint: 41 };
+        let replicas = [
+            ReplicaSnapshotStatus { node: "c".into(), snapshot: newer, healthy: true },
+            ReplicaSnapshotStatus { node: "b".into(), snapshot: older, healthy: true },
+            ReplicaSnapshotStatus { node: "a".into(), snapshot: older, healthy: true },
+        ];
+        assert_eq!(
+            rank_quorum_snapshot_replicas(&members, policy, &replicas).unwrap(),
+            (older, vec!["a".into(), "b".into()]),
+        );
+        let mut changed = replicas.clone();
+        changed[0].snapshot = older;
+        let (version, nodes) = rank_quorum_snapshot_replicas(
+            &members, policy, &changed,
+        ).unwrap();
+        assert_eq!(version, older);
+        assert_eq!(nodes, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn rejects_conflicting_and_duplicate_advertisements() {
+        let members = ["a", "b", "c"];
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let v = SnapshotVersion { epoch: 2, generation: 7, fingerprint: 40 };
+        let a = ReplicaSnapshotStatus { node: "a".into(), snapshot: v, healthy: true };
+        let b = ReplicaSnapshotStatus { node: "b".into(), snapshot: v, healthy: true };
+        assert!(rank_quorum_snapshot_replicas(&members, policy, &[a.clone()]).is_err());
+        assert!(rank_quorum_snapshot_replicas(&members, policy, &[a.clone(), a.clone()]).is_err());
+        assert!(rank_quorum_snapshot_replicas(&members, policy, &[
+            a.clone(), ReplicaSnapshotStatus { snapshot: SnapshotVersion {
+                fingerprint: 99, ..v }, ..b.clone() }
+        ]).is_err());
+        assert!(rank_quorum_snapshot_replicas(&members, policy, &[
+            a.clone(), ReplicaSnapshotStatus { healthy: false, ..b.clone() }
+        ]).is_err());
+        assert!(rank_quorum_snapshot_replicas(&members, policy, &[
+            ReplicaSnapshotStatus { node: "unknown".into(), ..a.clone() }, b.clone()
+        ]).is_err());
+        assert!(rank_quorum_snapshot_replicas(&members, policy, &[
+            ReplicaSnapshotStatus { snapshot: SnapshotVersion {
+                epoch: 0, ..v }, ..a }, b,
+        ]).is_err());
+    }
+
+    #[test]
+    fn large_replica_group_requires_distinct_healthy_quorum() {
+        let names = (0..16).map(|i| format!("node_{i}")).collect::<Vec<_>>();
+        let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+        let policy = QuorumPolicy::new(16, 9, 9).unwrap();
+        let v = SnapshotVersion { epoch: 1, generation: 11, fingerprint: 222 };
+        let statuses = names.iter().enumerate().map(|(i, node)| {
+            ReplicaSnapshotStatus { node: node.clone(), snapshot: v, healthy: i < 9 }
+        }).collect::<Vec<_>>();
+        assert_eq!(
+            rank_quorum_snapshot_replicas(&members, policy, &statuses).unwrap().1.len(), 9,
+        );
+        let mut less = statuses;
+        less[8].healthy = false;
+        assert!(rank_quorum_snapshot_replicas(&members, policy, &less).is_err());
+    }
+}

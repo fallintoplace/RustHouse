@@ -240,7 +240,26 @@ pub(super) fn count_batch_matches(
                     NumericColumn::Int32(v) => count_hashed_in!(v, Signed, i128),
                     NumericColumn::Int64(v) => count_hashed_in!(v, Signed, i128),
                     NumericColumn::Int128(v) => count_hashed_in!(v, Signed, i128),
-                    NumericColumn::Float32(_) | NumericColumn::Float64(_) => {}
+                    NumericColumn::Float32(values) => {
+                        // Avoid rebuilding the generic numeric predicate tree
+                        // for every Float32 row. Match the NumberKey conversion
+                        // exactly, including -0 and unordered NaN.
+                        return values.iter().filter(|&&value| {
+                            let value = f64::from(value);
+                            let matched = !value.is_nan() && targets.contains(&NumberKey::Float(
+                                if value == 0.0 { 0 } else { value.to_bits() }
+                            ));
+                            matched != *negated
+                        }).count();
+                    }
+                    NumericColumn::Float64(values) => {
+                        return values.iter().filter(|&&value| {
+                            let matched = !value.is_nan() && targets.contains(&NumberKey::Float(
+                                if value == 0.0 { 0 } else { value.to_bits() }
+                            ));
+                            matched != *negated
+                        }).count();
+                    }
                 }
             }
             if let CompiledTest::NotBetween { lower, upper } = &predicate.test {
@@ -816,6 +835,29 @@ pub(super) fn excluded_generated_positions(
     Some(indices)
 }
 
+fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
+}
+
+// The inputs are coprime and below 2^64 after the GCD reduction.
+// Signed 128-bit intermediates cover the extended Euclidean coefficients.
+fn modular_inverse_u64(value: u64, modulus: u64) -> u64 {
+    let (mut previous, mut current) = (0i128, 1i128);
+    let (mut a, mut b) = (i128::from(modulus), i128::from(value));
+    while b != 0 {
+        let quotient = a / b;
+        (a, b) = (b, a - quotient * b);
+        (previous, current) = (current, previous - quotient * current);
+    }
+    debug_assert_eq!(a, 1);
+    previous.rem_euclid(i128::from(modulus)) as u64
+}
+
 pub(super) fn count_monotonic_numbers(
     branches: &[Vec<CompiledPredicate>],
     start: u64,
@@ -969,25 +1011,39 @@ pub(super) fn count_monotonic_numbers(
 
     let start = u128::from(start);
     let step = u128::from(step);
-    // For consecutive generated rows, a modulo filter is a periodic
-    // arithmetic progression. Count matching positions in O(1) instead of
-    // iterating over billions of generated values.
+    // Solve start + index * step ≡ target (mod modulus), even for
+    // non-unit strides. The matching indices form one progression with
+    // period modulus / gcd(step, modulus). No generated rows are scanned.
     if let [predicate] = conjunction.as_slice() {
         if let CompiledTest::Comparison {
             operator: Operator::Modulo(modulus) | Operator::ModuloNe(modulus),
             target: Number::Unsigned(target),
         } = &predicate.test
         {
-            if step == 1 && *modulus != 0 {
+            if *modulus != 0 {
                 let divisor = u128::from(*modulus);
                 let equal = if *target >= divisor {
                     0
                 } else {
-                    let first = (*target + divisor - (start % divisor)) % divisor;
-                    if first >= u128::from(rows) {
+                    let gcd = gcd_u64(step as u64, *modulus);
+                    let difference = (*target + divisor - start % divisor) % divisor;
+                    if difference % u128::from(gcd) != 0 {
                         0
                     } else {
-                        1 + (u128::from(rows) - 1 - first) / divisor
+                        let period = divisor / u128::from(gcd);
+                        let first = if period == 1 {
+                            0
+                        } else {
+                            let reduced_modulus = *modulus / gcd;
+                            let reduced_step = (step as u64 / gcd) % reduced_modulus;
+                            let inverse = modular_inverse_u64(reduced_step, reduced_modulus);
+                            (difference / u128::from(gcd) * u128::from(inverse)) % period
+                        };
+                        if first >= u128::from(rows) {
+                            0
+                        } else {
+                            1 + (u128::from(rows) - 1 - first) / period
+                        }
                     }
                 };
                 let matches = if matches!(
@@ -1693,5 +1749,92 @@ mod nan_not_between_semantics_tests {
         assert_eq!((0..column.len()).filter(|&i| {
             batch_matches(std::slice::from_ref(&column), i, &branches)
         }).count(), 2);
+    }
+}
+
+#[cfg(test)]
+mod direct_hashed_float_count_regressions {
+    use super::*;
+
+    #[test]
+    fn float32_and_float64_match_generic_predicate_semantics() {
+        let cases = vec![
+            -0.0f64, 0.0, -1.0, 1.0, 0.5, -0.5,
+            f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 12.25,
+            1.0 / 3.0, 12345.0,
+        ];
+        for negated in [false, true] {
+            let mut targets = cases.iter().copied().map(Number::Float).collect::<Vec<_>>();
+            targets.extend((0..30).map(|value| Number::Float(value as f64 * 0.25)));
+            let test = compile_in_test(targets, negated);
+            let input32 = cases.iter().copied().map(|value| value as f32)
+                .collect::<Vec<_>>();
+            let input64 = cases.clone();
+            let reference32 = input32.iter().filter(|&&value| {
+                test.matches(Number::Float(f64::from(value)))
+            }).count();
+            let reference64 = input64.iter().filter(|&&value| {
+                test.matches(Number::Float(value))
+            }).count();
+            let branch = [vec![CompiledPredicate { index: 0, test }]];
+            assert_eq!(count_batch_matches(&[NumericColumn::Float32(input32)], &branch),
+                reference32);
+            assert_eq!(count_batch_matches(&[NumericColumn::Float64(input64)], &branch),
+                reference64);
+        }
+    }
+}
+
+#[cfg(test)]
+mod arbitrary_stride_modulo_regression_tests {
+    use super::*;
+    #[test]
+    fn arithmetic_progression_matches_bounded_rowwise_reference() {
+        for start in [0u64, 7, 100, u64::MAX - 100] {
+            for step in [1u64, 2, 3, 6, 9, u64::MAX] {
+                for modulus in 1..=15u64 {
+                    for target in [0u128, 1, 2, u128::from(modulus - 1), u128::from(modulus)] {
+                        for rows in [0u64, 1, 2, 3, 100] {
+                            for negated in [false, true] {
+                                let predicate = CompiledPredicate {
+                                    index: 0,
+                                    test: CompiledTest::Comparison {
+                                        operator: if negated {
+                                            Operator::ModuloNe(modulus)
+                                        } else {
+                                            Operator::Modulo(modulus)
+                                        },
+                                        target: Number::Unsigned(target),
+                                    },
+                                };
+                                let expected = (0..rows).filter(|index| {
+                                    let value = u128::from(start) + u128::from(*index) * u128::from(step);
+                                    let matched = value % u128::from(modulus) == target;
+                                    matched != negated
+                                }).count() as u64;
+                                assert_eq!(
+                                    count_monotonic_numbers(&[vec![predicate]], start, rows, step),
+                                    Some(expected),
+                                    "start={start} step={step} modulo={modulus} target={target} rows={rows} negated={negated}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn billion_row_non_unit_stride_is_counted_without_scanning() {
+        let predicate = CompiledPredicate {
+            index: 0,
+            test: CompiledTest::Comparison {
+                operator: Operator::Modulo(12),
+                target: Number::Unsigned(5),
+            },
+        };
+        assert_eq!(count_monotonic_numbers(&[vec![predicate]], 1, 1_000_000_000, 4),
+            Some(333_333_333));
     }
 }

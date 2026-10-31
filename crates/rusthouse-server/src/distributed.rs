@@ -625,7 +625,9 @@ fn merge_distinct_tsv(
 ) -> Result<Vec<u8>, MergeError> {
     const MAX_DISTINCT_ROWS: usize = 250_000;
     let mut header: Option<&[u8]> = None;
-    let mut unique = HashSet::<&[u8]>::new();
+    // Deduplicate by logical TSV field values, not by one possible on-wire
+    // escape spelling. The first encountered wire row remains the output.
+    let mut unique = HashSet::<Vec<NormalizedGroupKey<'_>>>::new();
     let mut output = Vec::new();
     let mut returned = 0usize;
     for (cap, body) in shards {
@@ -654,14 +656,13 @@ fn merge_distinct_tsv(
                 if row.iter().filter(|&&byte| byte == b'\t').count() != required_tabs {
                     return Err(MergeError::InvalidResponse);
                 }
-                for field in row.split(|&byte| byte == b'\t') {
-                    if field != br"\N" {
-                        rusthouse_format::validate_tsv_field(field)
-                            .map_err(|_| MergeError::InvalidResponse)?;
-                    }
-                }
+                let normalized = row
+                    .split(|&byte| byte == b'\t')
+                    .map(|field| normalized_group_key(field)
+                        .map_err(|_| MergeError::InvalidResponse))
+                    .collect::<Result<Vec<_>, _>>()?;
                 shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
-                if unique.insert(row) {
+                if unique.insert(normalized) {
                     if unique.len() > MAX_DISTINCT_ROWS {
                         return Err(MergeError::CoordinatorLimit);
                     }
@@ -2986,6 +2987,40 @@ mod malformed_distributed_tsv_tests {
         assert_eq!(
             merge_tsv_page(&body, 16, 1, Some(1)).unwrap(),
             b"name\tvalue\na\\nb\t\\\\\n"
+        );
+    }
+}
+
+#[cfg(test)]
+mod logical_distinct_tsv_equivalence_tests {
+    use super::*;
+
+    #[test]
+    fn distinct_and_pagination_use_decoded_field_values() {
+        let shards = [
+            (16, b"id\tvalue\n1\tA\n2\t\\x41\n3\t\\t\n".to_vec()),
+            (16, b"id\tvalue\n1\t\\x41\n3\t\\x09\n2\tA\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_distinct_tsv(&shards, 16, 0, None).unwrap(),
+            b"id\tvalue\n1\tA\n2\t\\x41\n3\t\\t\n",
+        );
+        assert_eq!(
+            merge_distinct_tsv(&shards, 2, 1, Some(2)).unwrap(),
+            b"id\tvalue\n2\t\\x41\n3\t\\t\n",
+        );
+    }
+
+    #[test]
+    fn null_marker_is_not_the_same_value_as_a_literal_backslash_n() {
+        let shards = [(16, b"v\n\\N\n\\\\N\n\\x5cN\n".to_vec())];
+        assert_eq!(
+            merge_distinct_tsv(&shards, 16, 0, None).unwrap(),
+            b"v\n\\N\n\\\\N\n",
+        );
+        assert_eq!(
+            merge_distinct_tsv(&[(16, b"v\nvalid\n\\q\n".to_vec())], 1, 0, Some(1)),
+            Err(MergeError::InvalidResponse),
         );
     }
 }
