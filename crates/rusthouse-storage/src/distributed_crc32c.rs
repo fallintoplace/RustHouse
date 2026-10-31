@@ -640,6 +640,10 @@ mod sparse_gf2_matrix_tests {
             let shift = Crc32cShift::new(len);
             for left in [0, 1, 0x8000_0000, 0x1234_5678, u32::MAX] {
                 for right in [0, 0xdead_beef, u32::MAX] {
+                    // The checksum of an empty right-hand range is zero.
+                    if len == 0 && right != 0 {
+                        continue;
+                    }
                     assert_eq!(shift.combine(left, right), crc32c_combine(left, right, len));
                 }
             }
