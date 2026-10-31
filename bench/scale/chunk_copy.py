@@ -131,7 +131,8 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
             raise ValueError(f"missing or unsafe shard: {name}")
         verify_shard(path, entry)
         paths.append(path)
-    if manifest.get("total_rows") != sum(e["rows"] for e in shards):
+    total_rows = sum(e["rows"] for e in shards)
+    if manifest.get("total_rows") != total_rows:
         raise ValueError("total rows mismatch in shard manifest")
     if manifest.get("total_bytes") != sum(e["bytes"] for e in shards):
         raise ValueError("total bytes mismatch in shard manifest")
@@ -139,7 +140,7 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         return {"workload": "tsv-shard-copy", "atomic_batch": False,
                 "dry_run": True, "preflight_verified": True,
                 "shards_loaded": 0, "shards_planned": len(paths),
-                "rows_reported_by_manifest": sum(s["rows"] for s in shards),
+                "rows_reported_by_manifest": total_rows,
                 "results": []}
     completed = []
     for entry, path in zip(shards, paths):
