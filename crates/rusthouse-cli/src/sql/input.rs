@@ -92,13 +92,24 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             current.push_str(&input[segment..index]);
             current.push(' ');
             index += 2;
-            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
-                index += 1;
+            // ClickHouse block comments can be nested. Stop at the matching
+            // close, not the first inner close, so embedded semicolons never
+            // become new SQL script statements.
+            let mut depth = 1usize;
+            while index + 1 < bytes.len() && depth != 0 {
+                if bytes[index] == b'/' && bytes[index + 1] == b'*' {
+                    depth += 1;
+                    index += 2;
+                } else if bytes[index] == b'*' && bytes[index + 1] == b'/' {
+                    depth -= 1;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
             }
-            if index + 1 >= bytes.len() {
+            if depth != 0 {
                 return Err("unterminated SQL block comment".into());
             }
-            index += 2;
             segment = index;
             continue;
         }
@@ -254,6 +265,36 @@ mod cr_only_script_comments_tests {
         assert_eq!(
             split_sql_script("SELECT 1; -- comment\r\nSELECT 2;").unwrap(),
             ["SELECT 1", "SELECT 2"],
+        );
+    }
+}
+
+#[cfg(test)]
+mod nested_sql_script_comment_tests {
+    use super::split_sql_script;
+
+    #[test]
+    fn inner_block_terminators_cannot_expose_hidden_semicolons() {
+        let script = "SELECT 1 /* outer ; /* inner ; */ still outer ; */; SELECT 2;";
+        assert_eq!(split_sql_script(script).unwrap(), ["SELECT 1", "SELECT 2"]);
+        assert_eq!(
+            split_sql_script("SELECT 1 /* a /* b /* c */ d */ e */ + 2;").unwrap(),
+            ["SELECT 1 + 2"],
+        );
+        assert!(split_sql_script("SELECT 1 /* outer /* inner */").is_err());
+    }
+
+    #[test]
+    fn deeply_nested_comments_are_processed_iteratively() {
+        let script = format!(
+            "SELECT 1 {} hidden ; {} ; SELECT 2;",
+            "/*".repeat(1000),
+            "*/".repeat(1000),
+        );
+        assert_eq!(split_sql_script(&script).unwrap(), ["SELECT 1", "SELECT 2"]);
+        assert_eq!(
+            split_sql_script("SELECT '/* literal; */'; SELECT 3;").unwrap(),
+            ["SELECT '/* literal; */'", "SELECT 3"],
         );
     }
 }

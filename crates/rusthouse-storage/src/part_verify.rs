@@ -68,6 +68,11 @@ fn fixed_stream_width(kind: &str) -> Option<u64> {
         .and_then(|base| base.strip_suffix(')'))
         .unwrap_or(kind);
     match kind {
+        // Decimal disk storage is always a signed fixed-width integer.
+        // Consult the decoder's parser so invalid precision/scale is not
+        // accidentally reported as a valid fixed-width stream.
+        "Decimal" => crate::decimal::decimal_stream_width(kind),
+        _ if kind.starts_with("Decimal") => crate::decimal::decimal_stream_width(kind),
         "Bool" | "UInt8" | "Int8" => Some(1),
         "Date" | "UInt16" | "Int16" | "BFloat16" => Some(2),
         "DateTime" | "Date32" | "UInt32" | "Int32" | "Float32" | "IPv4" => Some(4),
@@ -288,6 +293,42 @@ mod tests {
                 ..
             })
         ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn verifies_fixed_decimal_stream_widths_and_nullable_variants() {
+        let dir = fixture();
+        for (kind, bytes_per_row) in [
+            ("Decimal32(2)", 4usize),
+            ("Decimal64(4)", 8),
+            ("Decimal128(10)", 16),
+            ("Decimal(9, 2)", 4),
+            ("Decimal(10, 2)", 8),
+            ("Decimal(38, 2)", 16),
+            ("Decimal", 8),
+            ("Nullable(Decimal64(2))", 8),
+        ] {
+            fs::write(
+                dir.join("columns.txt"),
+                format!("columns format version: 1\n1 columns:\n`id` {kind}\n"),
+            ).unwrap();
+            if kind.starts_with("Nullable(") {
+                fs::write(dir.join("id.null.bin"), checked_plain_block(&[0, 1])).unwrap();
+                fs::copy(dir.join("id.mrk2"), dir.join("id.null.mrk2")).unwrap();
+            }
+            fs::write(dir.join("id.bin"),
+                checked_plain_block(&vec![0; bytes_per_row * 2])).unwrap();
+            assert!(verify_wide_part(&dir).is_ok(), "{kind}");
+            fs::write(dir.join("id.bin"),
+                checked_plain_block(&vec![0; bytes_per_row])).unwrap();
+            assert!(matches!(verify_wide_part(&dir),
+                Err(PartError::InvalidPart {
+                    reason: "fixed-width stream byte count differs from count.txt",
+                    ..
+                })
+            ), "{kind}");
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 

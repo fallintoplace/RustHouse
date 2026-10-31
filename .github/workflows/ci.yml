@@ -27,6 +27,8 @@ jobs:
           key: latest-main
       - name: Check workspace targets
         run: cargo check --workspace --lib --bins --locked
+      - name: Verify query and storage library regressions
+        run: cargo test -p rusthouse-query -p rusthouse-storage --lib --locked --no-fail-fast
 
   format:
     if: github.event_name != 'push' && github.ref == 'refs/heads/main'

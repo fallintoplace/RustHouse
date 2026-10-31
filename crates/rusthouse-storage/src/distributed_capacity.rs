@@ -239,3 +239,79 @@ mod batch_reservation_fast_path_tests {
         }
     }
 }
+
+impl Capacity {
+    /// Commit a verified batch as one accounting transaction. The capacity
+    /// value is unchanged on any invalid byte sum or insufficient reservation.
+    pub fn commit_many(self, object_sizes: &[u64]) -> Result<Self, &'static str> {
+        if object_sizes.len() > MAX_RESERVATION_OBJECTS {
+            return Err("replica object batch exceeds limit");
+        }
+        let total = object_sizes.iter().try_fold(0u64, |sum, &size| {
+            sum.checked_add(size).ok_or("replica batch size overflow")
+        })?;
+        self.commit(total)
+    }
+
+    /// Cancel a whole pending batch without allowing reservation underflow.
+    pub fn release_many(self, object_sizes: &[u64]) -> Result<Self, &'static str> {
+        if object_sizes.len() > MAX_RESERVATION_OBJECTS {
+            return Err("replica object batch exceeds limit");
+        }
+        let total = object_sizes.iter().try_fold(0u64, |sum, &size| {
+            sum.checked_add(size).ok_or("replica batch size overflow")
+        })?;
+        self.release(total)
+    }
+}
+
+#[cfg(test)]
+mod atomic_batch_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn batch_reserve_commit_release_preserve_exact_usage() {
+        let initial = Capacity { total: 100, used: 9, reserved: 3 };
+        let reserved = initial.reserve_many(&[11, 19, 7]).unwrap();
+        let committed = reserved.commit_many(&[11, 19]).unwrap();
+        assert_eq!(committed, Capacity { total: 100, used: 39, reserved: 10 });
+        assert_eq!(committed.release_many(&[7]).unwrap(),
+            Capacity { total: 100, used: 39, reserved: 3 });
+        assert!(reserved.commit_many(&[11, 19, 60]).is_err());
+        assert!(reserved.release_many(&[11, 19, 60]).is_err());
+        assert_eq!(initial.reserve_many(&[11, 19, 7]).unwrap(), reserved);
+    }
+
+    #[test]
+    fn checked_batched_transitions_match_sequential_for_valid_states() {
+        for total in 0..=24u64 {
+            for used in 0..=total {
+                for held in 0..=total - used {
+                    let state = Capacity { total, used, reserved: held };
+                    for first in 0..=held {
+                        for second in 0..=held - first {
+                            assert_eq!(
+                                state.commit_many(&[first, second]).unwrap(),
+                                state.commit(first).unwrap().commit(second).unwrap(),
+                            );
+                            assert_eq!(
+                                state.release_many(&[first, second]).unwrap(),
+                                state.release(first).unwrap().release(second).unwrap(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batch_totals_reject_overflow_and_oversized_lists() {
+        let state = Capacity { total: u64::MAX, used: 0, reserved: u64::MAX };
+        assert!(state.commit_many(&[u64::MAX, 1]).is_err());
+        assert!(state.release_many(&[u64::MAX, 1]).is_err());
+        assert!(state.commit_many(&vec![0; 65_537]).is_err());
+        assert!(state.release_many(&vec![0; 65_537]).is_err());
+        assert_eq!(state.commit_many(&[]).unwrap(), state);
+    }
+}
