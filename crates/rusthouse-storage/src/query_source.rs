@@ -794,7 +794,7 @@ mod tests {
             Err(PartError::InvalidScan(_))
         ));
 
-        ranges[2].1 = 4;
+        ranges[1].1 = 4;
         sort_and_validate_part_ranges(&mut ranges).unwrap();
         assert_eq!(ranges.iter().map(|part| part.1).collect::<Vec<_>>(), [1, 4, 10]);
 
