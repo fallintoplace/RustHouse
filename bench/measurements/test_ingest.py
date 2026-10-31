@@ -101,6 +101,17 @@ class IngestBenchmarkTests(unittest.TestCase):
             with self.subTest(rows=rows, runs=runs), self.assertRaises(ValueError):
                 runner.benchmark(Path("rusthouse"), rows, 1, runs, 0, 3, "TSV")
 
+    def test_cached_temperatures_match_float_reference_exactly(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "temperatures.tsv"
+            runner.write_input(path, 1602, 17)
+            actual = path.read_text(encoding="utf-8")
+            expected = "".join(
+                f"station-{row % 17:05}\t{runner.temperature_tenths(row) / 10:.1f}\n"
+                for row in range(1602)
+            )
+            self.assertEqual(actual, expected)
+
     def test_buffered_fixture_matches_one_row_reference(self):
         with tempfile.TemporaryDirectory() as temp:
             single = Path(temp) / "single.tsv"
