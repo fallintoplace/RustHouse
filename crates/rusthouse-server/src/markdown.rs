@@ -107,6 +107,19 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
 }
 
 fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Result<()> {
+    // A typical header has up to 64 columns. Frame it once without a
+    // per-query heap allocation or one write per separator.
+    if columns <= 64 {
+        let mut framed = [0u8; 1 + 64 * 6 + 1];
+        framed[0] = b'|';
+        let mut used = 1;
+        for _ in 0..columns {
+            framed[used..used + 6].copy_from_slice(b" --- |");
+            used += 6;
+        }
+        framed[used] = b'\n';
+        return output.write_all(&framed[..used + 1]);
+    }
     output.write_all(b"|")?;
     for _ in 0..columns {
         output.write_all(b" --- |")?;
@@ -415,5 +428,34 @@ mod markdown_bulk_output_tests {
         let mut output = Vec::new();
         write_cell(&mut output, b"abc|xyz<&>\r\x01").unwrap();
         assert_eq!(output, b"abc\\|xyz&lt;&amp;&gt;&#13;&#1;");
+    }
+}
+
+#[cfg(test)]
+mod framed_header_separator_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Counted { calls: usize, bytes: Vec<u8> }
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn ordinary_headers_use_one_write_and_wide_headers_still_stream() {
+        for columns in [0, 1, 3, 64, 65] {
+            let mut output = Counted::default();
+            write_header_separator(&mut output, columns).unwrap();
+            let expected = format!("|{}\n", " --- |".repeat(columns));
+            assert_eq!(output.bytes, expected.as_bytes());
+            if columns <= 64 {
+                assert_eq!(output.calls, 1, "columns={columns}");
+            }
+        }
     }
 }
