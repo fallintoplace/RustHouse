@@ -22,7 +22,6 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     if !schema_metadata.file_type().is_file() || schema_metadata.len() > 32 * 1024 {
         return Err(format!("invalid database schema for {table}"));
     }
-    let mut content = Vec::new();
     let mut file = fs::File::open(&schema)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
     let opened_schema_metadata = file
@@ -41,6 +40,7 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
             return Err(format!("database schema replaced before read for {table}"));
         }
     }
+    let mut content = Vec::with_capacity(opened_schema_metadata.len() as usize);
     (&mut file)
         .take(32 * 1024 + 1)
         .read_to_end(&mut content)
