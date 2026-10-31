@@ -598,10 +598,10 @@ mod validated_key_only_merge_tests {
         assert_eq!(next_validated_row_key(rows, position, kind).unwrap(), None);
         assert_eq!(
             merge_sorted_integer_rows_page(
-                &[(8, [b"id\\tvalue\\n".as_slice(), rows].concat())],
+                &[(8, [b"id\tvalue\n".as_slice(), rows].concat())],
                 &["id", "value"], "Int64", false, 0, 3, 3,
             ).unwrap(),
-            [b"id\\tvalue\\n".as_slice(), rows].concat(),
+            [b"id\tvalue\n".as_slice(), rows].concat(),
         );
     }
 
