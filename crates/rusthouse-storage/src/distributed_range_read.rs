@@ -4,6 +4,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const ABSOLUTE_MAX_RANGE: usize = 8 * 1024 * 1024;
+const MAX_RANGES: usize = 1024;
 
 fn validate_range(offset: u64, length: usize, file_length: u64) -> io::Result<()> {
     let end = offset
@@ -100,7 +101,7 @@ pub fn read_object_ranges(
     ranges: &[(u64, usize)],
     max_total_bytes: usize,
 ) -> io::Result<Vec<Vec<u8>>> {
-    if ranges.len() > 1024 {
+    if ranges.len() > MAX_RANGES {
         return Err(io::Error::other("too many object ranges"));
     }
     let mut total = 0usize;
@@ -165,6 +166,31 @@ pub fn read_object_ranges(
     }
     verify_object_after_read(path, &file, &baseline)?;
     Ok(output)
+}
+
+/// Read independently checksummed immutable object chunks in one bounded
+/// call. Verify every chunk before returning any data to a replica consumer.
+/// CRC32C detects accidental corruption; it does not authenticate peers.
+pub fn read_object_ranges_checked(
+    path: &Path,
+    ranges: &[(u64, usize, u32)],
+    max_total_bytes: usize,
+) -> io::Result<Vec<Vec<u8>>> {
+    if ranges.len() > MAX_RANGES {
+        return Err(io::Error::other("too many object ranges"));
+    }
+    let spans = ranges.iter().map(|&(offset, length, _)| (offset, length))
+        .collect::<Vec<_>>();
+    let chunks = read_object_ranges(path, &spans, max_total_bytes)?;
+    for (chunk, &(_, _, expected_crc32c)) in chunks.iter().zip(ranges) {
+        if crate::distributed_crc32c::crc32c(chunk) != expected_crc32c {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "replica object range checksum mismatch",
+            ));
+        }
+    }
+    Ok(chunks)
 }
 
 #[cfg(all(test, unix))]
@@ -309,6 +335,41 @@ mod zero_offset_object_ranges_tests {
         assert_eq!(read_object_ranges(&path, &[(0, 4)], 4).unwrap(), vec![b"abcd".to_vec()]);
         assert_eq!(read_object_ranges(&path, &[(8, 2), (0, 3)], 5).unwrap(), vec![b"ij".to_vec(), b"abc".to_vec()]);
         assert_eq!(read_object_ranges(&path, &[(0, 6), (3, 6)], 12).unwrap(), vec![b"abcdef".to_vec(), b"defghi".to_vec()]);
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod checked_multi_range_tests {
+    use super::*;
+
+    #[test]
+    fn verifies_overlapping_chunk_checksums_and_rejects_corruption() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-checked-range-{}", std::process::id()
+        ));
+        let bytes = b"the quick brown fox jumped over a lazy dog";
+        fs::write(&path, bytes).unwrap();
+        let checksum = crate::distributed_crc32c::crc32c;
+        let ranges = vec![
+            (0, 9, checksum(&bytes[0..9])),
+            (4, 16, checksum(&bytes[4..20])),
+            (bytes.len() as u64, 0, checksum(b"")),
+            (2, 4, checksum(&bytes[2..6])),
+        ];
+        let result = read_object_ranges_checked(&path, &ranges, 32).unwrap();
+        assert_eq!(result, vec![
+            bytes[0..9].to_vec(), bytes[4..20].to_vec(),
+            Vec::new(), bytes[2..6].to_vec(),
+        ]);
+        let mut corrupted = ranges.clone();
+        corrupted[1].2 ^= 1;
+        assert_eq!(
+            read_object_ranges_checked(&path, &corrupted, 32)
+                .unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(read_object_ranges_checked(&path, &ranges, 8).is_err());
         fs::remove_file(path).unwrap();
     }
 }
