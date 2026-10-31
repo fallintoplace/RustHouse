@@ -710,7 +710,7 @@ mod heap_root_regression_tests {
             sorter.write(&mut output, &["String", "UInt64"], offset, limit).unwrap();
             let actual = String::from_utf8(output).unwrap();
             let expected = expected.iter().skip(offset).take(limit)
-                .map(|(key, index)| format!("row_{index}\\t{key}\\n"))
+                .map(|(key, index)| format!("row_{index}\t{key}\n"))
                 .collect::<String>();
             assert_eq!(actual, expected);
         }
