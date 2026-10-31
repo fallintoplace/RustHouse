@@ -165,7 +165,7 @@ fn gf2_matrix_square(matrix: &[u32; 32]) -> [u32; 32] {
 
 /// Precomputed CRC32C zero-byte shift for repeatedly appending fixed-size chunks.
 ///
-/// The ordinary crc32c_combine rebuilds GF(2) matrices for each length.
+/// The generic crc32c_combine uses shared powers for arbitrary lengths.
 /// A transfer with thousands of equal-size verified chunks can reuse this
 /// operator, reducing each combination to one 32-bit matrix-vector multiply.
 #[derive(Clone)]
@@ -321,9 +321,12 @@ mod cached_crc_byte_shift_tests {
         for len in [0, 1, 3, 7, 9, 127, 255, 4095, 1 << 32, u64::MAX] {
             let shift = Crc32cShift::new(len);
             for left in [0, 1, 0xdead_beef, u32::MAX] {
+                // The checksum of an empty right range is zero. A nonzero
+                // right checksum is not meaningful when its length is zero.
+                let right = if len == 0 { 0 } else { 0x1234_abcd };
                 assert_eq!(
-                    crc32c_combine(left, 0x1234_abcd, len),
-                    shift.combine(left, 0x1234_abcd)
+                    crc32c_combine(left, right, len),
+                    shift.combine(left, right)
                 );
             }
         }
