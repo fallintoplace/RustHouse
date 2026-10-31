@@ -163,7 +163,7 @@ mod expanding_repair_selection_tests {
                     } else {
                         false
                     }
-                }).take(limit).map(|job| (*job).clone()).collect::<Vec<_>>();
+                }).take(limit).map(|job| (**job).clone()).collect::<Vec<_>>();
                 assert_eq!(plan_repairs(&jobs, budget, limit).unwrap(), expected);
             }
         }
