@@ -22,6 +22,10 @@ def fact_id(index, build_rows, hot_percent):
     return 1 + (index % (build_rows - 1))
 
 
+def group_label(key):
+    return f"group-{key % 10}"
+
+
 def write_fixture(directory, probe_rows, build_rows, hot_percent):
     if type(probe_rows) is not int or not 1 <= probe_rows <= 131072:
         raise ValueError("probe rows must be in 1..131072")
@@ -37,11 +41,11 @@ def write_fixture(directory, probe_rows, build_rows, hot_percent):
         for index in range(probe_rows):
             key = fact_id(index, build_rows, hot_percent)
             facts.write(f"{key}\t{index % 100}\n")
-            expected[(key, f"group-{key % 10}")] += 1
+            expected[(key, group_label(key))] += 1
     with (directory / "dimensions.tsv").open("w", encoding="utf-8") as dimensions:
         dimensions.write("id\tlabel\n")
         for key in range(build_rows):
-            dimensions.write(f"{key}\tgroup-{key % 10}\n")
+            dimensions.write(f"{key}\t{group_label(key)}\n")
     return expected
 
 
