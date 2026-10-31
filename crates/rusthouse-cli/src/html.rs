@@ -169,27 +169,62 @@ fn html_escape_entity(ch: char) -> Option<&'static [u8]> {
     }
 }
 
+fn append_html_escape_span<W: Write>(
+    output: &mut W,
+    buffer: &mut [u8; 4096],
+    used: &mut usize,
+    mut bytes: &[u8],
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        if *used == buffer.len() {
+            output.write_all(buffer)?;
+            *used = 0;
+        }
+        if *used == 0 && bytes.len() >= buffer.len() {
+            // Large ordinary runs can pass through without a scratch copy.
+            output.write_all(bytes)?;
+            return Ok(());
+        }
+        let count = bytes.len().min(buffer.len() - *used);
+        buffer[*used..*used + count].copy_from_slice(&bytes[..count]);
+        *used += count;
+        bytes = &bytes[count..];
+    }
+    Ok(())
+}
+
 fn write_cell<W: Write>(output: &mut W, field: &str) -> io::Result<()> {
     let mut start = 0;
+    let mut buffer = [0u8; 4096];
+    let mut used = 0;
     for (index, ch) in field.char_indices() {
-        if ch.is_control() {
-            if start < index {
-                output.write_all(&field.as_bytes()[start..index])?;
-            }
-            write!(output, "&#{};", ch as u32)?;
-            start = index + ch.len_utf8();
-            continue;
-        }
-        if let Some(escape) = html_escape_entity(ch) {
-            if start < index {
-                output.write_all(&field.as_bytes()[start..index])?;
-            }
-            output.write_all(escape)?;
+        let mut numeric = [0u8; 16];
+        let entity: Option<&[u8]> = if ch.is_control() {
+            // Render numeric HTML entities without allocating a String.
+            let length = {
+                let mut cursor = std::io::Cursor::new(numeric.as_mut_slice());
+                write!(&mut cursor, "&#{};", ch as u32)?;
+                cursor.position() as usize
+            };
+            Some(&numeric[..length])
+        } else {
+            html_escape_entity(ch)
+        };
+        if let Some(entity) = entity {
+            append_html_escape_span(
+                output, &mut buffer, &mut used, &field.as_bytes()[start..index],
+            )?;
+            append_html_escape_span(output, &mut buffer, &mut used, entity)?;
             start = index + ch.len_utf8();
         }
     }
-    if start < field.len() {
-        output.write_all(&field.as_bytes()[start..])?;
+    if start == 0 {
+        // Keep one direct write for a safe cell, including long UTF-8 values.
+        return output.write_all(field.as_bytes());
+    }
+    append_html_escape_span(output, &mut buffer, &mut used, &field.as_bytes()[start..])?;
+    if used != 0 {
+        output.write_all(&buffer[..used])?;
     }
     Ok(())
 }
@@ -509,5 +544,47 @@ mod medium_html_framing_tests {
         let mut output = Vec::new();
         write_plain_cells(&mut output, &"z".repeat(4097), false).unwrap();
         assert_eq!(output.len(), 4097 + 9);
+    }
+}
+
+#[cfg(test)]
+mod html_escape_batching_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct CountingSink {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+    impl Write for CountingSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn thousands_of_escaped_characters_are_batched_without_changing_html() {
+        let mut sink = CountingSink::default();
+        let input = "<>&\"'\n\r".repeat(2048);
+        write_cell(&mut sink, &input).unwrap();
+        let expected = "&lt;&gt;&amp;&quot;&#39;&#10;&#13;".repeat(2048);
+        assert_eq!(sink.bytes, expected.as_bytes());
+        assert!(sink.writes <= 32, "unexpected fragmented writes: {}", sink.writes);
+    }
+
+    #[test]
+    fn long_plain_utf8_still_uses_one_write_and_mixed_cells_preserve_bytes() {
+        let value = "café".repeat(2048);
+        let mut plain = CountingSink::default();
+        write_cell(&mut plain, &value).unwrap();
+        assert_eq!(plain.writes, 1);
+        assert_eq!(plain.bytes, value.as_bytes());
+
+        let mut mixed = Vec::new();
+        write_cell(&mut mixed, "é<&🍕\nZ").unwrap();
+        assert_eq!(mixed, "é&lt;&amp;🍕&#10;Z".as_bytes());
     }
 }
