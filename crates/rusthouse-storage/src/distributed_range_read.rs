@@ -251,11 +251,23 @@ pub fn verify_object_ranges_crc32c(
     }
     let mut buffer = [0u8; 64 * 1024];
     for &(offset, length, expected) in ranges {
+        #[cfg(not(unix))]
         file.seek(SeekFrom::Start(offset))?;
+        #[cfg(unix)]
+        let mut position = offset;
         let mut remaining = length;
         let mut checksum = crate::distributed_crc32c::Crc32cState::new();
         while remaining > 0 {
             let amount = remaining.min(buffer.len() as u64) as usize;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileExt;
+                // Immutable scrub ranges can overlap or arrive out of order.
+                // Positioned reads avoid a seek syscall for every range.
+                file.read_exact_at(&mut buffer[..amount], position)?;
+                position += amount as u64; // range end was validated above
+            }
+            #[cfg(not(unix))]
             file.read_exact(&mut buffer[..amount])?;
             checksum.append(&buffer[..amount]);
             remaining -= amount as u64;
@@ -597,5 +609,48 @@ mod direct_disjoint_range_read_tests {
         assert!(read_object_ranges(&path, &[(0, 4), (20, 4)], 7).is_err());
         assert!(read_object_ranges(&path, &[(0, 4), (250, 7)], 100).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod positioned_scrub_regression_tests {
+    use super::*;
+
+    #[test]
+    fn unaligned_out_of_order_and_overlapping_scrubs_match_reference_crc() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-positioned-scrub-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        let _ = fs::remove_file(&root);
+        let bytes = (0..(256 * 1024 + 17))
+            .map(|index| ((index * 67 + index / 13) % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&root, &bytes).unwrap();
+        let ranges = [
+            (120_011usize, 80_003usize),
+            (3, 190_000),
+            (bytes.len(), 0),
+            (70_017, 65_537),
+            (1, 1),
+            (0, bytes.len()),
+        ];
+        let checksummed = ranges.map(|(start, length)| {
+            (
+                start as u64,
+                length as u64,
+                crate::distributed_crc32c::crc32c(&bytes[start..start + length]),
+            )
+        });
+        let budget = checksummed.iter().map(|(_, length, _)| *length).sum();
+        verify_object_ranges_crc32c(&root, &checksummed, budget).unwrap();
+        let mut invalid = checksummed;
+        invalid[3].2 ^= 0x4000;
+        assert_eq!(
+            verify_object_ranges_crc32c(&root, &invalid, budget)
+                .unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::remove_file(root).unwrap();
     }
 }
