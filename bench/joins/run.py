@@ -148,10 +148,11 @@ def main(argv=None):
         ]
         for statement in statements:
             run(statement)
+        query = query_for_strictness(args.strictness)
         elapsed = []
         for iteration in range(-args.warmups, args.runs):
             start = time.perf_counter() if iteration >= 0 else None
-            output = run(query_for_strictness(args.strictness))
+            output = run(query)
             if start is not None:
                 elapsed.append(time.perf_counter() - start)
             verify_result(output, expected,
