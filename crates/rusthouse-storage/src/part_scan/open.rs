@@ -1,9 +1,20 @@
 use super::*;
 
+// Path::exists() follows symlinks and treats dangling aliases as absent.
+// A dangling .cmrk2 next to an otherwise valid .mrk2 is still an ambiguous
+// part layout and must not be silently ignored.
+fn marks_path_present(path: &Path) -> Result<bool, PartError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(PartError::Io { path: path.to_path_buf(), source }),
+    }
+}
+
 pub(super) fn numeric_marks_path(part: &Path, name: &str) -> Result<PathBuf, PartError> {
     let plain_marks = part.join(format!("{name}.mrk2"));
     let compressed_marks = part.join(format!("{name}.cmrk2"));
-    match (plain_marks.exists(), compressed_marks.exists()) {
+    match (marks_path_present(&plain_marks)?, marks_path_present(&compressed_marks)?) {
         (true, true) => Err(PartError::InvalidScan(format!(
             "multiple mark files for {name}"
         ))),
