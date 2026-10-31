@@ -147,6 +147,17 @@ fn parse_decimal_type(data_type: &str) -> Option<(u8, u8, &'static str)> {
     parse_general_decimal(inner)
 }
 
+/// Reuse the exact decoder type grammar when verifying physical part widths.
+pub(crate) fn decimal_stream_width(data_type: &str) -> Option<u64> {
+    let (_, _, storage) = parse_decimal_type(data_type)?;
+    match storage {
+        "Int32" => Some(4),
+        "Int64" => Some(8),
+        "Int128" => Some(16),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
