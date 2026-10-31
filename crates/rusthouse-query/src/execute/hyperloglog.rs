@@ -434,7 +434,8 @@ mod nibble_decoder_regression_tests {
                 continue;
             }
             let mut corrupt = valid.as_bytes().to_vec();
-            corrupt[corrupt.len() - 1] = invalid;
+            let final_index = corrupt.len() - 1;
+            corrupt[final_index] = invalid;
             let corrupt = String::from_utf8(corrupt);
             if let Ok(corrupt) = corrupt {
                 let mut unchanged = HyperLogLog::default();
