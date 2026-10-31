@@ -88,5 +88,39 @@ class CorrectnessSoakTests(unittest.TestCase):
                 soak("rusthouse", "db", statement, "nonexistent-reference.tsv",
                      execute=lambda: self.fail("must not run unsafe SQL"))
 
+    def test_reference_replacement_between_stat_and_open_is_rejected(self):
+        import os
+        from unittest.mock import patch
+        from bench.scale.query_correctness_soak import read_reference
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "reference.tsv"
+            replacement = Path(root) / "new.tsv"
+            path.write_bytes(b"trusted")
+            replacement.write_bytes(b"changed")
+            real_open = os.open
+
+            def swapped(file, flags):
+                path.unlink()
+                replacement.rename(path)
+                return real_open(file, flags)
+
+            with patch("bench.scale.query_correctness_soak.os.open", side_effect=swapped):
+                with self.assertRaisesRegex(ValueError, "changed before opening"):
+                    read_reference(path)
+
+    def test_reference_mutation_during_hashing_is_rejected(self):
+        from unittest.mock import patch
+        from bench.scale.query_correctness_soak import read_reference
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "reference.tsv"
+            path.write_bytes(b"trusted")
+            def rewritten(source):
+                value = digest_file(source)
+                path.write_bytes(b"changed")
+                return value
+            with patch("bench.scale.query_correctness_soak.digest_file", side_effect=rewritten):
+                with self.assertRaisesRegex(ValueError, "changed during hashing"):
+                    read_reference(path)
+
 if __name__ == "__main__":
     unittest.main()
