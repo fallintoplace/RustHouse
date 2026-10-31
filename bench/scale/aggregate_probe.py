@@ -20,9 +20,10 @@ def aggregates(rows, *, start=0, column="id"):
         raise ValueError("invalid UInt64 interval")
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column):
         raise ValueError("column must be a SQL identifier")
-    total = rows * (2 * start + rows - 1) // 2
+    last_id = start + rows - 1
+    total = rows * (start + last_id) // 2
     return (("count(*)", rows), (f"sum({column})", total),
-            (f"min({column})", start), (f"max({column})", start + rows - 1))
+            (f"min({column})", start), (f"max({column})", last_id))
 
 
 def verify(binary, part, rows, *, timeout=600, execute=None,
