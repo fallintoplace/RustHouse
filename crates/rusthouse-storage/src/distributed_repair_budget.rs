@@ -476,7 +476,7 @@ pub fn plan_targeted_repairs(
         *remaining_node -= job.bytes;
         remaining_total -= job.bytes;
         *scheduled += 1;
-        selected.push(job.clone());
+        selected.push((*job).clone());
     }
     Ok(selected)
 }
