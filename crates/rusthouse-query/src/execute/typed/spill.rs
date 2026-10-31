@@ -109,32 +109,32 @@ fn write_cell(output: &mut impl Write, value: &Cell) -> Result<(), ExecutionErro
             record[1..].copy_from_slice(&v.to_bits().to_le_bytes());
             output.write_all(&record)?;
         }
-        Cell::Text(value) => {
-            output.write_all(&[4])?;
-            write_bytes(output, value)?;
-        }
-        Cell::Uuid(value) => {
-            output.write_all(&[5])?;
-            write_bytes(output, value.as_bytes())?;
-        }
+        Cell::Text(value) => write_bytes(output, 4, value)?,
+        Cell::Uuid(value) => write_bytes(output, 5, value.as_bytes())?,
     }
     Ok(())
 }
 
-fn write_bytes(output: &mut impl Write, value: &[u8]) -> Result<(), ExecutionError> {
+fn write_bytes(output: &mut impl Write, tag: u8, value: &[u8]) -> Result<(), ExecutionError> {
     let length = u32::try_from(value.len())
         .map_err(|_| invalid("typed sort value exceeds 4 GiB"))?;
     if value.len() > MAX_FIELD_BYTES {
         return Err(invalid("typed sort value exceeds 32 MiB field limit"));
     }
     if value.len() <= 256 {
-        let mut frame = [0u8; 260];
-        frame[..4].copy_from_slice(&length.to_le_bytes());
-        frame[4..4 + value.len()].copy_from_slice(value);
-        output.write_all(&frame[..4 + value.len()])?;
+        // One buffered write per small typed text cell, including its tag,
+        // length prefix and payload. This is common in external ORDER BY.
+        let mut frame = [0u8; 261];
+        frame[0] = tag;
+        frame[1..5].copy_from_slice(&length.to_le_bytes());
+        frame[5..5 + value.len()].copy_from_slice(value);
+        output.write_all(&frame[..5 + value.len()])?;
         return Ok(());
     }
-    output.write_all(&length.to_le_bytes())?;
+    let mut header = [0u8; 5];
+    header[0] = tag;
+    header[1..].copy_from_slice(&length.to_le_bytes());
+    output.write_all(&header)?;
     output.write_all(value)?;
     Ok(())
 }
@@ -726,5 +726,50 @@ mod heap_root_regression_tests {
                 .collect::<String>();
             assert_eq!(actual, expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod framed_text_spill_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct CountedWriter {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for CountedWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn text_and_uuid_cells_keep_exact_wire_layout_at_frame_boundary() {
+        for length in [0, 1, 32, 256, 257, 1024] {
+            let payload = vec![b'x'; length];
+            let mut output = CountedWriter::default();
+            write_cell(&mut output, &Cell::Text(payload.clone())).unwrap();
+            assert_eq!(output.calls, if length <= 256 { 1 } else { 2 });
+            assert_eq!(output.bytes[0], 4);
+            assert_eq!(output.bytes[1..5], (length as u32).to_le_bytes());
+            assert_eq!(&output.bytes[5..], payload);
+            let mut budget = MAX_BUFFER_BYTES;
+            let decoded = read_cell(&mut output.bytes.as_slice(), &mut budget).unwrap();
+            assert!(matches!(decoded, Cell::Text(bytes) if bytes == payload));
+        }
+        let uuid = "01234567-89ab-cdef-0123-456789abcdef".to_owned();
+        let mut output = CountedWriter::default();
+        write_cell(&mut output, &Cell::Uuid(uuid.clone())).unwrap();
+        assert_eq!(output.calls, 1);
+        assert_eq!(output.bytes[0], 5);
+        let mut budget = MAX_BUFFER_BYTES;
+        let decoded = read_cell(&mut output.bytes.as_slice(), &mut budget).unwrap();
+        assert!(matches!(decoded, Cell::Uuid(value) if value == uuid));
     }
 }
