@@ -92,14 +92,52 @@ impl ResumeMap {
         Ok(())
     }
 
+    // Update a dense sorted batch once per bitmap byte, instead of reading
+    // and writing the same byte for each of its eight completion flags.
+    // Short sparse batches keep the direct branch-free single-bit path.
+    fn apply_index_batch(&mut self, indexes: &[usize], complete: bool) {
+        if indexes.len() < 32 {
+            for &index in indexes {
+                let (byte, bit) = Self::bit_position(index);
+                if complete {
+                    self.completed[byte] |= bit;
+                } else {
+                    self.completed[byte] &= !bit;
+                }
+            }
+            return;
+        }
+        let mut current_byte = usize::MAX;
+        let mut mask = 0u8;
+        for &index in indexes {
+            let (byte, bit) = Self::bit_position(index);
+            if byte != current_byte {
+                if current_byte != usize::MAX {
+                    if complete {
+                        self.completed[current_byte] |= mask;
+                    } else {
+                        self.completed[current_byte] &= !mask;
+                    }
+                }
+                current_byte = byte;
+                mask = 0;
+            }
+            mask |= bit;
+        }
+        if current_byte != usize::MAX {
+            if complete {
+                self.completed[current_byte] |= mask;
+            } else {
+                self.completed[current_byte] &= !mask;
+            }
+        }
+    }
+
     /// Atomically record a sorted batch of verified, possibly nonadjacent
     /// chunks. No completion flags change if any index is invalid or repeated.
     pub fn mark_complete_indices(&mut self, indexes: &[usize]) -> Result<(), &'static str> {
         self.validate_index_batch(indexes)?;
-        for &index in indexes {
-            let (byte, bit) = Self::bit_position(index);
-            self.completed[byte] |= bit;
-        }
+        self.apply_index_batch(indexes, true);
         Ok(())
     }
 
@@ -107,10 +145,7 @@ impl ResumeMap {
     /// verified progress. Validation runs before any checkpoint mutation.
     pub fn invalidate_indices(&mut self, indexes: &[usize]) -> Result<(), &'static str> {
         self.validate_index_batch(indexes)?;
-        for &index in indexes {
-            let (byte, bit) = Self::bit_position(index);
-            self.completed[byte] &= !bit;
-        }
+        self.apply_index_batch(indexes, false);
         Ok(())
     }
 
@@ -843,5 +878,56 @@ mod checked_checkpoint_tests {
         bad_tail[length - 4..].copy_from_slice(&crc.to_le_bytes());
         assert!(ResumeMap::decode_binary_checked(&bad_tail).is_err());
         assert!(ResumeMap::decode_binary_checked(b"").is_err());
+    }
+}
+
+#[cfg(test)]
+mod bitmap_byte_batch_regressions {
+    use super::*;
+
+    #[test]
+    fn sorted_dense_and_sparse_batches_match_single_bit_transitions() {
+        for chunks in [
+            0usize, 1, 7, 8, 31, 32, 33, 63, 64, 65,
+            255, 256, 257, 8_193, 65_535, 65_536,
+        ] {
+            let mut batched = ResumeMap::new(chunks).unwrap();
+            let mut scalar = ResumeMap::new(chunks).unwrap();
+            let positions = (0..chunks)
+                .filter(|index| index % 11 != 0 && index % 17 != 0)
+                .collect::<Vec<_>>();
+            batched.mark_complete_indices(&positions).unwrap();
+            for &index in &positions {
+                scalar.mark_complete(index).unwrap();
+            }
+            assert_eq!(batched, scalar, "completed chunks={chunks}");
+            let invalidations = positions.iter().copied()
+                .filter(|index| index % 3 != 0)
+                .collect::<Vec<_>>();
+            batched.invalidate_indices(&invalidations).unwrap();
+            for &index in &invalidations {
+                scalar.invalidate_range(index, index + 1).unwrap();
+            }
+            assert_eq!(batched, scalar, "invalidated chunks={chunks}");
+            assert_eq!(batched.remaining(), scalar.remaining());
+            assert_eq!(batched.encode_binary_checked(), scalar.encode_binary_checked());
+        }
+    }
+
+    #[test]
+    fn dense_late_index_validation_never_commits_any_prior_byte() {
+        let mut map = ResumeMap::new(1024).unwrap();
+        map.mark_complete_range(0, 200).unwrap();
+        let original = map.clone();
+        let mut invalid = (0..100usize).collect::<Vec<_>>();
+        invalid.push(1024);
+        assert!(map.mark_complete_indices(&invalid).is_err());
+        assert_eq!(map, original);
+        assert!(map.invalidate_indices(&invalid).is_err());
+        assert_eq!(map, original);
+        invalid.pop();
+        invalid.push(99);
+        assert!(map.mark_complete_indices(&invalid).is_err());
+        assert_eq!(map, original);
     }
 }
