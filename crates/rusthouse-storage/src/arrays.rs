@@ -694,14 +694,16 @@ mod small_offsets_codegen_regression_tests {
 
     #[test]
     fn small_absolute_rows_still_reject_backward_offsets_and_overflows() {
-        let mut backward = 6u64.to_le_bytes().as_slice();
+        let backward_bytes = 6u64.to_le_bytes();
+        let mut backward = backward_bytes.as_slice();
         assert!(matches!(
             read_array_offsets(
                 &mut backward, 1, ArrayOffsetsEncoding::Absolute { previous_offset: 7 }
             ),
             Err(ArrayReadError::InvalidOffset { reason: "offset moves backwards", .. })
         ));
-        let mut overflow = 1u64.to_le_bytes().as_slice();
+        let overflow_bytes = 1u64.to_le_bytes();
+        let mut overflow = overflow_bytes.as_slice();
         assert!(matches!(
             read_array_offsets(
                 &mut overflow, 1, ArrayOffsetsEncoding::Absolute { previous_offset: u64::MAX }
