@@ -34,7 +34,8 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
             raise ValueError(f"invalid oversized count.txt in {child.name}")
         raw = payload.decode("ascii")
         digits = raw.removesuffix("\n").removesuffix("\r")
-        if not digits or not digits.isascii() or not digits.isdecimal():
+        if (not digits or not digits.isascii() or not digits.isdecimal()
+                or (len(digits) > 1 and digits.startswith("0"))):
             raise ValueError(f"invalid count.txt in {child.name}")
         count = int(digits)
         if count <= 0 or count > (1 << 64) - 1:
