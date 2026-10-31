@@ -24,12 +24,12 @@ class FixtureTsvDecodeTests(unittest.TestCase):
             (b"plain" * 10000, "plain" * 10000),
             (br"a\\tb", "a\\tb"),
             (br"a\tb", "a\tb"),
-            (br"\\N", r"\\N"),
+            (br"\\N", r"\N"),
         ]:
             self.assertEqual(_decode_fixture_field(field), expected)
         with self.assertRaises(UnicodeDecodeError):
             _decode_fixture_field(b"\\xff")
-        for invalid in (br"\\q", b"\\", br"\\xZZ"):
+        for invalid in (br"\q", b"\\", br"\xZZ"):
             with self.assertRaises(ValueError):
                 _decode_fixture_field(invalid)
 
