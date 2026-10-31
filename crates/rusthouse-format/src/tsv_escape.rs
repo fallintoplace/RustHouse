@@ -164,21 +164,21 @@ mod zero_allocation_validation_tests {
     #[test]
     fn validates_exactly_the_same_escape_grammar_as_the_decoder() {
         for field in [
-            br"simple".as_slice(), br"".as_slice(), br"\\t\\n\\r\\0".as_slice(),
-            br"a\\x00b\\x7F\\\\c".as_slice(), br"\\b\\f\\v".as_slice(),
+            br"simple".as_slice(), br"".as_slice(), br"\t\n\r\0".as_slice(),
+            br"a\x00b\x7F\\c".as_slice(), br"\b\f\v".as_slice(),
         ] {
             validate_tsv_field(field).unwrap();
             decode_tsv_field(field).unwrap();
         }
         for field in [
-            br"\\q".as_slice(), br"ending\\".as_slice(),
-            br"\\x0".as_slice(), br"\\xGG".as_slice(), br"hi\\x".as_slice(),
+            br"\q".as_slice(), br"ending\".as_slice(),
+            br"\x0".as_slice(), br"\xGG".as_slice(), br"hi\x".as_slice(),
         ] {
             assert!(validate_tsv_field(field).is_err());
             assert!(decode_tsv_field(field).is_err());
         }
         let mut long = vec![b'z'; 128 * 1024];
-        long.extend_from_slice(br"\\t");
+        long.extend_from_slice(br"\t");
         long.extend_from_slice(&vec![b'y'; 128 * 1024]);
         validate_tsv_field(&long).unwrap();
     }
