@@ -33,7 +33,5 @@ pub(super) fn parse_mark_record(record: &[u8], format: WideMarkFormat) -> WideMa
 }
 
 pub(super) fn read_u64(bytes: &[u8]) -> u64 {
-    let mut value = [0; 8];
-    value.copy_from_slice(bytes);
-    u64::from_le_bytes(value)
+    u64::from_le_bytes(bytes.try_into().expect("eight-byte mark word"))
 }

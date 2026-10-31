@@ -41,6 +41,12 @@ class AuditTests(unittest.TestCase):
             with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "one bounded SELECT"):
                 parse_lines(sql)
 
+    def test_ignores_statement_separators_inside_line_comments(self):
+        self.assertEqual(parse_lines("SELECT 1 -- comment; not SQL"), [
+            (1, "SELECT 1 -- comment; not SQL")])
+        with self.assertRaisesRegex(ValueError, "one bounded SELECT"):
+            parse_lines("SELECT 1; -- second statement")
+
     def test_rejects_mutating_sql(self):
         with self.assertRaises(ValueError):
             parse_lines("DROP TABLE events;")

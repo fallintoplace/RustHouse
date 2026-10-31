@@ -104,6 +104,15 @@ class StarJoinBenchmarkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid row"):
             benchmark("fake", rows=1_000_001)
 
+    def test_rejects_symlinked_fixture_sql_script(self):
+        with tempfile.TemporaryDirectory() as root:
+            script = Path(root) / "schema.sql"
+            script.write_text("CREATE TABLE t (id UInt64);", encoding="utf-8")
+            alias = Path(root) / "alias.sql"
+            alias.symlink_to(script)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                read_fixture_sql(alias)
+
     def test_generated_sql_script_is_bounded(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "table.sql"

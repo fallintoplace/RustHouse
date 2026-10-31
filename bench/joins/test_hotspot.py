@@ -19,6 +19,20 @@ class SkewedJoinTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "multiset"):
                 verify_rows(output[:-len(b"0\tgroup-0\n")], expected)
 
+    def test_rejects_symlinked_hotspot_fixture_outputs(self):
+        from pathlib import Path
+        for name in ("facts.tsv", "dimensions.tsv"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                directory = Path(root) / "fixture"
+                directory.mkdir()
+                protected = Path(root) / "protected"
+                protected.write_text("keep")
+                (directory / name).symlink_to(protected)
+                with self.assertRaisesRegex(ValueError, "symlinked hotspot"):
+                    write_fixture(directory, 10, 2, 50)
+                self.assertEqual(protected.read_text(), "keep")
+                self.assertFalse((directory / ("dimensions.tsv" if name == "facts.tsv" else "facts.tsv")).exists())
+
     def test_rejects_invalid_input_and_wrong_join_rows(self):
         with tempfile.TemporaryDirectory() as root:
             for probe, build, hot in [(0, 10, 90), (131073, 10, 90),

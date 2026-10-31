@@ -6,7 +6,6 @@ cross-engine benchmark claims. Targets are user-supplied, not CI defaults.
 import argparse
 import json
 import math
-import statistics
 from pathlib import Path
 
 from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
@@ -62,8 +61,11 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
                                      or len(samples) != report["runs"]):
                 raise ValueError(f"{query}: timing sample count differs from runs")
         if samples is not None:
-            measured_median = statistics.median(samples)
-            measured_p90 = sorted(samples)[math.ceil(0.9 * len(samples)) - 1]
+            ordered = sorted(samples)
+            middle = len(ordered) // 2
+            measured_median = (ordered[middle] if len(ordered) % 2
+                               else (ordered[middle - 1] + ordered[middle]) / 2)
+            measured_p90 = ordered[math.ceil(0.9 * len(ordered)) - 1]
             if (not math.isclose(median, measured_median, rel_tol=1e-9, abs_tol=0.0)
                     or not math.isclose(p90, measured_p90, rel_tol=1e-9, abs_tol=0.0)):
                 raise ValueError(f"{query}: timing summary differs from raw samples")
@@ -86,7 +88,22 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 
 
+def _unique_fields(pairs):
+    values = {}
+    for key, value in pairs:
+        if key in values:
+            raise ValueError(f"duplicate physical gate JSON field: {key}")
+        values[key] = value
+    return values
+
+
+def parse_report(path):
+    return json.loads(_read_bounded_report(path), object_pairs_hook=_unique_fields)
+
+
 def _read_bounded_report(path):
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("physical gate report must be a regular non-symlinked file")
     with path.open("rb") as source:
         contents = source.read(MAX_REPORT_BYTES + 1)
     if len(contents) > MAX_REPORT_BYTES:
@@ -103,7 +120,7 @@ def main(argv=None):
     parser.add_argument("--max-sample-spread-percent", type=float)
     args = parser.parse_args(argv)
     try:
-        report = validate(json.loads(_read_bounded_report(args.report)),
+        report = validate(parse_report(args.report),
                           min_rows=args.min_rows,
                           max_median_seconds=args.max_median_seconds,
                           max_p90_seconds=args.max_p90_seconds,

@@ -20,7 +20,9 @@ def parse_rss(status):
     for line in status.splitlines():
         if line.startswith(("VmRSS:", "VmHWM:")):
             tokens = line.split()
-            if len(tokens) == 3 and tokens[2] == "kB":
+            if (len(tokens) == 3 and tokens[2] == "kB"
+                    and tokens[1].isascii() and tokens[1].isdigit()
+                    and len(tokens[1]) <= 20):
                 peak = max(peak, int(tokens[1]) * 1024)
     return peak
 
@@ -30,7 +32,8 @@ def parse_io(payload):
     for line in payload.splitlines():
         if ": " in line:
             key, value = line.split(": ", 1)
-            fields[key] = int(value)
+            if key in ("read_bytes", "write_bytes"):
+                fields[key] = int(value)
     return {key: fields.get(key, 0) for key in ("read_bytes", "write_bytes")}
 
 
@@ -55,6 +58,8 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
     statement = sql.strip().removesuffix(";").rstrip()
     if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
         raise ValueError("resource profiler requires one read-only SELECT")
+    rss_budget_bytes = None if max_rss_mib is None else max_rss_mib * 1024 * 1024
+    read_budget_bytes = None if max_read_mib is None else max_read_mib * 1024 * 1024
     started = time.perf_counter()
     stderr_file = tempfile.TemporaryFile(mode="w+b")
     try:
@@ -78,11 +83,11 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
                 disk = parse_io((proc / "io").read_text())
             except (OSError, ValueError):
                 pass  # The process may exit between poll() and the /proc reads.
-            if max_rss_mib is not None and peak > max_rss_mib * 1024 * 1024:
+            if rss_budget_bytes is not None and peak > rss_budget_bytes:
                 failed_budget = True
                 process.kill()
                 break
-            if max_read_mib is not None and disk["read_bytes"] > max_read_mib * 1024 * 1024:
+            if read_budget_bytes is not None and disk["read_bytes"] > read_budget_bytes:
                 failed_read_budget = True
                 process.kill()
                 break

@@ -77,8 +77,11 @@ fn join_key(value: &typed::Cell) -> typed::Key {
 }
 
 fn key_eligible(value: &typed::Cell) -> bool {
-    !matches!(value, typed::Cell::Null)
-        && !matches!(value, typed::Cell::Numeric(Number::Float(number)) if number.is_nan())
+    match value {
+        typed::Cell::Null => false,
+        typed::Cell::Numeric(Number::Float(number)) => !number.is_nan(),
+        _ => true,
+    }
 }
 
 pub(super) fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {

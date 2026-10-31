@@ -139,6 +139,17 @@ pub(super) fn read_rows(
 // Build the probe key directly from its batch columns so misses never
 // materialize the full row, which may contain wide String payloads.
 
+fn selected_header(selected: &[(usize, String, Option<usize>)]) -> String {
+    let mut header = String::new();
+    for (index, (_, name, _)) in selected.iter().enumerate() {
+        if index > 0 {
+            header.push('\t');
+        }
+        header.push_str(name);
+    }
+    header
+}
+
 /// Retain only join keys, projected build-side columns and the optional
 /// post-join filter. All other columns are read neither from disk nor into
 /// the hash build. Slot indices remain in the full table schema.
@@ -534,8 +545,7 @@ fn execute_streaming_right_outer<W: Write>(
             any: query.any, null_filter,
         }, |_, _| Ok(()),
     )?;
-    let header = selected.iter().map(|(_, name, _)| name.as_str())
-        .collect::<Vec<_>>().join("\t");
+    let header = selected_header(&selected);
     writeln!(output, "{header}")?;
     if preflight <= query.offset { return Ok(()); }
     let end = query.offset.saturating_add(query.limit.unwrap_or(usize::MAX));
@@ -623,11 +633,7 @@ fn execute_streaming_inner<W: Write>(
         }
     }
     if hash.is_empty() {
-        let header = selected
-            .iter()
-            .map(|(_, name, _)| name.as_str())
-            .collect::<Vec<_>>()
-            .join("\t");
+        let header = selected_header(&selected);
         writeln!(output, "{header}")?;
         return Ok(());
     }
@@ -654,11 +660,7 @@ fn execute_streaming_inner<W: Write>(
         |_, _| Ok(()),
     )?;
 
-    let header = selected
-        .iter()
-        .map(|(_, name, _)| name.as_str())
-        .collect::<Vec<_>>()
-        .join("\t");
+    let header = selected_header(&selected);
     writeln!(output, "{header}")?;
     if preflight_matches <= query.offset {
         return Ok(());
@@ -850,11 +852,7 @@ fn execute_streaming_right<W: Write>(
         }
     }
     if hash.is_empty() {
-        let header = selected
-            .iter()
-            .map(|(_, name, _)| name.as_str())
-            .collect::<Vec<_>>()
-            .join("\t");
+        let header = selected_header(&selected);
         writeln!(output, "{header}")?;
         return Ok(());
     }
@@ -878,11 +876,7 @@ fn execute_streaming_right<W: Write>(
         },
         |_, _| Ok(()),
     )?;
-    let header = selected
-        .iter()
-        .map(|(_, name, _)| name.as_str())
-        .collect::<Vec<_>>()
-        .join("\t");
+    let header = selected_header(&selected);
     writeln!(output, "{header}")?;
     if preflight_matches <= query.offset {
         return Ok(());
@@ -1084,7 +1078,7 @@ fn execute_streaming_ordered_inner<W: Write>(
             Ok(())
         },
     )?;
-    let header = selected.iter().map(|(_, name, _)| name.as_str()).collect::<Vec<_>>().join("\t");
+    let header = selected_header(&selected);
     writeln!(output, "{header}")?;
     for row in heap.into_sorted_vec().into_iter().skip(query.offset) {
         for (index, value) in row.values.iter().enumerate() {
@@ -1374,22 +1368,14 @@ pub fn execute_join<W: Write>(
     }
     // LIMIT 0 needs the validated output schema, but not either input scan.
     if query.limit == Some(0) {
-        let header = selected
-            .iter()
-            .map(|(_, name, _)| name.as_str())
-            .collect::<Vec<_>>()
-            .join("\t");
+        let header = selected_header(&selected);
         writeln!(output, "{header}")?;
         return Ok(());
     }
 
     // A validated INNER join with an empty input cannot produce matches.
     if query.kind == JoinType::Inner && (left_meta.rows == 0 || right_meta.rows == 0) {
-        let header = selected
-            .iter()
-            .map(|(_, name, _)| name.as_str())
-            .collect::<Vec<_>>()
-            .join("\t");
+        let header = selected_header(&selected);
         writeln!(output, "{header}")?;
         return Ok(());
     }
@@ -1580,11 +1566,7 @@ pub fn execute_join<W: Write>(
             std::cmp::Ordering::Equal
         });
     }
-    let header = selected
-        .iter()
-        .map(|(_, name, _)| name.as_str())
-        .collect::<Vec<_>>()
-        .join("\t");
+    let header = selected_header(&selected);
     writeln!(output, "{header}")?;
     for pair in pairs
         .iter()
@@ -1816,5 +1798,20 @@ mod adaptive_join_build_side_tests {
         assert!(!prefer_left_hash_build(40_000, 60_000, false));
         assert!(!prefer_left_hash_build(10_000, 200_000, true));
         assert!(!prefer_left_hash_build(MAX_STREAM_BUILD_ROWS + 1, u64::MAX, false));
+    }
+}
+
+#[cfg(test)]
+mod selected_join_header_tests {
+    use super::selected_header;
+
+    #[test]
+    fn preserves_empty_single_and_multiple_column_headers() {
+        assert_eq!(selected_header(&[]), "");
+        assert_eq!(selected_header(&[(0, "one".into(), None)]), "one");
+        assert_eq!(
+            selected_header(&[(0, "left.id".into(), None), (1, "right.id".into(), Some(0))]),
+            "left.id\tright.id"
+        );
     }
 }

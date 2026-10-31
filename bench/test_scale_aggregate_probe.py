@@ -64,6 +64,11 @@ class AggregateProbeTests(unittest.TestCase):
             verify("rusthouse", "parts", 5, execute=lambda *a, **kw:
                    SimpleNamespace(returncode=0, stdout=b"wrong\n", stderr=b""))
 
+    def test_rejects_invalid_aggregate_identifiers(self):
+        for column in ("x" * 129, None):
+            with self.subTest(column=column), self.assertRaisesRegex(ValueError, "identifier"):
+                aggregates(3, column=column)
+
     def test_rejects_nonfinite_query_timeout(self):
         from bench.scale.aggregate_probe import verify
         for timeout in (float("nan"), float("inf"), float("-inf"), True):

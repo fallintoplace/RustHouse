@@ -6,7 +6,6 @@ Timing includes a new CLI process and potentially warm OS file caches.
 import argparse
 import json
 import math
-import statistics
 import subprocess
 import tempfile
 import time
@@ -72,10 +71,14 @@ def run_sweep(binary, part, rows, *, samples=3, timeout=600,
             if observed != expected:
                 raise ValueError(f"threshold {threshold}: result differs from sequential-id oracle")
             durations.append(elapsed)
+        ordered = sorted(durations)
+        middle = len(ordered) // 2
+        median = (ordered[middle] if len(ordered) % 2
+                  else (ordered[middle - 1] + ordered[middle]) / 2)
         results.append({"threshold": threshold, "expected_count": rows - (threshold - start),
                         "selectivity_percent": round(100 * (rows - (threshold - start)) / rows, 6),
-                        "median_seconds": statistics.median(durations),
-                        "p95_seconds": sorted(durations)[math.ceil(0.95 * len(durations)) - 1],
+                        "median_seconds": median,
+                        "p95_seconds": ordered[math.ceil(0.95 * len(ordered)) - 1],
                         "samples_seconds": durations, "verified": True})
     return {"workload": "physical-selectivity-sweep", "rows_assumed": rows,
             "assumption": f"id is exactly {start}..{start + rows - 1}", "steps": steps,

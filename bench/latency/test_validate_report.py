@@ -91,6 +91,17 @@ class BoundedLatencyReportReadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exceeds 2 MiB"):
                 load_report(path)
 
+    def test_refuses_symlinked_and_duplicate_key_reports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "real.json"
+            source.write_text('{"suite":"one","suite":"two"}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate SQL latency"):
+                load_report(source)
+            alias = Path(directory) / "symlink.json"
+            alias.symlink_to(source)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                load_report(alias)
+
     def test_loads_small_json(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "report.json"

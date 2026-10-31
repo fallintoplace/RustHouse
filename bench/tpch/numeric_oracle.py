@@ -53,11 +53,12 @@ def numeric_equal(left, right, tolerance=Decimal("0")):
 
 
 def split_tsv_rows(data):
-    if b"\r" in data.replace(b"\r\n", b""):
+    normalized = data.replace(b"\r\n", b"\n")
+    if b"\r" in normalized:
         return None
     if not data:
         return []
-    rows = data.replace(b"\r\n", b"\n").split(b"\n")
+    rows = normalized.split(b"\n")
     if data.endswith(b"\n"):
         rows.pop()
     return rows

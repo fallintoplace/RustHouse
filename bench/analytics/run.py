@@ -10,6 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from functools import lru_cache
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json, latency_summary
@@ -49,6 +50,8 @@ def load_queries(path):
                 or len(statement.encode("utf-8")) > 65_536):
             raise ValueError("analytics workload requires one bounded SELECT per line")
         queries.append(statement)
+    if not queries:
+        raise ValueError("analytics workload contains no SELECT queries")
     return queries
 
 
@@ -70,6 +73,7 @@ def execute_cli(binary, database, sql, timeout):
     return cli_sql(binary, database, sql, timeout)
 
 
+@lru_cache(maxsize=64)
 def http_target(endpoint):
     parsed = urllib.parse.urlsplit(endpoint)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:

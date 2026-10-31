@@ -27,6 +27,16 @@ class InteropParityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "capabilities"):
                     parity.verify_server_identity(8123)
 
+    def test_rejects_ambiguous_capability_json(self):
+        with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:
+            reply = opener.open.return_value.__enter__.return_value
+            reply.read.return_value = (
+                b'{"name":"RustHouse","source":"database",'
+                b'"read_only":true,"read_only":false}'
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate HTTP parity JSON"):
+                parity.verify_server_identity(8123)
+
     def test_server_identity_accepts_bounded_database_capabilities(self):
         payload = {"name": "RustHouse", "source": "database", "read_only": True}
         with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:
@@ -115,6 +125,14 @@ class SchemaResponseLimitTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exceeds 1 MiB"):
                 parity.fetch_schema(8123)
             response.read.assert_called_once_with(1_048_577)
+
+    def test_rejects_duplicate_schema_json_columns(self):
+        with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:
+            opener.open.return_value.__enter__.return_value.read.return_value = (
+                b'{"rows":3,"columns":[{"name":"id","name":"other"}]}'
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate HTTP parity JSON"):
+                parity.fetch_schema(8123)
 
     def test_schema_requires_object_and_accepts_normal_json(self):
         with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:

@@ -4,7 +4,6 @@ import argparse
 import csv
 import json
 import math
-import statistics
 import sys
 from pathlib import Path
 
@@ -71,8 +70,11 @@ def rows_from_report(report):
             ):
                 raise ValueError("successful query has invalid latency summary")
         if valid:
-            median = statistics.median(values)
-            p90 = sorted(values)[math.ceil(0.9 * len(values)) - 1]
+            ordered = sorted(values)
+            middle = len(ordered) // 2
+            median = (ordered[middle] if len(ordered) % 2
+                      else (ordered[middle - 1] + ordered[middle]) / 2)
+            p90 = ordered[math.ceil(0.9 * len(ordered)) - 1]
             if (not math.isclose(latency["median_seconds"], median, rel_tol=1e-9)
                     or not math.isclose(latency["p90_seconds"], p90, rel_tol=1e-9)):
                 raise ValueError("successful query has inconsistent latency summary")

@@ -116,7 +116,12 @@ def make_fixture(directory, rows, *, distribution="uniform"):
         raise ValueError("distribution must be uniform or skewed")
     source_row = fact_row if distribution == "uniform" else skewed_fact_row
     directory = Path(directory)
+    if directory.is_symlink():
+        raise ValueError("analytics fixture directory must not be a symlink")
     directory.mkdir(parents=True, exist_ok=True)
+    for name in ("events.tsv", "accounts.tsv"):
+        if (directory / name).is_symlink():
+            raise ValueError(f"refusing symlinked analytics suite fixture: {name}")
     path = directory / "events.tsv"
     oracle = sqlite3.connect(":memory:")
     oracle.execute(SQLITE_SCHEMA)
@@ -197,6 +202,7 @@ def run_suite(binary, workload, rows=10_000, runs=3, warmups=1, timeout=120,
         raise ValueError(f"workload accepts at most {workload['max_rows']} rows")
     if (type(runs) is not int or runs < 1
             or type(warmups) is not int or warmups < 0
+            or runs + warmups > 100
             or type(timeout) not in (int, float)
             or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("runs and timeout must be positive; warmups must be nonnegative")

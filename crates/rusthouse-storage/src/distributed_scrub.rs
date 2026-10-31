@@ -124,7 +124,8 @@ pub fn scrub_snapshot_with_byte_limit(
         Ok(())
     })?;
     for slot in slots {
-        let checked = slot.expect("each part was claimed exactly once")?;
+        let checked = slot
+            .ok_or_else(|| PartError::InvalidScan("missing snapshot scrub result".into()))??;
         report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
     }
     require_unchanged_snapshot(root, &active)?;

@@ -46,6 +46,11 @@ class PhysicalRangeOracleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sql_for("x;delete", 0, 1)
 
+    def test_rejects_invalid_range_oracle_identifier_lengths(self):
+        for table, column in (("x" * 129, "id"), ("events", "x" * 129), (None, "id")):
+            with self.subTest(table=table, column=column), self.assertRaisesRegex(ValueError, "name"):
+                sql_for(table, 0, 1, column=column)
+
     def test_rejects_unbounded_billion_row_query_count(self):
         with self.assertRaisesRegex(ValueError, "10000 query windows"):
             verify("rusthouse", "db", "events", 0, 1_000_000_000,

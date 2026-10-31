@@ -43,6 +43,14 @@ class ValidateBenchmarkManifestTests(unittest.TestCase):
                     load_manifest(path)
 
 
+    def test_rejects_duplicate_manifest_fields(self):
+        from bench.validate_benchmark import load_manifest
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "manifest.json"
+            path.write_text('{"results":[{"status":"passed","status":"failed"}]}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate benchmark manifest key"):
+                load_manifest(path)
+
     def test_accepts_four_complete_suites(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

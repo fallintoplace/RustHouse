@@ -62,7 +62,7 @@ def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=Non
                 raise ValueError("snapshot exceeds max_files")
     if count == 0:
         raise ValueError("snapshot contains no files")
-    result = {"workload": "snapshot-stream-bytes", "total_bytes": sum(groups.values()),
+    result = {"workload": "snapshot-stream-bytes", "total_bytes": total_bytes,
               "file_count": count, "byte_groups": groups,
               "scope": "filesystem inventory; verify active parts separately"}
     if largest_files:

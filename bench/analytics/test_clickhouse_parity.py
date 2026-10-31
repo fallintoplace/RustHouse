@@ -14,6 +14,25 @@ from bench.analytics.suite_runner import ACCOUNTS_ROWS, COLUMNS, fact_row, make_
 
 
 class ClickHouseDifferentialTests(unittest.TestCase):
+    def test_rejects_invalid_paired_controls_before_any_query(self):
+        from bench.analytics.clickhouse_parity import paired_query, run_parity
+
+        def forbidden(_sql):
+            self.fail("invalid run controls must not invoke either engine")
+
+        for options in ({"runs": True}, {"warmups": False},
+                        {"runs": 101}, {"runs": 100, "warmups": 1}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "runs"):
+                paired_query("SELECT 1", forbidden, forbidden, **options)
+
+        with mock.patch("bench.analytics.clickhouse_parity.make_fixture") as fixture:
+            for kwargs in ({"runs": True}, {"warmups": False},
+                           {"runs": 101}, {"rows": 1.5},
+                           {"timeout": float("nan")}, {"port": True}):
+                with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                    run_parity("binary", "client", {"max_rows": 1000}, **kwargs)
+            fixture.assert_not_called()
+
     def test_parity_accepts_floating_rounding_nulls_and_exact_big_integers(self):
         expected = b"9007199254740993\t1.3333333333333333\t\\N\n"
         actual = b"9007199254740993\t1.3333333333333335\tNULL\n"
@@ -113,6 +132,21 @@ class ClickHouseDifferentialTests(unittest.TestCase):
             finally:
                 oracle.close()
 
+
+    def test_rejects_symlinked_clickhouse_json_destinations(self):
+        for name in ("events.jsonl", "accounts.jsonl"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                folder = Path(root)
+                _, oracle = make_fixture(folder, 3)
+                oracle.close()
+                protected = folder / "protected"
+                protected.write_text("keep")
+                (folder / name).symlink_to(protected)
+                with self.assertRaisesRegex(ValueError, "symlinked ClickHouse"):
+                    fixture_json(folder, 3)
+                self.assertEqual(protected.read_text(), "keep")
+                other = "accounts.jsonl" if name == "events.jsonl" else "events.jsonl"
+                self.assertFalse((folder / other).exists())
 
     def test_parity_json_is_derived_from_loaded_tsv_not_regenerated(self):
         with tempfile.TemporaryDirectory() as directory:
