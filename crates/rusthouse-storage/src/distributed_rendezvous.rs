@@ -256,11 +256,28 @@ pub fn zone_aware_replicas_for(
             members[*left_index].node.cmp(&members[*right_index].node)
         })
     });
-    let mut zones = HashSet::new();
+    // Small replica groups normally have a few zones. Remember their
+    // indices on the stack, avoiding a separate hash table per placement.
+    // Large memberships retain hash-based O(n) membership checks.
+    let mut hashed_zones = (members.len() > 8).then(HashSet::new);
+    let mut stack_zones = [0usize; 8];
+    let mut stack_zone_count = 0usize;
     let mut selected = Vec::with_capacity(replicas);
     let mut first_pass = [false; MAX_PLACEMENT_NODES];
     for (position, &(_, index)) in ranked.iter().enumerate() {
-        if zones.insert(members[index].zone.as_str()) {
+        let first_in_zone = if let Some(zones) = hashed_zones.as_mut() {
+            zones.insert(members[index].zone.as_str())
+        } else if stack_zones[..stack_zone_count]
+            .iter()
+            .any(|&prior| members[prior].zone == members[index].zone)
+        {
+            false
+        } else {
+            stack_zones[stack_zone_count] = index;
+            stack_zone_count += 1;
+            true
+        };
+        if first_in_zone {
             first_pass[position] = true;
             selected.push(members[index].node.clone());
             if selected.len() == replicas {
@@ -728,6 +745,43 @@ mod allocation_free_membership_tests {
                 let mut duplicate_weights = weighted.clone();
                 duplicate_weights[1].0 = duplicate_weights[0].0;
                 assert!(weighted_replicas_for("shard_a", &duplicate_weights, 1).is_err());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod small_stack_zone_selection_tests {
+    use super::*;
+    use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn small_zone_rankings_match_weighted_reference_for_all_prefix_lengths() {
+        for count in [3, 4, 6, 8, 9, 16] {
+            let manifest = (0..count)
+                .map(|i| format!("n{i} zone{} {}\n", i % 3, i + 1))
+                .collect::<String>();
+            let members = parse_membership(&manifest).unwrap();
+            let weights = members.iter().map(|m| (m.node.as_str(), m.weight)).collect::<Vec<_>>();
+            for shard in 0..12 {
+                let shard = format!("small_{shard}");
+                let ranking = weighted_replicas_for(&shard, &weights, count).unwrap();
+                let mut seen = HashSet::new();
+                let mut first = Vec::new();
+                let mut fallback = Vec::new();
+                for node in ranking {
+                    let zone = &members.iter().find(|m| m.node == node).unwrap().zone;
+                    if seen.insert(zone) { first.push(node); }
+                    else { fallback.push(node); }
+                }
+                first.extend(fallback);
+                for replicas in 3..=count {
+                    assert_eq!(
+                        zone_aware_replicas_for(&shard, &members, replicas).unwrap(),
+                        first[..replicas],
+                        "count={count}, replicas={replicas}"
+                    );
+                }
             }
         }
     }
