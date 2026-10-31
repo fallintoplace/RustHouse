@@ -71,6 +71,12 @@ fn index(objects: &[ObjectMetadata]) -> Result<HashMap<&str, &ObjectMetadata>, &
     Ok(indexed)
 }
 
+fn needs_copy(meta: &ObjectMetadata, destination: &HashMap<&str, &ObjectMetadata>) -> bool {
+    destination
+        .get(meta.key.as_str())
+        .is_none_or(|existing| !meta.same_contents(existing))
+}
+
 /// Return missing or differing source objects in lexicographic key order.
 /// Deletions require a separate retention decision and are never planned here.
 pub fn plan_replica_copies(
@@ -81,11 +87,7 @@ pub fn plan_replica_copies(
     let destination = index(destination)?;
     let mut changed: Vec<ObjectMetadata> = source
         .into_values()
-        .filter(|meta| {
-            destination
-                .get(meta.key.as_str())
-                .is_none_or(|existing| !meta.same_contents(existing))
-        })
+        .filter(|meta| needs_copy(meta, &destination))
         .cloned()
         .collect();
     changed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
@@ -124,11 +126,7 @@ pub fn plan_replica_copy_batch(
         return Ok(source_index
             .into_values()
             .filter(|meta| meta.bytes <= max_bytes)
-            .filter(|meta| {
-                destination_index
-                    .get(meta.key.as_str())
-                    .is_none_or(|existing| !meta.same_contents(existing))
-            })
+            .filter(|meta| needs_copy(meta, &destination_index))
             .min_by(|left, right| left.key.cmp(&right.key))
             .cloned()
             .into_iter()
@@ -136,11 +134,7 @@ pub fn plan_replica_copy_batch(
     }
     let mut needed = source_index
         .into_values()
-        .filter(|meta| {
-            destination_index
-                .get(meta.key.as_str())
-                .is_none_or(|existing| !meta.same_contents(existing))
-        })
+        .filter(|meta| needs_copy(meta, &destination_index))
         .collect::<Vec<_>>();
     needed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
     let mut remaining = max_bytes;
