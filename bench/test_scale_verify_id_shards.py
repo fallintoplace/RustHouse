@@ -9,6 +9,14 @@ from bench.scale.verify_id_shards import verify, verify_file
 
 
 class VerifyShardsTests(unittest.TestCase):
+    def test_direct_verification_rejects_invalid_ranges_before_file_open(self):
+        missing = Path("missing-shard.tsv")
+        for args in ((0, 0, 1), (-1, 1, 1), (True, 1, 1),
+                     (0, 1, True), (0, 1, 1 << 64),
+                     ((1 << 64) - 1, 2, 1)):
+            with self.subTest(args=args), self.assertRaisesRegex(ValueError, "interval"):
+                verify_file(missing, *args)
+
     def test_verifies_exact_large_integer_boundaries(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
