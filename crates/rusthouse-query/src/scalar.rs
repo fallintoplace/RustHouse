@@ -735,7 +735,56 @@ fn parse_triangular(parser: &mut Parser, depth: usize) -> Result<i64, ParseError
     i64::try_from(value * (value + 1) / 2).map_err(|_| overflow())
 }
 
-/// Test primality with bounded 6k +/- 1 trial division.
+/// Deterministic Miller-Rabin for the SQL function's 10^12 input bound.
+/// The first seven prime bases are sufficient below 341,550,071,728,321.
+fn is_prime_bounded(value: u64) -> bool {
+    if value < 2 {
+        return false;
+    }
+    for prime in [2u64, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+        if value == prime {
+            return true;
+        }
+        if value % prime == 0 {
+            return false;
+        }
+    }
+
+    let divisions = (value - 1).trailing_zeros();
+    let odd = (value - 1) >> divisions;
+    let modulus = u128::from(value);
+    for witness in [2u64, 3, 5, 7, 11, 13, 17] {
+        let mut base = u128::from(witness);
+        let mut exponent = odd;
+        let mut result = 1u128;
+        while exponent > 0 {
+            if exponent & 1 == 1 {
+                result = result * base % modulus;
+            }
+            exponent >>= 1;
+            if exponent != 0 {
+                base = base * base % modulus;
+            }
+        }
+        if result == 1 || result == modulus - 1 {
+            continue;
+        }
+        let mut witnessed_composite = true;
+        for _ in 1..divisions {
+            result = result * result % modulus;
+            if result == modulus - 1 {
+                witnessed_composite = false;
+                break;
+            }
+        }
+        if witnessed_composite {
+            return false;
+        }
+    }
+    true
+}
+
+/// Decide SQL scalar primality in logarithmic time, even near one trillion.
 fn parse_is_prime(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "IS_PRIME requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -748,22 +797,7 @@ fn parse_is_prime(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
             "IS_PRIME supports values up to 1000000000000".into(),
         ));
     }
-    let value = u64::try_from(value)
-        .map_err(|_| ParseError("IS_PRIME requires a nonnegative integer".into()))?;
-    if value % 2 == 0 {
-        return Ok(i64::from(value == 2));
-    }
-    if value % 3 == 0 {
-        return Ok(i64::from(value == 3));
-    }
-    let mut divisor = 5_u64;
-    while divisor <= value / divisor {
-        if value % divisor == 0 || value % (divisor + 2) == 0 {
-            return Ok(0);
-        }
-        divisor += 6;
-    }
-    Ok(1)
+    Ok(i64::from(is_prime_bounded(value as u64)))
 }
 
 /// Compute n choose k exactly for n up to 66.
@@ -1420,5 +1454,40 @@ mod clickhouse_tobool_int64_tests {
         for sql in ["SELECT toBool()", "SELECT toBool(1, 2)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod miller_rabin_primality_tests {
+    use super::*;
+
+    fn trial_prime(value: u64) -> bool {
+        if value < 2 { return false; }
+        let mut candidate = 2;
+        while candidate <= value / candidate {
+            if value % candidate == 0 { return false; }
+            candidate += 1;
+        }
+        true
+    }
+
+    #[test]
+    fn matches_exact_division_for_all_small_inputs() {
+        for value in 0..50_000u64 {
+            assert_eq!(is_prime_bounded(value), trial_prime(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn rejects_strong_pseudoprimes_and_large_semiprimes() {
+        for composite in [
+            561u64, 1105, 1729, 3215031751,
+            1_000_003u64 * 999_983u64,
+            1_000_000_000_000,
+        ] {
+            assert!(!is_prime_bounded(composite), "{composite}");
+        }
+        assert!(is_prime_bounded(999_999_937));
+        assert!(is_prime_bounded(2_147_483_647));
     }
 }
