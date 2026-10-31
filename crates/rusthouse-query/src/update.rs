@@ -1,26 +1,50 @@
-//! Bounded UPDATE table SET column = literal [WHERE ...] parser.
+//! Bounded UPDATE parser. Numeric self-updates use checked integer offsets.
 use crate::{Operator, ParseError, Parser, Select, Source, Token, parse_select_tokens, tokenize};
 use std::collections::HashSet;
 
 const MAX_UPDATE_ASSIGNMENTS: usize = 64;
 const MAX_UPDATE_TABLE_BYTES: usize = 128;
 
+/// A literal replacement or an integer increment/decrement of the same column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateValue {
+    Literal(Option<String>),
+    Offset { delta: u128, subtract: bool },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Update {
     pub table: String,
-    pub assignments: Vec<(String, Option<String>)>,
+    pub assignments: Vec<(String, UpdateValue)>,
     pub select: Select,
 }
 
-fn parse_update_assignment_value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
+fn parse_update_assignment_value(parser: &mut Parser, column: &str) -> Result<UpdateValue, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::String(value)) | Some(Token::Number(value)) => {
             parser.index += 1;
-            Ok(Some(value.clone()))
+            Ok(UpdateValue::Literal(Some(value.clone())))
         }
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
             parser.index += 1;
-            Ok(None)
+            Ok(UpdateValue::Literal(None))
+        }
+        Some(Token::Word(word)) if word == column => {
+            parser.index += 1;
+            let subtract = if parser.take(Token::Plus) {
+                false
+            } else if parser.take(Token::Minus) {
+                true
+            } else {
+                return Err(ParseError("UPDATE self-reference requires + or -".into()));
+            };
+            let value = parser.number()?;
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(ParseError("UPDATE offset must be a non-negative integer".into()));
+            }
+            let delta = value.parse::<u128>()
+                .map_err(|_| ParseError("UPDATE offset exceeds UInt128".into()))?;
+            Ok(UpdateValue::Offset { delta, subtract })
         }
         Some(Token::Plus) => {
             parser.index += 1;
@@ -28,18 +52,18 @@ fn parse_update_assignment_value(parser: &mut Parser) -> Result<Option<String>, 
                 Some(Token::Number(value)) if !value.starts_with('-') => {
                     let value = value.clone();
                     parser.index += 1;
-                    Ok(Some(value))
+                    Ok(UpdateValue::Literal(Some(value)))
                 }
                 _ => Err(ParseError("UPDATE + requires a numeric literal".into())),
             }
         }
         _ => Err(ParseError(
-            "UPDATE SET accepts only literal values or NULL".into(),
+            "UPDATE SET accepts literals, NULL, or checked same-column integer offsets".into(),
         )),
     }
 }
 
-fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)>, ParseError> {
+fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, UpdateValue)>, ParseError> {
     let mut assignments = Vec::new();
     let mut seen = HashSet::new();
     loop {
@@ -53,7 +77,8 @@ fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)
         if !parser.take(Token::Operator(Operator::Eq)) {
             return Err(ParseError("UPDATE assignments require =".into()));
         }
-        assignments.push((column, parse_update_assignment_value(parser)?));
+        let assignment = parse_update_assignment_value(parser, &column)?;
+        assignments.push((column, assignment));
         if !parser.take(Token::Comma) {
             break;
         }
@@ -158,8 +183,8 @@ mod tests {
         assert_eq!(
             update.assignments,
             vec![
-                ("name".into(), Some("O'Brien".into())),
-                ("value".into(), None),
+                ("name".into(), UpdateValue::Literal(Some("O'Brien".into()))),
+                ("value".into(), UpdateValue::Literal(None)),
             ]
         );
         assert_eq!(update.select.source, Some(Source::Table("events".into())));
@@ -185,7 +210,10 @@ mod tests {
             "UPDATE events",
             "UPDATE events SET",
             "UPDATE events SET id 5",
-            "UPDATE events SET id = id + 1",
+            "UPDATE events SET id = other + 1",
+            "UPDATE events SET id = id * 2",
+            "UPDATE events SET id = id + -1",
+            "UPDATE events SET id = id + 1.5",
             "UPDATE events SET id = 1, id = 2",
             "UPDATE events SET id = 1 WHERE",
             "UPDATE events SET id = 1 WHERE id = 1 LIMIT 1",
@@ -207,7 +235,41 @@ mod tests {
         let parsed = parse_update("UPDATE events SET id = +3 WHERE id = 1")
             .unwrap()
             .unwrap();
-        assert_eq!(parsed.assignments, vec![("id".into(), Some("3".into()))]);
+        assert_eq!(
+            parsed.assignments,
+            vec![("id".into(), UpdateValue::Literal(Some("3".into())))]
+        );
         assert!(parse_update("UPDATE events SET id = +NULL").is_err());
+    }
+}
+
+#[cfg(test)]
+mod checked_integer_update_parser_tests {
+    use super::*;
+
+    #[test]
+    fn self_arithmetic_uses_a_typed_offset_not_a_string_literal() {
+        let update = parse_update(
+            "UPDATE inventory SET amount = amount + 7, stock = stock - 3 WHERE id = 4"
+        ).unwrap().unwrap();
+        assert_eq!(update.assignments, vec![
+            ("amount".into(), UpdateValue::Offset { delta: 7, subtract: false }),
+            ("stock".into(), UpdateValue::Offset { delta: 3, subtract: true }),
+        ]);
+        assert_eq!(update.select.predicates.len(), 1);
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_unbounded_arithmetic() {
+        for sql in [
+            "UPDATE events SET amount = other + 1",
+            "UPDATE events SET amount = amount / 2",
+            "UPDATE events SET amount = amount + 1.5",
+            "UPDATE events SET amount = amount + -1",
+            "UPDATE events SET amount = amount -",
+            "UPDATE events SET amount = amount + 340282366920938463463374607431768211456",
+        ] {
+            assert!(parse_update(sql).is_err(), "{sql}");
+        }
     }
 }

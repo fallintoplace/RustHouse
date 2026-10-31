@@ -51,6 +51,31 @@ fn create_private_replica_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+
+// A crashed copy may leave its private staging file behind. A later process
+// can reuse the same PID, so never let one orphan block every future copy.
+fn create_replica_staging_with(
+    mut candidate: impl FnMut() -> PathBuf,
+) -> io::Result<(PathBuf, File)> {
+    const MAX_COLLISION_RETRIES: usize = 32;
+    for _ in 0..MAX_COLLISION_RETRIES {
+        let path = candidate();
+        match create_private_replica_file(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "replica staging namespace exhausted",
+    ))
+}
+
+fn create_replica_staging_file(parent: &Path) -> io::Result<(PathBuf, File)> {
+    create_replica_staging_with(|| staging_path(parent, "replica"))
+}
+
 // A retry must not stream a large immutable object only to discover
 // an existing destination when it attempts the final hard link.
 fn require_new_destination(path: &Path) -> io::Result<()> {
@@ -129,7 +154,6 @@ fn copy_immutable_file_impl(
         ));
     }
     require_new_destination(destination)?;
-    let staging = staging_path(parent, "replica");
     let mut input = File::open(source)?;
     let opened = input.metadata()?;
     if !opened.file_type().is_file() || opened.len() != source_meta.len() {
@@ -139,7 +163,7 @@ fn copy_immutable_file_impl(
     if !same_source_identity(&source_meta, &opened) {
         return Err(io::Error::other("source inode changed before immutable copy"));
     }
-    let mut output = create_private_replica_file(&staging)?;
+    let (staging, mut output) = create_replica_staging_file(parent)?;
     let mut checksum = expected_crc32c.map(|_| crate::distributed_crc32c::Crc32cState::new());
     let copied = stream_bounded_copy(
         &mut input, &mut output, source_meta.len(), max_bytes, checksum.as_mut(),
@@ -412,5 +436,46 @@ mod existing_destination_preflight_tests {
             io::ErrorKind::AlreadyExists
         );
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod orphaned_replica_staging_tests {
+    use super::*;
+
+    #[test]
+    fn collision_retry_never_overwrites_abandoned_private_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-stage-retry-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let orphan = dir.join(".rusthouse-replica-orphan");
+        let fresh = dir.join(".rusthouse-replica-fresh");
+        fs::write(&orphan, b"uncommitted old transfer").unwrap();
+        let mut candidates = [orphan.clone(), fresh.clone()].into_iter();
+        let (staging, mut file) =
+            create_replica_staging_with(|| candidates.next().expect("bounded retries")).unwrap();
+        assert_eq!(staging, fresh);
+        file.write_all(b"new transfer").unwrap();
+        drop(file);
+        assert_eq!(fs::read(&orphan).unwrap(), b"uncommitted old transfer");
+        assert_eq!(fs::read(&fresh).unwrap(), b"new transfer");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cannot_overwrite_even_when_all_staging_names_collide() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-stage-exhaustion-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let stale = dir.join("stale");
+        fs::write(&stale, b"persistent").unwrap();
+        let err = create_replica_staging_with(|| stale.clone()).err().unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&stale).unwrap(), b"persistent");
+        fs::remove_dir_all(dir).unwrap();
     }
 }

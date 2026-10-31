@@ -1,6 +1,8 @@
 //! Safe seek-and-read support for a future replica object service.
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io;
+#[cfg(not(unix))]
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 const ABSOLUTE_MAX_RANGE: usize = 8 * 1024 * 1024;
@@ -69,11 +71,19 @@ fn open_verified_object(path: &Path) -> io::Result<(File, fs::Metadata)> {
 }
 
 fn read_at(file: &mut File, offset: u64, length: usize) -> io::Result<Vec<u8>> {
-    if offset != 0 {
-        file.seek(SeekFrom::Start(offset))?;
-    }
     let mut bytes = vec![0; length];
-    file.read_exact(&mut bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        // Positioned reads do not mutate the shared descriptor offset.
+        // This removes seek syscalls for scattered immutable object ranges.
+        file.read_exact_at(&mut bytes, offset)?;
+    }
+    #[cfg(not(unix))]
+    {
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(&mut bytes)?;
+    }
     Ok(bytes)
 }
 
@@ -370,6 +380,30 @@ mod checked_multi_range_tests {
             io::ErrorKind::InvalidData
         );
         assert!(read_object_ranges_checked(&path, &ranges, 8).is_err());
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod positioned_range_tests {
+    use super::*;
+    use std::io::{Seek, SeekFrom};
+
+    #[test]
+    fn positioned_reads_preserve_cursor_and_match_ordinary_seeks() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-positioned-ranges-{}-{}", std::process::id(), line!()
+        ));
+        let input = (0..256 * 1024).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        fs::write(&path, &input).unwrap();
+        let mut file = File::open(&path).unwrap();
+        file.seek(SeekFrom::Start(71)).unwrap();
+        for (start, length) in [(0, 5), (80_000, 77), (17, 4096), (250_000, 144), (256 * 1024, 0)] {
+            assert_eq!(read_at(&mut file, start, length).unwrap(), &input[start as usize..start as usize + length]);
+            assert_eq!(file.stream_position().unwrap(), 71);
+        }
+        assert_eq!(read_at(&mut file, 256 * 1024, 1).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(file.stream_position().unwrap(), 71);
         fs::remove_file(path).unwrap();
     }
 }

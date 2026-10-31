@@ -175,16 +175,30 @@ fn sort_run_keys(keys: &mut Vec<u64>) {
         keys.sort_unstable();
         return;
     }
+    // The first histogram pass can also detect all byte positions that
+    // differ from the first key. This skips histogram scans and scatter
+    // passes for the constant high bytes of UInt8/16/32 dimensions.
+    let mut offsets = [0usize; 256];
+    let pivot = keys[0];
+    let mut varying = 0u64;
+    for &key in keys.iter() {
+        offsets[(key & 255) as usize] += 1;
+        varying |= key ^ pivot;
+    }
+    // A uniform run is already sorted; avoid even allocating scratch.
+    if varying == 0 {
+        return;
+    }
     let mut scratch = vec![0u64; keys.len()];
     for shift in (0..64).step_by(8) {
-        let mut offsets = [0usize; 256];
-        for &key in keys.iter() {
-            offsets[((key >> shift) & 255) as usize] += 1;
-        }
-        // Whole-byte uniformity is common on narrow dimensions, so do not
-        // copy the input for passes that cannot change its ordering.
-        if offsets.iter().any(|&count| count == keys.len()) {
+        if (varying >> shift) & 255 == 0 {
             continue;
+        }
+        if shift != 0 {
+            offsets.fill(0);
+            for &key in keys.iter() {
+                offsets[((key >> shift) & 255) as usize] += 1;
+            }
         }
         let mut begin = 0usize;
         for count in &mut offsets {
@@ -620,5 +634,47 @@ mod spill_preflight_quota_tests {
         group.disk_bytes = MAX_DISK_BYTES;
         assert!(group.compact_runs().is_err());
         assert_eq!(fs::read_dir(directory).unwrap().count(), created);
+    }
+}
+
+#[cfg(test)]
+mod narrow_key_radix_sort_tests {
+    use super::*;
+
+    #[test]
+    fn large_narrow_dimensions_skip_constant_high_byte_passes() {
+        let mut keys = (0..150_000u64)
+            .rev()
+            .map(|i| (i.wrapping_mul(71)) & 0xffff)
+            .collect::<Vec<_>>();
+        let mut expected = keys.clone();
+        expected.sort_unstable();
+        sort_run_keys(&mut keys);
+        assert_eq!(keys, expected);
+
+        let mut signed = (0..60_000i64)
+            .rev()
+            .map(|i| (i - 30_000) as u64 ^ (1u64 << 63))
+            .collect::<Vec<_>>();
+        let mut expected = signed.clone();
+        expected.sort_unstable();
+        sort_run_keys(&mut signed);
+        assert_eq!(signed, expected);
+    }
+
+    #[test]
+    fn uniform_runs_and_sparse_changing_bytes_stay_exact() {
+        let mut equal = vec![0xa5a5_0000_0000_00a5; 100_000];
+        sort_run_keys(&mut equal);
+        assert!(equal.iter().all(|&value| value == 0xa5a5_0000_0000_00a5));
+
+        let mut high_only = (0..100_000u64)
+            .rev()
+            .map(|i| ((i % 251) << 56) | 0x00ff_0000_0000_00ff)
+            .collect::<Vec<_>>();
+        let mut expected = high_only.clone();
+        expected.sort_unstable();
+        sort_run_keys(&mut high_only);
+        assert_eq!(high_only, expected);
     }
 }

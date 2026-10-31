@@ -274,9 +274,9 @@ pub(super) fn grouped_count_shard_sql(sql: &str, select: &Select) -> Option<Stri
     None
 }
 
-/// Exact distributed top-K currently accepts a single unaliased integer
-/// projection and ORDER BY that same column. Validate integer types against
-/// each peer's schema before dispatch.
+/// Exact distributed top-K accepts up to sixteen unaliased projections,
+/// ordered by the first selected integer column. Validate the sort-key type
+/// against every peer's schema before dispatch.
 pub(super) fn is_safe_sorted_scan(select: &Select) -> bool {
     let (Projection::Columns(columns), Some(order), Some(limit)) =
         (&select.projection, &select.order_by, select.limit)
@@ -288,7 +288,7 @@ pub(super) fn is_safe_sorted_scan(select: &Select) -> bool {
         && select.having.is_none()
         && select.order_by_extra.is_empty()
         && order.nulls_first.is_none()
-        && columns.len() == 1
+        && (1..=16).contains(&columns.len())
         && columns[0] == order.column
         && select.offset.unwrap_or(0)
             .checked_add(limit)
