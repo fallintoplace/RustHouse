@@ -61,7 +61,7 @@ def latency_summary(seconds):
     ordered = sorted(seconds)
     middle = len(ordered) // 2
     median = (ordered[middle] if len(ordered) % 2
-              else (ordered[middle - 1] + ordered[middle]) / 2)
+              else ordered[middle - 1] + (ordered[middle] - ordered[middle - 1]) / 2)
     return {
         "min_seconds": ordered[0],
         "median_seconds": median,

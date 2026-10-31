@@ -25,6 +25,11 @@ class SharedWorkloadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             latency_summary([-1])
 
+    def test_even_median_stays_finite_for_large_samples(self):
+        values = latency_summary([1e308, 1e308])
+        self.assertEqual(values["median_seconds"], 1e308)
+        self.assertEqual(json.loads(json.dumps(values, allow_nan=False)), values)
+
     def test_cli_preserves_raw_bytes_for_exact_comparisons(self):
         def execute_sql(command, **kwargs):
             kwargs["stdout"].write(b"1\n")
