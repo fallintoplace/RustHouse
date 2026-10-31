@@ -137,7 +137,26 @@ fn decode_array_offsets<const ABSOLUTE: bool, O: Read>(
             .map_err(ArrayReadError::Offsets)?;
         for (row, record) in scratch[..bytes].chunks_exact(OFFSET_ENTRY_BYTES).enumerate() {
             let encoded = u64::from_le_bytes(record.try_into().unwrap());
-            append_array_offset(encoding, base, &mut absolute, encoded, row, &mut offsets)?;
+            let next = if ABSOLUTE {
+                encoded
+            } else {
+                absolute.checked_add(encoded).ok_or(ArrayReadError::InvalidOffset {
+                    row,
+                    reason: "array size overflows u64",
+                })?
+            };
+            if next < absolute {
+                return Err(ArrayReadError::InvalidOffset {
+                    row,
+                    reason: "offset moves backwards",
+                });
+            }
+            let elements = next - base;
+            if elements > MAX_BATCH_ELEMENTS {
+                return Err(ArrayReadError::TooManyElements(elements));
+            }
+            offsets.push(elements as usize);
+            absolute = next;
         }
         return Ok(ArrayOffsets { offsets, last_absolute_offset: absolute });
     }
