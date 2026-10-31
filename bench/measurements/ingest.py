@@ -48,6 +48,13 @@ def summarize(seconds):
     return latency_summary(seconds)
 
 
+def copy_sql(source, format_name):
+    if format_name not in ("TSV", "SSV"):
+        raise ValueError("format must be TSV or SSV")
+    escaped = str(source).replace("'", "''")
+    return f"COPY measurements FROM '{escaped}' WITH (FORMAT {format_name})"
+
+
 def sql(binary, database, statement, timeout):
     return cli_sql(binary, database, statement, timeout).decode("utf-8").strip()
 
@@ -98,10 +105,7 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name,
         minimum, maximum, total = write_input(source, rows, stations, delimiter,
                                               batch_rows=fixture_batch_rows)
         size = source.stat().st_size
-        copy = (
-            f"COPY measurements FROM '{source}' "
-            f"WITH (FORMAT {format_name})"
-        )
+        copy = copy_sql(source, format_name)
         timings = []
         for index in range(warmups + runs):
             database = root / f"database-{index}"
