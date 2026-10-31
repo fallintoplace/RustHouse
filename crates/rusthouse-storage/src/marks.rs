@@ -71,6 +71,26 @@ fn marks_io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
+// Verify both path identity and immutable contents across a raw mark read.
+fn marks_file_unchanged(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
+    if !after.file_type().is_file()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<WideMark>, PartError> {
     let entry = std::fs::symlink_metadata(path).map_err(|source| marks_io_error(path, source))?;
     if !entry.file_type().is_file() {
@@ -79,7 +99,7 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
             source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular marks file"),
         });
     }
-    let file = File::open(path).map_err(|source| marks_io_error(path, source))?;
+    let mut file = File::open(path).map_err(|source| marks_io_error(path, source))?;
     let opened = file
         .metadata()
         .map_err(|source| marks_io_error(path, source))?;
@@ -104,13 +124,25 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
         return Err(marks_too_large(path));
     }
     let mut content = Vec::with_capacity(size as usize);
-    file.take(MAX_MARKS_BYTES as u64 + 1)
+    (&mut file).take(MAX_MARKS_BYTES as u64 + 1)
         .read_to_end(&mut content)
         .map_err(|source| marks_io_error(path, source))?;
     if content.len() > MAX_MARKS_BYTES {
         return Err(marks_too_large(path));
     }
     if content.len() as u64 != size {
+        return Err(marks_io_error(
+            path,
+            io::Error::new(io::ErrorKind::InvalidData, "marks file changed during read"),
+        ));
+    }
+    // Keep the open descriptor alive and check the path again. A same-size
+    // replacement or in-place rewrite must not be silently trusted.
+    let finished = file.metadata().map_err(|source| marks_io_error(path, source))?;
+    let current = std::fs::symlink_metadata(path).map_err(|source| marks_io_error(path, source))?;
+    if !marks_file_unchanged(&opened, &finished)
+        || !marks_file_unchanged(&opened, &current)
+    {
         return Err(marks_io_error(
             path,
             io::Error::new(io::ErrorKind::InvalidData, "marks file changed during read"),
@@ -539,5 +571,39 @@ mod raw_marks_size_stability_tests {
         fs::write(&path, [0u8; 24]).unwrap();
         assert_eq!(read_wide_marks(&path).unwrap().marks.len(), 1);
         fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod immutable_raw_marks_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn rejects_equal_length_replacement_and_ctime_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-mark-identity-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let original = root.join("first.mrk2");
+        let replacement = root.join("second.mrk2");
+        std::fs::write(&original, [0u8; 24]).unwrap();
+        std::fs::write(&replacement, [1u8; 24]).unwrap();
+        let before = std::fs::metadata(&original).unwrap();
+        assert!(marks_file_unchanged(&before, &before));
+        assert!(!marks_file_unchanged(
+            &before, &std::fs::metadata(&replacement).unwrap(),
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut permissions = before.permissions();
+        permissions.set_mode(permissions.mode() ^ 0o100);
+        std::fs::set_permissions(&original, permissions).unwrap();
+        let altered = std::fs::metadata(&original).unwrap();
+        assert_eq!(altered.len(), before.len());
+        assert_eq!(altered.modified().unwrap(), before.modified().unwrap());
+        assert!(!marks_file_unchanged(&before, &altered));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
