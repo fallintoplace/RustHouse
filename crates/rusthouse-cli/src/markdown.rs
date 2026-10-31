@@ -59,6 +59,24 @@ fn decode_markdown_fields(line: &[u8], data_row: bool) -> io::Result<Vec<Cow<'_,
         .collect()
 }
 
+// Frame common safe Markdown cells without separate prefix/suffix writes.
+fn write_framed_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+    if field.len() <= 256
+        && field.iter().all(|&byte| {
+            !byte.is_ascii_control() && !matches!(byte, b'|' | b'\\' | b'&' | b'<' | b'>')
+        })
+    {
+        let mut framed = [0u8; 259];
+        framed[0] = b' ';
+        framed[1..field.len() + 1].copy_from_slice(field);
+        framed[field.len() + 1..field.len() + 3].copy_from_slice(b" |");
+        return output.write_all(&framed[..field.len() + 3]);
+    }
+    output.write_all(b" ")?;
+    write_markdown_cell(output, field)?;
+    output.write_all(b" |")
+}
+
 fn write_tsv_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
     if !data_row || !line.contains(&b'\\') {
         // Validate every field before writing so malformed UTF-8 is atomic.
@@ -67,9 +85,7 @@ fn write_tsv_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool)
         })?;
         output.write_all(b"|")?;
         for field in line.split(|&byte| byte == b'\t') {
-            output.write_all(b" ")?;
-            write_markdown_cell(output, field)?;
-            output.write_all(b" |")?;
+            write_framed_cell(output, field)?;
         }
         return output.write_all(b"\n");
     }
@@ -81,9 +97,7 @@ fn write_tsv_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool)
     }
     output.write_all(b"|")?;
     for field in fields {
-        output.write_all(b" ")?;
-        write_markdown_cell(output, field.as_ref())?;
-        output.write_all(b" |")?;
+        write_framed_cell(output, field.as_ref())?;
     }
     output.write_all(b"\n")
 }
@@ -346,5 +360,32 @@ mod markdown_bulk_output_tests {
         let mut output = Vec::new();
         write_markdown_cell(&mut output, b"abc|xyz<&>\r\x01").unwrap();
         assert_eq!(output, b"abc\\|xyz&lt;&amp;&gt;&#13;&#1;");
+    }
+}
+
+#[cfg(test)]
+mod framed_markdown_cell_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Counted { writes: usize, bytes: Vec<u8> }
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn safe_cells_use_one_write_and_special_cells_keep_escaping() {
+        let mut output = Counted::default();
+        write_framed_cell(&mut output, "café".as_bytes()).unwrap();
+        write_framed_cell(&mut output, b"42").unwrap();
+        assert_eq!(output.writes, 2);
+        assert_eq!(output.bytes, " café | 42 |".as_bytes());
+        write_framed_cell(&mut output, b"<unsafe>&|").unwrap();
+        assert!(output.bytes.ends_with(b" &lt;unsafe&gt;&amp;\\| |"));
     }
 }
