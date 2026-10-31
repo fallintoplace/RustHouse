@@ -229,6 +229,23 @@ pub(super) fn push_string_key_map(
     values: &mut Vec<u8>,
     sizes: &mut Vec<u8>,
 ) -> Result<(), PartError> {
+    let (old_keys, old_values, old_sizes) = (keys.len(), values.len(), sizes.len());
+    let result = push_string_key_map_inner(value_type, literal, keys, values, sizes);
+    if result.is_err() {
+        keys.truncate(old_keys);
+        values.truncate(old_values);
+        sizes.truncate(old_sizes);
+    }
+    result
+}
+
+fn push_string_key_map_inner(
+    value_type: &str,
+    literal: Option<&str>,
+    keys: &mut Vec<u8>,
+    values: &mut Vec<u8>,
+    sizes: &mut Vec<u8>,
+) -> Result<(), PartError> {
     let literal = literal.ok_or_else(|| invalid("NULL is not permitted for Map"))?;
     let bytes = literal.as_bytes();
     let mut cursor = 0;
@@ -293,6 +310,21 @@ pub(super) fn push_string_key_map(
 }
 
 pub(super) fn push_numeric_array(
+    inner: &str,
+    literal: Option<&str>,
+    elements: &mut Vec<u8>,
+    sizes: &mut Vec<u8>,
+) -> Result<(), PartError> {
+    let (old_elements, old_sizes) = (elements.len(), sizes.len());
+    let result = push_numeric_array_inner(inner, literal, elements, sizes);
+    if result.is_err() {
+        elements.truncate(old_elements);
+        sizes.truncate(old_sizes);
+    }
+    result
+}
+
+fn push_numeric_array_inner(
     inner: &str,
     literal: Option<&str>,
     elements: &mut Vec<u8>,
@@ -442,5 +474,49 @@ mod borrow_map_string_tests {
             read_map_string(input, &mut position).unwrap(),
             Cow::Borrowed("")
         ));
+    }
+}
+
+#[cfg(test)]
+mod atomic_nested_cell_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_map_restores_all_three_output_streams() {
+        let mut keys = vec![0x42, 0x43];
+        let mut values = vec![0x44, 0x45];
+        let mut sizes = vec![0x46];
+        let before = (keys.clone(), values.clone(), sizes.clone());
+        for invalid in [
+            r#"{"first":1,"second":oops}"#,
+            r#"{"first":1,"broken""#,
+            r#"{"first":1,"second":2} trailing"#,
+            r#"{"first":1,"second":2,}"#,
+        ] {
+            assert!(push_string_key_map("UInt64", Some(invalid),
+                &mut keys, &mut values, &mut sizes).is_err(), "{invalid}");
+            assert_eq!((&keys, &values, &sizes), (&before.0, &before.1, &before.2));
+        }
+        push_string_key_map("UInt64", Some(r#"{"valid":3}"#),
+            &mut keys, &mut values, &mut sizes).unwrap();
+        assert!(keys.len() > before.0.len());
+        assert_eq!(values.len(), before.1.len() + 8);
+        assert_eq!(&sizes[before.2.len()..], &1u64.to_le_bytes());
+    }
+
+    #[test]
+    fn invalid_array_element_restores_element_bytes_and_offsets() {
+        let mut elements = vec![0xa1, 0xa2];
+        let mut sizes = vec![0xb1, 0xb2];
+        let before = (elements.clone(), sizes.clone());
+        for invalid in ["[1,not_number]", "[1,]", "[1,2] trailing", "[1,,2]"] {
+            assert!(push_numeric_array("UInt32", Some(invalid),
+                &mut elements, &mut sizes).is_err(), "{invalid}");
+            assert_eq!((&elements, &sizes), (&before.0, &before.1));
+        }
+        push_numeric_array("UInt32", Some("[1,2]"),
+            &mut elements, &mut sizes).unwrap();
+        assert_eq!(elements.len(), before.0.len() + 8);
+        assert_eq!(&sizes[before.1.len()..], &2u64.to_le_bytes());
     }
 }

@@ -238,26 +238,37 @@ pub(super) fn merge_sorted_integer_rows_page(
     let mut output = header.into_bytes();
     let mut seen = 0usize;
     let mut returned = 0usize;
-    while let Some(cursor) = heap.pop() {
-        let body = &shards[cursor.shard].1[header_len..];
-        // The complete peer stream was already validated before heap merging.
-        let end = cursor.next_position;
-        if seen >= offset && returned < limit {
-            let row = &body[cursor.position..end];
-            if returned >= max_rows || output.len().checked_add(row.len())
-                .is_none_or(|size| size > MAX_RESPONSE_BYTES)
-            {
-                return Err(MergeError::CoordinatorLimit);
+    // A shard can supply a long consecutive run before another shard wins
+    // the global ordering. Keep its cursor outside the heap until it loses
+    // priority, avoiding a heap pop/push for every row of a dominant run.
+    'merge: while let Some(mut cursor) = heap.pop() {
+        loop {
+            let body = &shards[cursor.shard].1[header_len..];
+            // The complete peer stream was already validated before heap merging.
+            let end = cursor.next_position;
+            if seen >= offset && returned < limit {
+                let row = &body[cursor.position..end];
+                if returned >= max_rows || output.len().checked_add(row.len())
+                    .is_none_or(|size| size > MAX_RESPONSE_BYTES)
+                {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                output.extend_from_slice(row);
+                returned += 1;
             }
-            output.extend_from_slice(row);
-            returned += 1;
-        }
-        seen += 1;
-        if returned >= limit {
-            break;
-        }
-        if let Some((key, next_position)) = next_row(body, end, kind, columns.len())? {
-            heap.push(cursor.advance(key, next_position));
+            seen += 1;
+            if returned >= limit {
+                break 'merge;
+            }
+            let Some((key, next_position)) = next_row(body, end, kind, columns.len())? else {
+                break;
+            };
+            let advanced = cursor.advance(key, next_position);
+            if heap.peek().is_some_and(|other| other > &advanced) {
+                heap.push(advanced);
+                break;
+            }
+            cursor = advanced;
         }
     }
     Ok(output)
@@ -402,5 +413,66 @@ mod multicolumn_sorted_merge_tests {
             ).unwrap(),
             b"id\tlabel\n8\tother\n2\tsecond\n",
         );
+    }
+}
+
+#[cfg(test)]
+mod dominant_shard_run_tests {
+    use super::*;
+
+    #[test]
+    fn long_dominant_runs_match_global_stable_merge_with_pagination() {
+        let original: [Vec<i64>; 4] = [
+            (0..48).map(|i| i * 2).collect(),
+            (30..78).collect(),
+            vec![0, 0, 1, 3, 3, 3, 15, 40, 44, 91, 92, 93, 94],
+            vec![4, 4, 4, 7, 29, 49, 55, 60, 80, 99],
+        ];
+        for descending in [false, true] {
+            let ordered = original.iter().map(|values| {
+                let mut values = values.clone();
+                if descending { values.reverse(); }
+                values
+            }).collect::<Vec<_>>();
+            let mut expected_all = ordered.iter().enumerate()
+                .flat_map(|(shard, values)| values.iter().enumerate()
+                    .map(move |(row, &value)| (value, shard, row)))
+                .collect::<Vec<_>>();
+            expected_all.sort_by(|a, b| {
+                let cmp = a.0.cmp(&b.0);
+                (if descending { cmp.reverse() } else { cmp })
+                    .then_with(|| a.1.cmp(&b.1))
+                    .then_with(|| a.2.cmp(&b.2))
+            });
+            for offset in [0usize, 1, 7, 33, 50] {
+                for limit in [1usize, 2, 5, 17, 31] {
+                    let prefix = offset + limit;
+                    let shards = ordered.iter().map(|values| {
+                        let mut body = b"id\tlabel\n".to_vec();
+                        for &value in values.iter().take(prefix) {
+                            body.extend_from_slice(format!("{value}\tshard_row\n").as_bytes());
+                        }
+                        (prefix + 1, body)
+                    }).collect::<Vec<_>>();
+                    let actual = merge_sorted_integer_rows_page(
+                        &shards, &["id", "label"], "Int64", descending, offset, limit, limit,
+                    ).unwrap();
+                    let mut expected = b"id\tlabel\n".to_vec();
+                    for &(value, _, _) in expected_all.iter().skip(offset).take(limit) {
+                        expected.extend_from_slice(format!("{value}\tshard_row\n").as_bytes());
+                    }
+                    assert_eq!(actual, expected,
+                        "descending={descending} offset={offset} limit={limit}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn early_page_limit_never_reads_past_validated_rows() {
+        let shards = [(3, b"id\n1\n2\n".to_vec()), (3, b"id\n20\n21\n".to_vec())];
+        assert_eq!(merge_sorted_integer_rows_page(
+            &shards, &["id"], "Int64", false, 0, 1, 1,
+        ).unwrap(), b"id\n1\n");
     }
 }

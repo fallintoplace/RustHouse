@@ -332,6 +332,8 @@ struct LikeLiteral {
     bytes: Vec<u8>,
     // None for escaped patterns that do not form valid UTF-8.
     folded: Option<String>,
+    // Only long ASCII contains-patterns pay for a precomputed skip table.
+    ascii_contains_skip: Option<Box<[usize; 256]>>,
 }
 
 enum LikePattern {

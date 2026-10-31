@@ -24,15 +24,29 @@ pub enum ScalarExpr {
 
 impl ScalarExpr {
     pub fn referenced_columns(&self, out: &mut Vec<String>) {
-        let mut seen = out.iter().cloned().collect::<HashSet<_>>();
+        // Most scalar expressions reference only a handful of columns.
+        // Avoid building a hash table until linear scans become expensive.
+        let mut seen = (out.len() >= 8)
+            .then(|| out.iter().cloned().collect::<HashSet<_>>());
         self.collect_unique_referenced_columns(out, &mut seen);
     }
 
-    fn collect_unique_referenced_columns(&self, out: &mut Vec<String>, seen: &mut HashSet<String>) {
+    fn collect_unique_referenced_columns(
+        &self,
+        out: &mut Vec<String>,
+        seen: &mut Option<HashSet<String>>,
+    ) {
         match self {
             Self::Column(name) | Self::TextLength(name) => {
-                if seen.insert(name.clone()) {
+                if let Some(index) = seen.as_mut() {
+                    if index.insert(name.clone()) {
+                        out.push(name.clone());
+                    }
+                } else if !out.iter().any(|existing| existing == name) {
                     out.push(name.clone());
+                    if out.len() >= 8 {
+                        *seen = Some(out.iter().cloned().collect());
+                    }
                 }
             }
             Self::Integer(_) | Self::Decimal(_) => {}
@@ -328,5 +342,45 @@ mod case_when_parser_tests {
         let mut expr = String::from("1");
         for _ in 0..100 { expr = format!("CASE WHEN 1 THEN {expr} ELSE 0 END"); }
         assert!(parse_scalar_expression(&expr).is_err());
+    }
+}
+
+#[cfg(test)]
+mod small_expression_column_index_tests {
+    use super::*;
+
+    #[test]
+    fn deduplicates_existing_columns_before_and_after_index_upgrade() {
+        let expr = (0..30).fold(ScalarExpr::Integer(1), |current, index| {
+            ScalarExpr::Add(
+                Box::new(current),
+                Box::new(if index % 2 == 0 {
+                    ScalarExpr::Column(format!("col_{}", index % 11))
+                } else {
+                    ScalarExpr::TextLength(format!("col_{}", index % 11))
+                }),
+            )
+        });
+        let mut columns = vec!["col_4".to_owned(), "prior".to_owned()];
+        expr.referenced_columns(&mut columns);
+        assert_eq!(columns.len(), 12);
+        assert_eq!(columns[0], "col_4");
+        assert_eq!(columns[1], "prior");
+        for index in 0..11 {
+            assert!(columns.contains(&format!("col_{index}")));
+        }
+        expr.referenced_columns(&mut columns);
+        assert_eq!(columns.len(), 12);
+    }
+
+    #[test]
+    fn small_expressions_keep_first_reference_order() {
+        let expr = ScalarExpr::Add(
+            Box::new(ScalarExpr::Column("beta".into())),
+            Box::new(ScalarExpr::TextLength("alpha".into())),
+        );
+        let mut columns = vec!["beta".to_owned()];
+        expr.referenced_columns(&mut columns);
+        assert_eq!(columns, ["beta", "alpha"]);
     }
 }
