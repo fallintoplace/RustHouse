@@ -545,8 +545,9 @@ mod tests {
             fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
         }
         let mut output = Calls { count: 0, bytes: Vec::new() };
-        write_bytes(&mut output, b"hello").unwrap();
-        let mut expected = 5u32.to_le_bytes().to_vec();
+        write_bytes(&mut output, 4, b"hello").unwrap();
+        let mut expected = vec![4u8];
+        expected.extend_from_slice(&5u32.to_le_bytes());
         expected.extend_from_slice(b"hello");
         assert_eq!(output.count, 1);
         assert_eq!(output.bytes, expected);
