@@ -26,10 +26,7 @@ fn valid_epoch_member(version: SnapshotVersion, epoch: u64) -> bool {
 /// Comparing versions does not establish consensus or authorize writes.
 /// Different epochs or equal generations with different content must be reconciled.
 pub fn compare_snapshots(local: SnapshotVersion, remote: SnapshotVersion) -> VersionRelation {
-    if !valid_version(local)
-        || !valid_version(remote)
-        || local.epoch != remote.epoch
-    {
+    if !valid_version(local) || !valid_epoch_member(remote, local.epoch) {
         return VersionRelation::Diverged;
     }
     match local.generation.cmp(&remote.generation) {
