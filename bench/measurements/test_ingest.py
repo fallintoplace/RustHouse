@@ -29,6 +29,18 @@ class IngestBenchmarkTests(unittest.TestCase):
             self.assertTrue(math.isclose(max(temperatures), expected[1]))
             self.assertTrue(math.isclose(sum(temperatures), expected[2], abs_tol=1e-8))
 
+    def test_writer_rejects_invalid_direct_inputs_before_creating_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "measurements.tsv"
+            for rows, stations, delimiter in (
+                (0, 1, "\t"), (2, 0, "\t"), (2, 3, "\t"),
+                (True, 1, "\t"), (2.5, 1, "\t"), (2, True, "\t"),
+                (2, 1, ",")):
+                with self.subTest(rows=rows, stations=stations, delimiter=delimiter):
+                    with self.assertRaises(ValueError):
+                        runner.write_input(path, rows, stations, delimiter)
+                    self.assertFalse(path.exists())
+
     def test_verification_rejects_changed_sum_with_matching_count_and_extrema(self):
         valid = ["3", "2", "-1", "1", "0"]
         with mock.patch.object(runner, "sql", side_effect=valid):
