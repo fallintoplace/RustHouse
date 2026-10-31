@@ -1730,23 +1730,20 @@ mod direct_hashed_float_count_regressions {
             let mut targets = cases.iter().copied().map(Number::Float).collect::<Vec<_>>();
             targets.extend((0..30).map(|value| Number::Float(value as f64 * 0.25)));
             let test = compile_in_test(targets, negated);
-            for _ in 0..2 {
-                let input32 = cases.iter().copied().map(|value| value as f32)
-                    .collect::<Vec<_>>();
-                let input64 = cases.clone();
-                let reference32 = input32.iter().filter(|&&value| {
-                    test.matches(Number::Float(f64::from(value)))
-                }).count();
-                let reference64 = input64.iter().filter(|&&value| {
-                    test.matches(Number::Float(value))
-                }).count();
-                let branch = [vec![CompiledPredicate { index: 0, test }]];
-                assert_eq!(count_batch_matches(&[NumericColumn::Float32(input32)], &branch),
-                    reference32);
-                assert_eq!(count_batch_matches(&[NumericColumn::Float64(input64)], &branch),
-                    reference64);
-                break;
-            }
+            let input32 = cases.iter().copied().map(|value| value as f32)
+                .collect::<Vec<_>>();
+            let input64 = cases.clone();
+            let reference32 = input32.iter().filter(|&&value| {
+                test.matches(Number::Float(f64::from(value)))
+            }).count();
+            let reference64 = input64.iter().filter(|&&value| {
+                test.matches(Number::Float(value))
+            }).count();
+            let branch = [vec![CompiledPredicate { index: 0, test }]];
+            assert_eq!(count_batch_matches(&[NumericColumn::Float32(input32)], &branch),
+                reference32);
+            assert_eq!(count_batch_matches(&[NumericColumn::Float64(input64)], &branch),
+                reference64);
         }
     }
 }
