@@ -266,6 +266,20 @@ pub fn plan_repairs_excluding(
         return Err("too many in-flight repair shards");
     }
     validate_repair_jobs(jobs)?;
+    // A handful of active repairs is common even when the waiting queue is
+    // large. Avoid building a transient hash table for up to four exclusions.
+    if in_flight.len() <= 4 {
+        for (index, &shard) in in_flight.iter().enumerate() {
+            if !valid_shard(shard) || in_flight[..index].contains(&shard) {
+                return Err("invalid or duplicate in-flight repair shard");
+            }
+        }
+        return Ok(plan_ranked_repairs(
+            jobs.iter().filter(|job| !in_flight.contains(&job.shard.as_str())),
+            byte_budget,
+            job_limit,
+        ));
+    }
     let mut excluded = HashSet::with_capacity(in_flight.len());
     for &shard in in_flight {
         if !valid_shard(shard) || !excluded.insert(shard) {
@@ -680,5 +694,36 @@ mod bounded_targeted_repair_priority_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod small_in_flight_batch_tests {
+    use super::*;
+
+    #[test]
+    fn small_exclusions_match_hash_planner_across_large_queues() {
+        let jobs = (0..4096usize).map(|i| RepairJob {
+            shard: format!("shard_{i:04}"),
+            bytes: 1 + (i % 17) as u64,
+            missing_replicas: 1 + (i % 5) as u8,
+        }).collect::<Vec<_>>();
+        for exclusions in [
+            vec![],
+            vec!["shard_0001"],
+            vec!["shard_0001", "shard_0200", "shard_1000", "shard_4095"],
+        ] {
+            let active = exclusions.iter().copied().collect::<HashSet<_>>();
+            let expected = plan_ranked_repairs(
+                jobs.iter().filter(|job| !active.contains(job.shard.as_str())),
+                2048, 32,
+            );
+            assert_eq!(
+                plan_repairs_excluding(&jobs, &exclusions, 2048, 32).unwrap(),
+                expected,
+            );
+        }
+        assert!(plan_repairs_excluding(&jobs, &["shard_1", "shard_1"], 100, 3).is_err());
+        assert!(plan_repairs_excluding(&jobs, &["shard_1", "../invalid"], 100, 3).is_err());
     }
 }
