@@ -393,3 +393,172 @@ mod bounded_repair_prefix_tests {
         assert!(plan_repairs(&jobs, 0, 2).unwrap().len() == 1);
     }
 }
+
+/**
+ * One missing target replica for a shard. Multiple targets may legitimately
+ * share the same shard ID, but the target pair must be unique.
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetedRepairJob {
+    pub shard: String,
+    pub target: String,
+    pub bytes: u64,
+    pub missing_replicas: u8,
+}
+
+/// Build a deterministic repair batch that respects both the global transfer
+/// budget and each target's remaining disk capacity. Never schedule more
+/// targets for a shard than its declared replication deficit.
+///
+/// This only plans transfers. Capacity figures must be checked again at
+/// execution time; returned jobs do not reserve any physical storage.
+pub fn plan_targeted_repairs(
+    jobs: &[TargetedRepairJob],
+    target_capacity: &[(&str, u64)],
+    total_byte_budget: u64,
+    job_limit: usize,
+) -> Result<Vec<TargetedRepairJob>, &'static str> {
+    use std::collections::HashMap;
+    if jobs.len() > MAX_REPAIR_JOBS || job_limit > MAX_REPAIR_JOBS
+        || target_capacity.is_empty() || target_capacity.len() > 64
+    {
+        return Err("invalid targeted repair scheduler bounds");
+    }
+    let valid_node = |node: &str| !node.is_empty() && node.len() <= 64
+        && node.bytes().all(|byte| byte.is_ascii_alphanumeric()
+            || matches!(byte, b'_' | b'-'));
+    let mut capacity = HashMap::with_capacity(target_capacity.len());
+    for &(node, bytes) in target_capacity {
+        if !valid_node(node) || capacity.insert(node, bytes).is_some() {
+            return Err("invalid or duplicate repair destination");
+        }
+    }
+    let mut pairs = HashSet::with_capacity(jobs.len());
+    let mut shard_state = HashMap::new();
+    for job in jobs {
+        if !valid_shard(&job.shard) || !valid_node(&job.target)
+            || !(1..=16).contains(&job.missing_replicas)
+            || !capacity.contains_key(job.target.as_str())
+            || !pairs.insert((job.shard.as_str(), job.target.as_str()))
+        {
+            return Err("invalid or duplicate targeted repair job");
+        }
+        let state = (job.bytes, job.missing_replicas);
+        if shard_state.insert(job.shard.as_str(), state)
+            .is_some_and(|previous| previous != state)
+        {
+            return Err("inconsistent repair shard size or deficit");
+        }
+    }
+    let mut ranked = jobs.iter().collect::<Vec<_>>();
+    ranked.sort_unstable_by(|left, right| {
+        right.missing_replicas.cmp(&left.missing_replicas)
+            .then_with(|| left.bytes.cmp(&right.bytes))
+            .then_with(|| left.shard.cmp(&right.shard))
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    let mut selected = Vec::with_capacity(job_limit.min(jobs.len()));
+    let mut scheduled_by_shard = HashMap::<&str, u8>::new();
+    let mut remaining_total = total_byte_budget;
+    for job in ranked {
+        if selected.len() >= job_limit {
+            break;
+        }
+        let scheduled = scheduled_by_shard.entry(job.shard.as_str()).or_default();
+        if *scheduled >= job.missing_replicas || job.bytes > remaining_total {
+            continue;
+        }
+        let remaining_node = capacity.get_mut(job.target.as_str())
+            .expect("all targeted repair destinations were validated");
+        if job.bytes > *remaining_node {
+            continue;
+        }
+        *remaining_node -= job.bytes;
+        remaining_total -= job.bytes;
+        *scheduled += 1;
+        selected.push(job.clone());
+    }
+    Ok(selected)
+}
+
+#[cfg(test)]
+mod targeted_repair_tests {
+    use super::*;
+
+    fn job(shard: &str, target: &str, bytes: u64, missing: u8) -> TargetedRepairJob {
+        TargetedRepairJob {
+            shard: shard.into(), target: target.into(), bytes, missing_replicas: missing,
+        }
+    }
+
+    #[test]
+    fn respects_global_and_per_node_budgets_without_overrepair() {
+        let jobs = [
+            job("urgent", "a", 60, 2),
+            job("urgent", "b", 60, 2),
+            job("urgent", "c", 60, 2),
+            job("less_urgent", "c", 20, 1),
+            job("less_urgent", "a", 20, 1),
+        ];
+        let result = plan_targeted_repairs(
+            &jobs, &[("a", 10), ("b", 100), ("c", 50)], 80, 5,
+        ).unwrap();
+        assert_eq!(result, vec![
+            job("urgent", "b", 60, 2),
+            job("less_urgent", "c", 20, 1),
+        ]);
+        let consistent = [job("x", "a", 1, 1), job("x", "b", 1, 1)];
+        assert_eq!(plan_targeted_repairs(
+            &consistent, &[("a", 10), ("b", 10)], 10, 2,
+        ).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn all_inventories_and_reordering_produce_stable_priorities() {
+        let jobs = (0..250).map(|i| job(
+            &format!("shard_{}", i / 3),
+            &format!("node_{}", i % 3),
+            1 + (i / 3) as u64 % 31,
+            3,
+        )).collect::<Vec<_>>();
+        let targets = [("node_0", 500), ("node_1", 500), ("node_2", 500)];
+        let forward = plan_targeted_repairs(&jobs, &targets, 1000, 80).unwrap();
+        let mut reversed = jobs.clone();
+        reversed.reverse();
+        assert_eq!(
+            plan_targeted_repairs(&reversed, &targets, 1000, 80).unwrap(),
+            forward,
+        );
+        assert!(forward.len() <= 80);
+        let total = forward.iter().map(|job| job.bytes).sum::<u64>();
+        assert!(total <= 1000);
+    }
+
+    #[test]
+    fn validation_remains_strict_even_with_zero_budget() {
+        let destinations = [("a", 100), ("b", 100)];
+        assert!(plan_targeted_repairs(
+            &[job("x", "a", 1, 1), job("x", "a", 1, 1)],
+            &destinations, 0, 0,
+        ).is_err());
+        assert!(plan_targeted_repairs(
+            &[job("x", "a", 1, 1), job("x", "b", 2, 1)],
+            &destinations, 0, 0,
+        ).is_err());
+        assert!(plan_targeted_repairs(
+            &[job("x", "unknown", 1, 1)], &destinations, 0, 0,
+        ).is_err());
+        assert!(plan_targeted_repairs(
+            &[job("x", "a", 1, 0)], &destinations, 0, 0,
+        ).is_err());
+        assert!(plan_targeted_repairs(
+            &[], &[("a", 1), ("a", 2)], 0, 0,
+        ).is_err());
+        assert!(plan_targeted_repairs(
+            &[], &[], 0, 0,
+        ).is_err());
+        assert!(plan_targeted_repairs(
+            &[job("x", "a", 1, 1)], &destinations, u64::MAX, 0,
+        ).unwrap().is_empty());
+    }
+}
