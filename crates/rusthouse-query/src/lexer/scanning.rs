@@ -72,7 +72,16 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
     // Escapes and doubled quotes still use the original validated decoder,
     // starting at the first special byte without rescanning the plain prefix.
     let mut value = String::new();
-    while cursor < bytes.len() {
+    loop {
+        // After an escape, skip ordinary bytes as one span instead of
+        // branching on every byte of long string literals.
+        let Some(distance) = bytes[cursor..]
+            .iter()
+            .position(|&byte| byte == b'\\' || byte == b'\'')
+        else {
+            return Err(ParseError("unterminated string literal".into()));
+        };
+        cursor += distance;
         let escaped = match (bytes[cursor], bytes.get(cursor + 1)) {
             (b'\\', Some(b'\'' | b'\\')) => Some(bytes[cursor + 1]),
             (b'\\', Some(b'n')) => Some(b'\n'),
@@ -97,7 +106,6 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             cursor += 1;
         }
     }
-    Err(ParseError("unterminated string literal".into()))
 }
 
 fn valid_quoted_identifier(bytes: &[u8]) -> bool {
@@ -330,6 +338,37 @@ mod plain_string_literal_fast_path_tests {
         for sql in ["'unfinished", "'unfinished\\n"] {
             let mut cursor = 0;
             assert!(scan_string(sql, &mut cursor).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod escaped_string_bulk_span_tests {
+    use super::*;
+
+    #[test]
+    fn skips_large_plain_spans_between_escapes_without_changing_bytes() {
+        let prefix = "é".repeat(8 * 1024);
+        let suffix = "z".repeat(16 * 1024);
+        let sql = format!("'{prefix}\\n{suffix}''tail' SELECT");
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string(&sql, &mut cursor).unwrap(),
+            Token::String(format!("{prefix}\n{suffix}'tail"))
+        );
+        assert_eq!(&sql[cursor..], " SELECT");
+    }
+
+    #[test]
+    fn preserves_unknown_escapes_and_rejects_truncated_strings() {
+        for sql in ["'a\\qword'", "'a\\qword\\ntrail'"] {
+            let mut cursor = 0;
+            let expected = sql[1..sql.len() - 1].replace("\\n", "\n");
+            assert_eq!(scan_string(sql, &mut cursor).unwrap(), Token::String(expected));
+            assert_eq!(cursor, sql.len());
+        }
+        for sql in ["'prefix\\nunterminated", "'prefix\\q"] {
+            assert!(scan_string(sql, &mut 0).is_err(), "{sql}");
         }
     }
 }
