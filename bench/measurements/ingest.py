@@ -16,6 +16,9 @@ def temperature_tenths(row):
     return (row * 17 + 13) % 801 - 400
 
 
+_TEMPERATURE_TEXT = tuple(f"{tenths / 10:.1f}" for tenths in range(-400, 401))
+
+
 def write_input(path, rows, stations, delimiter="\t", batch_rows=4096):
     """Create an input file and return its min, max, and sum oracle."""
     if (type(rows) is not int or type(stations) is not int
@@ -36,7 +39,7 @@ def write_input(path, rows, stations, delimiter="\t", batch_rows=4096):
                 minimum = min(minimum, value)
                 maximum = max(maximum, value)
                 total += value
-                pending.append(f"station-{row % stations:05}{delimiter}{value / 10:.1f}\n")
+                pending.append(f"station-{row % stations:05}{delimiter}{_TEMPERATURE_TEXT[value + 400]}\n")
             output.write("".join(pending))
     return minimum / 10, maximum / 10, total / 10
 
