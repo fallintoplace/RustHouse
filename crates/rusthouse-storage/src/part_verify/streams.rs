@@ -52,19 +52,19 @@ pub(super) fn validate_adaptive_stream(
     if marks.format != WideMarkFormat::Adaptive {
         return Ok(());
     }
-    let rows = marks.marks.iter().try_fold(0u64, |total, mark| {
-        total.checked_add(mark.rows.unwrap_or(0))
-    });
-    if rows != Some(expected_rows) {
-        return Err(invalid(data, "mark row counts do not match count.txt"));
-    }
     let name = data
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("stream");
     layout
         .validate(name, &marks.marks, expected_rows)
-        .map_err(|_| invalid(data, "adaptive streams have mismatched granule boundaries"))
+        .map_err(|error| match error {
+            PartError::InvalidScan(message)
+                if message.starts_with("mark row counts do not match count.txt") => {
+                    invalid(data, "mark row counts do not match count.txt")
+                }
+            _ => invalid(data, "adaptive streams have mismatched granule boundaries"),
+        })
 }
 
 pub(super) fn collect_wide_file_pairs(
@@ -109,4 +109,47 @@ pub(super) fn collect_wide_file_pairs(
     }
 
     Ok((data_files, mark_files))
+}
+
+#[cfg(test)]
+mod adaptive_stream_single_pass_tests {
+    use super::*;
+
+    fn marks(rows: &[u64]) -> WideMarks {
+        WideMarks {
+            path: "values.mrk2".into(),
+            format: WideMarkFormat::Adaptive,
+            marks: rows.iter().enumerate().map(|(index, &rows)| WideMark {
+                compressed_offset: index as u64 * 16,
+                decompressed_offset: 0,
+                rows: Some(rows),
+            }).collect(),
+        }
+    }
+
+    #[test]
+    fn detects_total_row_mismatches_and_overflow() {
+        let mut layout = ScanLayout::default();
+        validate_adaptive_stream(Path::new("a.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
+        let mismatch = validate_adaptive_stream(
+            Path::new("b.bin"), &marks(&[2, 4]), 5, &mut layout
+        ).unwrap_err();
+        assert!(matches!(mismatch, PartError::InvalidScan(message)
+            if message == "mark row counts do not match count.txt"));
+        let overflow = validate_adaptive_stream(
+            Path::new("c.bin"), &marks(&[u64::MAX, 1]), u64::MAX, &mut ScanLayout::default()
+        ).unwrap_err();
+        assert!(matches!(overflow, PartError::InvalidScan(message)
+            if message == "mark row counts do not match count.txt"));
+    }
+
+    #[test]
+    fn validates_shared_granules_after_first_column() {
+        let mut layout = ScanLayout::default();
+        validate_adaptive_stream(Path::new("a.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
+        validate_adaptive_stream(Path::new("b.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
+        assert!(validate_adaptive_stream(
+            Path::new("c.bin"), &marks(&[3, 2]), 5, &mut layout
+        ).is_err());
+    }
 }
