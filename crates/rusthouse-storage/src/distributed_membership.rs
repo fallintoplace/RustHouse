@@ -95,7 +95,7 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
 
 /// Validate membership and its exact serialized length without allocating
 /// the manifest. Used by placement and capacity calculations.
-pub(crate) fn validate_membership(members: &[Member]) -> Result<(), &'static str> {
+fn serialized_membership_bytes(members: &[Member]) -> Result<(), &'static str> {
     if members.is_empty() || members.len() > MAX_MEMBER_RECORDS {
         return Err("invalid membership record count");
     }
@@ -120,13 +120,17 @@ pub(crate) fn validate_membership(members: &[Member]) -> Result<(), &'static str
             return Err("membership manifest too large");
         }
     }
-    Ok(())
+    Ok(bytes)
+}
+
+pub(crate) fn validate_membership(members: &[Member]) -> Result<(), &'static str> {
+    serialized_membership_bytes(members).map(|_| ())
 }
 
 /// Stable on-disk representation of an already validated member set.
 pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
-    validate_membership(members)?;
-    let mut text = String::with_capacity((members.len() * 64).min(MAX_MANIFEST_BYTES));
+    let wire_bytes = serialized_membership_bytes(members)?;
+    let mut text = String::with_capacity(wire_bytes);
     for member in members {
         writeln!(
             &mut text,
@@ -135,6 +139,7 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
         )
         .expect("writing to String is infallible");
     }
+    debug_assert_eq!(text.len(), wire_bytes);
     Ok(text)
 }
 
@@ -331,5 +336,32 @@ mod adaptive_membership_parse_tests {
             .map(|index| format!("node{index} zone{} 1\n", index % 4))
             .collect::<String>();
         assert_eq!(parse_membership(&text).unwrap().len(), 64);
+    }
+}
+
+#[cfg(test)]
+mod exact_membership_format_size_tests {
+    use super::*;
+
+    #[test]
+    fn validation_size_matches_wire_output_for_long_member_names() {
+        for count in [1, 8, 9, 32, 64] {
+            let members = (0..count).map(|index| Member {
+                node: format!("replica_{index:02}_{}", "n".repeat(40)),
+                zone: format!("zone_{}", index % 7),
+                weight: [1, 9, 10, 999, 1000][index % 5],
+            }).collect::<Vec<_>>();
+            let size = serialized_membership_bytes(&members).unwrap();
+            let formatted = format_membership(&members).unwrap();
+            assert_eq!(formatted.len(), size);
+            assert_eq!(parse_membership(&formatted).unwrap(), members);
+        }
+    }
+
+    #[test]
+    fn sizing_does_not_skip_duplicate_or_oversized_validation() {
+        let item = Member { node: "n".into(), zone: "z".into(), weight: 1 };
+        assert!(serialized_membership_bytes(&[item.clone(), item]).is_err());
+        assert!(serialized_membership_bytes(&[]).is_err());
     }
 }
