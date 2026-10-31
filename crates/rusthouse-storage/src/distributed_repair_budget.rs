@@ -76,6 +76,17 @@ fn plan_ranked_repairs<'a>(
             .collect();
     }
     let mut ranked: Vec<&RepairJob> = eligible.collect();
+    // A fully affordable queue only needs its top job_limit priorities.
+    // Partition first, then sort the bounded prefix. Retain the full
+    // greedy ordering if the queue exceeds the available byte budget.
+    if ranked.len() > job_limit
+        && ranked.iter().try_fold(0u64, |total, job| {
+            total.checked_add(job.bytes)
+        }).is_some_and(|total| total <= byte_budget)
+    {
+        ranked.select_nth_unstable_by(job_limit, |left, right| repair_priority(left, right));
+        ranked.truncate(job_limit);
+    }
     ranked.sort_unstable_by(|left, right| repair_priority(left, right));
     let mut selected = Vec::with_capacity(ranked.len().min(job_limit));
     let mut remaining = byte_budget;
@@ -279,5 +290,50 @@ mod replication_factor_tests {
         assert!(plan_repairs_for_replication_factor(&jobs, 0, 10, 1).is_err());
         assert!(plan_repairs_for_replication_factor(&jobs, 17, 10, 1).is_err());
         assert_eq!(plan_repairs_for_replication_factor(&jobs, 3, 10, 1).unwrap(), jobs.to_vec());
+    }
+}
+
+
+#[cfg(test)]
+mod bounded_repair_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn fully_affordable_prefix_matches_full_priority_order() {
+        let jobs = (0..4096usize).rev().map(|index| RepairJob {
+            shard: format!("shard_{index:05}"),
+            bytes: (index % 11) as u64,
+            missing_replicas: (1 + (index % 16)) as u8,
+        }).collect::<Vec<_>>();
+        let full = plan_repairs(&jobs, u64::MAX, jobs.len()).unwrap();
+        for limit in [2, 3, 8, 64, 512, 2048, 4096] {
+            assert_eq!(
+                plan_repairs(&jobs, u64::MAX, limit).unwrap(),
+                full.iter().take(limit).cloned().collect::<Vec<_>>()
+            );
+        }
+        let excluded = ["shard_00001", "shard_04095"];
+        let entire = plan_repairs_excluding(&jobs, &excluded, u64::MAX, jobs.len()).unwrap();
+        for limit in [2, 8, 128] {
+            assert_eq!(
+                plan_repairs_excluding(&jobs, &excluded, u64::MAX, limit).unwrap(),
+                entire.iter().take(limit).cloned().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn constrained_budget_still_skips_large_urgent_repairs() {
+        let jobs = [
+            RepairJob { shard: "urgent".into(), bytes: 20, missing_replicas: 16 },
+            RepairJob { shard: "zero".into(), bytes: 0, missing_replicas: 10 },
+            RepairJob { shard: "second".into(), bytes: 3, missing_replicas: 5 },
+            RepairJob { shard: "third".into(), bytes: 4, missing_replicas: 3 },
+        ];
+        let chosen = plan_repairs(&jobs, 3, 2).unwrap();
+        assert_eq!(chosen.iter().map(|j| j.shard.as_str()).collect::<Vec<_>>(),
+            vec!["zero", "second"]);
+        assert_eq!(plan_repairs(&jobs, 0, 2).unwrap()[0].shard, "zero");
+        assert!(plan_repairs(&jobs, 0, 2).unwrap().len() == 1);
     }
 }
