@@ -13,7 +13,38 @@ pub(super) fn literal_bytes(tokens: &[LikeToken]) -> Option<Vec<u8>> {
 fn compiled_literal(bytes: Vec<u8>) -> LikeLiteral {
     // SQL literals do not change between rows. Do the Unicode fold once.
     let folded = std::str::from_utf8(&bytes).ok().map(str::to_lowercase);
-    LikeLiteral { bytes, folded }
+    LikeLiteral { bytes, folded, ascii_contains_skip: None }
+}
+
+// A compiled case-insensitive ASCII contains query reuses one Horspool table
+// across every scanned row instead of doing worst-case quadratic comparisons.
+fn compiled_contains_literal(bytes: Vec<u8>) -> LikeLiteral {
+    let mut literal = compiled_literal(bytes);
+    if literal.bytes.is_ascii() && literal.bytes.len() >= 16 {
+        let length = literal.bytes.len();
+        let mut shifts = Box::new([length; 256]);
+        for (index, &byte) in literal.bytes[..length - 1].iter().enumerate() {
+            shifts[usize::from(byte.to_ascii_lowercase())] = length - 1 - index;
+        }
+        literal.ascii_contains_skip = Some(shifts);
+    }
+    literal
+}
+
+fn contains_ascii_folded(haystack: &[u8], needle: &[u8], shifts: &[usize; 256]) -> bool {
+    debug_assert!(!needle.is_empty() && haystack.is_ascii() && needle.is_ascii());
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    let last = needle.len() - 1;
+    let mut start = 0;
+    while start <= haystack.len() - needle.len() {
+        if haystack[start..start + needle.len()].eq_ignore_ascii_case(needle) {
+            return true;
+        }
+        start += shifts[usize::from(haystack[start + last].to_ascii_lowercase())];
+    }
+    false
 }
 
 pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError> {
@@ -28,7 +59,7 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
             .and_then(|remaining| remaining.strip_suffix('%'))
         {
             if !literal.contains('%') {
-                return Ok(LikePattern::Contains(compiled_literal(literal.as_bytes().to_vec())));
+                return Ok(LikePattern::Contains(compiled_contains_literal(literal.as_bytes().to_vec())));
             }
         }
         if let Some(literal) = pattern.strip_suffix('%') {
@@ -75,7 +106,7 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
         && matches!(tokens.last(), Some(LikeToken::Any))
     {
         if let Some(bytes) = literal_bytes(&tokens[1..tokens.len() - 1]) {
-            return Ok(LikePattern::Contains(compiled_literal(bytes)));
+            return Ok(LikePattern::Contains(compiled_contains_literal(bytes)));
         }
     }
     if matches!(tokens.last(), Some(LikeToken::Any)) {
@@ -274,6 +305,9 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             // ASCII-only ILIKE can search borrowed bytes directly, without
             // decoding or allocating a Unicode-folded copy of every row.
             if case_insensitive && value.is_ascii() && bytes.is_ascii() {
+                if let Some(shifts) = literal.ascii_contains_skip.as_deref() {
+                    return contains_ascii_folded(value, bytes, shifts);
+                }
                 return value
                     .windows(bytes.len())
                     .any(|candidate| candidate.eq_ignore_ascii_case(bytes));
@@ -628,5 +662,49 @@ mod empty_contains_tests {
             assert!(like_matches(value, &pattern, false));
             assert!(like_matches(value, &pattern, true));
         }
+    }
+}
+
+#[cfg(test)]
+mod compiled_ascii_contains_tests {
+    use super::*;
+
+    #[test]
+    fn long_ascii_contains_matches_window_oracle_for_adversarial_prefixes() {
+        let needles = [
+            b"aaaaaaaaaaaaaaab".as_slice(),
+            b"ababaabababababa",
+            b"theQUICKbrownFOX",
+            b"zzzzzzzzzzzzzzzz",
+            b"0123456789ABCDEF",
+        ];
+        for needle in needles {
+            let pattern = format!("%{}%", std::str::from_utf8(needle).unwrap());
+            let compiled = compile_like(&pattern).unwrap();
+            for length in [0usize, 1, 8, 15, 16, 31, 128, 4096] {
+                for offset in [0usize, 1, 7, 13] {
+                    let mut haystack = vec![b'a'; length];
+                    if offset <= haystack.len() {
+                        haystack.splice(offset..offset, needle.iter().copied());
+                    }
+                    let reference = haystack.windows(needle.len())
+                        .any(|candidate| candidate.eq_ignore_ascii_case(needle));
+                    assert_eq!(like_matches(&haystack, &compiled, true), reference,
+                        "needle={needle:?} length={length} offset={offset}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compiled_skip_table_handles_uppercase_and_false_matches() {
+        let needle = b"ABCDEFGHIJKLMNOP";
+        let literal = compiled_contains_literal(needle.to_vec());
+        let shifts = literal.ascii_contains_skip.as_deref().unwrap();
+        assert!(contains_ascii_folded(b"zzabcdefghijklmnopzz", needle, shifts));
+        assert!(!contains_ascii_folded(b"zzabcdefghijklmnoqzz", needle, shifts));
+        assert!(!contains_ascii_folded(b"short", needle, shifts));
+        assert!(compiled_contains_literal(b"short".to_vec())
+            .ascii_contains_skip.is_none());
     }
 }
