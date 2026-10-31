@@ -367,8 +367,8 @@ mod vertical_utf8_safety_tests {
 
     #[test]
     fn rejects_raw_and_decoded_invalid_utf8_before_printing_any_row() {
-        for payload in [b"\xff\n".as_slice(), b"valid\t\xff\n",
-            b"\\xFF\n", b"good\t\\xFF\n"] {
+        for payload in [b"\xff\tgood\n".as_slice(), b"good\t\xff\n",
+            b"\\xFF\tgood\n", b"good\t\\xFF\n"] {
             let mut writer = VerticalWriter::new(Vec::new());
             writer.write_all(b"first\tsecond\n").unwrap();
             let err = writer.write_all(payload).unwrap_err();
