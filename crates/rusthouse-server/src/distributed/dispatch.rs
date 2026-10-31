@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Claim indices dynamically to avoid head-of-line blocking between fixed
 /// batches. Spawn failure falls back to fewer workers or inline execution.
 /// Every peer gets one result slot, including failures and panics.
-pub(super) fn map_peers_bounded<T: Send>(
+pub(super) fn map_peers_bounded<T: Send + Sync>(
     peers: &[Peer],
     max_workers: usize,
     work: impl Fn(Peer) -> Result<T, String> + Sync,
@@ -16,17 +16,17 @@ pub(super) fn map_peers_bounded<T: Send>(
     let cursor = AtomicUsize::new(0);
     let slots: Vec<OnceLock<Result<T, String>>> =
         (0..peers.len()).map(|_| OnceLock::new()).collect();
+    let process = || loop {
+        let index = cursor.fetch_add(1, Ordering::Relaxed);
+        if index >= peers.len() {
+            break;
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(peers[index])))
+            .unwrap_or_else(|_| Err("peer query panicked".into()));
+        // A claimed index belongs to exactly one worker.
+        let _ = slots[index].set(result);
+    };
     std::thread::scope(|scope| {
-        let process = || loop {
-            let index = cursor.fetch_add(1, Ordering::Relaxed);
-            if index >= peers.len() {
-                break;
-            }
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(peers[index])))
-                .unwrap_or_else(|_| Err("peer query panicked".into()));
-            // A claimed index belongs to exactly one worker.
-            let _ = slots[index].set(result);
-        };
         let mut handles = Vec::with_capacity(max_workers.min(peers.len()));
         for _ in 0..max_workers.min(peers.len()) {
             match std::thread::Builder::new().spawn_scoped(scope, &process) {
