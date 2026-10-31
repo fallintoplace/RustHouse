@@ -103,7 +103,22 @@ def compare(baseline, candidate, *, max_slowdown_percent=10,
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 
 
+def _unique_fields(pairs):
+    values = {}
+    for key, value in pairs:
+        if key in values:
+            raise ValueError(f"duplicate physical comparison JSON field: {key}")
+        values[key] = value
+    return values
+
+
+def parse_report(path):
+    return json.loads(_read_bounded_report(path), object_pairs_hook=_unique_fields)
+
+
 def _read_bounded_report(path):
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("physical comparison report must be a regular non-symlinked file")
     with path.open("rb") as source:
         contents = source.read(MAX_REPORT_BYTES + 1)
     if len(contents) > MAX_REPORT_BYTES:
@@ -120,8 +135,8 @@ def main(argv=None):
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = compare(json.loads(_read_bounded_report(args.baseline)),
-                         json.loads(_read_bounded_report(args.candidate)),
+        report = compare(parse_report(args.baseline),
+                         parse_report(args.candidate),
                          max_slowdown_percent=args.max_slowdown_percent,
                          max_tail_slowdown_percent=args.max_tail_slowdown_percent)
         rendered = json.dumps(report, indent=2) + "\n"
