@@ -69,6 +69,28 @@ class ClusterTests(unittest.TestCase):
             self.assertEqual(info["total"], 0)
             opener.open.assert_called_once_with("http://127.0.0.1:8123/cluster/health", timeout=3)
 
+    def test_http_error_response_streams_are_closed(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+        from unittest.mock import patch
+        from cluster_health import inspect
+        origin = "http://127.0.0.1:8123"
+        payload = BytesIO(b'{"total":0,"healthy":0,"peers":[]}')
+        error = HTTPError(origin + "/cluster/health", 503, "Unavailable", {}, payload)
+        with patch("cluster_health.NO_REDIRECT_OPENER") as opener:
+            opener.open.side_effect = error
+            ok, _info = inspect(origin)
+        self.assertFalse(ok)
+        self.assertTrue(payload.closed)
+
+        payload = BytesIO(b"Not Found")
+        error = HTTPError(origin + "/cluster/health", 404, "Not Found", {}, payload)
+        with patch("cluster_health.NO_REDIRECT_OPENER") as opener:
+            opener.open.side_effect = error
+            with self.assertRaises(HTTPError):
+                inspect(origin)
+        self.assertTrue(payload.closed)
+
     def test_duplicate_peer_addresses_cannot_pass_health_check(self):
         with self.assertRaisesRegex(ValueError, "duplicate peer"):
             validate({"total": 2, "healthy": 2, "peers": [
