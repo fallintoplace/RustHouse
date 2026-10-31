@@ -36,6 +36,28 @@ class NativeFixtureTests(unittest.TestCase):
             self.assertEqual(row[4:8], ["123.45", "123.45", "0.06", "0.06"])
             self.assertEqual(row[10], "1994-06-15")
 
+    def test_native_dbgen_input_is_line_bounded(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "region.tbl"
+            source.write_bytes(b"1|" + b"x" * 100 + b"|comment|\n")
+            with patch("native_reference_fixture.MAX_LINE", 16):
+                with self.assertRaisesRegex(ValueError, "exceeds 8 MiB"):
+                    convert_native_table(source, Path(root) / "region.tsv", "region")
+
+    def test_refuses_symlinked_dbgen_input(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "region.tbl"
+            source.write_bytes(b"1|EUROPE|comment|\n")
+            alias = Path(root) / "alias.tbl"
+            try:
+                alias.symlink_to(source)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                convert_native_table(alias, Path(root) / "region.tsv", "region")
+
+
     def test_failures_dont_create_a_partial_reference_database(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
