@@ -60,12 +60,11 @@ fn open_verified_object(path: &Path) -> io::Result<(File, fs::Metadata)> {
     }
     let file = File::open(path)?;
     let opened = file.metadata()?;
-    if !opened.file_type().is_file() || opened.len() != meta.len() {
+    // Checking only length and inode misses in-place overwrites between
+    // the path stat and the open. Compare timestamps and change time too,
+    // using the same verified identity contract as post-read checks.
+    if !object_state_unchanged(&meta, &opened) {
         return Err(io::Error::other("object changed before range read"));
-    }
-    #[cfg(unix)]
-    if !same_object_identity(&meta, &opened) {
-        return Err(io::Error::other("object inode changed before range read"));
     }
     Ok((file, opened))
 }
@@ -404,6 +403,31 @@ mod positioned_range_tests {
         }
         assert_eq!(read_at(&mut file, 256 * 1024, 1).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
         assert_eq!(file.stream_position().unwrap(), 71);
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod range_open_metadata_consistency_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn a_same_size_overwrite_is_not_a_stable_immutable_object() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-range-open-metadata-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        fs::write(&path, b"original").unwrap();
+        let before = fs::symlink_metadata(&path).unwrap();
+        // Force a distinct timestamp even on filesystems with coarse clocks.
+        let file = File::options().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
+        )).unwrap();
+        let after = file.metadata().unwrap();
+        assert_eq!(before.len(), after.len());
+        assert!(!object_state_unchanged(&before, &after));
         fs::remove_file(path).unwrap();
     }
 }
