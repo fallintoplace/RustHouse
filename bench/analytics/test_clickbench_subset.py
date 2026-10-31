@@ -13,6 +13,13 @@ class VerifiedClickBenchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "within"):
             parse_ids("10")
 
+    def test_rejects_ambiguous_numeric_query_selectors(self):
+        for selector in ("+1", "1_0", "1, 2", "١", "1--2", "-1"):
+            with self.subTest(selector=selector):
+                with self.assertRaisesRegex(ValueError, "ASCII"):
+                    parse_ids(selector)
+
+
     def test_explicitly_empty_selection_is_not_all_queries(self):
         self.assertEqual(parse_ids(None), list(range(1, 10)))
         for spec in ("", "  ", False, 0):
