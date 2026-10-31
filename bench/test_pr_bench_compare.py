@@ -40,6 +40,17 @@ class CompareRustBenchTests(unittest.TestCase):
         summary = compare_text(baseline, candidate)
         self.assertIn("| filtered count | 0.000123 | 0.000082 | -33.3% |", summary)
 
+    def test_extreme_finite_medians_do_not_render_infinite_percent(self):
+        baseline = report().replace(
+            "filtered sum 0.003 1.00", "filtered sum 0." + "0" * 300 + "1 1.00"
+        )
+        candidate = report().replace(
+            "filtered sum 0.003 1.00", "filtered sum " + "9" * 300 + ".0 1.00"
+        )
+        summary = compare_text(baseline, candidate)
+        self.assertIn("N/A (ratio overflow)", summary)
+        self.assertNotIn("+inf%", summary)
+
     def test_rejects_zero_throughput_with_valid_median(self):
         bad = report().replace("filtered count 0.000 1.00", "filtered count 0.000 0.00")
         with self.assertRaisesRegex(ValueError, "invalid benchmark throughput"):
