@@ -61,6 +61,8 @@ impl Capacity {
     }
 
     pub fn release(self, bytes: u64) -> Result<Self, &'static str> {
+        // A malformed accounting state must not be propagated by a release.
+        self.available()?;
         Ok(Self {
             reserved: self.remaining_reservation(bytes, "cannot release unreserved bytes")?,
             ..self
@@ -365,5 +367,36 @@ mod atomic_committed_reclaim_tests {
         assert_eq!(state.reclaim_used_many(&[]).unwrap(), state);
         assert!(Capacity { total: 1, used: 2, reserved: 0 }
             .reclaim_used_many(&[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod release_invalid_state_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_overcommitted_and_overflowed_source_states() {
+        let overcommitted = Capacity {
+            total: 1,
+            used: 2,
+            reserved: 1,
+        };
+        assert!(overcommitted.release(1).is_err());
+        assert!(overcommitted.release_many(&[1]).is_err());
+
+        let overflowed = Capacity {
+            total: u64::MAX,
+            used: u64::MAX,
+            reserved: 1,
+        };
+        assert!(overflowed.release(0).is_err());
+        assert!(overflowed.release_many(&[]).is_err());
+
+        let valid = Capacity {
+            total: 10,
+            used: 4,
+            reserved: 3,
+        };
+        assert_eq!(valid.release(2).unwrap().available().unwrap(), 5);
     }
 }
