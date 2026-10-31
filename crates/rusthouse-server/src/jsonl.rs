@@ -18,17 +18,34 @@ pub(super) fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
 }
 
 fn parse_headers(line: &[u8]) -> io::Result<Vec<String>> {
-    let mut seen = HashSet::new();
     let mut headers = Vec::new();
+    // Most SELECTs project no more than a handful of columns. Borrow
+    // headers from the input line instead of allocating a hash table.
+    let mut small_names = [""; 8];
+    let mut seen: Option<HashSet<&str>> = None;
     for header in line.split(|byte| *byte == b'\t') {
         let name = std::str::from_utf8(header).map_err(|_| invalid("JSONL header is not UTF-8"))?;
         if name.is_empty() {
             return Err(invalid("JSONL header name must not be empty"));
         }
-        if headers.len() >= MAX_JSONL_COLUMNS {
+        let index = headers.len();
+        if index >= MAX_JSONL_COLUMNS {
             return Err(invalid("JSONL supports at most 64 columns"));
         }
-        if !seen.insert(name) {
+        let duplicate = if index < small_names.len() {
+            if small_names[..index].contains(&name) {
+                true
+            } else {
+                small_names[index] = name;
+                false
+            }
+        } else {
+            // Seed the large-schema set with the first eight borrowed names.
+            // This catches duplicates across the stack/heap threshold.
+            let seen = seen.get_or_insert_with(|| small_names.iter().copied().collect());
+            !seen.insert(name)
+        };
+        if duplicate {
             return Err(invalid("JSONL needs unique projected column names"));
         }
         headers.push(name.to_owned());
@@ -379,4 +396,33 @@ mod tests {
         );
     }
 
+}
+
+#[cfg(test)]
+mod bounded_jsonl_header_set_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_header_order_and_uniqueness_at_small_large_boundary() {
+        for count in [1, 2, 7, 8, 9, 16, 64] {
+            let names = (0..count).map(|i| format!("col_{i}")).collect::<Vec<_>>();
+            let input = names.join("\t");
+            assert_eq!(parse_headers(input.as_bytes()).unwrap(), names);
+            if count > 1 {
+                let mut repeated = names.clone();
+                repeated[count - 1] = names[0].clone();
+                assert!(parse_headers(repeated.join("\t").as_bytes()).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_ninth_header_and_overwide_schema() {
+        let names = (0..8).map(|i| format!("v{i}")).collect::<Vec<_>>();
+        let repeated = format!("{}\tv0", names.join("\t"));
+        assert!(parse_headers(repeated.as_bytes()).is_err());
+        let oversized = (0..65).map(|i| format!("x{i}")).collect::<Vec<_>>().join("\t");
+        assert!(parse_headers(oversized.as_bytes()).is_err());
+        assert!(parse_headers(b"v0\t\xff").is_err());
+    }
 }
