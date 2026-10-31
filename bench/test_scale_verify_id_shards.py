@@ -71,6 +71,16 @@ class VerifyShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symlink"):
                 verify(manifest)
 
+    @unittest.skipIf(sys.platform == "win32", "Windows CI may disallow symlinks")
+    def test_direct_shard_verifier_refuses_symlinks(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "real.tsv"
+            source.write_bytes(b"0\n1\n")
+            alias = Path(root) / "alias.tsv"
+            alias.symlink_to(source)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                verify_file(alias, 0, 2)
+
     def test_detects_extra_rows(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "rows.tsv"
