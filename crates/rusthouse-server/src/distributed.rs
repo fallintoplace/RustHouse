@@ -513,6 +513,75 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
     Ok(output)
 }
 
+/// Apply global SELECT DISTINCT over complete validated shard rows. Retain
+/// borrowed slices into bounded peer bodies rather than cloning row payloads.
+/// No shard-local pagination is allowed: it could hide globally unique rows.
+fn merge_distinct_tsv(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<Vec<u8>, MergeError> {
+    const MAX_DISTINCT_ROWS: usize = 250_000;
+    let mut header: Option<&[u8]> = None;
+    let mut unique = HashSet::<&[u8]>::new();
+    let mut output = Vec::new();
+    let mut returned = 0usize;
+    for (cap, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidResponse);
+        }
+        let header_end = body.iter().position(|&b| b == b'\n')
+            .ok_or(MergeError::InvalidResponse)?;
+        let shard_header = &body[..=header_end];
+        if shard_header.len() <= 1 {
+            return Err(MergeError::InvalidResponse);
+        }
+        if let Some(expected) = header {
+            if expected != shard_header {
+                return Err(MergeError::SchemaMismatch);
+            }
+        } else {
+            header = Some(shard_header);
+            output.extend_from_slice(shard_header);
+        }
+        let required_tabs = shard_header.iter().filter(|&&byte| byte == b'\t').count();
+        let rows = &body[header_end + 1..];
+        let mut shard_rows = 0usize;
+        if !rows.is_empty() {
+            for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+                if row.iter().filter(|&&byte| byte == b'\t').count() != required_tabs {
+                    return Err(MergeError::InvalidResponse);
+                }
+                shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
+                if unique.insert(row) {
+                    if unique.len() > MAX_DISTINCT_ROWS {
+                        return Err(MergeError::CoordinatorLimit);
+                    }
+                    if unique.len() > offset && limit.is_none_or(|limit| returned < limit) {
+                        returned = returned.checked_add(1)
+                            .filter(|&count| count <= max_rows)
+                            .ok_or(MergeError::CoordinatorLimit)?;
+                        let next = output.len().checked_add(row.len() + 1)
+                            .filter(|&size| size <= MAX_RESPONSE_BYTES)
+                            .ok_or(MergeError::CoordinatorLimit)?;
+                        output.reserve(next - output.len());
+                        output.extend_from_slice(row);
+                        output.push(b'\n');
+                    }
+                }
+            }
+        }
+        if *cap == 0 || shard_rows >= *cap {
+            return Err(MergeError::ShardRowLimit);
+        }
+    }
+    if header.is_none() {
+        return Err(MergeError::InvalidResponse);
+    }
+    Ok(output)
+}
+
 /// Apply LIMIT/OFFSET only after validating every shard's full result and
 /// advertised cap. Rows are paged in stable configured-peer order.
 /// Page complete shard TSV results in a single row-boundary pass per shard.
@@ -1229,6 +1298,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Ok(select)
             if is_safe_scan(&select)
                 || is_safe_count(&select)
+                || is_safe_distinct_scan(&select)
                 || is_safe_count_distinct(&select)
                 || is_safe_uniq(&select)
                 || is_safe_sorted_scan(&select)
@@ -1252,6 +1322,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         select.offset.unwrap_or(0) + select.limit.unwrap_or(0)
     });
     let count_query = is_safe_count(&select) || is_safe_count_if(&select);
+    let distinct_rows_query = is_safe_distinct_scan(&select);
     let distinct_count_column = match &select.projection {
         Projection::CountDistinct { column } => Some(column.as_str()),
         _ => None,
@@ -1264,6 +1335,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match sorted_scan_sql(sql, &select) {
             Some(query) => query,
             None => return Response::text("400 Bad Request", "unsupported distributed sort\n"),
+        }
+    } else if distinct_rows_query {
+        match unpaged_scan_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported distributed DISTINCT pagination\n"),
         }
     } else if is_safe_scan(&select) {
         match bounded_scan_sql(sql, &select) {
@@ -1484,6 +1560,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 max_rows.min(250_000),
             )
         })
+    } else if distinct_rows_query {
+        merge_distinct_tsv(
+            &shards,
+            max_rows.min(250_000),
+            select.offset.unwrap_or(0),
+            select.limit,
+        )
     } else if select.limit.is_some() || select.offset.is_some() {
         merge_tsv_page(
             &shards,
@@ -2672,5 +2755,46 @@ mod distributed_scan_tsv_shape_tests {
             merge_tsv_page(&shards, 1, 0, Some(1)),
             Err(MergeError::InvalidResponse),
         );
+    }
+}
+
+#[cfg(test)]
+mod global_distinct_row_tests {
+    use super::*;
+
+    fn shard(cap: usize, body: &str) -> (usize, Vec<u8>) {
+        (cap, body.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn exact_distinct_rows_preserve_multi_column_and_null_semantics() {
+        let shards = [
+            shard(8, "id\tregion\n1\teu\n2\t\\N\n1\teu\n"),
+            shard(8, "id\tregion\n2\t\\N\n3\tus\n"),
+        ];
+        assert_eq!(
+            merge_distinct_tsv(&shards, 10, 0, None).unwrap(),
+            b"id\tregion\n1\teu\n2\t\\N\n3\tus\n"
+        );
+        assert_eq!(
+            merge_distinct_tsv(&shards, 1, 1, Some(1)).unwrap(),
+            b"id\tregion\n2\t\\N\n"
+        );
+        assert!(merge_distinct_tsv(&shards, 2, 0, None).is_err());
+        assert!(merge_distinct_tsv(&[shard(2, "id\n1\n2\n")], 2, 0, None).is_err());
+        assert!(merge_distinct_tsv(&[shard(10, "id\tname\n1\n")], 10, 0, None).is_err());
+    }
+
+    #[test]
+    fn distributed_distinct_policy_accepts_only_unordered_rows() {
+        assert!(is_safe_distinct_scan(&parse_select(
+            "SELECT DISTINCT id, region FROM events LIMIT 10 OFFSET 2"
+        ).unwrap()));
+        assert!(!is_safe_distinct_scan(&parse_select(
+            "SELECT DISTINCT id FROM events ORDER BY id LIMIT 10"
+        ).unwrap()));
+        assert!(!is_safe_distinct_scan(&parse_select(
+            "SELECT id FROM events"
+        ).unwrap()));
     }
 }

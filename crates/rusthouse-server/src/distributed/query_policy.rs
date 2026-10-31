@@ -29,6 +29,18 @@ pub(super) fn is_safe_scan(select: &Select) -> bool {
         && is_safe_table_select(select)
 }
 
+/// Unordered DISTINCT must deduplicate complete projected rows across all
+/// shards. Per-shard DISTINCT alone cannot remove cross-shard duplicates.
+pub(super) fn is_safe_distinct_scan(select: &Select) -> bool {
+    select.distinct
+        && matches!(select.source, Some(Source::Table(_)))
+        && matches!(select.projection, Projection::All | Projection::Columns(_))
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+}
+
 pub(super) fn is_safe_count(select: &Select) -> bool {
     is_safe_unpaged_projection(select, |projection| {
         matches!(projection, Projection::Count | Projection::CountColumn { .. })
