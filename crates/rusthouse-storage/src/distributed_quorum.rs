@@ -73,7 +73,7 @@ impl QuorumPolicy {
             return Err("quorum membership or acknowledgement count mismatch");
         }
         let mut acknowledgement_mask = 0u16;
-        if members.len() <= 8 {
+        if members.len() <= 8 || acknowledgements.len() <= 8 {
             // Small replication groups are the common case. A short borrowed
             // lookup avoids allocating and hashing a temporary member map.
             for (index, &member) in members.iter().enumerate() {
@@ -512,5 +512,29 @@ mod indexed_joint_membership_validation_tests {
         let mut bad_ack = acks;
         bad_ack[127] = "unknown";
         assert!(observe_joint_quorum(policy, &previous, policy, &next, &bad_ack).is_err());
+    }
+}
+
+#[cfg(test)]
+mod sparse_large_quorum_ack_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_acks_match_full_member_count_and_preserve_errors() {
+        let nodes = (0..16).map(|index| format!("replica_{index}")).collect::<Vec<_>>();
+        let names = nodes.iter().map(String::as_str).collect::<Vec<_>>();
+        let policy = QuorumPolicy::new(16, 8, 9).unwrap();
+        for count in [0, 1, 2, 7, 8, 9, 16] {
+            let observed = policy.observe(&names, &names[..count]).unwrap();
+            assert_eq!(observed.distinct_acks, count);
+            assert_eq!(observed.can_read, count >= 8);
+            assert_eq!(observed.can_write, count >= 9);
+        }
+        assert_eq!(policy.observe(&names, &["replica_0"; 8]).unwrap().distinct_acks, 1);
+        assert!(policy.observe(&names, &["missing"]).is_err());
+        let mut duplicate = names.clone();
+        duplicate[15] = duplicate[0];
+        assert!(policy.observe(&duplicate, &[]).is_err());
+        assert!(policy.observe(&duplicate, &names[..9]).is_err());
     }
 }
