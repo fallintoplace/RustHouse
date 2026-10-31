@@ -25,6 +25,10 @@ fn valid_member_identity(node: &str, zone: &str) -> bool {
     identifier(node) && identifier(zone)
 }
 
+fn valid_member_weight(weight: u16) -> bool {
+    (1..=MAX_MEMBER_WEIGHT).contains(&weight)
+}
+
 fn parse_member(line: &str) -> Result<Member, &'static str> {
     if line.is_empty() {
         return Err("empty membership record");
@@ -41,7 +45,7 @@ fn parse_member(line: &str) -> Result<Member, &'static str> {
     let weight = weight_text
         .parse::<u16>()
         .map_err(|_| "invalid member weight")?;
-    if !(1..=MAX_MEMBER_WEIGHT).contains(&weight) {
+    if !valid_member_weight(weight) {
         return Err("duplicate member or invalid weight");
     }
     Ok(Member {
@@ -93,7 +97,7 @@ pub(crate) fn validate_membership(members: &[Member]) -> Result<(), &'static str
             members[..index].iter().any(|previous| previous.node == member.node)
         };
         if !valid_member_identity(&member.node, &member.zone)
-            || !(1..=MAX_MEMBER_WEIGHT).contains(&member.weight)
+            || !valid_member_weight(member.weight)
             || duplicate
         {
             return Err("invalid or duplicate membership record");
