@@ -177,6 +177,26 @@ fn next_row(
     Ok(Some((parse_integer_sort_key(key, kind)?, end)))
 }
 
+// The initial shard scan has already checked every field, escape and sort
+// order. The merge only needs the next integer key and row boundary, so do
+// not scan and validate each remaining TSV field a second time.
+fn next_validated_row_key(
+    data: &[u8],
+    start: usize,
+    kind: IntegerType,
+) -> Result<Option<(IntegerKey, usize)>, MergeError> {
+    if start == data.len() {
+        return Ok(None);
+    }
+    let newline = data[start..].iter()
+        .position(|&byte| byte == b'\n')
+        .ok_or(MergeError::InvalidSortedScan)?;
+    let end = start + newline + 1;
+    let row = &data[start..end - 1];
+    let key_end = row.iter().position(|&byte| byte == b'\t').unwrap_or(row.len());
+    Ok(Some((parse_integer_sort_key(&row[..key_end], kind)?, end)))
+}
+
 /// Validate the full sorted shard streams before returning any rows.
 /// Retain only one integer key and byte cursor per peer, rather than
 /// materializing every shard row at the coordinator.
@@ -275,7 +295,7 @@ pub(super) fn merge_sorted_integer_rows_page(
             if returned >= limit {
                 break 'merge;
             }
-            let Some((key, next_position)) = next_row(body, end, kind, columns.len())? else {
+            let Some((key, next_position)) = next_validated_row_key(body, end, kind)? else {
                 break;
             };
             let advanced = cursor.advance(key, next_position);
@@ -555,6 +575,44 @@ mod one_pass_tsv_field_tests {
         assert_eq!(
             merge_sorted_integer_rows_page(&[(3, short)], &names, "UInt32", false, 0, 1, 1),
             Err(MergeError::InvalidSortedScan)
+        );
+    }
+}
+
+#[cfg(test)]
+mod validated_key_only_merge_tests {
+    use super::*;
+
+    #[test]
+    fn key_only_path_matches_fully_validated_rows_with_escaped_values() {
+        let rows = b"-12\tplain\\tvalue\n0\t\\\\\n7\t\\x41\n";
+        let kind = IntegerType::Signed { min: i64::MIN as i128, max: i64::MAX as i128 };
+        let mut position = 0;
+        while let Some((key, end)) = next_row(rows, position, kind, 2).unwrap() {
+            assert_eq!(
+                next_validated_row_key(rows, position, kind).unwrap(),
+                Some((key, end))
+            );
+            position = end;
+        }
+        assert_eq!(next_validated_row_key(rows, position, kind).unwrap(), None);
+        assert_eq!(
+            merge_sorted_integer_rows_page(
+                &[(8, [b"id\tvalue\n".as_slice(), rows].concat())],
+                &["id", "value"], "Int64", false, 0, 3, 3,
+            ).unwrap(),
+            [b"id\tvalue\n".as_slice(), rows].concat(),
+        );
+    }
+
+    #[test]
+    fn full_validation_still_rejects_invalid_trailing_fields() {
+        let invalid = b"id\tvalue\n1\tok\n2\tinvalid\\q\n".to_vec();
+        assert_eq!(
+            merge_sorted_integer_rows_page(
+                &[(8, invalid)], &["id", "value"], "Int64", false, 0, 2, 2
+            ),
+            Err(MergeError::InvalidSortedScan),
         );
     }
 }
