@@ -3538,7 +3538,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         result.truncate(count);
                         ConstantValue::Text(result)
                     } else {
-                        ConstantValue::Text(value.chars().take(count).collect())
+                        // Keep the owned SQL constant and trim at a UTF-8
+                        // boundary. Collecting characters allocates again.
+                        let mut result = value;
+                        let end = result.char_indices().nth(count)
+                            .map_or(result.len(), |(offset, _)| offset);
+                        result.truncate(end);
+                        ConstantValue::Text(result)
                     }
                 }
                 _ => ConstantValue::Null,
@@ -3812,8 +3818,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.replace_range(..start, "");
                             ConstantValue::Text(result)
                         } else {
-                            let skip = value.chars().count().saturating_sub(count);
-                            ConstantValue::Text(value.chars().skip(skip).collect())
+                            // Count from the end for short suffixes. Avoid a
+                            // full code-point count and an output allocation.
+                            let start = value.char_indices().rev().nth(count - 1)
+                                .map_or(0, |(offset, _)| offset);
+                            let mut result = value;
+                            result.replace_range(..start, "");
+                            ConstantValue::Text(result)
                         }
                     }
                 }
@@ -5256,5 +5267,40 @@ mod common_affix_edit_distance_tests {
         let right = "y".repeat(2048);
         assert!(bounded_edit_distance(left.as_bytes(), right.as_bytes()).is_err());
         assert!(bounded_utf8_edit_distance(&left, &right).is_err());
+    }
+}
+
+#[cfg(test)]
+mod utf8_prefix_suffix_inplace_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    fn text(sql: &str) -> String {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => {
+                let ConstantValue::Text(value) = &columns[0].value else {
+                    panic!("expected text")
+                };
+                value.clone()
+            }
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn left_utf8_counts_codepoints_not_bytes() {
+        for (count, expected) in [(0, ""), (1, "é"), (2, "é🙂"), (3, "é🙂Z"), (9, "é🙂Z")] {
+            let sql = format!("SELECT leftUTF8('é🙂Z', {count})");
+            assert_eq!(text(&sql), expected);
+        }
+    }
+
+    #[test]
+    fn right_utf8_scans_only_the_suffix_and_preserves_unicode() {
+        for (count, expected) in [(0, ""), (1, "Z"), (2, "🙂Z"), (3, "é🙂Z"), (4, "aé🙂Z"), (9, "aé🙂Z")] {
+            let sql = format!("SELECT rightUTF8('aé🙂Z', {count})");
+            assert_eq!(text(&sql), expected);
+        }
+        let input = format!("{}🙂Z", "a".repeat(10_000));
+        assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
     }
 }
