@@ -13,6 +13,7 @@ import math
 import os
 import platform
 import re
+import stat
 import statistics
 import subprocess
 import tempfile
@@ -191,6 +192,32 @@ def unique_case_fields(pairs):
     return values
 
 
+def _file_identity(metadata):
+    return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+
+def read_case_json(path):
+    """Read the same bounded regular case file that was checked before opening."""
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"unsafe benchmark case file: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or _file_identity(before) != _file_identity(opened):
+            raise ValueError(f"benchmark case changed before opening: {path}")
+        payload = source.read(64 * 1024 + 1)
+        if len(payload) > 64 * 1024:
+            raise ValueError(f"benchmark case JSON exceeds 64 KiB: {path}")
+        if _file_identity(opened) != _file_identity(os.fstat(source.fileno())):
+            raise ValueError(f"benchmark case changed during reading: {path}")
+    if _file_identity(before) != _file_identity(path.lstat()):
+        raise ValueError(f"benchmark case changed during reading: {path}")
+    return json.loads(payload, object_pairs_hook=unique_case_fields)
+
+
 def load_cases(directory):
     paths = sorted(itertools.islice(
         Path(directory).glob("[0-9][0-9]-*.json"), MAX_CASES + 1
@@ -202,12 +229,7 @@ def load_cases(directory):
     names = set()
     cases = []
     for path in paths:
-        if path.is_symlink() or not path.is_file():
-            raise ValueError(f"unsafe benchmark case file: {path}")
-        if path.stat().st_size > 64 * 1024:
-            raise ValueError(f"benchmark case JSON exceeds 64 KiB: {path}")
-        case = json.loads(path.read_text(encoding="utf-8"),
-                          object_pairs_hook=unique_case_fields)
+        case = read_case_json(path)
         if (not isinstance(case, dict) or not isinstance(case.get("name"), str)
                 or case["name"] in names):
             raise ValueError(f"duplicate or malformed case: {path}")
