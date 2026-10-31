@@ -1356,7 +1356,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     // Bound concurrency without wave barriers: a fast peer immediately
     // claims the next pending shard, even if an earlier peer is still slow.
     const MAX_INFLIGHT_SHARDS: usize = 8;
-    let results = dispatch::map_peers_bounded(cluster.peers(), MAX_INFLIGHT_SHARDS, |peer| {
+    let results = dispatch::map_peers_bounded_failfast(cluster.peers(), MAX_INFLIGHT_SHARDS, |peer| {
         read_shard(
             peer, shard_sql.as_str(), sum_schema, group_schema, table,
             sorted_prefix, &retained_input,
