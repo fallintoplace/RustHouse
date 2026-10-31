@@ -50,7 +50,7 @@ fn parse_case(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseErro
 }
 
 fn parse_numeric_literal(number: &str) -> Result<ScalarExpr, ParseError> {
-    if number.contains('.') || number.contains('e') || number.contains('E') {
+    if number.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
         let value = number.parse::<f64>()
             .map_err(|_| ParseError("invalid decimal expression literal".into()))?;
         if !value.is_finite() {
