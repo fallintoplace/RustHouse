@@ -109,7 +109,8 @@ def assert_clickhouse_json_parity(rusthouse_output, clickhouse_output, unordered
 
     def equal(row, reference):
         return (
-            list(row) == list(reference)
+            len(row) == len(reference)
+            and all(left == right for left, right in zip(row, reference))
             and all(_json_cell_equal(row[key], value) for key, value in reference.items())
         )
 
