@@ -107,7 +107,6 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
         }
     }
 }
-}
 
 fn valid_quoted_identifier(bytes: &[u8]) -> bool {
     let mut characters = bytes.iter().copied();
