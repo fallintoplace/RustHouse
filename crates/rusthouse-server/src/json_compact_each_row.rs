@@ -314,7 +314,12 @@ mod safe_ascii_compact_field_tests {
             let mut actual = Vec::new();
             write_compact_field(&mut actual, source).unwrap();
             let mut expected = Vec::new();
-            write_json_string(&mut expected, std::str::from_utf8(source).unwrap()).unwrap();
+            let text = if source.contains(&b'\\') {
+                decode_tsv_value(source).unwrap()
+            } else {
+                std::str::from_utf8(source).unwrap().to_owned()
+            };
+            write_json_string(&mut expected, &text).unwrap();
             assert_eq!(actual, expected);
         }
         let mut null = Vec::new();
