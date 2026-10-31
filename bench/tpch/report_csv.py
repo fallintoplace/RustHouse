@@ -38,7 +38,8 @@ def load_report(path):
         payload = source.read(MAX_REPORT_BYTES + 1)
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("benchmark report exceeds 2 MiB")
-    return json.loads(payload, object_pairs_hook=reject_duplicate_report_keys,\n                      parse_constant=reject_nonstandard_json_number,
+    return json.loads(payload, object_pairs_hook=reject_duplicate_report_keys,
+                      parse_constant=reject_nonstandard_json_number,
                       parse_float=parse_finite_report_float)
 
 FIELDS = ("query", "status", "samples", "median_ms", "p90_ms", "error")
