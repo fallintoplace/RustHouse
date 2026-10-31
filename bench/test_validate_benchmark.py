@@ -51,6 +51,14 @@ class ValidateBenchmarkManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate benchmark manifest key"):
                 load_manifest(path)
 
+    def test_rejects_boolean_schema_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            report = sample_manifest(directory)
+            report["schema_version"] = True
+            with self.assertRaisesRegex(ValueError, "unsupported benchmark"):
+                verify(directory, report)
+
     def test_accepts_four_complete_suites(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

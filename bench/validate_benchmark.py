@@ -33,7 +33,9 @@ from bench.__main__ import BENCHMARK_SUITES, benchmark_command
 
 
 def validate_manifest(directory, manifest, *, rows, samples, stations):
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+    if (not isinstance(manifest, dict) or
+            type(manifest.get("schema_version")) is not int or
+            manifest["schema_version"] != 1):
         raise ValueError("unsupported benchmark manifest")
     for key, expected in (("rows", rows), ("samples", samples), ("stations", stations)):
         if type(manifest.get(key)) is not int or manifest[key] != expected:
