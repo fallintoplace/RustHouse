@@ -38,6 +38,27 @@ fn require_snapshot_directory(path: &Path, message: &'static str) -> Result<(), 
     Ok(())
 }
 
+// Active snapshot pointers are immutable publications. A same-length
+// modification or path replacement cannot be accepted as one observation.
+fn pointer_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if !after.file_type().is_file()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 /// Resolve the immutable active generation of a local table.
 /// Legacy tables without a pointer use their original parts directory.
 pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
@@ -54,15 +75,8 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
     }
     let mut file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
     let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
-    if !opened.file_type().is_file() || opened.len() != metadata.len() || opened.len() > 64 {
+    if !pointer_unchanged(&metadata, &opened) || opened.len() > 64 {
         return Err(PartError::InvalidScan("active pointer changed before read".into()));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
-            return Err(PartError::InvalidScan("active pointer replaced before read".into()));
-        }
     }
     let mut label = String::new();
     (&mut file)
@@ -70,9 +84,9 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
         .read_to_string(&mut label)
         .map_err(|error| io_error(&pointer, error))?;
     let finished = file.metadata().map_err(|error| io_error(&pointer, error))?;
-    if finished.len() != opened.len()
-        || finished.modified().map_err(|error| io_error(&pointer, error))?
-            != opened.modified().map_err(|error| io_error(&pointer, error))?
+    let current = fs::symlink_metadata(&pointer).map_err(|error| io_error(&pointer, error))?;
+    if !pointer_unchanged(&opened, &finished)
+        || !pointer_unchanged(&opened, &current)
     {
         return Err(PartError::InvalidScan("active pointer changed during read".into()));
     }
@@ -935,5 +949,36 @@ mod snapshot_entry_budget_tests {
         assert!(query_parts_with_entry_limit(&root, 2).is_err());
         assert_eq!(query_parts_with_entry_limit(&root, 3).unwrap().len(), 1);
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod active_pointer_stability_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn detects_same_size_active_pointer_replacement_and_ctime_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-pointer-stability-{}-{:?}",
+            std::process::id(), std::thread::current().id(),
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let pointer = dir.join(".rusthouse-active");
+        let other = dir.join("other");
+        fs::write(&pointer, b"g123\n").unwrap();
+        fs::write(&other, b"g456\n").unwrap();
+        let original = fs::metadata(&pointer).unwrap();
+        assert!(pointer_unchanged(&original, &original));
+        assert!(!pointer_unchanged(&original, &fs::metadata(&other).unwrap()));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut permissions = original.permissions();
+        permissions.set_mode(permissions.mode() ^ 0o100);
+        fs::set_permissions(&pointer, permissions).unwrap();
+        let altered = fs::metadata(&pointer).unwrap();
+        assert_eq!(original.len(), altered.len());
+        assert_eq!(original.modified().unwrap(), altered.modified().unwrap());
+        assert!(!pointer_unchanged(&original, &altered));
+        fs::remove_dir_all(dir).unwrap();
     }
 }
