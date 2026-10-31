@@ -330,12 +330,20 @@ pub fn parse_json_each_row_fields(text: &str) -> Result<Vec<(String, Option<Stri
     // every String into the duplicate-key set, then moved the originals to
     // the result, causing one extra allocation per column on every row.
     {
-        let mut seen = std::collections::HashSet::with_capacity(fields.len());
-        for (key, _) in &fields {
+        // Most imported rows contain only a few fields. Compare those keys
+        // directly and reserve the hash table for wider JSON objects.
+        let mut seen = (fields.len() > 8)
+            .then(|| std::collections::HashSet::with_capacity(fields.len()));
+        for (index, (key, _)) in fields.iter().enumerate() {
             if key.is_empty() || key.len() > 128 {
                 return Err("JSONEachRow field names must be between 1 and 128 bytes".into());
             }
-            if !seen.insert(key.as_str()) {
+            let duplicate = if let Some(seen) = seen.as_mut() {
+                !seen.insert(key.as_str())
+            } else {
+                fields[..index].iter().any(|(previous, _)| previous == key)
+            };
+            if duplicate {
                 return Err(format!("duplicate JSONEachRow field: {key}"));
             }
         }
@@ -502,5 +510,33 @@ mod json_node_budget_tests {
         let too_many = format!("{{\"items\":[{}]}}", vec!["null"; MAX_JSON_NODES - 1].join(","));
         assert_eq!(parse_json(&too_many).unwrap_err(), "JSON contains too many values");
         assert_eq!(parse_json("null").unwrap().type_name(), "Null");
+    }
+}
+
+#[cfg(test)]
+mod small_json_each_row_key_tests {
+    use super::parse_json_each_row_fields;
+
+    #[test]
+    fn checks_duplicates_without_a_hash_table_in_narrow_objects() {
+        let valid = r#"{"id":1,"name":"hello","nullable":null}"#;
+        let fields = parse_json_each_row_fields(valid).unwrap();
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0], ("id".into(), Some("1".into())));
+        assert_eq!(fields[1], ("name".into(), Some("hello".into())));
+        assert_eq!(fields[2], ("nullable".into(), None));
+        assert!(parse_json_each_row_fields(r#"{"id":1,"id":2}"#).is_err());
+    }
+
+    #[test]
+    fn wide_objects_still_validate_all_duplicate_field_names() {
+        let columns = (0..16)
+            .map(|i| format!("\\"col{i}\\":{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let valid = format!("{{{columns}}}");
+        assert_eq!(parse_json_each_row_fields(&valid).unwrap().len(), 16);
+        let duplicate = format!("{{{columns},\\"col0\\":17}}");
+        assert!(parse_json_each_row_fields(&duplicate).is_err());
     }
 }
