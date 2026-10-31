@@ -115,15 +115,14 @@ fn checksum_inventory_entry(
     }
     let mut file = fs::File::open(&path).map_err(|error| io_error(&path, error))?;
     let opened = file.metadata().map_err(|error| io_error(&path, error))?;
-    if !opened.file_type().is_file() || opened.len() != entry.bytes {
+    // Verify the full baseline before hashing. In-place mutation can retain
+    // the exact file length and inode while changing the bytes being inventoried.
+    if !opened.file_type().is_file()
+        || opened.len() != entry.bytes
+        || !same_file_state(&metadata, &opened)
+    {
         return Err(PartError::InvalidScan(
             "snapshot inventory file changed before hashing".into(),
-        ));
-    }
-    #[cfg(unix)]
-    if !same_file_identity(&metadata, &opened) {
-        return Err(PartError::InvalidScan(
-            "snapshot inventory file replaced before hashing".into(),
         ));
     }
     let (bytes, crc32c) = crate::distributed_crc32c::crc32c_reader(&mut file, entry.bytes)
@@ -603,5 +602,29 @@ mod inventory_generation_stability_tests {
         fs::write(&pointer, "g2\n").unwrap();
         assert!(require_unchanged_generation(&root, &first).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod inventory_open_consistency_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn same_size_content_rewrites_change_the_inventory_file_state() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-inventory-open-consistency-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        fs::write(&root, b"unchanged").unwrap();
+        let original = fs::symlink_metadata(&root).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&root).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
+        )).unwrap();
+        let opened = file.metadata().unwrap();
+        assert_eq!(original.len(), opened.len());
+        assert!(!same_file_state(&original, &opened));
+        fs::remove_file(&root).unwrap();
     }
 }
