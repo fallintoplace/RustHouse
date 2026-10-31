@@ -287,9 +287,8 @@ pub fn plan_missing_chunks_from_resume(
 
 
 /// Schedule coalesced transfer I/O directly from a packed completion map.
-
+///
 /// Unlike planning individual missing chunks and merging them afterwards,
-
 /// memory is proportional to the output run count, even for dense transfers.
 pub fn plan_missing_runs_from_resume(
     total_bytes: u64,
@@ -351,7 +350,7 @@ mod direct_resumable_run_tests {
 
     #[test]
     fn direct_runs_match_materialize_then_coalesce_over_sparse_checkpoints() {
-        for bytes in [0, 1, 7, 8, 9, 63, 65, 4097, 65_536] {
+        for bytes in [0u64, 1, 7, 8, 9, 63, 65, 4097, 65_536] {
             let count = bytes.div_ceil(7) as usize;
             for stride in [1usize, 2, 3, 13, 31] {
                 let mut progress = crate::distributed_resume_map::ResumeMap::new(count).unwrap();
