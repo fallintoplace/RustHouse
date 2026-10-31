@@ -26,6 +26,8 @@ def _has_separator(sql):
                 quote = None
         elif char in ("'", '"'):
             quote = char
+        elif char == "-" and sql[index:index + 2] == "--":
+            break
         elif char == ";":
             return True
         index += 1
