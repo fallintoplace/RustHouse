@@ -13,6 +13,10 @@ fn handles_literals_unicode_nulls_and_nested_calls() {
     for (sql, expected) in [
         ("SELECT STRPOS('hello world', 'world')", 7),
         ("SELECT strpos('aé🙂Z', '🙂')", 3),
+        ("SELECT positionUTF8('aé🙂Z', '🙂')", 3),
+        ("SELECT STRPOS('🙂🙂é', 'é')", 3),
+        ("SELECT STRPOS('🙂🙂é', 'missing')", 0),
+        ("SELECT STRPOS('🙂🙂é', '')", 1),
         ("SELECT STRPOS('ééa', 'a')", 3),
         ("SELECT STRPOS('abc', 'z')", 0),
         ("SELECT STRPOS('abc', '')", 1),
