@@ -114,6 +114,11 @@ impl<W: Write> SqlValuesWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
+        // A carriage return immediately before LF is a record delimiter,
+        // not a byte of the last TSV field. This also handles split writes.
+        if self.line.last() == Some(&b'\r') {
+            self.line.pop();
+        }
         let Some(columns) = self.columns else {
             let columns = self.line.split(|&byte| byte == b'\t').count();
             if columns == 0 || columns > MAX_SQL_VALUES_COLUMNS {
@@ -154,6 +159,12 @@ impl<W: Write> Write for SqlValuesWriter<W> {
                 &chunk[..chunk.len() - 1]
             } else {
                 chunk
+            };
+            // Keep the direct-row fast path safe for CRLF input as well.
+            let fragment = if complete && self.line.is_empty() {
+                fragment.strip_suffix(b"\r").unwrap_or(fragment)
+            } else {
+                fragment
             };
             if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
                 return Err(invalid("SQL VALUES input line exceeds 1 MiB"));
@@ -314,5 +325,28 @@ mod reuse_sql_values_row_buffer_tests {
         assert_eq!(writer.encoded.capacity(), capacity);
         writer.finish().unwrap();
         assert!(writer.output.ends_with(b"('small'),\n('small');\n"));
+    }
+}
+
+#[cfg(test)]
+mod crlf_values_regressions {
+    use super::*;
+    #[test]
+    fn strips_record_carriage_returns_not_escaped_field_data() {
+        let mut writer = SqlValuesWriter::new(Vec::new());
+        writer.write_all(b"id\tvalue\r\n").unwrap();
+        writer.write_all(b"1\tfirst\r\n2\tsecond\n3\tthird\\r\r\n").unwrap();
+        writer.finish().unwrap();
+        assert_eq!(writer.output,
+            b"VALUES ('1', 'first'),\n('2', 'second'),\n('3', 'third\\r');\n");
+    }
+    #[test]
+    fn handles_crlf_split_across_write_boundaries() {
+        let mut writer = SqlValuesWriter::new(Vec::new());
+        for part in [b"name\r".as_slice(), b"\nvalue\r", b"\n"] {
+            writer.write_all(part).unwrap();
+        }
+        writer.finish().unwrap();
+        assert_eq!(writer.output, b"VALUES ('value');\n");
     }
 }
