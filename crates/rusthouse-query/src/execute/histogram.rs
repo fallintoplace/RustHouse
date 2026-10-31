@@ -113,12 +113,13 @@ fn output_bins<W: Write>(
     if query.limit == Some(0) || query.offset.unwrap_or(0) > 0 {
         return Ok(());
     }
-    output.write_all(b"[")?;
-    // Formatting directly into a writer emits several tiny writes per bin.
-    // Reuse one short String so each result tuple is written in one call.
-    let mut formatted = String::with_capacity(96);
+    // Batch many result tuples per write. Wide histograms previously issued
+    // one writer call per bin, which dominates fast in-memory histograms.
+    // The buffer is reused and flushed at 64 KiB, independent of bin count.
+    const OUTPUT_CHUNK_BYTES: usize = 64 * 1024;
+    let mut formatted = String::with_capacity(OUTPUT_CHUNK_BYTES);
+    formatted.push('[');
     for (index, bin) in result.iter().enumerate() {
-        formatted.clear();
         if index > 0 {
             formatted.push(',');
         }
@@ -126,9 +127,13 @@ fn output_bins<W: Write>(
             &mut formatted,
             format_args!("({},{},{})", bin.min, bin.max, bin.count),
         ).expect("writing to String cannot fail");
-        output.write_all(formatted.as_bytes())?;
+        if formatted.len() >= OUTPUT_CHUNK_BYTES {
+            output.write_all(formatted.as_bytes())?;
+            formatted.clear();
+        }
     }
-    output.write_all(b"]\n")?;
+    formatted.push_str("]\n");
+    output.write_all(formatted.as_bytes())?;
     Ok(())
 }
 
@@ -405,6 +410,33 @@ mod tests {
         assert!(writer.bytes.ends_with(b"[(0,3,3),(3,6,3),(6,9,4)]\n"));
         // Header, brackets and the three bins need a bounded number of writes.
         assert!(writer.calls <= 12, "too many writes: {}", writer.calls);
+    }
+
+    #[test]
+    fn many_histogram_bins_stream_in_bounded_batches() {
+        use std::io;
+        struct Counted { writes: usize, max: usize, bytes: Vec<u8> }
+        impl Write for Counted {
+            fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.max = self.max.max(input.len());
+                self.bytes.extend_from_slice(input);
+                Ok(input.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let query = crate::parse_select("SELECT histogram(10000)(number) FROM numbers(10000)").unwrap();
+        let bins = (0..10_000).map(|value| Bin {
+            min: value as f64,
+            max: value as f64 + 1.0,
+            count: 1,
+        }).collect::<Vec<_>>();
+        let mut sink = Counted { writes: 0, max: 0, bytes: Vec::new() };
+        output_bins(&query, &mut sink, "number", 10_000, &bins).unwrap();
+        assert!(sink.writes < 10, "one write per bin regressed: {}", sink.writes);
+        assert!(sink.max < 65_600, "output batch grew without bound");
+        assert_eq!(sink.bytes.iter().filter(|&&byte| byte == b'(').count(), 10_001);
+        assert!(sink.bytes.ends_with(b"(9999,10000,1)]\n"));
     }
 
     #[test]
