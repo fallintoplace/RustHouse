@@ -25,12 +25,13 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
         raise ValueError("column must be a simple SQL identifier")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
+    last_id = start + rows - 1
     run = execute or subprocess.run
     results = []
     for descending in (False, True):
         direction = "DESC" if descending else "ASC"
         sql = f"SELECT {column} FROM part ORDER BY {column} {direction} LIMIT {limit}"
-        expected_values = (range(start + rows - 1, start + rows - 1 - limit, -1)
+        expected_values = (range(last_id, last_id - limit, -1)
                            if descending else range(start, start + limit))
         expected = "".join(f"{value}\n" for value in expected_values).encode()
         begun = time.perf_counter()
@@ -57,7 +58,7 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
         results.append({"direction": direction, "limit": limit,
                         "seconds": elapsed, "verified": True})
     return {"workload": "physical-topk-probe", "rows_assumed": rows,
-            "assumption": f"unique sequential ids {start}..{start + rows - 1}",
+            "assumption": f"unique sequential ids {start}..{last_id}",
             "start": start, "results": results}
 
 
