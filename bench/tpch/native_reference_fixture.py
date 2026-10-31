@@ -46,11 +46,13 @@ def convert_native_table(source, target, table):
     source, target = Path(source), Path(target)
     if source.resolve() == target.resolve():
         raise ValueError("source and destination must differ")
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("dbgen source must be a regular, non-symlinked file")
     count = 0
     with source.open("rb") as reader, target.open("w", newline="", encoding="utf-8") as dest:
         writer = csv.writer(dest, delimiter="\t", lineterminator="\n")
         writer.writerow(names(table))
-        for number, raw in enumerate(reader, 1):
+        for number, raw in enumerate(iter(lambda: reader.readline(MAX_LINE + 1), b""), 1):
             if len(raw) > MAX_LINE:
                 raise ValueError(f"{table} row {number}: exceeds 8 MiB")
             try:
