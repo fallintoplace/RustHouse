@@ -398,13 +398,13 @@ impl TypedExternalSort {
         paths: &[PathBuf],
         mut emit: F,
     ) -> Result<(), ExecutionError>
-    where F: FnMut(SortEntry) -> Result<bool, ExecutionError>,
+    where F: FnMut(&SortEntry) -> Result<bool, ExecutionError>,
     {
         if let [path] = paths {
             // A single pre-sorted run does not need a heap or comparisons.
             let mut source = BufReader::with_capacity(64 * 1024, File::open(path)?);
             while let Some(entry) = read_entry(&mut source)? {
-                if !emit(entry)? { break; }
+                if !emit(&entry)? { break; }
             }
             return Ok(());
         }
@@ -422,17 +422,18 @@ impl TypedExternalSort {
                 });
             }
         }
-        while let Some(item) = heap.pop() {
-            let source = item.source;
-            if !emit(item.entry)? {
-                // A globally merged LIMIT needs no further read or decode.
+        // Keep the winning entry in the heap until its successor is ready.
+        // Updating the root performs one sift, rather than a pop and push.
+        while let Some(mut root) = heap.peek_mut() {
+            if !emit(&root.entry)? {
+                // LIMIT must not decode a tail row that the client did not request.
                 return Ok(());
             }
+            let source = root.source;
             if let Some(entry) = read_entry(&mut sources[source])? {
-                heap.push(HeapItem {
-                    entry, source, descending: self.descending,
-                    nulls_first: self.nulls_first, nulls_last: self.nulls_last,
-                });
+                root.entry = entry;
+            } else {
+                std::collections::binary_heap::PeekMut::pop(root);
             }
         }
         Ok(())
@@ -460,7 +461,7 @@ impl TypedExternalSort {
                 {
                     let mut writer = BufWriter::with_capacity(64 * 1024, File::create(&merged)?);
                     self.merge_group(chunk, |entry| {
-                        write_entry(&mut writer, &entry)?;
+                        write_entry(&mut writer, entry)?;
                         Ok(true)
                     })?;
                     writer.flush()?;
@@ -681,5 +682,37 @@ mod typed_spill_preflight_tests {
         sort.disk_bytes = MAX_TEMP_BYTES;
         sort.flush().unwrap();
         assert!(sort.scratch.is_none());
+    }
+}
+
+#[cfg(test)]
+mod heap_root_regression_tests {
+    use super::*;
+
+    #[test]
+    fn multi_run_root_replacement_preserves_stable_rows_and_global_page() {
+        for descending in [false, true] {
+            let mut sorter = TypedExternalSort::new(if descending { 1 } else { 0 }, 0, 0);
+            let mut expected = Vec::new();
+            for index in 0..17_000usize {
+                let key = ((index * 37) % 101) as u64;
+                sorter.push(row(&format!("row_{index}"), key)).unwrap();
+                expected.push((key, index));
+            }
+            assert!(sorter.runs.len() >= 2);
+            expected.sort_by(|a, b| {
+                (if descending { b.0.cmp(&a.0) } else { a.0.cmp(&b.0) })
+                    .then_with(|| a.1.cmp(&b.1))
+            });
+            let offset = 8190usize;
+            let limit = 100usize;
+            let mut output = Vec::new();
+            sorter.write(&mut output, &["String", "UInt64"], offset, limit).unwrap();
+            let actual = String::from_utf8(output).unwrap();
+            let expected = expected.iter().skip(offset).take(limit)
+                .map(|(key, index)| format!("row_{index}\\t{key}\\n"))
+                .collect::<String>();
+            assert_eq!(actual, expected);
+        }
     }
 }
