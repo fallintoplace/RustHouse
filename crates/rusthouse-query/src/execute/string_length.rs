@@ -34,7 +34,23 @@ const MAX_DISTINCT_LENGTHS: usize = 100_000;
 
 fn append_length_line(buffer: &mut Vec<u8>, length: Option<usize>) -> std::io::Result<()> {
     match length {
-        Some(length) => writeln!(buffer, "{length}")?,
+        Some(mut value) => {
+            // Avoid formatting machinery and its repeated Writer calls for
+            // every LENGTH row. Render digits into a tiny stack array then
+            // append the complete decimal number in one bulk copy.
+            let mut ascii = [0u8; size_of::<usize>() * 3];
+            let mut start = ascii.len();
+            loop {
+                start -= 1;
+                ascii[start] = b'0' + (value % 10) as u8;
+                value /= 10;
+                if value == 0 {
+                    break;
+                }
+            }
+            buffer.extend_from_slice(&ascii[start..]);
+            buffer.push(b'\n');
+        }
         None => buffer.extend_from_slice(b"\\N\n"),
     }
     Ok(())
@@ -179,6 +195,28 @@ pub(super) fn execute<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn length_decimal_renderer_matches_standard_formatting() {
+        let mut output = Vec::new();
+        let values = [0usize, 1, 9, 10, 99, 100, 999, 1000,
+            1_000_000, usize::MAX];
+        for &value in &values {
+            append_length_line(&mut output, Some(value)).unwrap();
+        }
+        append_length_line(&mut output, None).unwrap();
+        let wanted = values.iter().map(|value| format!("{value}\n"))
+            .collect::<String>() + "\\N\n";
+        assert_eq!(output, wanted.as_bytes());
+
+        let mut many = Vec::new();
+        for value in 0..50_000usize {
+            append_length_line(&mut many, Some(value)).unwrap();
+        }
+        assert_eq!(many.iter().filter(|&&byte| byte == b'\n').count(), 50_000);
+        assert!(many.starts_with(b"0\n1\n2\n"));
+        assert!(many.ends_with(b"49999\n"));
+    }
 
     #[test]
     fn length_projection_without_predicates_uses_one_column() {
