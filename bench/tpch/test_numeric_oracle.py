@@ -33,8 +33,10 @@ class NumericOracleTests(unittest.TestCase):
         lower_tolerance = Decimal("12345678901234567890123456789.00")
         self.assertTrue(numeric_equal(b"0", lower, higher_tolerance))
         self.assertFalse(numeric_equal(b"0", lower, lower_tolerance))
-        self.assertTrue(compare_tsv(b"0\\n", lower + b"\\n", higher_tolerance))
-        self.assertFalse(numeric_equal(b"0", b"1e-10000", Decimal("0.01")))
+        self.assertTrue(compare_tsv(b"0\n", lower + b"\n", higher_tolerance))
+        self.assertTrue(numeric_equal(b"0", b"1e-10000", Decimal("0.01")))
+        self.assertFalse(numeric_equal(b"1e10000", b"-1e-10000", Decimal("1e10000")))
+        self.assertTrue(numeric_equal(b"1e10000", b"1e-10000", Decimal("1e10000")))
 
     def test_extreme_decimal_exponents_do_not_match_or_crash(self):
         self.assertFalse(numeric_equal(b"1e-9999999999", b"0"))
