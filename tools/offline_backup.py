@@ -18,6 +18,14 @@ except ImportError:
 
 
 
+def _require_stable_lock(path, fd):
+    opened = os.fstat(fd)
+    current = os.stat(path, follow_symlinks=False)
+    if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode)
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)):
+        raise ValueError("database lock path changed while locking")
+
+
 @contextmanager
 def refuse_live_database(source):
     """Hold the database advisory lock for the entire cold backup."""
@@ -31,12 +39,13 @@ def refuse_live_database(source):
         # not evidence that another process cannot start using the database.
         flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(lock, flags, 0o600)
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("database lock is not a regular file")
+        _require_stable_lock(lock, fd)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError("database is in use; stop readers and writers") from exc
+        # flock protects the opened inode, not a newly substituted pathname.
+        _require_stable_lock(lock, fd)
         yield
     finally:
         if fd is not None:
