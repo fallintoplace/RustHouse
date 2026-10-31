@@ -86,5 +86,20 @@ class OfflineVacuumTests(unittest.TestCase):
             self.assertEqual(active_label(parts), "g2")
 
 
+    def test_pending_entries_must_be_real_directories(self):
+        with tempfile.TemporaryDirectory() as root:
+            _parts, versions = self.fixture(root)
+            pending = versions / ".pending-unsafe"
+            pending.write_text("not a directory")
+            with self.assertRaisesRegex(ValueError, "invalid pending"):
+                plan(root, keep=2)
+            pending.unlink()
+            pending.symlink_to(versions / "g5", target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "invalid pending"):
+                plan(root, keep=2)
+            pending.unlink()
+            pending.mkdir()
+            self.assertEqual(len(plan(root, keep=2)), 2)
+
 if __name__ == "__main__":
     unittest.main()
