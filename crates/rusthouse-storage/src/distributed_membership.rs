@@ -58,16 +58,30 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
         return Err("membership manifest too large");
     }
     let mut members = Vec::new();
-    let mut seen = HashSet::new();
+    // Small replica groups should not allocate a hash table merely to
+    // reject duplicate node IDs. Borrow keys from the input text.
+    let mut small_seen = [""; 8];
+    let mut large_seen: Option<HashSet<&str>> = None;
     for line in text.lines() {
         // Inspect borrowed tokens before allocating the owned output fields.
         // Invalid, duplicate and over-limit entries do not allocate Strings.
         let (node, zone, weight) = parse_member(line)?;
-        if !seen.insert(node) {
-            return Err("duplicate member or invalid weight");
-        }
         if members.len() >= MAX_MEMBER_RECORDS {
             return Err("too many cluster members");
+        }
+        if let Some(seen) = large_seen.as_mut() {
+            if !seen.insert(node) {
+                return Err("duplicate member or invalid weight");
+            }
+        } else if small_seen[..members.len()].contains(&node) {
+            return Err("duplicate member or invalid weight");
+        } else if members.len() == small_seen.len() {
+            let mut seen = HashSet::with_capacity(MAX_MEMBER_RECORDS);
+            seen.extend(small_seen);
+            seen.insert(node);
+            large_seen = Some(seen);
+        } else {
+            small_seen[members.len()] = node;
         }
         members.push(Member {
             node: node.to_owned(),
@@ -289,5 +303,32 @@ mod borrowed_member_parsing_tests {
         assert_eq!(members[0].weight, 23);
         assert_eq!(members[1].zone, "zone2");
         assert_eq!(format_membership(&members).unwrap(), "n1 zone1 23\nn2 zone2 7\n");
+    }
+}
+
+#[cfg(test)]
+mod small_membership_parser_tests {
+    use super::*;
+
+    #[test]
+    fn switches_from_stack_to_hash_set_without_losing_duplicates() {
+        for count in [1usize, 2, 8, 9, 16, 64] {
+            let manifest = (0..count)
+                .map(|index| format!("n{index} zone{} 1\n", index % 3))
+                .collect::<String>();
+            let parsed = parse_membership(&manifest).unwrap();
+            assert_eq!(parsed.len(), count);
+            assert_eq!(format_membership(&parsed).unwrap(), manifest);
+            if count > 1 {
+                for duplicate in [0, count - 2] {
+                    let invalid = format!("{manifest}n{duplicate} zone0 1\n");
+                    assert!(parse_membership(&invalid).is_err());
+                }
+            }
+        }
+        let crossing = (0..8)
+            .map(|index| format!("n{index} z 1\n"))
+            .collect::<String>();
+        assert!(parse_membership(&(crossing + "n0 z 1\n")).is_err());
     }
 }
