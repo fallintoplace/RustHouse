@@ -904,7 +904,7 @@ mod interrupted_request_body_tests {
         assert_eq!(
             read_body_chunk_with_deadline(
                 &mut reader, &mut result, Instant::now(), Duration::from_secs(5),
-            ).unwrap(),
+            ).ok().expect("interrupted body read should succeed"),
             2,
         );
         assert_eq!(&result, b"OK");
