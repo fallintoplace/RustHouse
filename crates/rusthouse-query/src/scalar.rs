@@ -1489,3 +1489,38 @@ mod deterministic_primality_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod miller_rabin_primality_tests {
+    use super::*;
+
+    fn trial_prime(value: u64) -> bool {
+        if value < 2 { return false; }
+        let mut candidate = 2;
+        while candidate <= value / candidate {
+            if value % candidate == 0 { return false; }
+            candidate += 1;
+        }
+        true
+    }
+
+    #[test]
+    fn matches_exact_division_for_all_small_inputs() {
+        for value in 0..50_000u64 {
+            assert_eq!(prime_u64(value), trial_prime(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn rejects_strong_pseudoprimes_and_large_semiprimes() {
+        for composite in [
+            561u64, 1105, 1729, 3215031751,
+            1_000_003u64 * 999_983u64,
+            1_000_000_000_000,
+        ] {
+            assert!(!prime_u64(composite), "{composite}");
+        }
+        assert!(prime_u64(999_999_937));
+        assert!(prime_u64(2_147_483_647));
+    }
+}
