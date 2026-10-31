@@ -5,7 +5,7 @@ use rusthouse_server::{
     Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
 };
 use std::io::{self, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -51,7 +51,7 @@ fn parse_max_connections(value: &str) -> io::Result<usize> {
 }
 
 fn usage() -> &'static str {
-    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--max-connections <1-64>] [--peer IPv4:<port>]... [--bind <IPv4>] [--allow-private-network]\n\
+    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--max-connections <1-64>] [--peer IPv4:<port>]... [--bind <IPv4-or-IPv6-loopback>] [--allow-private-network]\n\
      Listens on 127.0.0.1 by default. Private networking requires opt-in. No TLS or authentication.\n"
 }
 
@@ -411,6 +411,16 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let _ = respond(&mut stream, response, accept_lz4);
 }
 
+/// Allow IPv6 only on ::1 without extending the experimental
+/// unauthenticated peer transport beyond the existing private IPv4 policy.
+fn permitted_listener_bind(bind: IpAddr, allow_private_network: bool) -> bool {
+    match bind {
+        IpAddr::V4(address) => address == Ipv4Addr::LOCALHOST
+            || (allow_private_network && cluster::is_private_address(address)),
+        IpAddr::V6(address) => address == Ipv6Addr::LOCALHOST,
+    }
+}
+
 fn main() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
     let mut port = 8123u16;
@@ -419,7 +429,7 @@ fn main() -> io::Result<()> {
     let mut max_rows = 10_000usize;
     let mut max_connections = MAX_CONNECTIONS;
     let mut peers = Vec::new();
-    let mut bind = Ipv4Addr::LOCALHOST;
+    let mut bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let mut allow_private_network = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -463,9 +473,9 @@ fn main() -> io::Result<()> {
             "--bind" => {
                 bind = args
                     .next()
-                    .ok_or_else(|| io::Error::other("missing bind IPv4 address"))?
-                    .parse::<Ipv4Addr>()
-                    .map_err(|_| io::Error::other("bind address must be numeric IPv4"))?;
+                    .ok_or_else(|| io::Error::other("missing bind IP address"))?
+                    .parse::<IpAddr>()
+                    .map_err(|_| io::Error::other("bind address must be numeric IP"))?;
             }
             "--allow-private-network" => allow_private_network = true,
             "--max-rows" => {
@@ -489,10 +499,9 @@ fn main() -> io::Result<()> {
     if part.is_some() && database.is_some() {
         return Err(io::Error::other("--part and --database cannot be combined"));
     }
-    if bind != Ipv4Addr::LOCALHOST && (!allow_private_network || !cluster::is_private_address(bind))
-    {
+    if !permitted_listener_bind(bind, allow_private_network) {
         return Err(io::Error::other(
-            "non-loopback bind requires --allow-private-network and a private IPv4 address",
+            "non-loopback bind requires --allow-private-network and private IPv4; IPv6 supports only ::1",
         ));
     }
     let peers: Vec<Peer> = peers
@@ -506,7 +515,7 @@ fn main() -> io::Result<()> {
     if cluster
         .peers()
         .iter()
-        .any(|peer| *peer.address().ip() == bind && peer.port() == port)
+        .any(|peer| IpAddr::V4(*peer.address().ip()) == bind && peer.port() == port)
     {
         return Err(io::Error::other("server cannot be its own peer"));
     }
@@ -516,7 +525,7 @@ fn main() -> io::Result<()> {
         max_rows,
     });
     let listener = TcpListener::bind((bind, port))?;
-    eprintln!("RustHouse read-only HTTP listening on http://{bind}:{port}");
+    eprintln!("RustHouse read-only HTTP listening on http://{}", listener.local_addr()?);
     let active = Arc::new(AtomicUsize::new(0));
     for accepted in listener.incoming() {
         let stream = match accepted {
@@ -568,6 +577,25 @@ fn main() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod ipv6_bind_policy_tests {
+    use super::*;
+
+    #[test]
+    fn enables_ipv6_loopback_only_without_expanding_private_network_access() {
+        for allow_private in [false, true] {
+            assert!(permitted_listener_bind("127.0.0.1".parse().unwrap(), allow_private));
+            assert!(permitted_listener_bind("::1".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("::".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("fc00::1".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("fe80::1".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("8.8.8.8".parse().unwrap(), allow_private));
+        }
+        assert!(!permitted_listener_bind("10.1.2.3".parse().unwrap(), false));
+        assert!(permitted_listener_bind("10.1.2.3".parse().unwrap(), true));
+    }
 }
 
 #[cfg(test)]
