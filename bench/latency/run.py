@@ -78,7 +78,7 @@ def make_cases(rows):
         Case("group-short", f"SELECT number, count(*) FROM numbers({rows}) WHERE number < 20 GROUP BY number ORDER BY number DESC LIMIT 10",
              tsv((number, 1) for number in range(19, 9, -1))),
         Case("series-top-desc", f"SELECT number FROM generate_series(0, {rows - 1}, 3) WHERE number % 7 = 0 ORDER BY number DESC LIMIT 20",
-             tsv(list(series_multiples_of_21)[-20:][::-1])),
+             tsv(reversed(series_multiples_of_21[-20:]))),
     ]
 
 
