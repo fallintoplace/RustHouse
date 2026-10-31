@@ -183,6 +183,13 @@ class AnalyticsSuiteParameterTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "integer"):
                     make_fixture("unused", rows)
 
+    def test_rejects_excessive_analytics_repetitions(self):
+        workload = {"name": "test", "queries": [{"name": "q", "sql": "SELECT 1"}]}
+        for runs, warmups in ((101, 0), (100, 1), (1, 100)):
+            with self.subTest(runs=runs, warmups=warmups):
+                with self.assertRaisesRegex(ValueError, "runs and timeout"):
+                    run_suite("unused", workload, rows=10, runs=runs, warmups=warmups)
+
     def test_nonfinite_timing_controls_are_rejected(self):
         workload = {"name": "test", "queries": [{"name": "q", "sql": "SELECT 1"}]}
         for options in ({"runs": True}, {"warmups": False},

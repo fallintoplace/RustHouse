@@ -202,6 +202,7 @@ def run_suite(binary, workload, rows=10_000, runs=3, warmups=1, timeout=120,
         raise ValueError(f"workload accepts at most {workload['max_rows']} rows")
     if (type(runs) is not int or runs < 1
             or type(warmups) is not int or warmups < 0
+            or runs + warmups > 100
             or type(timeout) not in (int, float)
             or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("runs and timeout must be positive; warmups must be nonnegative")
