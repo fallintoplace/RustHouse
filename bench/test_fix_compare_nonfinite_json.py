@@ -10,7 +10,7 @@ class CompareInputNumberTests(unittest.TestCase):
     def test_nonfinite_tokens_never_load(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "input.json"
-            for token in ("NaN", "Infinity", "-Infinity"):
+            for token in ("NaN", "Infinity", "-Infinity", "1e10000", "-1e10000"):
                 with self.subTest(token=token):
                     path.write_text('{"results": [], "bad": ' + token + '}', encoding="utf-8")
                     with self.assertRaisesRegex(ValueError, "nonstandard"):
