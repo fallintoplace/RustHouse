@@ -116,7 +116,9 @@ class CorrectnessSoakTests(unittest.TestCase):
             path.write_bytes(b"trusted")
             def rewritten(source):
                 value = digest_file(source)
-                path.write_bytes(b"changed")
+                # Change the length as well so coarse filesystem timestamps
+                # cannot make this race test pass accidentally.
+                path.write_bytes(b"changed and extended")
                 return value
             with patch("bench.scale.query_correctness_soak.digest_file", side_effect=rewritten):
                 with self.assertRaisesRegex(ValueError, "changed during hashing"):
