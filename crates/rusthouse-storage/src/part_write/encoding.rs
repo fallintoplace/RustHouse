@@ -366,6 +366,79 @@ pub(super) fn checksum_hash(data: &[u8]) -> u128 {
     seed.into()
 }
 
+pub(super) struct StreamingChecksum {
+    seed: U128,
+    pending: Vec<u8>,
+}
+
+impl StreamingChecksum {
+    pub(super) fn new() -> Self {
+        Self {
+            seed: U128::new(0, 0),
+            pending: Vec::with_capacity(2048),
+        }
+    }
+
+    /// The ClickHouse checksum hashes consecutive 2048-byte frames. A frame
+    /// may straddle any two granules, so preserve the partial final frame.
+    pub(super) fn update(&mut self, mut bytes: &[u8]) {
+        const BLOCK: usize = 2048;
+        if !self.pending.is_empty() {
+            let take = bytes.len().min(BLOCK - self.pending.len());
+            self.pending.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if self.pending.len() == BLOCK {
+                self.seed = cityhash128_with_seed(&self.pending, self.seed);
+                self.pending.clear();
+            }
+        }
+        let mut chunks = bytes.chunks_exact(BLOCK);
+        for chunk in chunks.by_ref() {
+            self.seed = cityhash128_with_seed(chunk, self.seed);
+        }
+        self.pending.extend_from_slice(chunks.remainder());
+    }
+
+    pub(super) fn finish(self) -> u128 {
+        let seed = if self.pending.is_empty() {
+            self.seed
+        } else {
+            cityhash128_with_seed(&self.pending, self.seed)
+        };
+        seed.into()
+    }
+}
+
+#[cfg(test)]
+mod streaming_checksum_tests {
+    use super::*;
+
+    #[test]
+    fn granule_boundaries_do_not_change_checksum_bytes() {
+        let bytes = (0..(2048 * 4 + 19))
+            .map(|index| (index * 19 % 251) as u8)
+            .collect::<Vec<_>>();
+        for step in [1, 7, 31, 2047, 2048, 2049, 3072, 8192] {
+            let mut checksum = StreamingChecksum::new();
+            for chunk in bytes.chunks(step) {
+                checksum.update(chunk);
+            }
+            assert_eq!(checksum.finish(), checksum_hash(&bytes), "step {step}");
+        }
+    }
+
+    #[test]
+    fn empty_and_aligned_inputs_match_existing_manifest_hashes() {
+        for len in [0, 1, 2048, 4096, 6144] {
+            let bytes = vec![42u8; len];
+            let mut checksum = StreamingChecksum::new();
+            checksum.update(&bytes);
+            checksum.update(&[]);
+            assert_eq!(checksum.finish(), checksum_hash(&bytes));
+        }
+    }
+}
+
 pub(super) fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
     const HEADER: &[u8] = b"checksums format version: 3\n";
     // Account for names, checksums, and bounded varuint fields so metadata
