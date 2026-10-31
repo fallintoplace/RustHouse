@@ -133,20 +133,42 @@ impl ResumeMap {
     /// Iterate missing chunk indexes in ascending order without materializing
     /// the entire transfer checkpoint. Only live bits in the last byte count.
     pub fn remaining_indices(&self) -> impl Iterator<Item = usize> + '_ {
-        self.completed.iter().enumerate().flat_map(move |(byte_index, &completed)| {
-            let mut missing = !completed;
-            if byte_index + 1 == self.completed.len() && self.chunks % 8 != 0 {
-                missing &= low_bit_mask(self.chunks % 8);
-            }
-            std::iter::from_fn(move || {
-                if missing == 0 {
-                    return None;
+        // Completed transfers have long stretches of full bytes. Check eight
+        // bytes together and skip all 64 verified chunks in one iteration.
+        // Use little-endian words to preserve chunk index order on all CPUs.
+        let full_words = self.completed.len() / 8;
+        let words = self.completed[..full_words * 8]
+            .chunks_exact(8).enumerate().flat_map(|(word_index, bytes)| {
+                let mut missing = !u64::from_le_bytes(
+                    bytes.try_into().expect("exactly eight checkpoint bytes")
+                );
+                std::iter::from_fn(move || {
+                    if missing == 0 {
+                        return None;
+                    }
+                    let bit = missing.trailing_zeros() as usize;
+                    missing &= missing - 1;
+                    Some(word_index * 64 + bit)
+                })
+            });
+        let tail_base = full_words * 64;
+        let tail = self.completed[full_words * 8..]
+            .iter().enumerate().flat_map(move |(byte_index, &completed)| {
+                let first = tail_base + byte_index * 8;
+                let mut missing = !completed;
+                if first + 8 > self.chunks {
+                    missing &= low_bit_mask(self.chunks - first);
                 }
-                let bit = missing.trailing_zeros() as usize;
-                missing &= missing - 1;
-                Some(byte_index * 8 + bit)
-            })
-        })
+                std::iter::from_fn(move || {
+                    if missing == 0 {
+                        return None;
+                    }
+                    let bit = missing.trailing_zeros() as usize;
+                    missing &= missing - 1;
+                    Some(first + bit)
+                })
+            });
+        words.chain(tail)
     }
 
     pub fn remaining(&self) -> Vec<usize> {
@@ -599,5 +621,47 @@ mod invalidation_checkpoint_tests {
         assert!(map.invalidate_range(7, 6).is_err());
         assert!(map.invalidate_range(0, 10).is_err());
         assert_eq!(map.encode_binary(), original);
+    }
+}
+
+#[cfg(test)]
+mod word_missing_chunk_iteration_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_holes_cross_word_and_partial_byte_boundaries() {
+        for len in [0usize, 1, 7, 8, 9, 63, 64, 65, 71, 72, 73, 511, 512, 513, 65_535, 65_536] {
+            let mut map = ResumeMap::new(len).unwrap();
+            map.mark_complete_range(0, len).unwrap();
+            let holes = [0usize, 7, 8, 31, 32, 63, 64, 65, 71, 72, 127, 128, 511, 512, 65_534, 65_535];
+            let expected = holes.iter().copied().filter(|&index| index < len).collect::<Vec<_>>();
+            for &index in &expected {
+                map.invalidate_range(index, index + 1).unwrap();
+            }
+            assert_eq!(map.remaining_indices().collect::<Vec<_>>(), expected, "len={len}");
+            assert_eq!(map.remaining_count(), expected.len());
+            assert_eq!(map.remaining(), expected);
+            assert_eq!(map.remaining_indices().next(), expected.first().copied());
+            assert_eq!(
+                ResumeMap::decode_binary(&map.encode_binary()).unwrap().remaining(),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn partial_map_iterators_match_scalar_reference_for_dense_checkpoints() {
+        for len in [63usize, 64, 65, 511, 512, 513, 8_191, 8_192, 65_536] {
+            let mut map = ResumeMap::new(len).unwrap();
+            for index in 0..len {
+                if index % 7 != 0 && index % 101 != 0 {
+                    map.mark_complete(index).unwrap();
+                }
+            }
+            let expected = (0..len)
+                .filter(|&index| index % 7 == 0 || index % 101 == 0)
+                .collect::<Vec<_>>();
+            assert_eq!(map.remaining_indices().collect::<Vec<_>>(), expected);
+        }
     }
 }
