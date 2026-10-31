@@ -71,6 +71,19 @@ fn index(objects: &[ObjectMetadata]) -> Result<HashMap<&str, &ObjectMetadata>, &
     Ok(indexed)
 }
 
+fn reject_immutable_conflicts(
+    source: &HashMap<&str, &ObjectMetadata>,
+    destination: &HashMap<&str, &ObjectMetadata>,
+) -> Result<(), &'static str> {
+    if source.iter().any(|(key, object)| {
+        destination.get(*key)
+            .is_some_and(|existing| !object.same_contents(existing))
+    }) {
+        return Err("replica copy conflicts with an existing immutable object");
+    }
+    Ok(())
+}
+
 fn needs_copy(meta: &ObjectMetadata, destination: &HashMap<&str, &ObjectMetadata>) -> bool {
     destination
         .get(meta.key.as_str())
@@ -85,6 +98,9 @@ pub fn plan_replica_copies(
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
     let source = index(source)?;
     let destination = index(destination)?;
+    // A generation-scoped key is immutable: returning it for a conflicting
+    // copy would ask the transport to overwrite an existing object.
+    reject_immutable_conflicts(&source, &destination)?;
     let mut changed: Vec<ObjectMetadata> = source
         .into_values()
         .filter(|meta| needs_copy(meta, &destination))
@@ -110,13 +126,7 @@ pub fn plan_replica_copy_batch(
     // the bounded batch rather than the entire changed inventory.
     let source_index = index(source)?;
     let destination_index = index(destination)?;
-    // A generation-scoped immutable object must never be overwritten in place.
-    if source_index.iter().any(|(key, object)| {
-        destination_index.get(*key)
-            .is_some_and(|existing| !object.same_contents(existing))
-    }) {
-        return Err("replica copy conflicts with an existing immutable object");
-    }
+    reject_immutable_conflicts(&source_index, &destination_index)?;
     if max_objects == 0 {
         return Ok(Vec::new());
     }
@@ -136,6 +146,18 @@ pub fn plan_replica_copy_batch(
         .into_values()
         .filter(|meta| needs_copy(meta, &destination_index))
         .collect::<Vec<_>>();
+    // When the whole missing set fits the byte budget, selection only
+    // needs the lexicographically earliest max_objects entries. Partition
+    // in linear time and sort that prefix, not the entire inventory.
+    // Constrained budgets retain the original greedy scan semantics.
+    if needed.len() > max_objects
+        && needed.iter().try_fold(0u64, |total, object| {
+            total.checked_add(object.bytes)
+        }).is_some_and(|total| total <= max_bytes)
+    {
+        needed.select_nth_unstable_by(max_objects, |left, right| left.key.cmp(&right.key));
+        needed.truncate(max_objects);
+    }
     needed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
     let mut remaining = max_bytes;
     let mut selected = Vec::with_capacity(needed.len().min(max_objects));
@@ -156,7 +178,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plans_only_missing_and_mismatched_objects() {
+    fn plans_missing_objects_but_rejects_immutable_conflicts() {
         let objects = vec![
             ObjectMetadata {
                 key: "s/g1/a".into(),
@@ -172,11 +194,6 @@ mod tests {
         let existing = vec![
             objects[0].clone(),
             ObjectMetadata {
-                key: "s/g1/b".into(),
-                bytes: 6,
-                crc32c: 3,
-            },
-            ObjectMetadata {
                 key: "s/g0/old".into(),
                 bytes: 1,
                 crc32c: 0,
@@ -186,6 +203,14 @@ mod tests {
             plan_replica_copies(&objects, &existing).unwrap(),
             vec![objects[1].clone()]
         );
+        let mut conflicting = existing;
+        conflicting.push(ObjectMetadata {
+            key: "s/g1/b".into(),
+            bytes: 6,
+            crc32c: 3,
+        });
+        assert!(plan_replica_copies(&objects, &conflicting).is_err());
+        assert!(plan_replica_copy_batch(&objects, &conflicting, 100, 2).is_err());
         assert!(plan_replica_copies(&objects, &objects).unwrap().is_empty());
     }
 
@@ -404,5 +429,59 @@ mod inventory_component_budget_tests {
         let key = format!("{}/{}", "a".repeat(128), "b".repeat(128));
         let meta = ObjectMetadata { key, bytes: 1, crc32c: 0 };
         assert_eq!(plan_replica_copies(&[meta.clone()], &[]).unwrap(), vec![meta]);
+    }
+}
+
+
+#[cfg(test)]
+mod unconstrained_prefix_selection_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_prefix_matches_full_copy_plan_at_inventory_scale() {
+        let source = (0..2048usize).rev().map(|index| ObjectMetadata {
+            key: format!("part/{index:05}.bin"),
+            bytes: (index % 17) as u64,
+            crc32c: index as u32,
+        }).collect::<Vec<_>>();
+        let destination = source.iter().filter(|meta| meta.crc32c % 5 == 0)
+            .cloned().collect::<Vec<_>>();
+        let all = plan_replica_copies(&source, &destination).unwrap();
+        for count in [2, 3, 8, 32, 256, 2048, 4096] {
+            let selected = plan_replica_copy_batch(&source, &destination, u64::MAX, count).unwrap();
+            assert_eq!(selected, all.iter().take(count).cloned().collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn tight_budgets_keep_greedy_skips_and_zero_byte_objects() {
+        let source = [
+            ObjectMetadata { key: "a/x".into(), bytes: 9, crc32c: 0 },
+            ObjectMetadata { key: "b/x".into(), bytes: 0, crc32c: 0 },
+            ObjectMetadata { key: "c/x".into(), bytes: 2, crc32c: 0 },
+            ObjectMetadata { key: "d/x".into(), bytes: 1, crc32c: 0 },
+            ObjectMetadata { key: "e/x".into(), bytes: 1, crc32c: 0 },
+        ];
+        assert_eq!(
+            plan_replica_copy_batch(&source, &[], 3, 2).unwrap()
+                .iter().map(|meta| meta.key.as_str()).collect::<Vec<_>>(),
+            vec!["b/x", "c/x"]
+        );
+        assert_eq!(
+            plan_replica_copy_batch(&source, &[], 0, 3).unwrap()
+                .iter().map(|meta| meta.key.as_str()).collect::<Vec<_>>(),
+            vec!["b/x"]
+        );
+        // An enormous missing object must not overflow the prefix sum.
+        let huge = [
+            ObjectMetadata { key: "a/x".into(), bytes: u64::MAX, crc32c: 1 },
+            ObjectMetadata { key: "b/x".into(), bytes: 5, crc32c: 2 },
+            ObjectMetadata { key: "c/x".into(), bytes: 0, crc32c: 3 },
+        ];
+        assert_eq!(
+            plan_replica_copy_batch(&huge, &[], 5, 2).unwrap()
+                .iter().map(|meta| meta.key.as_str()).collect::<Vec<_>>(),
+            vec!["b/x", "c/x"]
+        );
     }
 }
