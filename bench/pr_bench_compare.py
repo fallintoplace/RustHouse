@@ -66,7 +66,8 @@ def compare_text(baseline, candidate):
         if base_ms <= 0 or head_ms <= 0:
             change = "N/A (below printed precision)"
         else:
-            change = f"{(head_ms / base_ms - 1) * 100:+.1f}%"
+            percent = (head_ms / base_ms - 1) * 100
+            change = f"{percent:+.1f}%" if math.isfinite(percent) else "N/A (ratio overflow)"
         result.append(f"| {name} | {base_ms:.6f} | {head_ms:.6f} | {change} |")
     result.extend([
         "",
