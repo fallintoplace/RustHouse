@@ -61,10 +61,14 @@ impl Capacity {
     }
 
     pub fn release(self, bytes: u64) -> Result<Self, &'static str> {
-        Ok(Self {
+        let next = Self {
             reserved: self.remaining_reservation(bytes, "cannot release unreserved bytes")?,
             ..self
-        })
+        };
+        // A partial cancellation must not return a still-overcommitted state.
+        // Full cancellation may recover an invalid prior reservation.
+        next.available()?;
+        Ok(next)
     }
 }
 
@@ -365,5 +369,26 @@ mod atomic_committed_reclaim_tests {
         assert_eq!(state.reclaim_used_many(&[]).unwrap(), state);
         assert!(Capacity { total: 1, used: 2, reserved: 0 }
             .reclaim_used_many(&[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod release_remaining_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_partial_release_that_still_exceeds_capacity() {
+        let invalid = Capacity { total: 10, used: 9, reserved: 5 };
+        assert!(invalid.release(3).is_err());
+        assert!(invalid.release_many(&[1, 2]).is_err());
+        assert_eq!(
+            invalid.release(4).unwrap(),
+            Capacity { total: 10, used: 9, reserved: 1 }
+        );
+        assert_eq!(
+            invalid.release_many(&[2, 2, 1]).unwrap(),
+            Capacity { total: 10, used: 9, reserved: 0 }
+        );
+        assert!(Capacity { total: 1, used: 2, reserved: 1 }.release(1).is_err());
     }
 }
