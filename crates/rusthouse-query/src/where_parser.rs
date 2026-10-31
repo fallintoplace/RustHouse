@@ -228,6 +228,9 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
                     vec![Predicate::IsNull { column, negated: false }],
                 ]);
             }
+            // IS TRUE/FALSE are two-valued. Retaining the non-NULL guard
+            // makes NOT (column IS TRUE/FALSE) include NULL after De Morgan.
+            predicates.push(Predicate::IsNull { column, negated: true });
             compare
         };
         predicates.push(predicate);
