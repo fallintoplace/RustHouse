@@ -476,8 +476,12 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
             if byte != b'\t' && byte != b'\n' {
                 continue;
             }
-            rusthouse_format::validate_tsv_field(&rows[field_start..position])
-                .map_err(|_| MergeError::InvalidResponse)?;
+            let field = &rows[field_start..position];
+            // A bare \N is the TSV null marker, not an escape sequence.
+            if field != br"\N" {
+                rusthouse_format::validate_tsv_field(field)
+                    .map_err(|_| MergeError::InvalidResponse)?;
+            }
             field_start = position + 1;
             if byte == b'\t' {
                 row_tabs += 1;
@@ -572,8 +576,12 @@ fn merge_tsv_page(
             if byte != b'\t' && byte != b'\n' {
                 continue;
             }
-            rusthouse_format::validate_tsv_field(&rows[field_start..position])
-                .map_err(|_| MergeError::InvalidResponse)?;
+            let field = &rows[field_start..position];
+            // A bare \N is the TSV null marker, not an escape sequence.
+            if field != br"\N" {
+                rusthouse_format::validate_tsv_field(field)
+                    .map_err(|_| MergeError::InvalidResponse)?;
+            }
             field_start = position + 1;
             if byte == b'\t' {
                 row_tabs += 1;
@@ -2702,6 +2710,16 @@ mod malformed_distributed_tsv_tests {
         assert_eq!(
             merge_tsv_page(&invalid, 16, 2, Some(0)),
             Err(MergeError::InvalidResponse),
+        );
+    }
+
+    #[test]
+    fn null_marker_is_not_a_malformed_escape() {
+        let shard = vec![(16, b"id\tvalue\n1\t\\N\n2\t\\\\N\n".to_vec())];
+        assert_eq!(merge_tsv(&shard, 16).unwrap(), shard[0].1);
+        assert_eq!(
+            merge_tsv_page(&shard, 16, 1, Some(1)).unwrap(),
+            b"id\tvalue\n2\t\\\\N\n",
         );
     }
 
