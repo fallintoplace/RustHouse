@@ -205,6 +205,18 @@ pub fn read_object_ranges_checked(
     if ranges.len() > MAX_RANGES {
         return Err(io::Error::other("too many object ranges"));
     }
+    if let [(offset, length, expected_crc32c)] = ranges {
+        // A single verified chunk needs no intermediate span vector. The
+        // ordinary range reader enforces the same byte and file limits.
+        let chunk = read_object_range(path, *offset, *length, max_total_bytes)?;
+        if crate::distributed_crc32c::crc32c(&chunk) != *expected_crc32c {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "replica object range checksum mismatch",
+            ));
+        }
+        return Ok(vec![chunk]);
+    }
     let spans = ranges.iter().map(|&(offset, length, _)| (offset, length))
         .collect::<Vec<_>>();
     let chunks = read_object_ranges(path, &spans, max_total_bytes)?;
@@ -652,5 +664,39 @@ mod positioned_scrub_regression_tests {
             io::ErrorKind::InvalidData
         );
         fs::remove_file(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod single_checked_range_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn single_checked_reads_preserve_bounds_empty_ranges_and_crc_contract() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-checked-single-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        let bytes = (0u32..256).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+        fs::write(&path, &bytes).unwrap();
+        let checksum = crate::distributed_crc32c::crc32c;
+        let correct = (17, 64, checksum(&bytes[17..81]));
+        assert_eq!(
+            read_object_ranges_checked(&path, &[correct], 64).unwrap(),
+            vec![bytes[17..81].to_vec()]
+        );
+        assert_eq!(
+            read_object_ranges_checked(&path, &[(bytes.len() as u64, 0, checksum(b""))], 0)
+                .unwrap(),
+            vec![Vec::<u8>::new()]
+        );
+        let bad = (17, 64, correct.2 ^ 1);
+        assert_eq!(
+            read_object_ranges_checked(&path, &[bad], 64).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(read_object_ranges_checked(&path, &[correct], 63).is_err());
+        assert!(read_object_ranges_checked(&path, &[(250, 7, 0)], 64).is_err());
+        fs::remove_file(path).unwrap();
     }
 }
