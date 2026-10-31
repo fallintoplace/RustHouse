@@ -259,7 +259,10 @@ pub fn highest_quorum_observed_snapshot(
     }
     let mut observed_nodes = 0u16;
     let mut epoch = None;
-    let mut groups = std::collections::BTreeMap::<u64, (u128, usize)>::new();
+    // A quorum policy supports at most sixteen replicas. Grouping their
+    // snapshot identities on the stack avoids a tree allocation and sorting.
+    let mut groups = [(0u64, 0u128, 0usize); 16];
+    let mut group_count = 0usize;
     for &(member, version) in observations {
         let index = members.iter().position(|&known| member == known)
             .ok_or("snapshot observation from unknown replica")?;
@@ -275,19 +278,27 @@ pub fn highest_quorum_observed_snapshot(
             return Err("mismatched snapshot epoch");
         }
         epoch = Some(version.epoch);
-        let group = groups.entry(version.generation).or_insert((version.fingerprint, 0));
-        if group.0 != version.fingerprint {
-            return Err("conflicting snapshot fingerprint");
+        if let Some(group) = groups[..group_count].iter_mut()
+            .find(|group| group.0 == version.generation)
+        {
+            if group.1 != version.fingerprint {
+                return Err("conflicting snapshot fingerprint");
+            }
+            group.2 += 1;
+        } else {
+            groups[group_count] = (version.generation, version.fingerprint, 1);
+            group_count += 1;
         }
-        group.1 += 1;
     }
-    Ok(groups.into_iter().rev().find_map(|(generation, (fingerprint, count))| {
-        (count >= policy.writes).then_some(SnapshotVersion {
+    Ok(groups[..group_count]
+        .iter()
+        .filter(|group| group.2 >= policy.writes)
+        .max_by_key(|group| group.0)
+        .map(|&(generation, fingerprint, _)| SnapshotVersion {
             epoch: epoch.expect("nonempty groups have an epoch"),
             generation,
             fingerprint,
-        })
-    }))
+        }))
 }
 
 #[cfg(test)]
@@ -349,5 +360,61 @@ mod quorum_snapshot_selection_tests {
         let observed = members.iter().take(9).map(|&id| (id, version)).collect::<Vec<_>>();
         assert_eq!(highest_quorum_observed_snapshot(policy, &members, &observed).unwrap(), Some(version));
         assert_eq!(highest_quorum_observed_snapshot(policy, &members, &observed[..8]).unwrap(), None);
+    }
+}
+
+#[cfg(test)]
+mod stack_quorum_snapshot_tests {
+    use super::*;
+    use crate::distributed_quorum::QuorumPolicy;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn stack_groups_match_reference_for_all_quorum_sizes() {
+        for replicas in 1..=16usize {
+            let names = (0..replicas).map(|i| format!("node_{i}")).collect::<Vec<_>>();
+            let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+            for writes in (replicas / 2 + 1)..=replicas {
+                let policy = QuorumPolicy::new(replicas, replicas - writes + 1, writes).unwrap();
+                for shift in 0..replicas {
+                    let versions = (0..replicas)
+                        .map(|i| {
+                            let generation = 1 + ((i + shift) % 7) as u64;
+                            (members[i], SnapshotVersion {
+                                epoch: 3, generation, fingerprint: u128::from(generation * 19),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let mut reference = BTreeMap::<u64, usize>::new();
+                    for &(_, version) in &versions {
+                        *reference.entry(version.generation).or_default() += 1;
+                    }
+                    let expected = reference.iter().rev()
+                        .find(|entry| *entry.1 >= writes)
+                        .map(|(&generation, _)| SnapshotVersion {
+                            epoch: 3, generation, fingerprint: u128::from(generation * 19),
+                        });
+                    assert_eq!(
+                        highest_quorum_observed_snapshot(policy, &members, &versions).unwrap(),
+                        expected,
+                        "replicas={replicas} writes={writes} shift={shift}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_conflicting_identity_even_without_a_quorum() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let members = ["a", "b", "c"];
+        let version = SnapshotVersion { epoch: 1, generation: 10, fingerprint: 100 };
+        assert!(highest_quorum_observed_snapshot(policy, &members, &[
+            ("a", version), ("b", SnapshotVersion { fingerprint: 101, ..version }),
+        ]).is_err());
+        assert!(highest_quorum_observed_snapshot(policy, &members, &[
+            ("a", version), ("a", version),
+        ]).is_err());
+        assert_eq!(highest_quorum_observed_snapshot(policy, &members, &[]).unwrap(), None);
     }
 }

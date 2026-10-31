@@ -74,6 +74,27 @@ fn has_trailing_byte(reader: &mut impl Read) -> io::Result<bool> {
     }
 }
 
+// A same-length in-place rewrite can preserve mtime while changing ctime.
+// Check both timestamps on Unix before trusting a checksum of an immutable file.
+fn stored_file_state_unchanged(
+    before: &fs::Metadata,
+    after: &fs::Metadata,
+) -> io::Result<bool> {
+    if before.len() != after.len() || before.modified()? != after.modified()? {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec())
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(true)
+    }
+}
+
 fn hash_stored_file(path: &Path, expected_size: u64) -> Result<u128, PartError> {
     const BLOCK_BYTES: usize = 2048;
     let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
@@ -97,9 +118,8 @@ fn hash_stored_file(path: &Path, expected_size: u64) -> Result<u128, PartError> 
     #[cfg(unix)]
     ensure_opened_file_identity(path, &file)?;
     let finished = file.metadata().map_err(|source| io_error(path, source))?;
-    if finished.len() != opened.len()
-        || finished.modified().map_err(|source| io_error(path, source))?
-            != opened.modified().map_err(|source| io_error(path, source))?
+    if !stored_file_state_unchanged(&opened, &finished)
+        .map_err(|source| io_error(path, source))?
     {
         return Err(invalid(path, "file changed during hash verification"));
     }
@@ -660,5 +680,33 @@ mod interrupted_hash_probe_tests {
             interrupted: false,
         };
         assert!(has_trailing_byte(&mut extended).unwrap());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod stored_hash_change_time_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn rejects_ctime_changes_even_when_size_and_mtime_remain_equal() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-stored-hash-ctime-{}-{:?}",
+            std::process::id(), std::thread::current().id(),
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("data.bin");
+        fs::write(&path, b"immutable bytes").unwrap();
+        let before = fs::metadata(&path).unwrap();
+        assert!(stored_file_state_unchanged(&before, &before).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut permissions = before.permissions();
+        permissions.set_mode(permissions.mode() ^ 0o100);
+        fs::set_permissions(&path, permissions).unwrap();
+        let after = fs::metadata(&path).unwrap();
+        assert_eq!(before.len(), after.len());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        assert!(!stored_file_state_unchanged(&before, &after).unwrap());
+        fs::remove_dir_all(&root).unwrap();
     }
 }

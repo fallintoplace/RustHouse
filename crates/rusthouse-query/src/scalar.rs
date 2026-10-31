@@ -735,13 +735,31 @@ fn parse_triangular(parser: &mut Parser, depth: usize) -> Result<i64, ParseError
     i64::try_from(value * (value + 1) / 2).map_err(|_| overflow())
 }
 
-/// Deterministic Miller-Rabin for the SQL function's 10^12 input bound.
-/// The first seven prime bases are sufficient below 341,550,071,728,321.
-fn is_prime_bounded(value: u64) -> bool {
+/// Binary exponentiation with exact UInt128 intermediates for 64-bit residues.
+fn pow_mod(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
+    let mut result = 1u64;
+    while exponent > 0 {
+        if exponent & 1 != 0 {
+            result = ((u128::from(result) * u128::from(base))
+                % u128::from(modulus)) as u64;
+        }
+        exponent >>= 1;
+        if exponent != 0 {
+            base = ((u128::from(base) * u128::from(base))
+                % u128::from(modulus)) as u64;
+        }
+    }
+    result
+}
+
+/// Deterministic Miller-Rabin for every UInt64 value, using seven proven
+/// witnesses. The scalar SQL argument is limited to signed Int64.
+fn prime_u64(value: u64) -> bool {
+    const SMALL_PRIMES: [u64; 12] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
     if value < 2 {
         return false;
     }
-    for prime in [2u64, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+    for prime in SMALL_PRIMES {
         if value == prime {
             return true;
         }
@@ -749,55 +767,39 @@ fn is_prime_bounded(value: u64) -> bool {
             return false;
         }
     }
-
-    let divisions = (value - 1).trailing_zeros();
-    let odd = (value - 1) >> divisions;
-    let modulus = u128::from(value);
-    for witness in [2u64, 3, 5, 7, 11, 13, 17] {
-        let mut base = u128::from(witness);
-        let mut exponent = odd;
-        let mut result = 1u128;
-        while exponent > 0 {
-            if exponent & 1 == 1 {
-                result = result * base % modulus;
-            }
-            exponent >>= 1;
-            if exponent != 0 {
-                base = base * base % modulus;
-            }
-        }
-        if result == 1 || result == modulus - 1 {
+    let shifts = (value - 1).trailing_zeros();
+    let odd = (value - 1) >> shifts;
+    for base in [2u64, 325, 9375, 28178, 450775, 9780504, 1795265022] {
+        let residue = base % value;
+        if residue == 0 {
             continue;
         }
-        let mut witnessed_composite = true;
-        for _ in 1..divisions {
-            result = result * result % modulus;
-            if result == modulus - 1 {
-                witnessed_composite = false;
+        let mut power = pow_mod(residue, odd, value);
+        if power == 1 || power == value - 1 {
+            continue;
+        }
+        let mut witnessed_nontrivial_root = false;
+        for _ in 1..shifts {
+            power = ((u128::from(power) * u128::from(power))
+                % u128::from(value)) as u64;
+            if power == value - 1 {
+                witnessed_nontrivial_root = true;
                 break;
             }
         }
-        if witnessed_composite {
+        if !witnessed_nontrivial_root {
             return false;
         }
     }
     true
 }
 
-/// Decide SQL scalar primality in logarithmic time, even near one trillion.
+/// Test primality for any signed Int64 constant without trial-division spikes.
 fn parse_is_prime(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "IS_PRIME requires '('")?;
     let value = expression(parser, depth + 1)?;
     require_token(parser, Token::RParen, "IS_PRIME requires ')'")?;
-    if value < 2 {
-        return Ok(0);
-    }
-    if value > 1_000_000_000_000 {
-        return Err(ParseError(
-            "IS_PRIME supports values up to 1000000000000".into(),
-        ));
-    }
-    Ok(i64::from(is_prime_bounded(value as u64)))
+    Ok(i64::from(prime_u64(value.try_into().unwrap_or(0))))
 }
 
 /// Compute n choose k exactly for n up to 66.
@@ -1458,6 +1460,37 @@ mod clickhouse_tobool_int64_tests {
 }
 
 #[cfg(test)]
+mod deterministic_primality_tests {
+    use super::*;
+    use crate::{parse_select, Projection};
+
+    #[test]
+    fn agrees_with_trial_division_on_small_integer_domain() {
+        for value in 0..=20_000u64 {
+            let reference = value >= 2 && !(2..=value / 2)
+                .take_while(|&divisor| divisor <= value / divisor)
+                .any(|divisor| value % divisor == 0);
+            assert_eq!(prime_u64(value), reference, "{value}");
+        }
+    }
+
+    #[test]
+    fn distinguishes_large_primes_and_strong_pseudoprimes() {
+        for (value, expected) in [
+            (-1i64, 0), (0, 0), (1, 0), (2, 1), (3, 1), (4, 0),
+            (1_000_000_000_039, 1),
+            (341_550_071_728_321, 0),
+            (2_305_843_009_213_693_951, 1),
+            (9_223_372_036_854_775_783, 1),
+            (i64::MAX, 0),
+        ] {
+            let sql = format!("SELECT is_prime({value})");
+            assert_eq!(parse_select(&sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod miller_rabin_primality_tests {
     use super::*;
 
@@ -1474,7 +1507,7 @@ mod miller_rabin_primality_tests {
     #[test]
     fn matches_exact_division_for_all_small_inputs() {
         for value in 0..50_000u64 {
-            assert_eq!(is_prime_bounded(value), trial_prime(value), "{value}");
+            assert_eq!(prime_u64(value), trial_prime(value), "{value}");
         }
     }
 
@@ -1485,9 +1518,9 @@ mod miller_rabin_primality_tests {
             1_000_003u64 * 999_983u64,
             1_000_000_000_000,
         ] {
-            assert!(!is_prime_bounded(composite), "{composite}");
+            assert!(!prime_u64(composite), "{composite}");
         }
-        assert!(is_prime_bounded(999_999_937));
-        assert!(is_prime_bounded(2_147_483_647));
+        assert!(prime_u64(999_999_937));
+        assert!(prime_u64(2_147_483_647));
     }
 }
