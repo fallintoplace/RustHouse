@@ -35,7 +35,10 @@ def verify_file(path, start, rows, step=1):
     with os.fdopen(descriptor, "rb") as source:
         opened = os.fstat(source.fileno())
         if (not stat.S_ISREG(opened.st_mode)
-                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+                or (before.st_dev, before.st_ino, before.st_size,
+                    before.st_mtime_ns, before.st_ctime_ns) !=
+                    (opened.st_dev, opened.st_ino, opened.st_size,
+                     opened.st_mtime_ns, opened.st_ctime_ns)):
             raise ValueError("shard changed before verification")
         # Read exact bounded blocks rather than one readline and digest update
         # per UInt64 ID. An oversized/malformed line also fails without an
@@ -53,6 +56,18 @@ def verify_file(path, start, rows, step=1):
             digest.update(actual)
         if source.read(1):
             raise ValueError(f"{path}: contains additional rows")
+        finished = os.fstat(source.fileno())
+        if (opened.st_dev, opened.st_ino, opened.st_size,
+                opened.st_mtime_ns, opened.st_ctime_ns) != (
+                finished.st_dev, finished.st_ino, finished.st_size,
+                finished.st_mtime_ns, finished.st_ctime_ns):
+            raise ValueError(f"{path}: shard changed during verification")
+    after = path.lstat()
+    if (before.st_dev, before.st_ino, before.st_size,
+            before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_dev, after.st_ino, after.st_size,
+            after.st_mtime_ns, after.st_ctime_ns):
+        raise ValueError(f"{path}: shard changed during verification")
     return digest.hexdigest()
 
 
