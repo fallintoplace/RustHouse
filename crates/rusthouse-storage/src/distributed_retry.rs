@@ -13,10 +13,14 @@ pub fn retry_delay(
     }
     let bounded_backoff_ms = base_ms.saturating_mul(1u64 << attempt).min(max_ms);
     let half = bounded_backoff_ms.div_ceil(2);
-    let jitter = seed
-        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        .rotate_left(attempt)
-        % (bounded_backoff_ms - half + 1);
+    // Mix both seed and attempt before reducing to the jitter range.
+    // Multiplication alone maps seed zero to zero for every attempt,
+    // synchronizing retries across nodes with an unset seed.
+    let mut mixed = seed.wrapping_add(u64::from(attempt).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    mixed ^= mixed >> 31;
+    let jitter = mixed % (bounded_backoff_ms - half + 1);
     Ok(Duration::from_millis(half + jitter))
 }
 
@@ -155,5 +159,32 @@ mod retry_plan_single_validation_tests {
         }
         assert!(plan_retry_delays(0, 0, 5000, 0, Duration::MAX).is_err());
         assert!(plan_retry_delays(0, 100, 5000, 0, Duration::MAX).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod zero_seed_retry_dispersion_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn zero_seed_jitters_independent_attempts_after_backoff_caps() {
+        let mut delays = HashSet::new();
+        for attempt in 10..=32 {
+            let delay = retry_delay(attempt, 100, 1000, 0).unwrap();
+            assert!((500..=1000).contains(&(delay.as_millis() as u64)));
+            assert_eq!(delay, retry_delay(attempt, 100, 1000, 0).unwrap());
+            delays.insert(delay);
+        }
+        assert!(delays.len() >= 10, "capped attempts should not all synchronize");
+    }
+
+    #[test]
+    fn a_zero_attempt_still_uses_the_replica_seed() {
+        let mut delays = HashSet::new();
+        for seed in 0..128 {
+            delays.insert(retry_delay(0, 1000, 1000, seed).unwrap());
+        }
+        assert!(delays.len() > 40, "seeds should spread initial retries");
     }
 }
