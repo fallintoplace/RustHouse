@@ -54,12 +54,12 @@ class PairedDuckDbTests(unittest.TestCase):
                               (251, 0), (1, 101), (0, 0)):
             with self.subTest(runs=runs, warmups=warmups):
                 with self.assertRaisesRegex(ValueError, "runs or warmups"):
-                    benchmark_pair("SELECT 1", b"1\\n", never, runs, warmups)
+                    benchmark_pair("SELECT 1", b"1\n", never, runs, warmups)
         for sample in (True, False, "0.1", None, float("nan"), float("inf"), 0):
             with self.subTest(sample=sample):
                 with self.assertRaisesRegex(ValueError, "timings"):
-                    benchmark_pair("SELECT 1", b"1\\n",
-                                   lambda engine, sql: (b"1\\n", sample), 1, 0)
+                    benchmark_pair("SELECT 1", b"1\n",
+                                   lambda engine, sql: (b"1\n", sample), 1, 0)
 
     def test_ratio_overflow_does_not_create_nonstandard_json(self):
         def extreme(engine, _sql):
