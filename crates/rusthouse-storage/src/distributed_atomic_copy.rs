@@ -156,12 +156,10 @@ fn copy_immutable_file_impl(
     require_new_destination(destination)?;
     let mut input = File::open(source)?;
     let opened = input.metadata()?;
-    if !opened.file_type().is_file() || opened.len() != source_meta.len() {
+    // An in-place same-length rewrite between symlink_metadata and open
+    // must not be treated as the immutable source that was verified.
+    if !source_unchanged(&source_meta, &opened) {
         return Err(io::Error::other("source changed before immutable copy"));
-    }
-    #[cfg(unix)]
-    if !same_source_identity(&source_meta, &opened) {
-        return Err(io::Error::other("source inode changed before immutable copy"));
     }
     let (staging, mut output) = create_replica_staging_file(parent)?;
     let mut checksum = expected_crc32c.map(|_| crate::distributed_crc32c::Crc32cState::new());
@@ -477,5 +475,29 @@ mod orphaned_replica_staging_tests {
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(&stale).unwrap(), b"persistent");
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod source_open_metadata_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn same_length_source_mutations_break_snapshot_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-open-check-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        fs::write(&root, b"original").unwrap();
+        let before = fs::symlink_metadata(&root).unwrap();
+        let file = OpenOptions::new().write(true).open(&root).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
+        )).unwrap();
+        let after = file.metadata().unwrap();
+        assert_eq!(before.len(), after.len());
+        assert!(!source_unchanged(&before, &after));
+        fs::remove_file(root).unwrap();
     }
 }
