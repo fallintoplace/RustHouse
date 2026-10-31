@@ -65,6 +65,7 @@ pub struct NumericPartReader {
     rows: u64,
     marks: usize,
     next_mark: usize,
+    failed: bool,
 }
 
 impl NumericPartReader {
@@ -171,6 +172,7 @@ impl NumericPartReader {
             rows: metadata.rows,
             marks: layout.mark_count(),
             next_mark: 0,
+            failed: false,
         })
     }
 
@@ -185,6 +187,9 @@ impl NumericPartReader {
     /// Position the next scan batch at a mark without reading earlier granules.
     /// The index may equal mark_count() to seek to the end of the part.
     pub fn seek_to_mark(&mut self, index: usize) -> Result<(), PartError> {
+        if self.failed {
+            return Err(PartError::InvalidScan("numeric scan stopped after decoder failure".into()));
+        }
         if index > self.marks {
             return Err(PartError::InvalidGranuleIndex {
                 index,
@@ -199,6 +204,9 @@ impl NumericPartReader {
     /// The caller must still discard any remaining rows inside the next mark.
     /// Legacy marks without row counts cannot be skipped safely.
     pub fn skip_complete_marks(&mut self, max_rows: usize) -> usize {
+        if self.failed {
+            return 0;
+        }
         let Some(stream) = self.streams.first() else {
             return 0;
         };
@@ -220,6 +228,9 @@ impl NumericPartReader {
     }
 
     pub fn next_batch(&mut self) -> Result<Option<Vec<NumericColumn>>, PartError> {
+        if self.failed {
+            return Err(PartError::InvalidScan("numeric scan stopped after decoder failure".into()));
+        }
         if self.next_mark == self.marks {
             return Ok(None);
         }
@@ -241,7 +252,15 @@ impl NumericPartReader {
         } else {
             1
         };
-        let columns = decode_numeric_streams(&mut self.streams, index, workers)?;
+        // A failed projection may have advanced other independent streams.
+        // Once their cursors are out of sync, retrying this reader is unsafe.
+        let columns = match decode_numeric_streams(&mut self.streams, index, workers) {
+            Ok(columns) => columns,
+            Err(error) => {
+                self.failed = true;
+                return Err(error);
+            }
+        };
         self.next_mark += 1;
         Ok(Some(columns))
     }
@@ -569,6 +588,14 @@ mod tests {
             reader.next_batch(),
             Err(PartError::InvalidCompressedBlock { .. })
         ));
+        // Poison the entire projection. Neither retry nor seeking may emit
+        // rows after a column decoder has failed partway through a batch.
+        assert!(matches!(
+            reader.next_batch(),
+            Err(PartError::InvalidScan(message)) if message.contains("decoder failure")
+        ));
+        assert!(reader.seek_to_mark(0).is_err());
+        assert_eq!(reader.skip_complete_marks(100), 0);
         fs::remove_dir_all(dir).unwrap();
     }
 
