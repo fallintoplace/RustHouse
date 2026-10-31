@@ -43,11 +43,11 @@ def validate_existing(path, start, count):
         if source.read(1):
             raise ValueError(f"unexpected trailing rows in {path}")
         finished = os.fstat(source.fileno())
-        if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
             raise ValueError(f"reused shard changed while reading: {path}")
     after = path.lstat()
-    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
         raise ValueError(f"reused shard changed while reading: {path}")
     return digest.hexdigest()
 
