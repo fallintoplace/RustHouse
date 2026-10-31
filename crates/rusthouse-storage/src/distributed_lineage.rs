@@ -197,7 +197,7 @@ mod snapshot_selection_tests {
             });
             assert!(newest_consistent_snapshot(&conflicting).is_err());
             let mut wrong_epoch = versions.clone();
-            wrong_epoch[count - 1].epoch = 8;
+            wrong_epoch.push(SnapshotVersion { epoch: 8, ..versions[0] });
             assert!(newest_consistent_snapshot(&wrong_epoch).is_err());
         }
     }

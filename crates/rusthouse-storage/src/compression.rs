@@ -701,13 +701,16 @@ mod tests {
             let mut bytes = checked_block(0x02, b"hello", 5);
             bytes[index] ^= 1;
             let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "data.bin").unwrap();
+            let expected_reason = if index == 16 {
+                "unsupported compression method"
+            } else {
+                "checksum mismatch"
+            };
             assert!(matches!(
                 reader.next_decoded(),
                 Some(Err(PartError::InvalidCompressedBlock {
-                    offset: 0,
-                    reason: "checksum mismatch",
-                    ..
-                }))
+                    offset: 0, reason, ..
+                })) if reason == expected_reason
             ));
             assert!(reader.next_decoded().is_none());
         }

@@ -107,7 +107,7 @@ pub(super) enum Cell {
     Null,
 }
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(super) enum Key {
     Numeric(NumberKey),
     Text(Vec<u8>),

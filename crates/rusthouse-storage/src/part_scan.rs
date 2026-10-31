@@ -520,7 +520,7 @@ mod tests {
         fs::write(dir.join("id.mrk2"), marks(4, &[0, 3])).unwrap();
         assert!(matches!(
             NumericPartReader::open(&dir, &["id".into()]),
-            Err(PartError::InvalidScan(_))
+            Err(PartError::InvalidMarkOffset { .. })
         ));
 
         let mut unordered = marks(4, &[2, 1]);
@@ -529,7 +529,7 @@ mod tests {
         fs::write(dir.join("id.mrk2"), unordered).unwrap();
         assert!(matches!(
             NumericPartReader::open(&dir, &["id".into()]),
-            Err(PartError::InvalidScan(_))
+            Err(PartError::InvalidMarkOffset { .. })
         ));
 
         fs::remove_dir_all(dir).unwrap();
@@ -556,8 +556,7 @@ mod tests {
 
         assert!(matches!(
             NumericPartReader::open(&dir, &["id".into()]),
-            Err(PartError::InvalidScan(reason))
-                if reason.contains("duplicate live mark offsets")
+            Err(PartError::InvalidMarkOffset { reason: "nonterminal mark must advance", .. })
         ));
         fs::remove_dir_all(dir).unwrap();
     }
@@ -633,8 +632,8 @@ mod parallel_numeric_open_tests {
                 data_type: "UInt64".into(),
             })
             .collect::<Vec<_>>();
-        let data = (0..10)
-            .map(|index| vec![Some(index.to_string()), Some((index + 200).to_string())])
+        let data = (0..2)
+            .map(|row| (0..10).map(|index| Some((index + row * 200).to_string())).collect::<Vec<_>>())
             .collect::<Vec<_>>();
         write_wide_part(&part, &columns, &data).unwrap();
         let names = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();

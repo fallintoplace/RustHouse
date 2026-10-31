@@ -956,25 +956,27 @@ fn grouped_counts_merge_equal_values_without_precision_loss() {
 #[test]
 fn distinct_keys_preserve_numeric_identity() {
     let mut seen = HashSet::new();
-    assert!(remember_distinct(&mut seen, &[Number::Unsigned(u128::MAX)]).unwrap());
-    assert!(!remember_distinct(&mut seen, &[Number::Unsigned(u128::MAX)]).unwrap());
-    assert!(remember_distinct(&mut seen, &[Number::Unsigned(u128::MAX - 1)]).unwrap());
-    assert!(remember_distinct(&mut seen, &[Number::Float(0.0)]).unwrap());
-    assert!(!remember_distinct(&mut seen, &[Number::Float(-0.0)]).unwrap());
-    assert!(remember_distinct(&mut seen, &[Number::Float(f64::NAN)]).unwrap());
-    assert!(!remember_distinct(&mut seen, &[Number::Float(-f64::NAN)]).unwrap());
-    assert!(remember_distinct(&mut seen, &[Number::Signed(-1)]).unwrap());
+    let mut retained_bytes = 0usize;
+    assert!(remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(u128::MAX)]).unwrap());
+    assert!(!remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(u128::MAX)]).unwrap());
+    assert!(remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(u128::MAX - 1)]).unwrap());
+    assert!(remember_distinct(&mut seen, &mut retained_bytes, &[Number::Float(0.0)]).unwrap());
+    assert!(!remember_distinct(&mut seen, &mut retained_bytes, &[Number::Float(-0.0)]).unwrap());
+    assert!(remember_distinct(&mut seen, &mut retained_bytes, &[Number::Float(f64::NAN)]).unwrap());
+    assert!(!remember_distinct(&mut seen, &mut retained_bytes, &[Number::Float(-f64::NAN)]).unwrap());
+    assert!(remember_distinct(&mut seen, &mut retained_bytes, &[Number::Signed(-1)]).unwrap());
 }
 
 #[test]
 fn distinct_limit_rejects_new_rows_but_accepts_existing_rows() {
     let mut seen = HashSet::new();
+    let mut retained_bytes = 0usize;
     for index in 0..MAX_DISTINCT_ROWS {
-        assert!(remember_distinct(&mut seen, &[Number::Unsigned(index as u128)]).unwrap());
+        assert!(remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(index as u128)]).unwrap());
     }
-    assert!(!remember_distinct(&mut seen, &[Number::Unsigned(0)]).unwrap());
+    assert!(!remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(0)]).unwrap());
     assert!(matches!(
-        remember_distinct(&mut seen, &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]),
+        remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]),
         Err(ExecutionError::Invalid(_))
     ));
 }

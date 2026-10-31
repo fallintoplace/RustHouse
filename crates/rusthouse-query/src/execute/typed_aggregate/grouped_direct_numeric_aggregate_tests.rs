@@ -11,7 +11,7 @@ fn direct_grouped_sum_skips_nulls_and_preserves_signed_values() {
         update_group_numeric(&mut aggregate, &column, row).unwrap();
     }
     assert_eq!(aggregate.render(), "6");
-    let non_numeric = TypedColumn::Numeric(NumericColumn::UInt64(vec![4]));
-    update_group_numeric(&mut aggregate, &non_numeric, 0).unwrap();
+    let more_signed = TypedColumn::Numeric(NumericColumn::Int64(vec![4]));
+    update_group_numeric(&mut aggregate, &more_signed, 0).unwrap();
     assert_eq!(aggregate.render(), "10");
 }

@@ -1086,10 +1086,10 @@ mod utc_compat_tests {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
         assert_eq!(value("SELECT toStartOfWeek(NULL)"), ConstantValue::Null);
+        assert_eq!(value("SELECT toStartOfWeek('2024-03-06', 1)"), ConstantValue::Text("2024-03-04".into()));
         for sql in [
             "SELECT toStartOfWeek()",
             "SELECT toStartOfWeek('2023-02-29')",
-            "SELECT toStartOfWeek('2024-03-06', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
@@ -1216,10 +1216,10 @@ mod utc_compat_tests {
             assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
         }
         assert_eq!(value("SELECT toDayOfWeek(NULL)"), ConstantValue::Null);
+        assert_eq!(value("SELECT toDayOfWeek('2024-01-01', 1)"), ConstantValue::Integer(0));
         for sql in [
             "SELECT toDayOfWeek()",
             "SELECT toDayOfWeek('2023-02-29')",
-            "SELECT toDayOfWeek('2024-01-01', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }

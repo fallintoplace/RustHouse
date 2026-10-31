@@ -175,7 +175,9 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
     if entry_present(&path.join("count.txt"))? || entry_present(&path.join("columns.txt"))? {
         return Ok(vec![path.to_owned()]);
     }
-    let mut parts = Vec::new();
+    // Keep parsed numeric block bounds for physical ordering, instead of
+    // lexicographically placing part 10 before part 2.
+    let mut parts = Vec::<(String, u64, u64, PathBuf)>::new();
     let mut ranges: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
     let mut scanned_entries = 0usize;
     for entry in fs::read_dir(path).map_err(|e| io_error(path, e))? {
@@ -225,8 +227,8 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
         let (partition, min, max) = part_span(name).ok_or_else(|| {
             PartError::InvalidScan(format!("not a standard active part name: {name}"))
         })?;
-        ranges.entry(partition).or_default().push((min, max));
-        parts.push(child);
+        ranges.entry(partition.clone()).or_default().push((min, max));
+        parts.push((partition, min, max, child));
         if parts.len() > MAX_TABLE_PARTS {
             return Err(PartError::InvalidScan(
                 "table snapshot contains over 16384 parts".into(),
@@ -239,8 +241,10 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
         ));
     }
     validate_block_ranges(&mut ranges)?;
-    parts.sort_unstable();
-    Ok(parts)
+    parts.sort_unstable_by(|left, right| {
+        (&left.0, left.1, left.2, &left.3).cmp(&(&right.0, right.1, right.2, &right.3))
+    });
+    Ok(parts.into_iter().map(|(_, _, _, path)| path).collect())
 }
 
 /// List a snapshot's active parts and validate their combined metadata in one pass.

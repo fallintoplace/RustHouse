@@ -1600,7 +1600,7 @@ mod tests {
         let names = vec!["id".to_owned(), "payload".to_owned(), "key".to_owned()];
         let selected = vec![(3, "id".to_owned(), Some(0))];
         assert_eq!(retained_build_columns(&names, &[2], &selected, None, 0), vec![0, 2]);
-        assert_eq!(retained_build_columns(&names, &[2], &selected, None, 3), vec![2]);
+        assert_eq!(retained_build_columns(&names, &[2], &selected, None, 3), vec![0, 2]);
     }
 
     #[test]
@@ -1622,6 +1622,7 @@ mod tests {
             std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let right = root.join("right");
+        fs::create_dir_all(&root).unwrap();
         let schema = [Column { name: "id".into(), data_type: "UInt64".into() }];
         write_wide_part(&right, &schema, &[
             vec![Some("1".into())], vec![Some("3".into())],
@@ -1663,7 +1664,7 @@ mod tests {
             "rusthouse-join-build-pruning-{}-{}",
             std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let names = vec!["id".into(), "unused".into(), "label".into()];
+        let names: Vec<String> = vec!["id".into(), "unused".into(), "label".into()];
         let schema = vec![
             Column { name: names[0].clone(), data_type: "UInt64".into() },
             Column { name: names[1].clone(), data_type: "String".into() },

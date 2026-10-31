@@ -606,7 +606,7 @@ mod cached_composite_group_median_order_tests {
         }
         let mut positions = vec![0usize, 1, 2];
         positions.sort_unstable_by(|&left, &right| {
-            typed::compare_order_cells(&numeric[left], &numeric[right], false, false)
+            typed::compare_order_cells(&numeric[left], &numeric[right], false, None)
         });
         assert_eq!(positions, vec![1, 0, 2]);
     }
