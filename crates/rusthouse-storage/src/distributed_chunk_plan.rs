@@ -80,6 +80,7 @@ pub fn coalesce_indexed_chunks(
     }
     let mut previous_end = 0u64;
     let mut previous_index = None;
+    let mut runs: Vec<ChunkRun> = Vec::new();
     for chunk in chunks {
         let end = chunk.chunk.offset.checked_add(chunk.chunk.length)
             .ok_or("transfer chunk range overflow")?;
@@ -91,9 +92,6 @@ pub fn coalesce_indexed_chunks(
         }
         previous_end = end;
         previous_index = Some(chunk.index);
-    }
-    let mut runs: Vec<ChunkRun> = Vec::new();
-    for chunk in chunks {
         let item = chunk.chunk;
         if let Some(last) = runs.last_mut() {
             let next_index = last.first_index + last.chunk_count;
@@ -181,6 +179,39 @@ mod coalesced_chunk_runs_tests {
             IndexedChunk { index: 2, chunk: Chunk { offset: u64::MAX, length: 2 } },
         ], u64::MAX).is_err());
         assert_eq!(coalesce_indexed_chunks(&[], 1024).unwrap(), Vec::<ChunkRun>::new());
+    }
+}
+
+#[cfg(test)]
+mod fused_coalescing_regression_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_late_invalid_chunk_even_after_merging_earlier_runs() {
+        let chunks = [
+            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 8 } },
+            IndexedChunk { index: 1, chunk: Chunk { offset: 8, length: 8 } },
+            IndexedChunk { index: 2, chunk: Chunk { offset: 16, length: 8 } },
+            IndexedChunk { index: 3, chunk: Chunk { offset: 23, length: 1 } },
+        ];
+        assert!(coalesce_indexed_chunks(&chunks, 32).is_err());
+    }
+
+    #[test]
+    fn large_gapped_plan_preserves_run_budgets_and_boundaries() {
+        let chunks = (0..4096usize).filter(|index| index % 17 != 0)
+            .map(|index| IndexedChunk {
+                index,
+                chunk: Chunk { offset: index as u64 * 1024, length: 1024 },
+            }).collect::<Vec<_>>();
+        let runs = coalesce_indexed_chunks(&chunks, 8 * 1024).unwrap();
+        assert!(runs.iter().all(|run| run.length <= 8 * 1024));
+        let expanded = runs.iter().flat_map(|run| {
+            (0..run.chunk_count).map(move |offset| run.first_index + offset)
+        }).collect::<Vec<_>>();
+        assert_eq!(expanded, chunks.iter().map(|chunk| chunk.index).collect::<Vec<_>>());
+        assert_eq!(runs.iter().map(|run| run.length).sum::<u64>(),
+            chunks.iter().map(|chunk| chunk.chunk.length).sum::<u64>());
     }
 }
 
