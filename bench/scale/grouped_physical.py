@@ -21,6 +21,9 @@ from .physical_scan import invoke
 COUNT_SQL = "SELECT region, count(*) FROM events GROUP BY region ORDER BY region"
 SUM_SQL = "SELECT region, sum(amount) FROM events GROUP BY region ORDER BY region"
 
+# Nine of ten rows use the hot group, and their amounts repeat every 97 rows.
+_HOT_ROWS = tuple(f"0\t{1 + amount}\n" for amount in range(97))
+
 
 def region_at(index, groups):
     if index % 10 != 9:
@@ -36,7 +39,8 @@ def emit(stream, rows, groups, batch_rows=8192):
         raise ValueError("batch_rows must be in 1..1000000")
     for start in range(0, rows, batch_rows):
         stream.write("".join(
-            f"{region_at(index, groups)}\t{1 + index % 97}\n"
+            (_HOT_ROWS[index % 97] if index % 10 != 9
+             else f"{1 + (index // 10) % (groups - 1)}\t{1 + index % 97}\n")
             for index in range(start, min(rows, start + batch_rows))
         ))
 
