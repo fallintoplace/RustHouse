@@ -182,27 +182,32 @@ pub fn inventory_snapshot_crc32c(
 
     // Hash each file independently with bounded concurrency. Keep original
     // inventory order, including deterministic first-error reporting.
+    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let cursor = AtomicUsize::new(0);
-    let mut slots: Vec<Option<Result<CheckedInventoryEntry, PartError>>> =
-        (0..entries.len()).map(|_| None).collect();
+    // Each cursor index belongs to exactly one worker. Write directly to its
+    // one-time result slot instead of buffering another full result vector
+    // in each thread and copying all those vectors after join.
+    let slots: Vec<OnceLock<Result<CheckedInventoryEntry, PartError>>> =
+        (0..entries.len()).map(|_| OnceLock::new()).collect();
     std::thread::scope(|scope| -> Result<(), PartError> {
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
             let cursor = &cursor;
             let entries = &entries;
             let active = &active;
+            let slots = &slots;
             let handle = std::thread::Builder::new()
                 .spawn_scoped(scope, move || {
-                    let mut completed = Vec::new();
                     loop {
                         let index = cursor.fetch_add(1, Ordering::Relaxed);
                         if index >= entries.len() {
                             break;
                         }
-                        completed.push((index, checksum_inventory_entry(active, &entries[index])));
+                        slots[index]
+                            .set(checksum_inventory_entry(active, &entries[index]))
+                            .unwrap_or_else(|_| unreachable!("checksum index claimed twice"));
                     }
-                    completed
                 })
                 .map_err(|error| {
                     PartError::InvalidScan(format!("cannot start checksum worker: {error}"))
@@ -210,18 +215,17 @@ pub fn inventory_snapshot_crc32c(
             handles.push(handle);
         }
         for handle in handles {
-            let completed = handle.join().map_err(|_| {
+            handle.join().map_err(|_| {
                 PartError::InvalidScan("snapshot checksum worker panicked".into())
             })?;
-            for (index, item) in completed {
-                slots[index] = Some(item);
-            }
         }
         Ok(())
     })?;
     let result = slots
         .into_iter()
-        .map(|slot| slot.expect("every claimed file has one result"))
+        .map(|slot| slot.into_inner().ok_or_else(|| {
+            PartError::InvalidScan("missing snapshot checksum result".into())
+        })?)
         .collect::<Result<Vec<_>, _>>()?;
     require_unchanged_generation(root, &active)?;
     Ok(result)
