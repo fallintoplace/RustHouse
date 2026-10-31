@@ -47,6 +47,8 @@ def guard(binary, database, table, source, watch_dir, min_free_gib=5,
     if max_source_bytes is not None and (
             type(max_source_bytes) is not int or max_source_bytes < 1):
         raise ValueError("max_source_bytes must be a positive integer")
+    if Path(source).is_symlink():
+        raise ValueError("source TSV must not be a symlink")
     if not Path(source).is_file():
         raise ValueError("source TSV is missing")
     if max_source_bytes is not None and Path(source).stat().st_size > max_source_bytes:
