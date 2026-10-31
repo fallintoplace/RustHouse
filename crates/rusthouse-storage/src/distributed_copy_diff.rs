@@ -90,24 +90,53 @@ fn needs_copy(meta: &ObjectMetadata, destination: &HashMap<&str, &ObjectMetadata
         .is_none_or(|existing| !meta.same_contents(existing))
 }
 
+// Small immutable inventories are frequent when copying a fresh generation.
+// Validate borrowed keys directly instead of building two hash maps.
+fn validate_tiny_inventory(objects: &[ObjectMetadata]) -> Result<(), &'static str> {
+    for (index, object) in objects.iter().enumerate() {
+        if !valid_key(&object.key)
+            || objects[..index].iter().any(|prior| prior.key == object.key)
+        {
+            return Err("unsafe or duplicate replica object key");
+        }
+    }
+    Ok(())
+}
+
 /// Return missing or differing source objects in lexicographic key order.
 /// Deletions require a separate retention decision and are never planned here.
 pub fn plan_replica_copies(
     source: &[ObjectMetadata],
     destination: &[ObjectMetadata],
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
+    if source.len() <= 8 && destination.len() <= 8 {
+        validate_tiny_inventory(source)?;
+        validate_tiny_inventory(destination)?;
+        let mut missing = Vec::new();
+        for object in source {
+            match destination.iter().find(|candidate| candidate.key == object.key) {
+                Some(existing) if !object.same_contents(existing) => {
+                    return Err("replica copy conflicts with an existing immutable object");
+                }
+                None => missing.push(object.clone()),
+                Some(_) => {}
+            }
+        }
+        missing.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+        return Ok(missing);
+    }
     let source = index(source)?;
     let destination = index(destination)?;
     // A generation-scoped key is immutable: returning it for a conflicting
     // copy would ask the transport to overwrite an existing object.
     reject_immutable_conflicts(&source, &destination)?;
-    let mut changed: Vec<ObjectMetadata> = source
+    // Sort borrowed metadata first. Only clone final output in sorted order.
+    let mut changed: Vec<&ObjectMetadata> = source
         .into_values()
         .filter(|meta| needs_copy(meta, &destination))
-        .cloned()
         .collect();
     changed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
-    Ok(changed)
+    Ok(changed.into_iter().cloned().collect())
 }
 
 // Greedy ordering is by key, with oversized objects skipped. A small batch
@@ -586,5 +615,35 @@ mod unaffordable_copy_candidates_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tiny_inventory_diff_tests {
+    use super::*;
+
+    fn item(key: &str, bytes: u64) -> ObjectMetadata {
+        ObjectMetadata { key: key.into(), bytes, crc32c: bytes as u32 }
+    }
+
+    #[test]
+    fn small_sources_keep_sorted_missing_keys_without_hash_maps() {
+        let source = [item("z/part", 2), item("a/part", 1), item("m/part", 3)];
+        let destination = [item("m/part", 3)];
+        let changed = plan_replica_copies(&source, &destination).unwrap();
+        assert_eq!(changed, vec![item("a/part", 1), item("z/part", 2)]);
+        assert!(plan_replica_copies(&source, &source).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tiny_and_large_paths_reject_conflicts_and_duplicates() {
+        let source = [item("a/part", 1), item("b/part", 2)];
+        assert!(plan_replica_copies(&source, &[item("a/part", 7)]).is_err());
+        assert!(plan_replica_copies(&source, &[item("a/part", 1), item("a/part", 1)]).is_err());
+        assert!(plan_replica_copies(&[item("../unsafe", 2)], &[]).is_err());
+        let many = (0..1024).map(|index| item(&format!("k{index:04}"), index)).collect::<Vec<_>>();
+        let result = plan_replica_copies(&many, &many[..512]).unwrap();
+        assert_eq!(result.len(), 512);
+        assert!(result.windows(2).all(|pair| pair[0].key < pair[1].key));
     }
 }
