@@ -39,7 +39,16 @@ fn contains_ascii_folded(haystack: &[u8], needle: &[u8], shifts: &[usize; 256]) 
     let last = needle.len() - 1;
     let mut start = 0;
     while start <= haystack.len() - needle.len() {
-        if haystack[start..start + needle.len()].eq_ignore_ascii_case(needle) {
+        // Horspool compares from the end. A repeated prefix with a differing
+        // final byte should be rejected in O(1) comparisons per position.
+        let mut remaining = needle.len();
+        while remaining > 0
+            && haystack[start + remaining - 1]
+                .eq_ignore_ascii_case(&needle[remaining - 1])
+        {
+            remaining -= 1;
+        }
+        if remaining == 0 {
             return true;
         }
         start += shifts[usize::from(haystack[start + last].to_ascii_lowercase())];
