@@ -49,11 +49,23 @@ def invoke(binary, database, sql, *, timeout, no_header=False):
     command = [str(binary), "sql", sql, "--database", str(database)]
     if no_header:
         command.extend(["--format", "tsv-no-header"])
+    extra = {}
+    if os.name == "posix":
+        import resource
+
+        def cap_spooled_output():
+            _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            limit = 8 * 1024 * 1024 + 1
+            if hard != resource.RLIM_INFINITY:
+                limit = min(limit, hard)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+        extra["preexec_fn"] = cap_spooled_output
     start = time.perf_counter()
     with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile() as errors:
         process = subprocess.run(
             command, stdout=output, stderr=errors,
-            check=False, timeout=timeout,
+            check=False, timeout=timeout, **extra,
         )
         elapsed = time.perf_counter() - start
         if process.returncode:
