@@ -166,20 +166,44 @@ impl ResumeMap {
     /// Iterate missing chunk indexes in ascending order without materializing
     /// the entire transfer checkpoint. Only live bits in the last byte count.
     pub fn remaining_indices(&self) -> impl Iterator<Item = usize> + '_ {
-        self.completed.iter().enumerate().flat_map(move |(byte_index, &completed)| {
-            let mut missing = !completed;
-            if byte_index + 1 == self.completed.len() && self.chunks % 8 != 0 {
-                missing &= low_bit_mask(self.chunks % 8);
-            }
-            std::iter::from_fn(move || {
-                if missing == 0 {
-                    return None;
+        // Completed transfers have long stretches of full bytes. Check eight
+        // bytes together and skip all 64 verified chunks in one iteration.
+        // Use little-endian words to preserve chunk index order on all CPUs.
+        // Count complete logical words, not allocated bytes: a final
+        // 63-bit word contains one padding bit that must not be returned.
+        let full_words = self.chunks / 64;
+        let words = self.completed[..full_words * 8]
+            .chunks_exact(8).enumerate().flat_map(|(word_index, bytes)| {
+                let mut missing = !u64::from_le_bytes(
+                    bytes.try_into().expect("exactly eight checkpoint bytes")
+                );
+                std::iter::from_fn(move || {
+                    if missing == 0 {
+                        return None;
+                    }
+                    let bit = missing.trailing_zeros() as usize;
+                    missing &= missing - 1;
+                    Some(word_index * 64 + bit)
+                })
+            });
+        let tail_base = full_words * 64;
+        let tail = self.completed[full_words * 8..]
+            .iter().enumerate().flat_map(move |(byte_index, &completed)| {
+                let first = tail_base + byte_index * 8;
+                let mut missing = !completed;
+                if first + 8 > self.chunks {
+                    missing &= low_bit_mask(self.chunks - first);
                 }
-                let bit = missing.trailing_zeros() as usize;
-                missing &= missing - 1;
-                Some(byte_index * 8 + bit)
-            })
-        })
+                std::iter::from_fn(move || {
+                    if missing == 0 {
+                        return None;
+                    }
+                    let bit = missing.trailing_zeros() as usize;
+                    missing &= missing - 1;
+                    Some(first + bit)
+                })
+            });
+        words.chain(tail)
     }
 
     pub fn remaining(&self) -> Vec<usize> {
@@ -246,6 +270,46 @@ impl ResumeMap {
             *destination |= source;
         }
         Ok(())
+    }
+
+    /// Write an authenticated-by-checksum checkpoint envelope.
+    ///
+    /// A flipped completion bit must never silently skip an unverified chunk.
+    /// CRC32C detects accidental corruption, not malicious tampering. The
+    /// original compact binary format remains available for compatibility.
+    pub fn encode_binary_checked(&self) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(12 + self.completed.len());
+        encoded.extend_from_slice(b"RSM1");
+        encoded.extend_from_slice(&(self.chunks as u32).to_le_bytes());
+        encoded.extend_from_slice(&self.completed);
+        let checksum = crate::distributed_crc32c::crc32c(&encoded);
+        encoded.extend_from_slice(&checksum.to_le_bytes());
+        encoded
+    }
+
+    /// Verify framing and checksum before trusting any completion flag.
+    pub fn decode_binary_checked(encoded: &[u8]) -> Result<Self, &'static str> {
+        if encoded.get(..4) != Some(b"RSM1".as_slice()) {
+            return Err("invalid resume checkpoint magic");
+        }
+        let count = encoded.get(4..8).ok_or("truncated resume checkpoint")?;
+        let chunks = u32::from_le_bytes(
+            count.try_into().map_err(|_| "invalid resume checkpoint header")?,
+        ) as usize;
+        let map = Self::new(chunks)?;
+        let body_end = 8 + map.completed.len();
+        if encoded.len() != body_end + 4 {
+            return Err("invalid resume checkpoint length");
+        }
+        let received = u32::from_le_bytes(
+            encoded[body_end..body_end + 4].try_into()
+                .map_err(|_| "invalid resume checkpoint checksum")?,
+        );
+        if crate::distributed_crc32c::crc32c(&encoded[..body_end]) != received {
+            return Err("resume checkpoint checksum mismatch");
+        }
+        // Reuse the strict packed-bitmap decoder, including unused tail bits.
+        Self::decode_binary(&encoded[4..body_end])
     }
 
     /// Serialize the exact chunk count and completion bitmap.
@@ -678,5 +742,106 @@ mod atomic_sparse_verified_batch_tests {
         progress.mark_complete_indices(&[]).unwrap();
         progress.invalidate_indices(&[]).unwrap();
         assert_eq!(progress, baseline);
+    }
+}
+
+#[cfg(test)]
+mod word_missing_chunk_iteration_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_holes_cross_word_and_partial_byte_boundaries() {
+        for len in [0usize, 1, 7, 8, 9, 63, 64, 65, 71, 72, 73, 511, 512, 513, 65_535, 65_536] {
+            let mut map = ResumeMap::new(len).unwrap();
+            map.mark_complete_range(0, len).unwrap();
+            let holes = [0usize, 7, 8, 31, 32, 63, 64, 65, 71, 72, 127, 128, 511, 512, 65_534, 65_535];
+            let expected = holes.iter().copied().filter(|&index| index < len).collect::<Vec<_>>();
+            for &index in &expected {
+                map.invalidate_range(index, index + 1).unwrap();
+            }
+            assert_eq!(map.remaining_indices().collect::<Vec<_>>(), expected, "len={len}");
+            assert_eq!(map.remaining_count(), expected.len());
+            assert_eq!(map.remaining(), expected);
+            assert_eq!(map.remaining_indices().next(), expected.first().copied());
+            assert_eq!(
+                ResumeMap::decode_binary(&map.encode_binary()).unwrap().remaining(),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn partial_map_iterators_match_scalar_reference_for_dense_checkpoints() {
+        for len in [63usize, 64, 65, 511, 512, 513, 8_191, 8_192, 65_536] {
+            let mut map = ResumeMap::new(len).unwrap();
+            for index in 0..len {
+                if index % 7 != 0 && index % 101 != 0 {
+                    map.mark_complete(index).unwrap();
+                }
+            }
+            let expected = (0..len)
+                .filter(|&index| index % 7 == 0 || index % 101 == 0)
+                .collect::<Vec<_>>();
+            assert_eq!(map.remaining_indices().collect::<Vec<_>>(), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod checked_checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn versioned_checkpoints_round_trip_at_every_bitmap_boundary() {
+        for chunks in [0, 1, 7, 8, 9, 63, 64, 65, 511, 512, 513, 65_535, 65_536] {
+            let mut map = ResumeMap::new(chunks).unwrap();
+            for index in (0..chunks).step_by(3) {
+                map.mark_complete(index).unwrap();
+            }
+            let encoded = map.encode_binary_checked();
+            assert_eq!(&encoded[..4], b"RSM1");
+            assert_eq!(encoded.len(), 12 + chunks.div_ceil(8));
+            assert_eq!(ResumeMap::decode_binary_checked(&encoded).unwrap(), map);
+            assert_eq!(ResumeMap::decode_binary(&map.encode_binary()).unwrap(), map);
+        }
+    }
+
+    #[test]
+    fn every_single_bit_corruption_rejects_before_resuming_work() {
+        for chunks in [1, 8, 9, 1024] {
+            let mut map = ResumeMap::new(chunks).unwrap();
+            for index in (0..chunks).step_by(2) {
+                map.mark_complete(index).unwrap();
+            }
+            let encoded = map.encode_binary_checked();
+            for position in 0..encoded.len() {
+                for bit in 0..8 {
+                    let mut corrupted = encoded.clone();
+                    corrupted[position] ^= 1 << bit;
+                    assert!(ResumeMap::decode_binary_checked(&corrupted).is_err(),
+                        "chunks={chunks}, position={position}, bit={bit}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn length_magic_and_unused_tail_bits_are_strictly_validated() {
+        let map = ResumeMap::new(9).unwrap();
+        let encoded = map.encode_binary_checked();
+        assert!(ResumeMap::decode_binary_checked(&encoded[..encoded.len() - 1]).is_err());
+        let mut extra = encoded.clone();
+        extra.push(0);
+        assert!(ResumeMap::decode_binary_checked(&extra).is_err());
+        let mut wrong = encoded.clone();
+        wrong[..4].copy_from_slice(b"RSM2");
+        assert!(ResumeMap::decode_binary_checked(&wrong).is_err());
+        let mut bad_tail = encoded.clone();
+        bad_tail[9] = 0x80;
+        let crc = crate::distributed_crc32c::crc32c(&bad_tail[..bad_tail.len() - 4]);
+        let length = bad_tail.len();
+        bad_tail[length - 4..].copy_from_slice(&crc.to_le_bytes());
+        assert!(ResumeMap::decode_binary_checked(&bad_tail).is_err());
+        assert!(ResumeMap::decode_binary_checked(b"").is_err());
     }
 }
