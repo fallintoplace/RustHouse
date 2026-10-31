@@ -5,7 +5,9 @@ Usage: python -m bench.scale.verify_id_shards /data/shards/manifest.json
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
 from pathlib import Path
 
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
@@ -18,8 +20,18 @@ def require_uint(value, name, *, zero=False):
 
 
 def verify_file(path, start, rows, step=1):
+    path = Path(path)
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("shard must be a regular non-symlinked file")
     digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("shard changed before verification")
         # Read exact bounded blocks rather than one readline and digest update
         # per UInt64 ID. An oversized/malformed line also fails without an
         # unbounded readline allocation.
