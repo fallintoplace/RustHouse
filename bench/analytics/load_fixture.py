@@ -47,6 +47,8 @@ def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
         raise ValueError("timeout must be finite and positive")
     root = Path(fixture_dir)
     tsv = root / "hits.tsv"
+    if tsv.is_symlink() or not tsv.is_file():
+        raise ValueError("hits TSV must be a regular, non-symlinked file")
     with tsv.open(encoding="utf-8") as source:
         records = bounded_tsv_records(source)
         actual_header = next(records, "").rstrip("\r\n").split("\t")
