@@ -151,18 +151,25 @@ fn next_row(
     // Only the first projected column is the sort key. The remaining fields
     // are opaque TSV values and are returned together with the original row.
     // Strict column counts prevent partial or injected peer rows.
-    if row.iter().filter(|&&byte| byte == b'\t').count() != column_count - 1 {
-        return Err(MergeError::InvalidSortedScan);
-    }
     let mut fields = row.split(|&byte| byte == b'\t');
     let key = fields.next().ok_or(MergeError::InvalidSortedScan)?;
-    // A sorted shard must be as strict as the unordered TSV merger.
-    // Reject malformed escaping even in rows omitted by LIMIT/OFFSET.
+    // Count fields while validating them. The previous two passes scanned
+    // every projected byte once to count tabs, then again to decode fields.
+    // Reject excess fields immediately and missing fields at the end.
+    let mut fields_seen = 1usize;
     for field in fields {
+        fields_seen += 1;
+        if fields_seen > column_count {
+            return Err(MergeError::InvalidSortedScan);
+        }
+        // Even rows outside LIMIT/OFFSET must have valid TSV escaping.
         if field != br"\N" {
             rusthouse_format::validate_tsv_field(field)
                 .map_err(|_| MergeError::InvalidSortedScan)?;
         }
+    }
+    if fields_seen != column_count {
+        return Err(MergeError::InvalidSortedScan);
     }
     if key == b"NULL" {
         return Err(MergeError::InvalidSortedScan);
@@ -512,5 +519,42 @@ mod dominant_shard_run_tests {
         assert_eq!(merge_sorted_integer_rows_page(
             &shards, &["id"], "Int64", false, 0, 1, 1,
         ).unwrap(), b"id\n1\n");
+    }
+}
+fg(test)]
+mod one_pass_tsv_field_tests {
+    use super::*;
+
+    #[test]
+    fn full_width_rows_and_page_boundaries_stay_exact() {
+        let columns = (0..16).map(|i| format!("field_{i}")).collect::<Vec<_>>();
+        let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut body = format!("{}\n", columns.join("\t")).into_bytes();
+        let first = {
+            let mut values = vec!["1".to_owned()];
+            values.extend((1..16).map(|index| format!("col_{index}")));
+            format!("{}\n", values.join("\t"))
+        };
+        let second = {
+            let mut values = vec!["2".to_owned()];
+            values.extend((1..16).map(|_| "escaped\\\tvalue".to_owned()));
+            format!("{}\n", values.join("\t"))
+        };
+        body.extend_from_slice(first.as_bytes());
+        body.extend_from_slice(second.as_bytes());
+        let shard = [(3usize, body.clone())];
+        assert_eq!(
+            merge_sorted_integer_rows_page(&shard, &names, "UInt32", false, 1, 1, 1).unwrap(),
+            [format!("{}\n", columns.join("\t")).as_bytes(), second.as_bytes()].concat()
+        );
+
+        let mut short = body.clone();
+        let cut = short.windows(2).position(|w| w == b"\n2").unwrap() + 1;
+        short.truncate(cut);
+        short.extend_from_slice(b"2\tmissing\n");
+        assert_eq!(
+            merge_sorted_integer_rows_page(&[(3, short)], &names, "UInt32", false, 0, 1, 1),
+            Err(MergeError::InvalidSortedScan)
+        );
     }
 }
