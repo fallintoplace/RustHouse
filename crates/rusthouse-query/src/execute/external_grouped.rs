@@ -718,7 +718,7 @@ mod root_replacement_merge_tests {
             Ok(true)
         }).unwrap();
         let expected = expected.iter().enumerate()
-            .filter(|(_, &count)| count > 0)
+            .filter(|&(_, &count)| count > 0)
             .map(|(key, &count)| (key as u64, count))
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
