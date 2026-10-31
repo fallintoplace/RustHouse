@@ -58,12 +58,24 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
         return Err("membership manifest too large");
     }
     let mut members = Vec::new();
-    let mut seen = HashSet::new();
+    // Most deployments have only a few members. Avoid allocating a hash
+    // table until the ninth record while still checking every duplicate.
+    let mut first_eight = [""; 8];
+    let mut seen: Option<HashSet<&str>> = None;
     for line in text.lines() {
         // Inspect borrowed tokens before allocating the owned output fields.
         // Invalid, duplicate and over-limit entries do not allocate Strings.
         let (node, zone, weight) = parse_member(line)?;
-        if !seen.insert(node) {
+        let duplicate = if members.len() < first_eight.len() {
+            let duplicate = first_eight[..members.len()].contains(&node);
+            first_eight[members.len()] = node;
+            duplicate
+        } else {
+            !seen
+                .get_or_insert_with(|| first_eight.iter().copied().collect())
+                .insert(node)
+        };
+        if duplicate {
             return Err("duplicate member or invalid weight");
         }
         if members.len() >= MAX_MEMBER_RECORDS {
@@ -289,5 +301,35 @@ mod borrowed_member_parsing_tests {
         assert_eq!(members[0].weight, 23);
         assert_eq!(members[1].zone, "zone2");
         assert_eq!(format_membership(&members).unwrap(), "n1 zone1 23\nn2 zone2 7\n");
+    }
+}
+
+#[cfg(test)]
+mod adaptive_membership_parse_tests {
+    use super::*;
+
+    #[test]
+    fn validates_duplicates_across_the_stack_to_hash_transition() {
+        let mut text = String::new();
+        for index in 0..8 {
+            text.push_str(&format!("node{index} zone0 1\n"));
+        }
+        assert_eq!(parse_membership(&text).unwrap().len(), 8);
+        let mut duplicate = text.clone();
+        duplicate.push_str("node0 zone1 2\n");
+        assert!(parse_membership(&duplicate).is_err());
+        let mut valid = text;
+        valid.push_str("node8 zone1 2\n");
+        assert_eq!(parse_membership(&valid).unwrap().len(), 9);
+        valid.push_str("node8 zone0 1\n");
+        assert!(parse_membership(&valid).is_err());
+    }
+
+    #[test]
+    fn full_membership_has_unique_names_at_the_record_limit() {
+        let text = (0..64)
+            .map(|index| format!("node{index} zone{} 1\n", index % 4))
+            .collect::<String>();
+        assert_eq!(parse_membership(&text).unwrap().len(), 64);
     }
 }
