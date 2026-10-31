@@ -12,11 +12,109 @@ const MAX_DENSE_BLOCKS: usize = 8_192; // 64 MiB of 8 KiB bitmaps.
 
 #[derive(Clone)]
 enum Block {
-    Sparse(std::collections::HashSet<u16>),
+    Sparse(SparseKeys),
     Dense(Box<[u64; WORDS_PER_BLOCK]>),
 }
 
 const DENSE_THRESHOLD: usize = 4096;
+
+const INLINE_SUFFIXES: usize = 8;
+
+/// Most distinct prefixes contain only a handful of values. Store those
+/// suffixes directly in the hash-table entry and promote to a HashSet only
+/// when the small inline search stops being worthwhile.
+#[derive(Clone)]
+struct SparseKeys {
+    inline: [u16; INLINE_SUFFIXES],
+    inline_len: usize,
+    hashed: Option<std::collections::HashSet<u16>>,
+}
+
+impl SparseKeys {
+    fn new(value: u16) -> Self {
+        let mut inline = [0; INLINE_SUFFIXES];
+        inline[0] = value;
+        Self { inline, inline_len: 1, hashed: None }
+    }
+
+    fn len(&self) -> usize {
+        self.hashed.as_ref().map_or(self.inline_len, |keys| keys.len())
+    }
+
+    fn contains(&self, value: &u16) -> bool {
+        if let Some(keys) = &self.hashed {
+            keys.contains(value)
+        } else {
+            self.inline[..self.inline_len].contains(value)
+        }
+    }
+
+    fn insert(&mut self, value: u16) -> bool {
+        if let Some(keys) = &mut self.hashed {
+            return keys.insert(value);
+        }
+        if self.contains(&value) {
+            return false;
+        }
+        if self.inline_len < INLINE_SUFFIXES {
+            self.inline[self.inline_len] = value;
+            self.inline_len += 1;
+        } else {
+            let mut keys = std::collections::HashSet::with_capacity(INLINE_SUFFIXES * 2);
+            keys.extend(self.inline);
+            keys.insert(value);
+            self.hashed = Some(keys);
+            self.inline_len = 0;
+        }
+        true
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &u16> {
+        self.inline[..self.inline_len].iter()
+            .chain(self.hashed.iter().flat_map(|keys| keys.iter()))
+    }
+
+    fn extend(&mut self, values: impl IntoIterator<Item = u16>) {
+        for value in values {
+            self.insert(value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod inline_sparse_tests {
+    use super::*;
+
+    #[test]
+    fn inline_duplicates_and_hash_promotion_are_exact() {
+        let mut values = SparseKeys::new(1);
+        for value in 1..=8u16 {
+            values.insert(value);
+        }
+        assert!(values.hashed.is_none());
+        assert_eq!(values.len(), 8);
+        assert!(!values.insert(8));
+        assert!(values.insert(9));
+        assert!(values.hashed.is_some());
+        assert_eq!(values.len(), 9);
+        for value in 1..=9 {
+            assert!(values.contains(&value));
+        }
+    }
+
+    #[test]
+    fn merge_promotes_sparse_prefixes_without_double_counting() {
+        let mut left = BitmapDistinct32::new();
+        let mut right = BitmapDistinct32::new();
+        for suffix in 0..8u32 { left.insert(suffix).unwrap(); }
+        for suffix in 4..12u32 { right.insert(suffix).unwrap(); }
+        left.merge_from(&right).unwrap();
+        assert_eq!(left.len(), 12);
+        left.merge_from(&right).unwrap();
+        assert_eq!(left.len(), 12);
+    }
+}
+
 
 fn set_bitmap_bit_if_unset(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
     let index = usize::from(suffix);
@@ -101,9 +199,7 @@ impl BitmapDistinct32 {
                         "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
                     ));
                 }
-                let mut values = std::collections::HashSet::new();
-                values.insert(suffix);
-                entry.insert(Block::Sparse(values));
+                entry.insert(Block::Sparse(SparseKeys::new(suffix)));
                 self.sparse_keys += 1;
                 true
             }
