@@ -57,8 +57,8 @@ def run_sql(binary, database, statement, timeout):
             import resource
             def cap_spooled_output():
                 _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
-                limit = (MAX_SOAK_OUTPUT_BYTES if hard == resource.RLIM_INFINITY
-                         else min(MAX_SOAK_OUTPUT_BYTES, hard))
+                limit = (MAX_SOAK_OUTPUT_BYTES + 1 if hard == resource.RLIM_INFINITY
+                         else min(MAX_SOAK_OUTPUT_BYTES + 1, hard))
                 resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
             extra["preexec_fn"] = cap_spooled_output
         process = subprocess.run(
@@ -68,7 +68,7 @@ def run_sql(binary, database, statement, timeout):
         elapsed = time.perf_counter() - started
         if process.returncode:
             sink.seek(0, 2)
-            if sink.tell() >= MAX_SOAK_OUTPUT_BYTES:
+            if sink.tell() > MAX_SOAK_OUTPUT_BYTES:
                 raise ValueError("soak output exceeds configured byte limit")
             errors.seek(0, 2)
             errors.seek(max(0, errors.tell() - 500))
