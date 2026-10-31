@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import statistics
 import subprocess
@@ -38,14 +39,34 @@ def digest_file(source):
     return digest.hexdigest(), length
 
 
-def run_sql(binary, database, statement, timeout):
+def run_sql(binary, database, statement, timeout, max_output_bytes=None):
+    if max_output_bytes is not None and (
+            type(max_output_bytes) is not int or max_output_bytes < 0):
+        raise ValueError("max_output_bytes must be nonnegative")
+    extra = {}
+    if max_output_bytes is not None and os.name == "posix":
+        import resource
+
+        def cap_spooled_output():
+            soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            limit = min(max_output_bytes + 1, (1 << 63) - 1)
+            if soft != resource.RLIM_INFINITY:
+                limit = min(limit, soft)
+            if hard != resource.RLIM_INFINITY:
+                limit = min(limit, hard)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+        extra["preexec_fn"] = cap_spooled_output
     with tempfile.TemporaryFile() as sink, tempfile.TemporaryFile() as errors:
         started = time.perf_counter()
         process = subprocess.run(
             [str(binary), "sql", statement, "--database", str(database)],
-            stdout=sink, stderr=errors, timeout=timeout, check=False,
+            stdout=sink, stderr=errors, timeout=timeout, check=False, **extra,
         )
         elapsed = time.perf_counter() - started
+        sink.seek(0, 2)
+        if max_output_bytes is not None and sink.tell() > max_output_bytes:
+            raise ValueError("query output exceeds the reference byte length")
         if process.returncode:
             errors.seek(0, 2)
             errors.seek(max(0, errors.tell() - 500))
@@ -73,7 +94,7 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
         raise ValueError("expected output must be a regular non-symlinked file")
     with expected_file.open("rb") as source:
         reference, size = digest_file(source)
-    execute = execute or (lambda: run_sql(binary, database, sql, timeout))
+    execute = execute or (lambda: run_sql(binary, database, sql, timeout, max_output_bytes=size))
     samples = []
     for attempt in range(runs + warmups):
         actual, bytes_written, seconds = execute()
