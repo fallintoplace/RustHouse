@@ -15,27 +15,50 @@ from pathlib import Path
 
 
 def _has_separator(statement):
-    # Delimiters inside quoted SQL text do not separate statements.
+    # Ignore separators inside SQL literals and comments, including nested
+    # block comments. Reject unfinished constructs rather than guessing
+    # whether the apparent tail of a query is executable SQL.
     quote = None
+    depth = 0
     index = 0
     while index < len(statement):
         char = statement[index]
+        following = statement[index + 1:index + 2]
         if quote is not None:
-            if char == "\\":
+            if char == "\\" and following:
                 index += 2
                 continue
             if char == quote:
-                if index + 1 < len(statement) and statement[index + 1] == quote:
+                if following == quote:
                     index += 2
                     continue
                 quote = None
-        elif char in ("'", '"'):
+        elif depth:
+            if char == "/" and following == "*":
+                depth += 1
+                if depth > 32:
+                    return True
+                index += 2
+                continue
+            if char == "*" and following == "/":
+                depth -= 1
+                index += 2
+                continue
+        elif char in ("'", '"', "`"):
             quote = char
+        elif char == "#" or (char == "-" and following == "-"):
+            index += 1 if char == "#" else 2
+            while index < len(statement) and statement[index] not in "\r\n":
+                index += 1
+            continue
+        elif char == "/" and following == "*":
+            depth = 1
+            index += 2
+            continue
         elif char == ";":
             return True
         index += 1
-    return quote is not None
-
+    return quote is not None or depth != 0
 
 def read_reference(path):
     path = Path(path)
