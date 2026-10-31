@@ -63,9 +63,9 @@ def query(binary, database, statement, timeout):
 
 def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
           execute=None, column="id"):
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", table):
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", table):
         raise ValueError("unsafe table identifier")
-    if not isinstance(column, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", column):
+    if not isinstance(column, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", column):
         raise ValueError("unsafe key column identifier")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
