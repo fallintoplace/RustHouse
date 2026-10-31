@@ -257,9 +257,19 @@ pub fn plan_missing_chunks_from_resume(
         return Ok(Vec::new());
     }
     let max_by_budget = byte_budget / chunk_bytes;
-    let reserve = progress.remaining_count()
+    // Small pages need no whole-checkpoint popcount merely to size their
+    // output. A one-chunk scheduler otherwise rescans all 65,536 bitmap
+    // positions for every page, producing quadratic planning work.
+    // For large pages, count remaining bits to avoid over-allocating when
+    // a nearly complete transfer has only a few holes.
+    let reserve_limit = progress.len()
         .min(max_batch_chunks)
         .min(usize::try_from(max_by_budget.saturating_add(1)).unwrap_or(usize::MAX));
+    let reserve = if reserve_limit <= 64 {
+        reserve_limit
+    } else {
+        reserve_limit.min(progress.remaining_count())
+    };
     let mut selected = Vec::with_capacity(reserve);
     let mut remaining_bytes = byte_budget;
     for index in progress.remaining_indices() {
@@ -592,6 +602,36 @@ mod clamped_window_fast_path_tests {
                     let clamped = plan_chunk_window_clamped(total, 7, 65536, start as usize, request as usize).unwrap();
                     assert_eq!(strict, clamped);
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tiny_checkpoint_page_tests {
+    use super::*;
+    use crate::distributed_resume_map::ResumeMap;
+
+    #[test]
+    fn tiny_pages_keep_order_and_budget_for_dense_and_sparse_checkpoints() {
+        let chunks = 65_536;
+        let mut progress = ResumeMap::new(chunks).unwrap();
+        for index in 0..chunks {
+            if index != 17 && index != 33_333 && index != 65_535 {
+                progress.mark_complete(index).unwrap();
+            }
+        }
+        for page_limit in [1, 2, 3, 4, 8, 64] {
+            for byte_budget in [1, 2, 4, 64, u64::MAX] {
+                let expected = plan_missing_chunks(
+                    chunks as u64, 1, chunks, &progress.remaining(),
+                    byte_budget, page_limit
+                ).unwrap();
+                let actual = plan_missing_chunks_from_resume(
+                    chunks as u64, 1, chunks, &progress,
+                    byte_budget, page_limit
+                ).unwrap();
+                assert_eq!(actual, expected, "page_limit={page_limit} budget={byte_budget}");
             }
         }
     }
