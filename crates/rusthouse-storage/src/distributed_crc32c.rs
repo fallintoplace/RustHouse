@@ -1,5 +1,6 @@
 //! Streaming CRC32C for accidental corruption checks, not authentication.
 use std::io::{self, Read};
+use std::sync::OnceLock;
 
 const POLYNOMIAL: u32 = 0x82f6_3b78;
 const INITIAL_CRC32C: u32 = !0;
@@ -263,42 +264,75 @@ mod reusable_crc_shift_tests {
 /// The inputs must be checksums of consecutive byte ranges in the same order.
 /// This permits parallel verification of chunks without re-reading the data.
 /// A zero-length right range leaves the left checksum unchanged.
+// The 64 powers of the one-zero-byte CRC shift cover every u64 byte length.
+// Initialize once, rather than rebuilding GF(2) matrices for every merge.
+static CRC32C_BYTE_SHIFTS: OnceLock<[[u32; 32]; 64]> = OnceLock::new();
+
+fn crc32c_byte_shifts() -> &'static [[u32; 32]; 64] {
+    CRC32C_BYTE_SHIFTS.get_or_init(|| {
+        let mut powers = [[0u32; 32]; 64];
+        powers[0] = Crc32cShift::new(1).operator;
+        for bit in 1..powers.len() {
+            powers[bit] = gf2_matrix_square(&powers[bit - 1]);
+        }
+        powers
+    })
+}
+
+/// Combine two finalized CRC32C values as if their byte ranges were concatenated.
+///
+/// The inputs must be checksums of consecutive byte ranges in the same order.
+/// This permits parallel verification of chunks without re-reading the data.
+/// A zero-length right range leaves the left checksum unchanged.
 pub fn crc32c_combine(mut left: u32, right: u32, mut right_len: u64) -> u32 {
     if right_len == 0 {
         return left;
     }
-
-    // Build the one-zero-bit operator for the reflected Castagnoli polynomial.
-    let mut odd = [0u32; 32];
-    odd[0] = POLYNOMIAL;
-    let mut row = 1u32;
-    for slot in odd.iter_mut().skip(1) {
-        *slot = row;
-        row <<= 1;
-    }
-
-    let mut even = gf2_matrix_square(&odd); // two zero bits
-    odd = gf2_matrix_square(&even); // four zero bits
-
-    loop {
-        even = gf2_matrix_square(&odd); // one zero byte, then powers of four bytes
+    let powers = crc32c_byte_shifts();
+    let mut bit = 0;
+    while right_len != 0 {
         if right_len & 1 != 0 {
-            left = gf2_matrix_times(&even, left);
+            left = gf2_matrix_times(&powers[bit], left);
         }
+        bit += 1;
         right_len >>= 1;
-        if right_len == 0 {
-            break;
-        }
-        odd = gf2_matrix_square(&even);
-        if right_len & 1 != 0 {
-            left = gf2_matrix_times(&odd, left);
-        }
-        right_len >>= 1;
-        if right_len == 0 {
-            break;
-        }
     }
     left ^ right
+}
+
+#[cfg(test)]
+mod cached_crc_byte_shift_tests {
+    use super::*;
+
+    #[test]
+    fn cached_powers_match_independent_shift_for_every_length_bit() {
+        for bit in 0..64 {
+            let len = 1u64 << bit;
+            let expected = Crc32cShift::new(len);
+            for left in [0, 1, 0x1234_5678, 0xffff_ffff] {
+                for right in [0, 1, 0xabcd_ef01, 0xffff_ffff] {
+                    assert_eq!(
+                        crc32c_combine(left, right, len),
+                        expected.combine(left, right),
+                        "length bit {bit}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn combined_bit_lengths_are_equivalent_and_order_independent() {
+        for len in [0, 1, 3, 7, 9, 127, 255, 4095, 1 << 32, u64::MAX] {
+            let shift = Crc32cShift::new(len);
+            for left in [0, 1, 0xdead_beef, u32::MAX] {
+                assert_eq!(
+                    crc32c_combine(left, 0x1234_abcd, len),
+                    shift.combine(left, 0x1234_abcd)
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
