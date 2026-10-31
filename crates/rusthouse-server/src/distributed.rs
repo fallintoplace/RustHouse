@@ -99,10 +99,14 @@ fn merge_distinct_bitmap32(
     const MAX_BLOCKS: usize = 32_768;
     let expected_header = format!("{column}\n");
     enum Block {
-        Sparse(HashSet<u16>),
+        // Most 32-bit prefixes have only a handful of distinct suffixes.
+        // A sorted packed vector uses two bytes per suffix, without a
+        // separate hash-table allocation for every sparse prefix.
+        Sparse(Vec<u16>),
         Dense(Box<[u64; 1024]>),
     }
-    const DENSE_THRESHOLD: usize = 4096;
+    // Switch to O(1) bitmap probes before sorted insertion becomes costly.
+    const DENSE_THRESHOLD: usize = 256;
     let mut blocks = HashMap::<u16, Block>::new();
     let mut distinct = 0u64;
     for (cap, body) in shards {
@@ -129,19 +133,24 @@ fn merge_distinct_bitmap32(
                 return Err(MergeError::CoordinatorLimit);
             }
             let suffix = (key & 0xffff) as u16;
-            let block = blocks.entry(prefix).or_insert_with(|| Block::Sparse(HashSet::new()));
+            let block = blocks.entry(prefix).or_insert_with(|| Block::Sparse(Vec::new()));
             let fresh = match block {
                 Block::Sparse(values) => {
-                    let inserted = values.insert(suffix);
-                    if inserted && values.len() == DENSE_THRESHOLD {
-                        let mut dense = Box::new([0u64; 1024]);
-                        for &value in values.iter() {
-                            let index = usize::from(value);
-                            dense[index / 64] |= 1u64 << (index % 64);
+                    match values.binary_search(&suffix) {
+                        Ok(_) => false,
+                        Err(at) => {
+                            values.insert(at, suffix);
+                            if values.len() == DENSE_THRESHOLD {
+                                let mut dense = Box::new([0u64; 1024]);
+                                for &value in values.iter() {
+                                    let index = usize::from(value);
+                                    dense[index / 64] |= 1u64 << (index % 64);
+                                }
+                                *block = Block::Dense(dense);
+                            }
+                            true
                         }
-                        *block = Block::Dense(dense);
                     }
-                    inserted
                 }
                 Block::Dense(bits) => {
                     let index = usize::from(suffix);
@@ -160,6 +169,34 @@ fn merge_distinct_bitmap32(
     Ok(format!("count(DISTINCT {column})\n{distinct}\n").into_bytes())
 }
 
+
+#[cfg(test)]
+mod sparse_distinct_bitmap_regression_tests {
+    use super::*;
+
+    #[test]
+    fn distributed_sparse_and_dense_prefixes_match_exact_set_count() {
+        // Few suffixes per prefix, then a dense prefix past the promotion
+        // threshold. Shards deliberately overlap and reverse key order.
+        let mut keys = (0..32_000u32)
+            .map(|n| (n << 16) | (n % 13))
+            .collect::<Vec<_>>();
+        keys.extend((0..1_500u32).map(|n| (7 << 16) | n));
+        let expected = keys.iter().copied().collect::<HashSet<_>>().len();
+        let first = format!("key\\n{}\\n", keys.iter().map(u32::to_string).collect::<Vec<_>>().join("\\n"))
+            .replace("\\n", "\n")
+            .into_bytes();
+        keys.reverse();
+        let second = format!("key\\n{}\\n", keys.iter().map(u32::to_string).collect::<Vec<_>>().join("\\n"))
+            .replace("\\n", "\n")
+            .into_bytes();
+        let merged = merge_distinct_bitmap32(
+            &[(keys.len() + 1, first), (keys.len() + 1, second)],
+            "key", false,
+        ).unwrap();
+        assert_eq!(merged, format!("count(DISTINCT key)\\n{expected}\\n").replace("\\n", "\n").into_bytes());
+    }
+}
 
 #[cfg(test)]
 mod adaptive_distinct_bitmap_tests {
