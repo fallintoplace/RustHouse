@@ -151,6 +151,18 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     parse_checksums(&content, path)
 }
 
+// Check borrowed names after parsing, so the hash table never allocates
+// an additional String for every immutable object in a large manifest.
+fn has_duplicate_file_names(files: &[FileChecksum]) -> bool {
+    if files.len() <= 8 {
+        return files.iter().enumerate().any(|(index, file)| {
+            files[..index].iter().any(|prior| prior.name == file.name)
+        });
+    }
+    let mut names = HashSet::with_capacity(files.len().min(128));
+    files.iter().any(|file| !names.insert(file.name.as_str()))
+}
+
 fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartError> {
     let (version, payload) = parse_checksum_header(content, path)?;
     let decoded = if version == 4 {
@@ -167,13 +179,11 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
     }
 
     let mut files = Vec::with_capacity(count.min(128));
-    let mut names = HashSet::with_capacity(count.min(128));
     for _ in 0..count {
-        let entry = reader.file_checksum()?;
-        if !names.insert(entry.name.clone()) {
-            return Err(invalid(path, "duplicate file name"));
-        }
-        files.push(entry);
+        files.push(reader.file_checksum()?);
+    }
+    if has_duplicate_file_names(&files) {
+        return Err(invalid(path, "duplicate file name"));
     }
     if reader.remaining() != 0 {
         return Err(invalid(path, "trailing checksums data"));
@@ -634,5 +644,36 @@ mod manifest_postread_identity_tests {
             &before, &fs::symlink_metadata(&original).unwrap(),
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod borrowed_manifest_name_tests {
+    use super::*;
+
+    fn file(name: &str) -> FileChecksum {
+        FileChecksum {
+            name: name.to_owned(),
+            size: 0,
+            hash: 0,
+            uncompressed: None,
+        }
+    }
+
+    #[test]
+    fn preserves_duplicate_detection_for_small_and_large_manifests() {
+        for count in [0, 1, 8, 9, 512] {
+            let files = (0..count)
+                .map(|index| file(&format!("data_{index}.bin")))
+                .collect::<Vec<_>>();
+            assert!(!has_duplicate_file_names(&files));
+            if count > 0 {
+                let mut duplicate = files.clone();
+                duplicate.push(files[0].clone());
+                assert!(has_duplicate_file_names(&duplicate));
+                duplicate.reverse();
+                assert!(has_duplicate_file_names(&duplicate));
+            }
+        }
     }
 }
