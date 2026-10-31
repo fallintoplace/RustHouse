@@ -521,7 +521,7 @@ mod dominant_shard_run_tests {
         ).unwrap(), b"id\n1\n");
     }
 }
-fg(test)]
+#[cfg(test)]
 mod one_pass_tsv_field_tests {
     use super::*;
 
@@ -537,7 +537,7 @@ mod one_pass_tsv_field_tests {
         };
         let second = {
             let mut values = vec!["2".to_owned()];
-            values.extend((1..16).map(|_| "escaped\\\tvalue".to_owned()));
+            values.extend((1..16).map(|_| "escaped\\tvalue".to_owned()));
             format!("{}\n", values.join("\t"))
         };
         body.extend_from_slice(first.as_bytes());
