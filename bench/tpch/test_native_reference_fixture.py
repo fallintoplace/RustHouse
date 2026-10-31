@@ -48,6 +48,24 @@ class NativeFixtureTests(unittest.TestCase):
             self.assertFalse(target.exists())
 
 
+    def test_native_database_cannot_clobber_concurrent_publisher(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            (directory / "region.tbl").write_bytes(b"1|EUROPE|comment|\n")
+            destination = directory / "native.duckdb"
+
+            def execute(command):
+                if command[-1].startswith("SELECT count(*)"):
+                    destination.write_bytes(b"newer database")
+                    return CompletedProcess(command, 0, b"1\n", b"")
+                Path(command[3]).write_bytes(b"first database")
+                return CompletedProcess(command, 0, b"", b"")
+
+            with self.assertRaises(FileExistsError):
+                load("duckdb", destination, directory, ["region"], execute=execute)
+            self.assertEqual(destination.read_bytes(), b"newer database")
+
+
     def test_native_duckdb_cli_capture_is_spooled_and_bounded(self):
         from types import SimpleNamespace
         from unittest.mock import patch
