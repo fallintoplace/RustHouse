@@ -116,7 +116,12 @@ def make_fixture(directory, rows, *, distribution="uniform"):
         raise ValueError("distribution must be uniform or skewed")
     source_row = fact_row if distribution == "uniform" else skewed_fact_row
     directory = Path(directory)
+    if directory.is_symlink():
+        raise ValueError("analytics fixture directory must not be a symlink")
     directory.mkdir(parents=True, exist_ok=True)
+    for name in ("events.tsv", "accounts.tsv"):
+        if (directory / name).is_symlink():
+            raise ValueError(f"refusing symlinked analytics suite fixture: {name}")
     path = directory / "events.tsv"
     oracle = sqlite3.connect(":memory:")
     oracle.execute(SQLITE_SCHEMA)
