@@ -30,7 +30,7 @@ class AggregateSpoolLimitTests(unittest.TestCase):
             with mock.patch.object(resource, "getrlimit", return_value=(200, 4096)), \
                  mock.patch.object(resource, "setrlimit") as set_limit:
                 kwargs["preexec_fn"]()
-                set_limit.assert_called_once_with(resource.RLIMIT_FSIZE, (4096, 4096))
+                set_limit.assert_called_once_with(resource.RLIMIT_FSIZE, (200, 4096))
             expression = command[2].removeprefix("SELECT ").removesuffix(" FROM part")
             kwargs["stdout"].write(f"{expected[expression]}\n".encode())
             return subprocess.CompletedProcess(command, 0)
