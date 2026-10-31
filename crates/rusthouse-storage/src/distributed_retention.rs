@@ -562,8 +562,9 @@ pub fn retention_candidates_with_replica_floors_and_budget(
         return Err("invalid replica-aware retention configuration");
     }
     let floor = *replica_floors.iter().min().expect("nonempty floors checked");
-    let mut ordered = generations.to_vec();
-    ordered.sort_unstable_by_key(|&(id, _)| id);
+    // Chronological inventories are the normal case. Avoid copying and
+    // sorting all generations when their existing order is already valid.
+    let ordered = ordered_generation_sizes(generations);
     if ordered[0].0 == 0
         || ordered.windows(2).any(|pair| pair[0].0 == pair[1].0)
         || ordered.binary_search_by_key(&active, |&(id, _)| id).is_err()
@@ -724,5 +725,29 @@ mod borrowed_budgeted_retention_tests {
     fn already_sorted_duplicate_generations_still_fail_validation() {
         assert!(matches!(ordered_generation_sizes(&[(1, 1), (1, 2)]), Cow::Borrowed(_)));
         assert!(retention_candidates_with_byte_budget(&[(1, 1), (1, 2)], 1, 1, &[], 100).is_err());
+    }
+}
+
+#[cfg(test)]
+mod sorted_budgeted_replica_retention_tests {
+    use super::*;
+
+    #[test]
+    fn sorted_and_reversed_inventories_produce_the_same_budgeted_plan() {
+        let sorted = (1..=512u64).map(|id| (id, id * 3)).collect::<Vec<_>>();
+        let reversed = sorted.iter().copied().rev().collect::<Vec<_>>();
+        let pins = [13, 25, 60];
+        let floors = [380, 400];
+        let expected = retention_candidates_with_replica_floors_and_budget(
+            &sorted, 512, 5, &pins, &floors, 2_000,
+        ).unwrap();
+        assert_eq!(
+            retention_candidates_with_replica_floors_and_budget(
+                &reversed, 512, 5, &pins, &floors, 2_000,
+            ).unwrap(),
+            expected,
+        );
+        assert!(!expected.0.contains(&13));
+        assert!(!expected.0.contains(&25));
     }
 }
