@@ -15,6 +15,18 @@ class TopKProbeTests(unittest.TestCase):
         self.assertEqual([r["direction"] for r in result["results"]], ["ASC", "DESC"])
         self.assertTrue(all(r["verified"] for r in result["results"]))
 
+    def test_default_topk_matches_short_fixture_and_keeps_explicit_validation(self):
+        def execute(command, **kwargs):
+            self.assertIn("LIMIT 3", command[2])
+            values = b"2\\n1\\n0\\n" if "DESC" in command[2] else b"0\\n1\\n2\\n"
+            return SimpleNamespace(returncode=0, stdout=values, stderr=b"")
+
+        result = probe("rusthouse", "part", 3, execute=execute)
+        self.assertEqual([case["limit"] for case in result["results"]], [3, 3])
+        self.assertTrue(all(case["verified"] for case in result["results"]))
+        with self.assertRaisesRegex(ValueError, "limit"):
+            probe("rusthouse", "part", 3, limit=4, execute=execute)
+
     def test_nonzero_start_uses_exact_uint64_endpoints(self):
         boundary = (1 << 64) - 3
         expected = [f"{boundary}\n{boundary + 1}\n".encode(),
