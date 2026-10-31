@@ -49,6 +49,8 @@ def load_queries(path):
                 or len(statement.encode("utf-8")) > 65_536):
             raise ValueError("analytics workload requires one bounded SELECT per line")
         queries.append(statement)
+    if not queries:
+        raise ValueError("analytics workload contains no SELECT queries")
     return queries
 
 
