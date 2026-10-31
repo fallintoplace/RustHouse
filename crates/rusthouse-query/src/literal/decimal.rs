@@ -27,15 +27,19 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     {
         return Err(ParseError("invalid decimal constant".into()));
     }
-    let mut digits = String::with_capacity(whole.len() + fraction.len() + usize::from(negative));
-    if negative {
-        digits.push('-');
+    // A decimal mantissa does not need to be copied into a temporary
+    // String. Accumulate the whole and fractional ASCII digit slices
+    // directly, with checked signed arithmetic so Int128::MIN stays valid.
+    let mut signed = 0i128;
+    for digit in whole.bytes().chain(fraction.bytes()) {
+        let value = i128::from(digit - b'0');
+        signed = signed.checked_mul(10)
+            .and_then(|current| {
+                if negative { current.checked_sub(value) }
+                else { current.checked_add(value) }
+            })
+            .ok_or_else(|| ParseError("decimal constant exceeds Int128".into()))?;
     }
-    digits.push_str(whole);
-    digits.push_str(fraction);
-    let signed = digits
-        .parse::<i128>()
-        .map_err(|_| ParseError("decimal constant exceeds Int128".into()))?;
     // Zero remains exact under any finite decimal exponent. Avoid rejecting
     // it merely because a redundant power of ten exceeds Int128.
     if signed == 0 {
@@ -116,5 +120,38 @@ mod tests {
         assert_eq!(fixed_decimal("1.230000000000000000000").unwrap(), (123, 2));
         assert_eq!(fixed_decimal("-0.001000000000000000000").unwrap(), (-1, 3));
         assert_eq!(fixed_decimal("1.23000000e-2").unwrap(), (123, 4));
+    }
+}
+
+#[cfg(test)]
+mod allocation_free_decimal_mantissa_tests {
+    use super::*;
+
+    #[test]
+    fn parses_int128_extremes_and_exponents_without_mantissa_buffer() {
+        for value in [i128::MIN, i128::MIN + 1, -100, -1, 0, 1, 100, i128::MAX - 1, i128::MAX] {
+            let repr = value.to_string();
+            assert_eq!(fixed_decimal(&repr).unwrap(), (value, 0));
+            assert_eq!(fixed_decimal(&format!("{repr}.0000")).unwrap(), (value, 0));
+        }
+        for repr in [
+            "170141183460469231731687303715884105728",
+            "-170141183460469231731687303715884105729",
+            "99999999999999999999999999999999999999999999",
+        ] {
+            assert!(fixed_decimal(repr).is_err(), "{repr}");
+        }
+        for (repr, expected) in [
+            ("-.125e2", (-125i128, 1usize)),
+            ("0.00123000e2", (123, 3)),
+            ("-1.0000000e-2", (-1, 2)),
+            ("+1.25", (125, 2)),
+        ] {
+            if repr.starts_with('+') {
+                assert!(fixed_decimal(repr).is_err());
+            } else {
+                assert_eq!(fixed_decimal(repr).unwrap(), expected, "{repr}");
+            }
+        }
     }
 }
