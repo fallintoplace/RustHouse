@@ -1,7 +1,6 @@
 //! Safe seek-and-read support for a future replica object service.
 use std::fs::{self, File};
 use std::io;
-#[cfg(not(unix))]
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
