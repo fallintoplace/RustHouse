@@ -120,8 +120,11 @@ impl ResumeMap {
             return false;
         }
         let remainder = self.chunks % 8;
-        remainder == 0
-            || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
+        if remainder == 0 {
+            return true;
+        }
+        let mask = low_bit_mask(remainder);
+        self.completed[full_bytes] & mask == mask
     }
 
     /// Stable ASCII encoding for persisting transfer progress.
@@ -444,6 +447,23 @@ mod grouped_ascii_resume_decoder_tests {
         }
         for encoded in ["10x", "00000000x", "11111111\u{00a0}"] {
             assert!(ResumeMap::decode(encoded).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod completion_tail_tests {
+    use super::*;
+
+    #[test]
+    fn completion_handles_all_partial_bitmap_widths() {
+        for length in 1..8 {
+            let mut map = ResumeMap::new(length).unwrap();
+            assert!(!map.complete());
+            map.mark_complete_range(0, length - 1).unwrap();
+            assert!(!map.complete());
+            map.mark_complete(length - 1).unwrap();
+            assert!(map.complete());
         }
     }
 }
