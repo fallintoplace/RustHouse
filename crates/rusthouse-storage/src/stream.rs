@@ -96,12 +96,12 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn scan(bytes: Vec<u8>) -> UInt64ColumnReader<Cursor<Vec<u8>>> {
+    pub(super) fn scan(bytes: Vec<u8>) -> UInt64ColumnReader<Cursor<Vec<u8>>> {
         let blocks = CompressedBlockReader::new(Cursor::new(bytes), "values.bin").unwrap();
         UInt64ColumnReader::new(blocks)
     }
 
-    fn none_block(data: &[u8]) -> Vec<u8> {
+    pub(super) fn none_block(data: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0u8; 16];
         bytes.push(0x02);
         bytes.extend_from_slice(&(data.len() as u32 + 9).to_le_bytes());
