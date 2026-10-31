@@ -20,8 +20,10 @@ MAX_QUERY = 9
 
 
 def parse_ids(spec):
-    if not spec:
+    if spec is None:
         return list(range(1, MAX_QUERY + 1))
+    if not isinstance(spec, str) or not spec.strip():
+        raise ValueError("--only cannot be empty or nontext")
     ids = set()
     for fragment in spec.split(","):
         pair = fragment.split("-", 1)
