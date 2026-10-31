@@ -9,7 +9,40 @@ enum IntegerKey {
     Unsigned(u128),
 }
 
-fn parse_integer_sort_key(bytes: &[u8], unsigned: bool) -> Result<IntegerKey, MergeError> {
+#[derive(Clone, Copy)]
+enum IntegerType {
+    Signed { min: i128, max: i128 },
+    Unsigned { max: u128 },
+}
+
+impl IntegerType {
+    fn from_schema(kind: &str) -> Result<Self, MergeError> {
+        let kind = kind.strip_prefix("Nullable(")
+            .and_then(|inner| inner.strip_suffix(')'))
+            .unwrap_or(kind);
+        let (unsigned, bits) = match kind {
+            "UInt8" => (true, 8), "UInt16" => (true, 16),
+            "UInt32" => (true, 32), "UInt64" => (true, 64),
+            "UInt128" => (true, 128),
+            "Int8" => (false, 8), "Int16" => (false, 16),
+            "Int32" => (false, 32), "Int64" => (false, 64),
+            "Int128" => (false, 128),
+            _ => return Err(MergeError::InvalidSortedScan),
+        };
+        Ok(if unsigned {
+            Self::Unsigned {
+                max: if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 },
+            }
+        } else {
+            Self::Signed {
+                min: if bits == 128 { i128::MIN } else { -(1i128 << (bits - 1)) },
+                max: if bits == 128 { i128::MAX } else { (1i128 << (bits - 1)) - 1 },
+            }
+        })
+    }
+}
+
+fn parse_integer_sort_key(bytes: &[u8], kind: IntegerType) -> Result<IntegerKey, MergeError> {
     let text = std::str::from_utf8(bytes).map_err(|_| MergeError::InvalidSortedScan)?;
     if text.starts_with('+')
         || (text.len() > 1 && text.starts_with('0'))
@@ -17,14 +50,17 @@ fn parse_integer_sort_key(bytes: &[u8], unsigned: bool) -> Result<IntegerKey, Me
     {
         return Err(MergeError::InvalidSortedScan);
     }
-    if unsigned {
-        text.parse::<u128>()
-            .map(IntegerKey::Unsigned)
-            .map_err(|_| MergeError::InvalidSortedScan)
-    } else {
-        text.parse::<i128>()
-            .map(IntegerKey::Signed)
-            .map_err(|_| MergeError::InvalidSortedScan)
+    match kind {
+        IntegerType::Unsigned { max } => {
+            let number = text.parse::<u128>().map_err(|_| MergeError::InvalidSortedScan)?;
+            (number <= max).then_some(IntegerKey::Unsigned(number))
+                .ok_or(MergeError::InvalidSortedScan)
+        }
+        IntegerType::Signed { min, max } => {
+            let number = text.parse::<i128>().map_err(|_| MergeError::InvalidSortedScan)?;
+            (min <= number && number <= max).then_some(IntegerKey::Signed(number))
+                .ok_or(MergeError::InvalidSortedScan)
+        }
     }
 }
 
@@ -64,7 +100,7 @@ impl PartialOrd for Cursor {
 fn next_row(
     data: &[u8],
     start: usize,
-    unsigned: bool,
+    kind: IntegerType,
 ) -> Result<Option<(IntegerKey, usize)>, MergeError> {
     if start == data.len() {
         return Ok(None);
@@ -77,7 +113,7 @@ fn next_row(
     if value.contains(&b'\t') || value == b"NULL" {
         return Err(MergeError::InvalidSortedScan);
     }
-    Ok(Some((parse_integer_sort_key(value, unsigned)?, end)))
+    Ok(Some((parse_integer_sort_key(value, kind)?, end)))
 }
 
 /// Validate the full sorted shard streams before returning any rows.
@@ -94,7 +130,7 @@ pub(super) fn merge_sorted_integer_page(
 ) -> Result<Vec<u8>, MergeError> {
     let header = format!("{column}\n");
     let header_len = header.len();
-    let unsigned = kind.starts_with("UInt");
+    let kind = IntegerType::from_schema(kind)?;
     let prefix = offset.checked_add(limit).ok_or(MergeError::CoordinatorLimit)?;
     if shards.is_empty() {
         return Err(MergeError::InvalidSortedScan);
@@ -109,7 +145,7 @@ pub(super) fn merge_sorted_integer_page(
         let mut rows = 0usize;
         let mut previous = None;
         let mut first = None;
-        while let Some((key, next)) = next_row(data, cursor, unsigned)? {
+        while let Some((key, next)) = next_row(data, cursor, kind)? {
             if previous.is_some_and(|prior| if descending { prior < key } else { prior > key }) {
                 return Err(MergeError::InvalidSortedScan);
             }
@@ -154,7 +190,7 @@ pub(super) fn merge_sorted_integer_page(
         if returned >= limit {
             break;
         }
-        if let Some((key, next_position)) = next_row(body, end, unsigned)? {
+        if let Some((key, next_position)) = next_row(body, end, kind)? {
             heap.push(cursor.advance(key, next_position));
         }
     }
@@ -173,3 +209,47 @@ mod large_sorted_merge_tests;
 #[cfg(test)]
 #[path = "sorted_merge/cursor_boundary_regression_tests.rs"]
 mod cursor_boundary_regression_tests;
+
+#[cfg(test)]
+mod schema_width_regression_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_peer_values_outside_declared_integer_width() {
+        for (kind, value) in [
+            ("UInt8", "256"), ("UInt16", "65536"),
+            ("UInt32", "4294967296"), ("UInt64", "18446744073709551616"),
+            ("Int8", "-129"), ("Int8", "128"), ("Int16", "32768"),
+            ("Int32", "-2147483649"), ("Int64", "9223372036854775808"),
+            ("Nullable(UInt64)", "18446744073709551616"),
+            ("UInt128", "-1"),
+        ] {
+            let wire = format!("id\\n{value}\\n").replace("\\n", "\n").into_bytes();
+            assert_eq!(
+                merge_sorted_integer_page(&[(4, wire)], "id", kind, false, 0, 1, 1),
+                Err(MergeError::InvalidSortedScan), "{kind}: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_bounds_and_unsigned_nullable_types() {
+        for (kind, value) in [
+            ("Int8", "-128"), ("Int8", "127"), ("UInt8", "255"),
+            ("Int16", "-32768"), ("UInt16", "65535"),
+            ("Int64", "-9223372036854775808"),
+            ("UInt64", "18446744073709551615"),
+            ("Int128", "-170141183460469231731687303715884105728"),
+            ("UInt128", "340282366920938463463374607431768211455"),
+            ("Nullable(UInt128)", "340282366920938463463374607431768211455"),
+        ] {
+            let wire = format!("id\\n{value}\\n").replace("\\n", "\n").into_bytes();
+            assert!(merge_sorted_integer_page(&[(4, wire)], "id", kind, false, 0, 1, 1).is_ok(),
+                "{kind}: {value}");
+        }
+        assert_eq!(
+            merge_sorted_integer_page(&[(4, b"id\\n1\\n".to_vec())], "id", "Unknown", false, 0, 1, 1),
+            Err(MergeError::InvalidSortedScan)
+        );
+    }
+}
