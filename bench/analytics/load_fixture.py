@@ -29,6 +29,10 @@ def bounded_tsv_records(source):
 
 
 
+def split_tsv_record(record):
+    return record.rstrip("\r\n").split("\t")
+
+
 def read_fixture_sql(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -49,12 +53,12 @@ def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
     tsv = root / "hits.tsv"
     with tsv.open(encoding="utf-8") as source:
         records = bounded_tsv_records(source)
-        actual_header = next(records, "").rstrip("\r\n").split("\t")
+        actual_header = split_tsv_record(next(records, ""))
         if actual_header != [name for name, _, _ in FIELDS]:
             raise ValueError("hits TSV column names differ from the fixture schema")
         expected = 0
         for record in records:
-            if len(record.rstrip("\r\n").split("\t")) != len(FIELDS):
+            if len(split_tsv_record(record)) != len(FIELDS):
                 raise ValueError(f"hits TSV row {expected + 1} has an invalid column count")
             expected += 1
     reference_path = root / "hits.sqlite"
@@ -71,7 +75,7 @@ def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
             next(records, None)
             rows = reference.execute(f"SELECT {columns} FROM hits ORDER BY rowid")
             for number, (record, values) in enumerate(zip(records, rows, strict=True), 1):
-                actual = record.rstrip("\r\n").split("\t")
+                actual = split_tsv_record(record)
                 if actual != [str(value) for value in values]:
                     raise ValueError(f"hits TSV row {number} differs from SQLite reference")
     if execute is None:
