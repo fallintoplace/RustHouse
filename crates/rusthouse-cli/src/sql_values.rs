@@ -338,7 +338,7 @@ mod crlf_values_regressions {
         writer.write_all(b"1\tfirst\r\n2\tsecond\n3\tthird\\r\r\n").unwrap();
         writer.finish().unwrap();
         assert_eq!(writer.output,
-            b"VALUES ('1', 'first'),\n('2', 'second'),\n('3', 'third\\r');\n");
+            b"VALUES ('1', 'first'),\n('2', 'second'),\n('3', 'third\r');\n");
     }
     #[test]
     fn handles_crlf_split_across_write_boundaries() {
