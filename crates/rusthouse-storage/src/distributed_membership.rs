@@ -346,13 +346,13 @@ mod canonical_weight_token_tests {
     #[test]
     fn rejects_signed_and_nondecimal_member_weights() {
         for value in ["+1", "-1", "1.0", "0x10", "1_000", "1e1"] {
-            let manifest = format!("n1 z1 {value}\\n");
+            let manifest = format!("n1 z1 {value}\n");
             assert!(
                 parse_membership(&manifest).is_err(),
                 "accepted nondecimal weight {value}",
             );
         }
-        assert_eq!(parse_membership("n1 z1 1000\\n").unwrap()[0].weight, 1000);
-        assert!(parse_membership("n1 z1 1001\\n").is_err());
+        assert_eq!(parse_membership("n1 z1 1000\n").unwrap()[0].weight, 1000);
+        assert!(parse_membership("n1 z1 1001\n").is_err());
     }
 }
