@@ -30,6 +30,17 @@ class MassiveTsvGeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "step"):
             emit_rows(output, 2, step=True)
 
+    def test_rejects_out_of_domain_step_even_for_one_row(self):
+        stream = io.StringIO()
+        with self.assertRaisesRegex(ValueError, "step"):
+            emit_rows(stream, 1, step=MAX_UINT64 + 1)
+        self.assertEqual(stream.getvalue(), "")
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "single.tsv"
+            with self.assertRaisesRegex(ValueError, "step"):
+                generate(path, 1, step=MAX_UINT64 + 1)
+            self.assertFalse(path.exists())
+
     def test_can_start_above_32_bit_boundary(self):
         output = io.StringIO()
         emit_rows(output, 2, start=(1 << 32), batch_rows=1)
