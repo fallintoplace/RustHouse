@@ -47,17 +47,17 @@ fn parse_copy_column_list(parser: &mut Parser) -> Result<Option<Vec<String>>, Pa
 }
 
 fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseError> {
-    if parser.keyword("CSV") {
-        Ok(CopyFormat::Csv)
-    } else if parser.keyword("TSV") {
-        Ok(CopyFormat::Tsv)
-    } else if parser.keyword("SSV") {
-        Ok(CopyFormat::Ssv)
-    } else if parser.keyword("JSONEACHROW") {
-        Ok(CopyFormat::JsonEachRow)
-    } else {
-        Err(ParseError("COPY format must be CSV, TSV, SSV or JSONEachRow".into()))
+    for (keyword, format) in [
+        ("CSV", CopyFormat::Csv),
+        ("TSV", CopyFormat::Tsv),
+        ("SSV", CopyFormat::Ssv),
+        ("JSONEACHROW", CopyFormat::JsonEachRow),
+    ] {
+        if parser.keyword(keyword) {
+            return Ok(format);
+        }
     }
+    Err(ParseError("COPY format must be CSV, TSV, SSV or JSONEachRow".into()))
 }
 
 fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
