@@ -47,9 +47,10 @@ def guard(binary, database, table, source, watch_dir, min_free_gib=5,
     if max_source_bytes is not None and (
             type(max_source_bytes) is not int or max_source_bytes < 1):
         raise ValueError("max_source_bytes must be a positive integer")
-    if not Path(source).is_file():
+    source_path = Path(source)
+    if not source_path.is_file():
         raise ValueError("source TSV is missing")
-    if max_source_bytes is not None and Path(source).stat().st_size > max_source_bytes:
+    if max_source_bytes is not None and source_path.stat().st_size > max_source_bytes:
         raise ValueError("COPY source exceeds max_source_bytes")
     if not Path(watch_dir).is_dir():
         raise ValueError("watch directory is missing")
