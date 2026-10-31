@@ -56,10 +56,13 @@ fn check_expansion(branches: &Branches) -> Result<(), ParseError> {
 }
 
 pub(super) fn combine_and(left: Branches, right: Branches) -> Result<Branches, ParseError> {
-    if left.len().checked_mul(right.len()).is_none_or(|n| n > MAX_BRANCHES) {
-        return Err(bad_expansion());
-    }
-    let mut result = Vec::with_capacity(left.len() * right.len());
+    // A temporary cross-product can be larger than the final DNF when
+    // absorption removes duplicate and stronger branches. Keep the work
+    // bounded, but enforce the public branch cap only after normalization.
+    let combinations = left.len().checked_mul(right.len())
+        .filter(|&count| count <= MAX_BRANCHES * MAX_BRANCHES)
+        .ok_or_else(bad_expansion)?;
+    let mut result = Vec::with_capacity(combinations.min(MAX_BRANCHES));
     for lhs in &left {
         for rhs in &right {
             let mut conjuncts = Vec::with_capacity(lhs.len() + rhs.len());
@@ -406,6 +409,20 @@ mod tests {
         assert!(parse_select(
             "SELECT number FROM numbers(8) WHERE NOT (number = 1"
         ).is_err());
+    }
+
+    #[test]
+    fn repeated_nine_way_disjunctions_simplify_before_branch_budget() {
+        let values = (1..=9)
+            .map(|number| format!("number = {number}"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let sql = format!(
+            "SELECT number FROM numbers(11) WHERE ({values}) AND ({values}) ORDER BY number"
+        );
+        let query = crate::parse_select(&sql).unwrap();
+        assert_eq!(query.or_predicates.len(), 8);
+        assert_eq!(run(&sql), "number\n1\n2\n3\n4\n5\n6\n7\n8\n9\n");
     }
 
     #[test]
