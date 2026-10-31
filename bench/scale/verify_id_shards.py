@@ -42,9 +42,9 @@ def verify_file(path, start, rows, step=1):
         # unbounded readline allocation.
         for offset in range(0, rows, 4096):
             count = min(4096, rows - offset)
-            expected = "".join(
-                f"{start + (offset + index) * step}\n" for index in range(count)
-            ).encode("ascii")
+            first = start + offset * step
+            stop = first + count * step
+            expected = ("\n".join(map(str, range(first, stop, step))) + "\n").encode("ascii")
             actual = source.read(len(expected))
             if actual != expected:
                 raise ValueError(
