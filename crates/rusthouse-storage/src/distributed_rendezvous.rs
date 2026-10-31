@@ -1,5 +1,5 @@
 //! Deterministic experimental shard-to-replica placement.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 const MAX_PLACEMENT_NODES: usize = 64;
 
@@ -176,38 +176,55 @@ pub fn zone_aware_replicas_for(
     if replicas == 0 || replicas > members.len() {
         return Err("invalid zone-aware replica count");
     }
-    let nodes = members
-        .iter()
-        .map(|member| (member.node.as_str(), member.weight))
-        .collect::<Vec<_>>();
-    if replicas == 1 {
-        return weighted_replicas_for(shard, &nodes, 1);
+    if !valid_shard(shard) {
+        return Err("invalid weighted replica placement configuration");
     }
-    let ranked = weighted_replicas_for(shard, &nodes, members.len())?;
-    // The placement loop can inspect every member. Resolve each node's zone
-    // once instead of linearly searching membership for every ranked node.
-    let zones_by_node: HashMap<&str, &str> = members
-        .iter()
-        .map(|member| (member.node.as_str(), member.zone.as_str()))
-        .collect();
+    let seed = shard_seed(shard);
+    if replicas == 1 {
+        // No candidate vector or duplicate membership validation is needed
+        // to select a single primary from an already validated member set.
+        let mut winner: Option<(f64, usize)> = None;
+        for (index, member) in members.iter().enumerate() {
+            let uniform = hash_to_open_unit_interval(score_with_seed(seed, &member.node));
+            let priority = -uniform.ln() / f64::from(member.weight);
+            if winner.is_none_or(|(best, best_index)| {
+                priority.total_cmp(&best).then_with(|| {
+                    member.node.cmp(&members[best_index].node)
+                }).is_lt()
+            }) {
+                winner = Some((priority, index));
+            }
+        }
+        return Ok(vec![members[winner.expect("nonempty membership").1].node.clone()]);
+    }
+    // Rank borrowed membership indices directly. The previous path
+    // revalidated nodes, allocated owned names for every candidate, and
+    // built a second hash map to recover each candidate's zone.
+    let mut ranked = members.iter().enumerate().map(|(index, member)| {
+        let uniform = hash_to_open_unit_interval(score_with_seed(seed, &member.node));
+        let priority = -uniform.ln() / f64::from(member.weight);
+        (priority, index)
+    }).collect::<Vec<_>>();
+    ranked.sort_unstable_by(|(left, left_index), (right, right_index)| {
+        left.total_cmp(right).then_with(|| {
+            members[*left_index].node.cmp(&members[*right_index].node)
+        })
+    });
     let mut zones = HashSet::new();
     let mut selected = Vec::with_capacity(replicas);
-    // Track first-pass selections by ranking position. This avoids scanning
-    // selected names repeatedly and lets the second pass move owned Strings.
     let mut first_pass = [false; MAX_PLACEMENT_NODES];
-    for (index, node) in ranked.iter().enumerate() {
-        let zone = zones_by_node[node.as_str()];
-        if zones.insert(zone) {
-            first_pass[index] = true;
-            selected.push(node.clone());
+    for (position, &(_, index)) in ranked.iter().enumerate() {
+        if zones.insert(members[index].zone.as_str()) {
+            first_pass[position] = true;
+            selected.push(members[index].node.clone());
             if selected.len() == replicas {
                 return Ok(selected);
             }
         }
     }
-    for (index, node) in ranked.into_iter().enumerate() {
-        if !first_pass[index] {
-            selected.push(node);
+    for (position, (_, index)) in ranked.into_iter().enumerate() {
+        if !first_pass[position] {
+            selected.push(members[index].node.clone());
             if selected.len() == replicas {
                 break;
             }
@@ -340,6 +357,46 @@ mod tests {
             let first = replicas_for(&shard, &nodes, 1).unwrap();
             let all = replicas_for(&shard, &nodes, nodes.len()).unwrap();
             assert_eq!(first[0], all[0]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod borrowed_zone_ranking_tests {
+    use super::*;
+    use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn borrowed_rank_matches_full_weighted_order_across_replica_counts() {
+        let manifest = (0..64)
+            .map(|i| format!("n_{i} z_{} {}\n", i % 7, (i % 100) + 1))
+            .collect::<String>();
+        let members = parse_membership(&manifest).unwrap();
+        let weights = members.iter()
+            .map(|member| (member.node.as_str(), member.weight))
+            .collect::<Vec<_>>();
+        for shard in 0..40 {
+            let shard = format!("events_{shard}");
+            let rank = weighted_replicas_for(&shard, &weights, members.len()).unwrap();
+            let mut zones = HashSet::new();
+            let mut expected = Vec::new();
+            let mut fallback = Vec::new();
+            for name in rank {
+                let member = members.iter().find(|member| member.node == name).unwrap();
+                if zones.insert(member.zone.as_str()) {
+                    expected.push(name);
+                } else {
+                    fallback.push(name);
+                }
+            }
+            expected.extend(fallback);
+            for replicas in [2, 3, 7, 8, 16, 64] {
+                assert_eq!(
+                    zone_aware_replicas_for(&shard, &members, replicas).unwrap(),
+                    expected[..replicas],
+                    "shard={shard}, replicas={replicas}",
+                );
+            }
         }
     }
 }
