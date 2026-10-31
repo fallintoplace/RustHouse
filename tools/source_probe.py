@@ -49,6 +49,11 @@ def read_json(url, timeout):
 
 def scan_rows(base, table, timeout):
     """Execute a real bounded SELECT to check data-path readiness."""
+    base = verify_origin(base)
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
+        raise ValueError("invalid readiness scan table")
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 300:
+        raise ValueError("timeout must be finite and in (0, 300] seconds")
     query = f"SELECT count(*) AS rows_checked FROM {table}".encode("ascii")
     request = Request(base + "/", data=query,
                       headers={"Content-Type": "text/plain; charset=utf-8"},
