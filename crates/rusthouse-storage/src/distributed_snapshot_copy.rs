@@ -50,6 +50,51 @@ fn ensure_destination_absent(destination: &Path) -> Result<(), PartError> {
 }
 
 
+/// Linux can atomically publish a directory without replacing another
+/// writer's destination, even if it appears after the absence check.
+#[cfg(target_os = "linux")]
+fn publish_snapshot_no_replace(staging: &Path, destination: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_int, c_uint};
+    use std::os::unix::ffi::OsStrExt;
+
+    unsafe extern "C" {
+        fn renameat2(
+            olddirfd: c_int,
+            oldpath: *const c_char,
+            newdirfd: c_int,
+            newpath: *const c_char,
+            flags: c_uint,
+        ) -> c_int;
+    }
+    const AT_FDCWD: c_int = -100;
+    const RENAME_NOREPLACE: c_uint = 1;
+    let path = |value: &Path| {
+        CString::new(value.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in snapshot path"))
+    };
+    let old = path(staging)?;
+    let new = path(destination)?;
+    let code = unsafe {
+        renameat2(AT_FDCWD, old.as_ptr(), AT_FDCWD, new.as_ptr(), RENAME_NOREPLACE)
+    };
+    if code == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Other platforms retain the trusted single-writer precondition.
+#[cfg(not(target_os = "linux"))]
+fn publish_snapshot_no_replace(staging: &Path, destination: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(destination) {
+        Ok(_) => Err(io::Error::new(io::ErrorKind::AlreadyExists, "destination exists")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => fs::rename(staging, destination),
+        Err(error) => Err(error),
+    }
+}
+
 /// Copy a complete active generation into a new directory and validate it
 /// before rename. Does not copy catalog schemas or create remote connections.
 pub fn copy_frozen_snapshot(
@@ -188,7 +233,7 @@ pub fn copy_frozen_snapshot_with_file_limit(
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
     }
-    if let Err(error) = fs::rename(&staging, destination) {
+    if let Err(error) = publish_snapshot_no_replace(&staging, destination) {
         let _ = fs::remove_dir_all(&staging);
         return Err(io_error(destination, error));
     }
@@ -524,6 +569,34 @@ mod dangling_destination_tests {
         assert!(ensure_destination_absent(&destination).is_ok());
         symlink("missing-target", &destination).unwrap();
         assert!(ensure_destination_absent(&destination).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod atomic_publish_tests {
+    use super::*;
+
+    #[test]
+    fn does_not_replace_destination_created_after_preflight() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-snapshot-no-replace-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let staging = root.join("staging");
+        let destination = root.join("published");
+        fs::create_dir(&staging).unwrap();
+        assert!(ensure_destination_absent(&destination).is_ok());
+        // Another actor can create even an empty directory after preflight.
+        fs::create_dir(&destination).unwrap();
+        assert!(publish_snapshot_no_replace(&staging, &destination).is_err());
+        assert!(staging.is_dir());
+        assert!(destination.is_dir());
+        fs::remove_dir(&destination).unwrap();
+        publish_snapshot_no_replace(&staging, &destination).unwrap();
+        assert!(!staging.exists());
+        assert!(destination.is_dir());
         fs::remove_dir_all(root).unwrap();
     }
 }
