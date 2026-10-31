@@ -437,7 +437,8 @@ mod tests {
         output_bins(&query, &mut sink, "number", 10_000, &bins).unwrap();
         assert!(sink.writes < 10, "one write per bin regressed: {}", sink.writes);
         assert!(sink.max < 65_600, "output batch grew without bound");
-        assert_eq!(sink.bytes.iter().filter(|&&byte| byte == b'(').count(), 10_001);
+        let opening = sink.bytes.iter().position(|&byte| byte == b'[').unwrap();
+        assert_eq!(sink.bytes[opening..].iter().filter(|&&byte| byte == b'(').count(), 10_000);
         assert!(sink.bytes.ends_with(b"(9999,10000,1)]\n"));
     }
 
