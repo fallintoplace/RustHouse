@@ -1562,12 +1562,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if sorted_query {
         let order = select.order_by.as_ref().expect("validated bounded sort");
         let Projection::Columns(columns) = &select.projection else {
-            unreachable!("validated single-column bounded sort");
+            unreachable!("validated bounded sort");
         };
         sum_type.as_deref().map_or(Err(MergeError::InvalidSortedScan), |kind| {
-            merge_sorted_integer_page(
+            let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
+            merge_sorted_integer_rows_page(
                 &shards,
-                &columns[0],
+                &names,
                 kind,
                 order.descending,
                 select.offset.unwrap_or(0),
