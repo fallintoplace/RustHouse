@@ -277,7 +277,9 @@ pub fn copy_frozen_snapshot_with_file_limit(
     }
     // Reject oversized inventories before checksum reads or staging any files.
     crate::distributed_inventory::inventory_active_snapshot(&active, max_files, max_bytes)?;
-    inspect_query_source(&active)?;
+    // The selected generation's parts are already enumerated above.
+    // Validate those exact paths without relisting thousands of directories.
+    crate::query_source::inspect_parts_metadata(&active, &parts)?;
     ensure_destination_absent(destination)?;
     let parent = destination
         .parent()
@@ -352,8 +354,12 @@ pub fn preview_frozen_snapshot(
     if parts.len() > max_parts || max_parts > 16_384 {
         return Err(PartError::InvalidScan("snapshot preview exceeds part limit".into()));
     }
-    inspect_query_source(&active)?;
-    let files = crate::distributed_inventory::inventory_snapshot(&active, max_files, max_bytes)?;
+    // Reuse the same immutable generation and part list for preview.
+    // The final source-generation check still rejects concurrent switches.
+    crate::query_source::inspect_parts_metadata(&active, &parts)?;
+    let files = crate::distributed_inventory::inventory_active_snapshot(
+        &active, max_files, max_bytes,
+    )?;
     let bytes = files.iter().try_fold(0u64, |total, file| {
         total.checked_add(file.bytes)
             .ok_or_else(|| PartError::InvalidScan("snapshot preview byte overflow".into()))
@@ -786,6 +792,52 @@ mod parallel_copy_failfast_tests {
         fs::write(source.join("all_1_1_0/count.txt"), "9999\n").unwrap();
         assert!(copy_snapshot_parts(&parts, &staging, 10_000, u64::MAX).is_err());
         assert!(!root.join("published").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod reused_part_listing_regression_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn many_part_preview_and_atomic_copy_share_exact_report_and_rows() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-reused-part-list-{}-{:?}",
+            std::process::id(), std::thread::current().id(),
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let replica = root.join("replica");
+        fs::create_dir_all(&source).unwrap();
+        let columns = [Column {
+            name: "amount".to_owned(), data_type: "UInt64".to_owned(),
+        }];
+        let mut expected_rows = 0u64;
+        for index in (0..36usize).rev() {
+            let row_count = index % 5 + 1;
+            let rows = (0..row_count).map(|row| {
+                vec![Some((index * 100 + row).to_string())]
+            }).collect::<Vec<_>>();
+            write_wide_part(
+                &source.join(format!("all_{index}_{index}_0")),
+                &columns, &rows,
+            ).unwrap();
+            expected_rows += row_count as u64;
+        }
+        let direct = crate::query_source::inspect_parts_metadata(
+            &source, &query_parts(&source).unwrap(),
+        ).unwrap();
+        assert_eq!(direct.rows, expected_rows);
+        let preview = preview_frozen_snapshot(&source, 36, 512, 10_000_000).unwrap();
+        assert_eq!(preview.parts, 36);
+        assert!(!replica.exists());
+        let actual = copy_frozen_snapshot_with_file_limit(
+            &source, &replica, 36, 512, 10_000_000,
+        ).unwrap();
+        assert_eq!(actual, preview);
+        assert_eq!(inspect_query_source(&replica).unwrap().rows, expected_rows);
         fs::remove_dir_all(root).unwrap();
     }
 }
