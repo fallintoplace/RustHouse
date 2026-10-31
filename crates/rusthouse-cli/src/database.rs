@@ -2,7 +2,7 @@
 //! Tables use existing .schema metadata and immutable, atomically published wide parts.
 use crate::catalog;
 mod rewrite;
-use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source, Update};
+use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source, Update, UpdateValue};
 use rusthouse_storage::{
     Column, DatabaseLock, acquire_database_lock, inspect_query_source, query_parts,
     query_parts_with_metadata, resolve_active_snapshot, verify_wide_part, write_wide_part,
@@ -304,6 +304,43 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
     }
 }
 
+/// Calculate one integer row update without narrowing UInt128 or wrapping.
+fn checked_update_offset(
+    current: &str,
+    delta: u128,
+    subtract: bool,
+    signed: bool,
+) -> Result<String, String> {
+    if signed {
+        let current = current.parse::<i128>()
+            .map_err(|_| "invalid signed UPDATE column value")?;
+        let delta = i128::try_from(delta)
+            .map_err(|_| "UPDATE offset exceeds Int128")?;
+        let result = if subtract {
+            current.checked_sub(delta)
+        } else {
+            current.checked_add(delta)
+        };
+        result.map(|value| value.to_string())
+            .ok_or_else(|| "signed UPDATE arithmetic overflow".into())
+    } else {
+        let current = current.parse::<u128>()
+            .map_err(|_| "invalid unsigned UPDATE column value")?;
+        let result = if subtract {
+            current.checked_sub(delta)
+        } else {
+            current.checked_add(delta)
+        };
+        result.map(|value| value.to_string())
+            .ok_or_else(|| "unsigned UPDATE arithmetic overflow".into())
+    }
+}
+
+enum PreparedUpdate {
+    Literal { index: usize, value: Option<String> },
+    Offset { index: usize, delta: u128, subtract: bool, signed: bool },
+}
+
 pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
     let _lock = lock(database)?;
     let cols = columns(database, &update.table)?;
@@ -316,17 +353,55 @@ pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
                 .iter()
                 .position(|column| column.name == *name)
                 .ok_or_else(|| format!("unknown UPDATE column: {name}"))?;
-            if value.is_none() && !cols[index].data_type.starts_with("Nullable(") {
-                return Err(format!("NULL is not allowed for UPDATE column: {name}"));
+            match value {
+                UpdateValue::Literal(value) => {
+                    if value.is_none() && !cols[index].data_type.starts_with("Nullable(") {
+                        return Err(format!("NULL is not allowed for UPDATE column: {name}"));
+                    }
+                    Ok(PreparedUpdate::Literal { index, value: value.clone() })
+                }
+                UpdateValue::Offset { delta, subtract } => {
+                    let data_type = &cols[index].data_type;
+                    let kind = data_type.strip_prefix("Nullable(")
+                        .and_then(|value| value.strip_suffix(')'))
+                        .unwrap_or(data_type);
+                    let signed = matches!(
+                        kind, "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+                    );
+                    let unsigned = matches!(
+                        kind, "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                    );
+                    if !signed && !unsigned {
+                        return Err(format!(
+                            "UPDATE integer offset requires an integer column: {name}"
+                        ));
+                    }
+                    if signed && i128::try_from(*delta).is_err() {
+                        return Err("UPDATE offset exceeds Int128".into());
+                    }
+                    Ok(PreparedUpdate::Offset {
+                        index, delta: *delta, subtract: *subtract, signed,
+                    })
+                }
             }
-            Ok((index, value.clone()))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let mut changed = 0usize;
     rewrite::rewrite_rows_locked(database, &update.table, |batch, row, values| {
         if filter.matches(batch, row) {
-            for (index, literal) in &assignments {
-                values[*index] = literal.clone();
+            for assignment in &assignments {
+                match assignment {
+                    PreparedUpdate::Literal { index, value } => values[*index] = value.clone(),
+                    PreparedUpdate::Offset { index, delta, subtract, signed } => {
+                        // SQL NULL arithmetic stays NULL; copying a row uses the
+                        // original column value, never an updated sibling.
+                        if let Some(current) = values[*index].as_deref() {
+                            values[*index] = Some(checked_update_offset(
+                                current, *delta, *subtract, *signed,
+                            )?);
+                        }
+                    }
+                }
             }
             changed += 1;
         }
@@ -684,5 +759,36 @@ mod mutation_lock_order_tests {
         assert!(error.contains("acquire database write lock"), "{error}");
         drop(held);
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod checked_update_arithmetic_tests {
+    use super::*;
+
+    #[test]
+    fn exact_signed_and_unsigned_integer_offsets() {
+        assert_eq!(checked_update_offset("7", 3, false, true).unwrap(), "10");
+        assert_eq!(checked_update_offset("-7", 3, true, true).unwrap(), "-10");
+        assert_eq!(checked_update_offset("7", 3, true, false).unwrap(), "4");
+        assert_eq!(
+            checked_update_offset(&(u128::MAX - 1).to_string(), 1, false, false).unwrap(),
+            u128::MAX.to_string()
+        );
+        assert_eq!(
+            checked_update_offset(&(i128::MIN + 1).to_string(), 1, true, true).unwrap(),
+            i128::MIN.to_string()
+        );
+    }
+
+    #[test]
+    fn rejects_underflow_overflow_and_invalid_input() {
+        assert!(checked_update_offset("0", 1, true, false).is_err());
+        assert!(checked_update_offset(&u128::MAX.to_string(), 1, false, false).is_err());
+        assert!(checked_update_offset(&i128::MIN.to_string(), 1, true, true).is_err());
+        assert!(checked_update_offset(&i128::MAX.to_string(), 1, false, true).is_err());
+        assert!(checked_update_offset("not-an-integer", 2, true, true).is_err());
+        assert!(checked_update_offset("1.5", 2, false, true).is_err());
+        assert!(checked_update_offset("1", u128::MAX, false, true).is_err());
     }
 }
