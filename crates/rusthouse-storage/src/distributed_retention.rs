@@ -562,8 +562,9 @@ pub fn retention_candidates_with_replica_floors_and_budget(
         return Err("invalid replica-aware retention configuration");
     }
     let floor = *replica_floors.iter().min().expect("nonempty floors checked");
-    let mut ordered = generations.to_vec();
-    ordered.sort_unstable_by_key(|&(id, _)| id);
+    // Most generation inventories are chronological. Reuse their existing
+    // order instead of allocating and sorting up to 16K entries per plan.
+    let ordered = ordered_generation_sizes(generations);
     if ordered[0].0 == 0
         || ordered.windows(2).any(|pair| pair[0].0 == pair[1].0)
         || ordered.binary_search_by_key(&active, |&(id, _)| id).is_err()
@@ -572,9 +573,16 @@ pub fn retention_candidates_with_replica_floors_and_budget(
     }
     // Validate pins even when byte_budget is zero. A stale pin must not be
     // silently ignored when deleting older generations on another attempt.
-    let mut pins = std::collections::HashSet::with_capacity(pinned.len());
-    for &id in pinned {
-        if !pins.insert(id) || ordered.binary_search_by_key(&id, |&(key, _)| key).is_err() {
+    // Avoid a hash table for the common case of a few pinned readers.
+    let mut pins = (pinned.len() > 4)
+        .then(|| std::collections::HashSet::with_capacity(pinned.len()));
+    for (index, &id) in pinned.iter().enumerate() {
+        let duplicate = if let Some(seen) = pins.as_mut() {
+            !seen.insert(id)
+        } else {
+            pinned[..index].contains(&id)
+        };
+        if duplicate || ordered.binary_search_by_key(&id, |&(key, _)| key).is_err() {
             return Err("duplicate or unknown pinned generation");
         }
     }
@@ -582,7 +590,9 @@ pub fn retention_candidates_with_replica_floors_and_budget(
     let mut selected = Vec::new();
     let mut consumed = 0u64;
     for &(id, size) in ordered.iter().take(eligible) {
-        if id == active || id >= floor || pins.contains(&id) {
+        if id == active || id >= floor
+            || pins.as_ref().map_or_else(|| pinned.contains(&id), |seen| seen.contains(&id))
+        {
             continue;
         }
         // Subtraction cannot underflow because consumed never exceeds budget.
@@ -724,5 +734,38 @@ mod borrowed_budgeted_retention_tests {
     fn already_sorted_duplicate_generations_still_fail_validation() {
         assert!(matches!(ordered_generation_sizes(&[(1, 1), (1, 2)]), Cow::Borrowed(_)));
         assert!(retention_candidates_with_byte_budget(&[(1, 1), (1, 2)], 1, 1, &[], 100).is_err());
+    }
+}
+
+#[cfg(test)]
+mod sorted_replica_aware_inventory_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_and_reversed_inventories_produce_identical_retention_plans() {
+        let sorted = (1..=10_000u64)
+            .map(|generation| (generation, generation % 7 + 1))
+            .collect::<Vec<_>>();
+        assert!(matches!(ordered_generation_sizes(&sorted), Cow::Borrowed(_)));
+        let mut reversed = sorted.clone();
+        reversed.reverse();
+        assert!(matches!(ordered_generation_sizes(&reversed), Cow::Owned(_)));
+
+        for pins in [&[][..], &[77, 500, 9000][..], &[77, 500, 900, 2000, 9000][..]] {
+            let expected = retention_candidates_with_replica_floors_and_budget(
+                &sorted, 10_000, 3, pins, &[9_000, 9_700], 3_000
+            ).unwrap();
+            let actual = retention_candidates_with_replica_floors_and_budget(
+                &reversed, 10_000, 3, pins, &[9_000, 9_700], 3_000
+            ).unwrap();
+            assert_eq!(actual, expected);
+            assert!(actual.0.iter().all(|&generation| generation < 9_000));
+            assert!(actual.0.iter().all(|generation| !pins.contains(generation)));
+            assert!(actual.1 <= 3_000);
+        }
+
+        assert!(retention_candidates_with_replica_floors_and_budget(
+            &sorted, 10_000, 3, &[77, 77], &[9000], 0
+        ).is_err());
     }
 }
