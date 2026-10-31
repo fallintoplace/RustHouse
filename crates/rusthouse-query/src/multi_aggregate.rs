@@ -29,43 +29,61 @@ impl AggregateItem {
 }
 
 fn render_expr(expr: &ScalarExpr) -> String {
+    let mut output = String::new();
+    render_expr_into(expr, &mut output);
+    output
+}
+
+// Append directly to the final header instead of formatting a new String
+// at every interior AST node. Long, bounded expressions are linear in output
+// size rather than repeatedly copying their accumulated prefixes.
+fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
     match expr {
-        ScalarExpr::Column(name) => name.clone(),
-        ScalarExpr::TextLength(name) => format!("length({name})"),
-        ScalarExpr::Integer(number) => number.to_string(),
-        ScalarExpr::Decimal(number) => number.clone(),
+        ScalarExpr::Column(name) | ScalarExpr::Decimal(name) => output.push_str(name),
+        ScalarExpr::TextLength(name) => {
+            output.push_str("length(");
+            output.push_str(name);
+            output.push(')');
+        }
+        ScalarExpr::Integer(number) => {
+            write!(output, "{number}").expect("writing to String cannot fail");
+        }
         ScalarExpr::Case { branches, else_expr } => {
-            let mut result = String::from("CASE");
+            output.push_str("CASE");
             for (condition, value) in branches {
-                write!(&mut result, " WHEN {} THEN {}", render_expr(condition), render_expr(value))
-                    .expect("writing to String cannot fail");
+                output.push_str(" WHEN ");
+                render_expr_into(condition, output);
+                output.push_str(" THEN ");
+                render_expr_into(value, output);
             }
             if let Some(value) = else_expr {
-                write!(&mut result, " ELSE {}", render_expr(value))
-                    .expect("writing to String cannot fail");
+                output.push_str(" ELSE ");
+                render_expr_into(value, output);
             }
-            result.push_str(" END");
-            result
+            output.push_str(" END");
         }
-        ScalarExpr::Add(left, right) => format!("{} + {}", render_expr(left), render_expr(right)),
+        ScalarExpr::Add(left, right) => {
+            render_expr_into(left, output);
+            output.push_str(" + ");
+            render_expr_into(right, output);
+        }
         ScalarExpr::Subtract(left, right) => {
-            let right = if matches!(
-                right.as_ref(),
-                ScalarExpr::Add(..) | ScalarExpr::Subtract(..)
-            ) {
-                format!("({})", render_expr(right))
-            } else {
-                render_expr(right)
-            };
-            format!("{} - {right}", render_expr(left))
+            render_expr_into(left, output);
+            output.push_str(" - ");
+            let wrap = matches!(right.as_ref(), ScalarExpr::Add(..) | ScalarExpr::Subtract(..));
+            if wrap { output.push('('); }
+            render_expr_into(right, output);
+            if wrap { output.push(')'); }
         }
-        ScalarExpr::Divide(left, right) => {
-            format!("({}) / ({})", render_expr(left), render_expr(right))
-        }
-        ScalarExpr::Modulo(left, right) => {
-            format!("({}) % ({})", render_expr(left), render_expr(right))
+        ScalarExpr::Divide(left, right) | ScalarExpr::Modulo(left, right) => {
+            output.push('(');
+            render_expr_into(left, output);
+            output.push_str(if matches!(expr, ScalarExpr::Divide(..)) { ") / (" } else { ") % (" });
+            render_expr_into(right, output);
+            output.push(')');
         }
         ScalarExpr::Compare(left, operator, right) => {
+            render_expr_into(left, output);
             let symbol = match operator {
                 crate::Operator::Eq => "=",
                 crate::Operator::Ne => "!=",
@@ -75,18 +93,20 @@ fn render_expr(expr: &ScalarExpr) -> String {
                 crate::Operator::Ge => ">=",
                 _ => unreachable!("comparisons only accept comparison operators"),
             };
-            format!("{} {symbol} {}", render_expr(left), render_expr(right))
+            write!(output, " {symbol} ").expect("writing to String cannot fail");
+            render_expr_into(right, output);
         }
         ScalarExpr::Multiply(left, right) => {
-            let operand = |value: &ScalarExpr| {
-                let rendered = render_expr(value);
-                if matches!(value, ScalarExpr::Add(..) | ScalarExpr::Subtract(..) | ScalarExpr::Compare(..)) {
-                    format!("({rendered})")
-                } else {
-                    rendered
-                }
-            };
-            format!("{} * {}", operand(left), operand(right))
+            for (index, operand) in [left.as_ref(), right.as_ref()].into_iter().enumerate() {
+                if index != 0 { output.push_str(" * "); }
+                let wrap = matches!(
+                    operand,
+                    ScalarExpr::Add(..) | ScalarExpr::Subtract(..) | ScalarExpr::Compare(..)
+                );
+                if wrap { output.push('('); }
+                render_expr_into(operand, output);
+                if wrap { output.push(')'); }
+            }
         }
     }
 }
@@ -284,5 +304,44 @@ mod tests {
             panic!("expected multiple aggregates");
         };
         assert_eq!(items.len(), 90);
+    }
+}
+
+#[cfg(test)]
+mod aggregate_header_rendering_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_arithmetic_parentheses_and_case_format() {
+        let plus = ScalarExpr::Add(
+            Box::new(ScalarExpr::Column("x".into())),
+            Box::new(ScalarExpr::Integer(2)),
+        );
+        let negative = ScalarExpr::Subtract(
+            Box::new(ScalarExpr::Integer(10)),
+            Box::new(plus.clone()),
+        );
+        assert_eq!(render_expr(&negative), "10 - (x + 2)");
+        let product = ScalarExpr::Multiply(Box::new(plus), Box::new(negative));
+        assert_eq!(render_expr(&product), "(x + 2) * (10 - (x + 2))");
+        let case = ScalarExpr::Case {
+            branches: vec![(ScalarExpr::Integer(1), product)],
+            else_expr: Some(Box::new(ScalarExpr::Decimal("3.50".into()))),
+        };
+        assert_eq!(
+            render_expr(&case),
+            "CASE WHEN 1 THEN (x + 2) * (10 - (x + 2)) ELSE 3.50 END",
+        );
+    }
+
+    #[test]
+    fn long_left_deep_header_preserves_all_terms() {
+        let mut expr = ScalarExpr::Integer(0);
+        for _ in 0..120 {
+            expr = ScalarExpr::Add(Box::new(expr), Box::new(ScalarExpr::Column("x".into())));
+        }
+        let text = render_expr(&expr);
+        assert_eq!(text.matches(" + x").count(), 120);
+        assert!(text.starts_with("0 + x"));
     }
 }

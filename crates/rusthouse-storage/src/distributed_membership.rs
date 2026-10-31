@@ -29,7 +29,7 @@ fn valid_member_weight(weight: u16) -> bool {
     (1..=MAX_MEMBER_WEIGHT).contains(&weight)
 }
 
-fn parse_member(line: &str) -> Result<Member, &'static str> {
+fn parse_member(line: &str) -> Result<(&str, &str, u16), &'static str> {
     if line.is_empty() {
         return Err("empty membership record");
     }
@@ -48,11 +48,7 @@ fn parse_member(line: &str) -> Result<Member, &'static str> {
     if !valid_member_weight(weight) {
         return Err("duplicate member or invalid weight");
     }
-    Ok(Member {
-        node: node.to_owned(),
-        zone: zone.to_owned(),
-        weight,
-    })
+    Ok((node, zone, weight))
 }
 
 /// Format: one `node zone weight` record per line, at most 64 records.
@@ -64,17 +60,20 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
     let mut members = Vec::new();
     let mut seen = HashSet::new();
     for line in text.lines() {
-        let member = parse_member(line)?;
-        // Borrow the validated node from the manifest for duplicate checks.
-        // The returned members still own their node and zone strings.
-        let node = line.split_whitespace().next().expect("validated member has a node");
+        // Inspect borrowed tokens before allocating the owned output fields.
+        // Invalid, duplicate and over-limit entries do not allocate Strings.
+        let (node, zone, weight) = parse_member(line)?;
         if !seen.insert(node) {
             return Err("duplicate member or invalid weight");
         }
-        members.push(member);
-        if members.len() > MAX_MEMBER_RECORDS {
+        if members.len() >= MAX_MEMBER_RECORDS {
             return Err("too many cluster members");
         }
+        members.push(Member {
+            node: node.to_owned(),
+            zone: zone.to_owned(),
+            weight,
+        });
     }
     if members.is_empty() {
         return Err("membership is empty");
@@ -264,5 +263,31 @@ mod small_membership_validation_tests {
                 assert!(validate_membership(&invalid).is_err());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod borrowed_member_parsing_tests {
+    use super::*;
+
+    #[test]
+    fn parses_full_membership_without_duplicating_or_losing_values() {
+        let manifest = (0..64)
+            .map(|index| format!("n{index} zone{} {}\n", index % 8, index + 1))
+            .collect::<String>();
+        let parsed = parse_membership(&manifest).unwrap();
+        assert_eq!(parsed.len(), 64);
+        assert_eq!(format_membership(&parsed).unwrap(), manifest);
+        assert!(parse_membership(&(manifest.clone() + "overflow zone0 1\n")).is_err());
+        assert!(parse_membership(&(manifest + "n0 zone1 1\n")).is_err());
+    }
+
+    #[test]
+    fn preserves_validation_with_irregular_whitespace() {
+        let members = parse_membership("n1\tzone1\t23\nn2   zone2  7\n").unwrap();
+        assert_eq!(members[0].node, "n1");
+        assert_eq!(members[0].weight, 23);
+        assert_eq!(members[1].zone, "zone2");
+        assert_eq!(format_membership(&members).unwrap(), "n1 zone1 23\nn2 zone2 7\n");
     }
 }

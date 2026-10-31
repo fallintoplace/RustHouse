@@ -132,6 +132,24 @@ pub fn read_object_ranges(
         verify_object_after_read(path, &file, &baseline)?;
         return Ok(vec![data]);
     }
+    // Mark-driven scans often request already ordered, disjoint ranges.
+    // Read these directly into their final buffers without a sorted index
+    // vector or a second copy. Adjacent or overlapping ranges keep the
+    // coalescing path below to preserve the reduced syscall count.
+    let mut previous_end = None;
+    let strictly_disjoint = ranges.iter().filter(|(_, len)| *len > 0)
+        .all(|&(offset, length)| {
+            let ordered = previous_end.is_none_or(|end| offset > end);
+            previous_end = Some(offset + length as u64); // bounds checked above
+            ordered
+        });
+    if strictly_disjoint {
+        let result = ranges.iter()
+            .map(|&(offset, length)| read_at(&mut file, offset, length))
+            .collect::<io::Result<Vec<_>>>()?;
+        verify_object_after_read(path, &file, &baseline)?;
+        return Ok(result);
+    }
     // Adjacent or overlapping logical ranges share one physical read.
     // This reduces seeks and small I/O operations for mark-driven scans.
     // Preserve the request order and return independent byte buffers.
@@ -200,6 +218,110 @@ pub fn read_object_ranges_checked(
         }
     }
     Ok(chunks)
+}
+
+/// Verify checksums of immutable byte ranges without buffering their contents.
+///
+/// Unlike read_object_ranges_checked, this scrub-only path retains one fixed
+/// 64 KiB block regardless of total range length. Every offset, total byte
+/// budget and range count is checked before any data is read.
+pub fn verify_object_ranges_crc32c(
+    path: &Path,
+    ranges: &[(u64, u64, u32)],
+    max_total_bytes: u64,
+) -> io::Result<()> {
+    const MAX_VERIFY_BYTES: u64 = 64 * 1024 * 1024;
+    if ranges.len() > MAX_RANGES {
+        return Err(io::Error::other("too many object checksum ranges"));
+    }
+    let mut requested = 0u64;
+    for &(_, length, _) in ranges {
+        requested = requested.checked_add(length)
+            .ok_or_else(|| io::Error::other("object checksum range size overflow"))?;
+        if requested > max_total_bytes || requested > MAX_VERIFY_BYTES {
+            return Err(io::Error::other("object checksum ranges exceed byte limit"));
+        }
+    }
+    let (mut file, before) = open_verified_object(path)?;
+    for &(offset, length, _) in ranges {
+        let end = offset.checked_add(length)
+            .ok_or_else(|| io::Error::other("object checksum range overflow"))?;
+        if end > before.len() {
+            return Err(io::Error::other("object checksum range exceeds file length"));
+        }
+    }
+    let mut buffer = [0u8; 64 * 1024];
+    for &(offset, length, expected) in ranges {
+        file.seek(SeekFrom::Start(offset))?;
+        let mut remaining = length;
+        let mut checksum = crate::distributed_crc32c::Crc32cState::new();
+        while remaining > 0 {
+            let amount = remaining.min(buffer.len() as u64) as usize;
+            file.read_exact(&mut buffer[..amount])?;
+            checksum.append(&buffer[..amount]);
+            remaining -= amount as u64;
+        }
+        if checksum.checksum() != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData, "replica checksum range mismatch",
+            ));
+        }
+    }
+    verify_object_after_read(path, &file, &before)
+}
+
+#[cfg(test)]
+mod streaming_checksum_range_tests {
+    use super::*;
+
+    #[test]
+    fn validates_large_sparse_overlapping_ranges_without_retaining_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-stream-check-{}-{:?}", std::process::id(), std::thread::current().id()
+        ));
+        let bytes = (0..(512 * 1024)).map(|index| (index % 251) as u8).collect::<Vec<_>>();
+        fs::write(&path, &bytes).unwrap();
+        let checksum = crate::distributed_crc32c::crc32c;
+        let ranges = [
+            (0, bytes.len() as u64, checksum(&bytes)),
+            (1024, 65_537, checksum(&bytes[1024..1024 + 65_537])),
+            (bytes.len() as u64, 0, checksum(b"")),
+            (0, 1, checksum(&bytes[..1])),
+        ];
+        verify_object_ranges_crc32c(&path, &ranges, 700_000).unwrap();
+        let mut bad = ranges;
+        bad[1].2 ^= 1;
+        assert_eq!(
+            verify_object_ranges_crc32c(&path, &bad, 700_000).unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+        );
+        assert!(verify_object_ranges_crc32c(&path, &ranges, 1024).is_err());
+        assert!(verify_object_ranges_crc32c(&path, &[(u64::MAX, 2, 0)], u64::MAX).is_err());
+        assert!(verify_object_ranges_crc32c(&path, &vec![(0, 0, 0); 1025], u64::MAX).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn streamed_crc_agrees_with_checked_range_reader_for_small_ranges() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-stream-compare-{}-{:?}", std::process::id(), std::thread::current().id()
+        ));
+        let bytes = (0..16_384).map(|i| (i * 13 % 251) as u8).collect::<Vec<_>>();
+        fs::write(&path, &bytes).unwrap();
+        let mut ranges = Vec::new();
+        for index in 0..48usize {
+            let start = index * 241;
+            let len = index % 193;
+            let expected = crate::distributed_crc32c::crc32c(&bytes[start..start + len]);
+            ranges.push((start as u64, len as u64, expected));
+        }
+        verify_object_ranges_crc32c(&path, &ranges, 48 * 193).unwrap();
+        let read_ranges = ranges.iter().map(|&(offset, len, checksum)| {
+            (offset, len as usize, checksum)
+        }).collect::<Vec<_>>();
+        assert!(read_object_ranges_checked(&path, &read_ranges, 48 * 193).is_ok());
+        fs::remove_file(path).unwrap();
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -429,5 +551,52 @@ mod range_open_metadata_consistency_tests {
         assert_eq!(before.len(), after.len());
         assert!(!object_state_unchanged(&before, &after));
         fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod direct_disjoint_range_read_tests {
+    use super::*;
+
+    #[test]
+    fn ordered_sparse_ranges_and_zero_lengths_match_exact_file_slices() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-range-disjoint-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("part.bin");
+        let data = (0..8192usize).map(|n| (n * 31 % 256) as u8).collect::<Vec<_>>();
+        fs::write(&path, &data).unwrap();
+        for ranges in [
+            vec![(0, 32), (64, 32), (200, 800), (4000, 100), (8100, 92)],
+            vec![(0, 0), (1, 17), (1, 0), (64, 200), (8192, 0)],
+            vec![(50, 10), (60, 10), (70, 10)],
+            vec![(400, 50), (425, 100), (400, 50), (10, 10)],
+        ] {
+            let total = ranges.iter().map(|(_, length)| *length).sum::<usize>();
+            let actual = read_object_ranges(&path, &ranges, total).unwrap();
+            let expected = ranges.iter().map(|&(offset, length)| {
+                data[offset as usize..offset as usize + length].to_vec()
+            }).collect::<Vec<_>>();
+            assert_eq!(actual, expected, "ranges={ranges:?}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sorted_disjoint_reads_still_check_total_budget_and_bounds() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-range-bounds-{}-{:?}", std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("data");
+        fs::write(&path, vec![7u8; 256]).unwrap();
+        assert!(read_object_ranges(&path, &[(0, 4), (20, 4)], 7).is_err());
+        assert!(read_object_ranges(&path, &[(0, 4), (250, 7)], 100).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
