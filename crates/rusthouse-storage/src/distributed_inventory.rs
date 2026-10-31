@@ -150,6 +150,30 @@ fn checksum_inventory_entry(
     })
 }
 
+// When file sizes are highly skewed, schedule large checksum streams first.
+// Otherwise avoid the index allocation and sort for uniform inventories.
+fn checksum_work_order(entries: &[InventoryEntry], workers: usize) -> Option<Vec<usize>> {
+    if entries.len() < workers.saturating_mul(2) {
+        return None;
+    }
+    let mut total_bytes = 0u128;
+    let mut largest = 0u64;
+    for entry in entries {
+        total_bytes += u128::from(entry.bytes);
+        largest = largest.max(entry.bytes);
+    }
+    if total_bytes == 0
+        || u128::from(largest) * entries.len() as u128 <= total_bytes * 3
+    {
+        return None;
+    }
+    let mut order = (0..entries.len()).collect::<Vec<_>>();
+    order.sort_unstable_by(|&a, &b| {
+        entries[b].bytes.cmp(&entries[a].bytes).then_with(|| a.cmp(&b))
+    });
+    Some(order)
+}
+
 pub fn inventory_snapshot_crc32c(
     root: &Path,
     max_files: usize,
@@ -185,6 +209,7 @@ pub fn inventory_snapshot_crc32c(
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let cursor = AtomicUsize::new(0);
+    let work_order = checksum_work_order(&entries, workers);
     // Each cursor index belongs to exactly one worker. Write directly to its
     // one-time result slot instead of buffering another full result vector
     // in each thread and copying all those vectors after join.
@@ -197,13 +222,15 @@ pub fn inventory_snapshot_crc32c(
             let entries = &entries;
             let active = &active;
             let slots = &slots;
+            let work_order = work_order.as_deref();
             let handle = std::thread::Builder::new()
                 .spawn_scoped(scope, move || {
                     loop {
-                        let index = cursor.fetch_add(1, Ordering::Relaxed);
-                        if index >= entries.len() {
+                        let position = cursor.fetch_add(1, Ordering::Relaxed);
+                        if position >= entries.len() {
                             break;
                         }
+                        let index = work_order.map_or(position, |order| order[position]);
                         slots[index]
                             .set(checksum_inventory_entry(active, &entries[index]))
                             .unwrap_or_else(|_| unreachable!("checksum index claimed twice"));
@@ -280,6 +307,31 @@ mod immutable_identity_tests {
         fs::write(&first, b"longer").unwrap();
         assert!(!same_file_state(&before, &fs::metadata(&first).unwrap()));
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod checksum_scheduling_tests {
+    use super::*;
+
+    fn entries(sizes: &[u64]) -> Vec<InventoryEntry> {
+        sizes.iter().enumerate().map(|(index, &bytes)| InventoryEntry {
+            relative_path: PathBuf::from(format!("part/file_{index}")),
+            bytes,
+        }).collect()
+    }
+
+    #[test]
+    fn large_replica_objects_start_before_small_manifest_files() {
+        let queue = entries(&[1, 2, 1, 50_000, 3, 50_000, 1, 4]);
+        assert_eq!(checksum_work_order(&queue, 2), Some(vec![3, 5, 7, 4, 1, 0, 2, 6]));
+    }
+
+    #[test]
+    fn uniform_inventories_avoid_extra_sort_and_index_allocation() {
+        assert!(checksum_work_order(&entries(&[1024; 128]), 4).is_none());
+        assert!(checksum_work_order(&entries(&[0; 128]), 4).is_none());
+        assert!(checksum_work_order(&entries(&[1, 90]), 4).is_none());
     }
 }
 
