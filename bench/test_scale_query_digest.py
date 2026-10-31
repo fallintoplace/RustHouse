@@ -70,6 +70,27 @@ class QueryDigestTests(unittest.TestCase):
             self.assertEqual(query_digest("binary", "part", "SELECT 1")["bytes"], 3)
 
 
+    def test_sql_delimiters_respect_literals_and_comments(self):
+        from bench.scale.query_digest import single_read_only_select
+        for sql in (
+            "SELECT ';' AS punctuation",
+            "SELECT 'it''s;fine' AS message;",
+            'SELECT "semi;col" FROM part',
+            "SELECT 1 /* ; ignored */;",
+            "SELECT 1 -- ; inside comment",
+        ):
+            with self.subTest(sql=sql):
+                self.assertTrue(single_read_only_select(sql))
+        for sql in (
+            "SELECT 1; SELECT 2",
+            "SELECT 1; DROP TABLE t",
+            "SELECT 'unterminated",
+            "SELECT 1 /* unterminated",
+            "SELECT 1; -- comment after separator",
+        ):
+            with self.subTest(sql=sql):
+                self.assertFalse(single_read_only_select(sql))
+
     def test_refuses_mutations_and_multiple_statements(self):
         def never_run(*_args, **_kwargs):
             self.fail("mutating SQL must be rejected before execution")

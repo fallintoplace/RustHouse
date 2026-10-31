@@ -15,6 +15,55 @@ import time
 from pathlib import Path
 
 
+def single_read_only_select(sql):
+    """Find SQL statement delimiters outside quoted strings and comments."""
+    statement = sql.strip()
+    if not re.match(r"^SELECT\b", statement, re.IGNORECASE):
+        return False
+    quote = None
+    line_comment = False
+    block_comment = False
+    semicolon = None
+    index = 0
+    while index < len(statement):
+        char = statement[index]
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+        elif block_comment:
+            if statement.startswith("*/", index):
+                block_comment = False
+                index += 2
+                continue
+        elif quote is not None:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                if statement.startswith(quote * 2, index):
+                    index += 2
+                    continue
+                quote = None
+        elif statement.startswith("--", index):
+            line_comment = True
+            index += 2
+            continue
+        elif statement.startswith("/*", index):
+            block_comment = True
+            index += 2
+            continue
+        elif char in ("'", '"', chr(96)):
+            quote = char
+        elif char == ";":
+            if semicolon is not None:
+                return False
+            semicolon = index
+        index += 1
+    if quote is not None or block_comment:
+        return False
+    return semicolon is None or not statement[semicolon + 1:].strip()
+
+
 def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None,
                  max_rows=10000, max_output_bytes=100_000_000,
                  timeout=600, run=None):
@@ -33,8 +82,7 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
         raise ValueError("expected_sha256 must be lowercase SHA256 hex")
     if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
         raise ValueError("SQL must be nonempty and at most 64 KiB")
-    statement = sql.strip().removesuffix(";").rstrip()
-    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
+    if not single_read_only_select(sql):
         raise ValueError("digest requires one read-only SELECT")
     execute = run or subprocess.run
     started = time.perf_counter()
