@@ -557,6 +557,19 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn dangling_compressed_mark_symlink_cannot_hide_a_duplicate_layout() {
+        use std::os::unix::fs::symlink;
+        let dir = fixture();
+        symlink("missing.cmrk2", dir.join("id.cmrk2")).unwrap();
+        assert!(matches!(
+            NumericPartReader::open(&dir, &["id".into()]),
+            Err(PartError::InvalidScan(reason)) if reason.contains("multiple mark files")
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn rejects_duplicate_live_mark_positions() {
         let dir = fixture();
