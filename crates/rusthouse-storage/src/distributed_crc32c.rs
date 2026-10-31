@@ -149,13 +149,11 @@ fn update_software(mut crc: u32, bytes: &[u8]) -> u32 {
 /// Apply a GF(2) operator to a 32-bit CRC state.
 fn gf2_matrix_times(matrix: &[u32; 32], mut vector: u32) -> u32 {
     let mut result = 0u32;
-    let mut bit = 0;
+    // Only the set bits contribute to a GF(2) dot product. Sparse CRC
+    // states avoid testing every intervening zero bit.
     while vector != 0 {
-        if vector & 1 != 0 {
-            result ^= matrix[bit];
-        }
-        vector >>= 1;
-        bit += 1;
+        result ^= matrix[vector.trailing_zeros() as usize];
+        vector &= vector - 1;
     }
     result
 }
@@ -601,5 +599,50 @@ mod incremental_crc_tests {
         assert_eq!(crc.checksum(), crc32c(b"part-one"));
         crc.append(b"-part-two");
         assert_eq!(crc.checksum(), crc32c(b"part-one-part-two"));
+    }
+}
+
+#[cfg(test)]
+mod sparse_gf2_matrix_tests {
+    use super::*;
+
+    fn reference(matrix: &[u32; 32], mut vector: u32) -> u32 {
+        let mut result = 0;
+        for &value in matrix {
+            if vector & 1 != 0 {
+                result ^= value;
+            }
+            vector >>= 1;
+        }
+        result
+    }
+
+    #[test]
+    fn set_bit_iteration_matches_full_32_bit_reference() {
+        let matrix = std::array::from_fn(|index| {
+            (index as u32).wrapping_mul(0x9e37_79b9).rotate_left(index as u32)
+        });
+        for vector in [0, 1, u32::MAX, 0x8000_0000, 0x8000_0001, 0xaaaa_aaaa, 0x5555_5555] {
+            assert_eq!(gf2_matrix_times(&matrix, vector), reference(&matrix, vector));
+        }
+        for bit in 0..32 {
+            assert_eq!(gf2_matrix_times(&matrix, 1u32 << bit), matrix[bit]);
+        }
+        for seed in 0u32..4096 {
+            let vector = seed.wrapping_mul(0x85eb_ca6b).rotate_left(seed & 31);
+            assert_eq!(gf2_matrix_times(&matrix, vector), reference(&matrix, vector));
+        }
+    }
+
+    #[test]
+    fn crc_combination_is_unchanged_for_sparse_and_dense_states() {
+        for len in [0, 1, 7, 64, 8192, 1 << 20, u64::MAX] {
+            let shift = Crc32cShift::new(len);
+            for left in [0, 1, 0x8000_0000, 0x1234_5678, u32::MAX] {
+                for right in [0, 0xdead_beef, u32::MAX] {
+                    assert_eq!(shift.combine(left, right), crc32c_combine(left, right, len));
+                }
+            }
+        }
     }
 }
