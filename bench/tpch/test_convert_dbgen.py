@@ -36,6 +36,19 @@ class DbgenConversionTests(unittest.TestCase):
             self.assertEqual(cells[4:8], ["12345", "12345", "600", "600"])
             self.assertEqual(cells[10], "1994-05-06")
 
+    def test_preserves_existing_predictable_temporary_filename(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            source = directory / "region.tbl"
+            target = directory / "region.tsv"
+            original = directory / "region.tsv.tmp"
+            source.write_text(sample("region"))
+            original.write_text("do not overwrite me")
+            self.assertEqual(convert_table(source, target, "region"), 1)
+            self.assertEqual(original.read_text(), "do not overwrite me")
+            self.assertTrue(target.exists())
+            self.assertEqual(sorted(p.name for p in directory.glob(".*.tmp")), [])
+
     def test_exact_scaled_values_without_decimal_rounding(self):
         cases = [
             ("123.45", 100, 12345),
