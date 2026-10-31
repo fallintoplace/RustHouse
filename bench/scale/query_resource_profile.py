@@ -30,7 +30,8 @@ def parse_io(payload):
     for line in payload.splitlines():
         if ": " in line:
             key, value = line.split(": ", 1)
-            fields[key] = int(value)
+            if key in ("read_bytes", "write_bytes"):
+                fields[key] = int(value)
     return {key: fields.get(key, 0) for key in ("read_bytes", "write_bytes")}
 
 

@@ -16,6 +16,13 @@ class ResourceProfileTests(unittest.TestCase):
                          {"read_bytes": 5000, "write_bytes": 7})
         self.assertEqual(parse_io(""), {"read_bytes": 0, "write_bytes": 0})
 
+    def test_ignores_unrelated_proc_io_field_values(self):
+        self.assertEqual(parse_io(
+            "rchar: unavailable\nread_bytes: 4096\nwrite_bytes: 1024\n"
+        ), {"read_bytes": 4096, "write_bytes": 1024})
+        with self.assertRaises(ValueError):
+            parse_io("read_bytes: invalid\n")
+
     @unittest.skipUnless(sys.platform == "linux", "requires Linux")
     def test_successful_short_lived_subprocess(self):
         # A tiny Python process exercises resource monitoring, not RustHouse SQL.
