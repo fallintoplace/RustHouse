@@ -30,7 +30,7 @@ def emit(stream, rows, *, seed=0, batch_rows=8192):
     for start in range(0, rows, batch_rows):
         # Modular addition is enough to preserve the exact affine UInt64 sequence.
         pending = []
-        for _ in range(start, min(rows, start + batch_rows)):
+        for _ in range(min(batch_rows, rows - start)):
             pending.append(f"{value}\n")
             value = (value + MULTIPLIER) & MASK
         stream.write("".join(pending))
