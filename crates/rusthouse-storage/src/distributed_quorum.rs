@@ -316,17 +316,39 @@ pub fn observe_joint_quorum(
     }
     let mut previous_mask = 0u16;
     let mut next_mask = 0u16;
-    for &member in acknowledgements {
-        let old = previous_members.iter().position(|&id| id == member);
-        let new = next_members.iter().position(|&id| id == member);
-        if old.is_none() && new.is_none() {
-            return Err("acknowledgement from unknown replica");
+    if acknowledgements.len() > 32 {
+        // Large retry batches often repeat the same acknowledgement. Resolve
+        // a replica ID to its old/new bit positions only once, while sharing
+        // nodes count as one vote in each membership configuration.
+        let mut positions = HashMap::<&str, (u16, u16)>::with_capacity(
+            previous_members.len() + next_members.len(),
+        );
+        for (index, &member) in previous_members.iter().enumerate() {
+            positions.entry(member).or_default().0 |= 1u16 << index;
         }
-        if let Some(index) = old {
-            previous_mask |= 1u16 << index;
+        for (index, &member) in next_members.iter().enumerate() {
+            positions.entry(member).or_default().1 |= 1u16 << index;
         }
-        if let Some(index) = new {
-            next_mask |= 1u16 << index;
+        for &member in acknowledgements {
+            let &(old, new) = positions.get(member)
+                .ok_or("acknowledgement from unknown replica")?;
+            previous_mask |= old;
+            next_mask |= new;
+        }
+    } else {
+        // Small batches avoid a temporary map entirely.
+        for &member in acknowledgements {
+            let old = previous_members.iter().position(|&id| id == member);
+            let new = next_members.iter().position(|&id| id == member);
+            if old.is_none() && new.is_none() {
+                return Err("acknowledgement from unknown replica");
+            }
+            if let Some(index) = old {
+                previous_mask |= 1u16 << index;
+            }
+            if let Some(index) = new {
+                next_mask |= 1u16 << index;
+            }
         }
     }
     let previous_count = previous_mask.count_ones() as usize;
@@ -402,5 +424,43 @@ mod joint_reconfiguration_tests {
         assert_eq!(result.previous.distinct_acks, 16);
         assert_eq!(result.next.distinct_acks, 16);
         assert!(result.can_write);
+    }
+}
+
+#[cfg(test)]
+mod joint_quorum_large_ack_index_tests {
+    use super::*;
+
+    #[test]
+    fn indexed_acknowledgements_match_small_batch_observations() {
+        let policy = QuorumPolicy::new(16, 9, 9).unwrap();
+        let old_nodes = (0..16).map(|index| format!("node_{index:02}"))
+            .collect::<Vec<_>>();
+        let new_nodes = (8..24).map(|index| format!("node_{index:02}"))
+            .collect::<Vec<_>>();
+        let old = old_nodes.iter().map(String::as_str).collect::<Vec<_>>();
+        let new = new_nodes.iter().map(String::as_str).collect::<Vec<_>>();
+        for count in 0..=24usize {
+            let acknowledgements = (0..count)
+                .map(|index| format!("node_{index:02}")).collect::<Vec<_>>();
+            let unique = acknowledgements.iter().map(String::as_str).collect::<Vec<_>>();
+            let mut repeated = Vec::new();
+            for _ in 0..10 {
+                repeated.extend(unique.iter().copied());
+            }
+            if repeated.len() <= 32 {
+                continue;
+            }
+            let expected = observe_joint_quorum(policy, &old, policy, &new, &unique).unwrap();
+            assert_eq!(
+                observe_joint_quorum(policy, &old, policy, &new, &repeated).unwrap(),
+                expected, "distinct acknowledgements: {count}",
+            );
+        }
+        let too_many = vec!["node_08"; 257];
+        assert!(observe_joint_quorum(policy, &old, policy, &new, &too_many).is_err());
+        let mut bad = vec!["node_08"; 40];
+        bad.push("stranger");
+        assert!(observe_joint_quorum(policy, &old, policy, &new, &bad).is_err());
     }
 }
