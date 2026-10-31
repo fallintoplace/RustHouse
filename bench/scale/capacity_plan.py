@@ -4,6 +4,10 @@ import json
 import math
 
 
+def ceil_div(numerator, denominator):
+    return (numerator - 1) // denominator + 1
+
+
 def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
          disk_budget_bytes=None, disk_copies=2, stored_bytes_per_row=None,
          reserved_parts=0, disk_reserve_bytes=0):
@@ -26,9 +30,9 @@ def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
         raise ValueError("disk_reserve_bytes must be nonnegative")
     if type(disk_copies) is not int or not 1 <= disk_copies <= 8:
         raise ValueError("disk_copies must be in 1..8")
-    required_parts = (rows - 1) // rows_per_part + 1
+    required_parts = ceil_div(rows, rows_per_part)
     usable_parts = max_parts - reserved_parts
-    minimum_rows = (rows - 1) // usable_parts + 1
+    minimum_rows = ceil_div(rows, usable_parts)
     estimated_bytes = rows * bytes_per_row
     part_fit = required_parts <= usable_parts
     stored_width = bytes_per_row if stored_bytes_per_row is None else stored_bytes_per_row
