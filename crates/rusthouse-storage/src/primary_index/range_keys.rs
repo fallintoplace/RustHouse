@@ -234,9 +234,11 @@ mod in_place_interval_union_tests {
             candidate_mark_ranges(100, |mark| Some(mark as u64), &input).unwrap(),
             vec![19..28, 39..42]
         );
-        assert!(candidate_mark_ranges(
+        // The last mark is conservatively included as predecessor when
+        // every indexed key lies below the lower bound.
+        assert_eq!(candidate_mark_ranges(
             100, |mark| Some(mark as u64),
             &[(Bound::Included(200u64), Bound::Included(300))]
-        ).unwrap().is_empty());
+        ).unwrap(), vec![99..100]);
     }
 }
