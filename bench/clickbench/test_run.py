@@ -90,6 +90,18 @@ class ClickBenchRunnerTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     load_projection(path)
 
+    def test_duplicate_projection_json_fields_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "projection.json"
+            for payload in (
+                '{"available_columns":["UserID"],"available_columns":[],"query_columns":{}}',
+                '{"available_columns":["UserID"],"query_columns":{"1":[],"1":["Missing"]}}',
+            ):
+                with self.subTest(payload=payload):
+                    path.write_text(payload)
+                    with self.assertRaisesRegex(ValueError, "duplicate projection"):
+                        load_projection(path)
+
     def test_tsv_oracle_compares_large_integers_exactly(self):
         self.assertTrue(matches_reference(b"9007199254740993\n", b"9007199254740993\n"))
         self.assertFalse(matches_reference(b"9007199254740994\n", b"9007199254740993\n"))
