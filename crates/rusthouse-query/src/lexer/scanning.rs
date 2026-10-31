@@ -57,7 +57,7 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
 
 pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
-    let start = *index + 1;
+    let mut start = *index + 1;
     // The common literal has no embedded quotes or escapes. Find the
     // terminator in one byte scan and allocate the final String once.
     let first_special = bytes[start..]
