@@ -134,6 +134,24 @@ fn request_read_error(error: io::Error, incomplete: &'static str) -> Response {
     }
 }
 
+fn read_body_chunk_with_deadline(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+    started: Instant,
+    deadline: Duration,
+) -> Result<usize, Response> {
+    loop {
+        request_remaining(started, deadline)?;
+        match reader.read(buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(request_read_error(error, "incomplete HTTP request body\n"));
+            }
+            Ok(bytes) => return Ok(bytes),
+        }
+    }
+}
+
 fn read_request_with_deadline(
     stream: &mut TcpStream,
     deadline: Duration,
@@ -262,9 +280,9 @@ fn read_request_with_deadline(
             .get_mut()
             .set_read_timeout(Some(remaining))
             .map_err(|error| request_read_error(error, "cannot set request read timeout\n"))?;
-        let count = input
-            .read(&mut body[received..])
-            .map_err(|error| request_read_error(error, "incomplete HTTP request body\n"))?;
+        let count = read_body_chunk_with_deadline(
+            &mut input, &mut body[received..], started, deadline,
+        )?;
         if count == 0 {
             return Err(Response::text(
                 "400 Bad Request",
@@ -859,5 +877,46 @@ mod host_validation_tests {
         assert!(host_matches_listener("10.1.2.3:8080", private));
         assert!(!host_matches_listener("localhost:8080", private));
         assert!(!host_matches_listener("10.1.2.4:8080", private));
+    }
+}
+
+#[cfg(test)]
+mod interrupted_request_body_tests {
+    use super::*;
+
+    struct InterruptedOnce(bool);
+
+    impl Read for InterruptedOnce {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if !self.0 {
+                self.0 = true;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            buffer[..2].copy_from_slice(b"OK");
+            Ok(2)
+        }
+    }
+
+    #[test]
+    fn interrupted_body_read_retries_without_losing_bytes() {
+        let mut reader = InterruptedOnce(false);
+        let mut result = [0u8; 2];
+        assert_eq!(
+            read_body_chunk_with_deadline(
+                &mut reader, &mut result, Instant::now(), Duration::from_secs(5),
+            ).unwrap(),
+            2,
+        );
+        assert_eq!(&result, b"OK");
+    }
+
+    #[test]
+    fn expired_body_deadline_fails_before_reading() {
+        let mut reader = InterruptedOnce(false);
+        let mut result = [0u8; 2];
+        assert!(read_body_chunk_with_deadline(
+            &mut reader, &mut result, Instant::now(), Duration::ZERO,
+        ).is_err());
+        assert!(!reader.0);
     }
 }
