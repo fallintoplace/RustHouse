@@ -102,8 +102,31 @@ fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
 /// Only numeric bind addresses (and localhost for loopback) are trusted as
 /// Host values. This prevents DNS rebinding against an unauthenticated server.
 fn host_matches_listener(host: &str, listener: SocketAddr) -> bool {
-    let (name, port) = match host.rsplit_once(':') {
-        Some((name, port)) => (name, Some(port)),
+    if let Some(value) = host.strip_prefix('[') {
+        // RFC 3986 requires IPv6 address literals in HTTP Host to be
+        // bracketed. Compare addresses, not spellings: compressed and
+        // expanded forms refer to the same bound listener.
+        let Some((address, suffix)) = value.split_once(']') else {
+            return false;
+        };
+        let port = if suffix.is_empty() {
+            None
+        } else if let Some(port) = suffix.strip_prefix(':') {
+            Some(port)
+        } else {
+            return false;
+        };
+        let SocketAddr::V6(bound) = listener else {
+            return false;
+        };
+        return address.parse::<std::net::Ipv6Addr>().ok() == Some(*bound.ip())
+            && port.is_none_or(|value| value.parse::<u16>().ok() == Some(bound.port()));
+    }
+    // Unbracketed IPv6 is not an HTTP authority. A textual IPv4 address or
+    // loopback hostname may have a single optional port.
+    let (name, port) = match host.split_once(':') {
+        Some((name, port)) if !port.contains(':') => (name, Some(port)),
+        Some(_) => return false,
         None => (host, None),
     };
     if port.is_some_and(|port| port.parse::<u16>().ok() != Some(listener.port())) {
@@ -877,6 +900,24 @@ mod host_validation_tests {
         assert!(host_matches_listener("10.1.2.3:8080", private));
         assert!(!host_matches_listener("localhost:8080", private));
         assert!(!host_matches_listener("10.1.2.4:8080", private));
+    }
+
+    #[test]
+    fn accepts_bracketed_ipv6_without_disabling_host_validation() {
+        let listener: SocketAddr = "[::1]:8123".parse().unwrap();
+        for host in ["[::1]", "[::1]:8123", "[0:0:0:0:0:0:0:1]:8123"] {
+            assert!(host_matches_listener(host, listener), "{host}");
+        }
+        for host in [
+            "::1", "::1:8123", "[::1]:8124", "[::2]:8123",
+            "[::1]garbage", "[::1]:", "[::1]:1234:8123",
+            "[localhost]:8123", "[::1", "[::1]]:8123",
+        ] {
+            assert!(!host_matches_listener(host, listener), "{host}");
+        }
+        let v4: SocketAddr = "127.0.0.1:8123".parse().unwrap();
+        assert!(!host_matches_listener("[::1]:8123", v4));
+        assert!(host_matches_listener("localhost:8123", listener));
     }
 }
 
