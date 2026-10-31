@@ -1,6 +1,8 @@
 //! Quorum policy validation for future replicated storage writes.
 //! This module does not implement consensus or distributed transactions.
 
+use std::collections::HashMap;
+
 fn valid_member(member: &str) -> bool {
     !member.is_empty()
         && member.len() <= 64
