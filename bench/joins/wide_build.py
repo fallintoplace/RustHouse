@@ -64,6 +64,8 @@ def benchmark(binary, fact_rows=65536, build_rows=8192, payload_bytes=4096,
             path = fixture.resolve().as_posix().replace("'", "''")
             run(f"COPY {table} FROM '{path}' WITH (FORMAT TSV, HEADER TRUE)")
 
+        count_expected = f"{build_rows}\n".encode()
+        page_expected = "".join(f"{key}\n" for key in range(min(32, build_rows))).encode()
         summary = {}
         for table in ("narrow", "wide"):
             queries = {
@@ -72,8 +74,7 @@ def benchmark(binary, fact_rows=65536, build_rows=8192, payload_bytes=4096,
             }
             for kind, query in queries.items():
                 output = run(query)
-                expected = (f"{build_rows}\n".encode() if kind == "count" else
-                            "".join(f"{key}\n" for key in range(min(32, build_rows))).encode())
+                expected = count_expected if kind == "count" else page_expected
                 if output != expected:
                     raise ValueError(f"{table} {kind} query result differs from exact oracle")
                 samples = []
