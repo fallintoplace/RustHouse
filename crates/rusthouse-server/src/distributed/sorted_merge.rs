@@ -165,6 +165,7 @@ fn next_row(
 /// Validate the full sorted shard streams before returning any rows.
 /// Retain only one integer key and byte cursor per peer, rather than
 /// materializing every shard row at the coordinator.
+#[cfg(test)]
 pub(super) fn merge_sorted_integer_page(
     shards: &[(usize, Vec<u8>)],
     column: &str,
