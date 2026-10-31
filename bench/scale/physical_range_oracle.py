@@ -41,12 +41,28 @@ MAX_ORACLE_RESULT_BYTES = 1024
 
 def invoke(binary, database, statement, timeout):
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        extra = {}
+        if os.name == "posix":
+            import resource
+
+            def cap_output_file():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                maximum = MAX_ORACLE_RESULT_BYTES + 1
+                soft = maximum if hard == resource.RLIM_INFINITY else min(maximum, hard)
+                resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+
+            extra["preexec_fn"] = cap_output_file
         response = subprocess.run(
             [str(binary), "sql", statement, "--database", str(database),
              "--format", "tsv-no-header"],
-            stdout=output, stderr=errors, timeout=timeout, check=False,
+            stdout=output, stderr=errors, timeout=timeout, check=False, **extra,
         )
         if response.returncode:
+            # A child stopped by the file-size limit must not be mistaken for
+            # an unrelated SQL failure.
+            output.seek(0, os.SEEK_END)
+            if output.tell() > MAX_ORACLE_RESULT_BYTES:
+                raise ValueError("physical range oracle output exceeds 1 KiB")
             errors.seek(0, os.SEEK_END)
             errors.seek(max(0, errors.tell() - 500))
             raise RuntimeError(errors.read().decode("utf-8", "replace"))
@@ -55,7 +71,6 @@ def invoke(binary, database, statement, timeout):
     if len(result) > MAX_ORACLE_RESULT_BYTES:
         raise ValueError("physical range oracle output exceeds 1 KiB")
     return result
-
 
 def verify(binary, database, table, start, rows, window_rows=10_000_000,
            timeout=1800, execute=None, column="id", max_total_seconds=None):
