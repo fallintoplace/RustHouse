@@ -93,14 +93,32 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
         return writer.write_all(b"\"");
     }
 
-    // Batch frequent JSON escapes into stack chunks. Inspect bytes because
-    // every JSON-special/control character is ASCII; other UTF-8 bytes pass
-    // through unchanged.
+    // JSON controls and ASCII quote/backslash are the only escaped bytes.
+    // Bulk copy the UTF-8 spans between them into the bounded scratch buffer.
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut buffer = [0u8; 4096];
     buffer[0] = b'"';
     let mut used = 1;
-    for &byte in bytes {
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        let plain_len = remaining.iter()
+            .position(|&byte| byte < 0x20 || byte == b'"' || byte == b'\\')
+            .unwrap_or(remaining.len());
+        let mut plain = &remaining[..plain_len];
+        while !plain.is_empty() {
+            if used == buffer.len() {
+                writer.write_all(&buffer)?;
+                used = 0;
+            }
+            let count = plain.len().min(buffer.len() - used);
+            buffer[used..used + count].copy_from_slice(&plain[..count]);
+            used += count;
+            plain = &plain[count..];
+        }
+        remaining = &remaining[plain_len..];
+        let Some((&byte, rest)) = remaining.split_first() else {
+            break;
+        };
         let mut unicode_escape = [0u8; 6];
         let encoded: &[u8] = match byte {
             b'"' => br#"\""#,
@@ -112,16 +130,13 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
             12 => br"\f",
             0..=31 => {
                 unicode_escape = [
-                    b'\\',
-                    b'u',
-                    b'0',
-                    b'0',
+                    b'\\', b'u', b'0', b'0',
                     HEX[(byte >> 4) as usize],
                     HEX[(byte & 0xf) as usize],
                 ];
                 &unicode_escape
             }
-            _ => std::slice::from_ref(&byte),
+            _ => unreachable!("plain bytes stop only at JSON escapes"),
         };
         if buffer.len() - used < encoded.len() {
             writer.write_all(&buffer[..used])?;
@@ -129,6 +144,7 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
         }
         buffer[used..used + encoded.len()].copy_from_slice(encoded);
         used += encoded.len();
+        remaining = rest;
     }
     if used == buffer.len() {
         writer.write_all(&buffer)?;
@@ -228,5 +244,39 @@ mod sparse_percent_span_tests {
     fn handles_consecutive_escapes_and_empty_spans() {
         assert_eq!(decode_url("%41%42++%43").unwrap(), "AB  C");
         assert_eq!(decode_url("%00").unwrap().as_bytes(), &[0]);
+    }
+}
+
+#[cfg(test)]
+mod sparse_json_escape_span_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_utf8_and_special_characters_at_chunk_boundaries() {
+        for length in [0usize, 1, 4094, 4095, 4096, 8191, 8192] {
+            let input = format!("{}\"\n\\é\u{0001}{}", "x".repeat(length), "y".repeat(10));
+            let mut output = Vec::new();
+            write_json_string(&mut output, &input).unwrap();
+            let wanted = format!("\"{}\\\"\\n\\\\é\\u0001{}\"", "x".repeat(length), "y".repeat(10));
+            assert_eq!(output, wanted.as_bytes(), "prefix={length}");
+        }
+    }
+
+    #[test]
+    fn long_sparse_json_escapes_use_bounded_writes() {
+        struct Counting { calls: usize, bytes: Vec<u8> }
+        impl Write for Counting {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let input = format!("{}\\{}", "p".repeat(100_000), "q".repeat(100_000));
+        let mut output = Counting { calls: 0, bytes: Vec::new() };
+        write_json_string(&mut output, &input).unwrap();
+        assert_eq!(output.bytes.len(), input.len() + 3);
+        assert!(output.calls <= 51, "{} writes", output.calls);
     }
 }
