@@ -3,6 +3,7 @@
 
 mod query_policy;
 mod sorted_merge;
+mod dispatch;
 
 use self::query_policy::*;
 use self::sorted_merge::*;
@@ -1319,43 +1320,14 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => unreachable!("validated named table"),
     };
     let retained_input = AtomicUsize::new(0);
-    // A high-fanout query must not launch one full response buffer per peer.
-    // Process bounded waves while maintaining the configured shard order.
+    // Bound concurrency without wave barriers: a fast peer immediately
+    // claims the next pending shard, even if an earlier peer is still slow.
     const MAX_INFLIGHT_SHARDS: usize = 8;
-    let results = std::thread::scope(|scope| {
-        let shard_query = shard_sql.as_str();
-        let used_bytes = &retained_input;
-        let mut results = Vec::with_capacity(cluster.peers().len());
-        for wave in cluster.peers().chunks(MAX_INFLIGHT_SHARDS) {
-            let jobs = wave
-                .iter()
-                .map(|&peer| {
-                    match std::thread::Builder::new().spawn_scoped(scope, move || {
-                        read_shard(
-                            peer, shard_query, sum_schema, group_schema, table,
-                            sorted_prefix, used_bytes,
-                        )
-                    }) {
-                        Ok(handle) => Ok(handle),
-                        Err(_) => Err(read_shard(
-                            peer, shard_query, sum_schema, group_schema, table,
-                            sorted_prefix, used_bytes,
-                        )),
-                    }
-                })
-                .collect::<Vec<_>>();
-            // Retain configured peer order even when a worker ran inline.
-            for job in jobs {
-                let result = match job {
-                    Ok(handle) => handle
-                        .join()
-                        .unwrap_or_else(|_| Err("peer query panicked".into())),
-                    Err(inline) => inline,
-                };
-                results.push(result);
-            }
-        }
-        results
+    let results = dispatch::map_peers_bounded(cluster.peers(), MAX_INFLIGHT_SHARDS, |peer| {
+        read_shard(
+            peer, shard_sql.as_str(), sum_schema, group_schema, table,
+            sorted_prefix, &retained_input,
+        )
     });
     let mut shards = Vec::with_capacity(results.len());
     let mut sum_type: Option<String> = None;
