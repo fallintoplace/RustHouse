@@ -115,63 +115,13 @@ impl Error for ArrayReadError {
     }
 }
 
-fn next_array_offset(
-    encoding: ArrayOffsetsEncoding,
-    absolute: u64,
-    encoded: u64,
-    row: usize,
-) -> Result<u64, ArrayReadError> {
-    let next = match encoding {
-        ArrayOffsetsEncoding::Sizes => {
-            absolute
-                .checked_add(encoded)
-                .ok_or(ArrayReadError::InvalidOffset {
-                    row,
-                    reason: "array size overflows u64",
-                })?
-        }
-        ArrayOffsetsEncoding::Absolute { .. } => encoded,
-    };
-    if next < absolute {
-        return Err(ArrayReadError::InvalidOffset {
-            row,
-            reason: "offset moves backwards",
-        });
-    }
-    Ok(next)
-}
-
-fn append_array_offset(
-    encoding: ArrayOffsetsEncoding,
-    base: u64,
-    absolute: &mut u64,
-    encoded: u64,
-    row: usize,
-    offsets: &mut Vec<usize>,
-) -> Result<(), ArrayReadError> {
-    let next = next_array_offset(encoding, *absolute, encoded, row)?;
-    let elements = next - base;
-    if elements > MAX_BATCH_ELEMENTS {
-        return Err(ArrayReadError::TooManyElements(elements));
-    }
-    offsets.push(elements as usize);
-    *absolute = next;
-    Ok(())
-}
-
-pub fn read_array_offsets<O: Read>(
+// Specialize the two offset encodings before the hot decode loop. The
+// compiler can eliminate the per-element mode match for million-row arrays.
+fn decode_array_offsets<const ABSOLUTE: bool, O: Read>(
     offset_stream: &mut O,
     rows: usize,
-    encoding: ArrayOffsetsEncoding,
+    base: u64,
 ) -> Result<ArrayOffsets, ArrayReadError> {
-    if rows > MAX_BATCH_ROWS {
-        return Err(ArrayReadError::TooManyRows(rows));
-    }
-
-    let base = match encoding {
-        ArrayOffsetsEncoding::Sizes => 0,
-        ArrayOffsetsEncoding::Absolute { previous_offset } => previous_offset,
-    };
     let mut absolute = base;
     let mut offsets = Vec::with_capacity(rows + 1);
     offsets.push(0);
@@ -186,7 +136,26 @@ pub fn read_array_offsets<O: Read>(
 
         for bytes in buffer[..count * OFFSET_ENTRY_BYTES].chunks_exact(OFFSET_ENTRY_BYTES) {
             let encoded = u64::from_le_bytes(bytes.try_into().unwrap());
-            append_array_offset(encoding, base, &mut absolute, encoded, row, &mut offsets)?;
+            let next = if ABSOLUTE {
+                encoded
+            } else {
+                absolute.checked_add(encoded).ok_or(ArrayReadError::InvalidOffset {
+                    row,
+                    reason: "array size overflows u64",
+                })?
+            };
+            if next < absolute {
+                return Err(ArrayReadError::InvalidOffset {
+                    row,
+                    reason: "offset moves backwards",
+                });
+            }
+            let elements = next - base;
+            if elements > MAX_BATCH_ELEMENTS {
+                return Err(ArrayReadError::TooManyElements(elements));
+            }
+            offsets.push(elements as usize);
+            absolute = next;
             row += 1;
         }
     }
@@ -195,6 +164,21 @@ pub fn read_array_offsets<O: Read>(
         offsets,
         last_absolute_offset: absolute,
     })
+}
+
+pub fn read_array_offsets<O: Read>(
+    offset_stream: &mut O,
+    rows: usize,
+    encoding: ArrayOffsetsEncoding,
+) -> Result<ArrayOffsets, ArrayReadError> {
+    if rows > MAX_BATCH_ROWS {
+        return Err(ArrayReadError::TooManyRows(rows));
+    }
+    match encoding {
+        ArrayOffsetsEncoding::Sizes => decode_array_offsets::<false, O>(offset_stream, rows, 0),
+        ArrayOffsetsEncoding::Absolute { previous_offset } =>
+            decode_array_offsets::<true, O>(offset_stream, rows, previous_offset),
+    }
 }
 
 fn validated_numeric_array_element_type(data_type: &str) -> Result<&str, ArrayReadError> {
@@ -568,5 +552,48 @@ mod numeric_array_type_fastcheck_tests {
         for ty in ["Array(String)", "Array(Nullable(UInt64))", "Array(garbage)", "Array()"] {
             assert!(validated_numeric_array_element_type(ty).is_err(), "{ty}");
         }
+    }
+}
+
+#[cfg(test)]
+mod specialized_array_offset_mode_tests {
+    use super::*;
+
+    #[test]
+    fn large_absolute_and_size_modes_produce_identical_relative_offsets() {
+        let sizes = (0..24_000u64).map(|index| (index % 7 == 0) as u64 * 3)
+            .collect::<Vec<_>>();
+        let mut final_offset = 50_000u64;
+        let absolute = sizes.iter().map(|&size| {
+            final_offset += size;
+            final_offset
+        }).collect::<Vec<_>>();
+        let size_bytes = sizes.iter().flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let absolute_bytes = absolute.iter().flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let decoded_sizes = read_array_offsets(
+            &mut size_bytes.as_slice(), sizes.len(), ArrayOffsetsEncoding::Sizes
+        ).unwrap();
+        let decoded_absolute = read_array_offsets(
+            &mut absolute_bytes.as_slice(), absolute.len(),
+            ArrayOffsetsEncoding::Absolute { previous_offset: 50_000 }
+        ).unwrap();
+        assert_eq!(decoded_sizes.offsets(), decoded_absolute.offsets());
+        assert_eq!(decoded_absolute.last_absolute_offset(), final_offset);
+        assert_eq!(decoded_sizes.element_count(), (final_offset - 50_000) as usize);
+    }
+
+    #[test]
+    fn specialized_modes_reject_overflow_and_backward_offsets() {
+        let sizes = [u64::MAX, 1u64].into_iter().flat_map(u64::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert!(read_array_offsets(&mut sizes.as_slice(), 2, ArrayOffsetsEncoding::Sizes).is_err());
+        let absolute = [5u64].into_iter().flat_map(u64::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert!(read_array_offsets(
+            &mut absolute.as_slice(), 1,
+            ArrayOffsetsEncoding::Absolute { previous_offset: 10 },
+        ).is_err());
     }
 }
