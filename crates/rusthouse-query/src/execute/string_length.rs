@@ -73,21 +73,29 @@ pub(super) fn execute<W: Write>(
         ));
     }
     let names = projection_columns(query, column);
-    let indices: HashMap<_, _> = names
-        .iter()
-        .enumerate()
-        .map(|(index, name)| (name.clone(), index))
-        .collect();
-    let types: HashMap<_, _> = metadata
-        .columns
-        .iter()
-        .map(|column| (column.name.clone(), column.data_type.clone()))
-        .collect();
-    let mut conditions = Vec::with_capacity(query.or_predicates.len() + 1);
-    conditions.push(typed::compile(&query.predicates, &indices, &types)?);
-    for branch in &query.or_predicates {
-        conditions.push(typed::compile(branch, &indices, &types)?);
-    }
+    let is_unfiltered = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // Unfiltered LENGTH only needs its first projected column. Avoid
+    // cloning the full schema into two hash tables for every simple scan.
+    let conditions = if is_unfiltered {
+        Vec::new()
+    } else {
+        let indices: HashMap<_, _> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), index))
+            .collect();
+        let types: HashMap<_, _> = metadata
+            .columns
+            .iter()
+            .map(|column| (column.name.clone(), column.data_type.clone()))
+            .collect();
+        let mut conditions = Vec::with_capacity(query.or_predicates.len() + 1);
+        conditions.push(typed::compile(&query.predicates, &indices, &types)?);
+        for branch in &query.or_predicates {
+            conditions.push(typed::compile(branch, &indices, &types)?);
+        }
+        conditions
+    };
 
     if let Some(alias) = query.alias.as_deref() {
         writeln!(output, "{alias}")?;
@@ -103,7 +111,6 @@ pub(super) fn execute<W: Write>(
     let mut written = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
-    let is_unfiltered = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut output_batch = Vec::with_capacity(OUTPUT_BATCH_BYTES);
     // DISTINCT is applied before OFFSET, and NULL contributes one distinct value.
     let mut seen_lengths = HashSet::<Option<usize>>::new();
@@ -118,8 +125,9 @@ pub(super) fn execute<W: Write>(
             .first()
             .ok_or_else(|| ExecutionError::Invalid("empty LENGTH input batch".into()))?
             .len();
+        // projection_columns always puts the requested String first.
         let values = batch
-            .get(indices[column])
+            .first()
             .ok_or_else(|| ExecutionError::Invalid("missing LENGTH input column".into()))?;
         let (offsets, nulls) = match values {
             TypedColumn::Text(values) => (values.offsets(), None),
@@ -184,6 +192,14 @@ mod tests {
     fn length_projection_without_predicates_uses_one_column() {
         let query = crate::parse_select("SELECT length(name) FROM data").unwrap();
         assert_eq!(projection_columns(&query, "name"), vec!["name"]);
+    }
+
+    #[test]
+    fn length_predicates_keep_requested_column_first() {
+        let query = crate::parse_select(
+            "SELECT LENGTH(name) FROM part WHERE category = 'ok'",
+        ).unwrap();
+        assert_eq!(projection_columns(&query, "name"), vec!["name", "category"]);
     }
 
     #[test]
