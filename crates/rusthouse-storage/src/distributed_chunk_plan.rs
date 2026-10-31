@@ -211,6 +211,19 @@ pub fn plan_missing_chunks(
     if byte_budget == 0 || max_batch_chunks == 0 || remaining_indices.is_empty() {
         return Ok(Vec::new());
     }
+    // When a budget cannot fit a normal chunk, only the short final chunk
+    // can qualify. The missing indices are validated and strictly sorted,
+    // so avoid a full scan of a large resume inventory.
+    if byte_budget < chunk_bytes {
+        let final_index = chunk_count - 1;
+        if remaining_indices.binary_search(&final_index).is_ok() {
+            let final_chunk = indexed_chunk_at(total_bytes, chunk_bytes, final_index);
+            if final_chunk.chunk.length <= byte_budget {
+                return Ok(vec![final_chunk]);
+            }
+        }
+        return Ok(Vec::new());
+    }
     // Only full chunks plus possibly one short final chunk can fit this budget.
     let budget_chunks = byte_budget / chunk_bytes;
     let reserve = remaining_indices
@@ -634,5 +647,22 @@ mod tiny_checkpoint_page_tests {
                 assert_eq!(actual, expected, "page_limit={page_limit} budget={byte_budget}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod short_tail_binary_search_tests {
+    use super::*;
+
+    #[test]
+    fn tiny_budget_only_schedules_the_short_final_chunk() {
+        let missing = (0..65_536).collect::<Vec<_>>();
+        let total_bytes = 65_535 * 8 + 3;
+        let selected = plan_missing_chunks(total_bytes, 8, 65_536, &missing, 3, 4).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].index, 65_535);
+        assert_eq!(selected[0].chunk.length, 3);
+        assert!(plan_missing_chunks(total_bytes, 8, 65_536, &missing, 2, 4).unwrap().is_empty());
+        assert!(plan_missing_chunks(total_bytes, 8, 65_536, &missing[..65_535], 3, 4).unwrap().is_empty());
     }
 }
