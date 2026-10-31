@@ -390,7 +390,7 @@ mod stack_quorum_snapshot_tests {
                         *reference.entry(version.generation).or_default() += 1;
                     }
                     let expected = reference.iter().rev()
-                        .find(|(_, &votes)| votes >= writes)
+                        .find(|entry| *entry.1 >= writes)
                         .map(|(&generation, _)| SnapshotVersion {
                             epoch: 3, generation, fingerprint: u128::from(generation * 19),
                         });
