@@ -6,6 +6,8 @@ cross-engine benchmark claims. Targets are user-supplied, not CI defaults.
 import argparse
 import json
 import math
+import os
+import stat
 from pathlib import Path
 
 from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
@@ -101,13 +103,29 @@ def parse_report(path):
     return json.loads(_read_bounded_report(path), object_pairs_hook=_unique_fields)
 
 
+def _file_identity(metadata):
+    return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+
 def _read_bounded_report(path):
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("physical gate report must be a regular non-symlinked file")
-    with path.open("rb") as source:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or _file_identity(opened) != _file_identity(before)):
+            raise ValueError("physical gate report changed before opening")
         contents = source.read(MAX_REPORT_BYTES + 1)
-    if len(contents) > MAX_REPORT_BYTES:
-        raise ValueError("benchmark JSON report exceeds 16 MiB")
+        if len(contents) > MAX_REPORT_BYTES:
+            raise ValueError("benchmark JSON report exceeds 16 MiB")
+        if _file_identity(opened) != _file_identity(os.fstat(source.fileno())):
+            raise ValueError("physical gate report changed during reading")
+    if _file_identity(before) != _file_identity(path.lstat()):
+        raise ValueError("physical gate report changed during reading")
     return contents.decode("utf-8")
 
 
