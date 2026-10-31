@@ -75,9 +75,12 @@ def inspect(origin, timeout=5, min_healthy=None, expected_peers=None):
         with NO_REDIRECT_OPENER.open(origin.rstrip("/") + "/cluster/health", timeout=timeout) as response:
             raw = response.read(1_048_577)
     except HTTPError as exc:
-        if exc.code != 503:
-            raise
-        raw = exc.read(1_048_577)
+        try:
+            if exc.code != 503:
+                raise
+            raw = exc.read(1_048_577)
+        finally:
+            exc.close()
     if len(raw) > 1_048_576:
         raise ValueError("peer-health response too large")
     payload = json.loads(raw, object_pairs_hook=_unique_object_pairs)
