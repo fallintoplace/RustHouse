@@ -176,23 +176,30 @@ pub fn zone_aware_replicas_for(
     if replicas == 0 || replicas > members.len() {
         return Err("invalid zone-aware replica count");
     }
-    if replicas == 1 {
-        return weighted_replicas_for(shard, &[(members[0].node.as_str(), members[0].weight)], 1)
-            .and_then(|_| {
-                // Keep the same primary as full weighted rendezvous.
-                let nodes = members.iter()
-                    .map(|member| (member.node.as_str(), member.weight))
-                    .collect::<Vec<_>>();
-                weighted_replicas_for(shard, &nodes, 1)
-            });
-    }
     if !valid_shard(shard) {
         return Err("invalid weighted replica placement configuration");
+    }
+    let seed = shard_seed(shard);
+    if replicas == 1 {
+        // No candidate vector or duplicate membership validation is needed
+        // to select a single primary from an already validated member set.
+        let mut winner: Option<(f64, usize)> = None;
+        for (index, member) in members.iter().enumerate() {
+            let uniform = hash_to_open_unit_interval(score_with_seed(seed, &member.node));
+            let priority = -uniform.ln() / f64::from(member.weight);
+            if winner.is_none_or(|(best, best_index)| {
+                priority.total_cmp(&best).then_with(|| {
+                    member.node.cmp(&members[best_index].node)
+                }).is_lt()
+            }) {
+                winner = Some((priority, index));
+            }
+        }
+        return Ok(vec![members[winner.expect("nonempty membership").1].node.clone()]);
     }
     // Rank borrowed membership indices directly. The previous path
     // revalidated nodes, allocated owned names for every candidate, and
     // built a second hash map to recover each candidate's zone.
-    let seed = shard_seed(shard);
     let mut ranked = members.iter().enumerate().map(|(index, member)| {
         let uniform = hash_to_open_unit_interval(score_with_seed(seed, &member.node));
         let priority = -uniform.ln() / f64::from(member.weight);
