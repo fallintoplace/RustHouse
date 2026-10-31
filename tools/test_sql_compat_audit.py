@@ -20,6 +20,26 @@ class AuditTests(unittest.TestCase):
                 read_queries(alias)
             self.assertEqual(read_queries(source), [(1, "SELECT 1")])
 
+    def test_rejects_corpus_replaced_between_preflight_and_open(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "queries.sql"
+            corpus.write_text("SELECT 1\n")
+            replacement = root / "replacement.sql"
+            replacement.write_text("SELECT 2\n")
+            real_open = os.open
+
+            def race(path, flags):
+                corpus.unlink()
+                replacement.rename(corpus)
+                return real_open(path, flags)
+
+            with patch("sql_compat_audit.os.open", side_effect=race):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    read_queries(corpus)
+
     def test_audit_file_fails_early_on_large_input(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "queries.sql"

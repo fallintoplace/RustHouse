@@ -3,9 +3,11 @@
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import re
 import subprocess
+import stat
 import sys
 import tempfile
 
@@ -58,9 +60,16 @@ MAX_QUERY_FILE_BYTES = 1_048_576
 
 def read_queries(path):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("SQL audit corpus must be a regular, non-symlinked file")
-    with path.open("rb") as handle:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as handle:
+        opened = os.fstat(handle.fileno())
+        if (not stat.S_ISREG(opened.st_mode) or
+                (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("SQL audit corpus changed while opening")
         raw = handle.read(MAX_QUERY_FILE_BYTES + 1)
     if len(raw) > MAX_QUERY_FILE_BYTES:
         raise ValueError("SQL audit corpus exceeds 1 MiB")
