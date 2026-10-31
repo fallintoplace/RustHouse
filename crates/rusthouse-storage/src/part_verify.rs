@@ -313,6 +313,10 @@ mod tests {
                 dir.join("columns.txt"),
                 format!("columns format version: 1\n1 columns:\n`id` {kind}\n"),
             ).unwrap();
+            if kind.starts_with("Nullable(") {
+                fs::write(dir.join("id.null.bin"), checked_plain_block(&[0, 1])).unwrap();
+                fs::copy(dir.join("id.mrk2"), dir.join("id.null.mrk2")).unwrap();
+            }
             fs::write(dir.join("id.bin"),
                 checked_plain_block(&vec![0; bytes_per_row * 2])).unwrap();
             assert!(verify_wide_part(&dir).is_ok(), "{kind}");
