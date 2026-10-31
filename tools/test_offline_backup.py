@@ -107,6 +107,23 @@ class BackupTests(unittest.TestCase):
             self.assertFalse((folder / "copy.partial").exists())
 
 
+    @unittest.skipUnless(__import__("os").name == "posix", "flock is POSIX-only")
+    def test_holds_newly_created_database_lock_during_copy(self):
+        import fcntl
+        from offline_backup import refuse_live_database
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "db"
+            source.mkdir()
+            lock = source / ".rusthouse-write.lock"
+            self.assertFalse(lock.exists())
+            with refuse_live_database(source):
+                self.assertTrue(lock.is_file())
+                with lock.open("r+b") as concurrent:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(concurrent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with lock.open("r+b") as later:
+                fcntl.flock(later, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
     def test_rechecks_backup_size_after_copy(self):
         import shutil
         with tempfile.TemporaryDirectory() as root:
