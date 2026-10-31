@@ -19,12 +19,15 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
     if (type(start) is not int or start < 0
             or start + rows > (1 << 64)):
         raise ValueError("invalid UInt64 start or range overflow")
-    if type(limit) is not int or not 1 <= limit <= min(4096, rows):
-        raise ValueError("limit must be in 1..min(4096, rows)")
+    # Report invalid security-sensitive inputs before the default limit is
+    # checked. A probe with fewer than ten rows still needs useful errors
+    # for an unsafe identifier or an invalid subprocess timeout.
     if not isinstance(column, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", column):
         raise ValueError("column must be a simple SQL identifier")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
+    if type(limit) is not int or not 1 <= limit <= min(4096, rows):
+        raise ValueError("limit must be in 1..min(4096, rows)")
     last_id = start + rows - 1
     run = execute or subprocess.run
     results = []
