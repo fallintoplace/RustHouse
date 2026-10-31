@@ -547,7 +547,31 @@ pub fn execute_multi_join<W: Write>(
             for row in &rows {
                 if let Some(key) = row_key(row, &left_keys) {
                     if let Some(matches) = hash.get(&key) {
-                        let multiplicity = if step.any { 1usize } else { matches.iter().len() };
+                        // The final COUNT fast path must apply the same
+                        // IS NULL / IS NOT NULL filter as materialized joins.
+                        // With ANY, inspect only the first matched dimension
+                        // row: filtering all matches changes first-match rules.
+                        let multiplicity = match output_filter {
+                            Some((filter_index, not_null)) if filter_index < left_width => {
+                                if matches!(row[filter_index], typed::Cell::Null) == not_null {
+                                    0
+                                } else if step.any {
+                                    1
+                                } else {
+                                    matches.iter().len()
+                                }
+                            }
+                            Some((filter_index, not_null)) => matches.iter()
+                                .take(if step.any { 1 } else { usize::MAX })
+                                .filter(|&&right_index| {
+                                    matches!(
+                                        right_rows[right_index][filter_index - left_width],
+                                        typed::Cell::Null
+                                    ) != not_null
+                                })
+                                .count(),
+                            None => if step.any { 1 } else { matches.iter().len() },
+                        };
                         count = count.checked_add(u64::try_from(multiplicity)
                             .map_err(|_| invalid("JOIN count overflow"))?)
                             .ok_or_else(|| invalid("JOIN count overflow"))?;
