@@ -27,6 +27,8 @@ def parse_ids(spec):
     ids = set()
     for fragment in spec.split(","):
         pair = fragment.split("-", 1)
+        if any(not value.isascii() or not value.isdecimal() for value in pair):
+            raise ValueError("--only requires ASCII decimal query IDs")
         try:
             start = int(pair[0])
             stop = int(pair[1]) if len(pair) == 2 else start
