@@ -10,6 +10,26 @@ from pathlib import Path
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 
 
+def reject_duplicate_report_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate TPC-H report JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def reject_nonstandard_json_number(value):
+    raise ValueError(f"invalid TPC-H report JSON number: {value}")
+
+
+def parse_finite_report_float(value):
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"invalid TPC-H report JSON number: {value}")
+    return parsed
+
+
 def load_report(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -18,7 +38,8 @@ def load_report(path):
         payload = source.read(MAX_REPORT_BYTES + 1)
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("benchmark report exceeds 2 MiB")
-    return json.loads(payload)
+    return json.loads(payload, object_pairs_hook=reject_duplicate_report_keys,\n                      parse_constant=reject_nonstandard_json_number,
+                      parse_float=parse_finite_report_float)
 
 FIELDS = ("query", "status", "samples", "median_ms", "p90_ms", "error")
 KNOWN_STATUSES = frozenset((
