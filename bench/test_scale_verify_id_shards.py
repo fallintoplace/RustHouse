@@ -89,6 +89,35 @@ class VerifyShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "non-symlinked"):
                 verify_file(alias, 0, 2)
 
+    def test_ctime_change_during_read_is_rejected(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "checked.tsv"
+            path.write_bytes(b"0\n1\n")
+            real_fstat = os.fstat
+            calls = 0
+
+            def changed_ctime(fd):
+                nonlocal calls
+                current = real_fstat(fd)
+                calls += 1
+                if calls != 2:
+                    return current
+                return SimpleNamespace(
+                    st_mode=current.st_mode, st_dev=current.st_dev,
+                    st_ino=current.st_ino, st_size=current.st_size,
+                    st_mtime_ns=current.st_mtime_ns,
+                    st_ctime_ns=current.st_ctime_ns + 1,
+                )
+
+            with patch("bench.scale.verify_id_shards.os.fstat", side_effect=changed_ctime):
+                with self.assertRaisesRegex(ValueError, "changed during verification"):
+                    verify_file(path, 0, 2)
+            self.assertEqual(calls, 2)
+
     def test_detects_extra_rows(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "rows.tsv"
