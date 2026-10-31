@@ -6,7 +6,7 @@ import math
 import re
 import sys
 from urllib.parse import quote, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, Request, build_opener, ProxyHandler
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -16,7 +16,7 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-NO_REDIRECT_OPENER = build_opener(NoRedirect())
+NO_REDIRECT_OPENER = build_opener(ProxyHandler({}), NoRedirect())
 
 
 def _unique_object_pairs(pairs):
