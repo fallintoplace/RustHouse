@@ -163,10 +163,41 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
                     column, value: parser.literal()?, negated,
                 }
             }
-        } else if parser.keyword("NULL") {
+        } else if parser.keyword("NULL") || parser.keyword("UNKNOWN") {
             Predicate::IsNull { column, negated }
         } else {
-            return Err(ParseError("expected NULL or DISTINCT FROM after IS".into()));
+            let expected_true = if parser.keyword("TRUE") {
+                true
+            } else if parser.keyword("FALSE") {
+                false
+            } else {
+                return Err(ParseError(
+                    "expected TRUE, FALSE, NULL, UNKNOWN or DISTINCT FROM after IS".into(),
+                ));
+            };
+            // IS NOT TRUE and IS NOT FALSE include NULL, unlike ordinary
+            // comparisons. Express them in the common DNF predicate model.
+            let operator = if expected_true ^ negated {
+                Operator::Ne
+            } else {
+                Operator::Eq
+            };
+            let compare = Predicate::Comparison {
+                column: column.clone(),
+                operator,
+                value: "0".into(),
+            };
+            if negated {
+                *conditions = conditions.checked_add(2).ok_or_else(bad_expansion)?;
+                if *conditions > MAX_CONDITIONS {
+                    return Err(bad_expansion());
+                }
+                return Ok(vec![
+                    vec![compare],
+                    vec![Predicate::IsNull { column, negated: false }],
+                ]);
+            }
+            compare
         };
         predicates.push(predicate);
     } else if let Some(case_insensitive) = parser.like_keyword() {
@@ -358,5 +389,56 @@ mod tests {
             .collect::<Vec<_>>().join(" AND ");
         let sql = format!("SELECT number FROM numbers(8) WHERE {groups}");
         assert!(parse_select(&sql).is_err());
+    }
+}
+
+#[cfg(test)]
+mod boolean_is_predicate_tests {
+    use super::*;
+    use crate::{execute, parse_select};
+
+    fn run(sql: &str) -> String {
+        let mut output = Vec::new();
+        execute(&parse_select(sql).unwrap(), None, &mut output).unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn boolean_is_forms_have_stable_numeric_truthiness() {
+        assert_eq!(
+            run("SELECT number FROM numbers(4) WHERE number IS TRUE ORDER BY number"),
+            "number\n1\n2\n3\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(4) WHERE number IS FALSE"),
+            "number\n0\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(4) WHERE number IS NOT TRUE"),
+            "number\n0\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(4) WHERE number IS NOT FALSE ORDER BY number"),
+            "number\n1\n2\n3\n"
+        );
+    }
+
+    #[test]
+    fn negated_is_predicates_preserve_sql_null_alternative() {
+        let query = parse_select("SELECT number FROM numbers(3) WHERE number IS NOT TRUE").unwrap();
+        assert_eq!(query.or_predicates.len(), 1);
+        assert!(matches!(
+            query.or_predicates[0].as_slice(),
+            [Predicate::IsNull { negated: false, .. }]
+        ));
+        assert_eq!(
+            run("SELECT number FROM numbers(3) WHERE number IS NOT UNKNOWN ORDER BY number"),
+            "number\n0\n1\n2\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(3) WHERE number IS UNKNOWN"),
+            "number\n"
+        );
+        assert!(parse_select("SELECT number FROM numbers(3) WHERE number IS MAYBE").is_err());
     }
 }
