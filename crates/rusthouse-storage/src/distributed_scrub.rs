@@ -87,26 +87,30 @@ pub fn scrub_snapshot_with_byte_limit(
 
     // Scrub independent frozen parts concurrently. Dynamic work claiming
     // balances uneven part sizes, with deterministic first-error reporting.
+    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let cursor = AtomicUsize::new(0);
-    let mut slots: Vec<Option<Result<ScrubReport, PartError>>> =
-        (0..parts.len()).map(|_| None).collect();
+    // The atomic index gives each part one owner. Keep only one result slot
+    // per part instead of also retaining a full vector inside every worker.
+    let slots: Vec<OnceLock<Result<ScrubReport, PartError>>> =
+        (0..parts.len()).map(|_| OnceLock::new()).collect();
     std::thread::scope(|scope| -> Result<(), PartError> {
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
             let cursor = &cursor;
             let parts = &parts;
+            let slots = &slots;
             let handle = std::thread::Builder::new()
                 .spawn_scoped(scope, move || {
-                    let mut completed = Vec::new();
                     loop {
                         let index = cursor.fetch_add(1, Ordering::Relaxed);
                         if index >= parts.len() {
                             break;
                         }
-                        completed.push((index, scrub_part(&parts[index])));
+                        slots[index]
+                            .set(scrub_part(&parts[index]))
+                            .unwrap_or_else(|_| unreachable!("scrub index claimed twice"));
                     }
-                    completed
                 })
                 .map_err(|error| {
                     PartError::InvalidScan(format!("cannot start scrub worker: {error}"))
@@ -114,17 +118,14 @@ pub fn scrub_snapshot_with_byte_limit(
             handles.push(handle);
         }
         for handle in handles {
-            let completed = handle.join().map_err(|_| {
+            handle.join().map_err(|_| {
                 PartError::InvalidScan("snapshot scrub worker panicked".into())
             })?;
-            for (index, result) in completed {
-                slots[index] = Some(result);
-            }
         }
         Ok(())
     })?;
     for slot in slots {
-        let checked = slot
+        let checked = slot.into_inner()
             .ok_or_else(|| PartError::InvalidScan("missing snapshot scrub result".into()))??;
         report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
     }
