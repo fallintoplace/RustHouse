@@ -243,6 +243,8 @@ def fixture_json(directory, rows):
     directory = Path(directory)
     event_json = directory / "events.jsonl"
     account_json = directory / "accounts.jsonl"
+    if directory.is_symlink() or event_json.is_symlink() or account_json.is_symlink():
+        raise ValueError("refusing symlinked ClickHouse parity JSON output")
     _copy_fixture_to_json(
         directory / "events.tsv", event_json, COLUMNS,
         {"event_id", "user_id", "amount", "quantity"}, {"coupon"}, rows,
