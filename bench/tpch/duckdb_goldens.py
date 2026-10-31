@@ -55,22 +55,21 @@ def generate(duckdb_binary, database, queries_dir, output_dir,
     # Publish nothing unless all of the canonical references succeed.
     with tempfile.TemporaryDirectory(prefix="tpch-full-reference-") as work:
         staging = Path(work)
+        def save_result(result):
+            number, sql, output = result
+            (staging / f"q{number:02d}.tsv").write_bytes(output)
+            generated.append({"query": number,
+                              "sql_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
+                              "reference_sha256": hashlib.sha256(output).hexdigest(),
+                              "bytes": len(output)})
+
         if jobs == 1:
-            completed = map(run_one, queries)
-            for number, sql, output in completed:
-                (staging / f"q{number:02d}.tsv").write_bytes(output)
-                generated.append({"query": number,
-                                  "sql_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
-                                  "reference_sha256": hashlib.sha256(output).hexdigest(),
-                                  "bytes": len(output)})
+            for result in map(run_one, queries):
+                save_result(result)
         else:
             with ThreadPoolExecutor(max_workers=jobs) as pool:
-                for number, sql, output in pool.map(run_one, queries):
-                    (staging / f"q{number:02d}.tsv").write_bytes(output)
-                    generated.append({"query": number,
-                                      "sql_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
-                                      "reference_sha256": hashlib.sha256(output).hexdigest(),
-                                      "bytes": len(output)})
+                for result in pool.map(run_one, queries):
+                    save_result(result)
         output_dir.mkdir(parents=True, exist_ok=True)
         for number, _ in queries:
             (staging / f"q{number:02d}.tsv").replace(output_dir / f"q{number:02d}.tsv")
