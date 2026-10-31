@@ -259,11 +259,6 @@ mod reusable_crc_shift_tests {
     }
 }
 
-/// Combine two finalized CRC32C values as if their byte ranges were concatenated.
-///
-/// The inputs must be checksums of consecutive byte ranges in the same order.
-/// This permits parallel verification of chunks without re-reading the data.
-/// A zero-length right range leaves the left checksum unchanged.
 // The 64 powers of the one-zero-byte CRC shift cover every u64 byte length.
 // Initialize once, rather than rebuilding GF(2) matrices for every merge.
 static CRC32C_BYTE_SHIFTS: OnceLock<[[u32; 32]; 64]> = OnceLock::new();
