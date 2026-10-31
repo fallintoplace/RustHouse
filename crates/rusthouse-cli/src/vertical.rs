@@ -399,12 +399,12 @@ mod batched_terminal_escape_tests {
 
     #[test]
     fn control_heavy_values_use_bounded_writes_and_preserve_all_bytes() {
-        let input = [vec![b'a'; 8_192], vec![0x1b; 8_192], b"café".to_vec()].concat();
+        let input = [vec![b'a'; 8_192], vec![0x1b; 8_192], "café".as_bytes().to_vec()].concat();
         let mut expected = vec![b'a'; 8_192];
         for _ in 0..8_192 {
             expected.extend_from_slice(br"\x1B");
         }
-        expected.extend_from_slice(b"café");
+        expected.extend_from_slice("café".as_bytes());
         let mut output = CountWrites {
             calls: 0,
             data: Vec::new(),
