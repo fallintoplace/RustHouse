@@ -86,6 +86,8 @@ def parse_rows(output):
     decoded = output.decode("utf-8")
     if not decoded:
         return []
+    if not decoded.endswith("\n"):
+        raise ValueError("TSV output is missing a final newline")
     if decoded.endswith("\n"):
         decoded = decoded[:-1]
     return [row.removesuffix("\r").split("\t") for row in decoded.split("\n")]
