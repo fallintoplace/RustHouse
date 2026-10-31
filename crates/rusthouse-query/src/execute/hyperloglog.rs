@@ -146,23 +146,23 @@ impl HyperLogLog {
         if bytes.len() != REGISTERS * 2 {
             return Err("invalid HLL register count".into());
         }
-        // Validate the complete input first. A bad final register must not
-        // leave the union partially changed.
-        for pair in bytes.chunks_exact(2) {
+        // Decode once into bounded scratch. Commit only after validating the
+        // complete state, so an invalid final byte cannot change the union.
+        let mut decoded = [0u8; REGISTERS];
+        for (target, pair) in decoded.iter_mut().zip(bytes.chunks_exact(2)) {
             let high = HEX_NIBBLES[usize::from(pair[0])];
             let low = HEX_NIBBLES[usize::from(pair[1])];
             if high == u8::MAX || low == u8::MAX {
                 return Err("invalid HLL hex state".into());
             }
-            if (high << 4) | low > MAX_REGISTER_RANK {
+            let register = (high << 4) | low;
+            if register > MAX_REGISTER_RANK {
                 return Err("invalid HLL register rank".into());
             }
+            *target = register;
         }
-        // The second pass has no per-digit validation branches or scratch.
-        for (target, pair) in self.registers.iter_mut().zip(bytes.chunks_exact(2)) {
-            let high = HEX_NIBBLES[usize::from(pair[0])];
-            let low = HEX_NIBBLES[usize::from(pair[1])];
-            *target = (*target).max((high << 4) | low);
+        for (target, register) in self.registers.iter_mut().zip(decoded) {
+            *target = (*target).max(register);
         }
         Ok(())
     }
@@ -466,5 +466,32 @@ mod nibble_decoder_regression_tests {
         let mut merged = HyperLogLog::default();
         merged.merge_hex_state(&encoded).unwrap();
         assert_eq!(*merged.registers, *sketch.registers);
+    }
+}
+
+#[cfg(test)]
+mod single_decode_state_tests {
+    use super::*;
+
+    #[test]
+    fn staged_decode_merges_all_registers_and_never_commits_invalid_tail() {
+        let mut state = HyperLogLog::default();
+        let mut union = HyperLogLog::default();
+        for (index, register) in state.registers.iter_mut().enumerate() {
+            *register = (index % (usize::from(MAX_REGISTER_RANK) + 1)) as u8;
+        }
+        for (index, register) in union.registers.iter_mut().enumerate() {
+            *register = ((index * 7) % (usize::from(MAX_REGISTER_RANK) + 1)) as u8;
+        }
+        let original = *union.registers;
+        let valid = state.encode_state();
+        let mut invalid = valid.clone();
+        invalid.replace_range(invalid.len() - 1.., "z");
+        assert!(union.merge_hex_state(&invalid).is_err());
+        assert_eq!(*union.registers, original);
+        union.merge_hex_state(&valid).unwrap();
+        for index in 0..REGISTERS {
+            assert_eq!(union.registers[index], original[index].max(state.registers[index]));
+        }
     }
 }
