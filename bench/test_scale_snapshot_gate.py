@@ -7,6 +7,20 @@ from bench.scale.snapshot_gate import inspect_snapshot
 
 
 class SnapshotGateTests(unittest.TestCase):
+    def test_default_subprocess_cannot_spool_unbounded_snapshot_report(self):
+        import os
+        def oversized(_command, **kwargs):
+            if os.name == "posix":
+                self.assertIn("preexec_fn", kwargs)
+            else:
+                self.assertNotIn("preexec_fn", kwargs)
+            kwargs["stdout"].write(b" " * (2 * 1024 * 1024 + 1))
+            return SimpleNamespace(returncode=0)
+        with patch("bench.scale.snapshot_gate.subprocess.run", side_effect=oversized):
+            with self.assertRaisesRegex(ValueError, "exceeds 2 MiB"):
+                inspect_snapshot("rusthouse", "parts", min_rows=1)
+
+
     def test_failed_default_inspection_spools_stderr(self):
         def fail(_command, **kwargs):
             self.assertNotIn("capture_output", kwargs)
