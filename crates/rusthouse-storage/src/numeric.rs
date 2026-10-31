@@ -177,8 +177,20 @@ where
         return Ok(Vec::new());
     }
     let mut values = Vec::with_capacity(rows);
-    let mut buffer = [0u8; READ_BUFFER_BYTES];
+    // Small marks are common on selective scans. Avoid initializing the
+    // full 64 KiB scratch array when at most 512 input bytes are needed.
+    const SMALL_BYTES: usize = 512;
+    if rows <= SMALL_BYTES / WIDTH {
+        let mut buffer = [0u8; SMALL_BYTES];
+        let size = rows * WIDTH;
+        reader.read_exact(&mut buffer[..size])?;
+        values.extend(buffer[..size].chunks_exact(WIDTH).map(|bytes| {
+            parse(bytes.try_into().expect("exact fixed-width numeric chunk"))
+        }));
+        return Ok(values);
+    }
 
+    let mut buffer = [0u8; READ_BUFFER_BYTES];
     while values.len() < rows {
         let count = (rows - values.len()).min(buffer.len() / WIDTH);
         let size = count * WIDTH;
@@ -201,6 +213,42 @@ mod tests {
 
     fn decode(data_type: &str, bytes: &[u8], rows: usize) -> NumericColumn {
         read_numeric_column(&mut Cursor::new(bytes), data_type, rows).unwrap()
+    }
+
+    #[test]
+    fn small_numeric_batches_preserve_exact_boundaries_and_short_reads() {
+        for rows in [1usize, 31, 32, 33, 64, 65, 100] {
+            let mut data = (0..rows as u64)
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>();
+            data.extend_from_slice(&u64::MAX.to_le_bytes());
+            let mut reader = Cursor::new(data);
+            let decoded = read_numeric_column(&mut reader, "UInt64", rows).unwrap();
+            let NumericColumn::UInt64(values) = decoded else {
+                panic!("expected UInt64");
+            };
+            assert_eq!(values.len(), rows);
+            assert_eq!(values[rows - 1], rows as u64 - 1);
+            assert_eq!(reader.position(), (rows * 8) as u64);
+            assert_eq!(
+                read_numeric_column(&mut reader, "UInt64", 1).unwrap(),
+                NumericColumn::UInt64(vec![u64::MAX])
+            );
+        }
+
+        struct Bytewise<R>(R);
+        impl<R: Read> Read for Bytewise<R> {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                self.0.read(&mut bytes[..bytes.len().min(1)])
+            }
+        }
+        let mut reader = Bytewise(&42u16.to_le_bytes()[..]);
+        assert_eq!(read_numeric_column(&mut reader, "UInt16", 1).unwrap(),
+            NumericColumn::UInt16(vec![42]));
+        assert!(matches!(
+            read_numeric_column(&mut &b"abc"[..], "UInt64", 1),
+            Err(NumericReadError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof
+        ));
     }
 
     #[test]
