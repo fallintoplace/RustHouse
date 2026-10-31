@@ -6,6 +6,7 @@ Run from the repository root with: python3 -m bench --help
 import argparse
 import datetime
 import json
+import math
 import os
 import platform
 import subprocess
@@ -89,8 +90,11 @@ def optional_version(command):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def benchmark(suites, rows, samples, stations, output_dir):
+def benchmark(suites, rows, samples, stations, output_dir, *, suite_timeout=3600):
     """Run verified benches and preserve machine metadata and failure outputs."""
+    if (type(suite_timeout) not in (int, float) or
+            not math.isfinite(suite_timeout) or suite_timeout <= 0):
+        raise ValueError("suite timeout must be finite and positive")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -118,8 +122,13 @@ def benchmark(suites, rows, samples, stations, output_dir):
             try:
                 completed = subprocess.run(
                     command, cwd=ROOT, capture_output=True, text=True, check=False,
+                    timeout=suite_timeout,
                 )
                 returncode, stdout, stderr = completed.returncode, completed.stdout, completed.stderr
+            except subprocess.TimeoutExpired:
+                returncode, stdout, stderr = 124, "", (
+                    f"benchmark suite timed out after {suite_timeout} seconds\n"
+                )
             except OSError as error:
                 returncode, stdout, stderr = 1, "", str(error) + "\n"
             elapsed = round(time.perf_counter() - started, 6)
@@ -158,6 +167,8 @@ def main(argv=None):
     bench.add_argument("--suite", choices=BENCHMARK_SUITES, action="append", help="Repeat to select suites (default: all)")
     bench.add_argument("--rows", type=int, default=65536)
     bench.add_argument("--samples", type=int, default=7)
+    bench.add_argument("--suite-timeout", type=float, default=3600,
+                       help="Maximum seconds to run each benchmark suite")
     bench.add_argument("--stations", type=int, default=413)
     bench.add_argument("--output-dir", type=Path, default=ROOT / "bench" / "results")
     args = parser.parse_args(argv)
@@ -172,13 +183,16 @@ def main(argv=None):
             return run_command(args.name, [sys.executable, "-m", "bench.analytics.suite_runner", *forwarded])
         return run_command(args.name, [sys.executable, str(ROOT / WORKLOADS[args.name]), *forwarded])
     suites = tuple(dict.fromkeys(args.suite or BENCHMARK_SUITES))
+    if not math.isfinite(args.suite_timeout) or args.suite_timeout <= 0:
+        parser.error("--suite-timeout must be finite and positive")
     if not 1 <= args.rows <= 1_000_000:
         parser.error("--rows must be in 1..1000000")
     if args.samples < 1 or args.samples % 2 != 1:
         parser.error("--samples must be a positive odd number")
     if not 1 <= args.stations <= 100_000 or ("grouped" in suites and args.stations > args.rows):
         parser.error("--stations must be in 1..100000 and cannot exceed --rows for grouped")
-    return benchmark(suites, args.rows, args.samples, args.stations, args.output_dir)
+    return benchmark(suites, args.rows, args.samples, args.stations, args.output_dir,
+                     suite_timeout=args.suite_timeout)
 
 
 if __name__ == "__main__":
