@@ -109,16 +109,30 @@ fn write_cell(output: &mut impl Write, value: &Cell) -> Result<(), ExecutionErro
             record[1..].copy_from_slice(&v.to_bits().to_le_bytes());
             output.write_all(&record)?;
         }
-        Cell::Text(value) => {
-            output.write_all(&[4])?;
-            write_bytes(output, value)?;
-        }
-        Cell::Uuid(value) => {
-            output.write_all(&[5])?;
-            write_bytes(output, value.as_bytes())?;
-        }
+        Cell::Text(value) => write_tagged_bytes(output, 4, value)?,
+        Cell::Uuid(value) => write_tagged_bytes(output, 5, value.as_bytes())?,
     }
     Ok(())
+}
+
+// Write the type tag, four-byte length and short payload in one framed
+// operation. Typed sort spills are dominated by short String/UUID cells.
+fn write_tagged_bytes(
+    output: &mut impl Write,
+    tag: u8,
+    value: &[u8],
+) -> Result<(), ExecutionError> {
+    if value.len() <= 256 {
+        let mut frame = [0u8; 261];
+        frame[0] = tag;
+        frame[1..5].copy_from_slice(&(value.len() as u32).to_le_bytes());
+        frame[5..5 + value.len()].copy_from_slice(value);
+        output.write_all(&frame[..5 + value.len()])?;
+        return Ok(());
+    }
+    // Keep the existing bounded large-field streaming path.
+    output.write_all(&[tag])?;
+    write_bytes(output, value)
 }
 
 fn write_bytes(output: &mut impl Write, value: &[u8]) -> Result<(), ExecutionError> {
@@ -725,6 +739,48 @@ mod heap_root_regression_tests {
                 .map(|(key, index)| format!("row_{index}\t{key}\n"))
                 .collect::<String>();
             assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tagged_text_spill_write_tests {
+    use super::*;
+
+    #[test]
+    fn short_text_and_uuid_use_one_write_with_original_wire_format() {
+        struct Counted { writes: usize, bytes: Vec<u8> }
+        impl Write for Counted {
+            fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(chunk);
+                Ok(chunk.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        for length in [0usize, 1, 36, 255, 256, 257] {
+            for tag in [4u8, 5] {
+                let contents = "x".repeat(length);
+                let value = if tag == 4 {
+                    Cell::Text(contents.as_bytes().to_vec())
+                } else {
+                    Cell::Uuid(contents.clone())
+                };
+                let mut output = Counted { writes: 0, bytes: Vec::new() };
+                write_cell(&mut output, &value).unwrap();
+                let mut expected = vec![tag];
+                expected.extend_from_slice(&(length as u32).to_le_bytes());
+                expected.extend_from_slice(contents.as_bytes());
+                assert_eq!(output.bytes, expected);
+                assert_eq!(output.writes, if length <= 256 { 1 } else { 3 });
+                let mut budget = MAX_BUFFER_BYTES;
+                let decoded = read_cell(&mut output.bytes.as_slice(), &mut budget).unwrap();
+                match (tag, decoded) {
+                    (4, Cell::Text(decoded)) => assert_eq!(decoded, contents.as_bytes()),
+                    (5, Cell::Uuid(decoded)) => assert_eq!(decoded, contents),
+                    _ => panic!("tagged cell changed its type"),
+                }
+            }
         }
     }
 }
