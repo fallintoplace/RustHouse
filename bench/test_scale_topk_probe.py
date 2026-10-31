@@ -18,7 +18,7 @@ class TopKProbeTests(unittest.TestCase):
     def test_default_topk_matches_short_fixture_and_keeps_explicit_validation(self):
         def execute(command, **kwargs):
             self.assertIn("LIMIT 3", command[2])
-            values = b"2\\n1\\n0\\n" if "DESC" in command[2] else b"0\\n1\\n2\\n"
+            values = b"2\n1\n0\n" if "DESC" in command[2] else b"0\n1\n2\n"
             return SimpleNamespace(returncode=0, stdout=values, stderr=b"")
 
         result = probe("rusthouse", "part", 3, execute=execute)
