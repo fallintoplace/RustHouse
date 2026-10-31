@@ -12,13 +12,15 @@ import time
 from pathlib import Path
 
 
-def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
+def probe(binary, part, rows, *, column="id", limit=None, timeout=600,
           execute=None, start=0):
     if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive")
     if (type(start) is not int or start < 0
             or start + rows > (1 << 64)):
         raise ValueError("invalid UInt64 start or range overflow")
+    if limit is None:
+        limit = min(10, rows)
     if type(limit) is not int or not 1 <= limit <= min(4096, rows):
         raise ValueError("limit must be in 1..min(4096, rows)")
     if not isinstance(column, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", column):
@@ -69,7 +71,7 @@ def main(argv=None):
     parser.add_argument("--rows", type=int, required=True)
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--column", default="id")
-    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--limit", type=int)
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
