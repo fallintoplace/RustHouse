@@ -84,6 +84,24 @@ fn same_checksums_inode(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     before.dev() == after.dev() && before.ino() == after.ino()
 }
 
+fn manifest_source_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if !after.file_type().is_file()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return same_checksums_inode(before, after)
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError> {
     let path = path.as_ref();
     let metadata = fs::symlink_metadata(path).map_err(|source| checksums_io_error(path, source))?;
@@ -96,7 +114,7 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
             ),
         });
     }
-    let file = File::open(path).map_err(|source| checksums_io_error(path, source))?;
+    let mut file = File::open(path).map_err(|source| checksums_io_error(path, source))?;
     let opened = file.metadata().map_err(|source| checksums_io_error(path, source))?;
     if !opened.file_type().is_file() || opened.len() != metadata.len() {
         return Err(invalid(path, "checksums file changed before open"));
@@ -111,7 +129,7 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     }
     // A checked metadata size is available, so reserve once for the input.
     let mut content = Vec::with_capacity(size as usize);
-    file.take(MAX_CHECKSUMS_BYTES + 1)
+    (&mut file).take(MAX_CHECKSUMS_BYTES + 1)
         .read_to_end(&mut content)
         .map_err(|source| checksums_io_error(path, source))?;
     if content.len() as u64 > MAX_CHECKSUMS_BYTES {
@@ -119,6 +137,16 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     }
     if content.len() as u64 != size {
         return Err(invalid(path, "checksums file changed during read"));
+    }
+    // Check both the opened file and current path. Same-size replacements
+    // and in-place mutations must not yield a stale verified manifest.
+    let finished = file.metadata().map_err(|source| checksums_io_error(path, source))?;
+    let current = fs::symlink_metadata(path)
+        .map_err(|source| checksums_io_error(path, source))?;
+    if !manifest_source_unchanged(&opened, &finished)
+        || !manifest_source_unchanged(&opened, &current)
+    {
+        return Err(invalid(path, "checksums source changed during read"));
     }
     parse_checksums(&content, path)
 }
@@ -576,6 +604,35 @@ mod opened_checksums_identity_tests {
         fs::write(&second, b"wxyz").unwrap();
         assert!(same_checksums_inode(&fs::metadata(&first).unwrap(), &fs::metadata(&first).unwrap()));
         assert!(!same_checksums_inode(&fs::metadata(&first).unwrap(), &fs::metadata(&second).unwrap()));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod manifest_postread_identity_tests {
+    use super::*;
+
+    #[test]
+    fn equal_length_replacements_do_not_pass_manifest_identity_check() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-checksums-postread-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let original = root.join("original");
+        let replacement = root.join("replacement");
+        fs::write(&original, b"abcd").unwrap();
+        fs::write(&replacement, b"wxyz").unwrap();
+        let before = fs::symlink_metadata(&original).unwrap();
+        let unchanged = fs::symlink_metadata(&original).unwrap();
+        assert!(manifest_source_unchanged(&before, &unchanged));
+        assert!(!manifest_source_unchanged(
+            &before, &fs::symlink_metadata(&replacement).unwrap(),
+        ));
+        fs::rename(&replacement, &original).unwrap();
+        assert!(!manifest_source_unchanged(
+            &before, &fs::symlink_metadata(&original).unwrap(),
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 }
