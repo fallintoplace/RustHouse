@@ -57,10 +57,21 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
 
 pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
-    let mut cursor = *index;
-    cursor += 1;
+    let start = *index + 1;
+    // The common literal has no embedded quotes or escapes. Find the
+    // terminator in one byte scan and allocate the final String once.
+    let first_special = bytes[start..]
+        .iter()
+        .position(|&byte| byte == b'\\' || byte == b'\'')
+        .ok_or_else(|| ParseError("unterminated string literal".into()))?;
+    let mut cursor = start + first_special;
+    if bytes[cursor] == b'\'' && bytes.get(cursor + 1) != Some(&b'\'') {
+        *index = cursor + 1;
+        return Ok(Token::String(sql[start..cursor].to_owned()));
+    }
+    // Escapes and doubled quotes still use the original validated decoder,
+    // starting at the first special byte without rescanning the plain prefix.
     let mut value = String::new();
-    let mut start = cursor;
     while cursor < bytes.len() {
         let escaped = match (bytes[cursor], bytes.get(cursor + 1)) {
             (b'\\', Some(b'\'' | b'\\')) => Some(bytes[cursor + 1]),
@@ -283,5 +294,42 @@ mod quoted_identifier_fast_path_tests {
             scan_quoted_identifier("`ok_42`", &mut 0).unwrap(),
             Token::QuotedWord("ok_42".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod plain_string_literal_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn scans_long_unescaped_literals_and_preserves_following_tokens() {
+        let value = "a".repeat(32 * 1024);
+        let sql = format!("'{value}' + 5");
+        let mut cursor = 0;
+        assert_eq!(scan_string(&sql, &mut cursor).unwrap(), Token::String(value));
+        assert_eq!(sql.as_bytes()[cursor], b' ');
+    }
+
+    #[test]
+    fn escaped_literals_decode_from_first_special_byte() {
+        let mut cursor = 0;
+        let token = scan_string("'prefix\\nwith''quote'", &mut cursor).unwrap();
+        assert_eq!(token, Token::String("prefix\nwith'quote".into()));
+        assert_eq!(cursor, "'prefix\\nwith''quote'".len());
+
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string("'café' trailing", &mut cursor).unwrap(),
+            Token::String("café".into()),
+        );
+        assert_eq!(cursor, "'café'".len());
+    }
+
+    #[test]
+    fn missing_terminator_is_rejected_in_plain_and_escaped_forms() {
+        for sql in ["'unfinished", "'unfinished\\n"] {
+            let mut cursor = 0;
+            assert!(scan_string(sql, &mut cursor).is_err(), "{sql}");
+        }
     }
 }
