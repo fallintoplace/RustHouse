@@ -26,7 +26,7 @@ impl<W: Write> JsonSeqSink<W> {
                 framed[0] = 0x1e;
                 framed[1..chunk.len() + 1].copy_from_slice(chunk);
                 self.output.write_all(&framed[..chunk.len() + 1])?;
-                self.at_row_start = !chunk.ends_with(b"\n");
+                self.at_row_start = chunk.ends_with(b"\n");
                 return Ok(());
             }
             self.output.write_all(b"\x1e")?;
