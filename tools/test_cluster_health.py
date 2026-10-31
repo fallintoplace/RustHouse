@@ -24,6 +24,12 @@ class ClusterTests(unittest.TestCase):
             ):
                 validate(payload, expected_peers=expected)
 
+    def test_rejects_more_peers_than_the_coordinator_supports(self):
+        peers = [{"address": f"127.0.0.1:{9000 + index}", "healthy": True}
+                 for index in range(33)]
+        with self.assertRaisesRegex(ValueError, "metadata"):
+            validate({"total": len(peers), "healthy": len(peers), "peers": peers})
+
     def test_partial_failure(self):
         self.assertFalse(validate({"total": 1, "healthy": 0,
                                    "peers": [{"address": "127.0.0.1:8124", "healthy": False}]}))
