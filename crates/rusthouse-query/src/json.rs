@@ -2,6 +2,7 @@
 //! This is not the ClickHouse JSON column storage serialization.
 const MAX_JSON_BYTES: usize = 1_048_576;
 const MAX_JSON_DEPTH: usize = 32;
+const MAX_JSON_NODES: usize = 65_536;
 
 #[derive(Debug)]
 pub(crate) struct JsonValue<'a> {
@@ -78,6 +79,7 @@ impl<'a> JsonValue<'a> {
 struct Parser<'a> {
     text: &'a str,
     offset: usize,
+    nodes: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -228,6 +230,12 @@ impl<'a> Parser<'a> {
         if depth > MAX_JSON_DEPTH {
             return Err("JSON nesting is too deep");
         }
+        // The byte and depth limits alone do not bound allocations for
+        // hundreds of thousands of tiny array/object values.
+        if self.nodes >= MAX_JSON_NODES {
+            return Err("JSON contains too many values");
+        }
+        self.nodes += 1;
         self.skip_ws();
         let begin = self.offset;
         let kind = match self.next() {
@@ -299,7 +307,7 @@ pub(crate) fn parse_json(text: &str) -> Result<JsonValue<'_>, &'static str> {
     if text.len() > MAX_JSON_BYTES {
         return Err("JSON exceeds 1 MiB");
     }
-    let mut parser = Parser { text, offset: 0 };
+    let mut parser = Parser { text, offset: 0, nodes: 0 };
     let value = parser.value(0)?;
     parser.skip_ws();
     if parser.offset != text.len() {
@@ -434,5 +442,26 @@ mod json_integer_range_type_tests {
         ] {
             assert_eq!(value.at_path(field).unwrap().type_name(), expected, "{field}");
         }
+    }
+}
+
+#[cfg(test)]
+mod json_node_budget_tests {
+    use super::*;
+
+    #[test]
+    fn limits_wide_arrays_even_below_the_input_byte_cap() {
+        let allowed = format!("[{}]", vec!["0"; MAX_JSON_NODES - 1].join(","));
+        assert_eq!(parse_json(&allowed).unwrap().container_len(), MAX_JSON_NODES - 1);
+        let too_many = format!("[{}]", vec!["0"; MAX_JSON_NODES].join(","));
+        assert_eq!(parse_json(&too_many).unwrap_err(), "JSON contains too many values");
+    }
+
+    #[test]
+    fn counts_nested_object_and_array_values_in_the_same_budget() {
+        assert_eq!(parse_json(r#"{"a":[1,2],"b":true}"#).unwrap().container_len(), 2);
+        let too_many = format!("{{\"items\":[{}]}}", vec!["null"; MAX_JSON_NODES - 1].join(","));
+        assert_eq!(parse_json(&too_many).unwrap_err(), "JSON contains too many values");
+        assert_eq!(parse_json("null").unwrap().type_name(), "Null");
     }
 }
