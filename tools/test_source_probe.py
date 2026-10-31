@@ -47,6 +47,11 @@ class SourceProbeTests(unittest.TestCase):
             b"rows_checked\n42\n"
         )
         self.assertEqual(scan_rows("http://127.0.0.1:8123", "events", 3), 42)
+        opener.open.return_value.__enter__.return_value.read.return_value = (
+            b"rows_checked\n18446744073709551616\n"
+        )
+        with self.assertRaisesRegex(ValueError, "UInt64"):
+            scan_rows("http://127.0.0.1:8123", "events", 3)
 
     @patch("source_probe.read_json")
     def test_expected_server_version_guards_deployments(self, read):
