@@ -15,7 +15,7 @@ class StrictPairedBenchmarkInputsTests(unittest.TestCase):
                                    runs=runs, warmups=warmups)
 
     def test_rejects_bad_sample_type_and_overflow(self):
-        for seconds in [True, "0.01", 10 ** 400, float("nan"), float("inf"), 0]:
+        for seconds in [True, "0.01", 10 ** 400, (1 << 1024) - 1, float("nan"), float("inf"), 0]:
             with self.subTest(seconds=str(seconds)[:30]):
                 with self.assertRaisesRegex(ValueError, "timings"):
                     benchmark_pair("SELECT 1", b"1\n",
