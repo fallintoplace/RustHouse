@@ -33,7 +33,13 @@ fn probe_peers_with(peers: &[Peer], ping: impl Fn(Peer) -> bool + Sync) -> Vec<b
                     if index >= peers.len() {
                         break;
                     }
-                    results[index].store(ping(peers[index]), Ordering::Relaxed);
+                    // One faulty probe must not abort the worker and leave
+                    // unrelated peers untested. A panic counts as unhealthy.
+                    let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        ping(peers[index])
+                    }))
+                    .unwrap_or(false);
+                    results[index].store(healthy, Ordering::Relaxed);
                 }
             }));
         }
@@ -218,5 +224,30 @@ mod dynamic_health_workers_tests {
         assert_eq!(health, peers.iter().map(|peer| peer.address().port() % 2 == 0)
             .collect::<Vec<_>>());
         assert!(probe_peers_with(&[], |_| true).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod panicking_health_probe_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn failing_peer_does_not_skip_other_health_probes() {
+        let peers = (0..crate::cluster::MAX_PEERS)
+            .map(|index| Peer::parse(&format!("127.0.0.1:{}", 49000 + index)).unwrap())
+            .collect::<Vec<_>>();
+        let visits = (0..peers.len()).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>();
+        let result = probe_peers_with(&peers, |peer| {
+            let index = usize::from(peer.port() - 49000);
+            visits[index].fetch_add(1, Ordering::SeqCst);
+            if index == 0 { panic!("one peer probe failed"); }
+            index % 2 == 0
+        });
+        assert_eq!(result.len(), peers.len());
+        for (index, count) in visits.iter().enumerate() {
+            assert_eq!(count.load(Ordering::SeqCst), 1, "probe {index} was skipped");
+            assert_eq!(result[index], index != 0 && index % 2 == 0);
+        }
     }
 }

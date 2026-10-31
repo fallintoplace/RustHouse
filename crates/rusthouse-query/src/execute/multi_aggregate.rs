@@ -141,6 +141,7 @@ enum BoundExpr {
     Subtract(Box<Self>, Box<Self>),
     Multiply(Box<Self>, Box<Self>),
     Divide(Box<Self>, Box<Self>),
+    Modulo(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
     Case { branches: Vec<(Self, Self)>, else_expr: Option<Box<Self>> },
 }
@@ -213,6 +214,10 @@ impl BoundExpr {
                 Box::new(Self::bind(right, indices)?),
             ),
             ScalarExpr::Divide(left, right) => Self::Divide(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
+            ScalarExpr::Modulo(left, right) => Self::Modulo(
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
             ),
@@ -395,6 +400,15 @@ fn eval_number(
                 ));
             }
             Ok(Some(Number::Float(quotient)))
+        }
+        BoundExpr::Modulo(left, right) => {
+            let Some(left) = eval_number(left, batch, row)? else {
+                return Ok(None);
+            };
+            let Some(right) = eval_number(right, batch, row)? else {
+                return Ok(None);
+            };
+            checked_remainder(left, right).map(Some)
         }
         BoundExpr::Multiply(left, right) => {
             let Some(left) = eval_number(left, batch, row)? else {

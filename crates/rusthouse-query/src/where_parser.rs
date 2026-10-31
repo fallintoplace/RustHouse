@@ -15,6 +15,30 @@ fn bad_expansion() -> ParseError {
     ParseError("WHERE boolean expression expands beyond bounded predicate limits".into())
 }
 
+/// Normalize structurally identical predicates before execution. SQL filters
+/// have no side effects, so exact duplicate AND/OR terms never change rows.
+fn unique_branches(mut branches: Branches) -> Branches {
+    for branch in &mut branches {
+        let mut distinct = Vec::with_capacity(branch.len());
+        for predicate in branch.drain(..) {
+            if !distinct.contains(&predicate) {
+                distinct.push(predicate);
+            }
+        }
+        *branch = distinct;
+    }
+    let mut distinct: Branches = Vec::with_capacity(branches.len());
+    for branch in branches {
+        if !distinct.iter().any(|existing| {
+            existing.len() == branch.len()
+                && branch.iter().all(|predicate| existing.contains(predicate))
+        }) {
+            distinct.push(branch);
+        }
+    }
+    distinct
+}
+
 fn check_expansion(branches: &Branches) -> Result<(), ParseError> {
     if branches.len() > MAX_BRANCHES
         || branches.iter().any(|branch| branch.len() > MAX_CONDITIONS)
@@ -38,6 +62,7 @@ pub(super) fn combine_and(left: Branches, right: Branches) -> Result<Branches, P
             result.push(conjuncts);
         }
     }
+    let result = unique_branches(result);
     check_expansion(&result)?;
     Ok(result)
 }
@@ -163,10 +188,41 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
                     column, value: parser.literal()?, negated,
                 }
             }
-        } else if parser.keyword("NULL") {
+        } else if parser.keyword("NULL") || parser.keyword("UNKNOWN") {
             Predicate::IsNull { column, negated }
         } else {
-            return Err(ParseError("expected NULL or DISTINCT FROM after IS".into()));
+            let expected_true = if parser.keyword("TRUE") {
+                true
+            } else if parser.keyword("FALSE") {
+                false
+            } else {
+                return Err(ParseError(
+                    "expected TRUE, FALSE, NULL, UNKNOWN or DISTINCT FROM after IS".into(),
+                ));
+            };
+            // IS NOT TRUE and IS NOT FALSE include NULL, unlike ordinary
+            // comparisons. Express them in the common DNF predicate model.
+            let operator = if expected_true ^ negated {
+                Operator::Ne
+            } else {
+                Operator::Eq
+            };
+            let compare = Predicate::Comparison {
+                column: column.clone(),
+                operator,
+                value: "0".into(),
+            };
+            if negated {
+                *conditions = conditions.checked_add(2).ok_or_else(bad_expansion)?;
+                if *conditions > MAX_CONDITIONS {
+                    return Err(bad_expansion());
+                }
+                return Ok(vec![
+                    vec![compare],
+                    vec![Predicate::IsNull { column, negated: false }],
+                ]);
+            }
+            compare
         };
         predicates.push(predicate);
     } else if let Some(case_insensitive) = parser.like_keyword() {
@@ -273,6 +329,7 @@ fn parse_or(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Result
             return Err(bad_expansion());
         }
         branches.extend(next);
+        branches = unique_branches(branches);
         check_expansion(&branches)?;
     }
     Ok(branches)
@@ -281,7 +338,7 @@ fn parse_or(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Result
 /// Parse a WHERE clause already past the WHERE keyword.
 pub(crate) fn parse_where(parser: &mut Parser) -> Result<Branches, ParseError> {
     let mut conditions = 0;
-    parse_or(parser, &mut conditions, 0)
+    Ok(unique_branches(parse_or(parser, &mut conditions, 0)?))
 }
 
 #[cfg(test)]
@@ -358,5 +415,79 @@ mod tests {
             .collect::<Vec<_>>().join(" AND ");
         let sql = format!("SELECT number FROM numbers(8) WHERE {groups}");
         assert!(parse_select(&sql).is_err());
+    }
+}
+
+#[cfg(test)]
+mod duplicate_boolean_terms_tests {
+    use crate::parse_select;
+
+    #[test]
+    fn identical_or_branches_and_and_predicates_share_one_plan() {
+        let sql = "SELECT number FROM numbers(10) WHERE             (number = 1 AND number = 1) OR (number = 1) OR             (number = 2 AND number >= 0 AND number = 2)";
+        let query = parse_select(sql).unwrap();
+        assert_eq!(query.predicates.len(), 1);
+        assert_eq!(query.or_predicates.len(), 1);
+        assert_eq!(query.or_predicates[0].len(), 2);
+    }
+
+    #[test]
+    fn equivalent_conjunctions_deduplicate_regardless_of_order() {
+        let query = parse_select(
+            "SELECT number FROM numbers(10) WHERE              (number > 1 AND number < 7) OR (number < 7 AND number > 1)",
+        ).unwrap();
+        assert_eq!(query.predicates.len(), 2);
+        assert!(query.or_predicates.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod boolean_is_predicate_tests {
+    use super::*;
+    use crate::{execute, parse_select};
+
+    fn run(sql: &str) -> String {
+        let mut output = Vec::new();
+        execute(&parse_select(sql).unwrap(), None, &mut output).unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn boolean_is_forms_have_stable_numeric_truthiness() {
+        assert_eq!(
+            run("SELECT number FROM numbers(4) WHERE number IS TRUE ORDER BY number"),
+            "number\n1\n2\n3\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(4) WHERE number IS FALSE"),
+            "number\n0\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(4) WHERE number IS NOT TRUE"),
+            "number\n0\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(4) WHERE number IS NOT FALSE ORDER BY number"),
+            "number\n1\n2\n3\n"
+        );
+    }
+
+    #[test]
+    fn negated_is_predicates_preserve_sql_null_alternative() {
+        let query = parse_select("SELECT number FROM numbers(3) WHERE number IS NOT TRUE").unwrap();
+        assert_eq!(query.or_predicates.len(), 1);
+        assert!(matches!(
+            query.or_predicates[0].as_slice(),
+            [Predicate::IsNull { negated: false, .. }]
+        ));
+        assert_eq!(
+            run("SELECT number FROM numbers(3) WHERE number IS NOT UNKNOWN ORDER BY number"),
+            "number\n0\n1\n2\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(3) WHERE number IS UNKNOWN"),
+            "number\n"
+        );
+        assert!(parse_select("SELECT number FROM numbers(3) WHERE number IS MAYBE").is_err());
     }
 }
