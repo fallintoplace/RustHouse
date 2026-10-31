@@ -14,24 +14,39 @@ fn is_peer_healthy(peer: Peer) -> bool {
 
 const MAX_INFLIGHT_HEALTH_PROBES: usize = 8;
 
-fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
-    // A large cluster must not spawn all peer probes for every HTTP request.
-    // Keep peer result order stable while limiting concurrent socket opens.
+fn probe_peers_with(peers: &[Peer], ping: impl Fn(Peer) -> bool + Sync) -> Vec<bool> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    // Use at most eight workers per request, not eight fresh threads for
+    // every chunk. Dynamic claims avoid waiting for all slow peers in one
+    // chunk before starting probes in the next one.
+    let cursor = AtomicUsize::new(0);
+    let results = (0..peers.len()).map(|_| AtomicBool::new(false)).collect::<Vec<_>>();
     std::thread::scope(|scope| {
-        let mut results = Vec::with_capacity(cluster.peers().len());
-        for peers in cluster.peers().chunks(MAX_INFLIGHT_HEALTH_PROBES) {
-            let handles = peers
-                .iter()
-                .map(|&peer| scope.spawn(move || is_peer_healthy(peer)))
-                .collect::<Vec<_>>();
-            results.extend(
-                handles
-                    .into_iter()
-                    .map(|handle| handle.join().unwrap_or(false)),
-            );
+        let mut handles = Vec::with_capacity(peers.len().min(MAX_INFLIGHT_HEALTH_PROBES));
+        for _ in 0..peers.len().min(MAX_INFLIGHT_HEALTH_PROBES) {
+            let cursor = &cursor;
+            let results = &results;
+            let ping = &ping;
+            handles.push(scope.spawn(move || {
+                loop {
+                    let index = cursor.fetch_add(1, Ordering::Relaxed);
+                    if index >= peers.len() {
+                        break;
+                    }
+                    results[index].store(ping(peers[index]), Ordering::Relaxed);
+                }
+            }));
         }
-        results
-    })
+        // A panicking probe leaves its uncompleted peer results unhealthy.
+        for handle in handles {
+            let _ = handle.join();
+        }
+    });
+    results.iter().map(|healthy| healthy.load(Ordering::Relaxed)).collect()
+}
+
+fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
+    probe_peers_with(cluster.peers(), is_peer_healthy)
 }
 
 fn render_health_response(cluster: &Cluster, healthy: &[bool]) -> Response {
@@ -173,5 +188,35 @@ mod health_probe_budget_tests {
         assert_eq!(results.len(), crate::cluster::MAX_PEERS);
         // Local ports are not guaranteed to be unused on CI runners.
         // This test checks that every registered peer has a result.
+    }
+}
+
+
+#[cfg(test)]
+mod dynamic_health_workers_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn bounded_workers_visit_every_peer_once_and_keep_input_order() {
+        let peers = (0..crate::cluster::MAX_PEERS)
+            .map(|index| Peer::parse(&format!("127.0.0.1:{}", 47000 + index)).unwrap())
+            .collect::<Vec<_>>();
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let calls = AtomicUsize::new(0);
+        let health = probe_peers_with(&peers, |peer| {
+            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            active.fetch_sub(1, Ordering::SeqCst);
+            calls.fetch_add(1, Ordering::SeqCst);
+            peer.address().port() % 2 == 0
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), peers.len());
+        assert!(peak.load(Ordering::SeqCst) <= MAX_INFLIGHT_HEALTH_PROBES);
+        assert_eq!(health, peers.iter().map(|peer| peer.address().port() % 2 == 0)
+            .collect::<Vec<_>>());
+        assert!(probe_peers_with(&[], |_| true).is_empty());
     }
 }
