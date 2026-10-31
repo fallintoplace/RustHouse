@@ -91,6 +91,7 @@ class BackupTests(unittest.TestCase):
             self.assertTrue((base / "backup.partial").exists())
             self.assertFalse((base / "backup").exists())
 
+    @unittest.skipUnless(__import__("os").name == "posix", "POSIX flock required")
     def test_missing_flock_support_fails_closed(self):
         from offline_backup import refuse_live_database
         with tempfile.TemporaryDirectory() as folder:
