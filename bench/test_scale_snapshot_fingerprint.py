@@ -83,6 +83,30 @@ class SnapshotFingerprintTests(unittest.TestCase):
                 fingerprint(root)
         self.assertEqual(checked, [True])
 
+    def test_detects_same_size_file_metadata_change_during_hashing(self):
+        import os
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "data.bin").write_bytes(b"1234")
+            original_fstat = os.fstat
+            calls = 0
+
+            def changed_ctime(fd):
+                nonlocal calls
+                result = original_fstat(fd)
+                calls += 1
+                if calls == 2:
+                    return SimpleNamespace(
+                        st_dev=result.st_dev, st_ino=result.st_ino,
+                        st_size=result.st_size, st_mtime_ns=result.st_mtime_ns,
+                        st_ctime_ns=result.st_ctime_ns + 1,
+                    )
+                return result
+
+            with patch("bench.scale.snapshot_fingerprint.os.fstat", side_effect=changed_ctime):
+                with self.assertRaisesRegex(ValueError, "changed during hashing"):
+                    fingerprint(root)
+
     def test_hash_is_independent_of_configurable_read_block_size(self):
         with tempfile.TemporaryDirectory() as root:
             (Path(root) / "payload.bin").write_bytes(b"abcd" * 50_000)
