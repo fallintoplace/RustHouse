@@ -178,5 +178,15 @@ class SourceTimeoutTests(unittest.TestCase):
             opener.open.assert_not_called()
 
 
+class LoopbackProxyIsolationTests(unittest.TestCase):
+    def test_loopback_http_opener_ignores_environment_proxies(self):
+        from urllib.request import ProxyHandler
+        from source_probe import NO_REDIRECT_OPENER
+        proxies = [handler for handler in NO_REDIRECT_OPENER.handlers
+                   if isinstance(handler, ProxyHandler)]
+        self.assertEqual(len(proxies), 1)
+        self.assertEqual(proxies[0].proxies, {})
+
+
 if __name__ == "__main__":
     unittest.main()
