@@ -114,6 +114,21 @@ class ClickHouseDifferentialTests(unittest.TestCase):
                 oracle.close()
 
 
+    def test_rejects_symlinked_clickhouse_json_destinations(self):
+        for name in ("events.jsonl", "accounts.jsonl"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                folder = Path(root)
+                _, oracle = make_fixture(folder, 3)
+                oracle.close()
+                protected = folder / "protected"
+                protected.write_text("keep")
+                (folder / name).symlink_to(protected)
+                with self.assertRaisesRegex(ValueError, "symlinked ClickHouse"):
+                    fixture_json(folder, 3)
+                self.assertEqual(protected.read_text(), "keep")
+                other = "accounts.jsonl" if name == "events.jsonl" else "events.jsonl"
+                self.assertFalse((folder / other).exists())
+
     def test_parity_json_is_derived_from_loaded_tsv_not_regenerated(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
