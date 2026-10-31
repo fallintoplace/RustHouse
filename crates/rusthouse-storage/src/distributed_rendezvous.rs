@@ -602,16 +602,28 @@ pub fn plan_zone_aware_rebalance(
 ) -> Result<ReplicaRebalance, &'static str> {
     let previous = zone_aware_replicas_for(shard, previous_members, replicas)?;
     let next = zone_aware_replicas_for(shard, next_members, replicas)?;
-    let previous_set = previous.iter().map(String::as_str).collect::<HashSet<_>>();
-    let next_set = next.iter().map(String::as_str).collect::<HashSet<_>>();
+    // Most rebalances move only a few replicas. Search those borrowed
+    // names directly instead of allocating two hash tables per shard.
+    let previous_set = (previous.len() > 8)
+        .then(|| previous.iter().map(String::as_str).collect::<HashSet<_>>());
+    let next_set = (next.len() > 8)
+        .then(|| next.iter().map(String::as_str).collect::<HashSet<_>>());
+    let in_previous = |node: &str| match &previous_set {
+        Some(set) => set.contains(node),
+        None => previous.iter().any(|candidate| candidate.as_str() == node),
+    };
+    let in_next = |node: &str| match &next_set {
+        Some(set) => set.contains(node),
+        None => next.iter().any(|candidate| candidate.as_str() == node),
+    };
     let incoming = next.iter()
-        .filter(|node| !previous_set.contains(node.as_str()))
+        .filter(|node| !in_previous(node))
         .cloned().collect::<Vec<_>>();
     let retained = next.iter()
-        .filter(|node| previous_set.contains(node.as_str()))
+        .filter(|node| in_previous(node))
         .cloned().collect::<Vec<_>>();
     let outgoing = previous.iter()
-        .filter(|node| !next_set.contains(node.as_str()))
+        .filter(|node| !in_next(node))
         .cloned().collect::<Vec<_>>();
     Ok(ReplicaRebalance {
         new_placement: next,
@@ -814,6 +826,42 @@ mod stack_zone_ranking_parity_tests {
             first.extend(later);
             for count in [3, 4, 8, 11, 12, 32, 64] {
                 assert_eq!(zone_aware_replicas_for(shard, &members, count).unwrap(), first[..count]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod hash_threshold_rebalance_tests {
+    use super::*;
+    use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn mixed_small_and_large_placements_preserve_transfer_sets() {
+        let old = parse_membership(
+            "a z0 1\nb z1 2\nc z2 3\nd z3 4\ne z4 5\nf z5 6\ng z6 7\nh z7 8\ni z8 9\n"
+        ).unwrap();
+        let new = parse_membership(
+            "a z0 1\nc z2 3\ne z4 5\ng z6 7\ni z8 9\nj z9 10\nk z10 11\nl z11 12\nm z12 13\n"
+        ).unwrap();
+        for replicas in [1, 3, 8, 9] {
+            for shard in ["first", "second", "third"] {
+                let plan = plan_zone_aware_rebalance(shard, &old, &new, replicas).unwrap();
+                let previous = zone_aware_replicas_for(shard, &old, replicas).unwrap();
+                let desired = zone_aware_replicas_for(shard, &new, replicas).unwrap();
+                assert_eq!(plan.new_placement, desired);
+                assert_eq!(
+                    plan.incoming,
+                    desired.iter().filter(|node| !previous.contains(node)).cloned().collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    plan.retained,
+                    desired.iter().filter(|node| previous.contains(node)).cloned().collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    plan.outgoing,
+                    previous.iter().filter(|node| !desired.contains(node)).cloned().collect::<Vec<_>>()
+                );
             }
         }
     }
