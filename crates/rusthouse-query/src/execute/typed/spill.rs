@@ -512,7 +512,7 @@ impl TypedExternalSort {
 mod tests {
     use super::*;
 
-    fn row(text: &str, value: u64) -> Row {
+    pub(super) fn row(text: &str, value: u64) -> Row {
         Row {
             values: vec![Cell::Text(text.as_bytes().to_vec()), Cell::Numeric(Number::Unsigned(value as u128))],
             sort_keys: vec![Cell::Numeric(Number::Unsigned(value as u128))],
@@ -688,6 +688,7 @@ mod typed_spill_preflight_tests {
 #[cfg(test)]
 mod heap_root_regression_tests {
     use super::*;
+    use super::tests::row;
 
     #[test]
     fn multi_run_root_replacement_preserves_stable_rows_and_global_page() {
