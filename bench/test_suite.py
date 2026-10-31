@@ -58,6 +58,29 @@ class BenchmarkEntryPointTests(unittest.TestCase):
             self.assertIn("count,1.2", (Path(directory) / "parts-sorted.csv").read_text())
             self.assertEqual((Path(directory) / "grouped.stderr.txt").read_text(), "failed query\n")
 
+    def test_suite_timeout_records_a_failure_in_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(runner, "optional_version", return_value=None), \
+                 mock.patch.object(runner.subprocess, "run",
+                                   side_effect=subprocess.TimeoutExpired(["cargo"], 0.01)) as run:
+                failed = runner.benchmark(
+                    ("queries",), 65536, 7, 413, directory, suite_timeout=0.01
+                )
+            self.assertEqual(failed, 1)
+            self.assertEqual(run.call_args.kwargs["timeout"], 0.01)
+            record = json.loads((Path(directory) / "manifest.json").read_text())["results"][0]
+            self.assertEqual(record["status"], "failed")
+            self.assertEqual(record["exit_code"], 124)
+            self.assertIn("timed out", (Path(directory) / "queries.stderr.txt").read_text())
+
+    def test_invalid_suite_timeouts_fail_before_launch(self):
+        for value in ("0", "-1", "nan", "inf"):
+            with self.subTest(value=value), mock.patch.object(runner, "benchmark") as execute:
+                with self.assertRaises(SystemExit) as raised:
+                    runner.main(["benchmark", "--suite-timeout", value])
+                self.assertEqual(raised.exception.code, 2)
+                execute.assert_not_called()
+
     def test_missing_cargo_still_writes_failure_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             with mock.patch.object(runner, "optional_version", return_value=None), \
