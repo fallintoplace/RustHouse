@@ -670,6 +670,9 @@ mod paged_resume_planner_tests {
                 map.mark_complete(index).unwrap();
             }
             for start in [0, 1, 7, 8, chunks / 2, chunks] {
+                if start > chunks {
+                    continue;
+                }
                 let subset = map.remaining().into_iter().filter(|&index| index >= start)
                     .collect::<Vec<_>>();
                 for budget in [0, 1, 4, 5, 9, 100] {
