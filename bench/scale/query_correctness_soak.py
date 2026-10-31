@@ -28,27 +28,49 @@ def percentile(samples, percentile):
     return sorted(samples)[math.ceil(len(samples) * percentile / 100) - 1]
 
 
-def digest_file(source):
+MAX_SOAK_OUTPUT_BYTES = 100 * 1024 * 1024
+
+
+def digest_file(source, *, max_bytes=None):
+    if max_bytes is None:
+        max_bytes = MAX_SOAK_OUTPUT_BYTES
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
     digest = hashlib.sha256()
     length = 0
     while True:
-        data = source.read(64 * 1024)
+        # Consume at most one extra byte to detect an oversized stream.
+        data = source.read(min(64 * 1024, max_bytes - length + 1))
         if not data:
             break
-        digest.update(data)
         length += len(data)
+        if length > max_bytes:
+            raise ValueError("soak output exceeds configured byte limit")
+        digest.update(data)
     return digest.hexdigest(), length
 
 
 def run_sql(binary, database, statement, timeout):
     with tempfile.TemporaryFile() as sink, tempfile.TemporaryFile() as errors:
         started = time.perf_counter()
+        extra = {}
+        if os.name == "posix":
+            import resource
+            def cap_spooled_output():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                limit = (MAX_SOAK_OUTPUT_BYTES + 1 if hard == resource.RLIM_INFINITY
+                         else min(MAX_SOAK_OUTPUT_BYTES + 1, hard))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+            extra["preexec_fn"] = cap_spooled_output
         process = subprocess.run(
             [str(binary), "sql", statement, "--database", str(database)],
-            stdout=sink, stderr=errors, timeout=timeout, check=False,
+            stdout=sink, stderr=errors, timeout=timeout, check=False, **extra,
         )
         elapsed = time.perf_counter() - started
         if process.returncode:
+            sink.seek(0, 2)
+            if sink.tell() > MAX_SOAK_OUTPUT_BYTES:
+                raise ValueError("soak output exceeds configured byte limit")
             errors.seek(0, 2)
             errors.seek(max(0, errors.tell() - 500))
             raise RuntimeError(errors.read(500).decode("utf-8", "replace"))

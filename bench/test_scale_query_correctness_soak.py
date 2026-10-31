@@ -15,6 +15,32 @@ class CorrectnessSoakTests(unittest.TestCase):
                              (hashlib.sha256(b"count\n2\n").hexdigest(), 8))
         self.assertEqual(percentile([3, 1, 2], 95), 3)
 
+    def test_soak_rejects_excessive_reference_and_query_output(self):
+        from io import BytesIO
+        from unittest.mock import patch
+        from bench.scale.query_correctness_soak import run_sql
+        self.assertEqual(digest_file(BytesIO(b"12345678"), max_bytes=8)[1], 8)
+        with self.assertRaisesRegex(ValueError, "exceeds"):
+            digest_file(BytesIO(b"123456789"), max_bytes=8)
+        with tempfile.TemporaryDirectory() as root:
+            oracle = Path(root) / "reference.tsv"
+            oracle.write_bytes(b"123456789")
+            with patch("bench.scale.query_correctness_soak.MAX_SOAK_OUTPUT_BYTES", 8):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    soak("unused", "unused", "SELECT 1", oracle, runs=1,
+                         execute=lambda: self.fail("must not run"))
+
+                def oversized_process(_command, **kwargs):
+                    from types import SimpleNamespace
+                    kwargs["stdout"].write(b"123456789")
+                    return SimpleNamespace(returncode=0)
+
+                with patch("bench.scale.query_correctness_soak.subprocess.run",
+                           side_effect=oversized_process):
+                    with self.assertRaisesRegex(ValueError, "exceeds"):
+                        run_sql("binary", "database", "SELECT 1", 1)
+
+
     def test_percentile_rejects_invalid_duration_samples(self):
         for values in ([float("nan")], [float("inf")], [-1], [True], ["0.1"]):
             with self.subTest(values=values), self.assertRaisesRegex(ValueError, "invalid sample"):
