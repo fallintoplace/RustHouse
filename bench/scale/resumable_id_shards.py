@@ -34,9 +34,8 @@ def validate_existing(path, start, count):
             raise ValueError(f"reused shard changed before opening: {path}")
         for offset in range(0, count, 4096):
             batch_rows = min(4096, count - offset)
-            expected = "".join(
-                f"{start + offset + index}\n" for index in range(batch_rows)
-            ).encode("ascii")
+            expected = ("\n".join(map(str, range(start + offset, start + offset + batch_rows)))
+                        + "\n").encode("ascii")
             actual = source.read(len(expected))
             if actual != expected:
                 raise ValueError(f"invalid or incomplete shard {path} near row {start + offset}")
@@ -68,7 +67,7 @@ def write_shard(path, start, count):
             # retaining more than one 4096-row block in memory.
             for first in range(start, start + count, 4096):
                 last = min(first + 4096, start + count)
-                block = "".join(f"{value}\n" for value in range(first, last)).encode("ascii")
+                block = ("\n".join(map(str, range(first, last))) + "\n").encode("ascii")
                 output.write(block)
                 digest.update(block)
             output.flush()
