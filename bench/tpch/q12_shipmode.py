@@ -5,6 +5,7 @@ Only the single-key grouping slice of TPC-H Q12 is implemented here.
 """
 import argparse
 import csv
+from collections import Counter
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -17,7 +18,7 @@ SQL = ("SELECT l_shipmode, COUNT(*) AS shipments FROM lineitem "
 
 
 def oracle(path):
-    counts = {}
+    counts = Counter()
     with Path(path).open(encoding="utf-8", newline="") as stream:
         reader = csv.reader(stream, delimiter="\t")
         fields = next(reader, [])
@@ -31,7 +32,7 @@ def oracle(path):
                 raise ValueError("Q12 input has missing or extra data fields")
             if "1994-01-01" <= row[receipt_index] < "1995-01-01":
                 mode = row[mode_index]
-                counts[mode] = counts.get(mode, 0) + 1
+                counts[mode] += 1
     return "".join(f"{mode}\t{counts[mode]}\n" for mode in sorted(counts)).encode()
 
 
