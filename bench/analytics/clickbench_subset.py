@@ -53,6 +53,7 @@ def run_subset(binary, database, sqlite_db, only=None, runs=3, warmups=1,
     results = []
     for number in ids:
         sql = queries[number - 1]
+        unordered = number in (8, 9)
         try:
             expected = sqlite_query(sqlite_db, sql)
         except sqlite3.Error as error:
@@ -66,7 +67,7 @@ def run_subset(binary, database, sqlite_db, only=None, runs=3, warmups=1,
             try:
                 output = execute(sql)
                 finished = time.perf_counter() if started is not None else None
-                assert_matches(output, expected, unordered=(number in (8, 9)))
+                assert_matches(output, expected, unordered=unordered)
             except subprocess.TimeoutExpired:
                 status, failure = "timeout", "RustHouse query timed out"
                 break
