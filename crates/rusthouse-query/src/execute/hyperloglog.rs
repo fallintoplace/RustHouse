@@ -8,6 +8,24 @@ const PRECISION: u32 = 14;
 const REGISTERS: usize = 1 << PRECISION;
 const MAX_REGISTER_RANK: u8 = (64 - PRECISION + 1) as u8;
 
+// Distributed HLL states contain 32 KiB of ASCII hex per shard. Decode
+// each nibble with a compact table instead of two branch-heavy digit matches.
+const HEX_NIBBLES: [u8; 256] = {
+    let mut table = [u8::MAX; 256];
+    let mut digit = 0usize;
+    while digit < 10 {
+        table[b'0' as usize + digit] = digit as u8;
+        digit += 1;
+    }
+    digit = 0;
+    while digit < 6 {
+        table[b'a' as usize + digit] = (digit + 10) as u8;
+        digit += 1;
+    }
+    table
+};
+
+
 // Hash the canonical UInt128 little-endian encoding once per tiny value.
 const SMALL_UNSIGNED_HASHES: [u64; 256] = {
     let mut values = [0u64; 256];
@@ -128,24 +146,22 @@ impl HyperLogLog {
         if bytes.len() != REGISTERS * 2 {
             return Err("invalid HLL register count".into());
         }
-        let digit = |value: u8| match value {
-            b'0'..=b'9' => Some(value - b'0'),
-            b'a'..=b'f' => Some(value - b'a' + 10),
-            _ => None,
-        };
-        // Validate every register before modifying the union, so a malformed
-        // register near the end cannot leave a partially merged sketch behind.
+        // Validate the complete input first. A bad final register must not
+        // leave the union partially changed.
         for pair in bytes.chunks_exact(2) {
-            let high = digit(pair[0]).ok_or("invalid HLL hex state")?;
-            let low = digit(pair[1]).ok_or("invalid HLL hex state")?;
+            let high = HEX_NIBBLES[usize::from(pair[0])];
+            let low = HEX_NIBBLES[usize::from(pair[1])];
+            if high == u8::MAX || low == u8::MAX {
+                return Err("invalid HLL hex state".into());
+            }
             if (high << 4) | low > MAX_REGISTER_RANK {
                 return Err("invalid HLL register rank".into());
             }
         }
-        // Merge validated bytes directly without a 16 KiB per-shard scratch.
+        // The second pass has no per-digit validation branches or scratch.
         for (target, pair) in self.registers.iter_mut().zip(bytes.chunks_exact(2)) {
-            let high = digit(pair[0]).expect("validated HLL hex digit");
-            let low = digit(pair[1]).expect("validated HLL hex digit");
+            let high = HEX_NIBBLES[usize::from(pair[0])];
+            let low = HEX_NIBBLES[usize::from(pair[1])];
             *target = (*target).max((high << 4) | low);
         }
         Ok(())
@@ -400,5 +416,52 @@ mod small_positive_signed_hash_tests {
             unsigned.observe_number(Number::Unsigned(u128::from(value)));
         }
         assert_eq!(signed.estimate(), unsigned.estimate());
+    }
+}
+
+#[cfg(test)]
+mod nibble_decoder_regression_tests {
+    use super::*;
+
+    #[test]
+    fn table_rejects_every_noncanonical_digit_and_preserves_union() {
+        let mut baseline = HyperLogLog::default();
+        baseline.observe_number(Number::Unsigned(17));
+        baseline.observe_number(Number::Unsigned(55));
+        let valid = baseline.encode_state();
+        for invalid in 0u8..=u8::MAX {
+            if invalid.is_ascii_digit() || (b'a'..=b'f').contains(&invalid) {
+                continue;
+            }
+            let mut corrupt = valid.as_bytes().to_vec();
+            corrupt[corrupt.len() - 1] = invalid;
+            let corrupt = String::from_utf8(corrupt);
+            if let Ok(corrupt) = corrupt {
+                let mut unchanged = HyperLogLog::default();
+                unchanged.observe_number(Number::Unsigned(7));
+                let original = unchanged.encode_state();
+                assert!(unchanged.merge_hex_state(&corrupt).is_err());
+                assert_eq!(unchanged.encode_state(), original);
+            }
+        }
+        let mut invalid_rank = valid.into_bytes();
+        invalid_rank[0..2].copy_from_slice(b"ff");
+        let mut unchanged = HyperLogLog::default();
+        assert!(unchanged.merge_hex_state(
+            std::str::from_utf8(&invalid_rank).unwrap()
+        ).is_err());
+        assert_eq!(unchanged.estimate(), 0);
+    }
+
+    #[test]
+    fn nibble_table_round_trips_every_possible_register_rank() {
+        let mut sketch = HyperLogLog::default();
+        for rank in 0..=MAX_REGISTER_RANK {
+            sketch.registers[rank as usize] = rank;
+        }
+        let encoded = sketch.encode_state();
+        let mut merged = HyperLogLog::default();
+        merged.merge_hex_state(&encoded).unwrap();
+        assert_eq!(*merged.registers, *sketch.registers);
     }
 }
