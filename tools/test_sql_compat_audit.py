@@ -67,6 +67,18 @@ class AuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one bounded SELECT"):
             parse_lines("SELECT 1; -- second statement")
 
+    def test_block_comments_do_not_create_fake_statement_separators(self):
+        self.assertEqual(
+            parse_lines("SELECT 1 /* quote ' and ; are comments */;"),
+            [(1, "SELECT 1 /* quote ' and ; are comments */")],
+        )
+        for query in ("SELECT 1 /* unterminated ;",
+                      "SELECT 1 /* comment */; SELECT 2"):
+            with self.subTest(query=query), self.assertRaisesRegex(
+                ValueError, "one bounded SELECT"
+            ):
+                parse_lines(query)
+
     def test_rejects_mutating_sql(self):
         with self.assertRaises(ValueError):
             parse_lines("DROP TABLE events;")

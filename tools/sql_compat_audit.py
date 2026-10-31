@@ -26,10 +26,16 @@ def _has_separator(sql):
                     index += 2
                     continue
                 quote = None
+        elif sql.startswith("--", index):
+            break
+        elif sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            if end == -1:
+                return True
+            index = end + 2
+            continue
         elif char in ("'", '"'):
             quote = char
-        elif char == "-" and sql[index:index + 2] == "--":
-            break
         elif char == ";":
             return True
         index += 1
