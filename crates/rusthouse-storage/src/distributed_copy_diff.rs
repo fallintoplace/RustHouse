@@ -96,6 +96,31 @@ pub fn plan_replica_copies(
     source: &[ObjectMetadata],
     destination: &[ObjectMetadata],
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
+    // Small immutable inventories need no pair of hash tables. Validate all
+    // keys first, including destination-only keys, before checking conflicts.
+    if source.len() <= 8 && destination.len() <= 8 {
+        for inventory in [source, destination] {
+            for (index, object) in inventory.iter().enumerate() {
+                if !valid_key(&object.key)
+                    || inventory[..index].iter().any(|seen| seen.key == object.key)
+                {
+                    return Err("unsafe or duplicate replica object key");
+                }
+            }
+        }
+        let mut changed = Vec::new();
+        for object in source {
+            if let Some(existing) = destination.iter().find(|dest| dest.key == object.key) {
+                if !object.same_contents(existing) {
+                    return Err("replica copy conflicts with an existing immutable object");
+                }
+            } else {
+                changed.push(object.clone());
+            }
+        }
+        changed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+        return Ok(changed);
+    }
     let source = index(source)?;
     let destination = index(destination)?;
     // A generation-scoped key is immutable: returning it for a conflicting
@@ -586,5 +611,48 @@ mod unaffordable_copy_candidates_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tiny_replica_inventory_tests {
+    use super::*;
+
+    #[test]
+    fn tiny_inventory_fast_path_matches_hash_based_reference() {
+        for source_size in 0..=9usize {
+            for destination_size in 0..=9usize {
+                let source = (0..source_size).rev().map(|index| ObjectMetadata {
+                    key: format!("obj-{index:02}"),
+                    bytes: index as u64 + 1,
+                    crc32c: index as u32,
+                }).collect::<Vec<_>>();
+                let destination = (0..destination_size).map(|index| ObjectMetadata {
+                    key: format!("obj-{index:02}"),
+                    bytes: index as u64 + 1,
+                    crc32c: index as u32,
+                }).collect::<Vec<_>>();
+                let indexed_source = index(&source).unwrap();
+                let indexed_destination = index(&destination).unwrap();
+                reject_immutable_conflicts(&indexed_source, &indexed_destination).unwrap();
+                let mut expected = indexed_source.into_values()
+                    .filter(|obj| needs_copy(obj, &indexed_destination))
+                    .cloned().collect::<Vec<_>>();
+                expected.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+                assert_eq!(plan_replica_copies(&source, &destination).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn small_inventory_rejects_late_duplicate_and_immutable_conflict() {
+        let good = ObjectMetadata { key: "a".into(), bytes: 4, crc32c: 1 };
+        let conflicting = ObjectMetadata { bytes: 5, ..good.clone() };
+        assert!(plan_replica_copies(&[good.clone()], &[conflicting]).is_err());
+        assert!(plan_replica_copies(&[good.clone(), good.clone()], &[]).is_err());
+        assert!(plan_replica_copies(&[], &[good.clone(), good]).is_err());
+        assert!(plan_replica_copies(&[ObjectMetadata {
+            key: "../escape".into(), bytes: 1, crc32c: 1
+        }], &[]).is_err());
     }
 }
