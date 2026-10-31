@@ -131,7 +131,7 @@ def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeo
     )
     with refuse_live_database(source):
         # Preserve all generations, including hidden files and lock metadata.
-        shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
+        shutil.copytree(source, stage, symlinks=True, copy_function=shutil.copy2)
         # The copied tree may have changed after source preflight.
         validate_tree(stage, max_bytes, max_entries)
         try:
