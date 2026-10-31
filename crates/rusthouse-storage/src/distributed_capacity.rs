@@ -61,12 +61,14 @@ impl Capacity {
     }
 
     pub fn release(self, bytes: u64) -> Result<Self, &'static str> {
-        // A malformed accounting state must not be propagated by a release.
-        self.available()?;
-        Ok(Self {
+        // Releasing reservations may repair a temporarily overcommitted
+        // state, but must never return a state that remains invalid.
+        let released = Self {
             reserved: self.remaining_reservation(bytes, "cannot release unreserved bytes")?,
             ..self
-        })
+        };
+        released.available()?;
+        Ok(released)
     }
 }
 
@@ -375,7 +377,7 @@ mod release_invalid_state_tests {
     use super::*;
 
     #[test]
-    fn rejects_overcommitted_and_overflowed_source_states() {
+    fn rejects_invalid_resulting_states_but_allows_recovery() {
         let overcommitted = Capacity {
             total: 1,
             used: 2,
@@ -391,6 +393,14 @@ mod release_invalid_state_tests {
         };
         assert!(overflowed.release(0).is_err());
         assert!(overflowed.release_many(&[]).is_err());
+
+        // The existing API allows a release to heal an overcommit.
+        let recoverable = Capacity {
+            total: 10,
+            used: 9,
+            reserved: 2,
+        };
+        assert_eq!(recoverable.release(1).unwrap().available().unwrap(), 0);
 
         let valid = Capacity {
             total: 10,
