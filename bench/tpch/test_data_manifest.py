@@ -36,6 +36,29 @@ class DataManifestTests(unittest.TestCase):
             self.assertNotEqual(build_manifest(root, ["region"])["tables"][0]["sha256"],
                                 table["sha256"])
 
+    def test_manifest_size_is_derived_from_hashed_bytes(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        from data_manifest import inspect_table
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            data = ("\t".join(names("region")) + "\n"
+                    + "1\tEUROPE\tcomment\n").encode()
+            path.write_bytes(data)
+            original_stat = Path.stat
+            calls = []
+
+            def changed_stat(item, *args, **kwargs):
+                result = original_stat(item, *args, **kwargs)
+                if item == path:
+                    calls.append(1)
+                    if len(calls) > 1:
+                        return SimpleNamespace(st_mode=result.st_mode, st_size=0)
+                return result
+
+            with patch.object(Path, "stat", changed_stat):
+                self.assertEqual(inspect_table(path, "region")["bytes"], len(data))
+
     def test_oversized_unterminated_tsv_record_is_rejected(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "region.tsv"
