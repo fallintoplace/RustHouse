@@ -72,6 +72,27 @@ fn ensure_metadata_size(path: &Path, size: u64, max_bytes: u64) -> Result<(), Pa
     Ok(())
 }
 
+// A stable length and mtime are not sufficient for frozen part metadata.
+// Include Unix inode and change time to catch same-sized replacements.
+fn metadata_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if !after.file_type().is_file()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 fn read_bounded_metadata_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, PartError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !metadata.file_type().is_file() {
@@ -80,15 +101,8 @@ fn read_bounded_metadata_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, Pa
     ensure_metadata_size(path, metadata.len(), max_bytes)?;
     let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     let opened = file.metadata().map_err(|source| io_error(path, source))?;
-    if !opened.file_type().is_file() || opened.len() != metadata.len() || opened.len() > max_bytes {
+    if !metadata_unchanged(&metadata, &opened) || opened.len() > max_bytes {
         return Err(invalid_metadata(path, "metadata changed before read"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
-            return Err(invalid_metadata(path, "metadata file replaced before read"));
-        }
     }
     let mut bytes = Vec::with_capacity(opened.len() as usize);
     (&mut file)
@@ -98,9 +112,9 @@ fn read_bounded_metadata_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, Pa
     ensure_metadata_size(path, bytes.len() as u64, max_bytes)?;
     ensure_exact_metadata_length(path, opened.len(), bytes.len())?;
     let finished = file.metadata().map_err(|source| io_error(path, source))?;
-    if finished.len() != opened.len()
-        || finished.modified().map_err(|source| io_error(path, source))?
-            != opened.modified().map_err(|source| io_error(path, source))?
+    let current = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if !metadata_unchanged(&opened, &finished)
+        || !metadata_unchanged(&opened, &current)
     {
         return Err(invalid_metadata(path, "metadata changed during read"));
     }
@@ -344,5 +358,33 @@ mod metadata_short_read_tests {
         let path = Path::new("synthetic-count.txt");
         assert!(ensure_exact_metadata_length(path, 10, 9).is_err());
         assert!(ensure_exact_metadata_length(path, 10, 10).is_ok());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod immutable_metadata_baseline_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn detects_metadata_changes_without_size_or_mtime_changes() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-metadata-immutable-{}-{:?}",
+            std::process::id(), std::thread::current().id(),
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("count.txt");
+        fs::write(&path, b"123\n").unwrap();
+        let baseline = fs::metadata(&path).unwrap();
+        assert!(metadata_unchanged(&baseline, &baseline));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut permissions = baseline.permissions();
+        permissions.set_mode(permissions.mode() ^ 0o100);
+        fs::set_permissions(&path, permissions).unwrap();
+        let mutated = fs::metadata(&path).unwrap();
+        assert_eq!(baseline.len(), mutated.len());
+        assert_eq!(baseline.modified().unwrap(), mutated.modified().unwrap());
+        assert!(!metadata_unchanged(&baseline, &mutated));
+        fs::remove_dir_all(directory).unwrap();
     }
 }
