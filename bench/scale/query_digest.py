@@ -15,6 +15,52 @@ import time
 from pathlib import Path
 
 
+
+def _has_unquoted_separator(sql):
+    """Match SQL string, identifier, and comment boundaries before checking ';'."""
+    quote = None
+    cursor = 0
+    while cursor < len(sql):
+        char = sql[cursor]
+        if quote is not None:
+            if char == "\\" and quote == "'":
+                cursor += 2
+                continue
+            if char == quote:
+                if cursor + 1 < len(sql) and sql[cursor + 1] == quote:
+                    cursor += 2
+                    continue
+                quote = None
+        elif sql.startswith("--", cursor) or char == "#":
+            newline = sql.find("\n", cursor)
+            if newline == -1:
+                return False
+            cursor = newline + 1
+            continue
+        elif sql.startswith("/*", cursor):
+            depth = 1
+            cursor += 2
+            while cursor < len(sql) and depth:
+                if sql.startswith("/*", cursor):
+                    depth += 1
+                    if depth > 32:
+                        return True
+                    cursor += 2
+                elif sql.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            if depth:
+                return True
+            continue
+        elif char in ("'", '"', "\`"):
+            quote = char
+        elif char == ";":
+            return True
+        cursor += 1
+    return quote is not None
+
 def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None,
                  max_rows=10000, max_output_bytes=100_000_000,
                  timeout=600, run=None):
@@ -34,7 +80,7 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
     if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
         raise ValueError("SQL must be nonempty and at most 64 KiB")
     statement = sql.strip().removesuffix(";").rstrip()
-    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
+    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or _has_unquoted_separator(statement):
         raise ValueError("digest requires one read-only SELECT")
     execute = run or subprocess.run
     started = time.perf_counter()

@@ -77,5 +77,28 @@ class QueryDigestTests(unittest.TestCase):
             with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "read-only SELECT"):
                 query_digest("rusthouse", "parts", sql, run=never_run)
 
+
+    def test_semicolons_inside_literals_and_comments_are_not_statements(self):
+        def execute(command, **kwargs):
+            kwargs["stdout"].write(b"ok\n")
+            return SimpleNamespace(returncode=0)
+        for sql in (
+            "SELECT ';' FROM part",
+            "SELECT 'a;''b' FROM part",
+            'SELECT "column;name" FROM part',
+            "SELECT 1 /* outer ; /* inner ; */ outer ; */ FROM part",
+            "SELECT 1 -- ; in comment",
+        ):
+            with self.subTest(sql=sql):
+                self.assertEqual(query_digest("binary", "part", sql, run=execute)["bytes"], 3)
+        for sql in (
+            "SELECT 1; DELETE FROM part",
+            "SELECT 1 /* unfinished",
+            "SELECT 'unterminated",
+            "SELECT 1 /* nested /* inner */ */; SELECT 2",
+        ):
+            with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "read-only SELECT"):
+                query_digest("binary", "part", sql, run=execute)
+
 if __name__ == "__main__":
     unittest.main()
