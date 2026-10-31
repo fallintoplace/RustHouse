@@ -53,8 +53,8 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
         result = execute(command, stdout=output, stderr=errors,
                          check=False, timeout=timeout, **extra)
         elapsed = time.perf_counter() - started
+        output.flush()
         if result.returncode:
-            output.flush()
             output.seek(0, os.SEEK_END)
             if output.tell() >= max_output_bytes:
                 raise ValueError("SQL output exceeds max_output_bytes")
@@ -64,7 +64,6 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
             errors.seek(max(0, length - 500))
             diagnostic = errors.read(500).decode("utf-8", "replace")
             raise RuntimeError(f"query failed: {diagnostic}")
-        output.flush()
         output.seek(0)
         digest = hashlib.sha256()
         size = 0
