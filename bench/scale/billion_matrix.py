@@ -180,6 +180,15 @@ def execute_case(binary, database, case, rows, *, runs=3, warmups=1,
             "within_target": max_p90_seconds is None or p90 <= max_p90_seconds}
 
 
+def unique_case_fields(pairs):
+    values = {}
+    for key, value in pairs:
+        if key in values:
+            raise ValueError(f"duplicate benchmark case JSON field: {key}")
+        values[key] = value
+    return values
+
+
 def load_cases(directory):
     paths = sorted(Path(directory).glob("[0-9][0-9]-*.json"))
     if not paths:
@@ -191,7 +200,8 @@ def load_cases(directory):
             raise ValueError(f"unsafe benchmark case file: {path}")
         if path.stat().st_size > 64 * 1024:
             raise ValueError(f"benchmark case JSON exceeds 64 KiB: {path}")
-        case = json.loads(path.read_text(encoding="utf-8"))
+        case = json.loads(path.read_text(encoding="utf-8"),
+                          object_pairs_hook=unique_case_fields)
         if (not isinstance(case, dict) or not isinstance(case.get("name"), str)
                 or case["name"] in names):
             raise ValueError(f"duplicate or malformed case: {path}")
