@@ -264,8 +264,9 @@ def clickhouse_create_table(schema):
 def paired_query(query, rust, clickhouse, *, runs=5, warmups=2,
                  unordered=False, clock=time.perf_counter_ns):
     """Alternate engine order and verify every paired sample before reporting timings."""
-    if runs < 1 or warmups < 0:
-        raise ValueError("paired runs must be positive and warmups nonnegative")
+    if (type(runs) is not int or type(warmups) is not int
+            or not 1 <= runs <= 100 or warmups < 0 or runs + warmups > 100):
+        raise ValueError("paired runs and warmups must total 1..100")
     samples = {"clickhouse": [], "rusthouse": []}
     verified_rows = 0
     for iteration in range(-warmups, runs):
@@ -299,10 +300,14 @@ def paired_query(query, rust, clickhouse, *, runs=5, warmups=2,
 
 def run_parity(binary, client, workload, rows=10_000, timeout=120,
                host="localhost", port=9000, runs=5, warmups=2):
-    if not 1 <= rows <= min(200_000, workload.get("max_rows", 200_000)):
+    if type(rows) is not int or not 1 <= rows <= min(200_000, workload.get("max_rows", 200_000)):
         raise ValueError("fixture rows exceed workload range")
-    if timeout <= 0 or not 1 <= port <= 65535:
+    if (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
+            or type(port) is not int or not 1 <= port <= 65535):
         raise ValueError("invalid ClickHouse timeout or port")
+    if (type(runs) is not int or type(warmups) is not int
+            or not 1 <= runs <= 100 or warmups < 0 or runs + warmups > 100):
+        raise ValueError("paired runs and warmups must total 1..100")
     db_name = "rusthouse_analytics_" + uuid.uuid4().hex[:16]
     results = []
     created = False
