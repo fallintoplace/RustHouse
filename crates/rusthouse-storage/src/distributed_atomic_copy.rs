@@ -51,6 +51,17 @@ fn create_private_replica_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+// A retry must not stream a large immutable object only to discover
+// an existing destination when it attempts the final hard link.
+fn require_new_destination(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(io::Error::new(io::ErrorKind::AlreadyExists,
+            "immutable replica destination already exists")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn stream_bounded_copy(
     input: &mut impl Read,
     output: &mut File,
@@ -117,6 +128,7 @@ fn copy_immutable_file_impl(
             "destination parent is not a real directory",
         ));
     }
+    require_new_destination(destination)?;
     let staging = staging_path(parent, "replica");
     let mut input = File::open(source)?;
     let opened = input.metadata()?;
@@ -350,5 +362,55 @@ mod private_replica_object_tests {
         assert_eq!(output.metadata().unwrap().permissions().mode() & 0o077, 0);
         drop(output);
         fs::remove_file(file).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod existing_destination_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn retries_do_not_create_staging_files_for_occupied_destinations() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-copy-existing-{}-{}", std::process::id(), line!()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let source = dir.join("source");
+        let destination = dir.join("destination");
+        fs::write(&source, vec![0x42u8; 1024 * 1024]).unwrap();
+        fs::write(&destination, b"old immutable data").unwrap();
+        let before = fs::read_dir(&dir).unwrap().count();
+        assert_eq!(
+            copy_immutable_file(&source, &destination, u64::MAX).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let checksum = crate::distributed_crc32c::crc32c(&fs::read(&source).unwrap());
+        assert_eq!(
+            copy_immutable_file_checked(&source, &destination, u64::MAX, checksum)
+                .unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), before);
+        assert_eq!(fs::read(&destination).unwrap(), b"old immutable data");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_targets_are_not_treated_as_free_destinations() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-symlink-destination-{}-{}", std::process::id(), line!()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        fs::write(&source, b"content").unwrap();
+        let link = root.join("destination");
+        symlink("missing", &link).unwrap();
+        assert_eq!(
+            copy_immutable_file(&source, &link, 1024).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }
