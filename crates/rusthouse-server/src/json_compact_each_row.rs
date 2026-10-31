@@ -9,6 +9,14 @@ fn write_compact_field(output: &mut Vec<u8>, value: &[u8]) -> io::Result<()> {
         output.write_all(b"null")?;
     } else if value.contains(&b'\\') {
         write_json_string(output, &decode_tsv_value(value)?)?;
+    } else if value.iter().all(|&byte| {
+        (0x20..0x7f).contains(&byte) && byte != b'"'
+    }) {
+        // A common TSV field is already printable ASCII without a JSON
+        // escape. Append quotes and payload directly to the row buffer.
+        output.push(b'"');
+        output.extend_from_slice(value);
+        output.push(b'"');
     } else {
         let text = std::str::from_utf8(value).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field")
@@ -281,5 +289,37 @@ mod overwide_row_tests {
         assert!(output.is_empty());
         write_compact_row_into(&mut output, b"one", 1, &mut row).unwrap();
         assert_eq!(output, b"[\"one\"]\n");
+    }
+}
+
+#[cfg(test)]
+mod safe_ascii_compact_field_tests {
+    use super::*;
+
+    #[test]
+    fn long_unescaped_ascii_field_is_framed_without_reencoding() {
+        let value = b"ABC-_0123456789+".repeat(4096);
+        let mut output = Vec::new();
+        write_compact_field(&mut output, &value).unwrap();
+        assert_eq!(output.len(), value.len() + 2);
+        assert_eq!(&output[1..output.len() - 1], value.as_slice());
+        assert_eq!(output[0], b'"');
+        assert_eq!(*output.last().unwrap(), b'"');
+    }
+
+    #[test]
+    fn unsafe_ascii_unicode_null_and_invalid_utf8_keep_existing_rules() {
+        for source in [b"\"quote\"".as_slice(), b"back\\slash".as_slice(), b"".as_slice(),
+                       b"caf\xc3\xa9".as_slice(), b"line\x01break".as_slice()] {
+            let mut actual = Vec::new();
+            write_compact_field(&mut actual, source).unwrap();
+            let mut expected = Vec::new();
+            write_json_string(&mut expected, std::str::from_utf8(source).unwrap()).unwrap();
+            assert_eq!(actual, expected);
+        }
+        let mut null = Vec::new();
+        write_compact_field(&mut null, b"\\N").unwrap();
+        assert_eq!(null, b"null");
+        assert!(write_compact_field(&mut Vec::new(), &[0xff, 0xfe]).is_err());
     }
 }
