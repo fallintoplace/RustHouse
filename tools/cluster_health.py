@@ -20,6 +20,11 @@ NO_REDIRECT_OPENER = build_opener(NoRedirect())
 MAX_PEERS = 32
 
 
+def _reject_nonfinite_json(value):
+    # Python's json.loads accepts NaN and Infinity unless explicitly blocked.
+    raise ValueError(f"nonfinite JSON constant: {value}")
+
+
 def _unique_object_pairs(pairs):
     result = {}
     for key, value in pairs:
@@ -83,7 +88,8 @@ def inspect(origin, timeout=5, min_healthy=None, expected_peers=None):
             exc.close()
     if len(raw) > 1_048_576:
         raise ValueError("peer-health response too large")
-    payload = json.loads(raw, object_pairs_hook=_unique_object_pairs)
+    payload = json.loads(raw, object_pairs_hook=_unique_object_pairs,
+                         parse_constant=_reject_nonfinite_json)
     return validate(payload, min_healthy=min_healthy, expected_peers=expected_peers), payload
 
 
