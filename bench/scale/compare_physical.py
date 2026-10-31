@@ -78,6 +78,8 @@ def compare(baseline, candidate, *, max_slowdown_percent=10,
         if not all(type(x) in (int, float) and math.isfinite(x) and x > 0 for x in (old, new)):
             raise ValueError(f"{name} has invalid median timings")
         slowdown = 100 * (new / old - 1)
+        if not math.isfinite(slowdown):
+            raise ValueError(f"{name}: median slowdown ratio overflows")
         old_p90, new_p90 = a.get("p90_seconds"), b.get("p90_seconds")
         tail_slowdown = None
         if old_p90 is not None or new_p90 is not None:
@@ -85,6 +87,8 @@ def compare(baseline, candidate, *, max_slowdown_percent=10,
                        for x, median in ((old_p90, old), (new_p90, new))):
                 raise ValueError(f"{name}: invalid p90 benchmark timings")
             tail_slowdown = 100 * (new_p90 / old_p90 - 1)
+            if not math.isfinite(tail_slowdown):
+                raise ValueError(f"{name}: p90 slowdown ratio overflows")
         if max_tail_slowdown_percent is not None and tail_slowdown is None:
             raise ValueError(f"{name}: explicit tail budget requires p90 samples")
         tail_budget = (max_slowdown_percent if max_tail_slowdown_percent is None
