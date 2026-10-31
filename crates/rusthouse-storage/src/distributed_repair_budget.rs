@@ -57,6 +57,27 @@ fn validate_repair_jobs(jobs: &[RepairJob]) -> Result<(), &'static str> {
     Ok(())
 }
 
+// Preserve strict priority order and byte-budget skips while cloning only
+// the jobs admitted to the current repair batch.
+fn select_repairs(
+    ordered: &[&RepairJob],
+    byte_budget: u64,
+    job_limit: usize,
+) -> Vec<RepairJob> {
+    let mut selected = Vec::with_capacity(ordered.len().min(job_limit));
+    let mut remaining = byte_budget;
+    for &job in ordered {
+        if selected.len() == job_limit {
+            break;
+        }
+        if job.bytes <= remaining {
+            remaining -= job.bytes;
+            selected.push(job.clone());
+        }
+    }
+    selected
+}
+
 // Work with borrowed jobs until the scheduler knows which ones fit.
 // This avoids cloning every pending job when only a small batch is selected.
 fn plan_ranked_repairs<'a>(
@@ -76,6 +97,22 @@ fn plan_ranked_repairs<'a>(
             .collect();
     }
     let mut ranked: Vec<&RepairJob> = eligible.collect();
+    if job_limit.saturating_mul(4) < ranked.len() {
+        // Keep widening only when high-priority repairs exhaust the byte
+        // budget before filling the batch. Avoid sorting the full queue.
+        let mut prefix = job_limit.saturating_mul(2).min(ranked.len());
+        loop {
+            if prefix < ranked.len() {
+                ranked.select_nth_unstable_by(prefix, |a, b| repair_priority(a, b));
+            }
+            ranked[..prefix].sort_unstable_by(|a, b| repair_priority(a, b));
+            let selected = select_repairs(&ranked[..prefix], byte_budget, job_limit);
+            if selected.len() == job_limit || prefix == ranked.len() {
+                return selected;
+            }
+            prefix = prefix.saturating_mul(2).min(ranked.len());
+        }
+    }
     // A fully affordable queue only needs its top job_limit priorities.
     // Partition first, then sort the bounded prefix. Retain the full
     // greedy ordering if the queue exceeds the available byte budget.
@@ -88,18 +125,7 @@ fn plan_ranked_repairs<'a>(
         ranked.truncate(job_limit);
     }
     ranked.sort_unstable_by(|left, right| repair_priority(left, right));
-    let mut selected = Vec::with_capacity(ranked.len().min(job_limit));
-    let mut remaining = byte_budget;
-    for job in ranked {
-        if selected.len() == job_limit {
-            break;
-        }
-        if job.bytes <= remaining {
-            remaining -= job.bytes;
-            selected.push(job.clone());
-        }
-    }
-    selected
+    select_repairs(&ranked, byte_budget, job_limit)
 }
 
 /// Prioritize severe under-replication, then smaller objects, then shard ID.
@@ -112,6 +138,36 @@ pub fn plan_repairs(
     validate_repair_plan_bounds(jobs, job_limit)?;
     validate_repair_jobs(jobs)?;
     Ok(plan_ranked_repairs(jobs.iter(), byte_budget, job_limit))
+}
+
+#[cfg(test)]
+mod expanding_repair_selection_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_repairs_match_the_complete_priority_schedule() {
+        let jobs = (0..4096usize).rev().map(|index| RepairJob {
+            shard: format!("shard_{index:04}"),
+            bytes: if index % 19 == 0 { 0 } else { ((index * 47) % 1024) as u64 },
+            missing_replicas: ((index % 5) + 1) as u8,
+        }).collect::<Vec<_>>();
+        let mut full = jobs.iter().collect::<Vec<_>>();
+        full.sort_unstable_by(|a, b| repair_priority(a, b));
+        for budget in [0u64, 10, 200, 1024, 8192, u64::MAX] {
+            for limit in [2usize, 3, 8, 17, 63] {
+                let mut remaining = budget;
+                let expected = full.iter().filter(|job| {
+                    if job.bytes <= remaining {
+                        remaining -= job.bytes;
+                        true
+                    } else {
+                        false
+                    }
+                }).take(limit).map(|job| (**job).clone()).collect::<Vec<_>>();
+                assert_eq!(plan_repairs(&jobs, budget, limit).unwrap(), expected);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
