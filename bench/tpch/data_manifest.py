@@ -18,6 +18,8 @@ def _identity(info):
 
 def inspect_table(path, table):
     path = Path(path)
+    if not path.exists() and not path.is_symlink():
+        raise ValueError(f"{table}: converted TSV does not exist: {path}")
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"{table}: converted TSV must be a regular, non-symlinked file: {path}")
     before = path.lstat()
