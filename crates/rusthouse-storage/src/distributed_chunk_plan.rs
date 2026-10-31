@@ -80,25 +80,25 @@ pub fn coalesce_indexed_chunks(
     }
     let mut previous_end = 0u64;
     let mut previous_index = None;
+    let mut runs: Vec<ChunkRun> = Vec::new();
+    // The output stays local until the entire input has been validated.
+    // Validate and coalesce in one walk instead of traversing all chunks twice.
     for chunk in chunks {
-        let end = chunk.chunk.offset.checked_add(chunk.chunk.length)
+        let item = chunk.chunk;
+        let end = item.offset.checked_add(item.length)
             .ok_or("transfer chunk range overflow")?;
-        if chunk.chunk.length == 0 || chunk.chunk.length > max_run_bytes
-            || chunk.chunk.offset < previous_end
+        if item.length == 0 || item.length > max_run_bytes
+            || item.offset < previous_end
             || previous_index.is_some_and(|index| chunk.index <= index)
         {
             return Err("invalid or overlapping transfer chunk");
         }
         previous_end = end;
         previous_index = Some(chunk.index);
-    }
-    let mut runs: Vec<ChunkRun> = Vec::new();
-    for chunk in chunks {
-        let item = chunk.chunk;
         if let Some(last) = runs.last_mut() {
             let next_index = last.first_index + last.chunk_count;
-            let end = last.offset + last.length;
-            if chunk.index == next_index && item.offset == end
+            let run_end = last.offset + last.length;
+            if chunk.index == next_index && item.offset == run_end
                 && item.length <= max_run_bytes - last.length
             {
                 last.chunk_count += 1;
@@ -594,5 +594,34 @@ mod clamped_window_fast_path_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod single_pass_coalescing_regression_tests {
+    use super::*;
+
+    #[test]
+    fn consecutive_runs_and_completed_gaps_keep_original_indices() {
+        let chunks = [
+            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
+            IndexedChunk { index: 1, chunk: Chunk { offset: 4, length: 4 } },
+            IndexedChunk { index: 4, chunk: Chunk { offset: 16, length: 4 } },
+            IndexedChunk { index: 5, chunk: Chunk { offset: 20, length: 4 } },
+        ];
+        assert_eq!(coalesce_indexed_chunks(&chunks, 8).unwrap(), vec![
+            ChunkRun { first_index: 0, chunk_count: 2, offset: 0, length: 8 },
+            ChunkRun { first_index: 4, chunk_count: 2, offset: 16, length: 8 },
+        ]);
+    }
+
+    #[test]
+    fn late_invalid_chunk_rejects_whole_coalescing_plan() {
+        let chunks = [
+            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
+            IndexedChunk { index: 1, chunk: Chunk { offset: 4, length: 4 } },
+            IndexedChunk { index: 2, chunk: Chunk { offset: u64::MAX, length: 2 } },
+        ];
+        assert_eq!(coalesce_indexed_chunks(&chunks, 8), Err("transfer chunk range overflow"));
     }
 }
