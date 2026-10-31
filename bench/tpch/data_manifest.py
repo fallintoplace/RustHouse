@@ -17,12 +17,14 @@ def inspect_table(path, table):
     expected = "\t".join(names(table)).encode("utf-8")
     digest = hashlib.sha256()
     rows = 0
+    bytes_hashed = 0
     expected_columns = len(TABLES[table])
     with path.open("rb") as source:
         header = source.readline(len(expected) + 3)
         if header not in (expected + b"\n", expected + b"\r\n"):
             raise ValueError(f"{table}: unexpected TSV header")
         digest.update(header)
+        bytes_hashed += len(header)
         while record := source.readline(MAX_RECORD_BYTES + 1):
             if len(record) > MAX_RECORD_BYTES:
                 raise ValueError(f"{table}: oversized TSV record")
@@ -31,13 +33,14 @@ def inspect_table(path, table):
             if not record.endswith(b"\n") or record.count(b"\t") != expected_columns - 1:
                 raise ValueError(f"{table}: malformed or truncated TSV record")
             digest.update(record)
+            bytes_hashed += len(record)
             rows += 1
     if rows == 0:
         raise ValueError(f"{table}: no data rows")
     return {
         "name": table,
         "rows": rows,
-        "bytes": path.stat().st_size,
+        "bytes": bytes_hashed,
         "sha256": digest.hexdigest(),
         "columns": [{"name": name, "type": kind, "scale": scale}
                     for name, kind, scale in TABLES[table]],
