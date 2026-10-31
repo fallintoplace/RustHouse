@@ -58,7 +58,7 @@ class GroupedPhysicalReferenceTests(unittest.TestCase):
                 sink = io.StringIO()
                 emit(sink, rows, groups, batch_rows=7)
                 expected = "".join(
-                    f"{region_at(index, groups)}\\t{1 + index % 97}\\n"
+                    f"{region_at(index, groups)}\t{1 + index % 97}\n"
                     for index in range(rows)
                 )
                 self.assertEqual(sink.getvalue(), expected)
