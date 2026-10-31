@@ -1492,9 +1492,7 @@ mod parallel_typed_open_tests {
             })
             .collect::<Vec<_>>();
         let data = (0..2)
-            .map(|row| (0..10)
-                .map(|index| Some((index + row * 100).to_string()))
-                .collect::<Vec<_>>())
+            .map(|row| (0..10).map(|index| Some((index + row * 100).to_string())).collect::<Vec<_>>())
             .collect::<Vec<_>>();
         write_wide_part(&root, &columns, &data).unwrap();
         let names = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
