@@ -123,18 +123,28 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
     if size > MAX_MARKS_BYTES as u64 {
         return Err(marks_too_large(path));
     }
-    let mut content = Vec::with_capacity(size as usize);
-    (&mut file).take(MAX_MARKS_BYTES as u64 + 1)
-        .read_to_end(&mut content)
-        .map_err(|source| marks_io_error(path, source))?;
-    if content.len() > MAX_MARKS_BYTES {
-        return Err(marks_too_large(path));
-    }
-    if content.len() as u64 != size {
-        return Err(marks_io_error(
-            path,
-            io::Error::new(io::ErrorKind::InvalidData, "marks file changed during read"),
-        ));
+    // A mark file may contain millions of records. Decode in bounded
+    // batches instead of retaining both a complete raw copy and all marks.
+    // 24 KiB is divisible by both 16-byte and 24-byte record formats.
+    const MARK_READ_BYTES: usize = 24 * 1024;
+    let record_size = format.record_size();
+    let size = size as usize; // checked against the 64 MiB cap above
+    let mut marks = Vec::with_capacity(size / record_size);
+    let mut buffer = [0u8; MARK_READ_BYTES];
+    let mut remaining = size;
+    while remaining > 0 {
+        let amount = remaining.min(buffer.len());
+        if let Err(source) = file.read_exact(&mut buffer[..amount]) {
+            if source.kind() == io::ErrorKind::UnexpectedEof {
+                return Err(marks_io_error(path, io::Error::new(
+                    io::ErrorKind::InvalidData, "marks file changed during read",
+                )));
+            }
+            return Err(marks_io_error(path, source));
+        }
+        marks.extend(buffer[..amount].chunks_exact(record_size)
+            .map(|record| parse_mark_record(record, format)));
+        remaining -= amount;
     }
     // Keep the open descriptor alive and check the path again. A same-size
     // replacement or in-place rewrite must not be silently trusted.
@@ -148,7 +158,17 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
             io::Error::new(io::ErrorKind::InvalidData, "marks file changed during read"),
         ));
     }
-    parse_wide_marks(&content, format, path)
+    if size == 0 {
+        return Err(PartError::EmptyMarksFile(path.to_path_buf()));
+    }
+    if size % record_size != 0 {
+        return Err(PartError::InvalidMarksLength {
+            path: path.to_path_buf(),
+            size,
+            record_size,
+        });
+    }
+    Ok(marks)
 }
 
 fn read_compressed_wide_marks<R: Read + Seek>(
@@ -605,5 +625,42 @@ mod immutable_raw_marks_tests {
         assert_eq!(altered.modified().unwrap(), before.modified().unwrap());
         assert!(!marks_file_unchanged(&before, &altered));
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod bounded_plain_mark_reader_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn records_across_24_kib_reads_preserve_fixed_and_adaptive_offsets() {
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        for format in [WideMarkFormat::Fixed, WideMarkFormat::Adaptive] {
+            let extension = if format == WideMarkFormat::Fixed { "mrk" } else { "mrk2" };
+            let path = std::env::temp_dir().join(format!(
+                "rusthouse-mark-batch-{}-{serial}.{extension}", std::process::id()
+            ));
+            let mut encoded = Vec::new();
+            for index in 0..2053u64 {
+                encoded.extend_from_slice(&(index * 128).to_le_bytes());
+                encoded.extend_from_slice(&(index * 7).to_le_bytes());
+                if format == WideMarkFormat::Adaptive {
+                    encoded.extend_from_slice(&(index % 7 + 1).to_le_bytes());
+                }
+            }
+            std::fs::write(&path, &encoded).unwrap();
+            let parsed = read_wide_marks(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            assert_eq!(parsed.marks.len(), 2053);
+            for index in [0usize, 1023, 1024, 2047, 2052] {
+                let mark = &parsed.marks[index];
+                assert_eq!(mark.compressed_offset, index as u64 * 128);
+                assert_eq!(mark.decompressed_offset, index as u64 * 7);
+                assert_eq!(mark.rows, (format == WideMarkFormat::Adaptive)
+                    .then_some(index as u64 % 7 + 1));
+            }
+        }
     }
 }
