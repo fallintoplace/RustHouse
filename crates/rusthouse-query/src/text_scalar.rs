@@ -242,13 +242,30 @@ pub(super) fn is_function(name: &str) -> bool {
     )
 }
 
-fn crc32_ieee(input: &[u8]) -> u32 {
-    let mut crc = !0_u32;
-    for &byte in input {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xEDB8_8320 & (0_u32.wrapping_sub(crc & 1)));
+// Compile the reflected IEEE polynomial table once instead of executing
+// eight bit-level recurrence steps for each input byte.
+const fn crc32_ieee_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut index = 0usize;
+    while index < table.len() {
+        let mut crc = index as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = (crc >> 1) ^ (0xEDB8_8320 & (0u32.wrapping_sub(crc & 1)));
+            bit += 1;
         }
+        table[index] = crc;
+        index += 1;
+    }
+    table
+}
+
+const CRC32_IEEE_TABLE: [u32; 256] = crc32_ieee_table();
+
+fn crc32_ieee(input: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in input {
+        crc = (crc >> 8) ^ CRC32_IEEE_TABLE[usize::from((crc as u8) ^ byte)];
     }
     !crc
 }
@@ -379,10 +396,23 @@ fn parse_readable_size_bytes(input: &str) -> Option<i64> {
     i64::try_from(rounded).ok()
 }
 
+// Equal prefixes and suffixes cannot contribute to Levenshtein distance.
+// Remove them before enforcing the quadratic work budget. Long values with a
+// small changed region remain cheap without weakening the worst-case bound.
+fn trim_common_edges<'a, T: Eq>(left: &'a [T], right: &'a [T]) -> (&'a [T], &'a [T]) {
+    let prefix = left.iter().zip(right.iter()).take_while(|(a, b)| a == b).count();
+    let left = &left[prefix..];
+    let right = &right[prefix..];
+    let suffix = left.iter().rev().zip(right.iter().rev())
+        .take_while(|(a, b)| a == b).count();
+    (&left[..left.len() - suffix], &right[..right.len() - suffix])
+}
+
 fn bounded_edit_distance<T: Eq>(left: &[T], right: &[T]) -> Result<i64, ParseError> {
     if left == right {
         return Ok(0);
     }
+    let (left, right) = trim_common_edges(left, right);
     if left.is_empty() {
         return i64::try_from(right.len())
             .map_err(|_| ParseError("editDistance exceeds Int64".into()));
@@ -420,6 +450,7 @@ fn bounded_utf8_edit_distance(left: &str, right: &str) -> Result<i64, ParseError
     }
     let left: Vec<char> = left.chars().collect();
     let right: Vec<char> = right.chars().collect();
+    let (left, right) = trim_common_edges(&left, &right);
     if left.is_empty() {
         return Ok(right.len() as i64);
     }
@@ -5145,5 +5176,85 @@ mod mac_oui_parser_reuse_tests {
             );
         }
         assert!(parse_select("SELECT MACStringToOUI('AA:BB:CC:DD:EE:FF', 1)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod table_crc32_tests {
+    use super::*;
+
+    fn reference(input: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for &byte in input {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xEDB8_8320 & (0u32.wrapping_sub(crc & 1)));
+            }
+        }
+        !crc
+    }
+
+    #[test]
+    fn table_matches_bitwise_reference_for_binary_and_unaligned_buffers() {
+        let mut source = vec![0u8; 8192];
+        let mut state = 0x9e37_79b9u32;
+        for byte in &mut source {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = state as u8;
+        }
+        for length in [0, 1, 2, 3, 4, 7, 8, 15, 16, 31, 32, 63, 127, 255, 1024, 8192] {
+            assert_eq!(crc32_ieee(&source[..length]), reference(&source[..length]));
+        }
+        for offset in 0..16 {
+            assert_eq!(crc32_ieee(&source[offset..offset + 4096]),
+                reference(&source[offset..offset + 4096]));
+        }
+        assert_eq!(crc32_ieee(b"123456789"), 0xcbf4_3926);
+    }
+}
+
+#[cfg(test)]
+mod common_affix_edit_distance_tests {
+    use super::*;
+
+    #[test]
+    fn long_common_prefix_and_suffix_do_not_exhaust_the_work_budget() {
+        let prefix = "a".repeat(65_536);
+        let suffix = "z".repeat(65_536);
+        let left = format!("{prefix}X{suffix}");
+        let right = format!("{prefix}Y{suffix}");
+        assert_eq!(bounded_edit_distance(left.as_bytes(), right.as_bytes()).unwrap(), 1);
+        assert_eq!(bounded_edit_distance(right.as_bytes(), left.as_bytes()).unwrap(), 1);
+
+        let prefix = "🚀".repeat(8192);
+        let suffix = "é".repeat(8192);
+        let left = format!("{prefix}猫{suffix}");
+        let right = format!("{prefix}犬{suffix}");
+        assert_eq!(bounded_utf8_edit_distance(&left, &right).unwrap(), 1);
+    }
+
+    #[test]
+    fn common_edge_trimming_preserves_insertions_and_deletions() {
+        for (left, right, distance) in [
+            ("abcdef", "abcXdef", 1),
+            ("abcXdef", "abcdef", 1),
+            ("kitten", "sitting", 3),
+            ("", "three", 5),
+            ("foobarbaz", "foobaz", 3),
+            ("aaaa", "aaa", 1),
+        ] {
+            assert_eq!(bounded_edit_distance(left.as_bytes(), right.as_bytes()).unwrap(), distance);
+            assert_eq!(bounded_utf8_edit_distance(left, right).unwrap(), distance);
+        }
+    }
+
+    #[test]
+    fn completely_different_large_strings_keep_the_work_limit() {
+        let left = "x".repeat(2048);
+        let right = "y".repeat(2048);
+        assert!(bounded_edit_distance(left.as_bytes(), right.as_bytes()).is_err());
+        assert!(bounded_utf8_edit_distance(&left, &right).is_err());
     }
 }

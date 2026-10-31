@@ -164,6 +164,102 @@ fn gf2_matrix_square(matrix: &[u32; 32]) -> [u32; 32] {
     std::array::from_fn(|index| gf2_matrix_times(matrix, matrix[index]))
 }
 
+/// Precomputed CRC32C zero-byte shift for repeatedly appending fixed-size chunks.
+///
+/// The ordinary crc32c_combine rebuilds GF(2) matrices for each length.
+/// A transfer with thousands of equal-size verified chunks can reuse this
+/// operator, reducing each combination to one 32-bit matrix-vector multiply.
+#[derive(Clone)]
+pub struct Crc32cShift {
+    operator: [u32; 32],
+}
+
+impl Crc32cShift {
+    /// Precompute the linear transformation for appending right_len bytes.
+    pub fn new(mut right_len: u64) -> Self {
+        let mut operator = std::array::from_fn(|bit| 1u32 << bit);
+        if right_len == 0 {
+            return Self { operator };
+        }
+        let mut one_bit = [0u32; 32];
+        one_bit[0] = POLYNOMIAL;
+        let mut row = 1u32;
+        for slot in one_bit.iter_mut().skip(1) {
+            *slot = row;
+            row <<= 1;
+        }
+        // Squaring the one-bit operator three times gives eight zero bits.
+        let mut power = gf2_matrix_square(&gf2_matrix_square(&gf2_matrix_square(&one_bit)));
+        while right_len != 0 {
+            if right_len & 1 != 0 {
+                // Compose power after the existing operator.
+                operator = std::array::from_fn(|bit| gf2_matrix_times(&power, operator[bit]));
+            }
+            right_len >>= 1;
+            if right_len != 0 {
+                power = gf2_matrix_square(&power);
+            }
+        }
+        Self { operator }
+    }
+
+    /// Combine finalized checksums of adjacent ranges without re-reading bytes.
+    /// The right-hand input must have the same length used in new().
+    pub fn combine(&self, left: u32, right: u32) -> u32 {
+        gf2_matrix_times(&self.operator, left) ^ right
+    }
+}
+
+#[cfg(test)]
+mod reusable_crc_shift_tests {
+    use super::*;
+
+    #[test]
+    fn cached_shift_agrees_with_independent_crc_and_direct_combination() {
+        let payload = (0..32768usize)
+            .map(|i| ((i.wrapping_mul(77) + i / 7) % 251) as u8)
+            .collect::<Vec<_>>();
+        for right_len in [0usize, 1, 2, 3, 7, 8, 15, 64, 256, 4096, 8192] {
+            let shift = Crc32cShift::new(right_len as u64);
+            let right = &payload[..right_len];
+            for left_len in [0usize, 1, 13, 31, 512, 4096, 16384] {
+                let left = &payload[..left_len];
+                let expected = crc32c(&[left, right].concat());
+                assert_eq!(shift.combine(crc32c(left), crc32c(right)), expected,
+                    "left={left_len} right={right_len}");
+                assert_eq!(shift.combine(crc32c(left), crc32c(right)),
+                    crc32c_combine(crc32c(left), crc32c(right), right_len as u64));
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_size_chunks_reduce_to_one_exact_stream_crc() {
+        let payload = (0..128_000usize).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        for chunk_size in [1usize, 7, 64, 1000, 4096] {
+            let shift = Crc32cShift::new(chunk_size as u64);
+            let mut cumulative = crc32c(b"");
+            for chunk in payload.chunks_exact(chunk_size) {
+                cumulative = shift.combine(cumulative, crc32c(chunk));
+            }
+            let tail = payload.chunks_exact(chunk_size).remainder();
+            cumulative = crc32c_combine(cumulative, crc32c(tail), tail.len() as u64);
+            assert_eq!(cumulative, crc32c(&payload), "chunk_size={chunk_size}");
+        }
+    }
+
+    #[test]
+    fn byte_length_edges_match_generic_combine() {
+        for length in [0u64, 1, 512, 65_536, 1 << 32, u64::MAX] {
+            let shift = Crc32cShift::new(length);
+            for crc in [0, 1, 0xdead_beef, u32::MAX] {
+                assert_eq!(shift.combine(crc, 0),
+                    crc32c_combine(crc, 0, length), "len={length}");
+            }
+        }
+    }
+}
+
 /// Combine two finalized CRC32C values as if their byte ranges were concatenated.
 ///
 /// The inputs must be checksums of consecutive byte ranges in the same order.

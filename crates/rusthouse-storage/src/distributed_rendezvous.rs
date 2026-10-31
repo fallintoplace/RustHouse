@@ -69,10 +69,20 @@ pub fn replicas_for(
     if nodes.is_empty() || nodes.len() > MAX_PLACEMENT_NODES || replicas == 0 || replicas > nodes.len() {
         return Err("invalid replica placement configuration");
     }
-    let mut unique = HashSet::with_capacity(nodes.len());
-    for node in nodes {
-        if !valid_node(node) || !unique.insert(node.as_str()) {
-            return Err("invalid or duplicate replica node");
+    // Most replica sets fit in a handful of nodes. Validate borrowed names
+    // in-place instead of allocating a hash table for every shard placement.
+    if nodes.len() <= 8 {
+        for (index, node) in nodes.iter().enumerate() {
+            if !valid_node(node) || nodes[..index].contains(node) {
+                return Err("invalid or duplicate replica node");
+            }
+        }
+    } else {
+        let mut unique = HashSet::with_capacity(nodes.len());
+        for node in nodes {
+            if !valid_node(node) || !unique.insert(node.as_str()) {
+                return Err("invalid or duplicate replica node");
+            }
         }
     }
     let seed = shard_seed(shard);
@@ -126,12 +136,17 @@ pub fn weighted_replicas_for(
     {
         return Err("invalid weighted replica placement configuration");
     }
-    let mut seen = HashSet::with_capacity(nodes.len());
+    let mut seen = (nodes.len() > 8).then(|| HashSet::with_capacity(nodes.len()));
     let mut ranked = Vec::with_capacity(if replicas == 1 { 0 } else { nodes.len() });
     let seed = shard_seed(shard);
     let mut winner: Option<(f64, &str)> = None;
-    for &(node, weight) in nodes {
-        if !valid_node(node) || !(1..=1024).contains(&weight) || !seen.insert(node) {
+    for (index, &(node, weight)) in nodes.iter().enumerate() {
+        let duplicate = if let Some(seen) = seen.as_mut() {
+            !seen.insert(node)
+        } else {
+            nodes[..index].iter().any(|&(previous, _)| previous == node)
+        };
+        if !valid_node(node) || !(1..=1024).contains(&weight) || duplicate {
             return Err("invalid weighted replica node or weight");
         }
         let uniform = hash_to_open_unit_interval(score_with_seed(seed, node));
@@ -676,6 +691,43 @@ mod two_replica_linear_selection_tests {
                 let mut reversed = members.clone();
                 reversed.reverse();
                 assert_eq!(zone_aware_replicas_for(shard, &reversed, 2).unwrap(), expected);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod allocation_free_membership_tests {
+    use super::*;
+
+    #[test]
+    fn small_and_large_candidate_sets_preserve_stable_ranking() {
+        for count in [1usize, 2, 3, 8, 9, 16, 64] {
+            let ids = (0..count).map(|i| format!("node_{i:02}")).collect::<Vec<_>>();
+            let weighted = ids.iter()
+                .enumerate().map(|(i, name)| (name.as_str(), 1 + (i % 17) as u16))
+                .collect::<Vec<_>>();
+            for requested in [1, count] {
+                let mut reverse_ids = ids.clone();
+                reverse_ids.reverse();
+                let mut reverse_weights = weighted.clone();
+                reverse_weights.reverse();
+                assert_eq!(
+                    replicas_for("shard_a", &ids, requested).unwrap(),
+                    replicas_for("shard_a", &reverse_ids, requested).unwrap(),
+                );
+                assert_eq!(
+                    weighted_replicas_for("shard_a", &weighted, requested).unwrap(),
+                    weighted_replicas_for("shard_a", &reverse_weights, requested).unwrap(),
+                );
+            }
+            if count > 1 {
+                let mut duplicate_ids = ids.clone();
+                duplicate_ids[1] = duplicate_ids[0].clone();
+                assert!(replicas_for("shard_a", &duplicate_ids, 1).is_err());
+                let mut duplicate_weights = weighted.clone();
+                duplicate_weights[1].0 = duplicate_weights[0].0;
+                assert!(weighted_replicas_for("shard_a", &duplicate_weights, 1).is_err());
             }
         }
     }
