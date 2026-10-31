@@ -139,6 +139,34 @@ pub fn membership_capacity_by_zone(
     members: &[Member],
 ) -> Result<Vec<ZoneCapacity>, &'static str> {
     validate_membership(members)?;
+    // Most clusters use far fewer zones than members. Aggregate borrowed
+    // zone names without a tree allocation for the small common case.
+    if members.len() <= 16 {
+        let mut zones = Vec::<(&str, usize, u64)>::new();
+        for member in members {
+            if let Some((_, nodes, weight)) = zones
+                .iter_mut()
+                .find(|(zone, _, _)| *zone == member.zone)
+            {
+                *nodes += 1;
+                *weight += u64::from(member.weight);
+            } else {
+                zones.push((&member.zone, 1, u64::from(member.weight)));
+            }
+        }
+        // Preserve the public method's stable alphabetical zone ordering.
+        zones.sort_unstable_by(|left, right| left.0.cmp(right.0));
+        return Ok(zones
+            .into_iter()
+            .map(|(zone, nodes, weight)| ZoneCapacity {
+                zone: zone.to_owned(),
+                nodes,
+                weight,
+            })
+            .collect());
+    }
+
+    // Large, zone-heavy membership snapshots keep the O(n log n) path.
     let mut zones = std::collections::BTreeMap::<&str, (usize, u64)>::new();
     for member in members {
         let entry = zones.entry(&member.zone).or_insert((0, 0));
@@ -289,5 +317,42 @@ mod borrowed_member_parsing_tests {
         assert_eq!(members[0].weight, 23);
         assert_eq!(members[1].zone, "zone2");
         assert_eq!(format_membership(&members).unwrap(), "n1 zone1 23\nn2 zone2 7\n");
+    }
+}
+
+#[cfg(test)]
+mod small_zone_capacity_regressions {
+    use super::*;
+
+    fn membership(n: usize) -> Vec<Member> {
+        (0..n)
+            .map(|index| Member {
+                node: format!("node{index}"),
+                zone: format!("z{}", index % 3),
+                weight: u16::try_from(index + 1).unwrap(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn small_and_large_membership_use_the_same_sorted_zone_totals() {
+        for count in [1, 3, 8, 16, 17, 32, 64] {
+            let members = membership(count);
+            let zones = membership_capacity_by_zone(&members).unwrap();
+            assert_eq!(zones.len(), count.min(3));
+            for (index, zone) in zones.iter().enumerate() {
+                assert_eq!(zone.zone, format!("z{index}"));
+                let matching = members.iter().filter(|m| m.zone == zone.zone);
+                assert_eq!(zone.nodes, matching.clone().count());
+                assert_eq!(zone.weight, matching.map(|m| u64::from(m.weight)).sum::<u64>());
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_membership_is_rejected_before_aggregation() {
+        let mut members = membership(3);
+        members[2].node = members[0].node.clone();
+        assert!(membership_capacity_by_zone(&members).is_err());
     }
 }
