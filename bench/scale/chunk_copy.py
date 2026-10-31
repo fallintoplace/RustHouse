@@ -145,9 +145,13 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         verify_shard(path, entry)
         paths.append(path)
     total_rows = sum(e["rows"] for e in shards)
-    if manifest.get("total_rows") != total_rows:
+    # JSON true and 1.0 compare equal to integer 1 in Python; require exact
+    # integer metadata before trusting manifest-wide totals.
+    if (type(manifest.get("total_rows")) is not int
+            or manifest["total_rows"] != total_rows):
         raise ValueError("total rows mismatch in shard manifest")
-    if manifest.get("total_bytes") != sum(e["bytes"] for e in shards):
+    if (type(manifest.get("total_bytes")) is not int
+            or manifest["total_bytes"] != sum(e["bytes"] for e in shards)):
         raise ValueError("total bytes mismatch in shard manifest")
     if dry_run:
         return {"workload": "tsv-shard-copy", "atomic_batch": False,
