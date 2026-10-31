@@ -5,6 +5,7 @@ It creates a disposable single-writer database and listens on loopback only.
 """
 import argparse
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -35,13 +36,25 @@ QUERIES = (
 
 def cli(binary, directory, statement):
     # Spool both streams: a noisy CLI must not exhaust memory or block on stderr.
+    extra = {}
+    if os.name == "posix":
+        import resource
+
+        def cap_spooled_output():
+            _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            limit = 4 * 1024 * 1024 + 1
+            if hard != resource.RLIM_INFINITY:
+                limit = min(limit, hard)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+        extra["preexec_fn"] = cap_spooled_output
     with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
         result = subprocess.run(
             [str(binary), "sql", statement, "--database", str(directory)],
             stdout=output,
             stderr=errors,
             timeout=30,
-            check=False,
+            check=False, **extra,
         )
         if result.returncode:
             errors.seek(0, 2)
