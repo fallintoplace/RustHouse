@@ -6,6 +6,7 @@ import datetime
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+import tempfile
 
 from schema import TABLES, names
 
@@ -68,11 +69,15 @@ def convert_table(source, target, table):
     if source.resolve() == target.resolve():
         raise ValueError("source and target must differ")
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(target.name + ".tmp")
+    temp = None
     rows = 0
     try:
-        with source.open("rb") as reader, \
-                temp.open("w", encoding="utf-8", newline="\n") as writer:
+        with source.open("rb") as reader, tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="\n",
+            dir=target.parent, prefix=f".{target.name}.", suffix=".tmp",
+            delete=False,
+        ) as writer:
+            temp = Path(writer.name)
             writer.write("\t".join(names(table)) + "\n")
             number = 0
             while raw_line := reader.readline(MAX_LINE + 1):
@@ -97,7 +102,8 @@ def convert_table(source, target, table):
                 rows += 1
         temp.replace(target)
     finally:
-        temp.unlink(missing_ok=True)
+        if temp is not None:
+            temp.unlink(missing_ok=True)
     return rows
 
 
