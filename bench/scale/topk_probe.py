@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 
-def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
+def probe(binary, part, rows, *, column="id", limit=None, timeout=600,
           execute=None, start=0):
     if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive")
@@ -20,12 +20,14 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
             or start + rows > (1 << 64)):
         raise ValueError("invalid UInt64 start or range overflow")
     # Report invalid security-sensitive inputs before the default limit is
-    # checked. A probe with fewer than ten rows still needs useful errors
+    # checked. Small fixtures also need an automatic limit below ten rows
     # for an unsafe identifier or an invalid subprocess timeout.
     if not isinstance(column, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", column):
         raise ValueError("column must be a simple SQL identifier")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
+    if limit is None:
+        limit = min(10, rows)
     if type(limit) is not int or not 1 <= limit <= min(4096, rows):
         raise ValueError("limit must be in 1..min(4096, rows)")
     last_id = start + rows - 1
@@ -72,7 +74,7 @@ def main(argv=None):
     parser.add_argument("--rows", type=int, required=True)
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--column", default="id")
-    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument("--limit", type=int)
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
