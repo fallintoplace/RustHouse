@@ -60,10 +60,22 @@ class SnapshotBytesTests(unittest.TestCase):
 
     def test_compressed_marks_are_mark_overhead(self):
         from bench.scale.snapshot_bytes import classify
+        self.assertEqual(classify("id.cmrk"), "mark_bytes")
         self.assertEqual(classify("id.cmrk2"), "mark_bytes")
         self.assertEqual(classify("id.cmrk3"), "mark_bytes")
         self.assertEqual(classify("id.bin"), "data_bytes")
 
+
+    def test_inventory_counts_legacy_compressed_marks_as_mark_bytes(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "id.cmrk").write_bytes(b"m" * 23)
+            (Path(root) / "id.bin").write_bytes(b"d" * 7)
+            (Path(root) / "columns.txt").write_bytes(b"meta")
+            result = inventory(root)
+            self.assertEqual(result["byte_groups"]["mark_bytes"], 23)
+            self.assertEqual(result["byte_groups"]["data_bytes"], 7)
+            self.assertEqual(result["byte_groups"]["metadata_bytes"], 4)
+            self.assertEqual(result["total_bytes"], 34)
 
     def test_total_snapshot_byte_budget_is_enforced(self):
         with tempfile.TemporaryDirectory() as root:
