@@ -40,7 +40,11 @@ def percentile(samples, percent):
                    or not math.isfinite(sample) or sample < 0
                    for sample in samples)):
         raise ValueError("invalid percentile or latency samples")
-    return sorted(samples)[math.ceil(percent * len(samples) / 100) - 1]
+    return percentile_sorted(sorted(samples), percent)
+
+
+def percentile_sorted(ordered, percent):
+    return ordered[math.ceil(percent * len(ordered) / 100) - 1]
 
 
 def query(binary, database, statement, timeout):
@@ -79,11 +83,12 @@ def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
         times.append(time.perf_counter() - begun)
         if actual != f"{value}\n".encode("ascii"):
             raise ValueError(f"point probe {value} returned {actual[:100]!r}")
+    ordered = sorted(times)
     return {"verified": True, "rows_in_domain": rows, "samples": count,
             "column": column,
             "seed": seed, "p50_seconds": statistics.median(times),
-            "p95_seconds": percentile(times, 95),
-            "p99_seconds": percentile(times, 99),
+            "p95_seconds": percentile_sorted(ordered, 95),
+            "p99_seconds": percentile_sorted(ordered, 99),
             "max_seconds": max(times), "min_seconds": min(times)}
 
 
