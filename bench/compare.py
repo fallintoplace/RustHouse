@@ -21,6 +21,10 @@ def reject_duplicate_keys(pairs):
     return result
 
 
+def reject_nonfinite_json_number(value):
+    raise ValueError(f"nonstandard numeric token in benchmark report: {value}")
+
+
 def load_report(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -29,7 +33,7 @@ def load_report(path):
         payload = stream.read(MAX_REPORT_BYTES + 1)
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("comparison report exceeds 2 MiB")
-    return json.loads(payload, object_pairs_hook=reject_duplicate_keys)
+    return json.loads(payload, object_pairs_hook=reject_duplicate_keys,\n                      parse_constant=reject_nonfinite_json_number)
 
 
 VALID = {"passed"}
