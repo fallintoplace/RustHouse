@@ -19,6 +19,11 @@ class NoRedirect(HTTPRedirectHandler):
 NO_REDIRECT_OPENER = build_opener(NoRedirect())
 
 
+def _reject_nonfinite_json(value):
+    # Python's json.loads accepts NaN and Infinity unless explicitly blocked.
+    raise ValueError(f"nonfinite JSON constant: {value}")
+
+
 def _unique_object_pairs(pairs):
     result = {}
     for key, value in pairs:
@@ -77,7 +82,8 @@ def fetch(base, table, timeout=5):
         body = response.read(1_048_577)
     if len(body) > 1_048_576:
         raise ValueError("schema response too large")
-    return columns(json.loads(body, object_pairs_hook=_unique_object_pairs))
+    return columns(json.loads(body, object_pairs_hook=_unique_object_pairs,
+                              parse_constant=_reject_nonfinite_json))
 
 
 def main():
