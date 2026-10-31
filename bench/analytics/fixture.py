@@ -47,7 +47,12 @@ def generate(directory, rows=10000, seed=42):
     if type(seed) is not int or not 0 <= seed <= (1 << 64) - 1:
         raise ValueError("seed must be an unsigned 64-bit integer")
     directory = Path(directory)
+    if directory.is_symlink():
+        raise ValueError("fixture root must not be a symlink")
     directory.mkdir(parents=True, exist_ok=True)
+    for name in ("hits.tsv", "hits.sqlite", "create.sql", "copy.sql"):
+        if (directory / name).is_symlink():
+            raise ValueError(f"refusing symlinked fixture output: {name}")
     names = [name for name, _, _ in FIELDS]
     tsv = directory / "hits.tsv"
     db = directory / "hits.sqlite"
