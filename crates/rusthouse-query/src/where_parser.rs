@@ -412,17 +412,21 @@ mod tests {
     }
 
     #[test]
-    fn repeated_nine_way_disjunctions_simplify_before_branch_budget() {
-        let values = (1..=9)
-            .map(|number| format!("number = {number}"))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        let sql = format!(
-            "SELECT number FROM numbers(11) WHERE ({values}) AND ({values}) ORDER BY number"
+    fn repeated_eight_atom_filters_simplify_before_branch_budget() {
+        // Four independent binary disjunctions produce 16 DNF branches
+        // from just eight source predicates. Repeating the group uses the
+        // 16-condition parser budget but creates 256 temporary pairs.
+        let clause = "(number > 0 OR number = 0) AND (number < 5 OR number > 8) AND (number % 2 = 0 OR number = 3) AND (number < 4 OR number > 1)";
+        let base = format!(
+            "SELECT number FROM numbers(11) WHERE {clause} ORDER BY number"
         );
-        let query = crate::parse_select(&sql).unwrap();
-        assert_eq!(query.or_predicates.len(), 8);
-        assert_eq!(run(&sql), "number\n1\n2\n3\n4\n5\n6\n7\n8\n9\n");
+        let repeated = format!(
+            "SELECT number FROM numbers(11) WHERE ({clause}) AND ({clause}) ORDER BY number"
+        );
+        let query = crate::parse_select(&repeated).unwrap();
+        assert_eq!(query.or_predicates.len(), 15);
+        assert_eq!(run(&base), "number\n0\n2\n3\n4\n10\n");
+        assert_eq!(run(&repeated), run(&base));
     }
 
     #[test]
