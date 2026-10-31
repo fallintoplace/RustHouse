@@ -77,6 +77,25 @@ class OfflineVacuumTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix" and shutil.rmtree.avoids_symlink_attacks,
                          "requires symlink-safe POSIX rmtree")
+    def test_vacuum_aborts_when_lock_file_is_swapped_during_flock(self):
+        import fcntl
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            parts, versions = self.fixture(root)
+            lock = Path(root) / ".rusthouse-write.lock"
+            original_flock = fcntl.flock
+            def replace(fd, flags):
+                original_flock(fd, flags)
+                lock.unlink()
+                lock.write_bytes(b"new inode")
+            with patch("offline_vacuum.fcntl.flock", side_effect=replace):
+                with self.assertRaisesRegex(ValueError, "lock path changed"):
+                    vacuum(root, keep=2, execute=True, offline_confirmed=True)
+            self.assertEqual(sorted(entry.name for entry in versions.iterdir()),
+                             [f"g{number}" for number in range(1, 6)])
+
+    @unittest.skipUnless(os.name == "posix" and shutil.rmtree.avoids_symlink_attacks,
+                         "requires symlink-safe POSIX rmtree")
     def test_vacuum_only_deletes_unpinned_obsolete_generations(self):
         with tempfile.TemporaryDirectory() as root:
             parts, versions = self.fixture(root)
