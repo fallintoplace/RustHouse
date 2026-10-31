@@ -332,8 +332,31 @@ impl SortedRows {
         Ok(())
     }
 
+    fn preflight_flush_run(&self) -> Result<(), ExecutionError> {
+        // Every row has a fixed 16-byte header and a 17-byte record for
+        // each key and projected numeric value. Bound disk before writing.
+        let required = self.rows.iter().try_fold(0u64, |total, row| {
+            let fields = row.extra_keys.len().checked_add(row.values.len())
+                .and_then(|count| count.checked_add(1))
+                .ok_or_else(|| invalid("external sort run size overflow"))?;
+            let bytes = u64::try_from(fields)
+                .ok().and_then(|count| count.checked_mul(17))
+                .and_then(|count| count.checked_add(16))
+                .ok_or_else(|| invalid("external sort run size overflow"))?;
+            total.checked_add(bytes)
+                .ok_or_else(|| invalid("external sort run size overflow"))
+        })?;
+        if self.temp_bytes.checked_add(required)
+            .is_none_or(|total| total > MAX_TEMP_SORT_BYTES)
+        {
+            return Err(invalid("external sort exceeded 32 GiB temporary disk budget"));
+        }
+        Ok(())
+    }
+
     fn flush_run(&mut self) -> Result<(), ExecutionError> {
         if self.rows.is_empty() { return Ok(()); }
+        self.preflight_flush_run()?;
         let path = self.next_path()?;
         let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
             .create_new(true).write(true).open(&path)?);
@@ -555,5 +578,39 @@ mod external_sort_run_header_eof_tests {
         let mut reader = BufReader::new(File::open(&path).unwrap());
         assert!(read_sorted_row(&mut reader, false, &directions).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod numeric_spill_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn checks_exact_serialized_size_before_allocating_scratch() {
+        let mut rows = SortedRows::new(None, false);
+        rows.set_extra_directions([false, true]);
+        rows.push_with_extra(
+            Number::Unsigned(1),
+            vec![Number::Unsigned(2), Number::Signed(-3)],
+            vec![Number::Unsigned(4)],
+        ).unwrap();
+        rows.temp_bytes = MAX_TEMP_SORT_BYTES - 83;
+        assert!(rows.flush_run().is_err());
+        assert!(rows.scratch.is_none());
+        assert_eq!(rows.rows.len(), 1);
+
+        rows.temp_bytes = 0;
+        rows.flush_run().unwrap();
+        let bytes = fs::metadata(&rows.run_paths[0]).unwrap().len();
+        assert_eq!(bytes, 16 + 17 * 4);
+        assert_eq!(rows.temp_bytes, bytes);
+    }
+
+    #[test]
+    fn empty_run_needs_no_scratch_even_at_quota() {
+        let mut rows = SortedRows::new(None, false);
+        rows.temp_bytes = MAX_TEMP_SORT_BYTES;
+        rows.flush_run().unwrap();
+        assert!(rows.scratch.is_none());
     }
 }
