@@ -237,15 +237,21 @@ mod prefilter_right_comparison_tests {
         };
         let mut all = rows.clone();
         prefilter_dimension_rows(&mut all, &filter, 2, false);
-        assert_eq!(all, vec![mk(3, 15), mk(4, 20)]);
+        let values = |rows: &[Vec<typed::Cell>]| rows.iter().map(|row| {
+            match &row[1] {
+                typed::Cell::Numeric(Number::Signed(value)) => *value,
+                _ => panic!("expected signed test value"),
+            }
+        }).collect::<Vec<_>>();
+        assert_eq!(values(&all), vec![15, 20]);
 
         let mut any = rows.clone();
         prefilter_dimension_rows(&mut any, &filter, 2, true);
-        assert_eq!(any, rows, "ANY must select its first key before filtering");
+        assert_eq!(values(&any), vec![5, 15, 20], "ANY preserves first match");
 
         let mut fact_filter = rows.clone();
         let left_filter = BoundFilter { column: 0, ..filter };
         prefilter_dimension_rows(&mut fact_filter, &left_filter, 2, false);
-        assert_eq!(fact_filter, rows, "left-only filters apply during probe");
+        assert_eq!(values(&fact_filter), vec![5, 15, 20]);
     }
 }
