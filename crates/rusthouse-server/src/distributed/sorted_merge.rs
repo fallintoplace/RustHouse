@@ -42,22 +42,59 @@ impl IntegerType {
     }
 }
 
+// Parse network TSV digits directly. UTF-8 validation and FromStr perform
+// redundant work for a grammar limited to canonical ASCII decimal integers.
+fn parse_unsigned_ascii(bytes: &[u8]) -> Option<u128> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut value = 0u128;
+    for &byte in bytes {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add(u128::from(byte - b'0'))?;
+    }
+    Some(value)
+}
+
+fn parse_signed_ascii(bytes: &[u8]) -> Option<i128> {
+    let negative = bytes.first() == Some(&b'-');
+    let digits = if negative { &bytes[1..] } else { bytes };
+    if digits.is_empty() {
+        return None;
+    }
+    let mut value = 0i128;
+    for &byte in digits {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?;
+        let digit = i128::from(byte - b'0');
+        value = if negative {
+            value.checked_sub(digit)?
+        } else {
+            value.checked_add(digit)?
+        };
+    }
+    Some(value)
+}
+
 fn parse_integer_sort_key(bytes: &[u8], kind: IntegerType) -> Result<IntegerKey, MergeError> {
-    let text = std::str::from_utf8(bytes).map_err(|_| MergeError::InvalidSortedScan)?;
-    if text.starts_with('+')
-        || (text.len() > 1 && text.starts_with('0'))
-        || text.starts_with("-0")
+    if bytes.starts_with(b"+")
+        || (bytes.len() > 1 && bytes[0] == b'0')
+        || bytes.starts_with(b"-0")
     {
         return Err(MergeError::InvalidSortedScan);
     }
     match kind {
         IntegerType::Unsigned { max } => {
-            let number = text.parse::<u128>().map_err(|_| MergeError::InvalidSortedScan)?;
+            let number = parse_unsigned_ascii(bytes).ok_or(MergeError::InvalidSortedScan)?;
             (number <= max).then_some(IntegerKey::Unsigned(number))
                 .ok_or(MergeError::InvalidSortedScan)
         }
         IntegerType::Signed { min, max } => {
-            let number = text.parse::<i128>().map_err(|_| MergeError::InvalidSortedScan)?;
+            let number = parse_signed_ascii(bytes).ok_or(MergeError::InvalidSortedScan)?;
             (min <= number && number <= max).then_some(IntegerKey::Signed(number))
                 .ok_or(MergeError::InvalidSortedScan)
         }
@@ -197,6 +234,38 @@ pub(super) fn merge_sorted_integer_page(
     Ok(output)
 }
 
+
+#[cfg(test)]
+mod ascii_integer_merge_tests {
+    use super::*;
+
+    #[test]
+    fn exact_ascii_parser_handles_bounds_and_canonical_wire_encoding() {
+        for number in [b"0".as_slice(), b"1", b"18446744073709551615",
+            b"340282366920938463463374607431768211455"] {
+            assert_eq!(parse_unsigned_ascii(number), std::str::from_utf8(number).unwrap().parse::<u128>().ok());
+        }
+        for number in [b"0".as_slice(), b"-1", b"170141183460469231731687303715884105727",
+            b"-170141183460469231731687303715884105728"] {
+            assert_eq!(parse_signed_ascii(number), std::str::from_utf8(number).unwrap().parse::<i128>().ok());
+        }
+        for invalid in [b"".as_slice(), b"-", b"1x", b" 1", b"1 ", b"\xff",
+            b"340282366920938463463374607431768211456"] {
+            assert!(parse_unsigned_ascii(invalid).is_none());
+        }
+        for invalid in [b"".as_slice(), b"-", b"1x", b"1 ", b"\xff",
+            b"170141183460469231731687303715884105728",
+            b"-170141183460469231731687303715884105729"] {
+            assert!(parse_signed_ascii(invalid).is_none());
+        }
+        let signed = IntegerType::Signed { min: i128::MIN, max: i128::MAX };
+        for invalid in [b"+1".as_slice(), b"00", b"01", b"-0", b"-01"] {
+            assert!(parse_integer_sort_key(invalid, signed).is_err());
+        }
+        assert_eq!(parse_integer_sort_key(b"-170141183460469231731687303715884105728", signed),
+            Ok(IntegerKey::Signed(i128::MIN)));
+    }
+}
 
 #[cfg(test)]
 #[path = "sorted_merge/tests.rs"]
