@@ -30,7 +30,10 @@ impl<R: Read + Seek> UInt64ColumnReader<R> {
         let mut filled = 0;
         while filled < value.len() {
             if self.position == self.current.len() {
-                match self.blocks.next_decoded() {
+                // The previous block is fully consumed. Recycle its capacity
+                // instead of allocating a fresh decoded Vec for each block.
+                let scratch = std::mem::take(&mut self.current);
+                match self.blocks.next_decoded_reusing(scratch) {
                     Some(Ok(decoded)) => {
                         self.current = decoded.data;
                         self.position = 0;
@@ -214,5 +217,26 @@ mod tests {
             let values = scan(blocks).collect::<Result<Vec<_>, _>>().unwrap();
             assert_eq!(values, expected, "split {split}");
         }
+    }
+}
+
+#[cfg(test)]
+mod recycled_column_block_tests {
+    use super::*;
+
+    #[test]
+    fn thousands_of_tiny_blocks_preserve_values_at_every_boundary() {
+        let expected = (0..1024u64)
+            .map(|index| index.wrapping_mul(0x9e37_79b9_7f4a_7c15))
+            .collect::<Vec<_>>();
+        let raw = expected.iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut frames = Vec::new();
+        for byte in raw {
+            frames.extend(tests::none_block(&[byte]));
+        }
+        let actual = tests::scan(frames).collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(actual, expected);
     }
 }
