@@ -20,7 +20,9 @@ def parse_rss(status):
     for line in status.splitlines():
         if line.startswith(("VmRSS:", "VmHWM:")):
             tokens = line.split()
-            if len(tokens) == 3 and tokens[2] == "kB":
+            if (len(tokens) == 3 and tokens[2] == "kB"
+                    and tokens[1].isascii() and tokens[1].isdigit()
+                    and len(tokens[1]) <= 20):
                 peak = max(peak, int(tokens[1]) * 1024)
     return peak
 
