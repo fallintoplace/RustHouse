@@ -1048,7 +1048,8 @@ mod authenticated_checkpoint_intersection_tests {
             let expected = (0..chunks).filter(|index| index % 3 != 0 && index % 5 != 0)
                 .collect::<Vec<_>>();
             assert_eq!(intersection.completed_count(), expected.len());
-            let actual = (0..chunks).filter(|&index| intersection.is_complete(index).unwrap())
+            let actual = intersection.encode().bytes().enumerate()
+                .filter_map(|(index, flag)| (flag == b'1').then_some(index))
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected);
             let mut reverse = b.clone();
