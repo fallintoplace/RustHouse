@@ -114,6 +114,7 @@ pub(super) fn collect_wide_file_pairs(
 #[cfg(test)]
 mod adaptive_stream_single_pass_tests {
     use super::*;
+    use crate::WideMark;
 
     fn marks(rows: &[u64]) -> WideMarks {
         WideMarks {
@@ -134,13 +135,11 @@ mod adaptive_stream_single_pass_tests {
         let mismatch = validate_adaptive_stream(
             Path::new("b.bin"), &marks(&[2, 4]), 5, &mut layout
         ).unwrap_err();
-        assert!(matches!(mismatch, PartError::InvalidScan(message)
-            if message == "mark row counts do not match count.txt"));
+        assert!(matches!(mismatch, PartError::InvalidPart { reason: "mark row counts do not match count.txt", .. }));
         let overflow = validate_adaptive_stream(
             Path::new("c.bin"), &marks(&[u64::MAX, 1]), u64::MAX, &mut ScanLayout::default()
         ).unwrap_err();
-        assert!(matches!(overflow, PartError::InvalidScan(message)
-            if message == "mark row counts do not match count.txt"));
+        assert!(matches!(overflow, PartError::InvalidPart { reason: "mark row counts do not match count.txt", .. }));
     }
 
     #[test]
