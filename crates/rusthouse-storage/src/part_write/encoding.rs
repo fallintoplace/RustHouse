@@ -8,30 +8,37 @@ pub(super) fn push_varuint(mut value: u64, output: &mut Vec<u8>) {
     output.push(value as u8);
 }
 
+#[inline]
+fn uuid_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn push_uuid(value: &str, output: &mut Vec<u8>) -> Result<(), PartError> {
     let bytes = value.as_bytes();
     if bytes.len() != 36 || [8, 13, 18, 23].iter().any(|&index| bytes[index] != b'-') {
         return Err(invalid(format!("invalid UUID value: {value}")));
     }
+    // Decode complete hex pairs rather than visiting all 36 text positions
+    // and branching for every hyphen and every high/low nibble.
     let mut canonical = [0u8; 16];
-    let mut digit_index = 0usize;
-    for (position, &byte) in bytes.iter().enumerate() {
-        if matches!(position, 8 | 13 | 18 | 23) {
-            continue;
+    let mut source = 0usize;
+    for byte in &mut canonical {
+        if matches!(source, 8 | 13 | 18 | 23) {
+            source += 1;
         }
-        let digit = match byte {
-            b'0'..=b'9' => byte - b'0',
-            b'a'..=b'f' => byte - b'a' + 10,
-            b'A'..=b'F' => byte - b'A' + 10,
-            _ => return Err(invalid(format!("invalid UUID value: {value}"))),
+        let (Some(upper), Some(lower)) = (
+            uuid_hex_nibble(bytes[source]),
+            uuid_hex_nibble(bytes[source + 1]),
+        ) else {
+            return Err(invalid(format!("invalid UUID value: {value}")));
         };
-        let slot = &mut canonical[digit_index / 2];
-        if digit_index % 2 == 0 {
-            *slot = digit << 4;
-        } else {
-            *slot |= digit;
-        }
-        digit_index += 1;
+        *byte = (upper << 4) | lower;
+        source += 2;
     }
     // ClickHouse stores each UInt64 UUID half in little-endian order.
     for half in canonical.chunks_exact_mut(8) {
@@ -518,5 +525,29 @@ mod atomic_nested_cell_encoding_tests {
             &mut elements, &mut sizes).unwrap();
         assert_eq!(elements.len(), before.0.len() + 8);
         assert_eq!(&sizes[before.1.len()..], &2u64.to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+mod direct_uuid_decode_tests {
+    use super::*;
+
+    #[test]
+    fn pairwise_hex_decode_preserves_clickhouse_uuid_halves() {
+        let mut output = Vec::new();
+        push_uuid("00112233-4455-6677-8899-AaBbCcDdEeFf", &mut output).unwrap();
+        assert_eq!(output, [
+            0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00,
+            0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88,
+        ]);
+        let original_len = output.len();
+        for bad in [
+            "00112233-4455-6677-8899-AaBbCcDdEeFg",
+            "00112233-4455-6677-8899-AaBbCcDdEeF",
+            "00112233X4455-6677-8899-AaBbCcDdEeFf",
+        ] {
+            assert!(push_uuid(bad, &mut output).is_err());
+            assert_eq!(output.len(), original_len);
+        }
     }
 }
