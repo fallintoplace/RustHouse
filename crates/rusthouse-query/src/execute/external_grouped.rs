@@ -138,7 +138,10 @@ fn merge_until(
         }
     }
     let mut current: Option<(u64, u64)> = None;
-    while let Some(Reverse((key, index, count))) = heap.pop() {
+    // Each output pair only changes the winning cursor. Replacing the
+    // heap root in place performs one sift instead of a pop and a push.
+    while let Some(mut top) = heap.peek_mut() {
+        let Reverse((key, index, count)) = *top;
         match current.as_mut() {
             Some((last, total)) if *last == key => {
                 *total = total.checked_add(count)
@@ -151,8 +154,10 @@ fn merge_until(
                 current = Some((key, count));
             }
         }
-        if let Some((next, count)) = read_group(&mut streams[index])? {
-            heap.push(Reverse((next, index, count)));
+        if let Some((next, next_count)) = read_group(&mut streams[index])? {
+            *top = Reverse((next, index, next_count));
+        } else {
+            std::collections::binary_heap::PeekMut::pop(top);
         }
     }
     if let Some((last, count)) = current { let _ = emit(last, count)?; }
@@ -319,6 +324,12 @@ impl ExternalGroupCount64 {
                 let previous = std::mem::take(&mut self.runs);
                 let mut reduced = Vec::new();
                 for chunk in previous.chunks(FAN_IN) {
+                    // An untouched tail run is already compacted. Rewriting
+                    // it uses scratch space and full read/write I/O for no gain.
+                    if let [single] = chunk {
+                        reduced.push(single.clone());
+                        continue;
+                    }
                     // Compacting canonical counts never produces more bytes
                     // than the combined input runs.
                     let bytes = chunk.iter().try_fold(0u64, |total, file| {
@@ -676,5 +687,70 @@ mod narrow_key_radix_sort_tests {
         expected.sort_unstable();
         sort_run_keys(&mut high_only);
         assert_eq!(high_only, expected);
+    }
+}
+
+#[cfg(test)]
+mod root_replacement_merge_tests {
+    use super::*;
+
+    #[test]
+    fn heap_root_replacement_matches_global_grouped_counts() {
+        let scratch = Scratch::create().unwrap();
+        let mut paths = Vec::new();
+        let mut expected = [0u64; 100];
+        for shard in 0..48usize {
+            let path = scratch.0.join(format!("root-merge-{shard}.bin"));
+            let mut writer = BufWriter::new(File::create(&path).unwrap());
+            for key in 0..100usize {
+                if (shard + key) % 7 == 0 {
+                    let count = (shard % 4 + 1) as u64;
+                    write_group(&mut writer, key as u64, count).unwrap();
+                    expected[key] += count;
+                }
+            }
+            writer.flush().unwrap();
+            paths.push(path);
+        }
+        let mut actual = Vec::new();
+        merge_until(&paths, |key, count| {
+            actual.push((key, count));
+            Ok(true)
+        }).unwrap();
+        let expected = expected.iter().enumerate()
+            .filter(|(_, &count)| count > 0)
+            .map(|(key, &count)| (key as u64, count))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+
+        let mut page = Vec::new();
+        merge_until(&paths, |key, count| {
+            page.push((key, count));
+            Ok(page.len() < 11)
+        }).unwrap();
+        assert_eq!(page, expected[..11]);
+    }
+
+    #[test]
+    fn compaction_keeps_single_tail_run_without_rewriting_it() {
+        let mut groups = ExternalGroupCount64::new(false, false);
+        for index in 0..FAN_IN + 1 {
+            let path = groups.next_path().unwrap();
+            let mut writer = File::create(&path).unwrap();
+            write_group(&mut writer, index as u64, 1).unwrap();
+            drop(writer);
+            groups.reserve_disk(&path).unwrap();
+            groups.runs.push(path);
+        }
+        let tail = groups.runs.last().unwrap().clone();
+        groups.compact_runs().unwrap();
+        assert_eq!(groups.runs.len(), 2);
+        assert_eq!(groups.runs[1], tail);
+        let mut items = Vec::new();
+        groups.finish(|key, count| {
+            items.push((key, count));
+            Ok(())
+        }).unwrap();
+        assert_eq!(items, (0..FAN_IN + 1).map(|k| (k as u64, 1)).collect::<Vec<_>>());
     }
 }
