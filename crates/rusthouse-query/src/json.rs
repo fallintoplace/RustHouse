@@ -468,7 +468,7 @@ mod borrowed_json_each_row_field_tests {
             "\"column_{index}\":{index}"
         )).collect::<Vec<_>>().join(","));
         assert_eq!(parse_json_each_row_fields(&wide).unwrap().len(), 128);
-        let duplicated = format!("{},\"column_3\":88}}", &wide[..wide.len() - 1]);
+        let duplicated = wide.replace("\"column_127\":127", "\"column_3\":88");
         assert!(parse_json_each_row_fields(&duplicated).unwrap_err()
             .starts_with("duplicate JSONEachRow field:"));
         assert!(parse_json_each_row_fields(r#"{"":1}"#).is_err());
