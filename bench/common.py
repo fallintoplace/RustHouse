@@ -26,6 +26,19 @@ def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-heade
         raise ValueError("a verification format can be used only with SELECT")
     # Do not buffer an untrusted query result in subprocess.PIPE. Only a
     # bounded prefix is ever read back into the Python heap.
+    extra = {}
+    if os.name == "posix":
+        import resource
+
+        def limit_child_output():
+            _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            cap = MAX_SQL_STDOUT_BYTES + 1
+            if hard != resource.RLIM_INFINITY:
+                cap = min(cap, hard)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (cap, hard))
+
+        extra["preexec_fn"] = limit_child_output
+
     with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
         completed = subprocess.run(
             command,
@@ -33,8 +46,12 @@ def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-heade
             stderr=errors,
             check=False,
             timeout=timeout,
+            **extra,
         )
         if completed.returncode:
+            output.seek(0, os.SEEK_END)
+            if output.tell() > MAX_SQL_STDOUT_BYTES:
+                raise ValueError("SQL query output exceeds 64 MiB")
             errors.seek(0)
             error = errors.read(2000).decode("utf-8", "replace")
             raise RuntimeError(f"exit {completed.returncode}: {error}")
