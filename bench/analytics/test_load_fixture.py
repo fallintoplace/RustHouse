@@ -18,6 +18,19 @@ class ClickBenchLoadTests(unittest.TestCase):
             self.assertEqual(len(commands), 3)
             self.assertFalse(result["official_clickbench"])
 
+    def test_rejects_symlinked_tsv_before_import(self):
+        with tempfile.TemporaryDirectory() as root:
+            generate(root, rows=4, seed=3)
+            path = Path(root) / "hits.tsv"
+            source = Path(root) / "original.tsv"
+            path.rename(source)
+            path.symlink_to(source)
+            executed = []
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                load_fixture("binary", Path(root) / "db", root,
+                             execute=lambda sql: executed.append(sql))
+            self.assertEqual(executed, [])
+
     def test_rejects_oversized_tsv_record_before_import(self):
         with tempfile.TemporaryDirectory() as root:
             generate(root, rows=4, seed=3)
