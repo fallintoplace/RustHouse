@@ -22,7 +22,7 @@ def bounded_tsv_records(source):
         line = source.readline(MAX_TSV_RECORD_CHARS + 1)
         if not line:
             return
-        if len(line) > MAX_TSV_RECORD_CHARS or not line.endswith("\n"):
+        if len(line.encode("utf-8")) > MAX_TSV_RECORD_CHARS or not line.endswith("\n"):
             raise ValueError("hits TSV record exceeds 64 KiB or is truncated")
         yield line
 
