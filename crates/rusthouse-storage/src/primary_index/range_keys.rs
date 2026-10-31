@@ -103,17 +103,22 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     if ranges.windows(2).any(|pair| pair[0].start > pair[1].start) {
         ranges.sort_unstable_by_key(|range| range.start);
     }
-    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
-    for range in ranges {
-        if let Some(previous) = merged.last_mut() {
-            if range.start <= previous.end {
-                previous.end = previous.end.max(range.end);
-                continue;
-            }
+    // Merge the sorted mark ranges in place. The original code allocated
+    // another vector and copied every candidate range into it. IN/OR scans
+    // can contain many intervals, but each merged range occupies at most one
+    // of the already allocated input slots.
+    let mut output_len = 0;
+    for input in 0..ranges.len() {
+        let range = ranges[input].clone();
+        if output_len != 0 && range.start <= ranges[output_len - 1].end {
+            ranges[output_len - 1].end = ranges[output_len - 1].end.max(range.end);
+        } else {
+            ranges[output_len] = range;
+            output_len += 1;
         }
-        merged.push(range);
     }
-    Some(merged)
+    ranges.truncate(output_len);
+    Some(ranges)
 }
 
 fn key_bytes(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<[u8; 8]> {
@@ -173,5 +178,65 @@ mod unbounded_range_tests {
             &intervals,
         );
         assert_eq!(merged, Some(std::iter::once(0..17).collect::<Vec<_>>()));
+    }
+}
+
+#[cfg(test)]
+mod in_place_interval_union_tests {
+    use super::*;
+
+    #[test]
+    fn large_interval_sets_match_sorted_and_reversed_reference() {
+        // A mark belongs to the candidate set when any interval selects it,
+        // including its predecessor granule. Cross-check every mark rather
+        // than testing only the number of returned ranges.
+        let intervals = (0..4096usize)
+            .map(|index| {
+                let start = ((index * 47) % 8192) as u64;
+                (Bound::Included(start), Bound::Included(start + (index % 19) as u64))
+            })
+            .collect::<Vec<_>>();
+        let expected = {
+            let mut selected = [false; 8192];
+            for &(lower, upper) in &intervals {
+                let interval = candidate_mark_range(
+                    selected.len(), |mark| Some(mark as u64), lower, upper
+                ).unwrap();
+                for mark in interval {
+                    selected[mark] = true;
+                }
+            }
+            selected
+        };
+        for unsorted in [false, true] {
+            let mut input = intervals.clone();
+            if unsorted { input.reverse(); }
+            let actual = candidate_mark_ranges(8192, |mark| Some(mark as u64), &input)
+                .unwrap();
+            assert!(actual.windows(2).all(|r| r[0].end < r[1].start));
+            let mut selected = [false; 8192];
+            for range in actual {
+                for mark in range { selected[mark] = true; }
+            }
+            assert_eq!(selected, expected);
+        }
+    }
+
+    #[test]
+    fn nested_and_disjoint_intervals_keep_only_one_copy_of_each_mark() {
+        let input = [
+            (Bound::Included(20u64), Bound::Included(25u64)),
+            (Bound::Included(21), Bound::Included(22)),
+            (Bound::Included(40), Bound::Included(41)),
+            (Bound::Included(24), Bound::Included(27)),
+        ];
+        assert_eq!(
+            candidate_mark_ranges(100, |mark| Some(mark as u64), &input).unwrap(),
+            vec![19..28, 39..42]
+        );
+        assert!(candidate_mark_ranges(
+            100, |mark| Some(mark as u64),
+            &[(Bound::Included(200u64), Bound::Included(300))]
+        ).unwrap().is_empty());
     }
 }
