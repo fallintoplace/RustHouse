@@ -60,6 +60,11 @@ class GeneratedQueryTests(unittest.TestCase):
                 expected = "".join(f"{last - 21 * index}\n" for index in range(20))
                 self.assertEqual(case.expected, expected.encode("ascii"))
 
+    def test_make_cases_rejects_noninteger_row_counts(self):
+        for rows in (True, 512.5, "512", None):
+            with self.subTest(rows=rows), self.assertRaisesRegex(ValueError, "--rows"):
+                runner.make_cases(rows)
+
     def test_query_selection_has_stable_ids_and_rejects_invalid_ranges(self):
         cases = runner.make_cases(512)
         self.assertEqual([i for i, _ in runner.select_cases(cases, "3,1-2,2,20")], [1, 2, 3, 20])

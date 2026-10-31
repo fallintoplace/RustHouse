@@ -35,7 +35,7 @@ def tsv(values):
 
 def make_cases(rows):
     """Keep results small while increasing the generated input scan size."""
-    if not 512 <= rows <= 1_000_000:
+    if type(rows) is not int or not 512 <= rows <= 1_000_000:
         raise ValueError("--rows must be in 512..1000000")
     middle = rows // 2
     multiples_of_7 = range(0, rows, 7)
