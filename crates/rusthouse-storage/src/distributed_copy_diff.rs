@@ -167,6 +167,10 @@ pub fn plan_replica_copy_batch(
     let mut needed = source_index
         .into_values()
         .filter(|meta| needs_copy(meta, &destination_index))
+        // Remaining budget only decreases during the greedy copy walk.
+        // Objects larger than the initial budget cannot enter this batch,
+        // so exclude them before allocating and ranking candidates.
+        .filter(|meta| meta.bytes <= max_bytes)
         .collect::<Vec<_>>();
     if max_objects.saturating_mul(4) < needed.len() {
         // Select progressively larger lexicographic prefixes. Most tiny
@@ -548,5 +552,39 @@ mod unconstrained_prefix_selection_tests {
                 .iter().map(|meta| meta.key.as_str()).collect::<Vec<_>>(),
             vec!["b/x", "c/x"]
         );
+    }
+}
+
+#[cfg(test)]
+mod unaffordable_copy_candidates_tests {
+    use super::*;
+
+    #[test]
+    fn large_immutable_objects_do_not_hide_later_affordable_copies() {
+        let source = (0..8_192)
+            .rev()
+            .map(|index| ObjectMetadata {
+                key: format!("part/file_{index:05}"),
+                bytes: if index % 101 == 0 { 0 } else if index % 17 == 0 { 1 } else { 1_000_000 },
+                crc32c: index,
+            })
+            .collect::<Vec<_>>();
+        let full = plan_replica_copies(&source, &[]).unwrap();
+        for budget in [0, 1, 2, 8, 64] {
+            for limit in [2, 3, 5, 16, 64, 257] {
+                let mut remaining = budget;
+                let expected = full.iter()
+                    .filter(|object| {
+                        if object.bytes > remaining { return false; }
+                        remaining -= object.bytes;
+                        true
+                    })
+                    .take(limit).cloned().collect::<Vec<_>>();
+                assert_eq!(
+                    plan_replica_copy_batch(&source, &[], budget, limit).unwrap(),
+                    expected, "budget={budget} limit={limit}",
+                );
+            }
+        }
     }
 }
