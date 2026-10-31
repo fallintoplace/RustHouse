@@ -12,6 +12,10 @@ from pathlib import Path
 MAX_SNAPSHOT_REPORT_BYTES = 2 * 1024 * 1024
 
 
+def reject_nonstandard_constant(value):
+    raise ValueError(f"nonstandard snapshot JSON constant: {value}")
+
+
 def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
                      max_parts=None, timeout=600):
     if (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0):
@@ -48,7 +52,8 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
             fields[name] = value
         return fields
 
-    data = json.loads(payload, object_pairs_hook=unique_fields)
+    data = json.loads(payload, object_pairs_hook=unique_fields,
+                      parse_constant=reject_nonstandard_constant)
     if not isinstance(data, dict):
         raise ValueError("snapshot report must be a JSON object")
     rows, parts = data.get("rows"), data.get("parts")
