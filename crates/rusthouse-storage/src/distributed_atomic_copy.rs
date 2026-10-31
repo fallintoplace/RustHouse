@@ -56,6 +56,7 @@ fn stream_bounded_copy(
     output: &mut File,
     expected_bytes: u64,
     max_bytes: u64,
+    mut checksum: Option<&mut crate::distributed_crc32c::Crc32cState>,
 ) -> io::Result<u64> {
     let mut total = 0u64;
     // Small files avoid allocating a large buffer; large copies reduce syscall count.
@@ -81,6 +82,9 @@ fn stream_bounded_copy(
             return Err(io::Error::other("replica file exceeds byte cap"));
         }
         output.write_all(&buffer[..len])?;
+        if let Some(state) = checksum.as_mut() {
+            state.append(&buffer[..len]);
+        }
     }
     if total != expected_bytes {
         return Err(io::Error::other("source changed during immutable copy"));
@@ -92,6 +96,15 @@ fn stream_bounded_copy(
 /// Stage, sync, and hard-link an immutable destination file.
 /// Both paths must be on a trusted local filesystem. Existing objects are never replaced.
 pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) -> io::Result<u64> {
+    copy_immutable_file_impl(source, destination, max_bytes, None)
+}
+
+fn copy_immutable_file_impl(
+    source: &Path,
+    destination: &Path,
+    max_bytes: u64,
+    expected_crc32c: Option<u32>,
+) -> io::Result<u64> {
     let source_meta = fs::symlink_metadata(source)?;
     if !source_meta.file_type().is_file() || source_meta.len() > max_bytes {
         return Err(io::Error::other("source is not a bounded regular file"));
@@ -115,10 +128,18 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
         return Err(io::Error::other("source inode changed before immutable copy"));
     }
     let mut output = create_private_replica_file(&staging)?;
-    let copied = stream_bounded_copy(&mut input, &mut output, source_meta.len(), max_bytes);
+    let mut checksum = expected_crc32c.map(|_| crate::distributed_crc32c::Crc32cState::new());
+    let copied = stream_bounded_copy(
+        &mut input, &mut output, source_meta.len(), max_bytes, checksum.as_mut(),
+    );
     drop(output);
     // hard_link fails if the destination already exists, unlike an overwriting rename.
     let published = copied.and_then(|total| {
+        if let Some(expected) = expected_crc32c {
+            if checksum.as_ref().is_none_or(|state| state.checksum() != expected) {
+                return Err(io::Error::other("replica object checksum mismatch"));
+            }
+        }
         // Recheck both the opened inode and the source path after the stream.
         // A mutation or replacement at the same length must not be published.
         let final_opened = input.metadata()?;
@@ -155,26 +176,9 @@ pub fn copy_immutable_file_checked(
     max_bytes: u64,
     expected_crc32c: u32,
 ) -> io::Result<u64> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| io::Error::other("destination has no parent directory"))?;
-    let staging = staging_path(parent, "checked-copy");
-    let copied = copy_immutable_file(source, &staging, max_bytes)?;
-    let verified = (|| -> io::Result<()> {
-        let mut file = File::open(&staging)?;
-        let (size, crc32c) = crate::distributed_crc32c::crc32c_reader(&mut file, max_bytes)?;
-        if size != copied || crc32c != expected_crc32c {
-            return Err(io::Error::other("replica object checksum mismatch"));
-        }
-        fs::hard_link(&staging, destination)?;
-        Ok(())
-    })();
-    let cleanup = fs::remove_file(&staging);
-    verified?;
-    cleanup?;
-    #[cfg(unix)]
-    File::open(parent)?.sync_all()?;
-    Ok(copied)
+    // Compute CRC32C while the copy is streamed. Publish only after the
+    // checksum and frozen-source identity both pass, without a second read.
+    copy_immutable_file_impl(source, destination, max_bytes, Some(expected_crc32c))
 }
 
 #[cfg(all(test, unix))]
@@ -236,7 +240,7 @@ mod tests {
         fs::write(&source, vec![1u8; 64 * 1024]).unwrap();
         let mut input = File::open(&source).unwrap();
         let mut output = File::create(&target).unwrap();
-        assert!(stream_bounded_copy(&mut input, &mut output, 64 * 1024, 0).is_err());
+        assert!(stream_bounded_copy(&mut input, &mut output, 64 * 1024, 0, None).is_err());
         assert_eq!(input.stream_position().unwrap(), 1);
         assert_eq!(output.metadata().unwrap().len(), 0);
         fs::remove_dir_all(dir).unwrap();
@@ -246,6 +250,30 @@ mod tests {
 #[cfg(test)]
 mod checked_copy_tests {
     use super::*;
+
+    #[test]
+    fn checked_copy_streams_large_inputs_and_rejects_corruption() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-checked-copy-stream-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let source = dir.join("source");
+        let target = dir.join("target");
+        let payload = (0..300_000).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        fs::write(&source, &payload).unwrap();
+        let expected = crate::distributed_crc32c::crc32c(&payload);
+        assert!(copy_immutable_file_checked(
+            &source, &target, payload.len() as u64, expected ^ 1,
+        ).is_err());
+        assert!(!target.exists());
+        assert_eq!(
+            copy_immutable_file_checked(&source, &target, payload.len() as u64, expected).unwrap(),
+            payload.len() as u64,
+        );
+        assert_eq!(fs::read(&target).unwrap(), payload);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn checks_staged_bytes_before_publishing() {
@@ -298,7 +326,7 @@ mod interrupted_replica_copy_tests {
             interrupted: true,
         };
         assert_eq!(
-            stream_bounded_copy(&mut input, &mut output, 12, 12).unwrap(),
+            stream_bounded_copy(&mut input, &mut output, 12, 12, None).unwrap(),
             12
         );
         drop(output);
