@@ -267,14 +267,21 @@ mod sparse_json_escape_span_tests {
     fn long_plain_runs_around_escapes_preserve_utf8_and_control_bytes() {
         let left = "é".repeat(3000);
         let right = "猫".repeat(1800);
-        let input = format!("{left}\\n\\u{0001}\\\\\\\"{right}\\t");
-        let expected = [
-            b"\\\"".as_slice(),
-            left.as_bytes(),
-            br"\\n\\u0001\\\\\\\"".as_slice(),
-            right.as_bytes(),
-            br"\\t\\\"".as_slice(),
-        ].concat();
+        let mut input = left.clone();
+        input.push('\n');
+        input.push('\u{0001}');
+        input.push('\\');
+        input.push('"');
+        input.push_str(&right);
+        input.push('\t');
+        let mut expected = vec![b'"'];
+        expected.extend_from_slice(left.as_bytes());
+        expected.extend_from_slice(&[
+            b'\\', b'n', b'\\', b'u', b'0', b'0', b'0', b'1',
+            b'\\', b'\\', b'\\', b'"',
+        ]);
+        expected.extend_from_slice(right.as_bytes());
+        expected.extend_from_slice(&[b'\\', b't', b'"']);
         let mut output = Vec::new();
         write_json_string(&mut output, &input).unwrap();
         assert_eq!(output, expected);
