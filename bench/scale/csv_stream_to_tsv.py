@@ -39,8 +39,10 @@ def convert(source, destination, *, header=False, empty_as_null=False,
         raise ValueError("input and output must be different files")
     if skip_header and not header:
         raise ValueError("skip_header requires header=True")
-    if type(max_field_bytes) is not int or max_field_bytes < 1:
-        raise ValueError("max_field_bytes must be a positive integer")
+    # COPY TSV rows cannot exceed 8 MiB. Larger CSV field limits cannot
+    # produce a valid row and can overflow csv.field_size_limit's C integer.
+    if type(max_field_bytes) is not int or not 1 <= max_field_bytes <= 8 * 1024 * 1024:
+        raise ValueError("max_field_bytes must be in 1..8388608")
     if expected_columns is not None and (
             type(expected_columns) is not int or not 1 <= expected_columns <= 128):
         raise ValueError("expected_columns must be in 1..128")
