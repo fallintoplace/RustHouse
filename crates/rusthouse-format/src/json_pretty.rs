@@ -42,20 +42,30 @@ fn is_empty_json_container_pair(open: u8, close: u8) -> bool {
 /// Pretty-print a validated JSON row, preserving punctuation inside strings.
 pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
     let mut inside_json_string = false;
-    let mut previous_byte_was_escape = false;
     let mut depth = 0usize;
     let mut start = 0usize;
-    for (index, &byte) in row.iter().enumerate() {
+    let mut index = 0usize;
+    while index < row.len() {
         if inside_json_string {
-            if previous_byte_was_escape {
-                previous_byte_was_escape = false;
-            } else if byte == b'\\' {
-                previous_byte_was_escape = true;
-            } else if byte == b'"' {
+            // JSON string values may be megabytes long. Skip ordinary bytes
+            // in a single span while still respecting escaped quote pairs.
+            let next = row[index..]
+                .iter()
+                .position(|&byte| byte == b'\\' || byte == b'"')
+                .unwrap_or(row.len() - index);
+            index += next;
+            if index == row.len() {
+                break;
+            }
+            if row[index] == b'\\' {
+                index = (index + 2).min(row.len());
+            } else {
                 inside_json_string = false;
+                index += 1;
             }
             continue;
         }
+        let byte = row[index];
         match byte {
             b'"' => inside_json_string = true,
             b'{' | b'[' => {
@@ -110,6 +120,7 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
             }
             _ => {}
         }
+        index += 1;
     }
     output.write_all(&row[start..])
 }
@@ -318,5 +329,31 @@ mod long_pretty_json_key_batch_tests {
             rendered,
             format!("{{\n    \"{key}\": 1\n  }}").as_bytes()
         );
+    }
+}
+
+#[cfg(test)]
+mod large_json_string_span_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_long_punctuation_and_escaped_quotes_in_values() {
+        let long = "café,{}[]:東京".repeat(4096);
+        let escaped = r#"\"quoted\"\\path\n"#;
+        let input = format!(r#"{{"value":"{long}{escaped}{long}","n":1}}"#);
+        let expected = format!("{{\n    \"value\": \"{long}{escaped}{long}\",\n    \"n\": 1\n  }}");
+        let mut actual = Vec::new();
+        write_pretty_json_row(&mut actual, input.as_bytes()).unwrap();
+        assert_eq!(actual, expected.as_bytes());
+    }
+
+    #[test]
+    fn repeated_escaped_backslashes_and_quotes_do_not_end_string_early() {
+        let escaped = r#"\\\""#.repeat(4096);
+        let input = format!(r#"{{"payload":"{escaped}","next":true}}"#);
+        let expected = format!("{{\n    \"payload\": \"{escaped}\",\n    \"next\": true\n  }}");
+        let mut actual = Vec::new();
+        write_pretty_json_row(&mut actual, input.as_bytes()).unwrap();
+        assert_eq!(actual, expected.as_bytes());
     }
 }
