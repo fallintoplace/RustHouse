@@ -51,7 +51,7 @@ pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
 
 fn parse_required_peer_headers<'a>(
     lines: impl Iterator<Item = &'a str>,
-) -> Result<(usize, String, bool), String> {
+) -> Result<(usize, &'a str, bool), String> {
     let mut length = None;
     let mut content_type = None;
     let mut compressed = None;
@@ -69,7 +69,7 @@ fn parse_required_peer_headers<'a>(
             if value.is_empty() {
                 return Err("empty peer Content-Type".into());
             }
-            content_type = Some(value.to_owned());
+            content_type = Some(value);
         } else if name.eq_ignore_ascii_case("content-encoding") {
             if compressed.is_some() {
                 return Err("duplicate peer Content-Encoding".into());
@@ -87,10 +87,10 @@ fn parse_required_peer_headers<'a>(
     Ok((length, content_type, compressed.unwrap_or(false)))
 }
 
-struct ResponseHead {
+struct ResponseHead<'a> {
     body_start: usize,
     status: u16,
-    content_type: String,
+    content_type: &'a str,
     body_length: usize,
     compressed: bool,
 }
@@ -109,7 +109,7 @@ fn decode_compressed_peer_body(compressed: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Parse a complete HTTP response head without waiting for the peer to close
 /// its connection. The advertised body length is untrusted and remains bounded.
-fn response_head(raw: &[u8]) -> Result<Option<ResponseHead>, String> {
+fn response_head(raw: &[u8]) -> Result<Option<ResponseHead<'_>>, String> {
     // A malicious peer must not force an unbounded delimiter scan before
     // the 8 KiB header cap is enforced. The terminator must fit in this
     // bounded prefix, even when body bytes were already buffered.
@@ -163,10 +163,10 @@ pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
     };
     Ok(PeerResponse {
         status: head.status,
-        content_type: head.content_type,
+        content_type: head.content_type.to_owned(),
         body,
     })
-}
+
 
 /// Decode a response when the caller owns the network buffer. Plain bodies
 /// are shifted in place rather than cloning up to 16 MiB of uncompressed TSV.
@@ -175,6 +175,9 @@ pub(super) fn parse_response_owned(mut raw: Vec<u8>) -> Result<PeerResponse, Str
     if raw.len() != head.body_start + head.body_length {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
+    // Only completed responses need an owned Content-Type. Release the
+    // borrowed header before compacting or moving the receive buffer.
+    let content_type = head.content_type.to_owned();
     let body = if head.compressed {
         decode_compressed_peer_body(&raw[head.body_start..])?
     } else {
@@ -184,7 +187,7 @@ pub(super) fn parse_response_owned(mut raw: Vec<u8>) -> Result<PeerResponse, Str
     };
     Ok(PeerResponse {
         status: head.status,
-        content_type: head.content_type,
+        content_type,
         body,
     })
 }
@@ -295,5 +298,29 @@ mod bounded_response_header_scan_tests {
         wire.extend(std::iter::repeat_n(b'x', 200_000));
         assert_eq!(expected_wire_length(&wire).unwrap(), Some(wire.len()));
         assert_eq!(parse_response_owned(wire).unwrap().body.len(), 200_000);
+    }
+}
+
+#[cfg(test)]
+mod borrowed_peer_head_tests {
+    use super::*;
+
+    #[test]
+    fn head_borrows_content_type_directly_from_network_buffer() {
+        let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 3\r\n\r\nabc";
+        let parsed = response_head(wire).unwrap().unwrap();
+        let label = b"text/plain; charset=utf-8";
+        let start = wire.windows(label.len()).position(|span| span == label).unwrap();
+        assert_eq!(parsed.content_type.as_bytes().as_ptr(), wire[start..].as_ptr());
+        assert_eq!(expected_wire_length(wire).unwrap(), Some(wire.len()));
+        let owned = parse_response_owned(wire.to_vec()).unwrap();
+        assert_eq!(owned.content_type, "text/plain; charset=utf-8");
+        assert_eq!(owned.body, b"abc");
+    }
+
+    #[test]
+    fn uncompleted_header_rejects_duplicate_content_type() {
+        let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
+        assert!(expected_wire_length(wire).is_err());
     }
 }
