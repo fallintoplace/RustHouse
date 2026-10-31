@@ -18,7 +18,10 @@ from pathlib import Path
 
 def percentile(samples, percentile):
     if (not samples or type(percentile) not in (int, float)
-            or not math.isfinite(percentile) or not 0 < percentile <= 100):
+            or not math.isfinite(percentile) or not 0 < percentile <= 100
+            or any(type(sample) not in (int, float)
+                   or not math.isfinite(sample) or sample < 0
+                   for sample in samples)):
         raise ValueError("invalid sample count or percentile")
     return sorted(samples)[math.ceil(len(samples) * percentile / 100) - 1]
 
