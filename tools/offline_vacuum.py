@@ -60,7 +60,11 @@ def plan(database, keep=3):
         if not real_directory(versions):
             raise ValueError(f"invalid generation root: {versions}")
         labels = []
+        scanned = 0
         for entry in versions.iterdir():
+            scanned += 1
+            if scanned > MAX_GENERATIONS:
+                raise ValueError(f"invalid generation inventory: {versions}")
             if entry.name.startswith(".pending-"):
                 continue
             if not GENERATION.fullmatch(entry.name) or not real_directory(entry):

@@ -59,6 +59,15 @@ class OfflineVacuumTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "invalid generation inventory"):
                     plan(root, keep=2)
 
+    def test_pending_entries_consume_scan_budget(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            _parts, versions = self.fixture(root)
+            (versions / ".pending-incomplete").mkdir()
+            with patch("offline_vacuum.MAX_GENERATIONS", 5):
+                with self.assertRaisesRegex(ValueError, "invalid generation inventory"):
+                    plan(root, keep=2)
+
     def test_execute_needs_explicit_offline_confirmation(self):
         with tempfile.TemporaryDirectory() as root:
             self.fixture(root)
