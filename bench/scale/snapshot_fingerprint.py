@@ -55,9 +55,11 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
                     != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
                 raise ValueError(f"snapshot file changed while hashing: {path}")
             rel = path.relative_to(root).as_posix()
-            aggregate.update(rel.encode("utf-8") + b"\0"
-                             + str(before.st_size).encode("ascii") + b"\0"
-                             + digest.digest())
+            aggregate.update(rel.encode("utf-8"))
+            aggregate.update(b"\0")
+            aggregate.update(str(before.st_size).encode("ascii"))
+            aggregate.update(b"\0")
+            aggregate.update(digest.digest())
             count += 1
             total_bytes += before.st_size
             if count > max_files:
