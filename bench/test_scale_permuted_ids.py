@@ -39,6 +39,18 @@ class PermutedFixturesTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 generate(path, 3)
 
+    def test_published_output_syncs_parent_directory_on_posix(self):
+        import os
+        from unittest.mock import patch
+        if os.name != "posix":
+            self.skipTest("directory fsync requires POSIX")
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "durable.tsv"
+            with patch("bench.scale.permuted_ids.os.fsync", wraps=os.fsync) as sync:
+                generate(output, 3)
+            self.assertTrue(output.exists())
+            self.assertGreaterEqual(sync.call_count, 2)
+
     def test_never_replaces_raced_destination(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as root:
