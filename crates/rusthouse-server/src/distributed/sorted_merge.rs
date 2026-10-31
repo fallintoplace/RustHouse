@@ -154,8 +154,16 @@ fn next_row(
     if row.iter().filter(|&&byte| byte == b'\t').count() != column_count - 1 {
         return Err(MergeError::InvalidSortedScan);
     }
-    let key = row.split(|&byte| byte == b'\t').next()
-        .ok_or(MergeError::InvalidSortedScan)?;
+    let mut fields = row.split(|&byte| byte == b'\t');
+    let key = fields.next().ok_or(MergeError::InvalidSortedScan)?;
+    // A sorted shard must be as strict as the unordered TSV merger.
+    // Reject malformed escaping even in rows omitted by LIMIT/OFFSET.
+    for field in fields {
+        if field != br"\N" {
+            rusthouse_format::validate_tsv_field(field)
+                .map_err(|_| MergeError::InvalidSortedScan)?;
+        }
+    }
     if key == b"NULL" {
         return Err(MergeError::InvalidSortedScan);
     }
@@ -412,6 +420,36 @@ mod multicolumn_sorted_merge_tests {
                 &shards, &["id", "label"], "Int64", true, 1, 2, 2,
             ).unwrap(),
             b"id\tlabel\n8\tother\n2\tsecond\n",
+        );
+    }
+}
+
+#[cfg(test)]
+mod sorted_shard_escaped_fields_tests {
+    use super::*;
+
+    #[test]
+    fn validates_all_projected_fields_before_returning_a_page() {
+        for corrupt in [
+            b"id\tname\n1\tgood\n2\tbad\\q\n".as_slice(),
+            b"id\tname\n1\tgood\n2\tbad\\x0\n".as_slice(),
+            b"id\tname\n1\tgood\n2\tbad\\xGG\n".as_slice(),
+            b"id\tname\n1\tgood\n2\tbad\\\n".as_slice(),
+        ] {
+            assert_eq!(
+                merge_sorted_integer_rows_page(
+                    &[(16, corrupt.to_vec())], &["id", "name"],
+                    "UInt64", false, 0, 1, 1,
+                ),
+                Err(MergeError::InvalidSortedScan),
+            );
+        }
+        let valid = [(16, b"id\tname\n1\tvalid\\tvalue\n2\t\\N\n3\t\\x41\n".to_vec())];
+        assert_eq!(
+            merge_sorted_integer_rows_page(
+                &valid, &["id", "name"], "UInt64", false, 1, 2, 2,
+            ).unwrap(),
+            b"id\tname\n2\t\\N\n3\t\\x41\n",
         );
     }
 }
