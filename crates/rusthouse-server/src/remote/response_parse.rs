@@ -110,7 +110,11 @@ fn decode_compressed_peer_body(compressed: &[u8]) -> Result<Vec<u8>, String> {
 /// Parse a complete HTTP response head without waiting for the peer to close
 /// its connection. The advertised body length is untrusted and remains bounded.
 fn response_head(raw: &[u8]) -> Result<Option<ResponseHead>, String> {
-    let Some(head_end) = raw.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+    // A malicious peer must not force an unbounded delimiter scan before
+    // the 8 KiB header cap is enforced. The terminator must fit in this
+    // bounded prefix, even when body bytes were already buffered.
+    let head_prefix = &raw[..raw.len().min(MAX_HEADER_BYTES)];
+    let Some(head_end) = head_prefix.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
         if raw.len() >= MAX_HEADER_BYTES {
             return Err("peer headers exceed 8 KiB".into());
         }
@@ -261,5 +265,35 @@ mod compressed_response_tests {
         assert!(parse_response(&bomb).is_err());
         let unknown = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\n\r\nOK";
         assert!(parse_response(unknown).is_err());
+    }
+}
+
+#[cfg(test)]
+mod bounded_response_header_scan_tests {
+    use super::*;
+
+    #[test]
+    fn header_terminator_must_fit_inside_header_cap() {
+        let valid_head = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n";
+        let padding = MAX_HEADER_BYTES - valid_head.len() - 4;
+        let mut valid = valid_head.to_vec();
+        valid.extend(std::iter::repeat_n(b'X', padding));
+        valid.extend_from_slice(b"\r\n\r\n");
+        // Long header extension is syntactically rejected, but the
+        // byte-boundary check must still recognize the terminator.
+        assert_eq!(valid.len(), MAX_HEADER_BYTES);
+        assert!(response_head(&valid).is_err());
+        let mut malicious = vec![b'a'; MAX_HEADER_BYTES + 1_000_000];
+        malicious.extend_from_slice(b"\r\n\r\n");
+        assert!(response_head(&malicious).is_err());
+        assert_eq!(response_head(&vec![b'a'; MAX_HEADER_BYTES - 1]).unwrap().is_none(), true);
+    }
+
+    #[test]
+    fn complete_valid_response_with_large_body_is_still_detected() {
+        let mut wire = b"HTTP/1.1 200 OK\r\nContent-Length: 200000\r\nContent-Type: text/plain\r\n\r\n".to_vec();
+        wire.extend(std::iter::repeat_n(b'x', 200_000));
+        assert_eq!(expected_wire_length(&wire).unwrap(), Some(wire.len()));
+        assert_eq!(parse_response_owned(wire).unwrap().body.len(), 200_000);
     }
 }
