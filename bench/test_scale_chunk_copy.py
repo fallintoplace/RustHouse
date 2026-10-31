@@ -24,6 +24,15 @@ class ChunkCopyTests(unittest.TestCase):
         self.assertLessEqual(len(diagnostic), 500)
 
 
+    def test_rejects_ambiguous_manifest_before_copy(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "manifest.json"
+            for payload in (b'{"format":"one","format":"two"}', b"[]"):
+                path.write_bytes(payload)
+                with self.subTest(payload=payload), self.assertRaises(ValueError):
+                    load_chunks("rusthouse", "db", "events", root,
+                                execute=lambda *_a, **_k: self.fail("must not COPY"))
+
     def test_escapes_path_and_rejects_identifier_injection(self):
         self.assertIn("WITH (FORMAT TSV)", copy_sql("events", "events.tsv"))
         with self.assertRaisesRegex(ValueError, "identifier"):
