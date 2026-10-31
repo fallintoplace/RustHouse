@@ -1,24 +1,12 @@
 //! Quorum policy validation for future replicated storage writes.
 //! This module does not implement consensus or distributed transactions.
 
-use std::collections::HashMap;
-
 fn valid_member(member: &str) -> bool {
     !member.is_empty()
         && member.len() <= 64
         && member
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn member_index<'a>(members: &[&'a str]) -> Result<HashMap<&'a str, usize>, &'static str> {
-    let mut membership = HashMap::with_capacity(members.len());
-    for (index, &member) in members.iter().enumerate() {
-        if !valid_member(member) || membership.insert(member, index).is_some() {
-            return Err("invalid or duplicate quorum member");
-        }
-    }
-    Ok(membership)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,12 +77,26 @@ impl QuorumPolicy {
                 acknowledgement_mask |= 1u16 << index;
             }
         } else {
-            let membership = member_index(members)?;
+            // At most 16 members can be configured. A stack-backed sorted
+            // index avoids allocating a HashMap for repeated acknowledgement
+            // polls and still preserves the original membership bit positions.
+            let mut membership = [("", 0usize); 16];
+            for (index, &member) in members.iter().enumerate() {
+                if !valid_member(member) {
+                    return Err("invalid or duplicate quorum member");
+                }
+                membership[index] = (member, index);
+            }
+            let sorted = &mut membership[..members.len()];
+            sorted.sort_unstable_by(|left, right| left.0.cmp(right.0));
+            if sorted.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return Err("invalid or duplicate quorum member");
+            }
             for &replica in acknowledgements {
-                let Some(&index) = membership.get(replica) else {
-                    return Err("acknowledgement from unknown replica");
-                };
-                acknowledgement_mask |= 1u16 << index;
+                let index = sorted
+                    .binary_search_by(|(member, _)| member.cmp(&replica))
+                    .map_err(|_| "acknowledgement from unknown replica")?;
+                acknowledgement_mask |= 1u16 << sorted[index].1;
             }
         }
         let distinct_acks = acknowledgement_mask.count_ones() as usize;
@@ -536,5 +538,30 @@ mod sparse_large_quorum_ack_tests {
         duplicate[15] = duplicate[0];
         assert!(policy.observe(&duplicate, &[]).is_err());
         assert!(policy.observe(&duplicate, &names[..9]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod stack_quorum_index_tests {
+    use super::*;
+
+    #[test]
+    fn many_acknowledgements_match_reference_masks_in_every_large_group() {
+        for replicas in 9..=16 {
+            let names = (0..replicas).map(|n| format!("member_{n}")).collect::<Vec<_>>();
+            let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+            let policy = QuorumPolicy::new(replicas, 1, replicas).unwrap();
+            for seed in 0..32usize {
+                let acks = (0..256).map(|n| members[(n * 37 + seed) % replicas])
+                    .collect::<Vec<_>>();
+                let reference = (0..replicas).filter(|&i| acks.contains(&members[i])).count();
+                let observed = policy.observe(&members, &acks).unwrap();
+                assert_eq!(observed.distinct_acks, reference);
+                assert_eq!(observed.can_write, reference >= replicas);
+            }
+            let mut duplicates = members.clone();
+            duplicates[replicas - 1] = duplicates[0];
+            assert!(policy.observe(&duplicates, &members).is_err());
+        }
     }
 }
