@@ -40,7 +40,8 @@ def load_report(path):
         payload = stream.read(MAX_REPORT_BYTES + 1)
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("comparison report exceeds 2 MiB")
-    return json.loads(payload, object_pairs_hook=reject_duplicate_keys,\n                      parse_constant=reject_nonfinite_json_number,
+    return json.loads(payload, object_pairs_hook=reject_duplicate_keys,
+                      parse_constant=reject_nonfinite_json_number,
                       parse_float=parse_finite_report_float)
 
 
