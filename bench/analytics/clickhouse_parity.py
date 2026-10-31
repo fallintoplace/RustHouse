@@ -8,6 +8,7 @@ import argparse
 from collections import Counter
 import json
 import math
+import os
 import re
 import statistics
 import subprocess
@@ -144,11 +145,26 @@ def cli_clickhouse(client, host, port, query, timeout, database=None, data=None)
     if database:
         command.extend(["--database", database])
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        extra = {}
+        if os.name == "posix":
+            import resource
+
+            def cap_output_file():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                limit = (4_000_000 if hard == resource.RLIM_INFINITY
+                         else min(4_000_000, hard))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+            extra["preexec_fn"] = cap_output_file
         result = subprocess.run(
             command, input=data, stdout=output, stderr=errors,
-            timeout=timeout, check=False,
+            timeout=timeout, check=False, **extra,
         )
         if result.returncode:
+            # A child hitting RLIMIT_FSIZE cannot fill the temporary drive.
+            output.seek(0, os.SEEK_END)
+            if output.tell() >= 4_000_000:
+                raise ValueError("ClickHouse result exceeds 4 MB comparison limit")
             errors.seek(0, 2)
             errors.seek(max(0, errors.tell() - 1000))
             diagnostic = errors.read(1000).decode("utf-8", "replace")
