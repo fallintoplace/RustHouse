@@ -23,8 +23,7 @@ def refuse_live_database(source):
     """Hold the database advisory lock for the entire cold backup."""
     lock = source / ".rusthouse-write.lock"
     if fcntl is None:
-        yield
-        return
+        raise ValueError("cold backup requires POSIX advisory file locking")
     fd = None
     try:
         # Create the shared advisory lock before copying. A missing lock is
