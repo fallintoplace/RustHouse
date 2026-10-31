@@ -98,6 +98,10 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
                     // Keep a separate medium-key path so short keys do not
                     // pay to initialize a larger stack buffer.
                     write_padded_span::<1024, _>(output, span)?;
+                } else if span.len() < 4096 {
+                    // Long JSON keys should not make two writer calls to
+                    // append their single required space.
+                    write_padded_span::<4096, _>(output, span)?;
                 } else {
                     output.write_all(span)?;
                     output.write_all(b" ")?;
@@ -269,5 +273,50 @@ mod deep_json_indent_fast_path_tests {
             assert_eq!(writer.bytes[0], b'\n');
             assert!(writer.bytes[1..].iter().all(|&byte| byte == b' '));
         }
+    }
+}
+
+#[cfg(test)]
+mod long_pretty_json_key_batch_tests {
+    use super::*;
+
+    struct Calls(Vec<Vec<u8>>);
+
+    impl Write for Calls {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.push(bytes.to_vec());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn long_colon_spans_use_one_write_until_four_kibibytes() {
+        for length in [1021, 1022, 2048, 4092] {
+            let key = "k".repeat(length);
+            let source = format!("{{\"{key}\":42}}");
+            let mut writer = Calls(Vec::new());
+            write_pretty_json_row(&mut writer, source.as_bytes()).unwrap();
+            let colon = format!("\"{key}\": ");
+            assert!(writer.0.iter().any(|call| call == colon.as_bytes()), "{length}");
+            assert_eq!(
+                writer.0.concat(),
+                format!("{{\n    \"{key}\": 42\n  }}").as_bytes(),
+            );
+        }
+    }
+
+    #[test]
+    fn larger_keys_preserve_output_without_fixed_size_stack_overflow() {
+        let key = "a".repeat(12_000);
+        let source = format!("{{\"{key}\":1}}");
+        let mut rendered = Vec::new();
+        write_pretty_json_row(&mut rendered, source.as_bytes()).unwrap();
+        assert_eq!(
+            rendered,
+            format!("{{\n    \"{key}\": 1\n  }}").as_bytes()
+        );
     }
 }
