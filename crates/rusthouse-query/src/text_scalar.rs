@@ -3022,7 +3022,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let index = input
                         .find(needle.as_str())
                         .map(|byte_index| {
-                            if name == "STRPOS" {
+                            if input.is_ascii() {
                                 byte_index + 1
                             } else {
                                 input[..byte_index].chars().count() + 1
