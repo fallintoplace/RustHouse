@@ -6,6 +6,7 @@ Usage: python -m bench.scale.sparse_point_probes --binary target/release/rusthou
 import argparse
 import json
 import math
+import os
 import random
 import re
 import statistics
@@ -48,22 +49,37 @@ def percentile_sorted(ordered, percent):
 
 
 def query(binary, database, statement, timeout):
-    # A single point probe can only return a small result. Spool both streams.
+    # A single point probe only needs 128 output bytes. On POSIX cap the
+    # child while it writes, rather than discovering runaway output afterward.
+    extra = {}
+    if os.name == "posix":
+        import resource
+
+        def limit_child_output():
+            soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            limit = 129
+            if soft != resource.RLIM_INFINITY:
+                limit = min(limit, soft)
+            if hard != resource.RLIM_INFINITY:
+                limit = min(limit, hard)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+        extra["preexec_fn"] = limit_child_output
     with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
         result = subprocess.run(
             [str(binary), "sql", statement, "--database", str(database),
              "--format", "tsv-no-header"],
-            stdout=output, stderr=errors, timeout=timeout, check=False,
+            stdout=output, stderr=errors, timeout=timeout, check=False, **extra,
         )
+        output.seek(0, os.SEEK_END)
+        if output.tell() > 128:
+            raise ValueError("point probe SQL output exceeds 128 bytes")
         if result.returncode:
             errors.seek(0, 2)
             errors.seek(max(0, errors.tell() - 500))
             raise RuntimeError(errors.read(500).decode("utf-8", "replace"))
         output.seek(0)
-        payload = output.read(129)
-        if len(payload) > 128:
-            raise ValueError("point probe SQL output exceeds 128 bytes")
-        return payload
+        return output.read(128)
 
 def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
           execute=None, column="id"):

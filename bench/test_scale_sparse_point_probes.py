@@ -123,5 +123,21 @@ class BoundedPointProbeOutputTests(unittest.TestCase):
             self.assertEqual(query("binary", "database", "SELECT 123", 2), b"123\n")
 
 
+    def test_posix_point_probes_cap_child_output_during_execution(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.sparse_point_probes import query
+
+        def limited(_command, **kwargs):
+            if os.name == "posix":
+                self.assertIn("preexec_fn", kwargs)
+                self.assertTrue(callable(kwargs["preexec_fn"]))
+            kwargs["stdout"].write(b"42\n")
+            return SimpleNamespace(returncode=0)
+
+        with patch("bench.scale.sparse_point_probes.subprocess.run", side_effect=limited):
+            self.assertEqual(query("rusthouse", "db", "SELECT 42", 1), b"42\n")
+
 if __name__ == "__main__":
     unittest.main()
