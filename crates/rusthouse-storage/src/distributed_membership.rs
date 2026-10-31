@@ -42,6 +42,11 @@ fn parse_member(line: &str) -> Result<(&str, &str, u16), &'static str> {
     if !valid_member_identity(node, zone) {
         return Err("invalid membership record");
     }
+    // Rust integer parsing accepts a leading '+', but the on-disk
+    // membership format uses unsigned ASCII decimal tokens only.
+    if weight_text.is_empty() || !weight_text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("invalid member weight");
+    }
     let weight = weight_text
         .parse::<u16>()
         .map_err(|_| "invalid member weight")?;
@@ -331,5 +336,23 @@ mod adaptive_membership_parse_tests {
             .map(|index| format!("node{index} zone{} 1\n", index % 4))
             .collect::<String>();
         assert_eq!(parse_membership(&text).unwrap().len(), 64);
+    }
+}
+
+#[cfg(test)]
+mod canonical_weight_token_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_signed_and_nondecimal_member_weights() {
+        for value in ["+1", "-1", "1.0", "0x10", "1_000", "1e1"] {
+            let manifest = format!("n1 z1 {value}\n");
+            assert!(
+                parse_membership(&manifest).is_err(),
+                "accepted nondecimal weight {value}",
+            );
+        }
+        assert_eq!(parse_membership("n1 z1 1000\n").unwrap()[0].weight, 1000);
+        assert!(parse_membership("n1 z1 1001\n").is_err());
     }
 }
