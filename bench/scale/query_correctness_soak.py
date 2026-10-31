@@ -6,6 +6,8 @@ Every warmup and timed run is compared byte-for-byte by digest and length.
 """
 import argparse
 import hashlib
+import os
+import stat
 import json
 import math
 import re
@@ -26,15 +28,21 @@ def percentile(samples, percentile):
     return sorted(samples)[math.ceil(len(samples) * percentile / 100) - 1]
 
 
-def digest_file(source):
+MAX_EXPECTED_BYTES = 256 * 1024 * 1024
+
+
+def digest_file(source, max_bytes=None):
     digest = hashlib.sha256()
     length = 0
     while True:
-        data = source.read(64 * 1024)
+        count = 64 * 1024 if max_bytes is None else min(64 * 1024, max_bytes - length + 1)
+        data = source.read(count)
         if not data:
             break
-        digest.update(data)
         length += len(data)
+        if max_bytes is not None and length > max_bytes:
+            raise ValueError("expected output exceeds reference byte limit")
+        digest.update(data)
     return digest.hexdigest(), length
 
 
@@ -71,8 +79,23 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
     expected_file = Path(expected_file)
     if expected_file.is_symlink() or not expected_file.is_file():
         raise ValueError("expected output must be a regular non-symlinked file")
-    with expected_file.open("rb") as source:
-        reference, size = digest_file(source)
+    before = expected_file.lstat()
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(expected_file, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("expected output changed while opening")
+        reference, size = digest_file(source, max_bytes=MAX_EXPECTED_BYTES)
+        finished = os.fstat(source.fileno())
+    after = expected_file.lstat()
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                             info.st_mtime_ns, info.st_ctime_ns)
+    if (identity(before) != identity(opened)
+            or identity(opened) != identity(finished)
+            or identity(finished) != identity(after)):
+        raise ValueError("expected output changed while hashing")
     execute = execute or (lambda: run_sql(binary, database, sql, timeout))
     samples = []
     for attempt in range(runs + warmups):
