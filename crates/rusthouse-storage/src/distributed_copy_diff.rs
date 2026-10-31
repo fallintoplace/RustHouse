@@ -110,6 +110,28 @@ pub fn plan_replica_copies(
     Ok(changed)
 }
 
+// Greedy ordering is by key, with oversized objects skipped. A small batch
+// can be found from a progressively expanded prefix without sorting the
+// entire inventory. Returning fewer than max_objects requires another page.
+fn select_copy_batch(
+    ordered: &[&ObjectMetadata],
+    max_bytes: u64,
+    max_objects: usize,
+) -> Vec<ObjectMetadata> {
+    let mut remaining = max_bytes;
+    let mut selected = Vec::with_capacity(ordered.len().min(max_objects));
+    for &object in ordered {
+        if selected.len() == max_objects {
+            break;
+        }
+        if object.bytes <= remaining {
+            remaining -= object.bytes;
+            selected.push(object.clone());
+        }
+    }
+    selected
+}
+
 /// Select a bounded batch from the deterministic copy-only reconciliation plan.
 /// Oversized objects are skipped so smaller copies can still make progress.
 pub fn plan_replica_copy_batch(
@@ -146,6 +168,24 @@ pub fn plan_replica_copy_batch(
         .into_values()
         .filter(|meta| needs_copy(meta, &destination_index))
         .collect::<Vec<_>>();
+    if max_objects.saturating_mul(4) < needed.len() {
+        // Select progressively larger lexicographic prefixes. Most tiny
+        // batches finish after one linear partition and a short sort.
+        // Expanding when the byte budget skips large objects preserves
+        // the exact full-plan greedy semantics, including zero-byte keys.
+        let mut prefix = max_objects.saturating_mul(2).min(needed.len());
+        loop {
+            if prefix < needed.len() {
+                needed.select_nth_unstable_by(prefix, |a, b| a.key.cmp(&b.key));
+            }
+            needed[..prefix].sort_unstable_by(|a, b| a.key.cmp(&b.key));
+            let selected = select_copy_batch(&needed[..prefix], max_bytes, max_objects);
+            if selected.len() == max_objects || prefix == needed.len() {
+                return Ok(selected);
+            }
+            prefix = prefix.saturating_mul(2).min(needed.len());
+        }
+    }
     // When the whole missing set fits the byte budget, selection only
     // needs the lexicographically earliest max_objects entries. Partition
     // in linear time and sort that prefix, not the entire inventory.
@@ -159,18 +199,43 @@ pub fn plan_replica_copy_batch(
         needed.truncate(max_objects);
     }
     needed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
-    let mut remaining = max_bytes;
-    let mut selected = Vec::with_capacity(needed.len().min(max_objects));
-    for object in needed {
-        if selected.len() == max_objects {
-            break;
-        }
-        if object.bytes <= remaining {
-            remaining -= object.bytes;
-            selected.push(object.clone());
+    Ok(select_copy_batch(&needed, max_bytes, max_objects))
+}
+
+#[cfg(test)]
+mod expanding_copy_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn tiny_batches_match_full_sorted_greedy_plan_at_inventory_scale() {
+        let source = (0..8_192usize)
+            .rev()
+            .map(|index| ObjectMetadata {
+                key: format!("part/object_{index:05}"),
+                bytes: if index % 17 == 0 { 0 } else { (index % 257) as u64 },
+                crc32c: index as u32,
+            })
+            .collect::<Vec<_>>();
+        let destination = source.iter().step_by(7).cloned().collect::<Vec<_>>();
+        let full = plan_replica_copies(&source, &destination).unwrap();
+        for budget in [0, 1, 23, 100, 1024, u64::MAX] {
+            for limit in [2, 3, 8, 31, 127] {
+                let mut remaining = budget;
+                let expected = full.iter().filter(|object| {
+                    if object.bytes <= remaining {
+                        remaining -= object.bytes;
+                        true
+                    } else {
+                        false
+                    }
+                }).take(limit).cloned().collect::<Vec<_>>();
+                assert_eq!(
+                    plan_replica_copy_batch(&source, &destination, budget, limit).unwrap(),
+                    expected, "budget={budget}, limit={limit}",
+                );
+            }
         }
     }
-    Ok(selected)
 }
 
 #[cfg(test)]
