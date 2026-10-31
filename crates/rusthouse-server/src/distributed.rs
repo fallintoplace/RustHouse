@@ -2708,7 +2708,7 @@ mod coordinator_input_budget_tests {
             let tasks: Vec<_> = (0..16).map(|_| {
                 scope.spawn(|| reserve_shard_bytes(&bytes, 8 * 1024 * 1024).is_ok())
             }).collect();
-            tasks.into_iter().filter(|task| task.join().unwrap()).count()
+            tasks.into_iter().map(|task| task.join().unwrap()).filter(|&ok| ok).count()
         });
         assert_eq!(succeeded, 8);
         assert_eq!(bytes.load(AtomicOrdering::Relaxed), MAX_SHARD_INPUT_BYTES);
