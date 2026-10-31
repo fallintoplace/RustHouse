@@ -22,13 +22,15 @@ except ImportError:
 def refuse_live_database(source):
     """Hold the database advisory lock for the entire cold backup."""
     lock = source / ".rusthouse-write.lock"
-    if fcntl is None or not lock.exists():
+    if fcntl is None:
         yield
         return
     fd = None
     try:
-        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(lock, flags)
+        # Create the shared advisory lock before copying. A missing lock is
+        # not evidence that another process cannot start using the database.
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(lock, flags, 0o600)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError("database lock is not a regular file")
         try:
