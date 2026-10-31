@@ -79,7 +79,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
         return Some(if len == 0 {
             Vec::new()
         } else {
-            std::iter::once(0..len).collect()
+            vec![0..len]
         });
     }
     if !mark_keys_sorted(len, &key_at) {
