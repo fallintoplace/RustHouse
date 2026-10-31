@@ -167,6 +167,9 @@ UINT64_MAX = (1 << 64) - 1
 
 def _decode_fixture_field(field):
     """Decode the escaped TSV bytes that RustHouse COPY also reads."""
+    if b"\\\\" not in field:
+        # Most fixture fields contain no escapes. Decode those in native code.
+        return field.decode("utf-8")
     decoded = bytearray()
     index = 0
     escapes = {
