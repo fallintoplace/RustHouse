@@ -95,7 +95,7 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
 
 /// Validate membership and its exact serialized length without allocating
 /// the manifest. Used by placement and capacity calculations.
-fn serialized_membership_bytes(members: &[Member]) -> Result<(), &'static str> {
+fn serialized_membership_bytes(members: &[Member]) -> Result<usize, &'static str> {
     if members.is_empty() || members.len() > MAX_MEMBER_RECORDS {
         return Err("invalid membership record count");
     }
