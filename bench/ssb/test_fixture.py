@@ -74,6 +74,14 @@ class StarFixtureTests(unittest.TestCase):
             with (Path(root) / "lineorder.tsv").open() as stream:
                 self.assertEqual(sum(1 for _ in stream), 32770)
 
+    def test_rejects_noninteger_row_counts_before_writing(self):
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "fixture"
+            for rows in (True, False, 2.5, "10"):
+                with self.subTest(rows=rows), self.assertRaisesRegex(ValueError, "rows"):
+                    generate(output, rows=rows)
+                self.assertFalse(output.exists())
+
     def test_seed_is_deterministic_and_input_bounded(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             generate(a, 70, 14)
