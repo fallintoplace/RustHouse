@@ -14,6 +14,27 @@ class GroupedDoctorOutputTests(unittest.TestCase):
         with patch("bench.scale.grouped_physical.subprocess.run", side_effect=run):
             inspect_persisted_snapshot("rusthouse", "db", 10, 2)
 
+    def test_doctor_summary_must_begin_on_its_own_line(self):
+        def run(command, **kwargs):
+            kwargs["stdout"].write(
+                b"WARN: previously OK events: 10 rows, 1 parts\n"
+                b"NOT OK events: 10 rows, 1 parts\n"
+            )
+            return subprocess.CompletedProcess(command, 0)
+        with patch("bench.scale.grouped_physical.subprocess.run", side_effect=run):
+            with self.assertRaisesRegex(RuntimeError, "verification failed"):
+                inspect_persisted_snapshot("rusthouse", "db", 10, 2)
+
+    def test_doctor_summary_can_follow_other_complete_lines(self):
+        def run(command, **kwargs):
+            kwargs["stdout"].write(
+                b"OK unrelated: 99 rows, 1 parts\n"
+                b"OK events: 10 rows, 1 parts\n"
+            )
+            return subprocess.CompletedProcess(command, 0)
+        with patch("bench.scale.grouped_physical.subprocess.run", side_effect=run):
+            inspect_persisted_snapshot("rusthouse", "db", 10, 2)
+
     def test_failed_snapshot_shows_bounded_final_error(self):
         def run(command, **kwargs):
             kwargs["stderr"].write(b"x" * 100_000 + b"fatal error")
