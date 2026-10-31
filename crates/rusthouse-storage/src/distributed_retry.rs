@@ -56,7 +56,7 @@ pub fn plan_retry_delays(
     let mut elapsed = Duration::ZERO;
     let mut delays = Vec::with_capacity(attempts as usize);
     for attempt in 0..attempts {
-        let delay = retry_delay(attempt, base_ms, max_ms, seed.wrapping_add(u64::from(attempt)))?;
+        let delay = retry_delay(attempt, base_ms, max_ms, seed)?;
         if delay > budget.saturating_sub(elapsed) {
             break;
         }
@@ -186,5 +186,28 @@ mod zero_seed_retry_dispersion_tests {
             delays.insert(retry_delay(0, 1000, 1000, seed).unwrap());
         }
         assert!(delays.len() > 40, "seeds should spread initial retries");
+    }
+}
+
+#[cfg(test)]
+mod planned_retry_consistency_tests {
+    use super::*;
+
+    #[test]
+    fn budgeted_plan_uses_the_same_jitter_as_individual_retries() {
+        for seed in [0, 1, 17, u64::MAX] {
+            let planned = plan_retry_delays(33, 125, 10_000, seed, Duration::MAX).unwrap();
+            assert_eq!(planned.len(), 33);
+            for (attempt, delay) in planned.iter().enumerate() {
+                assert_eq!(
+                    *delay,
+                    retry_delay(attempt as u32, 125, 10_000, seed).unwrap(),
+                    "seed={seed}, attempt={attempt}"
+                );
+            }
+            let budget = planned[..4].iter().copied().sum::<Duration>();
+            let limited = plan_retry_delays(33, 125, 10_000, seed, budget).unwrap();
+            assert_eq!(limited, planned[..4]);
+        }
     }
 }
