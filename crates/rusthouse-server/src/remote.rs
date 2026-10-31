@@ -68,6 +68,24 @@ pub fn query(peer: Peer, sql: &str) -> Result<PeerResponse, String> {
     request(peer, "POST", "/", sql.as_bytes())
 }
 
+/// Return control to the caller after an interrupted read so it can
+/// recompute the absolute deadline before attempting the next syscall.
+fn read_peer_chunk(reader: &mut impl Read, buffer: &mut [u8]) -> Result<Option<usize>, String> {
+    match reader.read(buffer) {
+        Ok(size) => Ok(Some(size)),
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(None),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) =>
+        {
+            Err("peer response deadline exceeded".into())
+        }
+        Err(error) => Err(format!("cannot read peer response: {error}")),
+    }
+}
+
 /// Search only the newly received bytes plus the previous three bytes.
 /// An untrusted peer can trickle its header one byte at a time; rescanning
 /// the complete prefix after every read would make framing quadratic.
@@ -103,16 +121,9 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
             return Err("peer response exceeds wire limit".into());
         }
         let capacity = available.min(buffer.len());
-        let size = stream.read(&mut buffer[..capacity]).map_err(|error| {
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-            ) {
-                "peer response deadline exceeded".to_owned()
-            } else {
-                format!("cannot read peer response: {error}")
-            }
-        })?;
+        let Some(size) = read_peer_chunk(stream, &mut buffer[..capacity])? else {
+            continue;
+        };
         if size == 0 {
             break;
         }
@@ -193,6 +204,45 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
+
+    #[test]
+    fn retries_interrupted_peer_reads_and_preserves_deadline_errors() {
+        use std::io::Cursor;
+
+        struct InterruptOnce {
+            interrupted: bool,
+            data: Cursor<&'static [u8]>,
+        }
+        impl Read for InterruptOnce {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                self.data.read(buf)
+            }
+        }
+
+        let mut peer = InterruptOnce {
+            interrupted: false,
+            data: Cursor::new(b"HTTP/1.1 200 OK"),
+        };
+        let mut bytes = [0u8; 32];
+        assert_eq!(read_peer_chunk(&mut peer, &mut bytes).unwrap(), None);
+        assert_eq!(read_peer_chunk(&mut peer, &mut bytes).unwrap(), Some(15));
+        assert_eq!(&bytes[..15], b"HTTP/1.1 200 OK");
+
+        struct TimeOut;
+        impl Read for TimeOut {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::TimedOut.into())
+            }
+        }
+        assert_eq!(
+            read_peer_chunk(&mut TimeOut, &mut bytes).unwrap_err(),
+            "peer response deadline exceeded"
+        );
+    }
 
     #[test]
     fn rejects_expired_total_peer_write_deadline() {
@@ -371,7 +421,6 @@ mod data_plane_deadline_tests {
         }
     }
 }
-
 
 #[cfg(test)]
 mod incremental_peer_header_tests {

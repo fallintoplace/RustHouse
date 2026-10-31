@@ -139,7 +139,7 @@ fn write_bytes(output: &mut impl Write, value: &[u8]) -> Result<(), ExecutionErr
     Ok(())
 }
 
-fn read_cell(input: &mut impl Read) -> Result<Cell, ExecutionError> {
+fn read_cell(input: &mut impl Read, remaining_bytes: &mut usize) -> Result<Cell, ExecutionError> {
     let mut tag = [0u8; 1];
     input.read_exact(&mut tag)?;
     Ok(match tag[0] {
@@ -159,22 +159,28 @@ fn read_cell(input: &mut impl Read) -> Result<Cell, ExecutionError> {
             input.read_exact(&mut data)?;
             Cell::Numeric(Number::Float(f64::from_bits(u64::from_le_bytes(data))))
         }
-        4 => Cell::Text(read_bytes(input)?),
-        5 => Cell::Uuid(String::from_utf8(read_bytes(input)?)
+        4 => Cell::Text(read_bytes(input, remaining_bytes)?),
+        5 => Cell::Uuid(String::from_utf8(read_bytes(input, remaining_bytes)?)
             .map_err(|_| invalid("invalid UUID bytes in typed sort run"))?),
         _ => return Err(invalid("invalid typed sort cell tag")),
     })
 }
 
-fn read_bytes(input: &mut impl Read) -> Result<Vec<u8>, ExecutionError> {
+fn read_bytes(input: &mut impl Read, remaining_bytes: &mut usize) -> Result<Vec<u8>, ExecutionError> {
     let mut size = [0u8; 4];
     input.read_exact(&mut size)?;
     let size = u32::from_le_bytes(size) as usize;
     if size > MAX_FIELD_BYTES {
         return Err(invalid("oversized typed sort run value"));
     }
+    // Validate the whole row's memory budget before allocating the payload.
+    // A corrupted run must not allocate 32 MiB for every declared column.
+    if size > *remaining_bytes {
+        return Err(invalid("typed sort run row exceeds 32 MiB memory budget"));
+    }
     let mut data = vec![0u8; size];
     input.read_exact(&mut data)?;
+    *remaining_bytes -= size;
     Ok(data)
 }
 
@@ -208,13 +214,21 @@ fn read_entry(input: &mut impl Read) -> Result<Option<SortEntry>, ExecutionError
     if values > 4096 || keys > 8 {
         return Err(invalid("typed sort run has invalid projection width"));
     }
+    let base_bytes = values
+        .checked_add(keys)
+        .and_then(|count| count.checked_mul(std::mem::size_of::<Cell>()))
+        .and_then(|cells| std::mem::size_of::<SortEntry>().checked_add(cells))
+        .ok_or_else(|| invalid("typed sort run row-size overflow"))?;
+    let mut remaining_bytes = MAX_BUFFER_BYTES
+        .checked_sub(base_bytes)
+        .ok_or_else(|| invalid("typed sort run row exceeds 32 MiB memory budget"))?;
     let mut projected = Vec::with_capacity(values);
     let mut sorted = Vec::with_capacity(keys);
     for _ in 0..values {
-        projected.push(read_cell(input)?);
+        projected.push(read_cell(input, &mut remaining_bytes)?);
     }
     for _ in 0..keys {
-        sorted.push(read_cell(input)?);
+        sorted.push(read_cell(input, &mut remaining_bytes)?);
     }
     Ok(Some(SortEntry {
         row: Row { values: projected, sort_keys: sorted },
@@ -564,6 +578,20 @@ mod tests {
         let mut result = Vec::new();
         sorter.write(&mut result, &["String", "UInt64"], 0, 1).unwrap();
         assert_eq!(String::from_utf8(result).unwrap(), "a\t0\n");
+    }
+
+    #[test]
+    fn corrupted_spill_row_cannot_allocate_more_than_writer_budget() {
+        // A single 32 MiB text field is already too large once the row and
+        // Cell headers are counted. Reject the length before reading payloads.
+        let mut corrupt = Vec::new();
+        corrupt.extend_from_slice(&0u64.to_le_bytes());
+        corrupt.extend_from_slice(&1u16.to_le_bytes());
+        corrupt.extend_from_slice(&0u16.to_le_bytes());
+        corrupt.push(4);
+        corrupt.extend_from_slice(&(MAX_FIELD_BYTES as u32).to_le_bytes());
+        let error = read_entry(&mut corrupt.as_slice()).err().expect("oversized row must fail");
+        assert!(matches!(error, ExecutionError::Invalid(message) if message.contains("memory budget")));
     }
 
     #[test]
