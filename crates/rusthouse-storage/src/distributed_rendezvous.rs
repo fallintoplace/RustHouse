@@ -210,9 +210,13 @@ pub fn zone_aware_replicas_for(
                 members[left.1].node.cmp(&members[right.1].node)
             })
         };
-        let scores = members.iter().enumerate()
-            .map(|(index, member)| (priority(member), index))
-            .collect::<Vec<_>>();
+        // Placement bounds are 64 members, so keep priority scores on the
+        // stack and compute each expensive logarithm only once.
+        let mut storage = [(0.0f64, 0usize); MAX_PLACEMENT_NODES];
+        for (index, member) in members.iter().enumerate() {
+            storage[index] = (priority(member), index);
+        }
+        let scores = &storage[..members.len()];
         let primary = *scores.iter().min_by(|a, b| ordered(a, b))
             .expect("nonempty validated membership");
         let alternative = scores.iter().copied()
