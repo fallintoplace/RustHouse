@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 /// Claim indices dynamically to avoid head-of-line blocking between fixed
 /// batches. Spawn failure falls back to fewer workers or inline execution.
 /// Every peer gets one result slot, including failures and panics.
+#[cfg(test)]
 pub(super) fn map_peers_bounded<T: Send + Sync>(
     peers: &[Peer],
     max_workers: usize,
