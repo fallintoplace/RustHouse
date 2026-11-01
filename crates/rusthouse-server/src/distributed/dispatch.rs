@@ -53,7 +53,7 @@ fn map_peers_bounded_impl<T: Send + Sync>(
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(max_workers.min(peers.len()));
         for _ in 0..max_workers.min(peers.len()) {
-            match std::thread::Builder::new().spawn_scoped(scope, &process) {
+            match std::thread::Builder::new().spawn_scoped(scope, process) {
                 Ok(handle) => handles.push(handle),
                 Err(_) => break,
             }
