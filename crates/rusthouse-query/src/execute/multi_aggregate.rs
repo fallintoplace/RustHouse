@@ -1366,8 +1366,10 @@ mod multi_aggregate_distinct_text_budget_tests {
 
     #[test]
     fn text_budget_refuses_new_keys_before_mutating_set() {
-        let mut distinct = DistinctValues::default();
-        distinct.retained_text_bytes = MAX_DISTINCT_TEXT_BYTES - 1;
+        let mut distinct = DistinctValues {
+            retained_text_bytes: MAX_DISTINCT_TEXT_BYTES - 1,
+            ..Default::default()
+        };
         assert!(distinct.insert_text(b"new-key").is_err());
         assert_eq!(distinct.retained_text_bytes, MAX_DISTINCT_TEXT_BYTES - 1);
         assert!(distinct.text.is_empty());

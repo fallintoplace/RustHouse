@@ -1053,7 +1053,7 @@ mod external_run_order_validation_tests {
         let scratch = SortScratch::new().unwrap();
         let directions: Arc<[bool]> = Arc::from([]);
         let invalid = run(&scratch, "bad-desc", &[9, 4, 8], true);
-        assert!(merge_runs(&[invalid.clone()], true, &directions, |_| Ok(true)).is_err());
+        assert!(merge_runs(std::slice::from_ref(&invalid), true, &directions, |_| Ok(true)).is_err());
         // Do not inspect a later corrupt or out-of-order row after LIMIT.
         let mut seen = 0;
         merge_runs(&[invalid], true, &directions, |_| {

@@ -1120,7 +1120,6 @@ fn allows_grouped_numeric_ordering_by_aggregate_position() {
     )
     .unwrap();
     assert_eq!(query.order_by_extra.len(), 1);
-    for invalid in ["SELECT category, sum(amount) FROM part GROUP BY category ORDER BY 3"] {
-        assert!(parse_select(invalid).is_err(), "{invalid}");
-    }
+    let invalid = "SELECT category, sum(amount) FROM part GROUP BY category ORDER BY 3";
+    assert!(parse_select(invalid).is_err(), "{invalid}");
 }

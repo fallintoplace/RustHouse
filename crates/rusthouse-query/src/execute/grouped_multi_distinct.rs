@@ -331,7 +331,7 @@ mod bounded_payload_tests {
             fixed_group_bytes(0).unwrap()
                 >= std::mem::size_of::<Group>() + std::mem::size_of::<(Vec<Key>, usize)>()
         );
-        assert_eq!(fixed_group_bytes(usize::MAX).is_err(), true);
+        assert!(fixed_group_bytes(usize::MAX).is_err());
         let mut charged = 0;
         charge_bytes(&mut charged, fixed_group_bytes(1).unwrap()).unwrap();
         assert!(charged >= std::mem::size_of::<Group>());
