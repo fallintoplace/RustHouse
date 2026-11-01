@@ -206,16 +206,24 @@ impl HyperLogLog {
 
     pub(super) fn estimate(&self) -> u64 {
         let register_count = REGISTERS as f64;
-        // Each rank is bounded to 64 - PRECISION + 1. Its contribution
-        // is an exact normal binary64 power of two, so avoid 16K powi calls.
-        // Count zero registers in the same pass.
-        let (harmonic, zero_register_count) =
-            self.registers
-                .iter()
-                .fold((0.0f64, 0usize), |(sum, zeros), &rank| {
-                    let contribution = f64::from_bits((1023 - u64::from(rank)) << 52);
-                    (sum + contribution, zeros + usize::from(rank == 0))
-                });
+        // HLL registers take only 52 possible ranks. Accumulate integer
+        // frequencies first, then do at most 52 floating-point additions
+        // instead of 16384. Besides lowering estimator CPU overhead, this
+        // avoids rounding drift from repeatedly adding tiny contributions
+        // to a much larger running harmonic sum.
+        let mut ranks = [0u32; MAX_REGISTER_RANK as usize + 1];
+        for &rank in self.registers.iter() {
+            ranks[rank as usize] += 1;
+        }
+        let zero_register_count = ranks[0] as usize;
+        let harmonic = ranks
+            .iter()
+            .enumerate()
+            .filter(|&(_, &count)| count != 0)
+            .map(|(rank, &count)| {
+                f64::from(count) * f64::from_bits((1023 - rank as u64) << 52)
+            })
+            .sum::<f64>();
         let alpha = 0.7213 / (1.0 + 1.079 / register_count);
         let raw_estimate = alpha * register_count * register_count / harmonic;
         let estimate = if raw_estimate <= 2.5 * register_count && zero_register_count > 0 {
@@ -586,5 +594,49 @@ mod cached_negative_numeric_hash_tests {
         let mut unsigned = HyperLogLog::default();
         unsigned.observe_number(Number::Unsigned(u128::MAX));
         assert_ne!(signed.encode_state(), unsigned.encode_state());
+    }
+}
+
+#[cfg(test)]
+mod rank_frequency_estimate_tests {
+    use super::*;
+
+    fn scalar_reference(registers: &[u8; REGISTERS]) -> u64 {
+        let m = REGISTERS as f64;
+        let zeros = registers.iter().filter(|&&rank| rank == 0).count();
+        let harmonic = registers
+            .iter()
+            .map(|&rank| 2f64.powi(-i32::from(rank)))
+            .sum::<f64>();
+        let raw = (0.7213 / (1.0 + 1.079 / m)) * m * m / harmonic;
+        let estimated = if raw <= 2.5 * m && zeros > 0 {
+            m * (m / zeros as f64).ln()
+        } else {
+            raw
+        };
+        estimated.round().min(u64::MAX as f64) as u64
+    }
+
+    #[test]
+    fn rank_histogram_preserves_reference_estimates_for_skewed_distributions() {
+        for mode in 0..6usize {
+            let mut sketch = HyperLogLog::default();
+            for (index, rank) in sketch.registers.iter_mut().enumerate() {
+                *rank = match mode {
+                    0 => 0,
+                    1 => 1,
+                    2 => MAX_REGISTER_RANK,
+                    3 => (index % (MAX_REGISTER_RANK as usize + 1)) as u8,
+                    4 => if index % 31 == 0 { MAX_REGISTER_RANK } else { 0 },
+                    _ => if index % 2 == 0 { 2 } else { 27 },
+                };
+            }
+            let expected = scalar_reference(&sketch.registers);
+            assert!(
+                sketch.estimate().abs_diff(expected) <= 1,
+                "distribution={mode}, expected={expected}, got={}",
+                sketch.estimate()
+            );
+        }
     }
 }
