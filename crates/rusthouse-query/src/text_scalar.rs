@@ -3366,7 +3366,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let index = input
                         .find(needle.as_str())
                         .map(|byte_index| {
-                            if input.is_ascii() {
+                            if name == "STRPOS" {
+                                // strpos() measures UTF-8 bytes, not characters.
                                 byte_index + 1
                             } else {
                                 input[..byte_index].chars().count() + 1
