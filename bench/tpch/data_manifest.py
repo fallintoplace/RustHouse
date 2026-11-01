@@ -5,8 +5,11 @@ import hashlib
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import file_change_time_ns
 from schema import TABLES, names, explain_scaling
 
 MAX_RECORD_BYTES = 8 * 1024 * 1024
@@ -30,9 +33,9 @@ def inspect_table(path, table):
         opened = os.fstat(source.fileno())
         if (not stat.S_ISREG(opened.st_mode)
                 or (before.st_dev, before.st_ino, before.st_size,
-                    before.st_mtime_ns, before.st_ctime_ns) !=
+                    before.st_mtime_ns, file_change_time_ns(before)) !=
                    (opened.st_dev, opened.st_ino, opened.st_size,
-                    opened.st_mtime_ns, opened.st_ctime_ns)):
+                    opened.st_mtime_ns, file_change_time_ns(opened))):
             raise ValueError(f"{table}: TSV source changed before opening")
         header = source.readline(len(expected) + 3)
         if header not in (expected + b"\n", expected + b"\r\n"):
@@ -48,14 +51,14 @@ def inspect_table(path, table):
             digest.update(record)
             rows += 1
         finished = os.fstat(source.fileno())
-        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
-                finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
+        if (opened.st_size, opened.st_mtime_ns, file_change_time_ns(opened)) != (
+                finished.st_size, finished.st_mtime_ns, file_change_time_ns(finished)):
             raise ValueError(f"{table}: TSV source changed during hashing")
     after = path.lstat()
     if (before.st_dev, before.st_ino, before.st_size,
-            before.st_mtime_ns, before.st_ctime_ns) != (
+            before.st_mtime_ns, file_change_time_ns(before)) != (
             after.st_dev, after.st_ino, after.st_size,
-            after.st_mtime_ns, after.st_ctime_ns):
+            after.st_mtime_ns, file_change_time_ns(after)):
         raise ValueError(f"{table}: TSV source changed while hashing")
     if rows == 0:
         raise ValueError(f"{table}: no data rows")
