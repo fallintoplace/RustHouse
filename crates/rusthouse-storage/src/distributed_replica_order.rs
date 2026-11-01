@@ -51,9 +51,34 @@ fn validate_replica_nodes(replicas: &[ReplicaStatus]) -> Result<(), &'static str
     Ok(())
 }
 
-fn ranked_node_ids(mut replicas: Vec<&ReplicaStatus>) -> Vec<String> {
-    replicas.sort_unstable_by(|left, right| newest_first(left, right));
-    replicas.into_iter().map(|replica| replica.node.clone()).collect()
+fn ranked_node_ids<'a>(replicas: impl Iterator<Item = &'a ReplicaStatus>) -> Vec<String> {
+    let mut inline = [None; 8];
+    let mut count = 0usize;
+    let mut overflow: Option<Vec<&ReplicaStatus>> = None;
+    for replica in replicas {
+        if let Some(items) = overflow.as_mut() {
+            items.push(replica);
+        } else if count < inline.len() {
+            inline[count] = Some(replica);
+            count += 1;
+        } else {
+            let mut items = Vec::with_capacity(16);
+            items.extend(inline.iter().copied().flatten());
+            items.push(replica);
+            overflow = Some(items);
+        }
+    }
+    if let Some(mut items) = overflow {
+        items.sort_unstable_by(|left, right| newest_first(left, right));
+        items.into_iter().map(|replica| replica.node.clone()).collect()
+    } else {
+        inline[..count].sort_unstable_by(|left, right| {
+            newest_first(left.expect("initialized replica"), right.expect("initialized replica"))
+        });
+        inline[..count].iter().map(|replica| {
+            replica.expect("initialized replica").node.clone()
+        }).collect()
+    }
 }
 
 /// Return healthy node IDs, newest advertised version first.
@@ -63,11 +88,11 @@ pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'s
         return Err("invalid replica status set");
     }
     validate_replica_nodes(replicas)?;
-    let healthy: Vec<_> = replicas.iter().filter(|replica| replica.healthy).collect();
-    if healthy.is_empty() {
+    let ranked = ranked_node_ids(replicas.iter().filter(|replica| replica.healthy));
+    if ranked.is_empty() {
         return Err("no healthy storage replica");
     }
-    Ok(ranked_node_ids(healthy))
+    Ok(ranked)
 }
 
 /// Rank healthy replicas at or above a required snapshot version.
@@ -84,22 +109,21 @@ pub fn rank_read_replicas_at_least(
     if minimum_epoch == 0 || minimum_generation == 0 {
         return Err("invalid replica freshness floor");
     }
-    let eligible: Vec<_> = replicas
+    let ranked = ranked_node_ids(replicas
         .iter()
         .filter(|replica| {
             replica.healthy
                 && replica.epoch == minimum_epoch
                 && replica.generation >= minimum_generation
-        })
-        .collect();
-    if eligible.is_empty() {
+        }));
+    if ranked.is_empty() {
         return Err(if replicas.iter().any(|replica| replica.healthy) {
             "no storage replica meets the freshness floor"
         } else {
             "no healthy storage replica"
         });
     }
-    Ok(ranked_node_ids(eligible))
+    Ok(ranked)
 }
 
 /// Select only the preferred healthy replica in one scan.
@@ -472,5 +496,33 @@ mod quorum_snapshot_read_tests {
         let mut less = statuses;
         less[8].healthy = false;
         assert!(rank_quorum_snapshot_replicas(&members, policy, &less).is_err());
+    }
+}
+
+#[cfg(test)]
+mod inline_replica_ranking_tests {
+    use super::*;
+
+    #[test]
+    fn inline_and_spilled_groups_match_full_sort() {
+        for count in [1, 2, 8, 9, 16, 64] {
+            let statuses = (0..count).map(|index| ReplicaStatus {
+                node: format!("node_{index:02}"),
+                epoch: 1 + (index % 3) as u64,
+                generation: 1 + (index % 5) as u64,
+                healthy: index % 4 != 0,
+            }).collect::<Vec<_>>();
+            let mut expected = statuses.iter().filter(|status| status.healthy).collect::<Vec<_>>();
+            expected.sort_unstable_by(|a, b| newest_first(a, b));
+            let expected = expected.iter().map(|status| status.node.clone()).collect::<Vec<_>>();
+            assert_eq!(rank_read_replicas(&statuses).unwrap_or_default(), expected);
+            let expected_floor = statuses.iter().filter(|status| {
+                status.healthy && status.epoch == 2 && status.generation >= 3
+            }).map(|status| status.node.clone()).collect::<Vec<_>>();
+            let ranked_floor = rank_read_replicas_at_least(&statuses, 2, 3)
+                .unwrap_or_default();
+            assert_eq!(ranked_floor.len(), expected_floor.len());
+            assert!(ranked_floor.iter().all(|node| expected_floor.contains(node)));
+        }
     }
 }

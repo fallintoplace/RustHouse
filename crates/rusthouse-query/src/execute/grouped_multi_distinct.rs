@@ -4,7 +4,7 @@ use super::{ExecutionError, Number};
 use crate::Select;
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::Entry, HashMap};
 use std::io::Write;
 use std::path::Path;
 
@@ -38,7 +38,7 @@ fn charge_bytes(used: &mut usize, bytes: usize) -> Result<(), ExecutionError> {
 
 struct Group {
     keys: Vec<Cell>,
-    values: HashSet<Key>,
+    values: HashMap<Key, ()>,
     // Exact cardinality of a byte-wide column needs only 256 bits per group.
     byte_values: [u64; 4],
     distinct_count: usize,
@@ -145,7 +145,7 @@ pub(super) fn execute<W: Write>(
                 probes=Vec::with_capacity(columns.len());
                 groups.push(Group {
                     keys:group_indices.iter().map(|&i|typed::cell(&batch[i],row)).collect(),
-                    values:HashSet::new(),
+                    values:HashMap::new(),
                     byte_values: [0; 4],
                     distinct_count: 0,
                 });
@@ -159,22 +159,27 @@ pub(super) fn execute<W: Write>(
                 continue;
             }
             let value=typed::key_at(&batch[value_index],row);
-            if !groups[group].values.contains(&value) {
-                if total_pairs>=MAX_PAIRS {
+            // An Entry probes the table once. contains() followed by insert()
+            // hashed every new DISTINCT value twice.
+            if let Entry::Vacant(slot) = groups[group].values.entry(value) {
+                if total_pairs >= MAX_PAIRS {
                     return Err(ExecutionError::Invalid(
                         "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into()));
                 }
-                let dynamic = match &value {
+                let dynamic = match slot.key() {
                     Key::Text(text) => text.len(),
                     Key::Uuid(text) => text.len(),
                     _ => 0,
                 };
-                charge_bytes(&mut retained_bytes, std::mem::size_of::<Key>()
-                    .checked_add(dynamic)
-                    .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?)?;
-                groups[group].values.insert(value);
+                charge_bytes(
+                    &mut retained_bytes,
+                    std::mem::size_of::<Key>()
+                        .checked_add(dynamic)
+                        .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?,
+                )?;
+                slot.insert(());
                 groups[group].distinct_count += 1;
-                total_pairs+=1;
+                total_pairs += 1;
             }
         }
     }
@@ -251,7 +256,7 @@ mod bounded_payload_tests {
     fn caches_exact_distinct_cardinality_for_sorting_and_having() {
         let mut group = Group {
             keys: Vec::new(),
-            values: HashSet::new(),
+            values: HashMap::new(),
             byte_values: [0; 4],
             distinct_count: 0,
         };
@@ -263,7 +268,7 @@ mod bounded_payload_tests {
             group.byte_values.iter().map(|word| word.count_ones() as usize).sum::<usize>(),
             group.cardinality()
         );
-        group.values.insert(Key::Numeric(super::super::NumberKey::Unsigned(100)));
+        group.values.insert(Key::Numeric(super::super::NumberKey::Unsigned(100)), ());
         group.distinct_count += 1;
         assert_eq!(group.cardinality(), 6);
     }
@@ -336,6 +341,45 @@ mod grouped_distinct_bounded_topk_tests {
                     "{order}: OFFSET {offset} LIMIT {limit}");
             }
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod single_probe_distinct_tests {
+    use super::*;
+    use rusthouse_storage::{Column, write_wide_part};
+
+    #[test]
+    fn counts_non_byte_distinct_values_once_per_group() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-multidistinct-entry-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let schema = [
+            Column { name: "category".into(), data_type: "String".into() },
+            Column { name: "amount".into(), data_type: "UInt64".into() },
+        ];
+        let rows = [
+            ("a", 1), ("a", 1), ("a", 2), ("a", 2),
+            ("b", 1), ("b", 1), ("b", 3),
+        ]
+        .into_iter()
+        .map(|(category, amount)| {
+            vec![Some(category.into()), Some(amount.to_string())]
+        })
+        .collect::<Vec<_>>();
+        write_wide_part(&root, &schema, &rows).unwrap();
+        let sql = "SELECT category, COUNT(DISTINCT amount) FROM part GROUP BY category ORDER BY category";
+        let query = crate::parse_select(sql).unwrap();
+        let mut output = Vec::new();
+        execute(&query, &root, &["category".into()], "amount", &mut output).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "category\tcountDistinct(amount)\na\t2\nb\t2\n"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

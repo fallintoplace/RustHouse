@@ -16,6 +16,28 @@ class NoiseReportTests(unittest.TestCase):
                     load_report(source)
 
 
+    def test_loader_rejects_duplicate_keys_and_nonfinite_numbers(self):
+        import tempfile
+        from pathlib import Path
+        from noise_report import load_report
+        payloads = [
+            '{"results": [], "results": []}',
+            '{"results": [{"query": 1, "query": 2}]}',
+            '{"results": [{"query": 1, "timings_seconds": [NaN]}]}',
+            '{"results": [{"query": 1, "timings_seconds": [Infinity]}]}',
+            '{"results": [{"query": 1, "timings_seconds": [-Infinity]}]}',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "noise.json"
+            for payload in payloads:
+                with self.subTest(payload=payload):
+                    source.write_text(payload, encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        load_report(source)
+            source.write_text('{"results": [{"query": 1, "status": "passed", '
+                              '"timings_seconds": [1.0, 2.0]}]}', encoding="utf-8")
+            self.assertEqual(load_report(source)["results"][0]["query"], 1)
+
     def test_marks_repeatable_verified_samples_as_stable(self):
         result = assess_query({"query": 6, "status": "passed",
                                "timings_seconds": [1, 1, 1, 1, 1]})

@@ -58,6 +58,21 @@ impl<W: Write> JsonArraySink<W> {
         Ok(())
     }
 
+    fn emit_complete_row(&mut self, row: &[u8]) -> io::Result<()> {
+        validate_complete_object(row)?;
+        if !self.pretty && row.len() <= 4095 {
+            let mut framed = [0u8; 4096];
+            framed[0] = if self.first { b'[' } else { b',' };
+            framed[1..row.len() + 1].copy_from_slice(row);
+            self.output.write_all(&framed[..row.len() + 1])?;
+            self.first = false;
+        } else {
+            self.write_row_prefix()?;
+            emit_json_row(&mut self.output, row, self.pretty)?;
+        }
+        Ok(())
+    }
+
     fn append_row_fragment(&mut self, fragment: &[u8]) -> io::Result<()> {
         if fragment.len() > MAX_RESPONSE_BYTES.saturating_sub(self.row.len()) {
             return Err(io::Error::new(
@@ -109,9 +124,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                             "JSON array row exceeds 8 MiB",
                         ));
                     }
-                    validate_complete_object(row)?;
-                    self.write_row_prefix()?;
-                    emit_json_row(&mut self.output, row, self.pretty)?;
+                    self.emit_complete_row(row)?;
                     return Ok(buf.len());
                 }
             }
@@ -130,9 +143,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                         "JSON array row exceeds 8 MiB",
                     ));
                 }
-                validate_complete_object(fragment)?;
-                self.write_row_prefix()?;
-                emit_json_row(&mut self.output, fragment, self.pretty)?;
+                self.emit_complete_row(fragment)?;
                 continue;
             }
             self.append_row_fragment(fragment)?;
@@ -228,5 +239,41 @@ mod tests {
         assert_eq!(sink.row.capacity(), 0);
         let output = sink.finish().unwrap();
         assert_eq!(output, format!("[{}]\n", input.trim_end()).as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod compact_json_row_frame_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Counted { writes: usize, bytes: Vec<u8> }
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn complete_compact_objects_use_one_write_per_row() {
+        let mut sink = JsonArraySink::new(Counted::default());
+        sink.write_all(b"{\"a\":1}\n{\"b\":2}\n").unwrap();
+        let output = sink.finish().unwrap();
+        assert_eq!(output.bytes, b"[{\"a\":1},{\"b\":2}]\n");
+        assert_eq!(output.writes, 3); // two rows plus the final bracket
+    }
+
+    #[test]
+    fn threshold_and_pretty_output_keep_existing_framing() {
+        let row = format!("{{\"x\":\"{}\"}}", "q".repeat(4090));
+        let mut sink = JsonArraySink::new(Vec::new());
+        sink.write_all(format!("{row}\n").as_bytes()).unwrap();
+        assert_eq!(sink.finish().unwrap(), format!("[{row}]\n").as_bytes());
+        let mut pretty = JsonArraySink::new_pretty(Vec::new());
+        pretty.write_all(b"{\"a\":1}\n").unwrap();
+        assert_eq!(pretty.finish().unwrap(), b"[\n  {\n    \"a\": 1\n  }\n]\n");
     }
 }

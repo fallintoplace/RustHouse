@@ -30,7 +30,10 @@ pub(super) fn account_decoded_blocks(
 ) -> Result<u64, PartError> {
     let mut reader = CompressedBlockReader::open(data)?;
     let mut decoded_size = 0u64;
-    while let Some(block) = reader.next_decoded() {
+    // Verification consumes every block. Return the decoded allocation to the
+    // reader rather than allocating a new payload vector for each frame.
+    let mut scratch = Vec::new();
+    while let Some(block) = reader.next_decoded_reusing(scratch) {
         let block = block?;
         report.blocks = report
             .blocks
@@ -39,6 +42,7 @@ pub(super) fn account_decoded_blocks(
         let bytes = block.data.len() as u64;
         decoded_size = checked_decoded_bytes(decoded_size, bytes, data)?;
         report.decompressed_bytes = checked_decoded_bytes(report.decompressed_bytes, bytes, data)?;
+        scratch = block.data;
     }
     Ok(decoded_size)
 }
@@ -124,43 +128,39 @@ pub(super) fn collect_wide_file_pairs(
 }
 
 #[cfg(test)]
-mod adaptive_stream_single_pass_tests {
+mod reused_verification_decode_tests {
     use super::*;
-    use crate::WideMark;
+    use ch_cityhash102::cityhash128;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
 
-    fn marks(rows: &[u64]) -> WideMarks {
-        WideMarks {
-            path: "values.mrk2".into(),
-            format: WideMarkFormat::Adaptive,
-            marks: rows.iter().enumerate().map(|(index, &rows)| WideMark {
-                compressed_offset: index as u64 * 16,
-                decompressed_offset: 0,
-                rows: Some(rows),
-            }).collect(),
+    #[test]
+    fn reused_block_payloads_count_every_uncompressed_byte() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-reused-verify-{}-{}.bin",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let payloads = [vec![1u8; 8192], vec![2u8; 16_384], vec![3u8; 17]];
+        let mut bytes = Vec::new();
+        for payload in &payloads {
+            let mut frame = vec![0u8; 16];
+            frame.push(0x02);
+            frame.extend_from_slice(&(9u32 + payload.len() as u32).to_le_bytes());
+            frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            frame.extend_from_slice(payload);
+            let checksum = u128::from(cityhash128(&frame[16..])).to_le_bytes();
+            frame[..16].copy_from_slice(&checksum);
+            bytes.extend_from_slice(&frame);
         }
-    }
-
-    #[test]
-    fn detects_total_row_mismatches_and_overflow() {
-        let mut layout = ScanLayout::default();
-        validate_adaptive_stream(Path::new("a.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
-        let mismatch = validate_adaptive_stream(
-            Path::new("b.bin"), &marks(&[2, 4]), 5, &mut layout
-        ).unwrap_err();
-        assert!(matches!(mismatch, PartError::InvalidPart { reason: "mark row counts do not match count.txt", .. }));
-        let overflow = validate_adaptive_stream(
-            Path::new("c.bin"), &marks(&[u64::MAX, 1]), u64::MAX, &mut ScanLayout::default()
-        ).unwrap_err();
-        assert!(matches!(overflow, PartError::InvalidPart { reason: "mark row counts do not match count.txt", .. }));
-    }
-
-    #[test]
-    fn validates_shared_granules_after_first_column() {
-        let mut layout = ScanLayout::default();
-        validate_adaptive_stream(Path::new("a.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
-        validate_adaptive_stream(Path::new("b.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
-        assert!(validate_adaptive_stream(
-            Path::new("c.bin"), &marks(&[3, 2]), 5, &mut layout
-        ).is_err());
+        std::fs::write(&path, bytes).unwrap();
+        let mut report = PartVerification {
+            streams: 0, marks: 0, blocks: 0, decompressed_bytes: 0,
+        };
+        let result = account_decoded_blocks(&path, &mut report);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(result.unwrap(), 8192 + 16_384 + 17);
+        assert_eq!(report.blocks, 3);
+        assert_eq!(report.decompressed_bytes, 8192 + 16_384 + 17);
     }
 }

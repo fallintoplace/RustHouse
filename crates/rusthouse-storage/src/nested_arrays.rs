@@ -91,7 +91,8 @@ fn validated_nested_numeric_leaf_type(data_type: &str) -> Result<&str, NestedArr
         .and_then(|inner| inner.strip_suffix("))"))
         .filter(|inner| !inner.is_empty())
         .ok_or_else(|| NestedArrayReadError::InvalidType(data_type.to_owned()))?;
-    if read_numeric_column(&mut io::empty(), leaf_type, 0).is_err() {
+    // Avoid allocating an empty scalar column just to validate the type.
+    if crate::numeric::numeric_storage_type(leaf_type).is_none() {
         return Err(NestedArrayReadError::InvalidType(data_type.to_owned()));
     }
     Ok(leaf_type)
@@ -356,5 +357,23 @@ mod tests {
         assert_eq!(batch.outer_offsets(), &[0]);
         assert_eq!(batch.inner_offsets(), &[0]);
         assert_eq!(batch.values(), &NumericColumn::Float64(vec![]));
+    }
+}
+
+#[cfg(test)]
+mod direct_nested_array_type_tests {
+    use super::*;
+
+    #[test]
+    fn type_lookup_matches_zero_row_numeric_decoder() {
+        for leaf in ["UInt8", "Int64", "UInt128", "Float64", "Date",
+                     "DateTime64(9)", "DateTime('Europe/Berlin')",
+                     "DateTime64(11)", "String", "Nullable(UInt16)", "Float16"] {
+            let expected = read_numeric_column(&mut io::empty(), leaf, 0).is_ok();
+            assert_eq!(
+                validated_nested_numeric_leaf_type(&format!("Array(Array({leaf}))")).is_ok(),
+                expected, "leaf type: {leaf}"
+            );
+        }
     }
 }

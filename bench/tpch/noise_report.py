@@ -9,6 +9,19 @@ from pathlib import Path
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 
 
+def _unique_json_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate noise report JSON field: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json(value):
+    raise ValueError(f"nonfinite noise report JSON value: {value}")
+
+
 def load_report(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -17,7 +30,8 @@ def load_report(path):
         payload = source.read(MAX_REPORT_BYTES + 1)
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("benchmark report exceeds 2 MiB")
-    return json.loads(payload)
+    return json.loads(payload, object_pairs_hook=_unique_json_fields,
+                      parse_constant=_reject_nonfinite_json)
 
 
 def assess_query(result, min_samples=5, max_cv_percent=10.0):

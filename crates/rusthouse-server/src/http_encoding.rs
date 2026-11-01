@@ -88,6 +88,11 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
         if bytes.len() <= 4094 {
             return write_plain_json_string::<4096, _>(writer, bytes);
         }
+        // Avoid three underlying writes for large unescaped values up to
+        // 8 KiB. Larger values keep the zero-copy streaming path.
+        if bytes.len() <= 8190 {
+            return write_plain_json_string::<8192, _>(writer, bytes);
+        }
         writer.write_all(b"\"")?;
         writer.write_all(bytes)?;
         return writer.write_all(b"\"");
@@ -100,7 +105,35 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
     let mut buffer = [0u8; 4096];
     buffer[0] = b'"';
     let mut used = 1;
-    for &byte in bytes {
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        // JSON-special bytes are ASCII. Copy ordinary UTF-8 spans in bulk
+        // instead of branching and copying each byte independently.
+        let span = remaining
+            .iter()
+            .position(|&byte| byte < 0x20 || byte == b'"' || byte == b'\\')
+            .unwrap_or(remaining.len());
+        if span != 0 {
+            let plain = &remaining[..span];
+            if plain.len() >= buffer.len() {
+                writer.write_all(&buffer[..used])?;
+                writer.write_all(plain)?;
+                used = 0;
+            } else {
+                if buffer.len() - used < plain.len() {
+                    writer.write_all(&buffer[..used])?;
+                    used = 0;
+                }
+                buffer[used..used + plain.len()].copy_from_slice(plain);
+                used += plain.len();
+            }
+            remaining = &remaining[span..];
+        }
+        if remaining.is_empty() {
+            break;
+        }
+        let byte = remaining[0];
+        remaining = &remaining[1..];
         let mut unicode_escape = [0u8; 6];
         let encoded: &[u8] = match byte {
             b'"' => br#"\""#,
@@ -228,5 +261,69 @@ mod sparse_percent_span_tests {
     fn handles_consecutive_escapes_and_empty_spans() {
         assert_eq!(decode_url("%41%42++%43").unwrap(), "AB  C");
         assert_eq!(decode_url("%00").unwrap().as_bytes(), &[0]);
+    }
+}
+
+#[cfg(test)]
+mod sparse_json_escape_span_tests {
+    use super::*;
+
+    #[test]
+    fn long_plain_runs_around_escapes_preserve_utf8_and_control_bytes() {
+        let left = "é".repeat(3000);
+        let right = "猫".repeat(1800);
+        let mut input = left.clone();
+        input.push('\n');
+        input.push('\u{0001}');
+        input.push('\\');
+        input.push('"');
+        input.push_str(&right);
+        input.push('\t');
+        let mut expected = vec![b'"'];
+        expected.extend_from_slice(left.as_bytes());
+        expected.extend_from_slice(&[
+            b'\\', b'n', b'\\', b'u', b'0', b'0', b'0', b'1',
+            b'\\', b'\\', b'\\', b'"',
+        ]);
+        expected.extend_from_slice(right.as_bytes());
+        expected.extend_from_slice(&[b'\\', b't', b'"']);
+        let mut output = Vec::new();
+        write_json_string(&mut output, &input).unwrap();
+        assert_eq!(output, expected);
+    }
+}
+
+#[cfg(test)]
+mod larger_plain_json_write_tests {
+    use super::*;
+
+    struct CountingWriter {
+        calls: usize,
+        output: Vec<u8>,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, value: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.output.extend_from_slice(value);
+            Ok(value.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn large_plain_json_values_are_quoted_without_three_writes() {
+        for size in [4095, 5000, 8190, 8191, 20_000] {
+            let input = "é".repeat(size / 2) + if size % 2 == 0 { "" } else { "x" };
+            let mut counted = CountingWriter { calls: 0, output: Vec::new() };
+            write_json_string(&mut counted, &input).unwrap();
+            let mut expected = vec![b'"'];
+            expected.extend_from_slice(input.as_bytes());
+            expected.push(b'"');
+            assert_eq!(counted.output, expected);
+            assert_eq!(counted.calls, if size <= 8190 { 1 } else { 3 }, "{size}");
+        }
     }
 }

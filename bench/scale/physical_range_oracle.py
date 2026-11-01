@@ -41,12 +41,28 @@ MAX_ORACLE_RESULT_BYTES = 1024
 
 def invoke(binary, database, statement, timeout):
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        extra = {}
+        if os.name == "posix":
+            import resource
+
+            def cap_output_file():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                maximum = MAX_ORACLE_RESULT_BYTES + 1
+                soft = maximum if hard == resource.RLIM_INFINITY else min(maximum, hard)
+                resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+
+            extra["preexec_fn"] = cap_output_file
         response = subprocess.run(
             [str(binary), "sql", statement, "--database", str(database),
              "--format", "tsv-no-header"],
-            stdout=output, stderr=errors, timeout=timeout, check=False,
+            stdout=output, stderr=errors, timeout=timeout, check=False, **extra,
         )
         if response.returncode:
+            # A child stopped by the file-size limit must not be mistaken for
+            # an unrelated SQL failure.
+            output.seek(0, os.SEEK_END)
+            if output.tell() > MAX_ORACLE_RESULT_BYTES:
+                raise ValueError("physical range oracle output exceeds 1 KiB")
             errors.seek(0, os.SEEK_END)
             errors.seek(max(0, errors.tell() - 500))
             raise RuntimeError(errors.read().decode("utf-8", "replace"))
@@ -56,9 +72,8 @@ def invoke(binary, database, statement, timeout):
         raise ValueError("physical range oracle output exceeds 1 KiB")
     return result
 
-
 def verify(binary, database, table, start, rows, window_rows=10_000_000,
-           timeout=1800, execute=None, column="id"):
+           timeout=1800, execute=None, column="id", max_total_seconds=None):
     expected(start, rows)
     if type(window_rows) is not int or window_rows < 1:
         raise ValueError("window_rows must be positive")
@@ -67,15 +82,31 @@ def verify(binary, database, table, start, rows, window_rows=10_000_000,
     if (type(timeout) not in (int, float) or not math.isfinite(timeout)
             or timeout <= 0):
         raise ValueError("timeout must be finite and positive")
-    execute = execute or (lambda statement: invoke(binary, database, statement, timeout))
+    if (max_total_seconds is not None and
+            (type(max_total_seconds) not in (int, float) or
+             not math.isfinite(max_total_seconds) or max_total_seconds <= 0)):
+        raise ValueError("max_total_seconds must be finite and positive")
+    started = time.monotonic()
     seconds = []
     count_total = 0
     sum_total = 0
     for position in range(start, start + rows, window_rows):
+        remaining = None
+        if max_total_seconds is not None:
+            remaining = max_total_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError("physical range oracle total deadline exceeded")
         count = min(window_rows, start + rows - position)
         query = sql_for(table, position, count, column=column)
         begun = time.perf_counter()
-        data = execute(query)
+        if execute is None:
+            query_timeout = min(timeout, remaining) if remaining is not None else timeout
+            data = invoke(binary, database, query, query_timeout)
+        else:
+            data = execute(query)
+        if (max_total_seconds is not None and
+                time.monotonic() - started > max_total_seconds):
+            raise TimeoutError("physical range oracle total deadline exceeded")
         seconds.append(time.perf_counter() - begun)
         reference = expected(position, count)
         expected_wire = f"{reference[0]}\t{reference[1]}\n".encode("ascii")
@@ -103,11 +134,14 @@ def main(argv=None):
     parser.add_argument("--rows", type=int, required=True)
     parser.add_argument("--window-rows", type=int, default=10_000_000)
     parser.add_argument("--timeout", type=float, default=1800)
+    parser.add_argument("--max-total-seconds", type=float,
+                        help="Total deadline for all query windows")
     args = parser.parse_args(argv)
     try:
         result = verify(args.binary, args.database, args.table, args.start, args.rows,
-                        args.window_rows, args.timeout, column=args.column)
-    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+                        args.window_rows, args.timeout, column=args.column,
+                        max_total_seconds=args.max_total_seconds)
+    except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.TimeoutExpired) as error:
         parser.exit(1, f"physical range oracle failed: {error}\n")
     print(json.dumps(result))
     return 0

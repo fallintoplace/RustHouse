@@ -296,7 +296,11 @@ struct SchemaCursor<'a> {
 
 impl SchemaCursor<'_> {
     fn whitespace(&mut self) {
-        while self.bytes.get(self.index).is_some_and(u8::is_ascii_whitespace) {
+        // RFC 8259 JSON whitespace is only SP, HTAB, LF, and CR.
+        // is_ascii_whitespace also accepts VT and FF, which are not valid JSON.
+        while self.bytes.get(self.index).is_some_and(|byte| {
+            matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
+        }) {
             self.index += 1;
         }
     }
@@ -392,6 +396,26 @@ fn parse_peer_schema(bytes: &[u8]) -> Result<PeerSchema, String> {
         return Err("trailing data or empty peer schema".into());
     }
     Ok(PeerSchema { columns })
+}
+
+#[cfg(test)]
+mod peer_schema_json_whitespace_tests {
+    use super::parse_peer_schema;
+
+    #[test]
+    fn schema_parser_only_accepts_rfc_json_whitespace() {
+        let canonical = br#"{"rows":1,"columns":[{"name":"id","type":"UInt64"}]}"#;
+        for space in [b' ', b'\t', b'\r', b'\n'] {
+            let mut encoded = canonical.to_vec();
+            encoded.insert(1, space);
+            assert!(parse_peer_schema(&encoded).is_ok(), "valid JSON whitespace: {space}");
+        }
+        for invalid in [b'\x0b', b'\x0c'] {
+            let mut encoded = canonical.to_vec();
+            encoded.insert(1, invalid);
+            assert!(parse_peer_schema(&encoded).is_err(), "invalid JSON whitespace: {invalid}");
+        }
+    }
 }
 
 /// Resolve a column type from an independently validated peer schema.
@@ -2708,7 +2732,7 @@ mod coordinator_input_budget_tests {
             let tasks: Vec<_> = (0..16).map(|_| {
                 scope.spawn(|| reserve_shard_bytes(&bytes, 8 * 1024 * 1024).is_ok())
             }).collect();
-            tasks.into_iter().filter(|task| task.join().unwrap()).count()
+            tasks.into_iter().map(|task| task.join().unwrap()).filter(|&ok| ok).count()
         });
         assert_eq!(succeeded, 8);
         assert_eq!(bytes.load(AtomicOrdering::Relaxed), MAX_SHARD_INPUT_BYTES);

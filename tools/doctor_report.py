@@ -10,16 +10,25 @@ import tempfile
 import time
 
 
+def _bounded_text(value):
+    payload = value.encode("utf-8")
+    if len(payload) <= 32_768:
+        return value, False
+    return payload[:32_768].decode("utf-8", "ignore"), True
+
+
 def report(returncode, stdout, stderr, elapsed, full_hashes):
+    stdout, out_truncated = _bounded_text(stdout)
+    stderr, err_truncated = _bounded_text(stderr)
     return {
         "schema_version": 1,
         "ok": returncode == 0,
         "exit_code": returncode,
         "elapsed_seconds": round(elapsed, 3),
         "full_hashes": full_hashes,
-        "stdout": stdout[:32768],
-        "stderr": stderr[:32768],
-        "truncated": len(stdout) > 32768 or len(stderr) > 32768,
+        "stdout": stdout,
+        "stderr": stderr,
+        "truncated": out_truncated or err_truncated,
     }
 
 
