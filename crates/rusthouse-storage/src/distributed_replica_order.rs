@@ -1007,7 +1007,9 @@ pub fn rank_zone_diverse_quorum_snapshot_replicas(
         if !valid_node(node)
             || zone.is_empty()
             || zone.len() > 64
-            || !zone.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            || !zone
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
             || !members.contains(&node)
             || zones[..index].iter().any(|&(previous, _)| previous == node)
         {
