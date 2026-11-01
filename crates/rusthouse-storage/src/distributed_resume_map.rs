@@ -1475,6 +1475,110 @@ impl ResumeMap {
     }
 }
 
+
+impl ResumeMap {
+    /// Select the nth unfinished transfer chunk at or after a continuation cursor.
+    ///
+    /// Skip entire completed words instead of scanning every individual chunk.
+    /// The cursor is inclusive and the rank is zero-based within the suffix.
+    pub fn nth_missing_from(
+        &self,
+        start: usize,
+        mut rank: usize,
+    ) -> Result<Option<usize>, &'static str> {
+        if start > self.chunks {
+            return Err("resume cursor out of bounds");
+        }
+        if start == self.chunks {
+            return Ok(None);
+        }
+        let first_word = start / 64;
+        let full_words = self.chunks / 64;
+        for (index, bytes) in self.completed[first_word * 8..full_words * 8]
+            .chunks_exact(8)
+            .enumerate()
+        {
+            let word = first_word + index;
+            let mut missing = !u64::from_le_bytes(bytes.try_into().expect("checkpoint word"));
+            if index == 0 {
+                missing &= u64::MAX << (start % 64);
+            }
+            let count = missing.count_ones() as usize;
+            if rank >= count {
+                rank -= count;
+                continue;
+            }
+            for _ in 0..rank {
+                missing &= missing - 1;
+            }
+            return Ok(Some(word * 64 + missing.trailing_zeros() as usize));
+        }
+        let tail_base = full_words * 64;
+        for (byte_index, &completed) in self.completed[full_words * 8..]
+            .iter()
+            .enumerate()
+        {
+            let position = tail_base + byte_index * 8;
+            let live = (self.chunks - position).min(8);
+            let mut missing = !completed & low_bit_mask(live);
+            if start > position {
+                missing &= !low_bit_mask((start - position).min(8));
+            }
+            let count = missing.count_ones() as usize;
+            if rank >= count {
+                rank -= count;
+                continue;
+            }
+            for _ in 0..rank {
+                missing &= missing - 1;
+            }
+            return Ok(Some(position + missing.trailing_zeros() as usize));
+        }
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod paged_resume_select_tests {
+    use super::*;
+
+    #[test]
+    fn rank_select_from_every_cursor_matches_missing_iterator() {
+        for length in [0, 1, 7, 8, 9, 63, 64, 65, 127, 128, 129, 257] {
+            for stride in [2, 3, 5, 7] {
+                let mut state = ResumeMap::new(length).unwrap();
+                for index in (0..length).step_by(stride) {
+                    state.mark_complete(index).unwrap();
+                }
+                for start in 0..=length {
+                    let missing = state.remaining_indices_from(start).collect::<Vec<_>>();
+                    for (rank, &index) in missing.iter().enumerate() {
+                        assert_eq!(
+                            state.nth_missing_from(start, rank).unwrap(),
+                            Some(index),
+                            "length={length}, stride={stride}, start={start}, rank={rank}"
+                        );
+                    }
+                    assert_eq!(state.nth_missing_from(start, missing.len()), Ok(None));
+                    assert_eq!(state.nth_missing_from(start, usize::MAX), Ok(None));
+                }
+                assert!(state.nth_missing_from(length + 1, 0).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn large_checkpoint_selects_only_remaining_holes_past_cursor() {
+        let mut state = ResumeMap::new(65_535).unwrap();
+        state.mark_complete_range(0, 65_535).unwrap();
+        state.invalidate_indices(&[0, 63, 64, 65_534]).unwrap();
+        assert_eq!(state.nth_missing_from(1, 0), Ok(Some(63)));
+        assert_eq!(state.nth_missing_from(64, 0), Ok(Some(64)));
+        assert_eq!(state.nth_missing_from(65, 0), Ok(Some(65_534)));
+        assert_eq!(state.nth_missing_from(65_534, 1), Ok(None));
+    }
+}
+
 #[cfg(test)]
 mod resume_rank_select_tests {
     use super::*;
