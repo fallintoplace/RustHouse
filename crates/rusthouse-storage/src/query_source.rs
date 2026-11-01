@@ -58,6 +58,23 @@ fn pointer_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     true
 }
 
+// Windows File::open permits another process to replace or rewrite a
+// snapshot pointer between metadata validation and the completed read.
+#[cfg(windows)]
+fn open_snapshot_pointer(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_snapshot_pointer(path: &Path) -> io::Result<fs::File> {
+    fs::File::open(path)
+}
+
 /// Resolve the immutable active generation of a local table.
 /// Legacy tables without a pointer use their original parts directory.
 pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
@@ -72,7 +89,7 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
             "invalid database snapshot pointer".into(),
         ));
     }
-    let mut file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let mut file = open_snapshot_pointer(&pointer).map_err(|error| io_error(&pointer, error))?;
     let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
     if !pointer_unchanged(&metadata, &opened) || opened.len() > 64 {
         return Err(PartError::InvalidScan(
@@ -1111,5 +1128,34 @@ mod disguised_active_part_tests {
         symlink("all_0_0_0", root.join("all_1_1_0")).unwrap();
         assert!(query_parts(&root).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_pointer_sharing_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn open_pointer_cannot_be_rewritten_or_replaced_during_validation() {
+        let folder = std::env::temp_dir().join(format!(
+            "rusthouse-pointer-sharing-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir(&folder).unwrap();
+        let path = folder.join(".rusthouse-active");
+        fs::write(&path, b"g1\n").unwrap();
+        let first = open_snapshot_pointer(&path).unwrap();
+        let second = open_snapshot_pointer(&path).unwrap();
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        assert!(fs::rename(&path, folder.join("old-pointer")).is_err());
+        drop(first);
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        drop(second);
+        fs::OpenOptions::new().write(true).open(&path).unwrap();
+        fs::remove_dir_all(folder).unwrap();
     }
 }
