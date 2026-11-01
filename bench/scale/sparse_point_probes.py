@@ -15,23 +15,32 @@ import tempfile
 import time
 
 
-def choose_ids(start, rows, count, seed):
+def choose_ids(start, rows, count, seed, *, include_boundaries=False):
     if type(start) is not int or type(rows) is not int or start < 0 or rows < 1:
         raise ValueError("invalid row domain")
     if start + rows > 2**64 or type(count) is not int or not 1 <= count <= min(rows, 10_000):
         raise ValueError("invalid sample size or UInt64 overflow")
     if type(seed) is not int or not 0 <= seed <= (1 << 64) - 1:
         raise ValueError("seed must be UInt64")
+    if type(include_boundaries) is not bool:
+        raise ValueError("include_boundaries must be boolean")
+    boundary_count = min(count, rows, 2) if include_boundaries else 0
+    boundaries = ([start] if boundary_count else [])
+    if boundary_count == 2:
+        boundaries.append(start + rows - 1)
+    # Sample the interior directly, rather than drawing boundary IDs and
+    # retrying collisions. Floyd's algorithm remains O(count) for dense draws.
+    domain = rows - boundary_count
+    wanted = count - boundary_count
     rng = random.Random(seed)
     chosen = set()
     sampled = []
-    # Floyd's algorithm avoids retrying duplicate draws when the sample is dense.
-    for upper in range(rows - count, rows):
+    for upper in range(domain - wanted, domain):
         candidate = rng.randrange(upper + 1)
         selected = upper if candidate in chosen else candidate
         chosen.add(selected)
-        sampled.append(start + selected)
-    return sampled
+        sampled.append(start + selected + (1 if boundary_count else 0))
+    return boundaries + sampled
 
 
 def percentile(samples, percent):
@@ -85,7 +94,7 @@ def query(binary, database, statement, timeout):
         return payload
 
 def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
-          execute=None, column="id"):
+          execute=None, column="id", include_boundaries=False):
     if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", table):
         raise ValueError("unsafe table identifier")
     if not isinstance(column, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", column):
@@ -93,7 +102,7 @@ def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     execute = execute or (lambda sql: query(binary, database, sql, timeout))
-    sampled = choose_ids(start, rows, count, seed)
+    sampled = choose_ids(start, rows, count, seed, include_boundaries=include_boundaries)
     times = []
     for value in sampled:
         statement = f"SELECT {column} FROM {table} WHERE {column} = {value} LIMIT 2"
@@ -105,7 +114,7 @@ def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
     ordered = sorted(times)
     return {"verified": True, "rows_in_domain": rows, "samples": count,
             "column": column,
-            "seed": seed, "p50_seconds": statistics.median(times),
+            "seed": seed, "boundaries_included": include_boundaries, "p50_seconds": statistics.median(times),
             "p95_seconds": percentile_sorted(ordered, 95),
             "p99_seconds": percentile_sorted(ordered, 99),
             "max_seconds": max(times), "min_seconds": min(times)}
@@ -122,10 +131,13 @@ def main(argv=None):
     p.add_argument("--count", type=int, default=50)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--timeout", type=float, default=30)
+    p.add_argument("--include-boundaries", action="store_true",
+                   help="Always probe the minimum and maximum ID when count permits")
     a = p.parse_args(argv)
     try:
         report = probe(a.binary, a.database, a.table, a.start,
-                       a.rows, a.count, a.seed, a.timeout, column=a.column)
+                       a.rows, a.count, a.seed, a.timeout, column=a.column,
+                       include_boundaries=a.include_boundaries)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         p.exit(1, f"sparse point probe failed: {error}\n")
     print(json.dumps(report))
