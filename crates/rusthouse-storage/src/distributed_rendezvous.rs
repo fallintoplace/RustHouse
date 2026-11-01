@@ -1,5 +1,5 @@
 //! Deterministic experimental shard-to-replica placement.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const MAX_PLACEMENT_NODES: usize = 64;
 
@@ -160,10 +160,54 @@ pub fn replicas_for_many(
     if shards.iter().any(|&shard| !valid_shard(shard)) {
         return Err("invalid shard identifier");
     }
-    Ok(shards
-        .iter()
-        .map(|&shard| rank_replicas_with_seed(shard_seed(shard), nodes, replicas))
-        .collect())
+    if shards.len() <= 16 {
+        return Ok(shards
+            .iter()
+            .map(|&shard| rank_replicas_with_seed(shard_seed(shard), nodes, replicas))
+            .collect());
+    }
+    // Repeated shard IDs are frequent in batched placement lookups. Keep the
+    // first completed placement by input index, so duplicates clone the
+    // already ranked replicas without rehashing and sorting all nodes.
+    // Unique inputs still compute each ranking exactly once.
+    let mut first_position = HashMap::<&str, usize>::with_capacity(shards.len());
+    let mut result: Vec<Vec<String>> = Vec::with_capacity(shards.len());
+    for &shard in shards {
+        if let Some(&index) = first_position.get(shard) {
+            result.push(result[index].clone());
+        } else {
+            first_position.insert(shard, result.len());
+            result.push(rank_replicas_with_seed(shard_seed(shard), nodes, replicas));
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod repeated_shard_batch_placement_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_large_batches_match_independent_rendezvous_placements() {
+        let nodes = (0..64)
+            .map(|number| format!("node_{number:02}"))
+            .collect::<Vec<_>>();
+        let names = (0..19)
+            .map(|number| format!("shard_{number:02}"))
+            .collect::<Vec<_>>();
+        let shards = (0..4_096)
+            .map(|index| names[(index * 37) % names.len()].as_str())
+            .collect::<Vec<_>>();
+        for replicas in [1, 2, 3, 8] {
+            let batched = replicas_for_many(&shards, &nodes, replicas).unwrap();
+            let independently = shards
+                .iter()
+                .map(|&shard| replicas_for(shard, &nodes, replicas).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(batched, independently, "replicas={replicas}");
+        }
+        assert!(replicas_for_many(&["shard_0", "invalid/path"], &nodes, 1).is_err());
+    }
 }
 
 /// Capacity-weighted rendezvous selection for heterogeneous replica nodes.
