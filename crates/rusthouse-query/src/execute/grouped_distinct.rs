@@ -115,6 +115,23 @@ impl GroupIndex16 {
     }
 }
 
+// A nullable byte group has 256 values plus a single NULL slot. Keep
+// both cases in the same direct index, without constructing hashed Keys.
+fn byte_group_slot(column: &TypedColumn, row: usize) -> Option<usize> {
+    const NULL_SLOT: usize = 256;
+    match column {
+        TypedColumn::Numeric(NumericColumn::UInt8(values)) => Some(usize::from(values[row])),
+        TypedColumn::Numeric(NumericColumn::Int8(values)) => Some(usize::from(values[row] as u8)),
+        TypedColumn::NullableNumeric { values: NumericColumn::UInt8(values), nulls } => {
+            Some(if nulls[row] != 0 { NULL_SLOT } else { usize::from(values[row]) })
+        }
+        TypedColumn::NullableNumeric { values: NumericColumn::Int8(values), nulls } => {
+            Some(if nulls[row] != 0 { NULL_SLOT } else { usize::from(values[row] as u8) })
+        }
+        _ => None,
+    }
+}
+
 fn mark_distinct_byte(group: &mut Group, value: u8) {
     let slot = usize::from(value) / 64;
     let bit = 1u64 << (usize::from(value) % 64);
@@ -187,11 +204,8 @@ pub(super) fn execute<W: Write>(
     let mut uuid_groups = HashMap::<[u8; 16], usize>::new();
     // One byte yields at most 256 groups. Use direct lookup rather than
     // hashing every GROUP BY key in large low-cardinality scans.
-    let mut dense_slots = matches!(
-        types.get(column).map(String::as_str),
-        Some("UInt8" | "Int8")
-    )
-    .then(|| [usize::MAX; 256]);
+    let mut dense_slots = matches!(typed::base_type(types[column].as_str()), "UInt8" | "Int8")
+        .then(|| [usize::MAX; 257]);
     // Allocate a dense 16-bit lookup only after sufficiently many distinct
     // groups materialize. Queries with few groups avoid the 512 KiB table.
     let mut dense_groups =
@@ -222,16 +236,12 @@ pub(super) fn execute<W: Write>(
                 _ => None,
             };
             let id = if let Some(slots) = dense_slots.as_mut() {
-                let byte = match &batch[group_index] {
-                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
-                    TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
-                    _ => {
-                        return Err(ExecutionError::Invalid(
-                            "unexpected byte-width grouped DISTINCT column".into(),
-                        ));
-                    }
-                };
-                let slot = &mut slots[usize::from(byte)];
+                let key = byte_group_slot(&batch[group_index], row).ok_or_else(|| {
+                    ExecutionError::Invalid(
+                        "unexpected byte-width grouped DISTINCT column".into(),
+                    )
+                })?;
+                let slot = &mut slots[key];
                 if *slot == usize::MAX {
                     *slot = groups.len();
                     charge_group_fixed(&mut retained_group_bytes)?;
@@ -621,5 +631,34 @@ mod lazy_grouped_u16_index_tests {
         for key in u16::MIN..=u16::MAX {
             assert_eq!(slots.get(key), Some(usize::from(key)));
         }
+    }
+}
+
+#[cfg(test)]
+mod nullable_byte_group_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn nullable_unsigned_groups_share_one_null_slot_not_the_zero_value() {
+        let values = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt8(vec![0, 0, 255, 255]),
+            nulls: vec![0, 1, 0, 1],
+        };
+        assert_eq!(
+            (0..4).map(|row| byte_group_slot(&values, row)).collect::<Vec<_>>(),
+            vec![Some(0), Some(256), Some(255), Some(256)]
+        );
+    }
+
+    #[test]
+    fn signed_byte_bit_patterns_and_nulls_have_distinct_indexes() {
+        let values = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int8(vec![-128, -1, 0, 127, -1]),
+            nulls: vec![0, 0, 0, 0, 1],
+        };
+        assert_eq!(
+            (0..5).map(|row| byte_group_slot(&values, row)).collect::<Vec<_>>(),
+            vec![Some(128), Some(255), Some(0), Some(127), Some(256)]
+        );
     }
 }
