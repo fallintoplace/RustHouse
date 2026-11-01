@@ -11,9 +11,9 @@ from pathlib import Path
 
 WORKLOADS = ("filtered count", "filtered sum", "filtered top-K")
 METADATA = re.compile(
-    r"RustHouse numbers\(\) benchmarks: (\d+) input rows, (\d+) samples, (\d+) warmups"
+    r"RustHouse numbers\(\) benchmarks: (\d+) input rows, (\d+) samples, (\d+) warmups", re.ASCII
 )
-MEASUREMENT = re.compile(r"(filtered (?:count|sum|top-K))\s+(\d+\.\d+)\s+(\d+\.\d+)")
+MEASUREMENT = re.compile(r"(filtered (?:count|sum|top-K))\s+(\d+\.\d+)\s+(\d+\.\d+)", re.ASCII)
 
 
 def parse_benchmark(text):
