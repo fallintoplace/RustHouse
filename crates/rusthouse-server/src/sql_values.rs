@@ -1,5 +1,4 @@
-use rusthouse_format::decode_tsv_field;
-use std::borrow::Cow;
+use rusthouse_format::decode_tsv_field_into;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -8,17 +7,18 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
+fn append_literal(output: &mut Vec<u8>, field: &[u8], decoded: &mut Vec<u8>) -> io::Result<()> {
     if field == b"\\N" {
         output.extend_from_slice(b"NULL");
         return Ok(());
     }
-    let decoded: Cow<'_, [u8]> = if field.contains(&b'\\') {
-        Cow::Owned(decode_tsv_field(field)?)
+    let bytes: &[u8] = if field.contains(&b'\\') {
+        decode_tsv_field_into(field, decoded)?;
+        decoded.as_slice()
     } else {
-        Cow::Borrowed(field)
+        field
     };
-    let value = std::str::from_utf8(&decoded)
+    let value = std::str::from_utf8(bytes)
         .map_err(|_| invalid("SQL VALUES output requires UTF-8 text"))?;
     append_quoted_text(output, value);
     Ok(())
@@ -45,11 +45,12 @@ fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
 
 #[cfg(test)]
 fn encode_values_row(line: &[u8], columns: usize, values: &mut Vec<u8>) -> io::Result<()> {
-    encode_values_row_prefixed(line, columns, values, b"")
+    encode_values_row_prefixed(line, columns, values, b"", &mut Vec::new())
 }
 
 fn encode_values_row_prefixed(
     line: &[u8], columns: usize, values: &mut Vec<u8>, prefix: &[u8],
+    decoded: &mut Vec<u8>,
 ) -> io::Result<()> {
     values.clear();
     values.reserve(
@@ -68,7 +69,7 @@ fn encode_values_row_prefixed(
         if count > 0 {
             values.extend_from_slice(b", ");
         }
-        append_literal(values, field)?;
+        append_literal(values, field, decoded)?;
         count += 1;
     }
     if count != columns {
@@ -81,12 +82,13 @@ fn encode_values_row_prefixed(
 fn emit_values_row<W: Write>(
     output: &mut W,
     values: &mut Vec<u8>,
+    decoded: &mut Vec<u8>,
     rows: &mut usize,
     line: &[u8],
     columns: usize,
 ) -> io::Result<()> {
     let prefix: &[u8] = if *rows == 0 { b"VALUES " } else { b",\n" };
-    encode_values_row_prefixed(line, columns, values, prefix)?;
+    encode_values_row_prefixed(line, columns, values, prefix, decoded)?;
     output.write_all(values)?;
     *rows += 1;
     Ok(())
@@ -97,6 +99,7 @@ pub struct SqlValuesWriter<W: Write> {
     columns: Option<usize>,
     line: Vec<u8>,
     values: Vec<u8>,
+    decoded: Vec<u8>,
     rows: usize,
     finished: bool,
 }
@@ -108,6 +111,7 @@ impl<W: Write> SqlValuesWriter<W> {
             columns: None,
             line: Vec::new(),
             values: Vec::new(),
+            decoded: Vec::new(),
             rows: 0,
             finished: false,
         }
@@ -128,7 +132,7 @@ impl<W: Write> SqlValuesWriter<W> {
             self.line.clear();
             return Ok(());
         };
-        emit_values_row(&mut self.output, &mut self.values, &mut self.rows, &self.line, columns)?;
+        emit_values_row(&mut self.output, &mut self.values, &mut self.decoded, &mut self.rows, &self.line, columns)?;
         self.line.clear();
         Ok(())
     }
@@ -174,6 +178,7 @@ impl<W: Write> Write for SqlValuesWriter<W> {
                     emit_values_row(
                         &mut self.output,
                         &mut self.values,
+                        &mut self.decoded,
                         &mut self.rows,
                         fragment,
                         columns,
@@ -223,6 +228,20 @@ mod tests {
     }
 
     #[test]
+    fn sql_values_reuses_decoding_storage_between_escaped_rows() {
+        let mut writer = SqlValuesWriter::new(Vec::new());
+        writer.write_all(b"note\nline\\t1\n").unwrap();
+        let first_buffer = writer.decoded.as_ptr();
+        let first_capacity = writer.decoded.capacity();
+        assert!(first_capacity >= 6);
+        writer.write_all(b"line\\t2\n").unwrap();
+        assert_eq!(writer.decoded.as_ptr(), first_buffer);
+        assert_eq!(writer.decoded.capacity(), first_capacity);
+        writer.finish().unwrap();
+        assert_eq!(writer.output, b"VALUES ('line\t1'),\n('line\t2');\n");
+    }
+
+    #[test]
     fn uses_shared_tsv_decoder_for_hex_and_control_escapes() {
         assert_eq!(
             render(b"value\ncaf\\xC3\\xA9\n").unwrap(),
@@ -239,7 +258,7 @@ mod tests {
     fn keeps_large_unescaped_utf8_fields_byte_for_byte() {
         let field = "café".repeat(4096);
         let mut output = Vec::new();
-        append_literal(&mut output, field.as_bytes()).unwrap();
+        append_literal(&mut output, field.as_bytes(), &mut Vec::new()).unwrap();
         assert_eq!(output.len(), field.len() + 2);
         assert_eq!(&output[1..1 + field.len()], field.as_bytes());
         assert_eq!(output[0], b'\'');
@@ -353,9 +372,10 @@ mod single_write_server_values_row_tests {
     fn prefixed_rows_are_written_once_without_changing_sql() {
         let mut output = Counted::default();
         let mut encoded = Vec::new();
+        let mut decoded = Vec::new();
         let mut rows = 0;
-        emit_values_row(&mut output, &mut encoded, &mut rows, b"one", 1).unwrap();
-        emit_values_row(&mut output, &mut encoded, &mut rows, b"two", 1).unwrap();
+        emit_values_row(&mut output, &mut encoded, &mut decoded, &mut rows, b"one", 1).unwrap();
+        emit_values_row(&mut output, &mut encoded, &mut decoded, &mut rows, b"two", 1).unwrap();
         assert_eq!(rows, 2);
         assert_eq!(output.calls, 2);
         assert_eq!(output.bytes, b"VALUES ('one'),\n('two')");
