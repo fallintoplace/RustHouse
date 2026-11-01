@@ -4,7 +4,9 @@ use crate::{
     PartError, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_hashes,
     verify_wide_part,
 };
-use std::fs::{self, File};
+use std::fs;
+#[cfg(not(windows))]
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
