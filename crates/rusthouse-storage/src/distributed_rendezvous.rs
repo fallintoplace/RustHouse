@@ -159,9 +159,10 @@ pub fn weighted_replicas_for(
         return Err("invalid weighted replica placement configuration");
     }
     let mut seen = (nodes.len() > 8).then(|| HashSet::with_capacity(nodes.len()));
-    let mut ranked = Vec::with_capacity(if replicas == 1 { 0 } else { nodes.len() });
+    let mut ranked = Vec::with_capacity(if replicas <= 2 { 0 } else { nodes.len() });
     let seed = shard_seed(shard);
     let mut winner: Option<(f64, &str)> = None;
+    let mut runner_up: Option<(f64, &str)> = None;
     for (index, &(node, weight)) in nodes.iter().enumerate() {
         let duplicate = if let Some(seen) = seen.as_mut() {
             !seen.insert(node)
@@ -172,22 +173,26 @@ pub fn weighted_replicas_for(
             return Err("invalid weighted replica node or weight");
         }
         let uniform = hash_to_open_unit_interval(score_with_seed(seed, node));
-        let priority = -uniform.ln() / f64::from(weight);
-        if replicas == 1 {
-            if winner.is_none_or(|(best, best_node)| {
-                priority
-                    .total_cmp(&best)
-                    .then_with(|| node.cmp(best_node))
-                    .is_lt()
-            }) {
-                winner = Some((priority, node));
+        let candidate = (-uniform.ln() / f64::from(weight), node);
+        if replicas <= 2 {
+            if winner.is_none_or(|best| weighted_rank_order(&candidate, &best).is_lt()) {
+                runner_up = winner;
+                winner = Some(candidate);
+            } else if replicas == 2
+                && runner_up.is_none_or(|second| weighted_rank_order(&candidate, &second).is_lt())
+            {
+                runner_up = Some(candidate);
             }
         } else {
-            ranked.push((priority, node));
+            ranked.push(candidate);
         }
     }
-    if replicas == 1 {
-        return Ok(vec![winner.expect("valid nonempty nodes").1.to_owned()]);
+    if replicas <= 2 {
+        let mut selected = vec![winner.expect("valid nonempty nodes").1.to_owned()];
+        if replicas == 2 {
+            selected.push(runner_up.expect("at least two validated nodes").1.to_owned());
+        }
+        return Ok(selected);
     }
     if replicas < ranked.len() {
         // Partition first; sorting just the selected replica prefix is enough.
@@ -1005,6 +1010,45 @@ mod hash_threshold_rebalance_tests {
                     previous.iter().filter(|node| !desired.contains(node)).cloned().collect::<Vec<_>>()
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod weighted_top_two_reference_tests {
+    use super::*;
+
+    #[test]
+    fn stack_winners_match_full_weighted_sort_for_many_shards_and_memberships() {
+        let names = ["node_a", "node_b", "node_c", "node_d", "node_e", "node_f", "node_g", "node_h"];
+        let weights = [1u16, 2, 7, 31, 127, 509, 1000, 1024];
+        for count in 2..=names.len() {
+            let nodes = names.iter().zip(weights).take(count).map(|(&name, weight)| (name, weight))
+                .collect::<Vec<_>>();
+            for id in 0..256 {
+                let shard = format!("shard_{id}");
+                let seed = shard_seed(&shard);
+                let mut ranked = nodes.iter().map(|&(name, weight)| {
+                    let score = score_with_seed(seed, name);
+                    (-hash_to_open_unit_interval(score).ln() / f64::from(weight), name)
+                }).collect::<Vec<_>>();
+                ranked.sort_unstable_by(weighted_rank_order);
+                for replicas in [1, 2] {
+                    let expected = ranked.iter().take(replicas)
+                        .map(|&(_, name)| name.to_owned()).collect::<Vec<_>>();
+                    assert_eq!(weighted_replicas_for(&shard, &nodes, replicas).unwrap(), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn still_validates_late_invalid_nodes_before_returning_primary() {
+        for count in [1, 2] {
+            let invalid = [("node_a", 2), ("node_b", 0)];
+            assert!(weighted_replicas_for("shard_1", &invalid, count).is_err());
+            let duplicate = [("node_a", 2), ("node_a", 3)];
+            assert!(weighted_replicas_for("shard_1", &duplicate, count).is_err());
         }
     }
 }
