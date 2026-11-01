@@ -1131,7 +1131,7 @@ mod age_retention_sorted_lookup_tests {
             let expected = ordered
                 .iter()
                 .filter(|&&(generation, created_at)| {
-                    generation < 16_384 - 128
+                    generation <= 16_384 - 128
                         && generation != 13
                         && generation != 917
                         && now - created_at >= minimum_age
