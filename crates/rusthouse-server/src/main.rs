@@ -72,6 +72,11 @@ fn parse_header(line: &str) -> Result<(&str, &str), Response> {
     Ok((key, value))
 }
 
+/// HTTP optional whitespace is SP or HTAB, not Unicode whitespace.
+fn http_ows(value: &str) -> &str {
+    value.trim_matches([' ', '\t'])
+}
+
 fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
     let mut words = line.split(' ');
     let (Some(method), Some(target), Some(version), None) =
@@ -293,7 +298,7 @@ fn read_request_with_deadline(
         }
         let (key, value) = parse_header(line)?;
         if key.eq_ignore_ascii_case("host") {
-            if host.replace(value.trim()).is_some() {
+            if host.replace(http_ows(value)).is_some() {
                 return Err(Response::text("400 Bad Request", "duplicate Host header\n"));
             }
         }
@@ -310,7 +315,7 @@ fn read_request_with_deadline(
                     "duplicate Content-Length\n",
                 ));
             }
-            let value = value.trim();
+            let value = http_ows(value);
             if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(Response::text(
                     "400 Bad Request",
@@ -702,6 +707,22 @@ mod buffered_header_boundary_tests {
         let oversized = vec![b'x'; MAX_HEADER_BYTES + 1];
         assert!(append_header_chunk(&mut head, &oversized).is_err());
         assert_eq!(head.len(), MAX_HEADER_BYTES + 1);
+    }
+}
+
+#[cfg(test)]
+mod http_ows_smuggling_tests {
+    use super::*;
+
+    #[test]
+    fn strips_only_http_optional_whitespace_from_control_headers() {
+        assert_eq!(http_ows(" \t123\t "), "123");
+        for invalid in ["\u{a0}123", "123\u{2003}", "\u{2002}123"] {
+            assert_eq!(http_ows(invalid), invalid);
+            assert!(!http_ows(invalid).bytes().all(|byte| byte.is_ascii_digit()));
+        }
+        let (_, value) = parse_header("Content-Length:\u{a0}123").unwrap();
+        assert!(!http_ows(value).bytes().all(|byte| byte.is_ascii_digit()));
     }
 }
 
