@@ -20,7 +20,8 @@ fn build_grouped_join_hash(
     indices: &[usize],
     any: bool,
 ) -> HashMap<Vec<typed::Key>, Bucket> {
-    let mut hash = HashMap::with_capacity(initial_hash_capacity(rows.len()));
+    let mut hash: HashMap<Vec<typed::Key>, Bucket> =
+        HashMap::with_capacity(initial_hash_capacity(rows.len()));
     let mut key = Vec::with_capacity(indices.len());
     for (row_index, row) in rows.iter().enumerate() {
         if !row_key_into(row, indices, &mut key) {
