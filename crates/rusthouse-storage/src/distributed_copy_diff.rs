@@ -932,3 +932,129 @@ mod sorted_replica_reconciliation_tests {
         assert!(plan_replica_copies(&unsafe_key, &[]).is_err());
     }
 }
+
+
+/// An immutable key that appears on both replicas with incompatible metadata.
+/// A conflict must be reconciled manually; it never authorizes an overwrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaObjectConflict {
+    pub key: String,
+    pub left_bytes: u64,
+    pub left_crc32c: u32,
+    pub right_bytes: u64,
+    pub right_crc32c: u32,
+}
+
+/// Symmetric, read-only anti-entropy diagnostics. Missing objects do not imply
+/// that the opposite replica should delete anything.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReplicaInventoryDifference {
+    pub only_left: Vec<ObjectMetadata>,
+    pub only_right: Vec<ObjectMetadata>,
+    pub conflicting: Vec<ReplicaObjectConflict>,
+}
+
+/// Compare two trusted immutable inventories without assuming which copy is
+/// authoritative. Validate all keys before exposing any reconciliation work.
+pub fn compare_replica_inventories(
+    left: &[ObjectMetadata],
+    right: &[ObjectMetadata],
+) -> Result<ReplicaInventoryDifference, &'static str> {
+    let left_index = index(left)?;
+    let right_index = index(right)?;
+    let mut result = ReplicaInventoryDifference::default();
+    for (key, object) in &left_index {
+        match right_index.get(key) {
+            None => result.only_left.push((*object).clone()),
+            Some(other) if !object.same_contents(other) => {
+                result.conflicting.push(ReplicaObjectConflict {
+                    key: (*key).to_owned(),
+                    left_bytes: object.bytes,
+                    left_crc32c: object.crc32c,
+                    right_bytes: other.bytes,
+                    right_crc32c: other.crc32c,
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    for (key, object) in &right_index {
+        if !left_index.contains_key(key) {
+            result.only_right.push((*object).clone());
+        }
+    }
+    result.only_left.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    result.only_right.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    result.conflicting.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    Ok(result)
+}
+
+#[cfg(test)]
+mod symmetric_replica_inventory_tests {
+    use super::*;
+
+    fn item(key: &str, bytes: u64, crc32c: u32) -> ObjectMetadata {
+        ObjectMetadata { key: key.into(), bytes, crc32c }
+    }
+
+    #[test]
+    fn diagnoses_conflicts_and_missing_objects_without_authorizing_overwrite() {
+        let left = [
+            item("cluster/shard/g1/part/a.bin", 10, 1),
+            item("cluster/shard/g1/part/b.bin", 20, 2),
+            item("cluster/shard/g1/part/c.bin", 30, 3),
+        ];
+        let right = [
+            item("cluster/shard/g1/part/d.bin", 40, 4),
+            item("cluster/shard/g1/part/c.bin", 30, 3),
+            item("cluster/shard/g1/part/b.bin", 20, 9),
+        ];
+        let difference = compare_replica_inventories(&left, &right).unwrap();
+        assert_eq!(difference.only_left, [left[0].clone()]);
+        assert_eq!(difference.only_right, [right[0].clone()]);
+        assert_eq!(difference.conflicting, [ReplicaObjectConflict {
+            key: left[1].key.clone(),
+            left_bytes: 20, left_crc32c: 2,
+            right_bytes: 20, right_crc32c: 9,
+        }]);
+        assert!(plan_replica_copies(&left, &right).is_err());
+
+        let reversed = compare_replica_inventories(&right, &left).unwrap();
+        assert_eq!(difference.only_left, reversed.only_right);
+        assert_eq!(difference.only_right, reversed.only_left);
+        assert_eq!(reversed.conflicting[0].left_crc32c, 9);
+        assert_eq!(reversed.conflicting[0].right_crc32c, 2);
+    }
+
+    #[test]
+    fn sorted_diagnostics_match_across_large_reversed_inventories() {
+        let left = (0..128).rev().map(|n| item(
+            &format!("cluster/shard/g1/part/left_{n:03}.bin"), n, n as u32,
+        )).collect::<Vec<_>>();
+        let right = (0..128).map(|n| item(
+            &format!("cluster/shard/g1/part/right_{n:03}.bin"), n, n as u32,
+        )).collect::<Vec<_>>();
+        let result = compare_replica_inventories(&left, &right).unwrap();
+        assert_eq!(result.only_left.len(), 128);
+        assert_eq!(result.only_right.len(), 128);
+        assert_eq!(result.only_left[0].key,
+            "cluster/shard/g1/part/left_000.bin");
+        assert_eq!(result.only_left[127].key,
+            "cluster/shard/g1/part/left_127.bin");
+        assert!(result.conflicting.is_empty());
+    }
+
+    #[test]
+    fn refuses_ambiguous_key_or_duplicate_on_either_side() {
+        let good = item("cluster/shard/g1/part/data.bin", 1, 2);
+        assert!(compare_replica_inventories(
+            &[good.clone(), good.clone()], &[],
+        ).is_err());
+        assert!(compare_replica_inventories(
+            &[], &[good.clone(), good.clone()],
+        ).is_err());
+        assert!(compare_replica_inventories(
+            &[item("../escaped", 1, 0)], &[],
+        ).is_err());
+    }
+}

@@ -93,9 +93,29 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
         if bytes.len() <= 8190 {
             return write_plain_json_string::<8192, _>(writer, bytes);
         }
-        writer.write_all(b"\"")?;
-        writer.write_all(bytes)?;
-        return writer.write_all(b"\"");
+        // One vectored socket write can transmit both quotes and a large
+        // plain UTF-8 payload without copying it into a temporary buffer.
+        // On Writers using the default non-vectored fallback, complete any
+        // short write with the same ordered, exact write_all semantics.
+        let slices = [
+            io::IoSlice::new(b"\""),
+            io::IoSlice::new(bytes),
+            io::IoSlice::new(b"\""),
+        ];
+        let written = loop {
+            match writer.write_vectored(&slices) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+                Ok(written) => break written,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        if written < bytes.len() + 2 {
+            let payload_written = written.saturating_sub(1).min(bytes.len());
+            writer.write_all(&bytes[payload_written..])?;
+            writer.write_all(b"\"")?;
+        }
+        return Ok(());
     }
 
     // Batch frequent JSON escapes into stack chunks. Inspect bytes because
@@ -325,5 +345,67 @@ mod larger_plain_json_write_tests {
             assert_eq!(counted.output, expected);
             assert_eq!(counted.calls, if size <= 8190 { 1 } else { 3 }, "{size}");
         }
+    }
+}
+
+#[cfg(test)]
+mod vectored_large_plain_json_tests {
+    use super::*;
+    use std::io::{IoSlice, Write};
+
+    struct ShortVectoredWriter {
+        bytes: Vec<u8>,
+        max_per_call: usize,
+        vector_calls: usize,
+    }
+
+    impl Write for ShortVectoredWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let count = buf.len().min(self.max_per_call);
+            self.bytes.extend_from_slice(&buf[..count]);
+            Ok(count)
+        }
+
+        fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> io::Result<usize> {
+            self.vector_calls += 1;
+            let mut written = 0usize;
+            for buffer in buffers {
+                let take = buffer.len().min(self.max_per_call - written);
+                self.bytes.extend_from_slice(&buffer[..take]);
+                written += take;
+                if written == self.max_per_call {
+                    break;
+                }
+            }
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn large_ordinary_utf8_is_framed_in_one_vectored_call() {
+        let payload = "🥨very_long".repeat(1024);
+        let mut writer = ShortVectoredWriter {
+            bytes: Vec::new(), max_per_call: usize::MAX, vector_calls: 0,
+        };
+        write_json_string(&mut writer, &payload).unwrap();
+        assert_eq!(writer.bytes, format!("\"{payload}\"").into_bytes());
+        assert_eq!(writer.vector_calls, 1);
+    }
+
+    #[test]
+    fn partial_vectored_writes_and_default_fallback_preserve_exact_json() {
+        let payload = "0123456789".repeat(1024);
+        let mut writer = ShortVectoredWriter {
+            bytes: Vec::new(), max_per_call: 23, vector_calls: 0,
+        };
+        write_json_string(&mut writer, &payload).unwrap();
+        let expected = format!("\"{payload}\"").into_bytes();
+        assert_eq!(writer.bytes, expected);
+        assert_eq!(writer.vector_calls, 1);
+        let mut ordinary = Vec::new();
+        write_json_string(&mut ordinary, &payload).unwrap();
+        assert_eq!(ordinary, expected);
     }
 }

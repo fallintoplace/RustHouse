@@ -62,16 +62,30 @@ pub(super) fn combine_and(left: Branches, right: Branches) -> Result<Branches, P
     let combinations = left.len().checked_mul(right.len())
         .filter(|&count| count <= MAX_BRANCHES * MAX_BRANCHES)
         .ok_or_else(bad_expansion)?;
-    let mut result = Vec::with_capacity(combinations.min(MAX_BRANCHES));
+    let mut result: Branches = Vec::with_capacity(combinations.min(MAX_BRANCHES));
     for lhs in &left {
         for rhs in &right {
+            // Test absorption against borrowed terms before cloning literal
+            // lists (IN may hold up to 4096 strings). Repeated OR factors
+            // otherwise allocate the entire Cartesian product unnecessarily.
+            if result.iter().any(|existing| existing.iter().all(|predicate| {
+                lhs.contains(predicate) || rhs.contains(predicate)
+            })) {
+                continue;
+            }
             let mut conjuncts = Vec::with_capacity(lhs.len() + rhs.len());
-            conjuncts.extend(lhs.iter().cloned());
-            conjuncts.extend(rhs.iter().cloned());
+            for predicate in lhs.iter().chain(rhs) {
+                if !conjuncts.contains(predicate) {
+                    conjuncts.push(predicate.clone());
+                }
+            }
+            // A later less-restrictive conjunction can replace earlier
+            // branches. Do not impose the final DNF cap before all inputs
+            // have had the chance to be absorbed.
+            result.retain(|existing| !branch_contains_all(existing, &conjuncts));
             result.push(conjuncts);
         }
     }
-    let result = unique_branches(result);
     check_expansion(&result)?;
     Ok(result)
 }
@@ -582,5 +596,49 @@ mod boolean_absorption_tests {
         assert_eq!(unique_branches(vec![
             vec![eq_two], vec![],
         ]), vec![Vec::<Predicate>::new()]);
+    }
+}
+
+#[cfg(test)]
+mod streaming_dnf_absorption_tests {
+    use super::*;
+
+    fn equals(column: &str, number: &str) -> Predicate {
+        Predicate::Comparison {
+            column: column.into(),
+            operator: Operator::Eq,
+            value: number.into(),
+        }
+    }
+
+    #[test]
+    fn identical_large_in_lists_do_not_need_cartesian_literal_clones() {
+        let values = (0..4096).map(|n| n.to_string()).collect::<Vec<_>>();
+        let heavy = Predicate::In { column: "number".into(), values };
+        let lhs = vec![vec![heavy.clone()]; 64];
+        let rhs = vec![vec![heavy]; 64];
+        let product = combine_and(lhs, rhs).unwrap();
+        assert_eq!(product.len(), 1);
+        assert_eq!(product[0].len(), 1);
+    }
+
+    #[test]
+    fn later_subsumption_removes_stronger_products_without_reordering() {
+        let a = equals("a", "1");
+        let b = equals("b", "2");
+        let c = equals("c", "3");
+        let d = equals("d", "4");
+        let product = combine_and(
+            vec![vec![a.clone(), b], vec![a.clone()]],
+            vec![vec![c.clone()], vec![c.clone(), d]],
+        ).unwrap();
+        assert_eq!(product, vec![vec![a, c]]);
+    }
+
+    #[test]
+    fn unrelated_cross_products_still_enforce_final_branch_limit() {
+        let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
+        let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
+        assert!(combine_and(lhs, rhs).is_err());
     }
 }
