@@ -4174,23 +4174,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if count >= value.len() {
                         ConstantValue::Text(value)
                     } else {
-                        let start = value.len() - count;
-                        if value.as_bytes()[start..].is_ascii() {
-                            let mut result = value;
-                            result.replace_range(..start, "");
-                            ConstantValue::Text(result)
+                        let start = if name == "RIGHT" {
+                            // RIGHT counts bytes; RIGHTUTF8 counts characters.
+                            value.len() - count
+                        } else if count == 0 {
+                            value.len()
                         } else {
-                            // Count from the end for short suffixes. Avoid a
-                            // full code-point count and an output allocation.
-                            let start = value
+                            value
                                 .char_indices()
                                 .rev()
                                 .nth(count - 1)
-                                .map_or(0, |(offset, _)| offset);
-                            let mut result = value;
-                            result.replace_range(..start, "");
-                            ConstantValue::Text(result)
+                                .map_or(0, |(offset, _)| offset)
+                        };
+                        if !value.is_char_boundary(start) {
+                            return Err(ParseError("RIGHT byte count splits UTF-8 text".into()));
                         }
+                        let mut result = value;
+                        result.replace_range(..start, "");
+                        ConstantValue::Text(result)
                     }
                 }
                 _ => ConstantValue::Null,
