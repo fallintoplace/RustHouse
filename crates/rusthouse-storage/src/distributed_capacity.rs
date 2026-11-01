@@ -768,24 +768,31 @@ pub fn plan_capacity_optimal_objects(
                     || (left.count == right.count && lex_earlier(left.mask, right.mask))))
     }
     fn enumerate(sizes: &[u64], budget: u64) -> Vec<Subset> {
+        // Consecutive Gray-code masks toggle exactly one object. Maintain the
+        // exact sum instead of adding up to 12 sizes for each of 4096 masks.
+        // A u128 accumulator also handles excluded overflowing u64 subsets
+        // without rebuilding their sums from scratch.
         let mut subsets = Vec::with_capacity(1 << sizes.len());
-        for mask in 0..(1u32 << sizes.len()) {
-            let mut bytes = Some(0u64);
-            for (index, &size) in sizes.iter().enumerate() {
-                if mask & (1u32 << index) != 0 {
-                    bytes = bytes.and_then(|sum| sum.checked_add(size));
-                    if bytes.is_none_or(|sum| sum > budget) {
-                        break;
-                    }
+        let mut bytes = 0u128;
+        let mut previous_mask = 0u32;
+        for index in 0..(1u32 << sizes.len()) {
+            let mask = index ^ (index >> 1);
+            if index != 0 {
+                let bit = (mask ^ previous_mask).trailing_zeros() as usize;
+                if mask & (1u32 << bit) != 0 {
+                    bytes += u128::from(sizes[bit]);
+                } else {
+                    bytes -= u128::from(sizes[bit]);
                 }
             }
-            if let Some(bytes) = bytes.filter(|&bytes| bytes <= budget) {
+            if bytes <= u128::from(budget) {
                 subsets.push(Subset {
-                    bytes,
+                    bytes: bytes as u64,
                     count: mask.count_ones(),
                     mask,
                 });
             }
+            previous_mask = mask;
         }
         subsets
     }
@@ -956,5 +963,35 @@ mod exact_capacity_transfer_subset_tests {
             .unwrap(),
             [1, 2]
         );
+    }
+}
+
+#[cfg(test)]
+mod gray_code_exact_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn maximum_width_subsets_reject_overflow_but_keep_zero_size_ties() {
+        let mut sizes = vec![0u64; 24];
+        sizes[0] = u64::MAX;
+        sizes[1] = u64::MAX - 1;
+        let planned = plan_capacity_optimal_objects(
+            Capacity { total: u64::MAX - 1, used: 0, reserved: 0 },
+            &sizes,
+        )
+        .unwrap();
+        assert_eq!(planned, (1..24).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn exact_ties_prefer_earliest_indexes_after_gray_enumeration() {
+        let mut sizes = vec![0u64; 24];
+        sizes[..4].copy_from_slice(&[3, 4, 5, 2]);
+        let planned = plan_capacity_optimal_objects(
+            Capacity { total: 7, used: 0, reserved: 0 },
+            &sizes,
+        )
+        .unwrap();
+        assert_eq!(planned, (0..24).filter(|&i| i < 2 || i >= 4).collect::<Vec<_>>());
     }
 }
