@@ -937,11 +937,15 @@ pub(super) fn execute_numbers<W: Write>(
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
-    for index in 0..rows {
+    // Equality and IN seeds produce at most 4096 exact generated positions.
+    // Evaluate only those positions, rather than scanning a billion-row source.
+    let sparse = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        None
+    } else {
+        super::sparse_generated_positions(&comparisons, start, rows, step)
+    };
+    let mut consume = |index: u64| -> Result<(), ExecutionError> {
         let value = Number::Unsigned(u128::from(start) + u128::from(index) * u128::from(step));
-        if !super::number_matches_all(value, &comparisons) {
-            continue;
-        }
         for state in &mut states {
             match state {
                 State::Count(count) => {
@@ -953,6 +957,19 @@ pub(super) fn execute_numbers<W: Write>(
                     seen.insert_key(typed::Key::Numeric(NumberKey::from(value)))?;
                 }
                 State::Numeric(state) => state.update(value)?,
+            }
+        }
+        Ok(())
+    };
+    if let Some(indices) = sparse {
+        for index in indices {
+            consume(index)?;
+        }
+    } else {
+        for index in 0..rows {
+            let value = Number::Unsigned(u128::from(start) + u128::from(index) * u128::from(step));
+            if super::number_matches_all(value, &comparisons) {
+                consume(index)?;
             }
         }
     }
@@ -1233,5 +1250,33 @@ mod dynamic_multiagg_workers_tests {
         });
         indices.sort_unstable();
         assert_eq!(indices, (0..=250).collect::<Vec<_>>());
+    }
+}
+
+#[cfg(test)]
+mod sparse_generated_multi_metric_tests {
+    use crate::{execute, parse_select};
+
+    fn run(sql: &str) -> String {
+        let query = parse_select(sql).unwrap();
+        let mut output = Vec::new();
+        execute(&query, None, &mut output).unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn billion_row_sparse_or_predicates_are_deduplicated() {
+        assert_eq!(
+            run("SELECT sum(number), count(*) FROM numbers(1000000000) WHERE number IN (42, 99) OR number = 42 OR number = 999999998"),
+            "sum(number)\tcount(*)\n1000000139\t3\n",
+        );
+    }
+
+    #[test]
+    fn large_sparse_multi_metrics_preserve_exact_min_max_and_count() {
+        assert_eq!(
+            run("SELECT count(*), min(number), max(number) FROM numbers(1000000000) WHERE number IN (2, 4, 6)"),
+            "count(*)\tmin(number)\tmax(number)\n3\t2\t6\n",
+        );
     }
 }

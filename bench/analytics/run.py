@@ -2,6 +2,8 @@
 """Run Analytics SQL against the RustHouse CLI or HTTP server."""
 import argparse
 import math
+import os
+import stat
 import re
 import subprocess
 import sys
@@ -116,14 +118,33 @@ def reference_failure(expected_path, output):
         return "unsafe_reference", str(expected_path)
     if not expected_path.is_file():
         return "missing_reference", str(expected_path)
-    with expected_path.open("rb") as source:
-        reference = source.read(MAX_REFERENCE_BYTES + 1)
+    before = expected_path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        return "unsafe_reference", str(expected_path)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(expected_path, flags)
+        with os.fdopen(descriptor, "rb") as source:
+            opened = os.fstat(source.fileno())
+            if (not stat.S_ISREG(opened.st_mode)
+                    or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+                return "unsafe_reference", str(expected_path)
+            reference = source.read(MAX_REFERENCE_BYTES + 1)
+            finished = os.fstat(source.fileno())
+        after = expected_path.lstat()
+    except OSError:
+        return "unsafe_reference", str(expected_path)
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                             info.st_mtime_ns, info.st_ctime_ns)
+    if (identity(before) != identity(opened)
+            or identity(opened) != identity(finished)
+            or identity(finished) != identity(after)):
+        return "unsafe_reference", str(expected_path)
     if len(reference) > MAX_REFERENCE_BYTES:
         return "reference_too_large", str(expected_path)
     if output != reference:
         return "mismatch", "query output differs from expected TSV"
     return None
-
 
 def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, warmups=0):
     if (type(runs) is not int or type(warmups) is not int

@@ -10,6 +10,23 @@ struct BoundFilter {
     literal: typed::Cell,
 }
 
+// ALL INNER JOINs may discard dimension rows that fail a dimension-only
+// predicate before building the hash table. ANY must keep the first matching
+// key even if that row later fails the predicate.
+fn prefilter_dimension_rows(
+    rows: &mut Vec<Vec<typed::Cell>>,
+    filter: &BoundFilter,
+    left_width: usize,
+    any: bool,
+) {
+    if !any && filter.column >= left_width {
+        let column = filter.column - left_width;
+        rows.retain(|row| typed::matches_comparison(
+            &row[column], &filter.literal, filter.operator,
+        ));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn scan<W: Write>(
     left_path: &Path,
@@ -28,6 +45,9 @@ fn scan<W: Write>(
     let width = left_names.len();
     let mut reader = TypedQueryReader::open(left_path, left_names)?;
     let mut key = Vec::with_capacity(left_keys.len());
+    // Cache each distinct left projection separately across all dimension
+    // matches for this fact row. One shared Cell corrupts multi-column output.
+    let mut left_cells = vec![None; width];
     let mut matched = 0u64;
     let mut written = 0usize;
     let max_matches = match limit {
@@ -56,6 +76,9 @@ fn scan<W: Write>(
             let Some(matches) = hash.get(key.as_slice()) else {
                 continue;
             };
+            if emit {
+                left_cells.fill(None);
+            }
             for &right_index in matches.iter().take(if any { 1 } else { usize::MAX }) {
                 // Dimension predicates must stay after ANY match selection.
                 // Filtering build rows first would change first-match semantics.
@@ -83,9 +106,10 @@ fn scan<W: Write>(
                         if position > 0 {
                             output.write_all(b"\t")?;
                         }
-                        let mut left_cell = None;
                         let value: &typed::Cell = if *index < width {
-                            left_cell.get_or_insert_with(|| typed::cell(&batch[*index], row_index))
+                            left_cells[*index].get_or_insert_with(|| {
+                                typed::cell(&batch[*index], row_index)
+                            })
                         } else {
                             &right_rows[right_index][*index - width]
                         };
@@ -162,7 +186,7 @@ pub(super) fn execute<W: Write>(
         kept.push((index, String::new(), None));
     }
     let columns = retained_build_columns(right_names, right_keys, &kept, None, width);
-    let right_rows = read_projected_build_rows(
+    let mut right_rows = read_projected_build_rows(
         right_path,
         right_names,
         &columns,
@@ -170,6 +194,7 @@ pub(super) fn execute<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
+    prefilter_dimension_rows(&mut right_rows, &filter, width, query.any);
     let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
     for (row_index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
@@ -197,4 +222,41 @@ pub(super) fn execute<W: Write>(
         left_path, left_names, left_keys, &right_rows, &hash, &filter,
         selected, query.any, query.offset, query.limit, true, output,
     )
+}
+
+#[cfg(test)]
+mod prefilter_right_comparison_tests {
+    use super::*;
+
+    #[test]
+    fn all_join_filters_dimension_before_hash_but_any_keeps_first_key() {
+        let mk = |key, value| vec![
+            typed::Cell::Numeric(Number::Signed(key)),
+            typed::Cell::Numeric(Number::Signed(value)),
+        ];
+        let rows = vec![mk(3, 5), mk(3, 15), mk(4, 20)];
+        let filter = BoundFilter {
+            column: 3,
+            operator: crate::Operator::Gt,
+            literal: typed::Cell::Numeric(Number::Signed(10)),
+        };
+        let mut all = rows.clone();
+        prefilter_dimension_rows(&mut all, &filter, 2, false);
+        let values = |rows: &[Vec<typed::Cell>]| rows.iter().map(|row| {
+            match &row[1] {
+                typed::Cell::Numeric(Number::Signed(value)) => *value,
+                _ => panic!("expected signed test value"),
+            }
+        }).collect::<Vec<_>>();
+        assert_eq!(values(&all), vec![15, 20]);
+
+        let mut any = rows.clone();
+        prefilter_dimension_rows(&mut any, &filter, 2, true);
+        assert_eq!(values(&any), vec![5, 15, 20], "ANY preserves first match");
+
+        let mut fact_filter = rows.clone();
+        let left_filter = BoundFilter { column: 0, ..filter };
+        prefilter_dimension_rows(&mut fact_filter, &left_filter, 2, false);
+        assert_eq!(values(&fact_filter), vec![5, 15, 20]);
+    }
 }

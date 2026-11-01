@@ -85,6 +85,18 @@ fn read_at(file: &mut File, offset: u64, length: usize) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+// A handful of out-of-order mark ranges can be proven disjoint with
+// stack-only pair checks. Avoid sorting an index vector for these requests.
+fn small_scattered_disjoint(ranges: &[(u64, usize)]) -> bool {
+    ranges.len() <= 8 && ranges.iter().enumerate().all(|(index, &(start, length))| {
+        length == 0 || ranges[..index].iter().all(|&(other_start, other_length)| {
+            other_length == 0
+                || start > other_start + other_length as u64
+                || other_start > start + length as u64
+        })
+    })
+}
+
 /// Read an exact byte range from a frozen regular file, rejecting short reads.
 pub fn read_object_range(
     path: &Path,
@@ -142,7 +154,7 @@ pub fn read_object_ranges(
             previous_end = Some(offset + length as u64); // bounds checked above
             ordered
         });
-    if strictly_disjoint {
+    if strictly_disjoint || small_scattered_disjoint(ranges) {
         let result = ranges.iter()
             .map(|&(offset, length)| read_at(&mut file, offset, length))
             .collect::<io::Result<Vec<_>>>()?;
@@ -205,9 +217,35 @@ pub fn read_object_ranges_checked(
     if ranges.len() > MAX_RANGES {
         return Err(io::Error::other("too many object ranges"));
     }
-    let spans = ranges.iter().map(|&(offset, length, _)| (offset, length))
-        .collect::<Vec<_>>();
-    let chunks = read_object_ranges(path, &spans, max_total_bytes)?;
+    if let [(offset, length, expected_crc32c)] = ranges {
+        // A single verified chunk needs no intermediate span vector. The
+        // ordinary range reader enforces the same byte and file limits.
+        let chunk = read_object_range(path, *offset, *length, max_total_bytes)?;
+        if crate::distributed_crc32c::crc32c(&chunk) != *expected_crc32c {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "replica object range checksum mismatch",
+            ));
+        }
+        return Ok(vec![chunk]);
+    }
+    // Keep up to eight checked range spans in a stack array rather than
+    // allocating a Vec for small read batches.
+    const INLINE_RANGES: usize = 8;
+    let mut inline = [(0u64, 0usize); INLINE_RANGES];
+    let owned = (ranges.len() > INLINE_RANGES).then(|| {
+        ranges.iter().map(|&(offset, length, _)| (offset, length))
+            .collect::<Vec<_>>()
+    });
+    let spans: &[(u64, usize)] = if let Some(ref spans) = owned {
+        spans
+    } else {
+        for (slot, &(offset, length, _)) in inline.iter_mut().zip(ranges) {
+            *slot = (offset, length);
+        }
+        &inline[..ranges.len()]
+    };
+    let chunks = read_object_ranges(path, spans, max_total_bytes)?;
     for (chunk, &(_, _, expected_crc32c)) in chunks.iter().zip(ranges) {
         if crate::distributed_crc32c::crc32c(chunk) != expected_crc32c {
             return Err(io::Error::new(
@@ -217,6 +255,21 @@ pub fn read_object_ranges_checked(
         }
     }
     Ok(chunks)
+}
+
+/// Use positioned reads on Unix, preserving the same verification behavior
+/// on other platforms without retaining any requested range in memory.
+fn read_scrub_chunk(file: &mut File, offset: u64, buffer: &mut [u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.read_exact_at(buffer, offset)
+    }
+    #[cfg(not(unix))]
+    {
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(buffer)
+    }
 }
 
 /// Verify checksums of immutable byte ranges without buffering their contents.
@@ -250,32 +303,79 @@ pub fn verify_object_ranges_crc32c(
         }
     }
     let mut buffer = [0u8; 64 * 1024];
-    for &(offset, length, expected) in ranges {
-        #[cfg(not(unix))]
-        file.seek(SeekFrom::Start(offset))?;
-        #[cfg(unix)]
-        let mut position = offset;
-        let mut remaining = length;
-        let mut checksum = crate::distributed_crc32c::Crc32cState::new();
-        while remaining > 0 {
-            let amount = remaining.min(buffer.len() as u64) as usize;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::FileExt;
-                // Immutable scrub ranges can overlap or arrive out of order.
-                // Positioned reads avoid a seek syscall for every range.
-                file.read_exact_at(&mut buffer[..amount], position)?;
-                position += amount as u64; // range end was validated above
+    // Already-ordered disjoint scrub ranges need no sorting or active-state
+    // bookkeeping. Preserve that fast path for ordinary sequential copies.
+    let mut previous_end = None;
+    let ordered_disjoint = ranges.iter()
+        .filter(|(_, length, _)| *length > 0)
+        .all(|&(offset, length, _)| {
+            let sorted = previous_end.is_none_or(|end| offset >= end);
+            previous_end = Some(offset + length); // checked against file bounds
+            sorted
+        });
+
+    if ordered_disjoint {
+        for &(offset, length, expected) in ranges {
+            let mut position = offset;
+            let mut remaining = length;
+            let mut checksum = crate::distributed_crc32c::Crc32cState::new();
+            while remaining > 0 {
+                let amount = remaining.min(buffer.len() as u64) as usize;
+                read_scrub_chunk(&mut file, position, &mut buffer[..amount])?;
+                checksum.append(&buffer[..amount]);
+                position += amount as u64;
+                remaining -= amount as u64;
             }
-            #[cfg(not(unix))]
-            file.read_exact(&mut buffer[..amount])?;
-            checksum.append(&buffer[..amount]);
-            remaining -= amount as u64;
+            if checksum.checksum() != expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData, "replica checksum range mismatch",
+                ));
+            }
         }
-        if checksum.checksum() != expected {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData, "replica checksum range mismatch",
-            ));
+    } else {
+        // For overlapping requests, read each physical byte once and update
+        // every live checksum for that segment. Memory is bounded by one 64 KiB
+        // I/O buffer, 1024 checksum states, and 1024 active interval indices.
+        let mut intervals: Vec<(u64, u64, usize)> = ranges.iter().enumerate()
+            .filter_map(|(index, &(offset, length, _))| {
+                (length > 0).then_some((offset, offset + length, index))
+            })
+            .collect();
+        intervals.sort_unstable_by_key(|entry| entry.0);
+        let mut states = (0..ranges.len()).map(|_| {
+            crate::distributed_crc32c::Crc32cState::new()
+        }).collect::<Vec<_>>();
+        let mut active = Vec::<usize>::new();
+        let mut next = 0usize;
+        let mut position = 0u64;
+        while next < intervals.len() || !active.is_empty() {
+            if active.is_empty() {
+                position = intervals[next].0;
+            }
+            while next < intervals.len() && intervals[next].0 == position {
+                active.push(intervals[next].2);
+                next += 1;
+            }
+            let next_start = intervals.get(next).map_or(u64::MAX, |entry| entry.0);
+            let next_end = active.iter().map(|&index| {
+                ranges[index].0 + ranges[index].1
+            }).min().unwrap_or(u64::MAX);
+            let boundary = next_start.min(next_end)
+                .min(position.saturating_add(buffer.len() as u64));
+            let amount = (boundary - position) as usize;
+            read_scrub_chunk(&mut file, position, &mut buffer[..amount])?;
+            for &index in &active {
+                states[index].append(&buffer[..amount]);
+            }
+            position = boundary;
+            active.retain(|&index| ranges[index].0 + ranges[index].1 > position);
+        }
+        for ((_, _, expected), checksum) in ranges.iter().zip(&states) {
+            if checksum.checksum() != *expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData, "replica checksum range mismatch",
+                ));
+            }
         }
     }
     verify_object_after_read(path, &file, &before)
@@ -652,5 +752,154 @@ mod positioned_scrub_regression_tests {
             io::ErrorKind::InvalidData
         );
         fs::remove_file(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod single_checked_range_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn single_checked_reads_preserve_bounds_empty_ranges_and_crc_contract() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-checked-single-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        let bytes = (0u32..256).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+        fs::write(&path, &bytes).unwrap();
+        let checksum = crate::distributed_crc32c::crc32c;
+        let correct = (17, 64, checksum(&bytes[17..81]));
+        assert_eq!(
+            read_object_ranges_checked(&path, &[correct], 64).unwrap(),
+            vec![bytes[17..81].to_vec()]
+        );
+        assert_eq!(
+            read_object_ranges_checked(&path, &[(bytes.len() as u64, 0, checksum(b""))], 0)
+                .unwrap(),
+            vec![Vec::<u8>::new()]
+        );
+        let bad = (17, 64, correct.2 ^ 1);
+        assert_eq!(
+            read_object_ranges_checked(&path, &[bad], 64).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(read_object_ranges_checked(&path, &[correct], 63).is_err());
+        assert!(read_object_ranges_checked(&path, &[(250, 7, 0)], 64).is_err());
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod small_scattered_disjoint_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_scattered_disjoint_requests_on_the_direct_read_path() {
+        assert!(small_scattered_disjoint(&[
+            (15, 3), (0, 2), (8, 4), (21, 0)
+        ]));
+        assert!(!small_scattered_disjoint(&[(15, 3), (17, 3)]));
+        assert!(!small_scattered_disjoint(&[(10, 2), (12, 3)]));
+        assert!(!small_scattered_disjoint(&[(0, 1); 9]));
+    }
+
+    #[test]
+    fn reads_out_of_order_small_ranges_in_original_order() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-scattered-range-{}-{}", std::process::id(), line!()
+        ));
+        std::fs::write(&path, b"abcdefghijklmnopqrstuvwxyz").unwrap();
+        let spans = [(20, 3), (0, 3), (10, 2), (6, 0)];
+        let actual = read_object_ranges(&path, &spans, 8).unwrap();
+        assert_eq!(
+            actual,
+            vec![b"uvw".to_vec(), b"abc".to_vec(), b"kl".to_vec(), Vec::new()]
+        );
+        let overlapping = read_object_ranges(&path, &[(4, 4), (6, 4)], 8).unwrap();
+        assert_eq!(overlapping, vec![b"efgh".to_vec(), b"ghij".to_vec()]);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod inline_checked_range_tests {
+    use super::*;
+
+    #[test]
+    fn inline_and_heap_range_paths_preserve_order_and_individual_checksums() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-checked-ranges-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("object.bin");
+        let bytes = (0..4096usize).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        std::fs::write(&path, &bytes).unwrap();
+        for count in [0usize, 1, 2, 8, 9, 16] {
+            let ranges = (0..count)
+                .map(|index| {
+                    let offset = ((count - index) * 7) as u64;
+                    let len = 23usize;
+                    let crc = crate::distributed_crc32c::crc32c(
+                        &bytes[offset as usize..offset as usize + len]
+                    );
+                    (offset, len, crc)
+                })
+                .collect::<Vec<_>>();
+            let actual = read_object_ranges_checked(&path, &ranges, 4096).unwrap();
+            assert_eq!(actual.len(), count);
+            for (result, &(offset, len, _)) in actual.iter().zip(&ranges) {
+                assert_eq!(result, &bytes[offset as usize..offset as usize + len]);
+            }
+            if !ranges.is_empty() {
+                let mut corrupt = ranges;
+                corrupt[0].2 ^= 1;
+                assert!(read_object_ranges_checked(&path, &corrupt, 4096).is_err());
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod coalesced_scrub_crc_tests {
+    use super::*;
+    use crate::distributed_crc32c::crc32c;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn overlapping_unordered_ranges_across_io_boundaries_match_independent_crc() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-coalesced-crc-{}-{}.bin",
+            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let bytes = (0..(256 * 1024 + 37usize))
+            .map(|index| (index * 29 % 251) as u8)
+            .collect::<Vec<_>>();
+        std::fs::write(&path, &bytes).unwrap();
+        let spans = [
+            (150_000u64, 100_000u64),
+            (0, 240_000),
+            (65_535, 131_072),
+            (150_000, 0),
+            (7, 200_000),
+            (255_000, 800),
+        ];
+        let mut ranges = spans.iter().map(|&(offset, length)| {
+            let start = offset as usize;
+            let expected = crc32c(&bytes[start..start + length as usize]);
+            (offset, length, expected)
+        }).collect::<Vec<_>>();
+        verify_object_ranges_crc32c(&path, &ranges, 64 * 1024 * 1024).unwrap();
+        ranges[2].2 ^= 1;
+        assert_eq!(
+            verify_object_ranges_crc32c(&path, &ranges, 64 * 1024 * 1024)
+                .unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        std::fs::remove_file(&path).unwrap();
     }
 }

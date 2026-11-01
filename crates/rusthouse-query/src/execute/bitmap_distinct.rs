@@ -7,11 +7,14 @@ use std::collections::HashMap;
 
 const WORDS_PER_BLOCK: usize = 1024;
 const MAX_BLOCKS: usize = 65_536; // All UInt16 prefixes, still bounded by sparse and dense memory caps.
-const MAX_SPARSE_KEYS: usize = 131_072; // Bound HashSet memory across all prefixes.
+const MAX_SPARSE_KEYS: usize = 131_072; // Bound sparse-key memory across all prefixes.
 const MAX_DENSE_BLOCKS: usize = 8_192; // 64 MiB of 8 KiB bitmaps.
 
 #[derive(Clone)]
 enum Block {
+    // Most 32-bit dimensions occupy a prefix only once. Store the first
+    // suffix inline instead of allocating a hash table per occupied prefix.
+    Single(u16),
     Sparse(SparseKeys),
     Dense(Box<[u64; WORDS_PER_BLOCK]>),
 }
@@ -116,6 +119,7 @@ mod inline_sparse_tests {
 }
 
 
+
 fn set_bitmap_bit_if_unset(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
     let index = usize::from(suffix);
     let mask = 1u64 << (index % 64);
@@ -149,6 +153,22 @@ impl BitmapDistinct32 {
             Entry::Occupied(mut entry) => {
                 let block = entry.get_mut();
                 match block {
+                    Block::Single(existing) => {
+                        if *existing == suffix {
+                            false
+                        } else {
+                            if self.sparse_keys >= MAX_SPARSE_KEYS {
+                                return Err(ExecutionError::Invalid(
+                                    "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
+                                ));
+                            }
+                            let mut values = SparseKeys::new(*existing);
+                            values.insert(suffix);
+                            *block = Block::Sparse(values);
+                            self.sparse_keys += 1;
+                            true
+                        }
+                    }
                     Block::Dense(bitmap) => set_bitmap_bit_if_unset(bitmap.as_mut(), suffix),
                     Block::Sparse(values) => {
                         let becoming_dense = values.len() + 1 == DENSE_THRESHOLD;
@@ -199,7 +219,7 @@ impl BitmapDistinct32 {
                         "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
                     ));
                 }
-                entry.insert(Block::Sparse(SparseKeys::new(suffix)));
+                entry.insert(Block::Single(suffix));
                 self.sparse_keys += 1;
                 true
             }
@@ -235,13 +255,37 @@ impl BitmapDistinct32 {
         let mut dense_blocks = self.dense_blocks;
         for (&prefix, incoming) in &other.blocks {
             match (self.blocks.get(&prefix), incoming) {
-                (None, Block::Sparse(values)) => {
-                    sparse_keys += values.len();
-                }
+                (None, Block::Single(_)) => sparse_keys += 1,
+                (None, Block::Sparse(values)) => sparse_keys += values.len(),
                 (None, Block::Dense(_)) => dense_blocks += 1,
+                (Some(Block::Single(_)), Block::Dense(_)) => {
+                    sparse_keys -= 1;
+                    dense_blocks += 1;
+                }
                 (Some(Block::Sparse(current)), Block::Dense(_)) => {
                     sparse_keys -= current.len();
                     dense_blocks += 1;
+                }
+                (Some(Block::Single(current)), Block::Single(incoming)) => {
+                    sparse_keys += usize::from(current != incoming);
+                }
+                (Some(Block::Single(current)), Block::Sparse(incoming)) => {
+                    let added = incoming.len() - usize::from(incoming.contains(current));
+                    if 1 + added >= DENSE_THRESHOLD {
+                        sparse_keys -= 1;
+                        dense_blocks += 1;
+                    } else {
+                        sparse_keys += added;
+                    }
+                }
+                (Some(Block::Sparse(current)), Block::Single(incoming)) => {
+                    let added = usize::from(!current.contains(incoming));
+                    if current.len() + added >= DENSE_THRESHOLD {
+                        sparse_keys -= current.len();
+                        dense_blocks += 1;
+                    } else {
+                        sparse_keys += added;
+                    }
                 }
                 (Some(Block::Sparse(current)), Block::Sparse(values)) => {
                     let added = values.iter().filter(|value| !current.contains(value)).count();
@@ -255,6 +299,8 @@ impl BitmapDistinct32 {
                 (Some(Block::Dense(_)), _) => {}
             }
         }
+        // Validate the completed plan instead of transient counts that
+        // depend on the arbitrary iteration order of prefix hash tables.
         if sparse_keys > MAX_SPARSE_KEYS {
             return Err(ExecutionError::Invalid(
                 "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
@@ -283,19 +329,27 @@ impl BitmapDistinct32 {
 
     fn block_len(block: &Block) -> u64 {
         match block {
+            Block::Single(_) => 1,
             Block::Sparse(values) => values.len() as u64,
             Block::Dense(words) => words.iter().map(|word| u64::from(word.count_ones())).sum(),
         }
     }
 
     fn merge_block(current: &mut Block, incoming: &Block) -> u64 {
-        // A dense source has at least 4096 keys. Converting a sparse
-        // destination once allows 1024 word-wise ORs, not thousands of probes.
-        if matches!(incoming, Block::Dense(_)) && matches!(current, Block::Sparse(_)) {
-            let Block::Sparse(values) = current else { unreachable!() };
+        // A dense source has at least 4096 keys. Convert once and merge
+        // entire bitmap words rather than probing individual source keys.
+        if matches!(incoming, Block::Dense(_)) && !matches!(current, Block::Dense(_)) {
             let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
-            for &suffix in values.iter() {
-                set_bitmap_bit_if_unset(bitmap.as_mut(), suffix);
+            match current {
+                Block::Single(value) => {
+                    set_bitmap_bit_if_unset(bitmap.as_mut(), *value);
+                }
+                Block::Sparse(values) => {
+                    for &suffix in values.iter() {
+                        set_bitmap_bit_if_unset(bitmap.as_mut(), suffix);
+                    }
+                }
+                Block::Dense(_) => unreachable!(),
             }
             *current = Block::Dense(bitmap);
         }
@@ -309,16 +363,52 @@ impl BitmapDistinct32 {
                 added
             }
             (Block::Dense(left), Block::Sparse(right)) => {
-                right.iter().filter(|&&suffix| {
-                    set_bitmap_bit_if_unset(left.as_mut(), suffix)
-                }).count() as u64
+                right
+                    .iter()
+                    .filter(|&&suffix| set_bitmap_bit_if_unset(left.as_mut(), suffix))
+                    .count() as u64
+            }
+            (Block::Dense(left), Block::Single(right)) => {
+                u64::from(set_bitmap_bit_if_unset(left.as_mut(), *right))
             }
             (Block::Sparse(left), Block::Sparse(right)) => {
                 let old = left.len();
                 left.extend(right.iter().copied());
                 (left.len() - old) as u64
             }
-            (Block::Sparse(_), Block::Dense(_)) => unreachable!("dense input converted above"),
+            (Block::Sparse(left), Block::Single(right)) => u64::from(left.insert(*right)),
+            (Block::Single(left), Block::Single(right)) => {
+                if left == right {
+                    0
+                } else {
+                    let mut values = SparseKeys::new(*left);
+                    values.insert(*right);
+                    *current = Block::Sparse(values);
+                    1
+                }
+            }
+            (Block::Single(left), Block::Sparse(right)) => {
+                let additions = right.len() - usize::from(right.contains(left));
+                if additions + 1 >= DENSE_THRESHOLD {
+                    // A singleton plus this sparse state will be dense.
+                    // Build its bitmap directly instead of cloning thousands
+                    // of hash-set entries only to discard that set.
+                    let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
+                    for &suffix in right.iter() {
+                        set_bitmap_bit_if_unset(bitmap.as_mut(), suffix);
+                    }
+                    set_bitmap_bit_if_unset(bitmap.as_mut(), *left);
+                    *current = Block::Dense(bitmap);
+                } else {
+                    let mut values = right.clone();
+                    values.insert(*left);
+                    *current = Block::Sparse(values);
+                }
+                additions as u64
+            }
+            (Block::Single(_) | Block::Sparse(_), Block::Dense(_)) => {
+                unreachable!("dense input converted above")
+            }
         };
         if let Block::Sparse(values) = current {
             if values.len() >= DENSE_THRESHOLD {
@@ -330,6 +420,37 @@ impl BitmapDistinct32 {
             }
         }
         additions
+    }
+}
+
+#[cfg(test)]
+mod order_independent_bitmap_merge_budget_tests {
+    use super::*;
+
+    #[test]
+    fn delayed_dense_conversion_frees_sparse_budget_before_validation() {
+        let mut left = BitmapDistinct32::new();
+        for prefix in 0..32u32 {
+            for suffix in 0..(DENSE_THRESHOLD as u32 - 1) {
+                left.insert((prefix << 16) | suffix).unwrap();
+            }
+        }
+        for suffix in 0..32u32 {
+            left.insert((32 << 16) | suffix).unwrap();
+        }
+        assert_eq!(left.sparse_keys, MAX_SPARSE_KEYS);
+        let before = left.len();
+
+        let mut right = BitmapDistinct32::new();
+        right.insert((DENSE_THRESHOLD as u32) - 1).unwrap();
+        right.insert(33 << 16).unwrap();
+
+        left.merge_from(&right).unwrap();
+        assert_eq!(left.len(), before + 2);
+        assert_eq!(left.sparse_keys, MAX_SPARSE_KEYS - DENSE_THRESHOLD + 2);
+        assert_eq!(left.dense_blocks, 1);
+        left.insert(34 << 16).unwrap();
+        assert_eq!(left.len(), before + 3);
     }
 }
 
@@ -555,5 +676,70 @@ mod partial_distinct_memory_budget_tests {
         assert_eq!(left.dense_blocks, 1);
         left.insert(5000).unwrap();
         assert_eq!(left.len(), 5001);
+    }
+}
+
+#[cfg(test)]
+mod inline_singleton_distinct_tests {
+    use super::*;
+
+    #[test]
+    fn wide_sparse_prefixes_do_not_allocate_one_hash_set_per_key() {
+        let mut state = BitmapDistinct32::new();
+        for prefix in 0..4096u32 {
+            state.insert(prefix << 16).unwrap();
+        }
+        assert_eq!(state.len(), 4096);
+        assert_eq!(state.sparse_keys, 4096);
+        assert!(state.blocks.values().all(|block| matches!(block, Block::Single(_))));
+        state.insert(0).unwrap();
+        state.insert(1).unwrap();
+        assert_eq!(state.len(), 4097);
+        assert!(matches!(state.blocks.get(&0), Some(Block::Sparse(_))));
+    }
+
+    #[test]
+    fn singleton_sparse_and_dense_merges_preserve_exact_counts() {
+        let mut left = BitmapDistinct32::new();
+        left.insert(0x0001_0001).unwrap();
+        let mut right = BitmapDistinct32::new();
+        right.insert(0x0001_0002).unwrap();
+        right.insert(0x0001_0003).unwrap();
+        left.merge_from(&right).unwrap();
+        assert_eq!(left.len(), 3);
+        left.merge_from(&right).unwrap();
+        assert_eq!(left.len(), 3);
+
+        let mut dense = BitmapDistinct32::new();
+        for suffix in 0..4096u32 {
+            dense.insert(0x0001_0000 | suffix).unwrap();
+        }
+        left.merge_from(&dense).unwrap();
+        assert_eq!(left.len(), 4096);
+        let mut other = BitmapDistinct32::new();
+        other.insert(0x0001_1000).unwrap();
+        other.merge_from(&left).unwrap();
+        assert_eq!(other.len(), 4097);
+        other.merge_from(&left).unwrap();
+        assert_eq!(other.len(), 4097);
+    }
+}
+
+#[cfg(test)]
+mod singleton_dense_union_tests {
+    use super::*;
+
+    #[test]
+    fn threshold_union_builds_the_exact_dense_bitmap() {
+        let mut current = Block::Single(4_095);
+        let incoming = Block::Sparse((0..4_095).collect());
+        assert_eq!(BitmapDistinct32::merge_block(&mut current, &incoming), 4_095);
+        let Block::Dense(bits) = current else { panic!("expected dense union"); };
+        assert_eq!(bits.iter().map(|word| word.count_ones() as usize).sum::<usize>(), 4_096);
+        assert_eq!(bits[63] & (1 << 63), 1 << 63);
+
+        let mut duplicate = Block::Single(4_094);
+        assert_eq!(BitmapDistinct32::merge_block(&mut duplicate, &incoming), 4_094);
+        assert!(matches!(duplicate, Block::Sparse(_)));
     }
 }

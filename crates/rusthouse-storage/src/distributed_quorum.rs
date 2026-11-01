@@ -11,16 +11,6 @@ fn valid_member(member: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
-fn member_index<'a>(members: &[&'a str]) -> Result<HashMap<&'a str, usize>, &'static str> {
-    let mut membership = HashMap::with_capacity(members.len());
-    for (index, &member) in members.iter().enumerate() {
-        if !valid_member(member) || membership.insert(member, index).is_some() {
-            return Err("invalid or duplicate quorum member");
-        }
-    }
-    Ok(membership)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuorumObservation {
     pub distinct_acks: usize,
@@ -73,7 +63,7 @@ impl QuorumPolicy {
             return Err("quorum membership or acknowledgement count mismatch");
         }
         let mut acknowledgement_mask = 0u16;
-        if members.len() <= 8 {
+        if members.len() <= 8 || acknowledgements.len() <= 8 {
             // Small replication groups are the common case. A short borrowed
             // lookup avoids allocating and hashing a temporary member map.
             for (index, &member) in members.iter().enumerate() {
@@ -89,12 +79,26 @@ impl QuorumPolicy {
                 acknowledgement_mask |= 1u16 << index;
             }
         } else {
-            let membership = member_index(members)?;
+            // At most 16 members can be configured. A stack-backed sorted
+            // index avoids allocating a HashMap for repeated acknowledgement
+            // polls and still preserves the original membership bit positions.
+            let mut membership = [("", 0usize); 16];
+            for (index, &member) in members.iter().enumerate() {
+                if !valid_member(member) {
+                    return Err("invalid or duplicate quorum member");
+                }
+                membership[index] = (member, index);
+            }
+            let sorted = &mut membership[..members.len()];
+            sorted.sort_unstable_by(|left, right| left.0.cmp(right.0));
+            if sorted.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return Err("invalid or duplicate quorum member");
+            }
             for &replica in acknowledgements {
-                let Some(&index) = membership.get(replica) else {
-                    return Err("acknowledgement from unknown replica");
-                };
-                acknowledgement_mask |= 1u16 << index;
+                let index = sorted
+                    .binary_search_by(|(member, _)| member.cmp(&replica))
+                    .map_err(|_| "acknowledgement from unknown replica")?;
+                acknowledgement_mask |= 1u16 << sorted[index].1;
             }
         }
         let distinct_acks = acknowledgement_mask.count_ones() as usize;
@@ -307,12 +311,21 @@ pub fn observe_joint_quorum(
     next_members: &[&str],
     acknowledgements: &[&str],
 ) -> Result<JointQuorumObservation, &'static str> {
-    // Validate both configurations even if all acknowledgements are empty or
-    // only originate from members outside one configuration.
-    previous.observe(previous_members, &[])?;
-    next.observe(next_members, &[])?;
+    // Large batches index both memberships together below. Validate their
+    // policies here, but avoid building two temporary membership hash maps.
+    previous.validate()?;
+    next.validate()?;
+    if previous_members.len() != previous.replicas || next_members.len() != next.replicas {
+        return Err("quorum membership or acknowledgement count mismatch");
+    }
     if acknowledgements.len() > 256 {
         return Err("quorum acknowledgement count exceeds bound");
+    }
+    if acknowledgements.len() <= 32 {
+        // Small acknowledgement batches use borrowed linear probes. Validate
+        // both memberships even when no acknowledgements were received.
+        previous.observe(previous_members, &[])?;
+        next.observe(next_members, &[])?;
     }
     let mut previous_mask = 0u16;
     let mut next_mask = 0u16;
@@ -324,10 +337,24 @@ pub fn observe_joint_quorum(
             previous_members.len() + next_members.len(),
         );
         for (index, &member) in previous_members.iter().enumerate() {
-            positions.entry(member).or_default().0 |= 1u16 << index;
+            if !valid_member(member) {
+                return Err("invalid or duplicate quorum member");
+            }
+            let entry = positions.entry(member).or_default();
+            if entry.0 != 0 {
+                return Err("invalid or duplicate quorum member");
+            }
+            entry.0 = 1u16 << index;
         }
         for (index, &member) in next_members.iter().enumerate() {
-            positions.entry(member).or_default().1 |= 1u16 << index;
+            if !valid_member(member) {
+                return Err("invalid or duplicate quorum member");
+            }
+            let entry = positions.entry(member).or_default();
+            if entry.1 != 0 {
+                return Err("invalid or duplicate quorum member");
+            }
+            entry.1 = 1u16 << index;
         }
         for &member in acknowledgements {
             let &(old, new) = positions.get(member)
@@ -462,5 +489,81 @@ mod joint_quorum_large_ack_index_tests {
         let mut bad = vec!["node_08"; 40];
         bad.push("stranger");
         assert!(observe_joint_quorum(policy, &old, policy, &new, &bad).is_err());
+    }
+}
+
+#[cfg(test)]
+mod indexed_joint_membership_validation_tests {
+    use super::*;
+
+    #[test]
+    fn large_ack_batches_validate_both_memberships_and_count_unique_votes() {
+        let policy = QuorumPolicy::new(9, 5, 5).unwrap();
+        let previous = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+        let next = ["b", "c", "d", "e", "f", "g", "h", "i", "j"];
+        let acks = (0..128).map(|index| if index % 2 == 0 { "a" } else { "j" })
+            .collect::<Vec<_>>();
+        let observed = observe_joint_quorum(policy, &previous, policy, &next, &acks).unwrap();
+        assert_eq!(observed.previous.distinct_acks, 1);
+        assert_eq!(observed.next.distinct_acks, 1);
+        assert!(!observed.can_write);
+        let mut invalid_old = previous;
+        invalid_old[8] = "a";
+        assert!(observe_joint_quorum(policy, &invalid_old, policy, &next, &acks).is_err());
+        let mut invalid_new = next;
+        invalid_new[8] = "b";
+        assert!(observe_joint_quorum(policy, &previous, policy, &invalid_new, &acks).is_err());
+        let mut bad_ack = acks;
+        bad_ack[127] = "unknown";
+        assert!(observe_joint_quorum(policy, &previous, policy, &next, &bad_ack).is_err());
+    }
+}
+
+#[cfg(test)]
+mod sparse_large_quorum_ack_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_acks_match_full_member_count_and_preserve_errors() {
+        let nodes = (0..16).map(|index| format!("replica_{index}")).collect::<Vec<_>>();
+        let names = nodes.iter().map(String::as_str).collect::<Vec<_>>();
+        let policy = QuorumPolicy::new(16, 8, 9).unwrap();
+        for count in [0, 1, 2, 7, 8, 9, 16] {
+            let observed = policy.observe(&names, &names[..count]).unwrap();
+            assert_eq!(observed.distinct_acks, count);
+            assert_eq!(observed.can_read, count >= 8);
+            assert_eq!(observed.can_write, count >= 9);
+        }
+        assert_eq!(policy.observe(&names, &["replica_0"; 8]).unwrap().distinct_acks, 1);
+        assert!(policy.observe(&names, &["missing"]).is_err());
+        let mut duplicate = names.clone();
+        duplicate[15] = duplicate[0];
+        assert!(policy.observe(&duplicate, &[]).is_err());
+        assert!(policy.observe(&duplicate, &names[..9]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod stack_quorum_index_tests {
+    use super::*;
+
+    #[test]
+    fn many_acknowledgements_match_reference_masks_in_every_large_group() {
+        for replicas in 9..=16 {
+            let names = (0..replicas).map(|n| format!("member_{n}")).collect::<Vec<_>>();
+            let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+            let policy = QuorumPolicy::new(replicas, 1, replicas).unwrap();
+            for seed in 0..32usize {
+                let acks = (0..256).map(|n| members[(n * 37 + seed) % replicas])
+                    .collect::<Vec<_>>();
+                let reference = (0..replicas).filter(|&i| acks.contains(&members[i])).count();
+                let observed = policy.observe(&members, &acks).unwrap();
+                assert_eq!(observed.distinct_acks, reference);
+                assert_eq!(observed.can_write, reference >= replicas);
+            }
+            let mut duplicates = members.clone();
+            duplicates[replicas - 1] = duplicates[0];
+            assert!(policy.observe(&duplicates, &members).is_err());
+        }
     }
 }

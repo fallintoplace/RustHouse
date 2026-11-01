@@ -31,9 +31,17 @@ def generate(duckdb_binary, database, queries_dir, output_dir,
     if not overwrite and any(path.exists() for path in destinations):
         raise ValueError("refusing to overwrite existing golden output")
     if execute is None:
-        execute = lambda cmd: subprocess.run(
-            cmd, capture_output=True, timeout=timeout, check=False
-        )
+        def execute(cmd):
+            with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                result = subprocess.run(
+                    cmd, stdout=stdout, stderr=stderr, timeout=timeout, check=False
+                )
+                stdout.seek(0)
+                data = stdout.read(MAX_REFERENCE_BYTES + 1)
+                stderr.seek(0, 2)
+                stderr.seek(max(0, stderr.tell() - 600))
+                error_tail = stderr.read(600)
+                return subprocess.CompletedProcess(cmd, result.returncode, data, error_tail)
     generated = []
 
     def run_one(item):

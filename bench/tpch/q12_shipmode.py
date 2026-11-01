@@ -12,15 +12,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json
 from run import benchmark_one, summarize_coverage
 
+MAX_REFERENCE_LINE_CHARS = 1024 * 1024
+
+
+def bounded_reference_lines(stream):
+    while True:
+        line = stream.readline(MAX_REFERENCE_LINE_CHARS + 1)
+        if not line:
+            return
+        if len(line) > MAX_REFERENCE_LINE_CHARS:
+            raise ValueError("Q12 reference record exceeds 1 MiB")
+        yield line
+
+
 SQL = ("SELECT l_shipmode, COUNT(*) AS shipments FROM lineitem "
        "WHERE l_receiptdate >= '1994-01-01' AND l_receiptdate < '1995-01-01' "
        "GROUP BY l_shipmode ORDER BY l_shipmode")
 
 
 def oracle(path):
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("Q12 reference must be a regular, non-symlinked file")
     counts = Counter()
-    with Path(path).open(encoding="utf-8", newline="") as stream:
-        reader = csv.reader(stream, delimiter="\t")
+    with source.open(encoding="utf-8", newline="") as stream:
+        reader = csv.reader(bounded_reference_lines(stream), delimiter="\t", strict=True)
         fields = next(reader, [])
         required = ("l_receiptdate", "l_shipmode")
         if len(fields) != len(set(fields)) or any(name not in fields for name in required):

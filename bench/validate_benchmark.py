@@ -18,6 +18,10 @@ def reject_duplicate_keys(pairs):
     return result
 
 
+def _reject_nonstandard_number(token):
+    raise ValueError(f"nonstandard scheduled benchmark manifest JSON number: {token}")
+
+
 def load_manifest(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -26,14 +30,17 @@ def load_manifest(path):
         payload = source.read(MAX_MANIFEST_BYTES + 1)
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("manifest exceeds 2 MiB")
-    return json.loads(payload, object_pairs_hook=reject_duplicate_keys)
+    return json.loads(payload, object_pairs_hook=reject_duplicate_keys,
+                      parse_constant=_reject_nonstandard_number)
 
 
 from bench.__main__ import BENCHMARK_SUITES, benchmark_command
 
 
 def validate_manifest(directory, manifest, *, rows, samples, stations):
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+    if (not isinstance(manifest, dict) or
+            type(manifest.get("schema_version")) is not int or
+            manifest["schema_version"] != 1):
         raise ValueError("unsupported benchmark manifest")
     for key, expected in (("rows", rows), ("samples", samples), ("stations", stations)):
         if type(manifest.get(key)) is not int or manifest[key] != expected:

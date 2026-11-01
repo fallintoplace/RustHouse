@@ -32,5 +32,24 @@ class SmokeTests(unittest.TestCase):
             check("http://127.0.0.1:8123")
 
 
+    def test_private_mode_never_accepts_public_hosts_or_dns(self):
+        for hostname in ("example.org", "8.8.4.4", "169.254.1.1",
+                         "127.0.0.2", "0.0.0.0", "[::1]"):
+            with self.subTest(host=hostname), self.assertRaises(ValueError):
+                origin("http://" + hostname + ":8123", True)
+        for hostname in ("10.1.2.3", "172.16.0.1", "172.31.255.254",
+                         "192.168.1.1", "100.64.0.1"):
+            self.assertEqual(origin("http://" + hostname + ":8123", True),
+                             "http://" + hostname + ":8123")
+
+    def test_smoke_client_ignores_environment_proxies(self):
+        import smoke
+        from urllib.request import ProxyHandler
+        proxies = [handler for handler in smoke.urlopen.__self__.handlers
+                   if isinstance(handler, ProxyHandler)]
+        # An empty ProxyHandler is intentionally omitted from installed handlers.
+        self.assertEqual(proxies, [])
+
+
 if __name__ == "__main__":
     unittest.main()

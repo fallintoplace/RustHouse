@@ -37,12 +37,26 @@ def page_sql(table, column, first, count):
 def query(binary, database, statement, timeout):
     # The CLI may be noisy. Bound memory for both successful output and errors.
     with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
+        extra = {}
+        if os.name == "posix":
+            import resource
+
+            def cap_output_file():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                limit = (2 * 1024 * 1024 if hard == resource.RLIM_INFINITY
+                         else min(2 * 1024 * 1024, hard))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+            extra["preexec_fn"] = cap_output_file
         result = subprocess.run(
             [str(binary), "sql", statement, "--database", str(database),
              "--format", "tsv-no-header"],
-            stdout=output, stderr=errors, check=False, timeout=timeout,
+            stdout=output, stderr=errors, check=False, timeout=timeout, **extra,
         )
         if result.returncode:
+            output.seek(0, os.SEEK_END)
+            if output.tell() >= 2 * 1024 * 1024:
+                raise ValueError("keyset SQL page output exceeds 2 MiB")
             errors.seek(0, os.SEEK_END)
             errors.seek(max(0, errors.tell() - 500))
             raise RuntimeError(errors.read(500).decode("utf-8", "replace"))
@@ -75,7 +89,7 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
     output = Path(output)
     if output.exists() or output.is_symlink():
         raise ValueError("refusing to overwrite an existing export")
-    execute = execute or (lambda statement: query(binary, database, statement, timeout))
+    use_default_query = execute is None
     temporary = None
     digest = hashlib.sha256()
     pages = 0
@@ -87,18 +101,26 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
         ) as sink:
             temporary = Path(sink.name)
             for first in range(start, start + rows, page_rows):
-                if (max_total_seconds is not None
-                        and time.monotonic() - started > max_total_seconds):
-                    raise TimeoutError("total export deadline exceeded")
+                remaining = None
+                if max_total_seconds is not None:
+                    remaining = max_total_seconds - (time.monotonic() - started)
+                    if remaining <= 0:
+                        raise TimeoutError("total export deadline exceeded")
                 count = min(page_rows, start + rows - first)
-                data = execute(page_sql(table, column, first, count))
+                statement = page_sql(table, column, first, count)
+                if use_default_query:
+                    page_timeout = min(timeout, remaining) if remaining is not None else timeout
+                    data = query(binary, database, statement, page_timeout)
+                else:
+                    data = execute(statement)
                 if (max_total_seconds is not None
                         and time.monotonic() - started > max_total_seconds):
                     raise TimeoutError("total export deadline exceeded")
                 # Compare the complete expected page in one operation.
                 # Avoid one Python bytes allocation and one splitline per ID.
-                expected = "".join(f"{number}\n" for number in
-                                   range(first, first + count)).encode("ascii")
+                # Convert whole integer ranges with map(str) rather than
+                # dispatching an f-string for every row in billion-ID exports.
+                expected = ("\n".join(map(str, range(first, first + count))) + "\n").encode("ascii")
                 if data != expected:
                     raise ValueError(f"missing, duplicated or unordered ID near {first}")
                 sink.write(data)
@@ -146,7 +168,7 @@ def main(argv=None):
                         a.rows, a.page_rows, a.timeout, a.column,
                         max_total_seconds=a.max_total_seconds,
                         expected_sha256=a.expected_sha256)
-    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+    except (OSError, RuntimeError, ValueError, TimeoutError, subprocess.TimeoutExpired) as error:
         p.exit(1, f"keyset export failed: {error}\n")
     print(json.dumps(report))
     return 0

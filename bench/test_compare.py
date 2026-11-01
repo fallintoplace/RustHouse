@@ -30,6 +30,29 @@ class BenchmarkComparisonTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate"):
                 load_report(path)
 
+    def test_report_swapped_after_preflight_is_rejected(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from bench.compare import load_report
+
+        with tempfile.TemporaryDirectory() as folder:
+            report = Path(folder) / "report.json"
+            replacement = Path(folder) / "replacement.json"
+            report.write_text('{"results":[]}', encoding="utf-8")
+            replacement.write_text('{"results":[1]}', encoding="utf-8")
+            real_open = os.open
+
+            def swapped_open(path, flags):
+                report.unlink()
+                replacement.rename(report)
+                return real_open(path, flags)
+
+            with patch("bench.compare.os.open", side_effect=swapped_open):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    load_report(report)
+
     def test_detects_slowdowns_and_speedups(self):
         baseline = {"engine": "rusthouse-cli", "rows": 100,
                     "results": [result(1, "passed", 0.01), result(2, "passed", 0.02)]}
@@ -124,6 +147,16 @@ class BenchmarkComparisonTests(unittest.TestCase):
         after["distribution"] = "skewed"
         with self.assertRaisesRegex(ValueError, "distribution"):
             compare(before, after)
+
+    def test_explicit_unverified_reports_cannot_produce_speedups(self):
+        base = {"reference_checked": False, "results": [result(1, "passed", 2.0)]}
+        next_report = {"reference_checked": False, "results": [result(1, "passed", 1.0)]}
+        with self.assertRaisesRegex(ValueError, "reference_checked"):
+            compare(base, next_report)
+        base["reference_checked"] = None
+        next_report["reference_checked"] = None
+        with self.assertRaisesRegex(ValueError, "reference_checked"):
+            compare(base, next_report)
 
     def test_overflowing_integer_latency_is_not_measurable(self):
         immense = 10 ** 400

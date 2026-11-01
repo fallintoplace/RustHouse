@@ -11,6 +11,7 @@ fn chained_inner_count_scans_last_bucket_without_retaining_join_product() {
         "rusthouse-chain-count-{}-{}",
         std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
     ));
+    fs::create_dir_all(&root).unwrap();
     let schema = [Column { name: "id".into(), data_type: "UInt64".into() }];
     let mut paths = Vec::new();
     for (name, n) in [("a", 2), ("b", 2), ("c", 5)] {
