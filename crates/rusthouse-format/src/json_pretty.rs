@@ -39,23 +39,126 @@ fn is_empty_json_container_pair(open: u8, close: u8) -> bool {
     matches!((open, close), (b'{', b'}') | (b'[', b']'))
 }
 
-/// Pretty-print a validated JSON row, preserving punctuation inside strings.
-pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
-    let mut inside_json_string = false;
-    let mut previous_byte_was_escape = false;
+fn validate_pretty_depth(row: &[u8]) -> io::Result<()> {
+    let mut inside_string = false;
+    let mut escaped = false;
     let mut depth = 0usize;
-    let mut start = 0usize;
-    for (index, &byte) in row.iter().enumerate() {
-        if inside_json_string {
-            if previous_byte_was_escape {
-                previous_byte_was_escape = false;
+    for &byte in row {
+        if inside_string {
+            if escaped {
+                escaped = false;
             } else if byte == b'\\' {
-                previous_byte_was_escape = true;
+                escaped = true;
             } else if byte == b'"' {
-                inside_json_string = false;
+                inside_string = false;
             }
             continue;
         }
+        match byte {
+            b'"' => inside_string = true,
+            b'{' | b'[' => {
+                if depth >= MAX_PRETTY_JSON_DEPTH {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "pretty JSON nesting exceeds 256 levels",
+                    ));
+                }
+                depth += 1;
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+// Batch punctuation-heavy JSON output without a heap allocation per row.
+struct RowWriter<'a, W: Write> {
+    output: &'a mut W,
+    buffer: [u8; 4096],
+    used: usize,
+}
+
+impl<'a, W: Write> RowWriter<'a, W> {
+    fn new(output: &'a mut W) -> Self {
+        Self {
+            output,
+            buffer: [0; 4096],
+            used: 0,
+        }
+    }
+
+    fn finish(self) -> io::Result<()> {
+        self.output.write_all(&self.buffer[..self.used])
+    }
+
+    fn drain(&mut self) -> io::Result<()> {
+        self.output.write_all(&self.buffer[..self.used])?;
+        self.used = 0;
+        Ok(())
+    }
+}
+
+impl<W: Write> Write for RowWriter<'_, W> {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        // Large spans already have useful writer granularity. Forward
+        // them intact to avoid copying and preserve long-key write shapes.
+        if input.len() >= 1024 {
+            if self.used != 0 {
+                self.drain()?;
+            }
+            self.output.write_all(input)?;
+            return Ok(input.len());
+        }
+        if input.len() > self.buffer.len() - self.used {
+            self.drain()?;
+        }
+        self.buffer[self.used..self.used + input.len()].copy_from_slice(input);
+        self.used += input.len();
+        Ok(input.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.drain()?;
+        self.output.flush()
+    }
+}
+
+/// Pretty-print a validated JSON row, preserving punctuation inside strings.
+pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
+    // Fail before writing a prefix that would leave the destination invalid.
+    validate_pretty_depth(row)?;
+    let mut writer = RowWriter::new(output);
+    write_pretty_json_row_into(&mut writer, row)?;
+    writer.finish()
+}
+
+fn write_pretty_json_row_into<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
+    let mut inside_json_string = false;
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut index = 0usize;
+    while index < row.len() {
+        if inside_json_string {
+            // JSON string values may be megabytes long. Skip ordinary bytes
+            // in a single span while still respecting escaped quote pairs.
+            let next = row[index..]
+                .iter()
+                .position(|&byte| byte == b'\\' || byte == b'"')
+                .unwrap_or(row.len() - index);
+            index += next;
+            if index == row.len() {
+                break;
+            }
+            if row[index] == b'\\' {
+                index = (index + 2).min(row.len());
+            } else {
+                inside_json_string = false;
+                index += 1;
+            }
+            continue;
+        }
+        let byte = row[index];
         match byte {
             b'"' => inside_json_string = true,
             b'{' | b'[' => {
@@ -110,6 +213,7 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
             }
             _ => {}
         }
+        index += 1;
     }
     output.write_all(&row[start..])
 }
@@ -182,7 +286,7 @@ mod tests {
             let key = "k".repeat(length);
             let row = format!("{{\"{key}\":0}}");
             let mut output = Writes(Vec::new());
-            write_pretty_json_row(&mut output, row.as_bytes()).unwrap();
+            write_pretty_json_row_into(&mut output, row.as_bytes()).unwrap();
             let wanted = format!("\"{key}\": ");
             assert!(
                 output.0.iter().any(|chunk| chunk.as_slice() == wanted.as_bytes()),
@@ -205,7 +309,7 @@ mod tests {
             let key = "a".repeat(length);
             let input = format!("{{\"{key}\":1}}");
             let mut output = Calls(Vec::new());
-            write_pretty_json_row(&mut output, input.as_bytes()).unwrap();
+            write_pretty_json_row_into(&mut output, input.as_bytes()).unwrap();
             let encoded = format!("\"{key}\": ");
             assert!(
                 output.0.iter().any(|bytes| bytes == encoded.as_bytes()),
@@ -227,7 +331,7 @@ mod tests {
             }
         }
         let mut output = Calls(Vec::new());
-        write_pretty_json_row(&mut output, br#"{"a":1}"#).unwrap();
+        write_pretty_json_row_into(&mut output, br#"{"a":1}"#).unwrap();
         assert!(output.0.iter().any(|chunk| chunk.as_slice() == b"\"a\": "));
         assert_eq!(output.0.concat(), b"{\n    \"a\": 1\n  }");
     }
@@ -298,7 +402,7 @@ mod long_pretty_json_key_batch_tests {
             let key = "k".repeat(length);
             let source = format!("{{\"{key}\":42}}");
             let mut writer = Calls(Vec::new());
-            write_pretty_json_row(&mut writer, source.as_bytes()).unwrap();
+            write_pretty_json_row_into(&mut writer, source.as_bytes()).unwrap();
             let colon = format!("\"{key}\": ");
             assert!(writer.0.iter().any(|call| call == colon.as_bytes()), "{length}");
             assert_eq!(
@@ -318,5 +422,99 @@ mod long_pretty_json_key_batch_tests {
             rendered,
             format!("{{\n    \"{key}\": 1\n  }}").as_bytes()
         );
+    }
+}
+
+#[cfg(test)]
+mod atomic_pretty_depth_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_depth_never_leaves_partial_json_in_sink() {
+        let row = format!("{}0{}", "[".repeat(257), "]".repeat(257));
+        let mut output = Vec::new();
+        let error = write_pretty_json_row(&mut output, row.as_bytes()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn quoted_brackets_and_escaped_quotes_do_not_count_as_depth() {
+        let row = format!("{}\"[]{{}}\\\"[]\"{}", "[".repeat(256), "]".repeat(256));
+        let mut output = Vec::new();
+        write_pretty_json_row(&mut output, row.as_bytes()).unwrap();
+        assert!(output.starts_with(b"[\n"));
+    }
+}
+
+#[cfg(test)]
+mod row_write_batch_tests {
+    use super::*;
+
+    struct Counted {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn punctuation_heavy_json_uses_bounded_output_writes() {
+        let row = format!(
+            "{{\"values\":[{}]}}",
+            (0..200).map(|index| format!("{{\"key\":{index}}}")).collect::<Vec<_>>().join(",")
+        );
+        let mut expected = Vec::new();
+        write_pretty_json_row_into(&mut expected, row.as_bytes()).unwrap();
+        let mut counted = Counted { calls: 0, bytes: Vec::new() };
+        write_pretty_json_row(&mut counted, row.as_bytes()).unwrap();
+        assert_eq!(counted.bytes, expected);
+        assert!(counted.calls <= 2, "writes: {}", counted.calls);
+    }
+
+    #[test]
+    fn batch_writer_preserves_long_literals_and_escaped_strings() {
+        let row = format!("{{\"text\":\"{}\",\"escape\":\"a\\\\b\\\"c\"}}", "x".repeat(20_000));
+        let mut expected = Vec::new();
+        write_pretty_json_row_into(&mut expected, row.as_bytes()).unwrap();
+        let mut actual = Vec::new();
+        write_pretty_json_row(&mut actual, row.as_bytes()).unwrap();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[cfg(test)]
+mod large_json_string_span_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_long_punctuation_and_escaped_quotes_in_values() {
+        let long = "café,{}[]:東京".repeat(4096);
+        let escaped = r#"\"quoted\"\\path\n"#;
+        let input = format!(r#"{{"value":"{long}{escaped}{long}","n":1}}"#);
+        let expected = format!("{{\n    \"value\": \"{long}{escaped}{long}\",\n    \"n\": 1\n  }}");
+        let mut actual = Vec::new();
+        write_pretty_json_row(&mut actual, input.as_bytes()).unwrap();
+        assert_eq!(actual, expected.as_bytes());
+    }
+
+    #[test]
+    fn repeated_escaped_backslashes_and_quotes_do_not_end_string_early() {
+        let escaped = r#"\\\""#.repeat(4096);
+        let input = format!(r#"{{"payload":"{escaped}","next":true}}"#);
+        let expected = format!("{{\n    \"payload\": \"{escaped}\",\n    \"next\": true\n  }}");
+        let mut actual = Vec::new();
+        write_pretty_json_row(&mut actual, input.as_bytes()).unwrap();
+        assert_eq!(actual, expected.as_bytes());
     }
 }

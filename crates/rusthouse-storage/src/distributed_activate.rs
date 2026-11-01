@@ -41,6 +41,43 @@ fn create_pending_pointer_with(
     ))
 }
 
+// Keep the active pointer's identity and metadata stable across each read.
+// A same-length in-place rewrite must not masquerade as a frozen generation.
+fn same_active_pointer_state(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if !before.file_type().is_file()
+        || !after.file_type().is_file()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
+fn verify_active_pointer_unchanged(
+    pointer: &Path,
+    file: &fs::File,
+    initial: &fs::Metadata,
+) -> Result<(), PartError> {
+    let opened = file.metadata().map_err(|error| io_error(pointer, error))?;
+    let current = fs::symlink_metadata(pointer).map_err(|error| io_error(pointer, error))?;
+    if !same_active_pointer_state(initial, &opened)
+        || !same_active_pointer_state(initial, &current)
+    {
+        return Err(PartError::InvalidScan("active pointer changed during read".into()));
+    }
+    Ok(())
+}
+
 fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), PartError> {
     match fs::symlink_metadata(pointer) {
         Ok(meta) => {
@@ -49,26 +86,17 @@ fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), Part
             }
             let file = fs::File::open(pointer).map_err(|error| io_error(pointer, error))?;
             let opened = file.metadata().map_err(|error| io_error(pointer, error))?;
-            if !opened.file_type().is_file()
-                || opened.len() != meta.len()
-                || opened.len() > 64
-            {
+            if opened.len() > 64 || !same_active_pointer_state(&meta, &opened) {
                 return Err(PartError::InvalidScan("active pointer changed".into()));
             }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                if meta.dev() != opened.dev() || meta.ino() != opened.ino() {
-                    return Err(PartError::InvalidScan("active pointer replaced before read".into()));
-                }
-            }
             let mut current = String::new();
-            file.take(65)
+            (&file).take(65)
                 .read_to_string(&mut current)
                 .map_err(|error| io_error(pointer, error))?;
             if current.len() > 64 || current.len() as u64 != opened.len() {
                 return Err(PartError::InvalidScan("active pointer changed during read".into()));
             }
+            verify_active_pointer_unchanged(pointer, &file, &meta)?;
             let prior = current
                 .strip_prefix('g')
                 .and_then(|text| text.strip_suffix('\n'))
@@ -181,26 +209,17 @@ pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
     };
     let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
     let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
-    if !opened.file_type().is_file()
-        || opened.len() != initial.len()
-        || opened.len() > 64
-    {
+    if opened.len() > 64 || !same_active_pointer_state(&initial, &opened) {
         return Err(PartError::InvalidScan("active generation pointer changed".into()));
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if initial.dev() != opened.dev() || initial.ino() != opened.ino() {
-            return Err(PartError::InvalidScan("active pointer replaced before read".into()));
-        }
-    }
     let mut bytes = Vec::new();
-    file.take(65)
+    (&file).take(65)
         .read_to_end(&mut bytes)
         .map_err(|error| io_error(&pointer, error))?;
     if bytes.len() as u64 != opened.len() {
         return Err(PartError::InvalidScan("active generation pointer changed during read".into()));
     }
+    verify_active_pointer_unchanged(&pointer, &file, &initial)?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| PartError::InvalidScan("active generation pointer is not UTF8".into()))?;
     let generation = text
@@ -432,6 +451,34 @@ mod active_pointer_inode_tests {
         let new = fs::File::open(&second).unwrap().metadata().unwrap();
         assert_eq!(old.len(), new.len());
         assert_ne!(old.ino(), new.ino());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod pointer_metadata_stability_tests {
+    use super::*;
+
+    #[test]
+    fn refuses_modified_and_replaced_generation_pointers() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-pointer-stability-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        fs::create_dir(&root).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        fs::write(&pointer, b"g12\n").unwrap();
+        let before = fs::symlink_metadata(&pointer).unwrap();
+        let file = fs::File::open(&pointer).unwrap();
+        assert!(same_active_pointer_state(&before, &file.metadata().unwrap()));
+        verify_active_pointer_unchanged(&pointer, &file, &before).unwrap();
+
+        let changed = fs::OpenOptions::new().write(true).open(&pointer).unwrap();
+        changed.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        assert!(!same_active_pointer_state(&before, &changed.metadata().unwrap()));
+        assert!(verify_active_pointer_unchanged(&pointer, &file, &before).is_err());
+
         fs::remove_dir_all(root).unwrap();
     }
 }

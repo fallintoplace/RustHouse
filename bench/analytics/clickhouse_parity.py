@@ -8,6 +8,7 @@ import argparse
 from collections import Counter
 import json
 import math
+import os
 import re
 import statistics
 import subprocess
@@ -126,6 +127,22 @@ def assert_clickhouse_json_parity(rusthouse_output, clickhouse_output, unordered
             if actual_counts != expected_counts:
                 raise ValueError("JSON result multiset differs from ClickHouse")
             return len(expected)
+        # Most analytical outputs mix dimension text with exact integer
+        # aggregates. Match those by ordered column/value tuples in O(n)
+        # instead of searching the remaining rows quadratically.
+        if (all(all(value is None or type(value) in (str, int, bool)
+                    for value in row.values()) for row in expected)
+                and all(all(value is None or isinstance(value, str)
+                            for value in row.values()) for row in actual)):
+            exact_reference = Counter(
+                tuple((name, str(int(value)) if type(value) in (int, bool) else value)
+                      for name, value in row.items())
+                for row in expected
+            )
+            if Counter(tuple(row.items()) for row in actual) == exact_reference:
+                return len(expected)
+        # Float results and noncanonical numeric text still use the tolerant
+        # typed comparator, retaining its existing compatibility semantics.
         unmatched = list(actual)
         for reference in expected:
             index = next((i for i, row in enumerate(unmatched) if equal(row, reference)), None)
@@ -144,11 +161,26 @@ def cli_clickhouse(client, host, port, query, timeout, database=None, data=None)
     if database:
         command.extend(["--database", database])
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+        extra = {}
+        if os.name == "posix":
+            import resource
+
+            def cap_output_file():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                limit = (4_000_000 if hard == resource.RLIM_INFINITY
+                         else min(4_000_000, hard))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+            extra["preexec_fn"] = cap_output_file
         result = subprocess.run(
             command, input=data, stdout=output, stderr=errors,
-            timeout=timeout, check=False,
+            timeout=timeout, check=False, **extra,
         )
         if result.returncode:
+            # A child hitting RLIMIT_FSIZE cannot fill the temporary drive.
+            output.seek(0, os.SEEK_END)
+            if output.tell() >= 4_000_000:
+                raise ValueError("ClickHouse result exceeds 4 MB comparison limit")
             errors.seek(0, 2)
             errors.seek(max(0, errors.tell() - 1000))
             diagnostic = errors.read(1000).decode("utf-8", "replace")
@@ -167,6 +199,9 @@ UINT64_MAX = (1 << 64) - 1
 
 def _decode_fixture_field(field):
     """Decode the escaped TSV bytes that RustHouse COPY also reads."""
+    if b"\\" not in field:
+        # Most fixture fields contain no escapes. Decode those in native code.
+        return field.decode("utf-8")
     decoded = bytearray()
     index = 0
     escapes = {

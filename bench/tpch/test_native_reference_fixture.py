@@ -36,6 +36,28 @@ class NativeFixtureTests(unittest.TestCase):
             self.assertEqual(row[4:8], ["123.45", "123.45", "0.06", "0.06"])
             self.assertEqual(row[10], "1994-06-15")
 
+    def test_native_dbgen_input_is_line_bounded(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "region.tbl"
+            source.write_bytes(b"1|" + b"x" * 100 + b"|comment|\n")
+            with patch("native_reference_fixture.MAX_LINE", 16):
+                with self.assertRaisesRegex(ValueError, "exceeds 8 MiB"):
+                    convert_native_table(source, Path(root) / "region.tsv", "region")
+
+    def test_refuses_symlinked_dbgen_input(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "region.tbl"
+            source.write_bytes(b"1|EUROPE|comment|\n")
+            alias = Path(root) / "alias.tbl"
+            try:
+                alias.symlink_to(source)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                convert_native_table(alias, Path(root) / "region.tsv", "region")
+
+
     def test_failures_dont_create_a_partial_reference_database(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
@@ -46,6 +68,24 @@ class NativeFixtureTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "import failed"):
                 load("duckdb", target, root, ["region"], execute=reject)
             self.assertFalse(target.exists())
+
+
+    def test_native_database_cannot_clobber_concurrent_publisher(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            (directory / "region.tbl").write_bytes(b"1|EUROPE|comment|\n")
+            destination = directory / "native.duckdb"
+
+            def execute(command):
+                if command[-1].startswith("SELECT count(*)"):
+                    destination.write_bytes(b"newer database")
+                    return CompletedProcess(command, 0, b"1\n", b"")
+                Path(command[3]).write_bytes(b"first database")
+                return CompletedProcess(command, 0, b"", b"")
+
+            with self.assertRaises(FileExistsError):
+                load("duckdb", destination, directory, ["region"], execute=execute)
+            self.assertEqual(destination.read_bytes(), b"newer database")
 
 
     def test_native_duckdb_cli_capture_is_spooled_and_bounded(self):

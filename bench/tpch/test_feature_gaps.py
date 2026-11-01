@@ -101,6 +101,22 @@ class BoundedFeatureGapReportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "non-symlinked"):
                 load_report(alias)
 
+    def test_rejects_duplicate_statuses_and_nonfinite_report_numbers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "report.json"
+            for payload in (
+                '{"results":[{"query":1,"status":"error","status":"passed"}]}',
+                '{"results":[],"results":[{"query":1,"status":"passed"}]}',
+                '{"results":[{"query":1,"status":"passed","latency":NaN}]}',
+                '{"results":[{"query":1,"status":"passed","latency":Infinity}]}',
+                '{"results":[{"query":1,"status":"passed","latency":-Infinity}]}',
+            ):
+                with self.subTest(payload=payload):
+                    source.write_text(payload, encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        load_report(source)
+
+
     def test_loads_normal_report(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "report.json"
