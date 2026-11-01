@@ -49,6 +49,7 @@ impl Drop for SortScratch {
     fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
 }
 
+#[cfg(test)]
 fn write_number(writer: &mut impl Write, number: Number) -> Result<(), ExecutionError> {
     let (tag, payload) = match number {
         Number::Unsigned(v) => (0u8, v.to_le_bytes()),
@@ -83,22 +84,47 @@ fn read_number(reader: &mut impl Read) -> Result<Number, ExecutionError> {
     decode_number_record(&encoded)
 }
 
-fn write_sorted_row(writer: &mut impl Write, row: &SortedRow)
-    -> Result<(), ExecutionError> {
+/// Encode and write an entire sort record with one buffered write, preserving
+/// the existing 16-byte header and 17-byte numeric wire format.
+fn write_sorted_row_reusing(
+    writer: &mut impl Write,
+    row: &SortedRow,
+    scratch: &mut Vec<u8>,
+) -> Result<(), ExecutionError> {
     let index = u64::try_from(row.sequence).map_err(|_| invalid("sort sequence overflow"))?;
     let secondary = u32::try_from(row.extra_keys.len())
         .map_err(|_| invalid("too many ORDER BY keys"))?;
     let width = u32::try_from(row.values.len())
         .map_err(|_| invalid("too many sorted columns"))?;
-    let mut header = [0u8; 16];
-    header[..8].copy_from_slice(&index.to_le_bytes());
-    header[8..12].copy_from_slice(&secondary.to_le_bytes());
-    header[12..].copy_from_slice(&width.to_le_bytes());
-    writer.write_all(&header)?;
-    write_number(writer, row.key)?;
-    for &key in &row.extra_keys { write_number(writer, key)?; }
-    for &value in &row.values { write_number(writer, value)?; }
+    scratch.clear();
+    scratch.extend_from_slice(&index.to_le_bytes());
+    scratch.extend_from_slice(&secondary.to_le_bytes());
+    scratch.extend_from_slice(&width.to_le_bytes());
+    append_number_record(scratch, row.key);
+    for &key in &row.extra_keys {
+        append_number_record(scratch, key);
+    }
+    for &value in &row.values {
+        append_number_record(scratch, value);
+    }
+    writer.write_all(scratch)?;
     Ok(())
+}
+
+fn append_number_record(scratch: &mut Vec<u8>, number: Number) {
+    let (tag, payload) = match number {
+        Number::Unsigned(v) => (0u8, v.to_le_bytes()),
+        Number::Signed(v) => (1u8, v.to_le_bytes()),
+        Number::Float(v) => (2u8, (v.to_bits() as u128).to_le_bytes()),
+    };
+    scratch.push(tag);
+    scratch.extend_from_slice(&payload);
+}
+
+#[cfg(test)]
+fn write_sorted_row(writer: &mut impl Write, row: &SortedRow)
+    -> Result<(), ExecutionError> {
+    write_sorted_row_reusing(writer, row, &mut Vec::new())
 }
 
 /// Read one external run row using a reusable wire buffer. A wide
@@ -481,8 +507,9 @@ impl SortedRows {
         let path = self.next_path()?;
         let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
             .create_new(true).write(true).open(&path)?);
+        let mut row_scratch = Vec::new();
         for row in std::mem::take(&mut self.rows).into_sorted_vec() {
-            write_sorted_row(&mut writer, &row)?;
+            write_sorted_row_reusing(&mut writer, &row, &mut row_scratch)?;
         }
         writer.flush()?;
         self.charge_temp(&path)?;
@@ -593,8 +620,9 @@ impl SortedRows {
                     let path = self.next_path()?;
                     let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
                         .create_new(true).write(true).open(&path)?);
+                    let mut row_scratch = Vec::new();
                     merge_runs(group, self.descending, &self.extra_descending, |row| {
-                        write_sorted_row(&mut writer, row)?;
+                        write_sorted_row_reusing(&mut writer, row, &mut row_scratch)?;
                         Ok(true)
                     })?;
                     writer.flush()?;
@@ -784,5 +812,38 @@ mod batched_sort_read_tests {
         assert!(read_sorted_row_reusing(&mut source, true, &directions, &mut scratch)
             .unwrap().is_none());
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod buffered_sort_record_tests {
+    use super::*;
+
+    #[test]
+    fn reusable_row_buffer_matches_legacy_field_encoding() {
+        let directions: Arc<[bool]> = Arc::from([true, false]);
+        let rows = [
+            (Number::Signed(-9), vec![Number::Unsigned(42), Number::Float(-0.0)],
+                vec![Number::Unsigned(u128::MAX), Number::Float(f64::NAN)]),
+            (Number::Float(3.5), vec![Number::Signed(i128::MIN), Number::Float(f64::INFINITY)],
+                vec![]),
+        ];
+        let mut scratch = Vec::new();
+        let mut complete = Vec::new();
+        let mut reference = Vec::new();
+        for (position, (key, extra_keys, values)) in rows.into_iter().enumerate() {
+            let row = SortedRow {
+                key, extra_keys, values, sequence: position,
+                descending: false, extra_descending: directions.clone(),
+            };
+            write_sorted_row_reusing(&mut complete, &row, &mut scratch).unwrap();
+            reference.extend_from_slice(&(position as u64).to_le_bytes());
+            reference.extend_from_slice(&(row.extra_keys.len() as u32).to_le_bytes());
+            reference.extend_from_slice(&(row.values.len() as u32).to_le_bytes());
+            write_number(&mut reference, row.key).unwrap();
+            for &number in &row.extra_keys { write_number(&mut reference, number).unwrap(); }
+            for &number in &row.values { write_number(&mut reference, number).unwrap(); }
+        }
+        assert_eq!(complete, reference);
     }
 }
