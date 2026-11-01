@@ -125,6 +125,53 @@ impl QuorumPolicy {
     }
 }
 
+/// Conservative availability after losing the largest failure domains.
+/// This is a capacity and quorum assessment, not a consensus guarantee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoneFailureQuorum {
+    pub failed_zones: usize,
+    pub surviving_nodes: usize,
+    pub can_read: bool,
+    pub can_write: bool,
+}
+
+/// Evaluate the worst placement-independent loss of any `failed_zones`
+/// distinct failure domains. Grouping by zone avoids enumerating all failure
+/// subsets, and the read/write thresholds still use the original membership.
+pub fn worst_case_zone_quorum(
+    policy: QuorumPolicy,
+    members: &[crate::distributed_membership::Member],
+    failed_zones: usize,
+) -> Result<ZoneFailureQuorum, &'static str> {
+    policy.validate()?;
+    crate::distributed_membership::validate_membership(members)?;
+    if members.len() != policy.replicas {
+        return Err("quorum policy does not match failure-zone membership");
+    }
+    let mut zones: Vec<(&str, usize)> = Vec::new();
+    for member in members {
+        if let Some((_, count)) = zones.iter_mut()
+            .find(|(zone, _)| *zone == member.zone.as_str())
+        {
+            *count += 1;
+        } else {
+            zones.push((&member.zone, 1));
+        }
+    }
+    if failed_zones > zones.len() {
+        return Err("failure-zone count exceeds configured zones");
+    }
+    zones.sort_unstable_by(|left, right| right.1.cmp(&left.1));
+    let lost = zones.iter().take(failed_zones).map(|&(_, count)| count).sum::<usize>();
+    let surviving = members.len() - lost;
+    Ok(ZoneFailureQuorum {
+        failed_zones,
+        surviving_nodes: surviving,
+        can_read: policy.can_read(surviving),
+        can_write: policy.can_write(surviving),
+    })
+}
+
 /// Additional replica acknowledgements needed to satisfy a quorum policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuorumDeficit {
@@ -565,6 +612,67 @@ mod stack_quorum_index_tests {
             duplicates[replicas - 1] = duplicates[0];
             assert!(policy.observe(&duplicates, &members).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod failure_zone_quorum_reference_tests {
+    use super::*;
+    use crate::distributed_membership::Member;
+
+    fn membership(zones: &[usize]) -> Vec<Member> {
+        zones.iter().enumerate().flat_map(|(zone, &count)| {
+            (0..count).map(move |index| Member {
+                node: format!("node_{zone}_{index}"),
+                zone: format!("zone_{zone}"),
+                weight: 1,
+            })
+        }).collect()
+    }
+
+    #[test]
+    fn worst_case_matches_exhaustive_zone_failure_subsets() {
+        for counts in [
+            &[1usize, 1, 1][..],
+            &[1, 2, 1, 1],
+            &[4, 1, 2],
+            &[2, 3, 1, 2, 1],
+            &[3, 3, 3, 2, 3, 2],
+        ] {
+            let members = membership(counts);
+            let n = members.len();
+            let writes = n / 2 + 1;
+            let reads = n - writes + 1;
+            let policy = QuorumPolicy::new(n, reads, writes).unwrap();
+            for failed in 0..=counts.len() {
+                let mut most_lost = 0usize;
+                for subset in 0..(1usize << counts.len()) {
+                    if subset.count_ones() as usize != failed { continue; }
+                    let lost = counts.iter().enumerate()
+                        .filter(|(zone, _)| subset & (1 << zone) != 0)
+                        .map(|(_, &size)| size).sum::<usize>();
+                    most_lost = most_lost.max(lost);
+                }
+                let expected = n - most_lost;
+                let result = worst_case_zone_quorum(policy, &members, failed).unwrap();
+                assert_eq!(result.surviving_nodes, expected, "zones={counts:?} failed={failed}");
+                assert_eq!(result.can_read, expected >= reads);
+                assert_eq!(result.can_write, expected >= writes);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_bad_membership_and_out_of_range_zone_failures() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let members = membership(&[2, 1]);
+        assert!(worst_case_zone_quorum(policy, &members, 3).is_err());
+        assert_eq!(worst_case_zone_quorum(policy, &members, 0).unwrap().surviving_nodes, 3);
+        let wrong = membership(&[2, 2]);
+        assert!(worst_case_zone_quorum(policy, &wrong, 1).is_err());
+        let mut repeated = members.clone();
+        repeated[2].node = repeated[0].node.clone();
+        assert!(worst_case_zone_quorum(policy, &repeated, 0).is_err());
     }
 }
 
