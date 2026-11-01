@@ -154,6 +154,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "TRANSLATE"
                 | "TRANSLATEUTF8"
                 | "POSITIONCASEINSENSITIVE"
+                | "POSITIONCASEINSENSITIVEUTF8"
                 | "STRPOS"
                 | "TOSTARTOFISOYEAR"
                 | "POSITIONUTF8"
@@ -3273,6 +3274,82 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 left
             }
         }
+        "POSITIONCASEINSENSITIVEUTF8" => {
+            let haystack = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "positionCaseInsensitiveUTF8 requires a needle",
+            )?;
+            let needle = text_arg(parser, depth + 1)?;
+            let start = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(1)
+            };
+            require(
+                parser,
+                Token::RParen,
+                "positionCaseInsensitiveUTF8 requires two or three arguments",
+            )?;
+            match (haystack, needle, start) {
+                (Some(haystack), Some(needle), Some(start)) => {
+                    if start < 0 {
+                        return Err(ParseError(
+                            "positionCaseInsensitiveUTF8 start must be nonnegative".into(),
+                        ));
+                    }
+                    let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
+                    let haystack_chars = haystack.chars().count();
+                    if offset > haystack_chars {
+                        return Ok(ConstantValue::Integer(0));
+                    }
+                    if needle.is_empty() {
+                        return Ok(ConstantValue::Integer((offset + 1) as i64));
+                    }
+                    // Use simple per-code-point lowercasing, matching the
+                    // one-code-point search contract rather than expanding
+                    // an entire string and changing character positions.
+                    let fold = |character: char| {
+                        character.to_lowercase().next().unwrap_or(character)
+                    };
+                    let needle: Vec<char> = needle.chars().map(fold).collect();
+                    if needle.len() > haystack_chars - offset {
+                        return Ok(ConstantValue::Integer(0));
+                    }
+                    // KMP avoids quadratic scans for repeated Unicode text.
+                    let mut border = vec![0usize; needle.len()];
+                    for index in 1..needle.len() {
+                        let mut candidate = border[index - 1];
+                        while candidate > 0 && needle[index] != needle[candidate] {
+                            candidate = border[candidate - 1];
+                        }
+                        if needle[index] == needle[candidate] {
+                            candidate += 1;
+                        }
+                        border[index] = candidate;
+                    }
+                    let mut matched = 0usize;
+                    for (index, character) in haystack.chars().enumerate().skip(offset) {
+                        let character = fold(character);
+                        while matched > 0 && needle[matched] != character {
+                            matched = border[matched - 1];
+                        }
+                        if needle[matched] == character {
+                            matched += 1;
+                        }
+                        if matched == needle.len() {
+                            return Ok(ConstantValue::Integer(
+                                i64::try_from(index + 2 - needle.len())
+                                    .map_err(|_| ParseError("position exceeds Int64".into()))?,
+                            ));
+                        }
+                    }
+                    ConstantValue::Integer(0)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "POSITIONCASEINSENSITIVE" => {
             let input = text_arg(parser, depth + 1)?;
             require(
@@ -5933,5 +6010,39 @@ mod utf8_prefix_suffix_inplace_tests {
         }
         let input = format!("{}🙂Z", "a".repeat(10_000));
         assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_position_case_insensitive_utf8_parity_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finds_unicode_case_insensitive_positions() {
+        for (sql, expected) in [
+            ("SELECT positionCaseInsensitiveUTF8('Äpfel', 'äP')", 1),
+            ("SELECT positionCaseInsensitiveUTF8('Crème brûlée', 'BRÛ')", 7),
+            ("SELECT positionCaseInsensitiveUTF8('Привет Мир', 'МИР')", 8),
+            ("SELECT positionCaseInsensitiveUTF8('abc abc', 'ABC', 4)", 5),
+            ("SELECT positionCaseInsensitiveUTF8('abc', 'A', 0)", 1),
+            ("SELECT positionCaseInsensitiveUTF8('abc', '', 3)", 3),
+            ("SELECT positionCaseInsensitiveUTF8('', '')", 1),
+            ("SELECT positionCaseInsensitiveUTF8('abc', '', 9)", 0),
+            ("SELECT positionCaseInsensitiveUTF8('abc', 'z')", 0),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT positionCaseInsensitiveUTF8(NULL, 'a')"), ConstantValue::Null);
+        assert_eq!(value("SELECT positionCaseInsensitiveUTF8('abc', NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT positionCaseInsensitiveUTF8('a')").is_err());
+        assert!(parse_select("SELECT positionCaseInsensitiveUTF8('abc', 'a', -1)").is_err());
+        assert!(parse_select("SELECT positionCaseInsensitiveUTF8('a', 'b', 1, 2)").is_err());
     }
 }
