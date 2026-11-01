@@ -13,6 +13,7 @@ pub struct RepairJob {
 fn valid_shard(shard: &str) -> bool {
     !shard.is_empty()
         && shard.len() <= 128
+        && shard.as_bytes()[0].is_ascii_alphanumeric()
         && shard
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
@@ -797,5 +798,25 @@ mod linear_two_repair_selection_tests {
                 .collect::<Vec<_>>(),
             vec!["first", "zero"],
         );
+    }
+}
+
+#[cfg(test)]
+mod canonical_repair_shard_tests {
+    use super::*;
+
+    #[test]
+    fn repair_shards_match_the_object_key_and_placement_prefix_rules() {
+        for shard in ["-not-a-key", "_not-a-key", ""] {
+            let jobs = [RepairJob {
+                shard: shard.into(), bytes: 1, missing_replicas: 1,
+            }];
+            assert!(plan_repairs(&jobs, 5, 1).is_err(), "shard={shard:?}");
+            assert!(plan_repairs_excluding(&[], &[shard], 5, 1).is_err(), "shard={shard:?}");
+        }
+        for shard in ["a", "0_worker", "shard-2"] {
+            let jobs = [RepairJob { shard: shard.into(), bytes: 1, missing_replicas: 1 }];
+            assert_eq!(plan_repairs(&jobs, 5, 1).unwrap(), jobs);
+        }
     }
 }

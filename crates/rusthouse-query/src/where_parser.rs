@@ -56,10 +56,13 @@ fn check_expansion(branches: &Branches) -> Result<(), ParseError> {
 }
 
 pub(super) fn combine_and(left: Branches, right: Branches) -> Result<Branches, ParseError> {
-    if left.len().checked_mul(right.len()).is_none_or(|n| n > MAX_BRANCHES) {
-        return Err(bad_expansion());
-    }
-    let mut result = Vec::with_capacity(left.len() * right.len());
+    // A temporary cross-product can be larger than the final DNF when
+    // absorption removes duplicate and stronger branches. Keep the work
+    // bounded, but enforce the public branch cap only after normalization.
+    let combinations = left.len().checked_mul(right.len())
+        .filter(|&count| count <= MAX_BRANCHES * MAX_BRANCHES)
+        .ok_or_else(bad_expansion)?;
+    let mut result = Vec::with_capacity(combinations.min(MAX_BRANCHES));
     for lhs in &left {
         for rhs in &right {
             let mut conjuncts = Vec::with_capacity(lhs.len() + rhs.len());
@@ -228,6 +231,9 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
                     vec![Predicate::IsNull { column, negated: false }],
                 ]);
             }
+            // IS TRUE/FALSE are two-valued. Retaining the non-NULL guard
+            // makes NOT (column IS TRUE/FALSE) include NULL after De Morgan.
+            predicates.push(Predicate::IsNull { column, negated: true });
             compare
         };
         predicates.push(predicate);
@@ -406,6 +412,24 @@ mod tests {
         assert!(parse_select(
             "SELECT number FROM numbers(8) WHERE NOT (number = 1"
         ).is_err());
+    }
+
+    #[test]
+    fn repeated_eight_atom_filters_simplify_before_branch_budget() {
+        // Four independent binary disjunctions produce 16 DNF branches
+        // from just eight source predicates. Repeating the group uses the
+        // 16-condition parser budget but creates 256 temporary pairs.
+        let clause = "(number > 0 OR number = 0) AND (number < 5 OR number > 8) AND (number % 2 = 0 OR number = 3) AND (number < 4 OR number > 1)";
+        let base = format!(
+            "SELECT number FROM numbers(11) WHERE {clause} ORDER BY number"
+        );
+        let repeated = format!(
+            "SELECT number FROM numbers(11) WHERE ({clause}) AND ({clause}) ORDER BY number"
+        );
+        let query = crate::parse_select(&repeated).unwrap();
+        assert_eq!(query.or_predicates.len(), 15);
+        assert_eq!(run(&base), "number\n0\n2\n3\n4\n10\n");
+        assert_eq!(run(&repeated), run(&base));
     }
 
     #[test]

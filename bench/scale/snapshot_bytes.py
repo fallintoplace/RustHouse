@@ -21,12 +21,15 @@ def classify(path):
     return "metadata_bytes"
 
 
-def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=None):
+def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=None,
+              max_dirs=1_000_000):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected a real offline snapshot directory")
     if type(max_files) is not int or max_files < 1:
         raise ValueError("max_files must be a positive integer")
+    if type(max_dirs) is not int or max_dirs < 1:
+        raise ValueError("max_dirs must be a positive integer")
     if type(largest_files) is not int or not 0 <= largest_files <= 100:
         raise ValueError("largest_files must be in 0..100")
     if max_total_bytes is not None and (type(max_total_bytes) is not int or max_total_bytes < 1):
@@ -34,11 +37,15 @@ def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=Non
     heap = []
     groups = dict.fromkeys(("data_bytes", "mark_bytes", "index_bytes", "metadata_bytes"), 0)
     count = 0
+    directory_count = 0
     total_bytes = 0
     def fail_walk(error):
         raise error
 
     for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail_walk):
+        directory_count += 1
+        if directory_count > max_dirs:
+            raise ValueError("snapshot exceeds max_dirs")
         for name in dirs:
             if (Path(directory) / name).is_symlink():
                 raise ValueError("symlinked directory is unsafe")
@@ -77,12 +84,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--max-files", type=int, default=1_000_000)
+    parser.add_argument("--max-dirs", type=int, default=1_000_000)
     parser.add_argument("--largest-files", type=int, default=0)
     parser.add_argument("--max-total-bytes", type=int)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         result = inventory(args.part, max_files=args.max_files,
+                           max_dirs=args.max_dirs,
                            largest_files=args.largest_files,
                            max_total_bytes=args.max_total_bytes)
         rendered = json.dumps(result, indent=2) + "\n"

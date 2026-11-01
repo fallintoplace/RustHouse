@@ -34,9 +34,18 @@ def row_source(rows, seed):
         yield (shipdate.isoformat(), price, discount, quantity)
 
 def generate(output_dir, rows, seed):
-    if rows < 1:
-        raise ValueError("rows must be positive")
+    if type(rows) is not int or not 1 <= rows <= 1_000_000:
+        raise ValueError("rows must be an integer in 1..1000000")
+    if type(seed) is not int or not 0 <= seed <= (1 << 64) - 1:
+        raise ValueError("seed must be an unsigned 64-bit integer")
     output_dir = Path(output_dir)
+    if output_dir.is_symlink() or any(
+        (output_dir / name).is_symlink()
+        for name in ("queries", "references", "lineitem.tsv",
+                     "queries/q06.sql", "references/q06.tsv",
+                     "create.sql", "copy.sql")
+    ):
+        raise ValueError("refusing symlinked fixture output")
     (output_dir / "queries").mkdir(parents=True, exist_ok=True)
     (output_dir / "references").mkdir(parents=True, exist_ok=True)
     count, revenue = 0, 0

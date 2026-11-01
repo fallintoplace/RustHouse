@@ -6,6 +6,7 @@ Usage: python -m bench.scale.sparse_point_probes --binary target/release/rusthou
 import argparse
 import json
 import math
+import os
 import random
 import re
 import statistics
@@ -47,21 +48,39 @@ def percentile_sorted(ordered, percent):
     return ordered[math.ceil(percent * len(ordered) / 100) - 1]
 
 
+MAX_POINT_RESULT_BYTES = 128
+
+
 def query(binary, database, statement, timeout):
-    # A single point probe can only return a small result. Spool both streams.
+    # Reject runaway output during execution, not only after spooling it.
+    extra = {}
+    if os.name == "posix":
+        import resource
+        def cap_point_output():
+            soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            limit = MAX_POINT_RESULT_BYTES + 1
+            if soft != resource.RLIM_INFINITY:
+                limit = min(limit, soft)
+            if hard != resource.RLIM_INFINITY:
+                limit = min(limit, hard)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+        extra["preexec_fn"] = cap_point_output
     with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
         result = subprocess.run(
             [str(binary), "sql", statement, "--database", str(database),
              "--format", "tsv-no-header"],
-            stdout=output, stderr=errors, timeout=timeout, check=False,
+            stdout=output, stderr=errors, timeout=timeout, check=False, **extra,
         )
         if result.returncode:
+            output.seek(0, os.SEEK_END)
+            if output.tell() >= MAX_POINT_RESULT_BYTES + 1:
+                raise ValueError("point probe SQL output exceeds 128 bytes")
             errors.seek(0, 2)
             errors.seek(max(0, errors.tell() - 500))
             raise RuntimeError(errors.read(500).decode("utf-8", "replace"))
         output.seek(0)
-        payload = output.read(129)
-        if len(payload) > 128:
+        payload = output.read(MAX_POINT_RESULT_BYTES + 1)
+        if len(payload) > MAX_POINT_RESULT_BYTES:
             raise ValueError("point probe SQL output exceeds 128 bytes")
         return payload
 

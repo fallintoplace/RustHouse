@@ -1,6 +1,7 @@
 import unittest
 
 from bench.scale.compare_physical import compare
+from bench.scale.physical_scan import COUNT_SQL, SUM_SQL
 
 
 def report(**kw):
@@ -10,9 +11,9 @@ def report(**kw):
             "platform": "Linux", "cpu_count": 4,
             "source": "persisted immutable wide parts",
             "note": "fresh CLI processes",
-            "count_even": {"query": "count", "expected": 50,
+            "count_even": {"query": COUNT_SQL, "expected": 50,
                            "median_seconds": 1.0, "verified": True},
-            "sum_even": {"query": "sum", "expected": 2450,
+            "sum_even": {"query": SUM_SQL, "expected": 2450,
                          "median_seconds": 1.0, "verified": True}}
     data.update(kw)
     return data

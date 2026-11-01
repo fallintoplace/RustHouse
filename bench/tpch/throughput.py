@@ -53,8 +53,9 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None,
         if (not isinstance(entry, (tuple, list)) or len(entry) != 2
                 or type(entry[0]) is not int or entry[0] < 1
                 or entry[0] in seen or not isinstance(entry[1], str)
-                or not entry[1].strip()):
-            raise ValueError("queries need distinct positive IDs and nonempty SQL")
+                or not entry[1].strip()
+                or len(entry[1].encode("utf-8")) > 65_536):
+            raise ValueError("queries need distinct positive IDs and nonempty SQL within 64 KiB")
         seen.add(entry[0])
     tasks = [(number, sql) for _ in range(rounds) for number, sql in queries]
 

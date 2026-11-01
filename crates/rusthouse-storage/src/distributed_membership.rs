@@ -33,7 +33,9 @@ fn parse_member(line: &str) -> Result<(&str, &str, u16), &'static str> {
     if line.is_empty() {
         return Err("empty membership record");
     }
-    let mut fields = line.split_whitespace();
+    // The wire manifest has ASCII fields and separators. Unicode spaces must
+    // not silently alias valid, canonical member records.
+    let mut fields = line.split_ascii_whitespace();
     let (Some(node), Some(zone), Some(weight_text), None) =
         (fields.next(), fields.next(), fields.next(), fields.next())
     else {
@@ -41,6 +43,13 @@ fn parse_member(line: &str) -> Result<(&str, &str, u16), &'static str> {
     };
     if !valid_member_identity(node, zone) {
         return Err("invalid membership record");
+    }
+    // Reject alternate spellings such as +1 or 001. Membership manifests
+    // should have one canonical byte representation per numeric weight.
+    if weight_text.starts_with('0')
+        || !weight_text.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("noncanonical member weight");
     }
     let weight = weight_text
         .parse::<u16>()
@@ -363,5 +372,43 @@ mod exact_membership_format_size_tests {
         let item = Member { node: "n".into(), zone: "z".into(), weight: 1 };
         assert!(serialized_membership_bytes(&[item.clone(), item]).is_err());
         assert!(serialized_membership_bytes(&[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod canonical_membership_weight_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_ambiguous_numeric_weights_before_manifest_serialization() {
+        for weight in ["+1", "01", "0001", "-1", "1.0", "0", "1001", "١"] {
+            let manifest = format!("node zone {weight}\n");
+            assert!(parse_membership(&manifest).is_err(), "weight={weight}");
+        }
+        for weight in [1, 9, 10, 100, 1000] {
+            let manifest = format!("node zone {weight}\n");
+            let members = parse_membership(&manifest).unwrap();
+            assert_eq!(format_membership(&members).unwrap(), manifest);
+        }
+    }
+}
+
+#[cfg(test)]
+mod ascii_membership_delimiter_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unicode_whitespace_between_or_around_fields() {
+        for text in [
+            "node\u{00a0}zone 1\n",
+            "node zone\u{2003}1\n",
+            "\u{202f}node zone 1\n",
+            "node zone 1\u{0085}\n",
+        ] {
+            assert!(parse_membership(text).is_err(), "{text:?}");
+        }
+        let members = parse_membership("n1\tzone\t1\r\nn2 zone 2\n").unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(format_membership(&members).unwrap(), "n1 zone 1\nn2 zone 2\n");
     }
 }

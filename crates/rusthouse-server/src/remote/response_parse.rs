@@ -31,22 +31,35 @@ pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
         || !name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        || value
-            .bytes()
-            .any(|byte| byte.is_ascii_control() && byte != b'\t')
+        || value.chars().any(|ch| {
+            (ch.is_control() && ch != '\t')
+                || (ch.is_whitespace() && ch != ' ' && ch != '\t')
+        })
     {
         return Err("invalid peer header".into());
     }
-    Ok((name, value.trim()))
+    // HTTP optional whitespace is SP / HTAB only. Unicode trim() would
+    // silently turn non-HTTP whitespace into a valid numeric header value.
+    Ok((name, value.trim_matches(|ch| ch == ' ' || ch == '\t')))
 }
 
 pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
-    if !is_ascii_decimal(value) {
+    if value.is_empty() {
         return Err("invalid peer Content-Length".into());
     }
-    value
-        .parse::<usize>()
-        .map_err(|_| "invalid peer Content-Length".into())
+    // Validate and accumulate in one scan. Headers are untrusted, so neither
+    // signs nor arithmetic overflow may be accepted by the peer parser.
+    let mut length = 0usize;
+    for byte in value.bytes() {
+        if !byte.is_ascii_digit() {
+            return Err("invalid peer Content-Length".into());
+        }
+        length = length
+            .checked_mul(10)
+            .and_then(|length| length.checked_add(usize::from(byte - b'0')))
+            .ok_or("invalid peer Content-Length")?;
+    }
+    Ok(length)
 }
 
 fn parse_required_peer_headers<'a>(
@@ -326,5 +339,50 @@ mod borrowed_peer_head_tests {
     fn uncompleted_header_rejects_duplicate_content_type() {
         let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
         assert!(expected_wire_length(wire).is_err());
+    }
+}
+
+#[cfg(test)]
+mod strict_peer_header_ows_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unicode_whitespace_instead_of_normalizing_it() {
+        for value in [
+            "Content-Length:\u{00a0}4",
+            "Content-Length:4\u{2003}",
+            "Content-Type:application\u{2028}json",
+            "Content-Type:\u{0085}text/plain",
+        ] {
+            assert!(parse_peer_header(value).is_err(), "{value:?}");
+        }
+        assert_eq!(
+            parse_peer_header("Content-Length: \t 42 \t").unwrap(),
+            ("Content-Length", "42"),
+        );
+        assert_eq!(
+            parse_peer_header("X-Trace: a\tb").unwrap(),
+            ("X-Trace", "a\tb"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod one_pass_content_length_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_decimal_lengths_and_rejects_invalid_or_overflowing_headers() {
+        for (input, expected) in [("0", 0), ("0003", 3), ("8192", 8192)] {
+            assert_eq!(parse_content_length(input).unwrap(), expected);
+        }
+        for invalid in ["", " 3", "+3", "-1", "2 ", "2\n", "2a"] {
+            assert!(parse_content_length(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(parse_content_length(&format!("{}0", usize::MAX)).is_err());
+        assert_eq!(
+            parse_content_length(&usize::MAX.to_string()).unwrap(),
+            usize::MAX
+        );
     }
 }
