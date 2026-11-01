@@ -69,6 +69,37 @@ pub fn crc32c(bytes: &[u8]) -> u32 {
     checksum.finish()
 }
 
+/// Hash a large, already resident immutable object in independent slices.
+/// The chunks borrow the original buffer, so no payload is copied and the
+/// combined checksum is identical to a single sequential CRC32C pass.
+/// Small buffers and single-core hosts retain the original streaming path.
+pub fn crc32c_parallel(bytes: &[u8]) -> u32 {
+    const MIN_PARALLEL_BYTES: usize = 16 * 1024 * 1024;
+    const MAX_WORKERS: usize = 4;
+    if bytes.len() < MIN_PARALLEL_BYTES {
+        return crc32c(bytes);
+    }
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(MAX_WORKERS);
+    if workers <= 1 {
+        return crc32c(bytes);
+    }
+    let chunk_size = bytes.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for chunk in bytes.chunks(chunk_size) {
+            handles.push((chunk.len() as u64, scope.spawn(move || crc32c(chunk))));
+        }
+        let mut combined = crc32c(b"");
+        for (len, handle) in handles {
+            let checksum = handle.join().expect("CRC32C worker is infallible");
+            combined = crc32c_combine(combined, checksum, len);
+        }
+        combined
+    })
+}
+
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "crc")]
 unsafe fn update_arm64(mut crc: u32, bytes: &[u8]) -> u32 {
@@ -679,6 +710,36 @@ mod sparse_gf2_matrix_tests {
                     assert_eq!(shift.combine(left, right), crc32c_combine(left, right, len));
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod parallel_immutable_buffer_checksum_tests {
+    use super::*;
+
+    #[test]
+    fn small_and_large_borrowed_buffers_match_sequential_crc32c() {
+        for len in [0, 1, 7, 8, 31, 127, 128, 4096, 65_535, 65_536,
+                    16 * 1024 * 1024 - 1, 16 * 1024 * 1024,
+                    16 * 1024 * 1024 + 7] {
+            let bytes = (0..len).map(|i| (i.wrapping_mul(199) % 251) as u8)
+                .collect::<Vec<_>>();
+            assert_eq!(crc32c_parallel(&bytes), crc32c(&bytes), "len={len}");
+        }
+    }
+
+    #[test]
+    fn parallel_combine_is_stable_for_unbalanced_split_lengths() {
+        let bytes = (0..1_000_019usize).map(|i| (i * 41 % 251) as u8)
+            .collect::<Vec<_>>();
+        let expected = crc32c(&bytes);
+        for workers in [2, 3, 4, 7] {
+            let split = bytes.len().div_ceil(workers);
+            let result = bytes.chunks(split).fold(crc32c(b""), |combined, chunk| {
+                crc32c_combine(combined, crc32c(chunk), chunk.len() as u64)
+            });
+            assert_eq!(result, expected, "workers={workers}");
         }
     }
 }

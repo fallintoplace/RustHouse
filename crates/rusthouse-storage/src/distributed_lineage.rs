@@ -645,3 +645,110 @@ mod snapshot_supporter_selection_tests {
             &[("a", version), ("outsider", version)]).is_err());
     }
 }
+
+
+/// Diagnostics about reports relative to a quorum-observed snapshot.
+///
+/// A newer minority observation is *not* proof of a committed generation,
+/// and a lagging observation does not establish common ancestry or authorize
+/// overwrite. This is read-only metadata classification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuorumSnapshotLag {
+    pub confirmed: Option<SnapshotVersion>,
+    pub behind: Vec<String>,
+    pub ahead_without_quorum: Vec<String>,
+    pub unobserved: Vec<String>,
+}
+
+/// Classify a bounded replica poll without treating a minority's newer
+/// generation as committed or assuming that an unresponsive node is stale.
+pub fn classify_quorum_snapshot_lag(
+    policy: crate::distributed_quorum::QuorumPolicy,
+    members: &[&str],
+    observations: &[(&str, SnapshotVersion)],
+) -> Result<QuorumSnapshotLag, &'static str> {
+    let confirmed = newest_quorum_observed_snapshot(policy, members, observations)?;
+    let mut report = QuorumSnapshotLag {
+        confirmed,
+        behind: Vec::new(),
+        ahead_without_quorum: Vec::new(),
+        unobserved: Vec::new(),
+    };
+    for &member in members {
+        match observations.iter().find(|&&(node, _)| node == member) {
+            None => report.unobserved.push(member.to_owned()),
+            Some(&(_, version)) => {
+                if let Some(chosen) = confirmed {
+                    if version.generation < chosen.generation {
+                        report.behind.push(member.to_owned());
+                    } else if version.generation > chosen.generation {
+                        report.ahead_without_quorum.push(member.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    report.behind.sort_unstable();
+    report.ahead_without_quorum.sort_unstable();
+    report.unobserved.sort_unstable();
+    Ok(report)
+}
+
+#[cfg(test)]
+mod quorum_snapshot_lag_classification_tests {
+    use super::*;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    #[test]
+    fn minority_newer_versions_are_not_marked_as_committed() {
+        let policy = QuorumPolicy::new(5, 3, 3).unwrap();
+        let v4 = SnapshotVersion { epoch: 7, generation: 4, fingerprint: 44 };
+        let v3 = SnapshotVersion { generation: 3, fingerprint: 33, ..v4 };
+        let v5 = SnapshotVersion { generation: 5, fingerprint: 55, ..v4 };
+        let members = ["e", "d", "c", "b", "a"];
+        let report = classify_quorum_snapshot_lag(
+            policy, &members,
+            &[("a", v4), ("b", v4), ("c", v4), ("d", v3), ("e", v5)],
+        ).unwrap();
+        assert_eq!(report.confirmed, Some(v4));
+        assert_eq!(report.behind, ["d"]);
+        assert_eq!(report.ahead_without_quorum, ["e"]);
+        assert!(report.unobserved.is_empty());
+        let report = classify_quorum_snapshot_lag(
+            policy, &members,
+            &[("a", v4), ("b", v4), ("c", v4), ("d", v3)],
+        ).unwrap();
+        assert_eq!(report.confirmed, Some(v4));
+        assert_eq!(report.behind, ["d"]);
+        assert_eq!(report.unobserved, ["e"]);
+    }
+
+    #[test]
+    fn no_quorum_never_labels_a_replica_safe_to_repair() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let v1 = SnapshotVersion { epoch: 1, generation: 1, fingerprint: 10 };
+        let v2 = SnapshotVersion { generation: 2, fingerprint: 20, ..v1 };
+        let report = classify_quorum_snapshot_lag(
+            policy, &["a", "b", "c"], &[("a", v1), ("b", v2)],
+        ).unwrap();
+        assert_eq!(report.confirmed, None);
+        assert!(report.behind.is_empty());
+        assert!(report.ahead_without_quorum.is_empty());
+        assert_eq!(report.unobserved, ["c"]);
+    }
+
+    #[test]
+    fn conflicting_history_unknown_nodes_and_duplicate_reports_fail_closed() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let v1 = SnapshotVersion { epoch: 1, generation: 1, fingerprint: 10 };
+        for reports in [
+            vec![("a", v1), ("b", SnapshotVersion { fingerprint: 11, ..v1 })],
+            vec![("a", v1), ("a", v1)],
+            vec![("missing", v1)],
+        ] {
+            assert!(classify_quorum_snapshot_lag(
+                policy, &["a", "b", "c"], &reports,
+            ).is_err());
+        }
+    }
+}
