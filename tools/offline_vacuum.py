@@ -66,6 +66,11 @@ def plan(database, keep=3):
             if scanned > MAX_GENERATIONS:
                 raise ValueError(f"invalid generation inventory: {versions}")
             if entry.name.startswith(".pending-"):
+                # Interrupted staging directories are safe to leave alone.
+                # Symlinks and files with the same prefix are not expected
+                # snapshot state and must fail closed before any deletion.
+                if not real_directory(entry):
+                    raise ValueError(f"invalid pending generation entry: {entry}")
                 continue
             if not GENERATION.fullmatch(entry.name) or not real_directory(entry):
                 raise ValueError(f"unexpected snapshot generation entry: {entry}")
