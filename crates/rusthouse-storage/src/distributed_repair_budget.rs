@@ -114,6 +114,27 @@ fn plan_ranked_repairs<'a>(
         }
         return selected;
     }
+    if job_limit <= 8 {
+        // When the entire queue fits the byte budget, priority determines
+        // the exact answer. Keep only the best few borrowed jobs rather than
+        // allocating a full ranking for thousands of pending repairs.
+        let total = eligible.clone().try_fold(0u64, |sum, job| {
+            sum.checked_add(job.bytes)
+        });
+        if total.is_some_and(|bytes| bytes <= byte_budget) {
+            let mut best: Vec<&RepairJob> = Vec::with_capacity(job_limit);
+            for job in eligible {
+                let position = best.partition_point(|prior| repair_priority(prior, job).is_lt());
+                if position < job_limit {
+                    best.insert(position, job);
+                    if best.len() > job_limit {
+                        best.pop();
+                    }
+                }
+            }
+            return best.into_iter().cloned().collect();
+        }
+    }
     let mut ranked: Vec<&RepairJob> = eligible.collect();
     if job_limit.saturating_mul(4) < ranked.len() {
         // Keep widening only when high-priority repairs exhaust the byte
@@ -872,5 +893,55 @@ mod small_targeted_repair_validation_tests {
         assert_eq!(plan_targeted_repairs(&jobs, &targets, 16, 8).unwrap().len(), 8);
         jobs.push(job("s0", "n1", 1, 1));
         assert!(plan_targeted_repairs(&jobs, &targets, 16, 8).is_err());
+    }
+}
+
+#[cfg(test)]
+mod inline_small_repair_queue_reference_tests {
+    use super::*;
+
+    fn jobs(count: usize) -> Vec<RepairJob> {
+        (0..count).map(|index| RepairJob {
+            shard: format!("shard_{index:05}"),
+            bytes: ((index * 37) % 97) as u64,
+            missing_replicas: (1 + ((index * 11) % 6)) as u8,
+        }).collect()
+    }
+
+    fn reference(jobs: &[RepairJob], budget: u64, limit: usize) -> Vec<RepairJob> {
+        let mut ranked = jobs.to_vec();
+        ranked.sort_unstable_by(repair_priority);
+        let mut remaining = budget;
+        let mut selected = Vec::new();
+        for job in ranked {
+            if selected.len() == limit { break; }
+            if job.bytes <= remaining {
+                remaining -= job.bytes;
+                selected.push(job);
+            }
+        }
+        selected
+    }
+
+    #[test]
+    fn all_affordable_large_queues_match_full_priority_sort() {
+        for count in [0, 1, 2, 3, 8, 9, 100, 4096] {
+            let jobs = jobs(count);
+            for limit in [3, 4, 5, 8] {
+                assert_eq!(plan_repairs(&jobs, u64::MAX, limit).unwrap(),
+                    reference(&jobs, u64::MAX, limit), "count={count} limit={limit}");
+            }
+        }
+    }
+
+    #[test]
+    fn constrained_budget_still_preserves_greedy_priority_skips() {
+        let jobs = jobs(600);
+        for budget in [0, 1, 50, 500, 10_000] {
+            for limit in [3, 4, 8] {
+                assert_eq!(plan_repairs(&jobs, budget, limit).unwrap(),
+                    reference(&jobs, budget, limit), "budget={budget} limit={limit}");
+            }
+        }
     }
 }
