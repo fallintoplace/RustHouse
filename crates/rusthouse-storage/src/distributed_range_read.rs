@@ -229,9 +229,23 @@ pub fn read_object_ranges_checked(
         }
         return Ok(vec![chunk]);
     }
-    let spans = ranges.iter().map(|&(offset, length, _)| (offset, length))
-        .collect::<Vec<_>>();
-    let chunks = read_object_ranges(path, &spans, max_total_bytes)?;
+    // Keep up to eight checked range spans in a stack array rather than
+    // allocating a Vec for small read batches.
+    const INLINE_RANGES: usize = 8;
+    let mut inline = [(0u64, 0usize); INLINE_RANGES];
+    let owned = (ranges.len() > INLINE_RANGES).then(|| {
+        ranges.iter().map(|&(offset, length, _)| (offset, length))
+            .collect::<Vec<_>>()
+    });
+    let spans: &[(u64, usize)] = if let Some(ref spans) = owned {
+        spans
+    } else {
+        for (slot, &(offset, length, _)) in inline.iter_mut().zip(ranges) {
+            *slot = (offset, length);
+        }
+        &inline[..ranges.len()]
+    };
+    let chunks = read_object_ranges(path, spans, max_total_bytes)?;
     for (chunk, &(_, _, expected_crc32c)) in chunks.iter().zip(ranges) {
         if crate::distributed_crc32c::crc32c(chunk) != expected_crc32c {
             return Err(io::Error::new(
@@ -742,5 +756,47 @@ mod small_scattered_disjoint_tests {
         let overlapping = read_object_ranges(&path, &[(4, 4), (6, 4)], 8).unwrap();
         assert_eq!(overlapping, vec![b"efgh".to_vec(), b"ghij".to_vec()]);
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod inline_checked_range_tests {
+    use super::*;
+
+    #[test]
+    fn inline_and_heap_range_paths_preserve_order_and_individual_checksums() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-checked-ranges-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("object.bin");
+        let bytes = (0..4096usize).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        std::fs::write(&path, &bytes).unwrap();
+        for count in [0usize, 1, 2, 8, 9, 16] {
+            let ranges = (0..count)
+                .map(|index| {
+                    let offset = ((count - index) * 7) as u64;
+                    let len = 23usize;
+                    let crc = crate::distributed_crc32c::crc32c(
+                        &bytes[offset as usize..offset as usize + len]
+                    );
+                    (offset, len, crc)
+                })
+                .collect::<Vec<_>>();
+            let actual = read_object_ranges_checked(&path, &ranges, 4096).unwrap();
+            assert_eq!(actual.len(), count);
+            for (result, &(offset, len, _)) in actual.iter().zip(&ranges) {
+                assert_eq!(result, &bytes[offset as usize..offset as usize + len]);
+            }
+            if !ranges.is_empty() {
+                let mut corrupt = ranges;
+                corrupt[0].2 ^= 1;
+                assert!(read_object_ranges_checked(&path, &corrupt, 4096).is_err());
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
