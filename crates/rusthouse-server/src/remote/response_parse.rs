@@ -31,27 +31,40 @@ pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
         || !name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        || value
-            .bytes()
-            .any(|byte| byte.is_ascii_control() && byte != b'\t')
+        || value.chars().any(|ch| {
+            (ch.is_control() && ch != '\t')
+                || (ch.is_whitespace() && ch != ' ' && ch != '\t')
+        })
     {
         return Err("invalid peer header".into());
     }
-    Ok((name, value.trim()))
+    // HTTP optional whitespace is SP / HTAB only. Unicode trim() would
+    // silently turn non-HTTP whitespace into a valid numeric header value.
+    Ok((name, value.trim_matches(|ch| ch == ' ' || ch == '\t')))
 }
 
 pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
-    if !is_ascii_decimal(value) {
+    if value.is_empty() {
         return Err("invalid peer Content-Length".into());
     }
-    value
-        .parse::<usize>()
-        .map_err(|_| "invalid peer Content-Length".into())
+    // Validate and accumulate in one scan. Headers are untrusted, so neither
+    // signs nor arithmetic overflow may be accepted by the peer parser.
+    let mut length = 0usize;
+    for byte in value.bytes() {
+        if !byte.is_ascii_digit() {
+            return Err("invalid peer Content-Length".into());
+        }
+        length = length
+            .checked_mul(10)
+            .and_then(|length| length.checked_add(usize::from(byte - b'0')))
+            .ok_or("invalid peer Content-Length")?;
+    }
+    Ok(length)
 }
 
 fn parse_required_peer_headers<'a>(
     lines: impl Iterator<Item = &'a str>,
-) -> Result<(usize, String, bool), String> {
+) -> Result<(usize, &'a str, bool), String> {
     let mut length = None;
     let mut content_type = None;
     let mut compressed = None;
@@ -69,7 +82,7 @@ fn parse_required_peer_headers<'a>(
             if value.is_empty() {
                 return Err("empty peer Content-Type".into());
             }
-            content_type = Some(value.to_owned());
+            content_type = Some(value);
         } else if name.eq_ignore_ascii_case("content-encoding") {
             if compressed.is_some() {
                 return Err("duplicate peer Content-Encoding".into());
@@ -87,10 +100,10 @@ fn parse_required_peer_headers<'a>(
     Ok((length, content_type, compressed.unwrap_or(false)))
 }
 
-struct ResponseHead {
+struct ResponseHead<'a> {
     body_start: usize,
     status: u16,
-    content_type: String,
+    content_type: &'a str,
     body_length: usize,
     compressed: bool,
 }
@@ -109,7 +122,7 @@ fn decode_compressed_peer_body(compressed: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Parse a complete HTTP response head without waiting for the peer to close
 /// its connection. The advertised body length is untrusted and remains bounded.
-fn response_head(raw: &[u8]) -> Result<Option<ResponseHead>, String> {
+fn response_head(raw: &[u8]) -> Result<Option<ResponseHead<'_>>, String> {
     // A malicious peer must not force an unbounded delimiter scan before
     // the 8 KiB header cap is enforced. The terminator must fit in this
     // bounded prefix, even when body bytes were already buffered.
@@ -163,7 +176,7 @@ pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
     };
     Ok(PeerResponse {
         status: head.status,
-        content_type: head.content_type,
+        content_type: head.content_type.to_owned(),
         body,
     })
 }
@@ -175,16 +188,23 @@ pub(super) fn parse_response_owned(mut raw: Vec<u8>) -> Result<PeerResponse, Str
     if raw.len() != head.body_start + head.body_length {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
-    let body = if head.compressed {
-        decode_compressed_peer_body(&raw[head.body_start..])?
+    // Only completed responses need an owned Content-Type. Copy all fields
+    // needed after compacting before releasing the network-buffer borrow.
+    let content_type = head.content_type.to_owned();
+    let status = head.status;
+    let body_start = head.body_start;
+    let body_length = head.body_length;
+    let compressed = head.compressed;
+    let body = if compressed {
+        decode_compressed_peer_body(&raw[body_start..])?
     } else {
-        raw.copy_within(head.body_start.., 0);
-        raw.truncate(head.body_length);
+        raw.copy_within(body_start.., 0);
+        raw.truncate(body_length);
         raw
     };
     Ok(PeerResponse {
-        status: head.status,
-        content_type: head.content_type,
+        status,
+        content_type,
         body,
     })
 }
@@ -295,5 +315,74 @@ mod bounded_response_header_scan_tests {
         wire.extend(std::iter::repeat_n(b'x', 200_000));
         assert_eq!(expected_wire_length(&wire).unwrap(), Some(wire.len()));
         assert_eq!(parse_response_owned(wire).unwrap().body.len(), 200_000);
+    }
+}
+
+#[cfg(test)]
+mod borrowed_peer_head_tests {
+    use super::*;
+
+    #[test]
+    fn head_borrows_content_type_directly_from_network_buffer() {
+        let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 3\r\n\r\nabc";
+        let parsed = response_head(wire).unwrap().unwrap();
+        let label = b"text/plain; charset=utf-8";
+        let start = wire.windows(label.len()).position(|span| span == label).unwrap();
+        assert_eq!(parsed.content_type.as_bytes().as_ptr(), wire[start..].as_ptr());
+        assert_eq!(expected_wire_length(wire).unwrap(), Some(wire.len()));
+        let owned = parse_response_owned(wire.to_vec()).unwrap();
+        assert_eq!(owned.content_type, "text/plain; charset=utf-8");
+        assert_eq!(owned.body, b"abc");
+    }
+
+    #[test]
+    fn uncompleted_header_rejects_duplicate_content_type() {
+        let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
+        assert!(expected_wire_length(wire).is_err());
+    }
+}
+
+#[cfg(test)]
+mod strict_peer_header_ows_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unicode_whitespace_instead_of_normalizing_it() {
+        for value in [
+            "Content-Length:\u{00a0}4",
+            "Content-Length:4\u{2003}",
+            "Content-Type:application\u{2028}json",
+            "Content-Type:\u{0085}text/plain",
+        ] {
+            assert!(parse_peer_header(value).is_err(), "{value:?}");
+        }
+        assert_eq!(
+            parse_peer_header("Content-Length: \t 42 \t").unwrap(),
+            ("Content-Length", "42"),
+        );
+        assert_eq!(
+            parse_peer_header("X-Trace: a\tb").unwrap(),
+            ("X-Trace", "a\tb"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod one_pass_content_length_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_decimal_lengths_and_rejects_invalid_or_overflowing_headers() {
+        for (input, expected) in [("0", 0), ("0003", 3), ("8192", 8192)] {
+            assert_eq!(parse_content_length(input).unwrap(), expected);
+        }
+        for invalid in ["", " 3", "+3", "-1", "2 ", "2\n", "2a"] {
+            assert!(parse_content_length(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(parse_content_length(&format!("{}0", usize::MAX)).is_err());
+        assert_eq!(
+            parse_content_length(&usize::MAX.to_string()).unwrap(),
+            usize::MAX
+        );
     }
 }

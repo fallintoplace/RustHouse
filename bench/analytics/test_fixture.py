@@ -33,6 +33,25 @@ class ClickBenchFixtureTests(unittest.TestCase):
                     connection.execute("SELECT count(*) FROM hits").fetchone()[0], 1025
                 )
 
+    def test_dimension_cache_preserves_original_random_sequence(self):
+        import random
+        from datetime import date, timedelta
+
+        count, seed = 513, 27
+        rng = random.Random(seed)
+        start = date(2013, 7, 1)
+        original = []
+        for _ in range(count):
+            engine = rng.randrange(0, 5)
+            original.append((
+                engine, rng.choice((320, 768, 1024, 1440, 1920)),
+                rng.randrange(1, max(2, count // 3)),
+                f"term-{rng.randrange(0, 97)}",
+                (start + timedelta(days=rng.randrange(31))).isoformat(),
+                rng.randrange(0, 10), f"model-{rng.randrange(0, 8)}",
+            ))
+        self.assertEqual(list(records(count, seed)), original)
+
     def test_seed_is_repeatable_and_empty_fixture_rejected(self):
         self.assertEqual(list(records(10, 7)), list(records(10, 7)))
         with tempfile.TemporaryDirectory() as root:

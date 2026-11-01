@@ -4,8 +4,8 @@ use rusthouse_server::health;
 use rusthouse_server::{
     Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
 };
-use std::io::{self, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -51,7 +51,7 @@ fn parse_max_connections(value: &str) -> io::Result<usize> {
 }
 
 fn usage() -> &'static str {
-    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--max-connections <1-64>] [--peer IPv4:<port>]... [--bind <IPv4>] [--allow-private-network]\n\
+    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--max-connections <1-64>] [--peer IPv4:<port>]... [--bind <IPv4-or-IPv6-loopback>] [--allow-private-network]\n\
      Listens on 127.0.0.1 by default. Private networking requires opt-in. No TLS or authentication.\n"
 }
 
@@ -70,6 +70,11 @@ fn parse_header(line: &str) -> Result<(&str, &str), Response> {
         return Err(Response::text("400 Bad Request", "invalid HTTP header\n"));
     }
     Ok((key, value))
+}
+
+/// HTTP optional whitespace is SP or HTAB, not Unicode whitespace.
+fn http_ows(value: &str) -> &str {
+    value.trim_matches([' ', '\t'])
 }
 
 fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
@@ -102,8 +107,31 @@ fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
 /// Only numeric bind addresses (and localhost for loopback) are trusted as
 /// Host values. This prevents DNS rebinding against an unauthenticated server.
 fn host_matches_listener(host: &str, listener: SocketAddr) -> bool {
-    let (name, port) = match host.rsplit_once(':') {
-        Some((name, port)) => (name, Some(port)),
+    if let Some(value) = host.strip_prefix('[') {
+        // RFC 3986 requires IPv6 address literals in HTTP Host to be
+        // bracketed. Compare addresses, not spellings: compressed and
+        // expanded forms refer to the same bound listener.
+        let Some((address, suffix)) = value.split_once(']') else {
+            return false;
+        };
+        let port = if suffix.is_empty() {
+            None
+        } else if let Some(port) = suffix.strip_prefix(':') {
+            Some(port)
+        } else {
+            return false;
+        };
+        let SocketAddr::V6(bound) = listener else {
+            return false;
+        };
+        return address.parse::<std::net::Ipv6Addr>().ok() == Some(*bound.ip())
+            && port.is_none_or(|value| value.parse::<u16>().ok() == Some(bound.port()));
+    }
+    // Unbracketed IPv6 is not an HTTP authority. A textual IPv4 address or
+    // loopback hostname may have a single optional port.
+    let (name, port) = match host.split_once(':') {
+        Some((name, port)) if !port.contains(':') => (name, Some(port)),
+        Some(_) => return false,
         None => (host, None),
     };
     if port.is_some_and(|port| port.parse::<u16>().ok() != Some(listener.port())) {
@@ -134,6 +162,91 @@ fn request_read_error(error: io::Error, incomplete: &'static str) -> Response {
     }
 }
 
+fn read_body_chunk_with_deadline(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+    started: Instant,
+    deadline: Duration,
+) -> Result<usize, Response> {
+    loop {
+        request_remaining(started, deadline)?;
+        match reader.read(buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(request_read_error(error, "incomplete HTTP request body\n"));
+            }
+            Ok(bytes) => return Ok(bytes),
+        }
+    }
+}
+
+/// Check an HTTP quality value without floating-point parsing. HTTP/1.1
+/// quality values have at most three fractional digits and range from 0 to 1.
+fn positive_http_quality(value: &str) -> bool {
+    let raw = value.as_bytes();
+    match raw {
+        [b'1'] => true,
+        [b'1', b'.', digits @ ..]
+            if digits.len() <= 3 && digits.iter().all(|&digit| digit == b'0') => true,
+        [b'0'] => false,
+        [b'0', b'.', digits @ ..]
+            if digits.len() <= 3 && digits.iter().all(u8::is_ascii_digit) =>
+        {
+            digits.iter().any(|&digit| digit != b'0')
+        }
+        _ => false,
+    }
+}
+
+/// Only explicit positive acceptance enables the private peer encoding.
+/// Wildcards alone do not negotiate our unregistered, internal LZ4 format.
+fn accepts_rusthouse_lz4(header: &str) -> bool {
+    let mut accepted = false;
+    for entry in header.split(',') {
+        let mut parts = entry.split(';');
+        let name = parts.next().unwrap_or("").trim_matches([' ', '\t']);
+        if !name.eq_ignore_ascii_case("x-rusthouse-lz4") {
+            continue;
+        }
+        let positive = match parts.next() {
+            None => true,
+            Some(parameter) => {
+                let parameter = parameter.trim_matches([' ', '\t']);
+                match parameter.split_once('=') {
+                    Some((name, value)) if name.eq_ignore_ascii_case("q") =>
+                        positive_http_quality(value),
+                    _ => false,
+                }
+            }
+        };
+        // Duplicate or malformed preferences must not silently override an
+        // explicit rejection. Do not accept extension parameters either.
+        if !positive || parts.next().is_some() {
+            return false;
+        }
+        accepted = true;
+    }
+    accepted
+}
+
+/// Advance only through the header terminator. A buffered read may already
+/// contain request-body bytes, which must remain available to the body reader.
+fn append_header_chunk(head: &mut Vec<u8>, bytes: &[u8]) -> Result<(usize, bool), Response> {
+    for (index, &byte) in bytes.iter().enumerate() {
+        head.push(byte);
+        if head.len() > MAX_HEADER_BYTES {
+            return Err(Response::text(
+                "413 Payload Too Large",
+                "HTTP headers too large\n",
+            ));
+        }
+        if head.ends_with(b"\r\n\r\n") {
+            return Ok((index + 1, true));
+        }
+    }
+    Ok((bytes.len(), false))
+}
+
 fn read_request_with_deadline(
     stream: &mut TcpStream,
     deadline: Duration,
@@ -141,23 +254,30 @@ fn read_request_with_deadline(
     let started = Instant::now();
     let mut input = BufReader::new(stream);
     let mut head = Vec::new();
-    // Read only until the headers end, without consuming the beginning of the body.
-    while !head.ends_with(b"\r\n\r\n") {
+    // Refresh the socket timeout per buffered network read instead of per
+    // header byte. Byte-by-byte read_exact previously called setsockopt once
+    // for every byte, even for an already-buffered 8 KiB request header.
+    loop {
         let remaining = request_remaining(started, deadline)?;
         input
             .get_mut()
             .set_read_timeout(Some(remaining))
             .map_err(|error| request_read_error(error, "cannot set request read timeout\n"))?;
-        let mut byte = [0u8];
-        input
-            .read_exact(&mut byte)
-            .map_err(|error| request_read_error(error, "incomplete HTTP request headers\n"))?;
-        head.push(byte[0]);
-        if head.len() > MAX_HEADER_BYTES {
-            return Err(Response::text(
-                "413 Payload Too Large",
-                "HTTP headers too large\n",
-            ));
+        let (consumed, complete) = {
+            let available = input.fill_buf().map_err(|error| {
+                request_read_error(error, "incomplete HTTP request headers\n")
+            })?;
+            if available.is_empty() {
+                return Err(Response::text(
+                    "400 Bad Request",
+                    "incomplete HTTP request headers\n",
+                ));
+            }
+            append_header_chunk(&mut head, available)?
+        };
+        input.consume(consumed);
+        if complete {
+            break;
         }
     }
     let header_text = std::str::from_utf8(&head)
@@ -178,7 +298,7 @@ fn read_request_with_deadline(
         }
         let (key, value) = parse_header(line)?;
         if key.eq_ignore_ascii_case("host") {
-            if host.replace(value.trim()).is_some() {
+            if host.replace(http_ows(value)).is_some() {
                 return Err(Response::text("400 Bad Request", "duplicate Host header\n"));
             }
         }
@@ -195,7 +315,7 @@ fn read_request_with_deadline(
                     "duplicate Content-Length\n",
                 ));
             }
-            let value = value.trim();
+            let value = http_ows(value);
             if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(Response::text(
                     "400 Bad Request",
@@ -214,7 +334,7 @@ fn read_request_with_deadline(
                 return Err(Response::text("400 Bad Request", "duplicate Accept-Encoding\n"));
             }
             seen_accept = true;
-            accept_lz4 = value.trim() == "x-rusthouse-lz4";
+            accept_lz4 = accepts_rusthouse_lz4(value);
         }
     }
     let listener = input
@@ -262,9 +382,9 @@ fn read_request_with_deadline(
             .get_mut()
             .set_read_timeout(Some(remaining))
             .map_err(|error| request_read_error(error, "cannot set request read timeout\n"))?;
-        let count = input
-            .read(&mut body[received..])
-            .map_err(|error| request_read_error(error, "incomplete HTTP request body\n"))?;
+        let count = read_body_chunk_with_deadline(
+            &mut input, &mut body[received..], started, deadline,
+        )?;
         if count == 0 {
             return Err(Response::text(
                 "400 Bad Request",
@@ -370,6 +490,16 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let _ = respond(&mut stream, response, accept_lz4);
 }
 
+/// Allow IPv6 only on ::1 without extending the experimental
+/// unauthenticated peer transport beyond the existing private IPv4 policy.
+fn permitted_listener_bind(bind: IpAddr, allow_private_network: bool) -> bool {
+    match bind {
+        IpAddr::V4(address) => address == Ipv4Addr::LOCALHOST
+            || (allow_private_network && cluster::is_private_address(address)),
+        IpAddr::V6(address) => address == Ipv6Addr::LOCALHOST,
+    }
+}
+
 fn main() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
     let mut port = 8123u16;
@@ -378,7 +508,7 @@ fn main() -> io::Result<()> {
     let mut max_rows = 10_000usize;
     let mut max_connections = MAX_CONNECTIONS;
     let mut peers = Vec::new();
-    let mut bind = Ipv4Addr::LOCALHOST;
+    let mut bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let mut allow_private_network = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -422,9 +552,9 @@ fn main() -> io::Result<()> {
             "--bind" => {
                 bind = args
                     .next()
-                    .ok_or_else(|| io::Error::other("missing bind IPv4 address"))?
-                    .parse::<Ipv4Addr>()
-                    .map_err(|_| io::Error::other("bind address must be numeric IPv4"))?;
+                    .ok_or_else(|| io::Error::other("missing bind IP address"))?
+                    .parse::<IpAddr>()
+                    .map_err(|_| io::Error::other("bind address must be numeric IP"))?;
             }
             "--allow-private-network" => allow_private_network = true,
             "--max-rows" => {
@@ -448,10 +578,9 @@ fn main() -> io::Result<()> {
     if part.is_some() && database.is_some() {
         return Err(io::Error::other("--part and --database cannot be combined"));
     }
-    if bind != Ipv4Addr::LOCALHOST && (!allow_private_network || !cluster::is_private_address(bind))
-    {
+    if !permitted_listener_bind(bind, allow_private_network) {
         return Err(io::Error::other(
-            "non-loopback bind requires --allow-private-network and a private IPv4 address",
+            "non-loopback bind requires --allow-private-network and private IPv4; IPv6 supports only ::1",
         ));
     }
     let peers: Vec<Peer> = peers
@@ -465,7 +594,7 @@ fn main() -> io::Result<()> {
     if cluster
         .peers()
         .iter()
-        .any(|peer| *peer.address().ip() == bind && peer.port() == port)
+        .any(|peer| IpAddr::V4(*peer.address().ip()) == bind && peer.port() == port)
     {
         return Err(io::Error::other("server cannot be its own peer"));
     }
@@ -475,7 +604,7 @@ fn main() -> io::Result<()> {
         max_rows,
     });
     let listener = TcpListener::bind((bind, port))?;
-    eprintln!("RustHouse read-only HTTP listening on http://{bind}:{port}");
+    eprintln!("RustHouse read-only HTTP listening on http://{}", listener.local_addr()?);
     let active = Arc::new(AtomicUsize::new(0));
     for accepted in listener.incoming() {
         let stream = match accepted {
@@ -527,6 +656,74 @@ fn main() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod ipv6_bind_policy_tests {
+    use super::*;
+
+    #[test]
+    fn enables_ipv6_loopback_only_without_expanding_private_network_access() {
+        for allow_private in [false, true] {
+            assert!(permitted_listener_bind("127.0.0.1".parse().unwrap(), allow_private));
+            assert!(permitted_listener_bind("::1".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("::".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("fc00::1".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("fe80::1".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("8.8.8.8".parse().unwrap(), allow_private));
+        }
+        assert!(!permitted_listener_bind("10.1.2.3".parse().unwrap(), false));
+        assert!(permitted_listener_bind("10.1.2.3".parse().unwrap(), true));
+    }
+}
+
+#[cfg(test)]
+mod buffered_header_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_body_after_header_terminator_on_any_buffer_boundary() {
+        let request = b"POST / HTTP/1.1\r\nHost: localhost:8123\r\nContent-Length: 4\r\n\r\nBODY";
+        let terminator = request.windows(4).position(|bytes| bytes == b"\r\n\r\n").unwrap() + 4;
+        for split in 1..request.len() {
+            let mut header = Vec::new();
+            let (first, complete) = append_header_chunk(&mut header, &request[..split]).unwrap();
+            if complete {
+                assert_eq!(first, terminator);
+                assert_eq!(header.len(), terminator);
+            } else {
+                assert_eq!(first, split);
+                let (second, complete) = append_header_chunk(&mut header, &request[split..]).unwrap();
+                assert!(complete);
+                assert_eq!(split + second, terminator);
+                assert_eq!(header.len(), terminator);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_header_budget_overflow_before_advancing_into_body() {
+        let mut head = Vec::new();
+        let oversized = vec![b'x'; MAX_HEADER_BYTES + 1];
+        assert!(append_header_chunk(&mut head, &oversized).is_err());
+        assert_eq!(head.len(), MAX_HEADER_BYTES + 1);
+    }
+}
+
+#[cfg(test)]
+mod http_ows_smuggling_tests {
+    use super::*;
+
+    #[test]
+    fn strips_only_http_optional_whitespace_from_control_headers() {
+        assert_eq!(http_ows(" \t123\t "), "123");
+        for invalid in ["\u{a0}123", "123\u{2003}", "\u{2002}123"] {
+            assert_eq!(http_ows(invalid), invalid);
+            assert!(!http_ows(invalid).bytes().all(|byte| byte.is_ascii_digit()));
+        }
+        let (_, value) = parse_header("Content-Length:\u{a0}123").unwrap();
+        assert!(!http_ows(value).bytes().all(|byte| byte.is_ascii_digit()));
+    }
 }
 
 #[cfg(test)]
@@ -625,6 +822,46 @@ mod accept_error_policy_tests {
         }
         for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
             assert!(!retryable_accept_error(kind));
+        }
+    }
+}
+
+#[cfg(test)]
+mod accept_encoding_preferences_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_explicit_lz4_preferences_in_normal_header_lists() {
+        for value in [
+            "x-rusthouse-lz4",
+            "X-RUSTHOUSE-LZ4",
+            "gzip, X-RUSTHOUSE-LZ4",
+            "gzip;q=1, x-rusthouse-lz4; q=0.5",
+            "x-rusthouse-lz4;q=1.000",
+            "x-rusthouse-lz4;q=0.001",
+            "x-rusthouse-lz4;q=1.",
+            "x-rusthouse-lz4;Q=0.75, gzip",
+        ] {
+            assert!(accepts_rusthouse_lz4(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn disabled_invalid_or_implicit_lz4_is_not_negotiated() {
+        for value in [
+            "",
+            "gzip",
+            "*",
+            "x-rusthouse-lz4;q=0",
+            "x-rusthouse-lz4;q=0.000",
+            "x-rusthouse-lz4;q=1.001",
+            "x-rusthouse-lz4;q=0.0001",
+            "x-rusthouse-lz4;q=2",
+            "x-rusthouse-lz4;quality=1",
+            "x-rusthouse-lz4;q=1;version=1",
+            "x-rusthouse-lz4;q=1, x-rusthouse-lz4;q=0",
+        ] {
+            assert!(!accepts_rusthouse_lz4(value), "{value}");
         }
     }
 }
@@ -859,5 +1096,64 @@ mod host_validation_tests {
         assert!(host_matches_listener("10.1.2.3:8080", private));
         assert!(!host_matches_listener("localhost:8080", private));
         assert!(!host_matches_listener("10.1.2.4:8080", private));
+    }
+
+    #[test]
+    fn accepts_bracketed_ipv6_without_disabling_host_validation() {
+        let listener: SocketAddr = "[::1]:8123".parse().unwrap();
+        for host in ["[::1]", "[::1]:8123", "[0:0:0:0:0:0:0:1]:8123"] {
+            assert!(host_matches_listener(host, listener), "{host}");
+        }
+        for host in [
+            "::1", "::1:8123", "[::1]:8124", "[::2]:8123",
+            "[::1]garbage", "[::1]:", "[::1]:1234:8123",
+            "[localhost]:8123", "[::1", "[::1]]:8123",
+        ] {
+            assert!(!host_matches_listener(host, listener), "{host}");
+        }
+        let v4: SocketAddr = "127.0.0.1:8123".parse().unwrap();
+        assert!(!host_matches_listener("[::1]:8123", v4));
+        assert!(host_matches_listener("localhost:8123", listener));
+    }
+}
+
+#[cfg(test)]
+mod interrupted_request_body_tests {
+    use super::*;
+
+    struct InterruptedOnce(bool);
+
+    impl Read for InterruptedOnce {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if !self.0 {
+                self.0 = true;
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            buffer[..2].copy_from_slice(b"OK");
+            Ok(2)
+        }
+    }
+
+    #[test]
+    fn interrupted_body_read_retries_without_losing_bytes() {
+        let mut reader = InterruptedOnce(false);
+        let mut result = [0u8; 2];
+        assert_eq!(
+            read_body_chunk_with_deadline(
+                &mut reader, &mut result, Instant::now(), Duration::from_secs(5),
+            ).ok().expect("interrupted body read should succeed"),
+            2,
+        );
+        assert_eq!(&result, b"OK");
+    }
+
+    #[test]
+    fn expired_body_deadline_fails_before_reading() {
+        let mut reader = InterruptedOnce(false);
+        let mut result = [0u8; 2];
+        assert!(read_body_chunk_with_deadline(
+            &mut reader, &mut result, Instant::now(), Duration::ZERO,
+        ).is_err());
+        assert!(!reader.0);
     }
 }

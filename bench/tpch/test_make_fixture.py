@@ -39,6 +39,34 @@ class FixtureTests(unittest.TestCase):
             self.assertEqual(report["matched_rows"], count)
             self.assertEqual(report["revenue_bps"], revenue)
 
+    def test_invalid_rows_and_seeds_do_not_create_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "fixture"
+            for rows in (True, 1.5, -1, 1_000_001, "10"):
+                with self.subTest(rows=rows), self.assertRaisesRegex(ValueError, "rows"):
+                    generate(directory, rows, 42)
+                self.assertFalse(directory.exists())
+            for seed in (True, 1.5, -1, 1 << 64, "7"):
+                with self.subTest(seed=seed), self.assertRaisesRegex(ValueError, "seed"):
+                    generate(directory, 10, seed)
+                self.assertFalse(directory.exists())
+
+    def test_symlink_output_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "fixture"
+            directory.mkdir()
+            protected = Path(root) / "protected.txt"
+            protected.write_text("keep")
+            try:
+                (directory / "lineitem.tsv").symlink_to(protected)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            with self.assertRaisesRegex(ValueError, "symlinked"):
+                generate(directory, 10, 7)
+            self.assertEqual(protected.read_text(), "keep")
+            self.assertFalse((directory / "queries").exists())
+
+
     def test_rejects_empty_input(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(ValueError):

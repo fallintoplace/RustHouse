@@ -50,6 +50,27 @@ class ResourceProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "query exited 17"):
                 profile(sys.executable, ".", "SELECT 1", timeout=3, sample_ms=10)
 
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux")
+    def test_budgets_fail_closed_when_proc_metrics_are_unavailable(self):
+        real_popen = subprocess.Popen
+
+        def launch(_args, **kwargs):
+            return real_popen(
+                [sys.executable, "-c", "import time; time.sleep(0.15)"], **kwargs
+            )
+
+        with patch("bench.scale.query_resource_profile.subprocess.Popen",
+                   side_effect=launch), patch(
+                       "bench.scale.query_resource_profile.Path.read_text",
+                       side_effect=OSError("proc denied")):
+            with self.assertRaisesRegex(RuntimeError, "RSS budget cannot be verified"):
+                profile("binary", "database", "SELECT 1", timeout=3,
+                        sample_ms=5, max_rss_mib=2048)
+            with self.assertRaisesRegex(RuntimeError, "physical read budget cannot be verified"):
+                profile("binary", "database", "SELECT 1", timeout=3,
+                        sample_ms=5, max_read_mib=2048)
+
+
     def test_budget_input_validation(self):
         if sys.platform == "linux":
             with self.assertRaises(ValueError):

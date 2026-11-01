@@ -2,6 +2,8 @@
 import argparse
 import json
 import math
+import os
+import stat
 from pathlib import Path
 
 from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
@@ -78,6 +80,8 @@ def compare(baseline, candidate, *, max_slowdown_percent=10,
         if not all(type(x) in (int, float) and math.isfinite(x) and x > 0 for x in (old, new)):
             raise ValueError(f"{name} has invalid median timings")
         slowdown = 100 * (new / old - 1)
+        if not math.isfinite(slowdown):
+            raise ValueError(f"{name}: median slowdown ratio overflows")
         old_p90, new_p90 = a.get("p90_seconds"), b.get("p90_seconds")
         tail_slowdown = None
         if old_p90 is not None or new_p90 is not None:
@@ -85,6 +89,8 @@ def compare(baseline, candidate, *, max_slowdown_percent=10,
                        for x, median in ((old_p90, old), (new_p90, new))):
                 raise ValueError(f"{name}: invalid p90 benchmark timings")
             tail_slowdown = 100 * (new_p90 / old_p90 - 1)
+            if not math.isfinite(tail_slowdown):
+                raise ValueError(f"{name}: p90 slowdown ratio overflows")
         if max_tail_slowdown_percent is not None and tail_slowdown is None:
             raise ValueError(f"{name}: explicit tail budget requires p90 samples")
         tail_budget = (max_slowdown_percent if max_tail_slowdown_percent is None
@@ -114,15 +120,36 @@ def _unique_fields(pairs):
     return values
 
 
+def _reject_nonstandard_number(token):
+    raise ValueError(f"nonstandard physical comparison JSON number: {token}")
+
+
 def parse_report(path):
-    return json.loads(_read_bounded_report(path), object_pairs_hook=_unique_fields)
+    return json.loads(_read_bounded_report(path), object_pairs_hook=_unique_fields,
+                      parse_constant=_reject_nonstandard_number)
 
 
 def _read_bounded_report(path):
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("physical comparison report must be a regular non-symlinked file")
-    with path.open("rb") as source:
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("physical report must be a regular non-symlinked file")
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened):
+            raise ValueError("physical report changed before opening")
         contents = source.read(MAX_REPORT_BYTES + 1)
+        finished = os.fstat(source.fileno())
+        if identity(opened) != identity(finished):
+            raise ValueError("physical report changed during read")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError("physical report changed during read")
     if len(contents) > MAX_REPORT_BYTES:
         raise ValueError("benchmark JSON report exceeds 16 MiB")
     return contents.decode("utf-8")

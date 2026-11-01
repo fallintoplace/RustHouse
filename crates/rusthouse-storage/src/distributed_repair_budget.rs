@@ -13,6 +13,7 @@ pub struct RepairJob {
 fn valid_shard(shard: &str) -> bool {
     !shard.is_empty()
         && shard.len() <= 128
+        && shard.as_bytes()[0].is_ascii_alphanumeric()
         && shard
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
@@ -81,7 +82,7 @@ fn select_repairs(
 // Work with borrowed jobs until the scheduler knows which ones fit.
 // This avoids cloning every pending job when only a small batch is selected.
 fn plan_ranked_repairs<'a>(
-    jobs: impl Iterator<Item = &'a RepairJob>,
+    jobs: impl Iterator<Item = &'a RepairJob> + Clone,
     byte_budget: u64,
     job_limit: usize,
 ) -> Vec<RepairJob> {
@@ -95,6 +96,23 @@ fn plan_ranked_repairs<'a>(
             .cloned()
             .into_iter()
             .collect();
+    }
+    if job_limit == 2 {
+        // Select the first priority, then re-scan only jobs affordable after
+        // that reservation. A two-job poll needs no sorting or reference Vec.
+        let Some(first) = eligible.clone().min_by(|left, right| repair_priority(left, right)) else {
+            return Vec::new();
+        };
+        let remaining = byte_budget - first.bytes;
+        let second = eligible
+            .filter(|job| job.shard != first.shard && job.bytes <= remaining)
+            .min_by(|left, right| repair_priority(left, right));
+        let mut selected = Vec::with_capacity(2);
+        selected.push(first.clone());
+        if let Some(second) = second {
+            selected.push(second.clone());
+        }
+        return selected;
     }
     let mut ranked: Vec<&RepairJob> = eligible.collect();
     if job_limit.saturating_mul(4) < ranked.len() {
@@ -266,6 +284,20 @@ pub fn plan_repairs_excluding(
         return Err("too many in-flight repair shards");
     }
     validate_repair_jobs(jobs)?;
+    // A handful of active repairs is common even when the waiting queue is
+    // large. Avoid building a transient hash table for up to four exclusions.
+    if in_flight.len() <= 4 {
+        for (index, &shard) in in_flight.iter().enumerate() {
+            if !valid_shard(shard) || in_flight[..index].contains(&shard) {
+                return Err("invalid or duplicate in-flight repair shard");
+            }
+        }
+        return Ok(plan_ranked_repairs(
+            jobs.iter().filter(|job| !in_flight.contains(&job.shard.as_str())),
+            byte_budget,
+            job_limit,
+        ));
+    }
     let mut excluded = HashSet::with_capacity(in_flight.len());
     for &shard in in_flight {
         if !valid_shard(shard) || !excluded.insert(shard) {
@@ -468,20 +500,36 @@ pub fn plan_targeted_repairs(
             return Err("invalid or duplicate repair destination");
         }
     }
-    let mut pairs = HashSet::with_capacity(jobs.len());
-    let mut shard_state = HashMap::new();
-    for job in jobs {
+    // Common small repair polls need neither a shard map nor a pair set.
+    // All input validation still completes before scheduling any repair.
+    let mut pairs = (jobs.len() > 8).then(|| HashSet::with_capacity(jobs.len()));
+    let mut shard_state = (jobs.len() > 8).then(HashMap::new);
+    for (index, job) in jobs.iter().enumerate() {
+        let duplicate_pair = if let Some(seen) = pairs.as_mut() {
+            !seen.insert((job.shard.as_str(), job.target.as_str()))
+        } else {
+            jobs[..index].iter().any(|previous| {
+                previous.shard == job.shard && previous.target == job.target
+            })
+        };
         if !valid_shard(&job.shard) || !valid_node(&job.target)
             || !(1..=16).contains(&job.missing_replicas)
             || !capacity.contains_key(job.target.as_str())
-            || !pairs.insert((job.shard.as_str(), job.target.as_str()))
+            || duplicate_pair
         {
             return Err("invalid or duplicate targeted repair job");
         }
         let state = (job.bytes, job.missing_replicas);
-        if shard_state.insert(job.shard.as_str(), state)
-            .is_some_and(|previous| previous != state)
-        {
+        let inconsistent = if let Some(seen) = shard_state.as_mut() {
+            seen.insert(job.shard.as_str(), state)
+                .is_some_and(|previous| previous != state)
+        } else {
+            jobs[..index].iter().any(|previous| {
+                previous.shard == job.shard
+                    && (previous.bytes, previous.missing_replicas) != state
+            })
+        };
+        if inconsistent {
             return Err("inconsistent repair shard size or deficit");
         }
     }
@@ -680,5 +728,149 @@ mod bounded_targeted_repair_priority_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod small_in_flight_batch_tests {
+    use super::*;
+
+    #[test]
+    fn small_exclusions_match_hash_planner_across_large_queues() {
+        let jobs = (0..4096usize).map(|i| RepairJob {
+            shard: format!("shard_{i:04}"),
+            bytes: 1 + (i % 17) as u64,
+            missing_replicas: 1 + (i % 5) as u8,
+        }).collect::<Vec<_>>();
+        for exclusions in [
+            vec![],
+            vec!["shard_0001"],
+            vec!["shard_0001", "shard_0200", "shard_1000", "shard_4095"],
+        ] {
+            let active = exclusions.iter().copied().collect::<HashSet<_>>();
+            let expected = plan_ranked_repairs(
+                jobs.iter().filter(|job| !active.contains(job.shard.as_str())),
+                2048, 32,
+            );
+            assert_eq!(
+                plan_repairs_excluding(&jobs, &exclusions, 2048, 32).unwrap(),
+                expected,
+            );
+        }
+        assert!(plan_repairs_excluding(&jobs, &["shard_1", "shard_1"], 100, 3).is_err());
+        assert!(plan_repairs_excluding(&jobs, &["shard_1", "../invalid"], 100, 3).is_err());
+    }
+}
+
+#[cfg(test)]
+mod linear_two_repair_selection_tests {
+    use super::*;
+
+    fn full_sort(jobs: &[RepairJob], byte_budget: u64) -> Vec<RepairJob> {
+        let mut ranked = jobs.iter().collect::<Vec<_>>();
+        ranked.sort_unstable_by(|left, right| repair_priority(left, right));
+        let mut remaining = byte_budget;
+        let mut selected = Vec::new();
+        for job in ranked {
+            if job.bytes <= remaining {
+                remaining -= job.bytes;
+                selected.push(job.clone());
+                if selected.len() == 2 {
+                    break;
+                }
+            }
+        }
+        selected
+    }
+
+    #[test]
+    fn exactly_two_picks_match_full_priority_order_for_skewed_budgets() {
+        let jobs = (0..2048).map(|index| RepairJob {
+            shard: format!("shard_{index:04}"),
+            bytes: if index % 11 == 0 { 0 } else { (index * 131 % 2047) as u64 },
+            missing_replicas: (1 + index % 9) as u8,
+        }).collect::<Vec<_>>();
+        for budget in [0u64, 1, 7, 30, 500, 2047, 10_000, u64::MAX] {
+            assert_eq!(plan_repairs(&jobs, budget, 2).unwrap(), full_sort(&jobs, budget));
+            let excluded = ["shard_0000", "shard_0001", "shard_0002"];
+            let filtered = jobs.iter().filter(|job| !excluded.contains(&job.shard.as_str()))
+                .cloned().collect::<Vec<_>>();
+            assert_eq!(
+                plan_repairs_excluding(&jobs, &excluded, budget, 2).unwrap(),
+                full_sort(&filtered, budget),
+            );
+        }
+    }
+
+    #[test]
+    fn larger_candidate_can_leave_no_budget_for_second_repair() {
+        let jobs = [
+            RepairJob { shard: "first".into(), bytes: 100, missing_replicas: 3 },
+            RepairJob { shard: "cannot_fit".into(), bytes: 5, missing_replicas: 2 },
+            RepairJob { shard: "zero".into(), bytes: 0, missing_replicas: 1 },
+        ];
+        assert_eq!(
+            plan_repairs(&jobs, 100, 2).unwrap().iter().map(|job| job.shard.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "zero"],
+        );
+    }
+}
+
+#[cfg(test)]
+mod canonical_repair_shard_tests {
+    use super::*;
+
+    #[test]
+    fn repair_shards_match_the_object_key_and_placement_prefix_rules() {
+        for shard in ["-not-a-key", "_not-a-key", ""] {
+            let jobs = [RepairJob {
+                shard: shard.into(), bytes: 1, missing_replicas: 1,
+            }];
+            assert!(plan_repairs(&jobs, 5, 1).is_err(), "shard={shard:?}");
+            assert!(plan_repairs_excluding(&[], &[shard], 5, 1).is_err(), "shard={shard:?}");
+        }
+        for shard in ["a", "0_worker", "shard-2"] {
+            let jobs = [RepairJob { shard: shard.into(), bytes: 1, missing_replicas: 1 }];
+            assert_eq!(plan_repairs(&jobs, 5, 1).unwrap(), jobs);
+        }
+    }
+}
+
+#[cfg(test)]
+mod small_targeted_repair_validation_tests {
+    use super::*;
+
+    fn job(shard: &str, target: &str, bytes: u64, missing: u8) -> TargetedRepairJob {
+        TargetedRepairJob {
+            shard: shard.into(), target: target.into(), bytes, missing_replicas: missing,
+        }
+    }
+
+    #[test]
+    fn selects_small_batches_and_skips_unaffordable_targets() {
+        let jobs = [job("a", "n1", 5, 2), job("a", "n2", 5, 2), job("b", "n1", 1, 1)];
+        let chosen = plan_targeted_repairs(&jobs, &[("n1", 5), ("n2", 5)], 10, 3).unwrap();
+        assert_eq!(chosen, vec![jobs[0].clone(), jobs[1].clone()]);
+    }
+
+    #[test]
+    fn detects_duplicate_pairs_and_inconsistent_shards_before_zero_budget() {
+        let first = job("a", "n1", 3, 2);
+        let same_pair = job("a", "n1", 3, 2);
+        let wrong_size = job("a", "n2", 4, 2);
+        let targets = [("n1", 10), ("n2", 10)];
+        assert!(plan_targeted_repairs(&[first.clone(), same_pair], &targets, 0, 0).is_err());
+        assert!(plan_targeted_repairs(&[first, wrong_size], &targets, 0, 0).is_err());
+    }
+
+    #[test]
+    fn threshold_transition_keeps_strict_validation() {
+        let mut jobs = (0..8).map(|i| job(&format!("s{i}"), "n1", 1, 1))
+            .collect::<Vec<_>>();
+        let targets = [("n1", 16)];
+        assert_eq!(plan_targeted_repairs(&jobs, &targets, 16, 8).unwrap().len(), 8);
+        jobs.push(job("s0", "n1", 1, 1));
+        assert!(plan_targeted_repairs(&jobs, &targets, 16, 8).is_err());
     }
 }
