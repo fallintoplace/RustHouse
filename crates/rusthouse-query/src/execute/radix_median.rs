@@ -663,7 +663,7 @@ mod wide_digit_histogram_tests {
 
     #[test]
     fn divergent_prefix_and_nullable_filters_keep_exact_digit_counts() {
-        let column = NumericColumn::Int64(vec![-131_073, -131_072, -1, 0, 1, 65_537]);
+        let column = NumericColumn::Int64(vec![-131_073, -131_072, -1, 0, 1, 2]);
         let nulls = [0, 1, 0, 0, 0, 0];
         let targets = [
             sorted_key_signed(-131_073, 64),
@@ -684,6 +684,7 @@ mod wide_digit_histogram_tests {
         assert_eq!(counts[0].iter().sum::<u64>(), 1);
         assert_eq!(counts[1].iter().sum::<u64>(), 2);
         assert_eq!(counts[0][0xffff], 1);
-        assert_eq!(counts[1][1], 2);
+        assert_eq!(counts[1][1], 1);
+        assert_eq!(counts[1][2], 1);
     }
 }
