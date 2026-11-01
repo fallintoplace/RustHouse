@@ -1431,7 +1431,11 @@ mod fair_replica_transfer_tests {
                 checkpoint,
             })
             .collect::<Vec<_>>();
-        assert!(plan_fair_replica_transfers(&sources, 1, 64).unwrap().is_empty());
+        assert!(
+            plan_fair_replica_transfers(&sources, 1, 64)
+                .unwrap()
+                .is_empty()
+        );
 
         let short_tail = ResumeMap::new(2).unwrap();
         let tail_key = key("short.bin");
@@ -1442,7 +1446,9 @@ mod fair_replica_transfer_tests {
             checkpoint: &short_tail,
         }];
         assert_eq!(
-            plan_fair_replica_transfers(&only_tail, 1, 2).unwrap()[0].indexed.index,
+            plan_fair_replica_transfers(&only_tail, 1, 2).unwrap()[0]
+                .indexed
+                .index,
             1
         );
     }
@@ -1491,7 +1497,9 @@ pub fn chunks_intersecting_range(
     length: u64,
 ) -> Result<std::ops::Range<usize>, &'static str> {
     let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
-    let end = offset.checked_add(length).ok_or("changed object range overflow")?;
+    let end = offset
+        .checked_add(length)
+        .ok_or("changed object range overflow")?;
     if offset > total_bytes || end > total_bytes {
         return Err("changed object range exceeds transfer layout");
     }
@@ -1515,10 +1523,12 @@ mod intersecting_chunk_range_tests {
                 let planned = plan_chunks(total, width, 65_536).unwrap();
                 for offset in 0..=total {
                     for length in 0..=total - offset {
-                        let indexes = chunks_intersecting_range(
-                            total, width, 65_536, offset, length,
-                        ).unwrap();
-                        let expected = planned.iter().enumerate()
+                        let indexes =
+                            chunks_intersecting_range(total, width, 65_536, offset, length)
+                                .unwrap();
+                        let expected = planned
+                            .iter()
+                            .enumerate()
                             .filter(|(_, chunk)| {
                                 length != 0
                                     && chunk.offset < offset + length
@@ -1526,8 +1536,11 @@ mod intersecting_chunk_range_tests {
                             })
                             .map(|(index, _)| index)
                             .collect::<Vec<_>>();
-                        assert_eq!(indexes.clone().collect::<Vec<_>>(), expected,
-                            "total={total}, width={width}, offset={offset}, length={length}");
+                        assert_eq!(
+                            indexes.clone().collect::<Vec<_>>(),
+                            expected,
+                            "total={total}, width={width}, offset={offset}, length={length}"
+                        );
                     }
                 }
             }
@@ -1561,9 +1574,8 @@ mod lossless_missing_chunk_page_tests {
         let mut start = 0usize;
         let mut planned = Vec::new();
         for _ in 0..6 {
-            let page = plan_missing_chunk_page_from_resume(
-                29, 7, 65_536, &map, start, 8, 3,
-            ).unwrap();
+            let page =
+                plan_missing_chunk_page_from_resume(29, 7, 65_536, &map, start, 8, 3).unwrap();
             planned.extend(page.chunks.iter().map(|chunk| chunk.index));
             match page.next_start_index {
                 Some(next) => {
@@ -1576,11 +1588,12 @@ mod lossless_missing_chunk_page_tests {
         assert_eq!(planned, [0, 1, 2, 3, 4]);
         let mut completed = map;
         completed.mark_complete_range(0, 3).unwrap();
-        let page = plan_missing_chunk_page_from_resume(
-            29, 7, 65_536, &completed, 0, 8, 3,
-        ).unwrap();
+        let page = plan_missing_chunk_page_from_resume(29, 7, 65_536, &completed, 0, 8, 3).unwrap();
         assert_eq!(
-            page.chunks.iter().map(|chunk| chunk.index).collect::<Vec<_>>(),
+            page.chunks
+                .iter()
+                .map(|chunk| chunk.index)
+                .collect::<Vec<_>>(),
             vec![3, 4]
         );
         assert!(page.next_start_index.is_none());
@@ -1589,12 +1602,8 @@ mod lossless_missing_chunk_page_tests {
     #[test]
     fn unaffordable_first_chunk_cannot_advance_past_it() {
         let map = ResumeMap::new(3).unwrap();
-        assert!(plan_missing_chunk_page_from_resume(
-            15, 7, 65_536, &map, 0, 6, 9,
-        ).is_err());
-        let final_page = plan_missing_chunk_page_from_resume(
-            15, 7, 65_536, &map, 2, 6, 9,
-        ).unwrap();
+        assert!(plan_missing_chunk_page_from_resume(15, 7, 65_536, &map, 0, 6, 9,).is_err());
+        let final_page = plan_missing_chunk_page_from_resume(15, 7, 65_536, &map, 2, 6, 9).unwrap();
         assert_eq!(final_page.chunks[0].index, 2);
         assert!(final_page.next_start_index.is_none());
     }
@@ -1602,19 +1611,11 @@ mod lossless_missing_chunk_page_tests {
     #[test]
     fn rejects_mismatched_checkpoints_and_invalid_cursors() {
         let empty = ResumeMap::new(0).unwrap();
-        let page = plan_missing_chunk_page_from_resume(
-            0, 7, 65_536, &empty, 0, 0, 1,
-        ).unwrap();
+        let page = plan_missing_chunk_page_from_resume(0, 7, 65_536, &empty, 0, 0, 1).unwrap();
         assert!(page.chunks.is_empty());
         assert!(page.next_start_index.is_none());
-        assert!(plan_missing_chunk_page_from_resume(
-            8, 7, 65_536, &empty, 0, 7, 1,
-        ).is_err());
-        assert!(plan_missing_chunk_page_from_resume(
-            0, 7, 65_536, &empty, 1, 7, 1,
-        ).is_err());
-        assert!(plan_missing_chunk_page_from_resume(
-            0, 7, 65_536, &empty, 0, 7, 0,
-        ).is_err());
+        assert!(plan_missing_chunk_page_from_resume(8, 7, 65_536, &empty, 0, 7, 1,).is_err());
+        assert!(plan_missing_chunk_page_from_resume(0, 7, 65_536, &empty, 1, 7, 1,).is_err());
+        assert!(plan_missing_chunk_page_from_resume(0, 7, 65_536, &empty, 0, 7, 0,).is_err());
     }
 }
