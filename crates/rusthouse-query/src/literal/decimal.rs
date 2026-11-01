@@ -13,20 +13,17 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
         (digits, 0)
     };
     let (whole, original_fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    // Redundant fractional zeros should not consume scale or Int128 capacity.
+    // Redundant fractional and leading integer zeros are not significant digits.
+    // Validate the original mantissa first so "." and "-" remain invalid.
     let fraction = original_fraction.trim_end_matches('0');
-    let whole = if whole.is_empty() && fraction.is_empty() && !original_fraction.is_empty() {
-        "0"
-    } else {
-        whole
-    };
-    if (whole.is_empty() && fraction.is_empty())
+    if (whole.is_empty() && original_fraction.is_empty())
         || fraction.len() > 18
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
         || !fraction.bytes().all(|byte| byte.is_ascii_digit())
     {
         return Err(ParseError("invalid decimal constant".into()));
     }
+    let whole = whole.trim_start_matches('0');
     // A decimal mantissa does not need to be copied into a temporary
     // String. Accumulate the whole and fractional ASCII digit slices
     // directly, with checked signed arithmetic so Int128::MIN stays valid.
@@ -66,16 +63,25 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
 
 pub(super) fn format_decimal(value: i128, scale: usize) -> String {
     let absolute = value.unsigned_abs();
-    let divisor = 10_u128.pow(scale as u32);
+    // 10^39 exceeds u128; never compute that power for a display scale.
+    // The usual <=38 case retains the cheap integer division path.
     let mut formatted = if scale == 0 {
         absolute.to_string()
-    } else {
+    } else if scale <= 38 {
+        let divisor = 10_u128.pow(scale as u32);
         format!(
             "{}.{:0width$}",
             absolute / divisor,
             absolute % divisor,
             width = scale
         )
+    } else {
+        let digits = absolute.to_string();
+        let mut output = String::with_capacity(scale.saturating_add(2));
+        output.push_str("0.");
+        output.extend(std::iter::repeat_n('0', scale - digits.len()));
+        output.push_str(&digits);
+        output
     };
     if scale > 0 {
         while formatted.ends_with('0') {
@@ -153,5 +159,46 @@ mod allocation_free_decimal_mantissa_tests {
                 assert_eq!(fixed_decimal(repr).unwrap(), expected, "{repr}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod wide_display_scale_tests {
+    use super::*;
+
+    #[test]
+    fn formatting_large_scales_does_not_overflow_u128() {
+        assert_eq!(format_decimal(1, 39), format!("0.{}1", "0".repeat(38)));
+        assert_eq!(format_decimal(-10, 40), format!("-0.{}1", "0".repeat(38)));
+        assert_eq!(format_decimal(0, 40), "0");
+        assert_eq!(format_decimal(i128::MIN, 39).split('.').next(), Some("-0"));
+        for scale in [0usize, 1, 18, 38] {
+            assert_eq!(format_decimal(100, scale).starts_with('-'), false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod leading_zero_decimal_tests {
+    use super::*;
+
+    #[test]
+    fn large_zero_prefix_does_not_overflow_a_valid_mantissa() {
+        let zeros = "0".repeat(10_000);
+        for (value, expected) in [
+            ("0", (0, 0)),
+            ("123", (123, 0)),
+            ("1.25", (125, 2)),
+        ] {
+            let prefixed = format!("{zeros}{value}");
+            assert_eq!(fixed_decimal(&prefixed).unwrap(), expected);
+            assert_eq!(fixed_decimal(&format!("-{prefixed}")).unwrap(),
+                (-expected.0, expected.1));
+        }
+        assert_eq!(fixed_decimal(&format!(".{zeros}")).unwrap(), (0, 0));
+        assert_eq!(fixed_decimal(&format!("{zeros}.00000e100")).unwrap(), (0, 0));
+        assert!(fixed_decimal(&format!("{zeros}x")).is_err());
+        assert!(fixed_decimal(".").is_err());
+        assert!(fixed_decimal("-.").is_err());
     }
 }

@@ -96,6 +96,25 @@ class BoundedPointProbeOutputTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "128 bytes"):
                 query("binary", "database", "SELECT id FROM t LIMIT 2", 2)
 
+    def test_online_file_limit_reports_oversized_failed_subprocess(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.sparse_point_probes import query
+        def oversized(_command, **kwargs):
+            if os.name == "posix":
+                self.assertIn("preexec_fn", kwargs)
+            else:
+                self.assertNotIn("preexec_fn", kwargs)
+            kwargs["stdout"].write(b"x" * 256)
+            return SimpleNamespace(returncode=1)
+
+        with patch("bench.scale.sparse_point_probes.subprocess.run",
+                   side_effect=oversized):
+            with self.assertRaisesRegex(ValueError, "128 bytes"):
+                query("binary", "database", "SELECT id FROM t LIMIT 2", 2)
+
+
     def test_failed_query_bounded_error_and_no_pipe(self):
         from types import SimpleNamespace
         from unittest.mock import patch

@@ -25,6 +25,19 @@ RULES = (
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 
 
+def _unique_json_fields(pairs):
+    values = {}
+    for key, value in pairs:
+        if key in values:
+            raise ValueError(f"duplicate compatibility report JSON field: {key}")
+        values[key] = value
+    return values
+
+
+def _reject_nonfinite_json(value):
+    raise ValueError(f"nonfinite compatibility report JSON value: {value}")
+
+
 def load_report(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -33,7 +46,8 @@ def load_report(path):
         payload = source.read(MAX_REPORT_BYTES + 1)
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("compatibility report exceeds 2 MiB")
-    return json.loads(payload)
+    return json.loads(payload, object_pairs_hook=_unique_json_fields,
+                      parse_constant=_reject_nonfinite_json)
 
 
 REQUIRED_QUERY_IDS = frozenset(range(1, 23))

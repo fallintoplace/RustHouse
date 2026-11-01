@@ -33,6 +33,30 @@ class Q12ShipmodeTests(unittest.TestCase):
             self.assertEqual(oracle(path), b"")
 
 
+class Q12BoundedInputTests(unittest.TestCase):
+    def test_refuses_oversized_reference_lines(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "lineitem.tsv"
+            path.write_text("l_receiptdate\tl_shipmode\n"
+                            "1994-01-01\t" + "A" * 100 + "\n")
+            with patch("q12_shipmode.MAX_REFERENCE_LINE_CHARS", 40):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    oracle(path)
+
+    def test_refuses_symlinked_reference_before_reading(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "lineitem.tsv"
+            source.write_text("l_receiptdate\tl_shipmode\n")
+            alias = Path(root) / "alias.tsv"
+            try:
+                alias.symlink_to(source)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                oracle(alias)
+
+
 class Q12InputShapeTests(unittest.TestCase):
     def test_rejects_corrupt_reference_records(self):
         with tempfile.TemporaryDirectory() as root:

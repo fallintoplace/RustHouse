@@ -737,6 +737,24 @@ fn parse_triangular(parser: &mut Parser, depth: usize) -> Result<i64, ParseError
 
 /// Binary exponentiation with exact UInt128 intermediates for 64-bit residues.
 fn pow_mod(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
+    // Most scalar inputs fit in 32 bits. Multiplying two residues of a
+    // 32-bit modulus cannot overflow u64, so avoid costly u128 division
+    // for every bit of the Miller-Rabin exponent.
+    if modulus <= u32::MAX as u64 {
+        base %= modulus;
+        let mut result = 1u64;
+        while exponent > 0 {
+            if exponent & 1 != 0 {
+                result = result * base % modulus;
+            }
+            exponent >>= 1;
+            if exponent != 0 {
+                base = base * base % modulus;
+            }
+        }
+        return result;
+    }
+
     let mut result = 1u64;
     while exponent > 0 {
         if exponent & 1 != 0 {
@@ -1522,5 +1540,50 @@ mod miller_rabin_primality_tests {
         }
         assert!(prime_u64(999_999_937));
         assert!(prime_u64(2_147_483_647));
+    }
+}
+
+#[cfg(test)]
+mod small_modulus_primality_perf_tests {
+    use super::*;
+
+    fn reference_pow_mod(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
+        let mut result = 1_u128;
+        let modulus = u128::from(modulus);
+        base %= modulus as u64;
+        while exponent > 0 {
+            if exponent & 1 != 0 {
+                result = result * u128::from(base) % modulus;
+            }
+            exponent >>= 1;
+            base = ((u128::from(base) * u128::from(base)) % modulus) as u64;
+        }
+        result as u64
+    }
+
+    #[test]
+    fn exact_modular_power_across_32_bit_threshold() {
+        for modulus in [2, 3, 97, 65_537, u32::MAX as u64 - 4,
+            u32::MAX as u64, u32::MAX as u64 + 1, i64::MAX as u64] {
+            for base in [0, 1, 2, 100_000_007, u64::MAX] {
+                for exponent in [0, 1, 2, 7, 31, 63, 127] {
+                    assert_eq!(pow_mod(base, exponent, modulus),
+                        reference_pow_mod(base, exponent, modulus),
+                        "base={base} exponent={exponent} modulus={modulus}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn small_and_large_primes_keep_exact_classification() {
+        for (value, prime) in [
+            (2_u64, true), (3, true), (4, false), (97, true),
+            (1_000_000_007, true), (4_294_967_295, false),
+            (4_294_967_291, true), (4_294_967_297, false),
+            (2_305_843_009_213_693_951, true),
+        ] {
+            assert_eq!(prime_u64(value), prime, "{value}");
+        }
     }
 }
