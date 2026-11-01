@@ -205,7 +205,12 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
 }
 
 fn read_compressed(path: &Path) -> Result<Vec<u8>, PartError> {
+    let baseline = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     let mut blocks = CompressedBlockReader::open(path)?;
+    let opened = blocks.opened_metadata().map_err(|source| io_error(path, source))?;
+    if !raw_index_unchanged(&baseline, &opened) {
+        return Err(invalid(path, "compressed primary index changed before read"));
+    }
     let mut data = Vec::new();
     let mut scratch = Vec::new();
     while let Some(block) = blocks.next_decoded_reusing(std::mem::take(&mut scratch)) {
@@ -215,6 +220,14 @@ fn read_compressed(path: &Path) -> Result<Vec<u8>, PartError> {
         }
         data.extend_from_slice(&block.data);
         scratch = block.data;
+    }
+    // Individual compressed blocks have checksums, but a concurrent writer
+    // could replace an entire file between two independently valid blocks.
+    // Reject mixed-generation indexes before returning any primary keys.
+    let finished = blocks.opened_metadata().map_err(|source| io_error(path, source))?;
+    let current = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if !raw_index_unchanged(&opened, &finished) || !raw_index_unchanged(&opened, &current) {
+        return Err(invalid(path, "compressed primary index changed during read"));
     }
     Ok(data)
 }
@@ -764,5 +777,44 @@ mod recycled_primary_index_decoder_tests {
             );
         }
         fs::remove_file(&path).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod compressed_index_identity_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_TEST: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn opened_compressed_index_identity_rejects_path_replacement() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-compressed-index-identity-{}-{}",
+            std::process::id(), NEXT_TEST.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("primary.cidx");
+        let encoded = {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&[0u8; 16]);
+            bytes.push(0x02);
+            bytes.extend_from_slice(&17u32.to_le_bytes());
+            bytes.extend_from_slice(&8u32.to_le_bytes());
+            bytes.extend_from_slice(&42u64.to_le_bytes());
+            let checksum = u128::from(ch_cityhash102::cityhash128(&bytes[16..])).to_le_bytes();
+            bytes[..16].copy_from_slice(&checksum);
+            bytes
+        };
+        fs::write(&path, &encoded).unwrap();
+        assert_eq!(read_fixed_primary_index(&path, &[8]).unwrap().len(), 1);
+        let mut reader = CompressedBlockReader::open(&path).unwrap();
+        let before = reader.opened_metadata().unwrap();
+        assert!(raw_index_unchanged(&before, &fs::symlink_metadata(&path).unwrap()));
+        fs::rename(&path, root.join("old.cidx")).unwrap();
+        fs::write(&path, &encoded).unwrap();
+        assert!(!raw_index_unchanged(&before, &fs::symlink_metadata(&path).unwrap()));
+        assert!(reader.next_decoded().unwrap().is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
 }
