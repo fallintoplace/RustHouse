@@ -1,7 +1,9 @@
 //! Convert bounded TSV query results into newline-delimited JSON objects.
 //! Numeric values remain strings to preserve Int128 and UInt128 precision.
 use super::write_json_string;
-use rusthouse_format::{decode_tsv_field, decode_tsv_field_into};
+use rusthouse_format::decode_tsv_field_into;
+#[cfg(test)]
+use rusthouse_format::decode_tsv_field;
 #[cfg(test)]
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -14,6 +16,7 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+#[cfg(test)]
 pub(super) fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
     String::from_utf8(decode_tsv_field(value)?).map_err(|_| invalid("JSONL field is not UTF-8"))
 }
