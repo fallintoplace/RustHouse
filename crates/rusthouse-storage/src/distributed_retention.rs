@@ -1,5 +1,54 @@
 //! Conservative generation-retention planning; no files are deleted.
 
+#[cfg(test)]
+mod age_retention_sorted_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn ordered_and_unordered_timestamp_inventories_match_reference() {
+        let ordered = (1..=16_384u64)
+            .map(|generation| (generation, generation * 5))
+            .collect::<Vec<_>>();
+        let mut descending = ordered.clone();
+        descending.reverse();
+        let now = 16_384 * 5;
+        for minimum_age in [0, 5, 500, 25_000, 81_920, u64::MAX] {
+            let expected = ordered
+                .iter()
+                .filter(|&&(generation, created_at)| {
+                    generation <= 16_384 - 128
+                        && generation != 13
+                        && generation != 917
+                        && now - created_at >= minimum_age
+                })
+                .map(|&(generation, _)| generation)
+                .collect::<Vec<_>>();
+            for inventory in [&ordered, &descending] {
+                let selected = retention_candidates_with_min_age(
+                    inventory,
+                    16_384,
+                    128,
+                    &[13, 917],
+                    &[16_384],
+                    now,
+                    minimum_age,
+                ).unwrap();
+                assert_eq!(selected, expected, "age={minimum_age}");
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_timestamps_and_future_generations_still_fail() {
+        assert!(retention_candidates_with_min_age(
+            &[(2, 20), (1, 10), (1, 10)], 2, 1, &[], &[2], 20, 0
+        ).is_err());
+        assert!(retention_candidates_with_min_age(
+            &[(1, 10), (2, 21)], 2, 1, &[], &[2], 20, 0
+        ).is_err());
+    }
+}
+
 use std::borrow::Cow;
 
 const MAX_RETENTION_GENERATIONS: usize = 16_384;
@@ -927,13 +976,17 @@ pub fn retention_candidates_with_min_age(
     if generations.is_empty() || generations.len() > MAX_RETENTION_GENERATIONS {
         return Err("invalid generation retention inventory");
     }
-    // Retention plans are sorted by generation. Sort timestamps together once,
-    // or borrow an already ordered inventory, rather than hash every entry.
-    let ordered = ordered_generation_sizes(generations);
-    if ordered.iter().any(|&(_, created_at)| created_at > now_seconds) {
-        return Err("generation timestamp is in the future");
+    let mut timestamps = std::collections::HashMap::with_capacity(generations.len());
+    let mut ids = Vec::with_capacity(generations.len());
+    for &(generation, created_at) in generations {
+        if created_at > now_seconds {
+            return Err("generation timestamp is in the future");
+        }
+        if timestamps.insert(generation, created_at).is_some() {
+            return Err("duplicate generation timestamp");
+        }
+        ids.push(generation);
     }
-    let ids = ordered.iter().map(|&(generation, _)| generation).collect::<Vec<_>>();
     let eligible = retention_candidates_for_replica_floors(
         &ids,
         active,
@@ -944,10 +997,8 @@ pub fn retention_candidates_with_min_age(
     Ok(eligible
         .into_iter()
         .filter(|generation| {
-            let index = ordered
-                .binary_search_by_key(generation, |&(id, _)| id)
-                .expect("retention candidate belongs to validated inventory");
-            now_seconds - ordered[index].1 >= minimum_age_seconds
+            let created = timestamps[generation];
+            now_seconds - created >= minimum_age_seconds
         })
         .collect())
 }
@@ -1112,54 +1163,5 @@ mod ordered_replica_pin_merge_tests {
             assert!(retention_candidates_with_pins(&generations, 32, 2, &pins,).is_err());
             assert!(retention_candidates_with_byte_budget(&sizes, 32, 2, &pins, 100,).is_err());
         }
-    }
-}
-
-#[cfg(test)]
-mod age_retention_sorted_lookup_tests {
-    use super::*;
-
-    #[test]
-    fn ordered_and_unordered_timestamp_inventories_match_reference() {
-        let ordered = (1..=16_384u64)
-            .map(|generation| (generation, generation * 5))
-            .collect::<Vec<_>>();
-        let mut descending = ordered.clone();
-        descending.reverse();
-        let now = 16_384 * 5;
-        for minimum_age in [0, 5, 500, 25_000, 81_920, u64::MAX] {
-            let expected = ordered
-                .iter()
-                .filter(|&&(generation, created_at)| {
-                    generation <= 16_384 - 128
-                        && generation != 13
-                        && generation != 917
-                        && now - created_at >= minimum_age
-                })
-                .map(|&(generation, _)| generation)
-                .collect::<Vec<_>>();
-            for inventory in [&ordered, &descending] {
-                let selected = retention_candidates_with_min_age(
-                    inventory,
-                    16_384,
-                    128,
-                    &[13, 917],
-                    &[16_384],
-                    now,
-                    minimum_age,
-                ).unwrap();
-                assert_eq!(selected, expected, "age={minimum_age}");
-            }
-        }
-    }
-
-    #[test]
-    fn duplicate_timestamps_and_future_generations_still_fail() {
-        assert!(retention_candidates_with_min_age(
-            &[(2, 20), (1, 10), (1, 10)], 2, 1, &[], &[2], 20, 0
-        ).is_err());
-        assert!(retention_candidates_with_min_age(
-            &[(1, 10), (2, 21)], 2, 1, &[], &[2], 20, 0
-        ).is_err());
     }
 }
