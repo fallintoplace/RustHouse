@@ -171,6 +171,21 @@ impl Parser<'_> {
     }
 }
 
+/// Validate one complete JSON value, including arrays and scalar roots.
+/// The formatter uses this before emitting a framing prefix.
+pub(crate) fn validate_json_value(row: &[u8]) -> io::Result<()> {
+    if std::str::from_utf8(row).is_err() {
+        return Err(invalid());
+    }
+    let mut parser = Parser { input: row, offset: 0 };
+    parser.value(0)?;
+    parser.whitespace();
+    if parser.offset != row.len() {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 /// Accept exactly one complete UTF-8 JSON object, with bounded nesting.
 pub fn validate_json_object(row: &[u8]) -> io::Result<()> {
     if !row.starts_with(b"{") || !row.ends_with(b"}") || std::str::from_utf8(row).is_err() {
