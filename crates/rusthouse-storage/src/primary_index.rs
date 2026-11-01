@@ -208,12 +208,14 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
 fn read_compressed(path: &Path) -> Result<Vec<u8>, PartError> {
     let mut blocks = CompressedBlockReader::open(path)?;
     let mut data = Vec::new();
-    while let Some(block) = blocks.next_decoded() {
+    let mut scratch = Vec::new();
+    while let Some(block) = blocks.next_decoded_reusing(std::mem::take(&mut scratch)) {
         let block = block?;
         if block.data.len() > MAX_INDEX_BYTES - data.len() {
             return Err(invalid(path, "index exceeds the 256 MiB limit"));
         }
         data.extend_from_slice(&block.data);
+        scratch = block.data;
     }
     Ok(data)
 }
@@ -717,5 +719,45 @@ mod raw_index_immutability_tests {
         let changed = fs::symlink_metadata(&path).unwrap();
         assert!(!raw_index_unchanged(&original, &changed));
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod recycled_primary_index_decoder_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
+
+    fn none_block(payload: &[u8]) -> Vec<u8> {
+        let mut result = vec![0u8; 16];
+        result.push(0x02);
+        result.extend_from_slice(&(payload.len() as u32 + 9).to_le_bytes());
+        result.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        result.extend_from_slice(payload);
+        let checksum = u128::from(ch_cityhash102::cityhash128(&result[16..])).to_le_bytes();
+        result[..16].copy_from_slice(&checksum);
+        result
+    }
+
+    #[test]
+    fn compressed_primary_index_reads_many_boundary_split_tuples() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-primary-index-recycled-{}-{}.cidx",
+            std::process::id(), NEXT_FILE.fetch_add(1, Ordering::Relaxed),
+        ));
+        let raw = (0..1024u64).flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut compressed = Vec::new();
+        for part in raw.chunks(7) {
+            compressed.extend(none_block(part));
+        }
+        fs::write(&path, compressed).unwrap();
+        let decoded = read_fixed_primary_index(&path, &[8]).unwrap();
+        assert_eq!(decoded.len(), 1024);
+        for index in [0, 1, 63, 511, 1023] {
+            assert_eq!(u64::from_le_bytes(decoded.field(index, 0).unwrap().try_into().unwrap()), index as u64);
+        }
+        fs::remove_file(&path).unwrap();
     }
 }
