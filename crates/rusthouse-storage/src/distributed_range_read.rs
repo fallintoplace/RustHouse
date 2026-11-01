@@ -1059,12 +1059,16 @@ mod in_place_range_tests {
     #[test]
     fn existing_buffers_match_owned_exact_reads_at_unaligned_offsets() {
         let directory = std::env::temp_dir().join(format!(
-            "rusthouse-inplace-range-{}-{}", std::process::id(), line!()
+            "rusthouse-inplace-range-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join("object.bin");
-        let source = (0..16384u32).map(|value| (value % 251) as u8).collect::<Vec<_>>();
+        let source = (0..16384u32)
+            .map(|value| (value % 251) as u8)
+            .collect::<Vec<_>>();
         fs::write(&path, &source).unwrap();
         for &(offset, length) in &[(0, 0), (0, 1), (3, 7), (4095, 4096), (16384, 0)] {
             let mut destination = vec![0xcc; length];
@@ -1105,7 +1109,8 @@ mod duplicate_crc_scrub_tests {
         ranges[511].2 ^= 1;
         assert_eq!(
             verify_object_ranges_crc32c(&path, &ranges, 64 * 1024 * 1024)
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData
         );
         ranges[511].2 = crc;
@@ -1116,7 +1121,8 @@ mod duplicate_crc_scrub_tests {
         fs::write(&path, &corrupted).unwrap();
         assert_eq!(
             verify_object_ranges_crc32c(&path, &ranges, 64 * 1024 * 1024)
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData
         );
         fs::remove_file(path).unwrap();
