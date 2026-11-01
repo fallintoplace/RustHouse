@@ -35,6 +35,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "UTF16_LENGTH"
                 | "ISIPV6STRING"
                 | "HASSUBSEQUENCE"
+                | "HASSUBSEQUENCEUTF8"
                 | "BYTEHAMMINGDISTANCE"
                 | "CHR"
                 | "TOUNIXTIMESTAMP"
@@ -1863,6 +1864,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::try_from(mismatches).map_err(|_| {
                         ParseError("byteHammingDistance count exceeds Int64".into())
                     })?)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "HASSUBSEQUENCEUTF8" => {
+            let haystack = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "hasSubsequenceUTF8 requires a needle")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "hasSubsequenceUTF8 requires two arguments")?;
+            match (haystack, needle) {
+                (Some(haystack), Some(needle)) => {
+                    let mut remaining = needle.chars();
+                    let mut next = remaining.next();
+                    for character in haystack.chars() {
+                        if next == Some(character) {
+                            next = remaining.next();
+                        }
+                    }
+                    ConstantValue::Integer(i64::from(next.is_none()))
                 }
                 _ => ConstantValue::Null,
             }
@@ -6104,6 +6124,35 @@ mod utf8_prefix_suffix_inplace_tests {
         }
         let input = format!("{}🙂Z", "a".repeat(10_000));
         assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_has_subsequence_utf8_parity_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matches_ordered_unicode_codepoints() {
+        for (sql, expected) in [
+            ("SELECT hasSubsequenceUTF8('ReplicatedMergeTree', 'RepMT')", 1),
+            ("SELECT hasSubsequenceUTF8('a💫bç', 'aç')", 1),
+            ("SELECT hasSubsequenceUTF8('a💫bç', 'ça')", 0),
+            ("SELECT hasSubsequenceUTF8('Москва', 'Мса')", 1),
+            ("SELECT hasSubsequenceUTF8('a💫b', '')", 1),
+            ("SELECT hasSubsequenceUTF8('', 'a')", 0),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT hasSubsequenceUTF8(NULL, 'a')"), ConstantValue::Null);
+        assert_eq!(value("SELECT hasSubsequenceUTF8('a', NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT hasSubsequenceUTF8('a')").is_err());
     }
 }
 
