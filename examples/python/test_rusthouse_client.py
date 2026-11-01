@@ -74,5 +74,19 @@ class ClientTests(unittest.TestCase):
             RustHouseClient().query("SELECT '" + "é" * 3000 + "'")
 
 
+    def test_private_opt_in_rejects_public_hosts_and_dns_rebinding(self):
+        for host in (
+            "example.com", "8.8.8.8", "169.254.0.1",
+            "0.0.0.0", "127.0.0.2", "[::1]",
+        ):
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                RustHouseClient("http://" + host + ":8123", allow_private_network=True)
+        for host in ("10.0.0.1", "172.16.0.1", "172.31.255.255",
+                     "192.168.0.2", "100.64.0.1", "100.127.255.254"):
+            RustHouseClient("http://" + host + ":8123", allow_private_network=True)
+        with self.assertRaises(ValueError):
+            RustHouseClient("http://10.0.0.1:8123")
+
+
 if __name__ == "__main__":
     unittest.main()
