@@ -75,7 +75,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     if intervals.iter().any(|(lower, upper)| {
         matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded)
     }) {
-        return Some(if len == 0 { Vec::new() } else { vec![0..len] });
+        return Some(if len == 0 { Vec::new() } else { std::iter::once(0..len).collect() });
     }
     if !mark_keys_sorted(len, &key_at) {
         return None;

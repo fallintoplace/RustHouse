@@ -159,7 +159,7 @@ pub fn worst_case_zone_quorum(
     if failed_zones > zones.len() {
         return Err("failure-zone count exceeds configured zones");
     }
-    zones.sort_unstable_by(|left, right| right.1.cmp(&left.1));
+    zones.sort_unstable_by_key(|&(_, count)| std::cmp::Reverse(count));
     let lost = zones
         .iter()
         .take(failed_zones)

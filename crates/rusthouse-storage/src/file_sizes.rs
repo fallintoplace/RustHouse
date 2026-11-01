@@ -663,7 +663,7 @@ mod interrupted_hash_probe_tests {
     }
 
     #[test]
-    fn EOF_probe_retries_interrupted_reads_and_detects_extensions() {
+    fn eof_probe_retries_interrupted_reads_and_detects_extensions() {
         let mut clean = InterruptOnce {
             inner: Cursor::new(&b""[..]),
             interrupted: false,

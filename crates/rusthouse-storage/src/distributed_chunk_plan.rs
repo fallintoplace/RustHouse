@@ -425,6 +425,7 @@ pub fn plan_missing_runs_from_resume(
 /// Resume coalesced I/O planning at an inclusive chunk cursor without
 /// rescanning earlier completed checkpoint bits or materializing all chunks.
 /// Validate the complete checkpoint layout before selecting any work.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_missing_runs_from_resume_after(
     total_bytes: u64,
     chunk_bytes: u64,
