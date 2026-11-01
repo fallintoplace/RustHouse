@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run_canonical import command, read_bounded, run_full
+from run_canonical import MAX_QUERY_BYTES, command, read_bounded, run_full
 
 
 def corpus(root):
@@ -37,6 +37,46 @@ class FullRunnerTests(unittest.TestCase):
             (root / "q22.sql").unlink()
             with self.assertRaisesRegex(ValueError, "full canonical"):
                 command("rusthouse", "db", root, "reference", "output.json")
+
+    def test_rejects_float_bool_and_duplicate_report_query_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "queries"
+            corpus(root)
+            report_path = Path(tmp) / "report.json"
+            for invalid in (True, 1.0, "1"):
+                def invoke(cmd):
+                    report_path.write_text(json.dumps({
+                        "reference_checked": True,
+                        "results": [
+                            {"query": invalid if i == 1 else i, "status": "passed"}
+                            for i in range(1, 23)
+                        ],
+                    }), encoding="utf-8")
+                    return subprocess.CompletedProcess(cmd, 0)
+
+                with self.subTest(id=invalid):
+                    with self.assertRaisesRegex(ValueError, "invalid or duplicate"):
+                        run_full("rusthouse", "db", root, "refs", report_path,
+                                 invoke=invoke)
+
+    def test_rejects_canonical_query_replaced_during_open(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "q01.sql"
+            alternate = Path(root) / "other.sql"
+            path.write_text("SELECT 1", encoding="utf-8")
+            alternate.write_text("SELECT 2", encoding="utf-8")
+            real_open = os.open
+
+            def change(filename, flags):
+                path.unlink()
+                alternate.rename(path)
+                return real_open(filename, flags)
+
+            with patch("run_canonical.os.open", side_effect=change):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    read_bounded(path, MAX_QUERY_BYTES)
 
     def test_reports_incomplete_queries_without_claiming_success(self):
         with tempfile.TemporaryDirectory() as tmp:
