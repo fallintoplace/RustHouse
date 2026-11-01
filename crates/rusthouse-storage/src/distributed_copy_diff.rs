@@ -1321,6 +1321,51 @@ pub fn compare_replica_inventories(
     left: &[ObjectMetadata],
     right: &[ObjectMetadata],
 ) -> Result<ReplicaInventoryDifference, &'static str> {
+    if left.len() > 65_536 || right.len() > 65_536 {
+        return Err("replica inventory too large");
+    }
+    // Inventory snapshots arrive in sorted key order. A borrowed merge
+    // emits exactly the same canonical diagnostics without building two hash
+    // maps, cloning equal objects, or sorting three result vectors.
+    let sorted = |entries: &[ObjectMetadata]| {
+        entries.windows(2).all(|pair| pair[0].key < pair[1].key)
+    };
+    if sorted(left) && sorted(right) {
+        if left.iter().chain(right).any(|object| !valid_key(&object.key)) {
+            return Err("unsafe or duplicate replica object key");
+        }
+        let mut result = ReplicaInventoryDifference::default();
+        let mut lhs = 0;
+        let mut rhs = 0;
+        while lhs < left.len() && rhs < right.len() {
+            match left[lhs].key.cmp(&right[rhs].key) {
+                std::cmp::Ordering::Less => {
+                    result.only_left.push(left[lhs].clone());
+                    lhs += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    result.only_right.push(right[rhs].clone());
+                    rhs += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if !left[lhs].same_contents(&right[rhs]) {
+                        result.conflicting.push(ReplicaObjectConflict {
+                            key: left[lhs].key.clone(),
+                            left_bytes: left[lhs].bytes,
+                            left_crc32c: left[lhs].crc32c,
+                            right_bytes: right[rhs].bytes,
+                            right_crc32c: right[rhs].crc32c,
+                        });
+                    }
+                    lhs += 1;
+                    rhs += 1;
+                }
+            }
+        }
+        result.only_left.extend_from_slice(&left[lhs..]);
+        result.only_right.extend_from_slice(&right[rhs..]);
+        return Ok(result);
+    }
     let left_index = index(left)?;
     let right_index = index(right)?;
     let mut result = ReplicaInventoryDifference::default();
@@ -1431,6 +1476,32 @@ mod symmetric_replica_inventory_tests {
             "cluster/shard/g1/part/left_127.bin"
         );
         assert!(result.conflicting.is_empty());
+    }
+
+    #[test]
+    fn sorted_two_cursor_diff_matches_hash_reference_for_mixed_inventories() {
+        let left = (0..1_024u64)
+            .map(|index| item(&format!("cluster/shard/g1/part/key_{index:04}.bin"), index, index as u32))
+            .collect::<Vec<_>>();
+        let right = (0..1_024u64)
+            .filter(|index| index % 7 != 0)
+            .map(|index| {
+                item(
+                    &format!("cluster/shard/g1/part/key_{index:04}.bin"),
+                    index,
+                    (index as u32) ^ u32::from(index % 5 == 0),
+                )
+            })
+            .chain([item("cluster/shard/g1/part/new.bin", 9, 99)])
+            .collect::<Vec<_>>();
+        let sorted = compare_replica_inventories(&left, &right).unwrap();
+        let reversed_left = left.iter().cloned().rev().collect::<Vec<_>>();
+        let reversed_right = right.iter().cloned().rev().collect::<Vec<_>>();
+        let hashed = compare_replica_inventories(&reversed_left, &reversed_right).unwrap();
+        assert_eq!(sorted, hashed);
+        assert!(!sorted.only_left.is_empty());
+        assert!(!sorted.only_right.is_empty());
+        assert!(!sorted.conflicting.is_empty());
     }
 
     #[test]
