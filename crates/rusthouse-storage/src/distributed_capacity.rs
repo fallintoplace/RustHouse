@@ -61,10 +61,12 @@ impl Capacity {
     }
 
     pub fn release(self, bytes: u64) -> Result<Self, &'static str> {
-        Ok(Self {
+        let released = Self {
             reserved: self.remaining_reservation(bytes, "cannot release unreserved bytes")?,
             ..self
-        })
+        };
+        released.available()?;
+        Ok(released)
     }
 }
 
@@ -472,5 +474,44 @@ mod multi_replica_capacity_planning_tests {
             &before, &[("node_1", u64::MAX)]
         ).unwrap();
         assert_eq!(planned[0].capacity.available().unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod release_invalid_state_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_resulting_states_but_allows_recovery() {
+        let overcommitted = Capacity {
+            total: 1,
+            used: 2,
+            reserved: 1,
+        };
+        assert!(overcommitted.release(1).is_err());
+        assert!(overcommitted.release_many(&[1]).is_err());
+
+        let overflowed = Capacity {
+            total: u64::MAX,
+            used: u64::MAX,
+            reserved: 1,
+        };
+        assert!(overflowed.release(0).is_err());
+        assert!(overflowed.release_many(&[]).is_err());
+
+        // The existing API allows a release to heal an overcommit.
+        let recoverable = Capacity {
+            total: 10,
+            used: 9,
+            reserved: 2,
+        };
+        assert_eq!(recoverable.release(1).unwrap().available().unwrap(), 0);
+
+        let valid = Capacity {
+            total: 10,
+            used: 4,
+            reserved: 3,
+        };
+        assert_eq!(valid.release(2).unwrap().available().unwrap(), 5);
     }
 }
