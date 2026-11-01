@@ -87,6 +87,64 @@ fn contains_bytes_horspool(haystack: &[u8], needle: &[u8], shifts: &[usize; 256]
     false
 }
 
+/// Compile pure percent-wildcard patterns into UTF-8 substrings once.
+/// The built-in string search avoids quadratic backtracking on long text
+/// columns with many overlapping literal prefixes.
+fn compile_percent_segments(tokens: &[LikeToken]) -> Option<PercentSegments> {
+    if tokens.iter().any(|token| matches!(token, LikeToken::One)) {
+        return None;
+    }
+    let mut literals = Vec::new();
+    let mut span = Vec::new();
+    for token in tokens {
+        match token {
+            LikeToken::Byte(byte) => span.push(*byte),
+            LikeToken::Any => {
+                if !span.is_empty() {
+                    literals.push(String::from_utf8(std::mem::take(&mut span)).ok()?);
+                }
+            }
+            LikeToken::One => unreachable!(),
+        }
+    }
+    if !span.is_empty() {
+        literals.push(String::from_utf8(span).ok()?);
+    }
+    Some(PercentSegments {
+        prefix_wildcard: matches!(tokens.first(), Some(LikeToken::Any)),
+        suffix_wildcard: matches!(tokens.last(), Some(LikeToken::Any)),
+        literals,
+    })
+}
+
+fn match_percent_segments(value: &str, pattern: &PercentSegments) -> bool {
+    let mut offset = 0usize;
+    let mut first = 0usize;
+    let mut end = pattern.literals.len();
+    if !pattern.prefix_wildcard {
+        let Some(prefix) = pattern.literals.first() else { return true; };
+        if !value.starts_with(prefix) {
+            return false;
+        }
+        offset = prefix.len();
+        first += 1;
+    }
+    if !pattern.suffix_wildcard {
+        end = end.saturating_sub(1);
+    }
+    for segment in &pattern.literals[first..end] {
+        let Some(found) = value[offset..].find(segment) else { return false; };
+        offset += found + segment.len();
+    }
+    if !pattern.suffix_wildcard {
+        // The final literal must appear *after* every previously consumed
+        // segment. Anchoring cannot reuse bytes from a prior segment.
+        pattern.literals.last().is_some_and(|last| value[offset..].ends_with(last))
+    } else {
+        true
+    }
+}
+
 pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError> {
     if !pattern.bytes().any(|byte| matches!(byte, b'%' | b'_' | b'\\')) {
         return Ok(LikePattern::Exact(compiled_literal(pattern.as_bytes().to_vec())));
@@ -167,7 +225,8 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
     } else {
         None
     };
-    Ok(LikePattern::Wildcard { tokens, folded_percent, unicode_tokens })
+    let percent_segments = compile_percent_segments(&tokens);
+    Ok(LikePattern::Wildcard { tokens, folded_percent, unicode_tokens, percent_segments })
 }
 
 pub(super) fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
@@ -391,7 +450,14 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                     .any(|part| equal_like_bytes(part, bytes, true))
             }
         }
-        LikePattern::Wildcard { tokens, folded_percent, unicode_tokens } => {
+        LikePattern::Wildcard { tokens, folded_percent, unicode_tokens, percent_segments } => {
+            if !case_insensitive {
+                if let (Some(segments), Ok(text)) =
+                    (percent_segments.as_ref(), std::str::from_utf8(value))
+                {
+                    return match_percent_segments(text, segments);
+                }
+            }
             // Multi-segment ILIKE patterns must fold Unicode as a whole.
             // ASCII and '_' patterns keep the allocation-free scan.
             if case_insensitive
@@ -803,5 +869,54 @@ mod binary_horspool_like_tests {
         assert!(like_matches(&input, &pattern, false));
         input.pop();
         assert!(!like_matches(&input, &pattern, false));
+    }
+}
+
+
+#[cfg(test)]
+mod multi_percent_linear_search_tests {
+    use super::*;
+
+    #[test]
+    fn pure_percent_search_matches_reference_backtracker() {
+        let patterns = [
+            "a%b%c", "%a%b", "a%b%", "%aa%aa%ab%", "é%界%🌍",
+            "%aa%ab%ba%", "a%%b%c", "%abc%abc", "a%b%c%d",
+        ];
+        let rows = [
+            "", "abc", "axbyc", "abbc", "aabc", "aabaaba", "aabaaab",
+            "éxx界yy🌍", "é🌍界", "aaaaaaab", "aaabbaa",
+        ];
+        for pattern in patterns {
+            let compiled = compile_like(pattern).unwrap();
+            let LikePattern::Wildcard { tokens, percent_segments, .. } = &compiled else {
+                panic!("expected multi-wildcard compilation: {pattern}");
+            };
+            assert!(percent_segments.is_some());
+            for row in rows {
+                assert_eq!(
+                    like_matches(row.as_bytes(), &compiled, false),
+                    like_matches_wildcards(row.as_bytes(), tokens, false),
+                    "pattern={pattern:?} row={row:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn long_adversarial_prefixes_remain_exact_without_repeated_backtracking() {
+        let row = format!("{}b", "a".repeat(200_000));
+        let pattern = "%aaaaab%aaaaac%";
+        let compiled = compile_like(pattern).unwrap();
+        assert!(!like_matches(row.as_bytes(), &compiled, false));
+        let matching = format!("{}b{}c", "a".repeat(30_000), "a".repeat(30_000));
+        assert!(like_matches(matching.as_bytes(), &compiled, false));
+    }
+
+    #[test]
+    fn invalid_utf8_rows_still_use_binary_wildcard_semantics() {
+        let compiled = compile_like("a%b%c").unwrap();
+        let row = b"a\xffb\xffc";
+        assert!(like_matches(row, &compiled, false));
     }
 }

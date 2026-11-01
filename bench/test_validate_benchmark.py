@@ -51,6 +51,52 @@ class ValidateBenchmarkManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate benchmark manifest key"):
                 load_manifest(path)
 
+    def test_rejects_manifest_swapped_between_stat_and_open(self):
+        import os
+        from unittest.mock import patch
+        from bench.validate_benchmark import load_manifest
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "manifest.json"
+            replacement = Path(root) / "replacement.json"
+            path.write_text('{"schema_version":1}', encoding="utf-8")
+            replacement.write_text('{"schema_version":2}', encoding="utf-8")
+            original_open = os.open
+
+            def swap_before_open(filename, flags):
+                path.unlink()
+                replacement.rename(path)
+                return original_open(filename, flags)
+
+            with patch("bench.validate_benchmark.os.open", side_effect=swap_before_open):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    load_manifest(path)
+
+    def test_rejects_manifest_replaced_during_read(self):
+        import os
+        from unittest.mock import patch
+        from bench.validate_benchmark import load_manifest
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "manifest.json"
+            replacement = Path(root) / "replacement.json"
+            path.write_text('{"schema_version":1}', encoding="utf-8")
+            replacement.write_text('{"schema_version":2}', encoding="utf-8")
+            original_fstat = os.fstat
+            calls = 0
+
+            def mutate_before_finish(fd):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    path.unlink()
+                    replacement.rename(path)
+                return original_fstat(fd)
+
+            with patch("bench.validate_benchmark.os.fstat", side_effect=mutate_before_finish):
+                with self.assertRaisesRegex(ValueError, "changed while reading"):
+                    load_manifest(path)
+
     def test_rejects_boolean_schema_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

@@ -53,6 +53,46 @@ class BenchmarkComparisonTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "changed while opening"):
                     load_report(report)
 
+    def test_atomic_output_preserves_previous_report_if_replace_fails(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from bench.compare import main
+
+        with tempfile.TemporaryDirectory() as root:
+            baseline = Path(root) / "baseline.json"
+            candidate = Path(root) / "candidate.json"
+            output = Path(root) / "comparison.json"
+            record = {"results": [result(1, "passed", 0.2)]}
+            baseline.write_text(json.dumps(record), encoding="utf-8")
+            candidate.write_text(json.dumps(record), encoding="utf-8")
+            output.write_text("last complete run", encoding="utf-8")
+            args = ["--baseline", str(baseline), "--candidate", str(candidate),
+                    "--output", str(output)]
+            with patch("bench.compare.os.replace", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(SystemExit, "1"):
+                    main(args)
+            self.assertEqual(output.read_text(), "last complete run")
+            self.assertFalse(list(Path(root).glob(".comparison.json.*.tmp")))
+
+    def test_output_cannot_replace_benchmark_input(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from bench.compare import main
+
+        with tempfile.TemporaryDirectory() as root:
+            baseline = Path(root) / "baseline.json"
+            candidate = Path(root) / "candidate.json"
+            source = json.dumps({"results": [result(1, "passed", 0.1)]})
+            baseline.write_text(source, encoding="utf-8")
+            candidate.write_text(source, encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                main(["--baseline", str(baseline), "--candidate", str(candidate),
+                      "--output", str(baseline)])
+            self.assertEqual(baseline.read_text(), source)
+
     def test_detects_slowdowns_and_speedups(self):
         baseline = {"engine": "rusthouse-cli", "rows": 100,
                     "results": [result(1, "passed", 0.01), result(2, "passed", 0.02)]}

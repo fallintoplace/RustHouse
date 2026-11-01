@@ -5,7 +5,10 @@ fn valid_delete_scope(select: &Select) -> bool {
     matches!(select.source, Some(Source::Table(_)))
         && select.projection == Projection::All
         && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
         && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
         && select.limit.is_none()
         && select.offset.is_none()
         && select.having.is_none()
@@ -68,6 +71,8 @@ mod tests {
             "DELETE FROM events LIMIT 1",
             "DELETE FROM events; DROP TABLE events",
             "DELETE FROM numbers(10)",
+            "DELETE RENAME name AS renamed FROM events",
+            "DELETE RENAME id AS renamed FROM events WHERE id = 1",
         ] {
             assert!(parse_delete(sql).is_err(), "{sql}");
         }
@@ -99,6 +104,7 @@ mod delete_adjacent_comment_tests {
         assert!(parse_delete("DELETE/*comment*/events").is_err());
         assert!(parse_delete("DELETEX FROM events").unwrap().is_none());
     }
+}
 
 #[cfg(test)]
 mod leading_delete_comment_tests {
@@ -118,5 +124,21 @@ mod leading_delete_comment_tests {
     fn non_delete_statements_remain_unrecognized() {
         assert!(parse_delete("/* comment */ SELECT * FROM events").unwrap().is_none());
         assert!(parse_delete("-- comment only").unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod delete_projection_guard_tests {
+    use super::*;
+
+    #[test]
+    fn mutation_parser_rejects_select_only_projection_clauses() {
+        for sql in [
+            "DELETE RENAME id AS renamed FROM events",
+            "DELETE RENAME id AS renamed FROM events WHERE id = 2",
+        ] {
+            assert!(parse_delete(sql).is_err(), "{sql}");
+        }
+        assert!(parse_delete("DELETE FROM events WHERE id = 2").unwrap().is_some());
     }
 }

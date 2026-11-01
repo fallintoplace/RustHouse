@@ -336,6 +336,12 @@ struct LikeLiteral {
     ascii_contains_skip: Option<Box<[usize; 256]>>,
 }
 
+struct PercentSegments {
+    prefix_wildcard: bool,
+    suffix_wildcard: bool,
+    literals: Vec<String>,
+}
+
 enum LikePattern {
     Exact(LikeLiteral),
     Prefix(LikeLiteral),
@@ -345,6 +351,7 @@ enum LikePattern {
         tokens: Vec<LikeToken>,
         folded_percent: Option<Vec<LikeToken>>,
         unicode_tokens: Option<Vec<UnicodeLikeToken>>,
+        percent_segments: Option<PercentSegments>,
     },
 }
 
@@ -493,9 +500,21 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
 }
 
 fn order_compiled_conditions(conditions: &mut [Condition]) {
-    // Reordering AND predicates is safe after compilation, and lets cheap
-    // comparisons reject rows before expensive wildcard matching.
-    conditions.sort_by_key(|condition| matches!(&condition.test, Test::Like { .. }));
+    // AND predicates have no side effects. Put bitmap/null checks first,
+    // direct comparisons next, then membership sets and wildcard patterns.
+    // This keeps expensive LIKE, modulo and dynamic IN probes off rows that
+    // an earlier cheap condition can already reject.
+    conditions.sort_by_key(|condition| match &condition.test {
+        Test::IsNull(_) => 0,
+        Test::UuidCompare(..) | Test::UuidDistinctFrom(..)
+        | Test::ByteInSet(..) | Test::ShortInSet(..) => 1,
+        Test::Compare(Operator::Modulo(_) | Operator::ModuloNe(_), _) => 4,
+        Test::Compare(..) | Test::NotBetween(..) | Test::UuidNotBetween(..) => 2,
+        Test::In(values, _) if values.len() <= 4 => 2,
+        Test::In(..) | Test::TextInSet(..) | Test::NumericInSet(..)
+        | Test::UuidInSet(..) | Test::DistinctFrom(..) => 3,
+        Test::Like { .. } => 5,
+    });
 }
 
 pub(super) fn compile(
@@ -2842,5 +2861,68 @@ mod parallel_filtered_count_tests {
         assert_eq!(nonnull, expected_nonnull);
         assert!(nonnull < all);
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod typed_condition_cost_order_tests {
+    use super::*;
+    use rusthouse_storage::{NumericColumn, TypedColumn, read_legacy_strings};
+
+    #[test]
+    fn reordering_mixed_nullable_predicates_preserves_every_row_result() {
+        let mut input = b"\x05alpha\x04beta\x05gamma".as_slice();
+        let text = read_legacy_strings(&mut input, 3).unwrap();
+        let batch = [
+            TypedColumn::Text(text),
+            TypedColumn::NullableNumeric {
+                values: NumericColumn::UInt64(vec![1, 2, 3]),
+                nulls: vec![0, 1, 0],
+            },
+        ];
+        let mut conditions = vec![
+            Condition { index: 0, test: Test::Like {
+                pattern: compile_like("a%").unwrap(),
+                case_insensitive: false,
+                negated: false,
+            } },
+            Condition { index: 1, test: Test::Compare(
+                Operator::Eq, Cell::Numeric(Number::Unsigned(1)),
+            ) },
+            Condition { index: 1, test: Test::IsNull(true) },
+        ];
+        let expected = (0..3)
+            .map(|row| passes(&batch, row, std::slice::from_ref(&conditions)))
+            .collect::<Vec<_>>();
+        assert_eq!(expected, vec![true, false, false]);
+        order_compiled_conditions(&mut conditions);
+        assert!(matches!(conditions[0].test, Test::IsNull(true)));
+        assert!(matches!(conditions[1].test, Test::Compare(..)));
+        assert!(matches!(conditions[2].test, Test::Like { .. }));
+        let actual = (0..3)
+            .map(|row| passes(&batch, row, std::slice::from_ref(&conditions)))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn modulos_and_wildcards_follow_cheap_bitmap_checks() {
+        let mut conditions = vec![
+            Condition { index: 0, test: Test::Like {
+                pattern: compile_like("%needle%").unwrap(),
+                case_insensitive: true,
+                negated: false,
+            } },
+            Condition { index: 1, test: Test::Compare(
+                Operator::Modulo(3), Cell::Numeric(Number::Unsigned(2)),
+            ) },
+            Condition { index: 2, test: Test::IsNull(false) },
+            Condition { index: 3, test: Test::ByteInSet([0; 4], false) },
+        ];
+        order_compiled_conditions(&mut conditions);
+        assert!(matches!(conditions[0].test, Test::IsNull(false)));
+        assert!(matches!(conditions[1].test, Test::ByteInSet(..)));
+        assert!(matches!(conditions[2].test, Test::Compare(Operator::Modulo(_), _)));
+        assert!(matches!(conditions[3].test, Test::Like { .. }));
     }
 }

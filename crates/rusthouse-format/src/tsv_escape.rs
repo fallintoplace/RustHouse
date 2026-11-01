@@ -68,11 +68,16 @@ pub fn validate_tsv_field(field: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-pub fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
+/// Decode an escaped TSV field into a reusable buffer.
+/// The output is cleared before decoding. The caller can keep its capacity
+/// across many rows to avoid a per-field allocation.
+pub fn decode_tsv_field_into(field: &[u8], output: &mut Vec<u8>) -> io::Result<()> {
+    output.clear();
     let Some(first_escape) = field.iter().position(|&byte| byte == b'\\') else {
-        return Ok(field.to_vec());
+        output.extend_from_slice(field);
+        return Ok(());
     };
-    let mut output = Vec::with_capacity(field.len());
+    output.reserve(field.len());
     let mut index = first_escape;
     let mut start = 0;
     loop {
@@ -85,12 +90,39 @@ pub fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
         index += next_escape_offset;
     }
     output.extend_from_slice(&field[start..]);
+    Ok(())
+}
+
+pub fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    decode_tsv_field_into(field, &mut output)?;
     Ok(output)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_into_reuses_capacity_across_escaped_fields() {
+        let mut buffer = Vec::with_capacity(4096);
+        let original = buffer.as_ptr();
+        for field in [
+            br"caf\xC3\xA9".as_slice(),
+            br"first\tsecond".as_slice(),
+            br"plain".as_slice(),
+            br"\n\r\0".as_slice(),
+        ] {
+            let owned = decode_tsv_field(field).unwrap();
+            decode_tsv_field_into(field, &mut buffer).unwrap();
+            assert_eq!(buffer, owned);
+            assert_eq!(buffer.as_ptr(), original);
+        }
+        assert!(decode_tsv_field_into(br"bad\xG0", &mut buffer).is_err());
+        decode_tsv_field_into(br"good\x20again", &mut buffer).unwrap();
+        assert_eq!(buffer, b"good again");
+        assert_eq!(buffer.as_ptr(), original);
+    }
 
     #[test]
     fn reads_hex_pairs_and_keeps_error_categories() {
