@@ -68,6 +68,22 @@ class OfflineVacuumTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "invalid generation inventory"):
                     plan(root, keep=2)
 
+    @unittest.skipUnless(os.name == "posix" and shutil.rmtree.avoids_symlink_attacks,
+                         "requires symlink-safe POSIX rmtree")
+    def test_deletion_budget_blocks_all_candidates_before_mutation(self):
+        with tempfile.TemporaryDirectory() as root:
+            _parts, versions = self.fixture(root)
+            (versions / "g1" / "payload.bin").write_bytes(b"x" * 10)
+            before = sorted(path.name for path in versions.iterdir())
+            with self.assertRaisesRegex(ValueError, "max_delete_bytes"):
+                vacuum(root, keep=2, execute=True, offline_confirmed=True,
+                       max_delete_bytes=9)
+            self.assertEqual(before, sorted(path.name for path in versions.iterdir()))
+            with self.assertRaisesRegex(ValueError, "max_delete_entries"):
+                vacuum(root, keep=2, execute=True, offline_confirmed=True,
+                       max_delete_entries=1)
+            self.assertEqual(before, sorted(path.name for path in versions.iterdir()))
+
     def test_execute_needs_explicit_offline_confirmation(self):
         with tempfile.TemporaryDirectory() as root:
             self.fixture(root)

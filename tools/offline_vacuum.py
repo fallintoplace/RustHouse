@@ -103,7 +103,40 @@ def exclusive_database_lock(database):
         os.close(fd)
 
 
-def vacuum(database, keep=3, execute=False, offline_confirmed=False):
+def validate_deletion_budget(candidates, max_delete_bytes=None, max_delete_entries=1_000_000):
+    if max_delete_bytes is not None and (
+            type(max_delete_bytes) is not int or max_delete_bytes < 0):
+        raise ValueError("max_delete_bytes must be nonnegative")
+    if type(max_delete_entries) is not int or not 1 <= max_delete_entries <= 10_000_000:
+        raise ValueError("max_delete_entries must be between 1 and 10000000")
+    byte_count = 0
+    entry_count = 0
+
+    def raise_walk_error(error):
+        raise error
+
+    for _parts, _active, candidate in candidates:
+        for directory, dirs, files in os.walk(
+                candidate, followlinks=False, onerror=raise_walk_error):
+            entry_count += 1
+            for name in dirs:
+                if (Path(directory) / name).is_symlink():
+                    raise ValueError("vacuum refuses symlinked generation entries")
+            for name in files:
+                entry = (Path(directory) / name).lstat()
+                if not stat.S_ISREG(entry.st_mode):
+                    raise ValueError("vacuum requires regular generation files")
+                entry_count += 1
+                byte_count += entry.st_size
+            if entry_count > max_delete_entries:
+                raise ValueError("vacuum exceeds max_delete_entries")
+            if max_delete_bytes is not None and byte_count > max_delete_bytes:
+                raise ValueError("vacuum exceeds max_delete_bytes")
+    return byte_count, entry_count
+
+
+def vacuum(database, keep=3, execute=False, offline_confirmed=False,
+           max_delete_bytes=None, max_delete_entries=1_000_000):
     database = Path(database)
     if not execute:
         return plan(database, keep)
@@ -113,6 +146,7 @@ def vacuum(database, keep=3, execute=False, offline_confirmed=False):
         raise ValueError("database must be an existing real directory")
     with exclusive_database_lock(database):
         candidates = plan(database, keep)
+        validate_deletion_budget(candidates, max_delete_bytes, max_delete_entries)
         for parts, active, candidate in candidates:
             if active_label(parts) != active or not real_directory(candidate):
                 raise ValueError("generation changed before offline vacuum deletion")
@@ -132,9 +166,13 @@ def main(argv=None):
     parser.add_argument("--keep", type=int, default=3)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--offline-confirmed", action="store_true")
+    parser.add_argument("--max-delete-bytes", type=int)
+    parser.add_argument("--max-delete-entries", type=int, default=1_000_000)
     args = parser.parse_args(argv)
     try:
-        candidates = vacuum(args.database, args.keep, args.execute, args.offline_confirmed)
+        candidates = vacuum(args.database, args.keep, args.execute, args.offline_confirmed,
+                            max_delete_bytes=args.max_delete_bytes,
+                            max_delete_entries=args.max_delete_entries)
     except (OSError, ValueError, UnicodeDecodeError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
