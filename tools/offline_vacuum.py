@@ -24,17 +24,31 @@ def real_directory(path):
 
 
 def active_label(parts):
+    """Read a bounded, stable active-generation pointer without following links."""
     pointer = parts / ".rusthouse-active"
-    if pointer.is_symlink() or not pointer.is_file() or pointer.stat().st_size > 64:
+    before = pointer.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_size > 64:
         raise ValueError(f"invalid active generation pointer: {pointer}")
-    raw = pointer.read_bytes()
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(pointer, flags)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError(f"active generation pointer changed while opening: {pointer}")
+        raw = source.read(65)
+        finished = os.fstat(source.fileno())
+    after = pointer.lstat()
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                             info.st_mtime_ns, info.st_ctime_ns)
+    if identity(before) != identity(opened) or identity(opened) != identity(finished) or identity(finished) != identity(after):
+        raise ValueError(f"active generation pointer changed while reading: {pointer}")
     if not raw.endswith(b"\n") or len(raw) > 64:
         raise ValueError(f"invalid active generation pointer: {pointer}")
     label = raw[:-1].decode("ascii")
     if not GENERATION.fullmatch(label) or int(label[1:]) > (1 << 64) - 1:
         raise ValueError(f"noncanonical active generation: {pointer}")
     return label
-
 
 def plan(database, keep=3):
     database = Path(database)
