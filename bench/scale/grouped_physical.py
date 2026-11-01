@@ -10,6 +10,7 @@ import json
 import math
 import os
 import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -136,7 +137,8 @@ def inspect_persisted_snapshot(binary, directory, rows, timeout):
         stdout = output.read(256 * 1024 + 1)
         if len(stdout) > 256 * 1024:
             raise RuntimeError("persisted doctor output exceeds 256 KiB")
-        if result.returncode or f"OK events: {rows} rows, ".encode() not in stdout:
+        expected_row = rb"(?m)^OK events: " + str(rows).encode("ascii") + rb" rows, "
+        if result.returncode or not re.search(expected_row, stdout):
             errors.seek(0, os.SEEK_END)
             errors.seek(max(0, errors.tell() - 600))
             stderr = errors.read(600)

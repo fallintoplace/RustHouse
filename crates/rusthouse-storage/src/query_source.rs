@@ -176,7 +176,14 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
 
 fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<PathBuf>, PartError> {
     require_snapshot_directory(path, "snapshot source must be a real directory")?;
-    if entry_present(&path.join("count.txt"))? || entry_present(&path.join("columns.txt"))? {
+    let has_root_count = entry_present(&path.join("count.txt"))?;
+    let has_root_columns = entry_present(&path.join("columns.txt"))?;
+    if has_root_count != has_root_columns {
+        return Err(PartError::InvalidScan(format!(
+            "incomplete part metadata in {}", path.display()
+        )));
+    }
+    if has_root_count {
         return Ok(vec![path.to_owned()]);
     }
     // Keep parsed numeric block bounds for physical ordering, instead of
@@ -998,6 +1005,28 @@ mod active_pointer_stability_tests {
         assert_eq!(original.modified().unwrap(), altered.modified().unwrap());
         assert!(!pointer_unchanged(&original, &altered));
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod incomplete_single_part_tests {
+    use super::*;
+
+    #[test]
+    fn a_single_part_requires_both_metadata_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-single-part-metadata-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("count.txt"), b"1\n").unwrap();
+        assert!(query_parts(&root).is_err());
+        fs::write(root.join("columns.txt"), b"schema").unwrap();
+        assert_eq!(query_parts(&root).unwrap(), vec![root.clone()]);
+        fs::remove_file(root.join("count.txt")).unwrap();
+        assert!(query_parts(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
 
