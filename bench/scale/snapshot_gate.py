@@ -61,7 +61,11 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
             fields[name] = value
         return fields
 
-    data = json.loads(payload, object_pairs_hook=unique_fields)
+    def reject_nonfinite(value):
+        raise ValueError(f"invalid snapshot JSON constant: {value}")
+
+    data = json.loads(payload, object_pairs_hook=unique_fields,
+                      parse_constant=reject_nonfinite)
     if not isinstance(data, dict):
         raise ValueError("snapshot report must be a JSON object")
     rows, parts = data.get("rows"), data.get("parts")
