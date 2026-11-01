@@ -166,22 +166,27 @@ fn visit_part(
     let selected = indices[column];
     let mut reader = TypedQueryReader::open_with_metadata(part, names, metadata)?;
     while let Some(batch) = reader.next_batch()? {
-        for row in 0..batch[0].len() {
-            if !no_filters && !typed::passes(&batch, row, &conditions) {
-                continue;
-            }
-            match &batch[selected] {
-                TypedColumn::Numeric(values) => {
-                    observe(finite_number_as_f64(number_at(values, row))?)?
+        // The physical column variant stays constant throughout one batch.
+        // Specialize the row loop once instead of matching on every row.
+        let rows = batch[0].len();
+        match &batch[selected] {
+            TypedColumn::Numeric(values) => {
+                for row in 0..rows {
+                    if no_filters || typed::passes(&batch, row, conditions) {
+                        observe(finite_number_as_f64(number_at(values, row))?)?;
+                    }
                 }
-                TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
-                    observe(finite_number_as_f64(number_at(values, row))?)?
-                }
-                TypedColumn::NullableNumeric { .. } => {}
-                _ => return Err(ExecutionError::Invalid(
-                    "histogram requires numerical columns".into(),
-                )),
             }
+            TypedColumn::NullableNumeric { values, nulls } => {
+                for row in 0..rows {
+                    if nulls[row] == 0 && (no_filters || typed::passes(&batch, row, conditions)) {
+                        observe(finite_number_as_f64(number_at(values, row))?)?;
+                    }
+                }
+            }
+            _ => return Err(ExecutionError::Invalid(
+                "histogram requires numerical columns".into(),
+            )),
         }
     }
     Ok(())
@@ -644,5 +649,31 @@ mod streaming_histogram_bin_tests {
             (bin.min, bin.max, bin.count)).collect::<Vec<_>>(),
             eager.iter().map(|bin| (bin.min, bin.max, bin.count))
                 .collect::<Vec<_>>());
+    }
+}
+
+#[cfg(test)]
+mod batched_histogram_column_dispatch_tests {
+    use super::*;
+    use rusthouse_storage::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn nullable_stored_histogram_ignores_null_rows() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-batched-histogram-{}-{}", std::process::id(), line!(),
+        ));
+        let _ = fs::remove_dir_all(&path);
+        let columns = [Column { name: "value".into(), data_type: "Nullable(UInt64)".into() }];
+        let rows = [
+            vec![None], vec![Some("7".to_string())], vec![Some("7".to_string())],
+            vec![None], vec![Some("7".to_string())],
+        ];
+        write_wide_part(&path, &columns, &rows).unwrap();
+        let query = crate::parse_select("SELECT histogram(8)(value) FROM part").unwrap();
+        let mut output = Vec::new();
+        crate::execute(&query, Some(&path), &mut output).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "histogram(8)(value)\n[(7,7,3)]\n");
+        fs::remove_dir_all(path).unwrap();
     }
 }
