@@ -1877,12 +1877,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "UPPER requires one argument")?;
             match input {
                 Some(value) => {
+                    // ClickHouse upper() folds ASCII bytes only. Non-ASCII text
+                    // is preserved; upperUTF8() handles Unicode case folding.
                     let mut result = value;
-                    if result.is_ascii() {
-                        result.make_ascii_uppercase();
-                    } else {
-                        result = result.to_uppercase();
-                    }
+                    result.make_ascii_uppercase();
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("UPPER result is too large".into()));
                     }
