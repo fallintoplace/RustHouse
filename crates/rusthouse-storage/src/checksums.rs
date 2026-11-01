@@ -102,6 +102,23 @@ fn manifest_source_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> boo
     true
 }
 
+// A Windows reader must not let another handle change the checksums
+// manifest between inode validation, bounded read, and content parsing.
+#[cfg(windows)]
+fn open_immutable_checksums(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_immutable_checksums(path: &Path) -> io::Result<File> {
+    File::open(path)
+}
+
 pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError> {
     let path = path.as_ref();
     let metadata = fs::symlink_metadata(path).map_err(|source| checksums_io_error(path, source))?;
@@ -114,7 +131,7 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
             ),
         });
     }
-    let mut file = File::open(path).map_err(|source| checksums_io_error(path, source))?;
+    let mut file = open_immutable_checksums(path).map_err(|source| checksums_io_error(path, source))?;
     let opened = file
         .metadata()
         .map_err(|source| checksums_io_error(path, source))?;
@@ -717,5 +734,35 @@ mod checksums_initial_open_stability_tests {
             &file.metadata().unwrap()
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_checksums_sharing_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn checksum_manifest_blocks_in_place_writes_and_replacement() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-checksums-sharing-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("checksums.txt");
+        fs::write(&path, b"checksums format version: 3\n").unwrap();
+
+        let first = open_immutable_checksums(&path).unwrap();
+        let second = open_immutable_checksums(&path).unwrap();
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        assert!(fs::rename(&path, dir.join("old.txt")).is_err());
+        drop(first);
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        drop(second);
+        fs::OpenOptions::new().write(true).open(&path).unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 }
