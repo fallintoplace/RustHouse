@@ -75,12 +75,17 @@ def _unique_projection_pairs(pairs):
     return fields
 
 
+def _reject_nonstandard_projection_constant(token):
+    raise ValueError(f"nonstandard projection JSON number: {token}")
+
+
 def load_projection(path):
     """Never guess required columns by tokenizing SQL expressions."""
     if path is None:
         return None
     document = json.loads(read_bounded_text(path, MAX_PROJECTION_BYTES),
-                          object_pairs_hook=_unique_projection_pairs)
+                          object_pairs_hook=_unique_projection_pairs,
+                          parse_constant=_reject_nonstandard_projection_constant)
     if not isinstance(document, dict):
         raise ValueError("projection manifest must be a JSON object")
     available = document.get("available_columns")
