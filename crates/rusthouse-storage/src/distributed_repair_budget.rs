@@ -48,6 +48,14 @@ fn validate_repair_jobs(jobs: &[RepairJob]) -> Result<(), &'static str> {
         }
         return Ok(());
     }
+    // Repair inventories are often emitted in shard order. Validate them
+    // with adjacent comparisons and no hashing or heap allocation.
+    if jobs.windows(2).all(|pair| pair[0].shard < pair[1].shard) {
+        if jobs.iter().any(|job| !valid_repair_job(job)) {
+            return Err("invalid or duplicate repair job");
+        }
+        return Ok(());
+    }
     let mut unique = HashSet::with_capacity(jobs.len());
     for job in jobs {
         if !valid_repair_job(job) || !unique.insert(job.shard.as_str()) {
@@ -1093,5 +1101,37 @@ mod inline_small_repair_queue_reference_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ordered_repair_validation_tests {
+    use super::*;
+
+    #[test]
+    fn ordered_and_unordered_repair_inventories_have_identical_schedules() {
+        let ordered = (0..4096)
+            .map(|i| RepairJob {
+                shard: format!("shard_{i:04}"),
+                bytes: (i % 29) as u64,
+                missing_replicas: (i % 5 + 1) as u8,
+            })
+            .collect::<Vec<_>>();
+        let mut unordered = ordered.clone();
+        unordered.reverse();
+        for budget in [0u64, 11, 257, 8192, u64::MAX] {
+            for limit in [0, 1, 2, 8, 64] {
+                assert_eq!(
+                    plan_repairs(&ordered, budget, limit).unwrap(),
+                    plan_repairs(&unordered, budget, limit).unwrap()
+                );
+            }
+        }
+        let mut duplicate = ordered.clone();
+        duplicate[2048].shard = duplicate[1024].shard.clone();
+        assert!(plan_repairs(&duplicate, 9999, 10).is_err());
+        let mut invalid = ordered;
+        invalid[2048].shard = "bad/name".into();
+        assert!(plan_repairs(&invalid, 9999, 10).is_err());
     }
 }
