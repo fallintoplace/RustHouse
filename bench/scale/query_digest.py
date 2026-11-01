@@ -61,6 +61,38 @@ def _has_sql_separator(statement):
 
 
 
+def _starts_with_select(statement):
+    """Skip leading SQL comments without accepting write statements."""
+    cursor = 0
+    while cursor < len(statement):
+        if statement[cursor].isspace():
+            cursor += 1
+        elif statement.startswith("--", cursor) or statement[cursor] == "#":
+            newline = cursor
+            while newline < len(statement) and statement[newline] not in "\r\n":
+                newline += 1
+            cursor = newline
+        elif statement.startswith("/*", cursor):
+            cursor += 2
+            depth = 1
+            while depth and cursor < len(statement):
+                if statement.startswith("/*", cursor):
+                    depth += 1
+                    if depth > 32:
+                        return False
+                    cursor += 2
+                elif statement.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            if depth:
+                return False
+        else:
+            return re.match(r"SELECT\b", statement[cursor:], re.IGNORECASE) is not None
+    return False
+
+
 def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None,
                  max_rows=10000, max_output_bytes=100_000_000,
                  timeout=600, run=None):
@@ -80,7 +112,7 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
     if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
         raise ValueError("SQL must be nonempty and at most 64 KiB")
     statement = sql.strip().removesuffix(";").rstrip()
-    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or _has_sql_separator(statement):
+    if not _starts_with_select(statement) or _has_sql_separator(statement):
         raise ValueError("digest requires one read-only SELECT")
     execute = run or subprocess.run
     started = time.perf_counter()
