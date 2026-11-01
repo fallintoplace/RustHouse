@@ -431,11 +431,10 @@ mod heap_retry_timeline_equivalence_tests {
                 let mut expected = Vec::new();
                 for &(node, seed) in &nodes {
                     let mut due_after = Duration::ZERO;
-                    for (attempt, delay) in
-                        plan_retry_delays(attempts, 100, 1_000, seed, deadline)
-                            .unwrap()
-                            .into_iter()
-                            .enumerate()
+                    for (attempt, delay) in plan_retry_delays(attempts, 100, 1_000, seed, deadline)
+                        .unwrap()
+                        .into_iter()
+                        .enumerate()
                     {
                         due_after += delay;
                         expected.push(ReplicaRetryEvent {
@@ -451,7 +450,10 @@ mod heap_retry_timeline_equivalence_tests {
                         .then_with(|| a.node.cmp(&b.node))
                         .then_with(|| a.attempt.cmp(&b.attempt))
                 });
-                assert_eq!(actual, expected, "attempts={attempts}, deadline={deadline:?}");
+                assert_eq!(
+                    actual, expected,
+                    "attempts={attempts}, deadline={deadline:?}"
+                );
                 nodes.reverse();
                 assert_eq!(
                     plan_replica_retry_timeline(&nodes, attempts, 100, 1_000, deadline).unwrap(),
@@ -472,14 +474,13 @@ mod resumed_replica_retry_tests {
         for seed in [0, 7, 97, u64::MAX] {
             let all = plan_retry_delays(33, 100, 8_000, seed, Duration::MAX).unwrap();
             for first in [0, 1, 5, 16, 32, 33] {
-                let resumed = plan_retry_delays_from(
-                    first, 33 - first, 100, 8_000, seed, Duration::MAX,
-                ).unwrap();
+                let resumed =
+                    plan_retry_delays_from(first, 33 - first, 100, 8_000, seed, Duration::MAX)
+                        .unwrap();
                 assert_eq!(resumed, all[first as usize..]);
                 let budget = resumed.iter().take(3).copied().sum::<Duration>();
-                let partial = plan_retry_delays_from(
-                    first, 33 - first, 100, 8_000, seed, budget,
-                ).unwrap();
+                let partial =
+                    plan_retry_delays_from(first, 33 - first, 100, 8_000, seed, budget).unwrap();
                 assert_eq!(partial, resumed[..resumed.len().min(3)]);
             }
         }
@@ -491,7 +492,15 @@ mod resumed_replica_retry_tests {
             assert!(plan_retry_delays_from(start, count, 1, 2, 0, Duration::ZERO).is_err());
         }
         assert!(plan_retry_delays_from(33, 0, 0, 1, 0, Duration::ZERO).is_err());
-        assert!(plan_retry_delays_from(0, 0, 1, 1, 0, Duration::ZERO).unwrap().is_empty());
-        assert!(plan_retry_delays_from(32, 1, 1, 1, 0, Duration::ZERO).unwrap().is_empty());
+        assert!(
+            plan_retry_delays_from(0, 0, 1, 1, 0, Duration::ZERO)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            plan_retry_delays_from(32, 1, 1, 1, 0, Duration::ZERO)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
