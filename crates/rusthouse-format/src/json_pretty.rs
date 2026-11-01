@@ -619,13 +619,8 @@ mod atomic_pretty_json_validation_tests {
             assert!(write_pretty_json_row(&mut rendered, malformed).is_err());
             assert!(rendered.is_empty(), "rejected JSON must not emit a prefix");
         }
-        let mut nested = Vec::new();
-        for _ in 0..256 {
-            nested.push(b'[');
-        }
-        for _ in 0..256 {
-            nested.push(b']');
-        }
+        let mut nested = vec![b'['; 256];
+        nested.extend(std::iter::repeat_n(b']', 256));
         let mut rendered = Vec::new();
         write_pretty_json_row(&mut rendered, &nested).unwrap();
         assert!(rendered.starts_with(b"["));
