@@ -550,13 +550,22 @@ struct ShardResponse {
 const MAX_SHARD_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
 fn reserve_shard_bytes(used: &AtomicUsize, amount: usize) -> Result<(), String> {
-    used.fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
-        current
+    let mut current = used.load(AtomicOrdering::Acquire);
+    loop {
+        let next = current
             .checked_add(amount)
             .filter(|&total| total <= MAX_SHARD_INPUT_BYTES)
-    })
-    .map(|_| ())
-    .map_err(|_| "distributed shard input exceeds 64 MiB".into())
+            .ok_or("distributed shard input exceeds 64 MiB")?;
+        match used.compare_exchange_weak(
+            current,
+            next,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        ) {
+            Ok(_) => return Ok(()),
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 fn read_shard(
