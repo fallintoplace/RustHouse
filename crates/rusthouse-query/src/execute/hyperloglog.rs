@@ -37,6 +37,28 @@ const SMALL_UNSIGNED_HASHES: [u64; 256] = {
     values
 };
 
+// Small negative integer IDs are common in signed dimensions. Their
+// tagged Int128 hashes can be calculated at compile time, just like the
+// already-cached 0..255 unsigned integers.
+const SMALL_NEGATIVE_HASHES: [u64; 256] = {
+    let mut hashes = [0u64; 256];
+    let mut index = 0usize;
+    while index < hashes.len() {
+        let value = -(index as i128) - 1;
+        let mut tagged = [0u8; 17];
+        tagged[0] = 1;
+        let bytes = value.to_le_bytes();
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            tagged[offset + 1] = bytes[offset];
+            offset += 1;
+        }
+        hashes[index] = HyperLogLog::hash(&tagged);
+        index += 1;
+    }
+    hashes
+};
+
 pub(super) struct HyperLogLog {
     registers: Box<[u8; REGISTERS]>,
 }
@@ -81,6 +103,9 @@ impl HyperLogLog {
                 SMALL_UNSIGNED_HASHES[value as usize]
             }
             Number::Unsigned(value) => Self::hash(&value.to_le_bytes()),
+            Number::Signed(value) if (-256..0).contains(&value) => {
+                SMALL_NEGATIVE_HASHES[(value.unsigned_abs() - 1) as usize]
+            }
             Number::Signed(value) if value < 0 => {
                 // Negative Int128 keys must not collide with two's-complement UInt128 values.
                 let mut tagged = [0u8; 17];
@@ -496,5 +521,46 @@ mod decoded_hll_merge_equivalence_tests {
         invalid[last] = b'g';
         assert!(actual.merge_hex_state(&String::from_utf8(invalid).unwrap()).is_err());
         assert_eq!(actual.encode_state(), expected.encode_state());
+    }
+}
+
+#[cfg(test)]
+mod cached_negative_numeric_hash_tests {
+    use super::*;
+
+    #[test]
+    fn negative_lookup_matches_tagged_int128_hash_for_every_cached_value() {
+        for magnitude in 1..=256i128 {
+            let value = -magnitude;
+            let mut tagged = [0u8; 17];
+            tagged[0] = 1;
+            tagged[1..].copy_from_slice(&value.to_le_bytes());
+            let expected = HyperLogLog::hash(&tagged);
+            assert_eq!(SMALL_NEGATIVE_HASHES[(magnitude - 1) as usize], expected);
+            let mut expected_sketch = HyperLogLog::default();
+            expected_sketch.add(expected);
+            let mut cached_sketch = HyperLogLog::default();
+            cached_sketch.observe_number(Number::Signed(value));
+            assert_eq!(cached_sketch.encode_state(), expected_sketch.encode_state());
+        }
+    }
+
+    #[test]
+    fn negative_boundary_fallback_and_unsigned_keys_remain_distinct() {
+        for value in [-257i128, -256, -1, i128::MIN] {
+            let mut tagged = [0u8; 17];
+            tagged[0] = 1;
+            tagged[1..].copy_from_slice(&value.to_le_bytes());
+            let mut reference = HyperLogLog::default();
+            reference.add(HyperLogLog::hash(&tagged));
+            let mut actual = HyperLogLog::default();
+            actual.observe_number(Number::Signed(value));
+            assert_eq!(actual.encode_state(), reference.encode_state(), "{value}");
+        }
+        let mut signed = HyperLogLog::default();
+        signed.observe_number(Number::Signed(-1));
+        let mut unsigned = HyperLogLog::default();
+        unsigned.observe_number(Number::Unsigned(u128::MAX));
+        assert_ne!(signed.encode_state(), unsigned.encode_state());
     }
 }
