@@ -4537,8 +4537,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             }
                         }
                         let mut normalized = Vec::new();
-                        let source: &[u8] = if matches!(name.as_str(), "BASE64URLDECODE" | "FROM_BASE64URL" | "TRYBASE64URLDECODE")
-                        {
+                        let source: &[u8] = if matches!(
+                            name.as_str(),
+                            "BASE64URLDECODE" | "FROM_BASE64URL" | "TRYBASE64URLDECODE"
+                        ) {
                             normalized.reserve(value.len().saturating_add(3));
                             for byte in value.bytes() {
                                 normalized.push(match byte {
