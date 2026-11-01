@@ -14,19 +14,28 @@ pub struct ScrubReport {
 
 impl ScrubReport {
     fn record_part(&mut self, files: usize, bytes: u64, blocks: u64) -> Result<(), PartError> {
-        self.checked_files = self
+        // A later counter overflow must not leave a partially advanced scrub
+        // report. Validate the complete transition before publishing it.
+        let next_files = self
             .checked_files
             .checked_add(files)
             .ok_or_else(|| PartError::InvalidScan("scrub file count overflow".into()))?;
-        self.checked_bytes = self
+        let next_bytes = self
             .checked_bytes
             .checked_add(bytes)
             .ok_or_else(|| PartError::InvalidScan("scrub byte count overflow".into()))?;
-        self.blocks = self
+        let next_blocks = self
             .blocks
             .checked_add(blocks)
             .ok_or_else(|| PartError::InvalidScan("scrub block count overflow".into()))?;
-        self.parts += 1;
+        let next_parts = self
+            .parts
+            .checked_add(1)
+            .ok_or_else(|| PartError::InvalidScan("scrub part count overflow".into()))?;
+        self.checked_files = next_files;
+        self.checked_bytes = next_bytes;
+        self.blocks = next_blocks;
+        self.parts = next_parts;
         Ok(())
     }
 }
@@ -683,5 +692,60 @@ mod indexed_scrub_cursor_tests {
         ] {
             assert!(scrub_cursor_index(&parts, invalid).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod atomic_scrub_report_tests {
+    use super::*;
+
+    #[test]
+    fn every_overflow_preserves_the_entire_previous_report() {
+        for baseline in [
+            ScrubReport {
+                parts: 1,
+                checked_files: usize::MAX,
+                checked_bytes: 0,
+                blocks: 0,
+            },
+            ScrubReport {
+                parts: 1,
+                checked_files: 10,
+                checked_bytes: u64::MAX,
+                blocks: 0,
+            },
+            ScrubReport {
+                parts: 1,
+                checked_files: 10,
+                checked_bytes: 10,
+                blocks: u64::MAX,
+            },
+            ScrubReport {
+                parts: usize::MAX,
+                checked_files: 10,
+                checked_bytes: 10,
+                blocks: 10,
+            },
+        ] {
+            let mut report = baseline.clone();
+            assert!(report.record_part(1, 1, 1).is_err());
+            assert_eq!(report, baseline);
+        }
+    }
+
+    #[test]
+    fn successful_batch_updates_every_counter_once() {
+        let mut report = ScrubReport::default();
+        report.record_part(3, 250, 5).unwrap();
+        report.record_part(2, 10, 2).unwrap();
+        assert_eq!(
+            report,
+            ScrubReport {
+                parts: 2,
+                checked_files: 5,
+                checked_bytes: 260,
+                blocks: 7,
+            }
+        );
     }
 }
