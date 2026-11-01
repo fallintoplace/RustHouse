@@ -37,12 +37,26 @@ def page_sql(table, column, first, count):
 def query(binary, database, statement, timeout):
     # The CLI may be noisy. Bound memory for both successful output and errors.
     with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
+        extra = {}
+        if os.name == "posix":
+            import resource
+
+            def cap_output_file():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                limit = (2 * 1024 * 1024 if hard == resource.RLIM_INFINITY
+                         else min(2 * 1024 * 1024, hard))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+            extra["preexec_fn"] = cap_output_file
         result = subprocess.run(
             [str(binary), "sql", statement, "--database", str(database),
              "--format", "tsv-no-header"],
-            stdout=output, stderr=errors, check=False, timeout=timeout,
+            stdout=output, stderr=errors, check=False, timeout=timeout, **extra,
         )
         if result.returncode:
+            output.seek(0, os.SEEK_END)
+            if output.tell() >= 2 * 1024 * 1024:
+                raise ValueError("keyset SQL page output exceeds 2 MiB")
             errors.seek(0, os.SEEK_END)
             errors.seek(max(0, errors.tell() - 500))
             raise RuntimeError(errors.read(500).decode("utf-8", "replace"))
@@ -104,8 +118,9 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
                     raise TimeoutError("total export deadline exceeded")
                 # Compare the complete expected page in one operation.
                 # Avoid one Python bytes allocation and one splitline per ID.
-                expected = "".join(f"{number}\n" for number in
-                                   range(first, first + count)).encode("ascii")
+                # Convert whole integer ranges with map(str) rather than
+                # dispatching an f-string for every row in billion-ID exports.
+                expected = ("\n".join(map(str, range(first, first + count))) + "\n").encode("ascii")
                 if data != expected:
                     raise ValueError(f"missing, duplicated or unordered ID near {first}")
                 sink.write(data)

@@ -32,6 +32,21 @@ class SnapshotGateTests(unittest.TestCase):
         self.assertLess(len(str(failure.exception)), 700)
 
 
+    def test_posix_inspection_child_has_online_output_limit(self):
+        import os
+        if os.name != "posix":
+            self.skipTest("POSIX file-size limit required")
+
+        def run(command, **kwargs):
+            self.assertTrue(callable(kwargs.get("preexec_fn")))
+            kwargs["stdout"].write(
+                b'{"rows":100,"parts":1,"columns":[{"name":"id","type":"UInt64"}]}'
+            )
+            return SimpleNamespace(returncode=0)
+
+        with patch("bench.scale.snapshot_gate.subprocess.run", side_effect=run):
+            self.assertEqual(inspect_snapshot("binary", "part", min_rows=1)["physical_rows"], 100)
+
     def test_accepts_billion_physical_rows(self):
         def run(command, **kwargs):
             self.assertEqual(command[1], "inspect-snapshot")
@@ -142,6 +157,19 @@ class SnapshotMetadataBudgetTests(unittest.TestCase):
                 stdout=b'{"rows":1,"parts":1,"columns":[{"name":"id","type":"UInt64"}]}',
                 stderr=b""))
         self.assertEqual(result["physical_rows"], 1)
+
+    def test_noncanonical_column_identifiers_cannot_pass_a_snapshot_gate(self):
+        for name in ("1bad", "has.dot", "a b", "café", "x" * 129):
+            payload = json.dumps({
+                "rows": 1_000_000_001, "parts": 1,
+                "columns": [{"name": name, "type": "UInt64"}],
+            }).encode()
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "columns"):
+                inspect_snapshot(
+                    "rusthouse", "parts",
+                    run=lambda *_a, **_k: SimpleNamespace(
+                        returncode=0, stdout=payload, stderr=b""),
+                )
 
 if __name__ == "__main__":
     unittest.main()

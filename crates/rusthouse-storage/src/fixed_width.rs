@@ -45,6 +45,14 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
         append_decoded::<T, WIDTH>(&mut result, &buffer[..batch_bytes], &decode);
         return Ok(result);
     }
+    // Medium marks should not zero the bulk 64 KiB buffer either.
+    const MEDIUM_BYTES: usize = 8 * 1024;
+    if batch_bytes <= MEDIUM_BYTES {
+        let mut buffer = [0u8; MEDIUM_BYTES];
+        reader.read_exact(&mut buffer[..batch_bytes])?;
+        append_decoded::<T, WIDTH>(&mut result, &buffer[..batch_bytes], &decode);
+        return Ok(result);
+    }
     let mut buffer = [0u8; READ_BUFFER_BYTES];
     while result.len() < rows {
         let count = (rows - result.len()).min(buffer.len() / WIDTH);
@@ -120,6 +128,32 @@ mod empty_batch_fast_path_tests {
 #[cfg(test)]
 mod small_mark_tests {
     use super::*;
+
+
+    #[test]
+    fn decodes_across_small_medium_and_bulk_thresholds_without_read_ahead() {
+        for rows in [64usize, 65, 1024, 1025] {
+            let mut encoded = (0..rows as u64)
+                .flat_map(u64::to_le_bytes)
+                .collect::<Vec<_>>();
+            encoded.extend_from_slice(&u64::MAX.to_le_bytes());
+            let mut source = io::Cursor::new(encoded);
+            let decoded = read_fixed_width::<_, u64, 8>(
+                &mut source,
+                rows,
+                "invalid size",
+                u64::from_le_bytes,
+            )
+            .unwrap();
+            assert_eq!(decoded.len(), rows);
+            assert_eq!(decoded.first(), Some(&0));
+            assert_eq!(decoded.last(), Some(&((rows - 1) as u64)));
+            assert_eq!(source.position(), (rows * 8) as u64);
+            let mut trailing = [0u8; 8];
+            source.read_exact(&mut trailing).unwrap();
+            assert_eq!(trailing, u64::MAX.to_le_bytes());
+        }
+    }
 
     #[test]
     fn decodes_small_marks_and_preserves_the_next_record() {

@@ -33,9 +33,18 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
         dirs.sort()
         files.sort()
         for name in dirs:
-            if (Path(directory) / name).is_symlink():
+            child = Path(directory) / name
+            if child.is_symlink():
                 raise ValueError("snapshot contains a symlink")
+            # Empty directories are part of the snapshot even though they
+            # have no regular files to contribute to the file inventory.
+            if not any(child.iterdir()):
+                aggregate.update(b"empty-directory\0")
+                aggregate.update(child.relative_to(root).as_posix().encode("utf-8"))
+                aggregate.update(b"\0")
         for name in files:
+            if count >= max_files:
+                raise ValueError("snapshot exceeds max_files")
             path = Path(directory) / name
             before = path.lstat()
             if not stat.S_ISREG(before.st_mode):
@@ -65,8 +74,6 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
             aggregate.update(digest.digest())
             count += 1
             total_bytes += before.st_size
-            if count > max_files:
-                raise ValueError("snapshot exceeds max_files")
     if count == 0:
         raise ValueError("snapshot has no files")
     actual = aggregate.hexdigest()

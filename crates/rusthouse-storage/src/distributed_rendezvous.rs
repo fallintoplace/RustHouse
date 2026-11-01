@@ -99,6 +99,28 @@ pub fn replicas_for(
         }
         return Ok(vec![winning_node.to_owned()]);
     }
+    // Two replicas are common: select the top two without allocating and
+    // partitioning a ranking vector for all candidates.
+    if replicas == 2 {
+        let outranks = |left: (u64, &str), right: (u64, &str)| {
+            left.0 > right.0 || (left.0 == right.0 && left.1 < right.1)
+        };
+        let mut first: Option<(u64, &str)> = None;
+        let mut second: Option<(u64, &str)> = None;
+        for node in nodes {
+            let candidate = (score_with_seed(seed, node), node.as_str());
+            if first.is_none_or(|best| outranks(candidate, best)) {
+                second = first;
+                first = Some(candidate);
+            } else if second.is_none_or(|runner_up| outranks(candidate, runner_up)) {
+                second = Some(candidate);
+            }
+        }
+        return Ok(vec![
+            first.expect("at least two validated nodes").1.to_owned(),
+            second.expect("at least two validated nodes").1.to_owned(),
+        ]);
+    }
     let mut ranked: Vec<(u64, &str)> = nodes
         .iter()
         .map(|node| (score_with_seed(seed, node), node.as_str()))
@@ -901,6 +923,39 @@ mod stack_zone_ranking_parity_tests {
             first.extend(later);
             for count in [3, 4, 8, 11, 12, 32, 64] {
                 assert_eq!(zone_aware_replicas_for(shard, &members, count).unwrap(), first[..count]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod two_replica_rendezvous_selection_tests {
+    use super::*;
+
+    #[test]
+    fn two_replicas_match_full_sort_for_tiny_and_large_candidate_sets() {
+        for count in [2usize, 3, 8, 9, 16, 64] {
+            let nodes = (0..count)
+                .map(|index| format!("node_{index:02}"))
+                .collect::<Vec<_>>();
+            for index in 0..64 {
+                let shard = format!("placement_{index}");
+                let seed = shard_seed(&shard);
+                let mut ranked = nodes
+                    .iter()
+                    .map(|node| (score_with_seed(seed, node), node.as_str()))
+                    .collect::<Vec<_>>();
+                ranked.sort_unstable_by(|left, right| {
+                    right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
+                });
+                let expected = ranked
+                    .iter()
+                    .take(2)
+                    .map(|(_, node)| node.to_string())
+                    .collect::<Vec<_>>();
+                assert_eq!(replicas_for(&shard, &nodes, 2).unwrap(), expected);
+                let reversed = nodes.iter().rev().cloned().collect::<Vec<_>>();
+                assert_eq!(replicas_for(&shard, &reversed, 2).unwrap(), expected);
             }
         }
     }

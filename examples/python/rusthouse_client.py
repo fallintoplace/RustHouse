@@ -6,6 +6,7 @@ JSON numbers are intentionally represented as strings by RustHouse.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
@@ -42,8 +43,18 @@ class RustHouseClient:
                 or parsed.password or parsed.path not in ("", "/")
                 or parsed.query or parsed.fragment or not 0 < timeout <= 120):
             raise ValueError("expected an HTTP origin and timeout in (0, 120]")
-        if parsed.hostname not in {"localhost", "127.0.0.1"} and not allow_private_network:
-            raise ValueError("non-loopback hosts require allow_private_network=True")
+        if parsed.hostname not in {"localhost", "127.0.0.1"}:
+            if not allow_private_network:
+                raise ValueError("non-loopback hosts require allow_private_network=True")
+            try:
+                address = ipaddress.IPv4Address(parsed.hostname)
+            except ipaddress.AddressValueError as exc:
+                raise ValueError("private peers require a numeric IPv4 address") from exc
+            first, second, _, _ = address.packed
+            if not (first == 10 or first == 172 and 16 <= second <= 31
+                    or first == 192 and second == 168
+                    or first == 100 and 64 <= second <= 127):
+                raise ValueError("opt-in peers must use a private IPv4 address")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 

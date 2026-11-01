@@ -448,9 +448,34 @@ fn bounded_utf8_edit_distance(left: &str, right: &str) -> Result<i64, ParseError
     if left == right {
         return Ok(0);
     }
-    let left: Vec<char> = left.chars().collect();
-    let right: Vec<char> = right.chars().collect();
-    let (left, right) = trim_common_edges(&left, &right);
+    // Trim UTF-8 character boundaries before allocating char vectors.
+    // A tiny edit in long text should only materialize its changed region.
+    let mut left_start = 0;
+    let mut right_start = 0;
+    for ((left_index, left_char), (right_index, right_char)) in
+        left.char_indices().zip(right.char_indices())
+    {
+        if left_char != right_char {
+            break;
+        }
+        left_start = left_index + left_char.len_utf8();
+        right_start = right_index + right_char.len_utf8();
+    }
+    let left = &left[left_start..];
+    let right = &right[right_start..];
+    let mut left_end = left.len();
+    let mut right_end = right.len();
+    for ((left_index, left_char), (right_index, right_char)) in
+        left.char_indices().rev().zip(right.char_indices().rev())
+    {
+        if left_char != right_char {
+            break;
+        }
+        left_end = left_index;
+        right_end = right_index;
+    }
+    let left: Vec<char> = left[..left_end].chars().collect();
+    let right: Vec<char> = right[..right_end].chars().collect();
     if left.is_empty() {
         return Ok(right.len() as i64);
     }
@@ -1557,7 +1582,12 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "LOWER requires one argument")?;
             match input {
                 Some(value) => {
-                    let result = value.to_ascii_lowercase();
+                    let mut result = value;
+                    if result.is_ascii() {
+                        result.make_ascii_lowercase();
+                    } else {
+                        result = result.to_lowercase();
+                    }
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("LOWER result is too large".into()));
                     }
@@ -1644,7 +1674,12 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "UPPER requires one argument")?;
             match input {
                 Some(value) => {
-                    let result = value.to_ascii_uppercase();
+                    let mut result = value;
+                    if result.is_ascii() {
+                        result.make_ascii_uppercase();
+                    } else {
+                        result = result.to_uppercase();
+                    }
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("UPPER result is too large".into()));
                     }
@@ -2534,14 +2569,15 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         Some(None) => return Ok(ConstantValue::Null),
                     };
-                    if name == "SUBSTRING" {
+                    if name == "SUBSTRING" && value.is_ascii() {
+                        // Keep the byte-slice fast path for ordinary ASCII text.
+                        // UTF-8 text uses character offsets to avoid slicing a
+                        // codepoint in half and incorrectly rejecting the query.
                         let end = start.saturating_add(count).min(value.len());
                         let result = if start >= value.len() {
                             ""
                         } else {
-                            value.get(start..end).ok_or_else(|| {
-                                ParseError("SUBSTRING byte boundaries must be UTF-8".into())
-                            })?
+                            &value[start..end]
                         };
                         ConstantValue::Text(result.to_owned())
                     } else {
@@ -3525,13 +3561,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("LEFT count must be nonnegative".into()));
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    if name == "LEFT" {
-                        let end = count.min(value.len());
-                        let result = value.get(..end).ok_or_else(|| {
-                            ParseError("LEFT byte boundary must be valid UTF-8".into())
-                        })?;
-                        ConstantValue::Text(result.to_owned())
-                    } else if count >= value.len() {
+                    if count >= value.len() {
                         ConstantValue::Text(value)
                     } else if value.as_bytes()[..count].is_ascii() {
                         let mut result = value;
@@ -3797,13 +3827,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("RIGHT count must be nonnegative".into()));
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    if name == "RIGHT" {
-                        let start = value.len().saturating_sub(count);
-                        let result = value.get(start..).ok_or_else(|| {
-                            ParseError("RIGHT byte boundary must be valid UTF-8".into())
-                        })?;
-                        ConstantValue::Text(result.to_owned())
-                    } else if count >= value.len() {
+                    if count >= value.len() {
                         ConstantValue::Text(value)
                     } else {
                         let start = value.len() - count;
@@ -5256,5 +5280,35 @@ mod common_affix_edit_distance_tests {
         let right = "y".repeat(2048);
         assert!(bounded_edit_distance(left.as_bytes(), right.as_bytes()).is_err());
         assert!(bounded_utf8_edit_distance(&left, &right).is_err());
+    }
+}
+
+#[cfg(test)]
+mod utf8_edit_distance_pretrim_tests {
+    use super::bounded_utf8_edit_distance;
+
+    #[test]
+    fn common_multibyte_edges_are_trimmed_without_changing_distance() {
+        for (left, right, expected) in [
+            ("🎉éabc界", "🎉éaxc界", 1),
+            ("🎉éabc界", "🎉éab界", 1),
+            ("🎉éabc界", "🎉éabcd界", 1),
+            ("🙂🙂", "🙂", 1),
+            ("é", "e", 1),
+            ("e\u{301}", "é", 2),
+            ("hello", "world", 4),
+        ] {
+            assert_eq!(bounded_utf8_edit_distance(left, right).unwrap(), expected);
+            assert_eq!(bounded_utf8_edit_distance(right, left).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn long_identical_edges_leave_only_small_edits_to_allocate() {
+        let prefix = "🎉".repeat(100_000);
+        let suffix = "界".repeat(100_000);
+        let left = format!("{prefix}a{suffix}");
+        let right = format!("{prefix}b{suffix}");
+        assert_eq!(bounded_utf8_edit_distance(&left, &right).unwrap(), 1);
     }
 }
