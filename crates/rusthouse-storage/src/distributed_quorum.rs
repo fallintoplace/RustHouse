@@ -886,8 +886,8 @@ pub fn plan_joint_write_acknowledgements(
     // One common unacknowledged member can supply the final vote in both
     // memberships. Prefer the smallest common name for the exact tie break.
     if previous_missing == 1 && next_missing == 1 {
-        if let Some(&shared) = candidates.iter().find(|name| {
-            previous_members.contains(name) && next_members.contains(name)
+        if let Some(&shared) = candidates.iter().find(|&&name| {
+            previous_members.contains(&name) && next_members.contains(&name)
         }) {
             return Ok(vec![shared.to_owned()]);
         }
