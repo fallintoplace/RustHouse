@@ -4,7 +4,10 @@ import argparse
 import csv
 import json
 import math
+import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
 MAX_REPORT_BYTES = 2 * 1024 * 1024
@@ -32,10 +35,25 @@ def parse_finite_report_float(value):
 
 def load_report(path):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("report must be a regular, non-symlinked file")
-    with path.open("rb") as source:
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened):
+            raise ValueError("TPC-H report changed while opening")
         payload = source.read(MAX_REPORT_BYTES + 1)
+        if identity(opened) != identity(os.fstat(source.fileno())):
+            raise ValueError("TPC-H report changed while reading")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError("TPC-H report changed while reading")
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("benchmark report exceeds 2 MiB")
     return json.loads(payload, object_pairs_hook=reject_duplicate_report_keys,
@@ -132,9 +150,24 @@ def main(argv=None):
     try:
         report = load_report(args.input)
         if args.output:
+            if args.output.resolve() == args.input.resolve():
+                raise ValueError("CSV output must not replace its input report")
             args.output.parent.mkdir(parents=True, exist_ok=True)
-            with args.output.open("w", encoding="utf-8", newline="") as output:
-                write_csv(report, output)
+            pending = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", newline="",
+                    dir=args.output.parent, prefix=f".{args.output.name}.",
+                    suffix=".tmp", delete=False,
+                ) as output:
+                    pending = Path(output.name)
+                    write_csv(report, output)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(pending, args.output)
+            finally:
+                if pending is not None:
+                    pending.unlink(missing_ok=True)
         else:
             write_csv(report, sys.stdout)
     except (OSError, ValueError, TypeError, KeyError) as error:

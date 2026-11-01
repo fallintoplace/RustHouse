@@ -1,5 +1,6 @@
 //! Bounded, strict JSON parsing for constant SQL JSON scalar functions.
 //! This is not the ClickHouse JSON column storage serialization.
+use std::borrow::Cow;
 const MAX_JSON_BYTES: usize = 1_048_576;
 const MAX_JSON_DEPTH: usize = 32;
 const MAX_JSON_NODES: usize = 65_536;
@@ -13,7 +14,7 @@ pub(crate) struct JsonValue<'a> {
 #[derive(Debug)]
 enum JsonKind<'a> {
     Primitive,
-    Text(String),
+    Text(Cow<'a, str>),
     Array(Vec<JsonValue<'a>>),
     Object(Vec<(String, JsonValue<'a>)>),
 }
@@ -128,7 +129,7 @@ impl<'a> Parser<'a> {
         Ok(value)
     }
 
-    fn string(&mut self) -> Result<String, &'static str> {
+    fn string(&mut self) -> Result<Cow<'a, str>, &'static str> {
         self.expect(b'"')?;
         // Parse the common escape-free string without byte-by-byte dispatch.
         if let Some(end) = self.bytes()[self.offset..]
@@ -137,7 +138,7 @@ impl<'a> Parser<'a> {
             if self.bytes()[self.offset + end] == b'"' {
                 let begin = self.offset;
                 self.offset += end + 1;
-                return Ok(self.text[begin..begin + end].to_owned());
+                return Ok(Cow::Borrowed(&self.text[begin..begin + end]));
             }
         }
         let mut output = String::new();
@@ -147,7 +148,7 @@ impl<'a> Parser<'a> {
             if byte == b'"' {
                 output.push_str(&self.text[start..self.offset]);
                 self.offset += 1;
-                return Ok(output);
+                return Ok(Cow::Owned(output));
             }
             if byte < 0x20 {
                 return Err("unescaped control character in JSON string");
@@ -246,7 +247,7 @@ impl<'a> Parser<'a> {
                 let mut fields = Vec::new();
                 if !self.consume_expected_byte_if_present(b'}') {
                     loop {
-                        let key = self.string()?;
+                        let key = self.string()?.into_owned();
                         self.skip_ws();
                         self.expect(b':')?;
                         fields.push((key, self.value(depth + 1)?));
@@ -351,7 +352,7 @@ pub fn parse_json_each_row_fields(text: &str) -> Result<Vec<(String, Option<Stri
     let mut converted = Vec::with_capacity(fields.len());
     for (key, cell) in fields {
         let value = match cell.kind {
-            JsonKind::Text(text) => Some(text),
+            JsonKind::Text(text) => Some(text.into_owned()),
             JsonKind::Primitive if cell.raw == "null" => None,
             JsonKind::Primitive | JsonKind::Array(_) | JsonKind::Object(_) => {
                 Some(cell.raw.to_owned())
@@ -544,5 +545,41 @@ mod short_json_each_row_key_tests {
         }
         assert!(parse_json_each_row_fields(r#"{"":1}"#).is_err());
         assert!(parse_json_each_row_fields(&format!("{{\"{}\":1}}", "x".repeat(129))).is_err());
+    }
+}
+
+#[cfg(test)]
+mod borrowed_json_string_tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    #[test]
+    fn plain_values_borrow_the_source_and_escaped_values_are_owned() {
+        let input = r#"{"plain":"éclair-😀","escaped":"line\nbreak"}"#;
+        let parsed = parse_json(input).unwrap();
+        let JsonKind::Object(fields) = &parsed.kind else { panic!("expected object") };
+        assert!(matches!(&fields[0].1.kind, JsonKind::Text(Cow::Borrowed(_))));
+        assert!(matches!(&fields[1].1.kind, JsonKind::Text(Cow::Owned(_))));
+        assert_eq!(fields[0].1.as_string(), Some("éclair-😀"));
+        assert_eq!(fields[1].1.as_string(), Some("line\nbreak"));
+
+        // JSONEachRow owns the returned values even after its input is dropped.
+        let converted = parse_json_each_row_fields(input).unwrap();
+        assert_eq!(converted, vec![
+            ("plain".into(), Some("éclair-😀".into())),
+            ("escaped".into(), Some("line\nbreak".into())),
+        ]);
+    }
+
+    #[test]
+    fn plain_long_utf8_text_uses_one_borrowed_span() {
+        let long = "界".repeat(12_000);
+        let input = format!("{{\"data\":\"{long}\"}}");
+        let parsed = parse_json(&input).unwrap();
+        let JsonKind::Object(fields) = &parsed.kind else { panic!("expected object") };
+        let JsonKind::Text(Cow::Borrowed(value)) = &fields[0].1.kind else {
+            panic!("plain strings must not allocate a second copy")
+        };
+        assert_eq!(*value, long);
     }
 }

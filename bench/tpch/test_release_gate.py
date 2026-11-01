@@ -45,6 +45,34 @@ class ReleaseGateTests(unittest.TestCase):
                     gate.load_manifest(path)
 
 
+    def test_rejects_manifest_swapped_during_open(self):
+        import os
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "report.json"
+            replacement = Path(root) / "replacement.json"
+            path.write_text('{"runs":2}', encoding="utf-8")
+            replacement.write_text('{"runs":3}', encoding="utf-8")
+            actual_open = os.open
+
+            def swap(filename, flags):
+                path.unlink()
+                replacement.rename(path)
+                return actual_open(filename, flags)
+
+            with patch.object(gate.os, "open", side_effect=swap):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    gate.load_manifest(path)
+
+    def test_rejects_oversized_exponent_floats(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "report.json"
+            path.write_text('{"reference_checked":true,"runs":1e400}',
+                            encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "nonfinite JSON"):
+                gate.load_manifest(path)
+
     def test_accepts_verified_tpch_and_analytics_reports(self):
         required = {1, 6}
         gate.verify(report([(1, "passed"), (6, "passed")]), required)
