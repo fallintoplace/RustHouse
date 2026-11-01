@@ -152,6 +152,55 @@ fn read_body_chunk_with_deadline(
     }
 }
 
+/// Check an HTTP quality value without floating-point parsing. HTTP/1.1
+/// quality values have at most three fractional digits and range from 0 to 1.
+fn positive_http_quality(value: &str) -> bool {
+    let raw = value.as_bytes();
+    match raw {
+        [b'1'] => true,
+        [b'1', b'.', digits @ ..]
+            if digits.len() <= 3 && digits.iter().all(|&digit| digit == b'0') => true,
+        [b'0'] => false,
+        [b'0', b'.', digits @ ..]
+            if digits.len() <= 3 && digits.iter().all(u8::is_ascii_digit) =>
+        {
+            digits.iter().any(|&digit| digit != b'0')
+        }
+        _ => false,
+    }
+}
+
+/// Only explicit positive acceptance enables the private peer encoding.
+/// Wildcards alone do not negotiate our unregistered, internal LZ4 format.
+fn accepts_rusthouse_lz4(header: &str) -> bool {
+    let mut accepted = false;
+    for entry in header.split(',') {
+        let mut parts = entry.split(';');
+        let name = parts.next().unwrap_or("").trim_matches([' ', '\t']);
+        if !name.eq_ignore_ascii_case("x-rusthouse-lz4") {
+            continue;
+        }
+        let positive = match parts.next() {
+            None => true,
+            Some(parameter) => {
+                let parameter = parameter.trim_matches([' ', '\t']);
+                match parameter.split_once('=') {
+                    Some((name, value)) if name.eq_ignore_ascii_case("q") =>
+                        positive_http_quality(value),
+                    _ => false,
+                }
+            }
+        };
+        // Duplicate or malformed preferences must not silently override an
+        // explicit rejection. Do not accept extension parameters either.
+        if !positive || parts.next().is_some() {
+            return false;
+        }
+        accepted = true;
+    }
+    accepted
+}
+
 fn read_request_with_deadline(
     stream: &mut TcpStream,
     deadline: Duration,
@@ -232,7 +281,7 @@ fn read_request_with_deadline(
                 return Err(Response::text("400 Bad Request", "duplicate Accept-Encoding\n"));
             }
             seen_accept = true;
-            accept_lz4 = value.trim() == "x-rusthouse-lz4";
+            accept_lz4 = accepts_rusthouse_lz4(value);
         }
     }
     let listener = input
@@ -643,6 +692,46 @@ mod accept_error_policy_tests {
         }
         for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
             assert!(!retryable_accept_error(kind));
+        }
+    }
+}
+
+#[cfg(test)]
+mod accept_encoding_preferences_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_explicit_lz4_preferences_in_normal_header_lists() {
+        for value in [
+            "x-rusthouse-lz4",
+            "X-RUSTHOUSE-LZ4",
+            "gzip, X-RUSTHOUSE-LZ4",
+            "gzip;q=1, x-rusthouse-lz4; q=0.5",
+            "x-rusthouse-lz4;q=1.000",
+            "x-rusthouse-lz4;q=0.001",
+            "x-rusthouse-lz4;q=1.",
+            "x-rusthouse-lz4;Q=0.75, gzip",
+        ] {
+            assert!(accepts_rusthouse_lz4(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn disabled_invalid_or_implicit_lz4_is_not_negotiated() {
+        for value in [
+            "",
+            "gzip",
+            "*",
+            "x-rusthouse-lz4;q=0",
+            "x-rusthouse-lz4;q=0.000",
+            "x-rusthouse-lz4;q=1.001",
+            "x-rusthouse-lz4;q=0.0001",
+            "x-rusthouse-lz4;q=2",
+            "x-rusthouse-lz4;quality=1",
+            "x-rusthouse-lz4;q=1;version=1",
+            "x-rusthouse-lz4;q=1, x-rusthouse-lz4;q=0",
+        ] {
+            assert!(!accepts_rusthouse_lz4(value), "{value}");
         }
     }
 }
