@@ -146,8 +146,11 @@ def preflight(source, destination, max_bytes=None, max_entries=1_000_000):
     source = source.resolve(strict=True)
     if destination.is_symlink():
         raise ValueError("backup destination must not be a symlink")
-    destination = destination.resolve(strict=False)
-    if destination.exists() or destination == source or source in destination.parents:
+    # Resolve only for containment checks. Keep the caller's path for
+    # publication and reporting: macOS aliases /var to /private/var.
+    resolved_destination = destination.resolve(strict=False)
+    if (resolved_destination.exists() or resolved_destination == source
+            or source in resolved_destination.parents):
         raise ValueError("destination must not exist or be inside the source")
     stage = destination.with_name(destination.name + ".partial")
     if stage.exists() or stage.is_symlink():

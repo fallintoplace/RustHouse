@@ -244,5 +244,26 @@ class BackupTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "doctor_timeout"):
                 backup(source, Path(root) / "invalid", doctor_timeout=float("inf"))
 
+
+    @unittest.skipUnless(hasattr(__import__("os"), "symlink"), "requires symlinks")
+    def test_preserves_destination_spelling_through_parent_alias(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            real = base / "real"
+            real.mkdir()
+            source = real / "db"
+            source.mkdir()
+            alias = base / "alias"
+            try:
+                alias.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            requested = alias / "archive"
+            _, destination, stage = preflight(source, requested)
+            self.assertEqual(destination, requested)
+            self.assertEqual(stage, alias / "archive.partial")
+            with self.assertRaisesRegex(ValueError, "inside the source"):
+                preflight(source, alias / "db" / "nested")
+
 if __name__ == "__main__":
     unittest.main()
