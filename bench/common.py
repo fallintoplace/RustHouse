@@ -21,38 +21,22 @@ MAX_SQL_STDOUT_BYTES = 64 * 1024 * 1024
 
 
 def _leading_sql_keyword(statement):
-    """Identify the first SQL keyword after nested comments and whitespace."""
-    cursor = 0
-    while cursor < len(statement):
-        if statement[cursor].isspace():
-            cursor += 1
-        elif statement.startswith(("--", "#"), cursor):
-            end = statement.find("\n", cursor)
+    """Identify SELECT after leading comments without changing the SQL text."""
+    remainder = statement.lstrip()
+    while remainder:
+        if remainder.startswith(("--", "#")):
+            end = remainder.find("\n")
             if end < 0:
                 return ""
-            cursor = end + 1
-        elif statement.startswith("/*", cursor):
-            cursor += 2
-            depth = 1
-            while cursor < len(statement) and depth:
-                if statement.startswith("/*", cursor):
-                    depth += 1
-                    cursor += 2
-                elif statement.startswith("*/", cursor):
-                    depth -= 1
-                    cursor += 2
-                else:
-                    cursor += 1
-            if depth:
+            remainder = remainder[end + 1:].lstrip()
+        elif remainder.startswith("/*"):
+            end = remainder.find("*/", 2)
+            if end < 0:
                 return ""
+            remainder = remainder[end + 2:].lstrip()
         else:
             break
-    begin = cursor
-    while cursor < len(statement) and (
-            statement[cursor].isascii()
-            and (statement[cursor].isalnum() or statement[cursor] == "_")):
-        cursor += 1
-    return statement[begin:cursor].upper()
+    return remainder.split(maxsplit=1)[0].upper() if remainder else ""
 
 
 def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-header"):
