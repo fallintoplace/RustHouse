@@ -304,10 +304,8 @@ fn read_request_with_deadline(
             break;
         }
         let (key, value) = parse_header(line)?;
-        if key.eq_ignore_ascii_case("host") {
-            if host.replace(http_ows(value)).is_some() {
-                return Err(Response::text("400 Bad Request", "duplicate Host header\n"));
-            }
+        if key.eq_ignore_ascii_case("host") && host.replace(http_ows(value)).is_some() {
+            return Err(Response::text("400 Bad Request", "duplicate Host header\n"));
         }
         if key.eq_ignore_ascii_case("expect") {
             return Err(Response::text(
