@@ -186,6 +186,81 @@ fn count_column(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn count_column_wide(
+    column: &NumericColumn,
+    nulls: Option<&[u8]>,
+    mut included: impl FnMut(usize) -> bool,
+    bits: usize,
+    shift: usize,
+    prefix_mask: u128,
+    prefixes: &[u128; 2],
+    histogram: &mut [Vec<u64>; 2],
+) -> Result<(), ExecutionError> {
+    // Two bytes per radix pass halve I/O for large 64/128-bit medians.
+    // Reuse an explicitly bounded 1 MiB histogram across the entire query.
+    let targets = [prefixes[0] & prefix_mask, prefixes[1] & prefix_mask];
+    let shared_prefix = targets[0] == targets[1];
+    let mut visit = |value: u128, row: usize| {
+        if nulls.is_some_and(|map| map[row] != 0) {
+            return;
+        }
+        let masked = value & prefix_mask;
+        if masked != targets[0] && masked != targets[1] {
+            return;
+        }
+        // Filtering is expensive for LIKE/IN predicates. Only evaluate rows
+        // that may contribute to either rank at this radix level, and never
+        // allocate a per-batch boolean inclusion bitmap.
+        if !included(row) {
+            return;
+        }
+        let bucket = ((value >> shift) & 65_535) as usize;
+        if masked == targets[0] {
+            histogram[0][bucket] += 1;
+        }
+        if !shared_prefix && masked == targets[1] {
+            histogram[1][bucket] += 1;
+        }
+    };
+    macro_rules! unsigned {
+        ($values:expr) => {
+            for (index, &value) in $values.iter().enumerate() {
+                visit(sorted_key_unsigned(u128::from(value)), index);
+            }
+        };
+    }
+    macro_rules! signed {
+        ($values:expr) => {
+            for (index, &value) in $values.iter().enumerate() {
+                visit(sorted_key_signed(i128::from(value), bits), index);
+            }
+        };
+    }
+    match column {
+        NumericColumn::UInt8(values) => unsigned!(values),
+        NumericColumn::UInt16(values) => unsigned!(values),
+        NumericColumn::UInt32(values) => unsigned!(values),
+        NumericColumn::UInt64(values) => unsigned!(values),
+        NumericColumn::UInt128(values) => unsigned!(values),
+        NumericColumn::Int8(values) => signed!(values),
+        NumericColumn::Int16(values) => signed!(values),
+        NumericColumn::Int32(values) => signed!(values),
+        NumericColumn::Int64(values) => signed!(values),
+        NumericColumn::Int128(values) => signed!(values),
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "radix median requires a native integer column".into(),
+            ));
+        }
+    }
+    if shared_prefix {
+        let (first, second) = histogram.split_at_mut(1);
+        second[0].copy_from_slice(&first[0]);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod shared_histogram_tests {
     use super::*;
@@ -255,14 +330,26 @@ fn median_inner(
     let mut keys = [0_u128; 2];
     let mut ranks = [(n - 1) / 2, n / 2];
     let names = [column.to_owned()];
-    for byte in (0..bytes).rev() {
-        let shift = byte * 8;
-        let prefix_mask = if shift + 8 >= 128 {
+    // A 16-bit digit needs 1 MiB but halves the number of full part scans.
+    // Keep the small stack histogram for short columns and small queries.
+    let wide_digits = bytes >= 8 && n >= 131_072;
+    let mut wide_histograms =
+        wide_digits.then(|| [vec![0u64; 65_536], vec![0u64; 65_536]]);
+    let mut remaining_bytes = bytes;
+    while remaining_bytes != 0 {
+        let digit_bytes = if wide_digits && remaining_bytes >= 2 { 2 } else { 1 };
+        remaining_bytes -= digit_bytes;
+        let shift = remaining_bytes * 8;
+        let prefix_mask = if shift + digit_bytes * 8 >= 128 {
             0
         } else {
-            u128::MAX << (shift + 8)
+            u128::MAX << (shift + digit_bytes * 8)
         };
         let mut histogram = [[0_u64; 256]; 2];
+        if let Some(wide) = wide_histograms.as_mut() {
+            wide[0].fill(0);
+            wide[1].fill(0);
+        }
         if nullable {
             let columns = typed_filtered.map_or(names.as_slice(), |(columns, _)| columns);
             let mut reader = TypedQueryReader::open_with_metadata(part, columns, metadata)?;
@@ -272,43 +359,80 @@ fn median_inner(
                         "nullable radix input changed type".into(),
                     ));
                 };
-                count_column(
-                    values,
-                    Some(nulls),
-                    |row| {
-                        typed_filtered
-                            .is_none_or(|(_, conditions)| typed::passes(&batch, row, conditions))
-                    },
-                    bits,
-                    shift,
-                    prefix_mask,
-                    &keys,
-                    &mut histogram,
-                )?;
+                if let Some(wide) = wide_histograms.as_mut() {
+                    count_column_wide(
+                        values,
+                        Some(nulls),
+                        |row| {
+                            typed_filtered
+                                .is_none_or(|(_, conditions)| typed::passes(&batch, row, conditions))
+                        },
+                        bits,
+                        shift,
+                        prefix_mask,
+                        &keys,
+                        wide,
+                    )?;
+                } else {
+                    count_column(
+                        values,
+                        Some(nulls),
+                        |row| {
+                            typed_filtered
+                                .is_none_or(|(_, conditions)| typed::passes(&batch, row, conditions))
+                        },
+                        bits,
+                        shift,
+                        prefix_mask,
+                        &keys,
+                        &mut histogram,
+                    )?;
+                }
             }
         } else {
             let scan_columns = filtered.map_or(names.as_slice(), |(columns, _)| columns);
             let mut reader = NumericQueryReader::open_with_metadata(part, scan_columns, metadata)?;
             while let Some(batch) = reader.next_batch()? {
-                count_column(
-                    &batch[0],
-                    None,
-                    |row| {
-                        filtered
-                            .is_none_or(|(_, conditions)| batch_matches(&batch, row, conditions))
-                    },
-                    bits,
-                    shift,
-                    prefix_mask,
-                    &keys,
-                    &mut histogram,
-                )?;
+                if let Some(wide) = wide_histograms.as_mut() {
+                    count_column_wide(
+                        &batch[0],
+                        None,
+                        |row| {
+                            filtered
+                                .is_none_or(|(_, conditions)| batch_matches(&batch, row, conditions))
+                        },
+                        bits,
+                        shift,
+                        prefix_mask,
+                        &keys,
+                        wide,
+                    )?;
+                } else {
+                    count_column(
+                        &batch[0],
+                        None,
+                        |row| {
+                            filtered
+                                .is_none_or(|(_, conditions)| batch_matches(&batch, row, conditions))
+                        },
+                        bits,
+                        shift,
+                        prefix_mask,
+                        &keys,
+                        &mut histogram,
+                    )?;
+                }
             }
         }
         for side in 0..2 {
             let mut remaining = ranks[side];
             let mut selected = false;
-            for (bucket, &count) in histogram[side].iter().enumerate() {
+            let counts: &[u64] = if let Some(wide) = &wide_histograms {
+                &wide[side]
+            } else {
+                &histogram[side]
+            };
+            for (bucket, &count) in counts.iter().enumerate() {
                 if remaining < count {
                     keys[side] |= (bucket as u128) << shift;
                     ranks[side] = remaining;
@@ -513,5 +637,54 @@ mod lazy_radix_filter_tests {
         assert_eq!(calls.get(), 2);
         assert_eq!(histogram[0], histogram[1]);
         assert_eq!(histogram[0][1], 1);
+    }
+}
+
+#[cfg(test)]
+mod wide_digit_histogram_tests {
+    use super::*;
+
+    #[test]
+    fn two_byte_histograms_agree_with_direct_native_integer_buckets() {
+        let values = (0..16_384u64)
+            .map(|i| ((i * 977) << 32) | ((i * 17) & 0xffff))
+            .collect::<Vec<_>>();
+        let column = NumericColumn::UInt64(values.clone());
+        let mut actual = [vec![0u64; 65_536], vec![0u64; 65_536]];
+        count_column_wide(&column, None, |_| true, 64, 48, 0, &[0, 0], &mut actual)
+            .unwrap();
+        let mut expected = vec![0u64; 65_536];
+        for value in values {
+            expected[(value >> 48) as usize] += 1;
+        }
+        assert_eq!(actual[0], expected);
+        assert_eq!(actual[1], expected);
+    }
+
+    #[test]
+    fn divergent_prefix_and_nullable_filters_keep_exact_digit_counts() {
+        let column = NumericColumn::Int64(vec![-131_073, -131_072, -1, 0, 1, 2]);
+        let nulls = [0, 1, 0, 0, 0, 0];
+        let targets = [
+            sorted_key_signed(-131_073, 64),
+            sorted_key_signed(1, 64),
+        ];
+        let mut counts = [vec![0u64; 65_536], vec![0u64; 65_536]];
+        count_column_wide(
+            &column,
+            Some(&nulls),
+            |row| row != 3,
+            64,
+            0,
+            u128::MAX << 16,
+            &targets,
+            &mut counts,
+        )
+        .unwrap();
+        assert_eq!(counts[0].iter().sum::<u64>(), 1);
+        assert_eq!(counts[1].iter().sum::<u64>(), 2);
+        assert_eq!(counts[0][0xffff], 1);
+        assert_eq!(counts[1][1], 1);
+        assert_eq!(counts[1][2], 1);
     }
 }
