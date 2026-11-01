@@ -122,8 +122,14 @@ fn put_key(result: &mut Vec<typed::Key>, position: usize, key: typed::Key) {
 
 fn put_text_key(result: &mut Vec<typed::Key>, position: usize, bytes: &[u8]) {
     if let Some(typed::Key::Text(existing)) = result.get_mut(position) {
-        existing.clear();
-        existing.extend_from_slice(bytes);
+        // Long, low-cardinality JOIN keys commonly repeat across adjacent
+        // fact rows. Keep their already materialized bytes unchanged after
+        // an equal-key probe, instead of writing the full payload again.
+        // Short keys retain the direct copy path to avoid extra comparisons.
+        if bytes.len() < 64 || existing.as_slice() != bytes {
+            existing.clear();
+            existing.extend_from_slice(bytes);
+        }
     } else {
         put_key(result, position, typed::Key::Text(bytes.to_vec()));
     }
@@ -207,3 +213,56 @@ mod direct_numeric_join_probe_tests;
 #[cfg(test)]
 #[path = "keys/reusable_materialized_text_probe_tests.rs"]
 mod reusable_materialized_text_probe_tests;
+
+#[cfg(test)]
+mod repeated_long_join_key_tests {
+    use super::*;
+
+    #[test]
+    fn long_skewed_build_keys_keep_exact_contents_and_reuse_allocations() {
+        let original = vec![b'x'; 32 * 1024];
+        let modified = vec![b'y'; 32 * 1024];
+        let mut key = Vec::new();
+        let first_row = [
+            typed::Cell::Text(original.clone()),
+            typed::Cell::Numeric(Number::Unsigned(42)),
+        ];
+        assert!(row_key_into(&first_row, &[0, 1], &mut key));
+        let (pointer, capacity) = match &key[0] {
+            typed::Key::Text(bytes) => (bytes.as_ptr(), bytes.capacity()),
+            _ => panic!("expected long text key"),
+        };
+        for _ in 0..100 {
+            assert!(row_key_into(&first_row, &[0, 1], &mut key));
+            match &key[0] {
+                typed::Key::Text(bytes) => {
+                    assert_eq!(bytes.as_ptr(), pointer);
+                    assert_eq!(bytes.capacity(), capacity);
+                    assert_eq!(bytes.as_slice(), original);
+                }
+                _ => panic!("expected text key"),
+            }
+        }
+        let second_row = [
+            typed::Cell::Text(modified.clone()),
+            typed::Cell::Numeric(Number::Unsigned(42)),
+        ];
+        assert!(row_key_into(&second_row, &[0, 1], &mut key));
+        assert_eq!(key, row_key(&second_row, &[0, 1]).unwrap());
+        assert!(row_key_into(&first_row, &[0, 1], &mut key));
+        assert_eq!(key, row_key(&first_row, &[0, 1]).unwrap());
+    }
+
+    #[test]
+    fn repeated_short_keys_and_nullable_rows_keep_prior_semantics() {
+        let mut key = Vec::new();
+        let valid = [typed::Cell::Text(b"abc".to_vec())];
+        let invalid = [typed::Cell::Null];
+        assert!(row_key_into(&valid, &[0], &mut key));
+        assert_eq!(key, row_key(&valid, &[0]).unwrap());
+        assert!(!row_key_into(&invalid, &[0], &mut key));
+        assert!(key.is_empty());
+        assert!(row_key_into(&valid, &[0], &mut key));
+        assert_eq!(key, row_key(&valid, &[0]).unwrap());
+    }
+}
