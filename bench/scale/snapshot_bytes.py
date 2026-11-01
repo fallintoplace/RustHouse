@@ -91,6 +91,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         result = inventory(args.part, max_files=args.max_files,
+                           max_dirs=args.max_dirs,
                            largest_files=args.largest_files,
                            max_total_bytes=args.max_total_bytes)
         rendered = json.dumps(result, indent=2) + "\n"
