@@ -10,6 +10,7 @@ import json
 import math
 import os
 import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,9 @@ from .physical_scan import invoke
 
 COUNT_SQL = "SELECT region, count(*) FROM events GROUP BY region ORDER BY region"
 SUM_SQL = "SELECT region, sum(amount) FROM events GROUP BY region ORDER BY region"
+
+# Nine of ten rows use the hot group, and their amounts repeat every 97 rows.
+_HOT_ROWS = tuple(f"0\t{1 + amount}\n" for amount in range(97))
 
 
 def region_at(index, groups):
@@ -36,7 +40,8 @@ def emit(stream, rows, groups, batch_rows=8192):
         raise ValueError("batch_rows must be in 1..1000000")
     for start in range(0, rows, batch_rows):
         stream.write("".join(
-            f"{region_at(index, groups)}\t{1 + index % 97}\n"
+            (_HOT_ROWS[index % 97] if index % 10 != 9
+             else f"{1 + (index // 10) % (groups - 1)}\t{1 + index % 97}\n")
             for index in range(start, min(rows, start + batch_rows))
         ))
 
@@ -132,7 +137,8 @@ def inspect_persisted_snapshot(binary, directory, rows, timeout):
         stdout = output.read(256 * 1024 + 1)
         if len(stdout) > 256 * 1024:
             raise RuntimeError("persisted doctor output exceeds 256 KiB")
-        if result.returncode or f"OK events: {rows} rows, ".encode() not in stdout:
+        expected_row = rb"(?m)^OK events: " + str(rows).encode("ascii") + rb" rows, "
+        if result.returncode or not re.search(expected_row, stdout):
             errors.seek(0, os.SEEK_END)
             errors.seek(max(0, errors.tell() - 600))
             stderr = errors.read(600)

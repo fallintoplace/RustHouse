@@ -80,8 +80,8 @@ fn validated_nullable_array_type(data_type: &str) -> Result<&str, NullableArrayR
         .filter(|inner| !inner.is_empty())
         .ok_or_else(|| NullableArrayReadError::InvalidType(data_type.to_owned()))?;
 
-    // Validate before consuming any stream. The zero-row scalar read cannot read bytes.
-    if read_numeric_column(&mut io::empty(), numeric_type, 0).is_err() {
+    // Type validation is a lookup, not an empty numeric decode per granule.
+    if crate::numeric::numeric_storage_type(numeric_type).is_none() {
         return Err(NullableArrayReadError::InvalidType(data_type.to_owned()));
     }
 
@@ -287,5 +287,23 @@ mod tests {
         assert!(batch.is_empty());
         assert_eq!(batch.offsets(), &[0]);
         assert!(batch.values().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod direct_nullable_array_type_tests {
+    use super::*;
+
+    #[test]
+    fn type_lookup_matches_the_scalar_decoder_without_reading_input() {
+        for leaf in ["UInt8", "UInt128", "Int64", "Float32", "Date",
+                     "DateTime", "DateTime64(6)", "DateTime('UTC')",
+                     "DateTime64(10)", "String", "Bool", "Array(UInt64)"] {
+            let expected = read_numeric_column(&mut io::empty(), leaf, 0).is_ok();
+            assert_eq!(
+                validated_nullable_array_type(&format!("Array(Nullable({leaf}))")).is_ok(),
+                expected, "leaf type: {leaf}"
+            );
+        }
     }
 }

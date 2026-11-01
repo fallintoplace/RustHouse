@@ -54,6 +54,23 @@ def command(binary, database, queries_dir, reference_dir, report_path,
             "--timeout", str(timeout), "--output", str(report_path)]
 
 
+def parse_report(path):
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate full TPC-H report JSON field: {key}")
+            result[key] = value
+        return result
+
+    def reject_nonstandard_number(token):
+        raise ValueError(f"nonstandard full TPC-H report JSON number: {token}")
+
+    return json.loads(read_bounded(path, MAX_REPORT_BYTES),
+                      object_pairs_hook=unique_fields,
+                      parse_constant=reject_nonstandard_number)
+
+
 def run_full(binary, database, queries_dir, reference_dir, report_path,
              runs=3, warmups=1, timeout=300, invoke=None):
     if invoke is None:
@@ -63,7 +80,7 @@ def run_full(binary, database, queries_dir, reference_dir, report_path,
     outcome = invoke(cmd)
     if not Path(report_path).is_file():
         raise ValueError("full-query runner did not produce a JSON report")
-    report = json.loads(read_bounded(report_path, MAX_REPORT_BYTES))
+    report = parse_report(report_path)
     records = report.get("results", [])
     verified = sorted(record["query"] for record in records
                       if record.get("status") == "passed")

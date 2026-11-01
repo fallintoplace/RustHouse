@@ -48,6 +48,19 @@ class PairedDuckDbTests(unittest.TestCase):
             benchmark_pair("SELECT 1", b"1\n",
                            lambda engine, sql: (b"1\n", float("nan")), 1, 0)
 
+    def test_rejects_invalid_rounds_and_boolean_timing_samples(self):
+        never = lambda engine, sql: (_ for _ in ()).throw(AssertionError("executed"))
+        for runs, warmups in ((True, 0), (1.5, 0), (1, True), (1, 1.5),
+                              (251, 0), (1, 101), (0, 0)):
+            with self.subTest(runs=runs, warmups=warmups):
+                with self.assertRaisesRegex(ValueError, "runs or warmups"):
+                    benchmark_pair("SELECT 1", b"1\n", never, runs, warmups)
+        for sample in (True, False, "0.1", None, float("nan"), float("inf"), 0):
+            with self.subTest(sample=sample):
+                with self.assertRaisesRegex(ValueError, "timings"):
+                    benchmark_pair("SELECT 1", b"1\n",
+                                   lambda engine, sql: (b"1\n", sample), 1, 0)
+
     def test_ratio_overflow_does_not_create_nonstandard_json(self):
         def extreme(engine, _sql):
             return b"1\n", 1e-320 if engine == "rusthouse" else 1e100

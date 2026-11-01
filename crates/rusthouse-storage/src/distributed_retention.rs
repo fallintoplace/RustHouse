@@ -3,6 +3,17 @@
 use std::borrow::Cow;
 
 const MAX_RETENTION_GENERATIONS: usize = 16_384;
+
+fn ordered_generation_sizes(generations: &[(u64, u64)]) -> Cow<'_, [(u64, u64)]> {
+    if generations.windows(2).all(|pair| pair[0].0 <= pair[1].0) {
+        Cow::Borrowed(generations)
+    } else {
+        let mut ordered = generations.to_vec();
+        ordered.sort_unstable_by_key(|&(generation, _)| generation);
+        Cow::Owned(ordered)
+    }
+}
+
 fn validated_generations(generations: &[u64], active: u64) -> Result<Cow<'_, [u64]>, &'static str> {
     // Snapshot inventory is often already chronological. Borrow it without
     // copying or sorting; retain the old sorting path for unordered inputs.
@@ -120,7 +131,9 @@ pub fn retention_candidates_with_pins(
         }
         return Ok(candidates.into_iter().filter(|generation| generation != pin).collect());
     }
-    if pinned.len() <= 4 && candidates.len() <= 128 {
+    // Up to four integer comparisons per candidate are cheaper than building
+    // and probing a hash table, even for a full 16K-generation inventory.
+    if pinned.len() <= 4 {
         for (index, &generation) in pinned.iter().enumerate() {
             if pinned[..index].contains(&generation) || !known_generation(&known, generation) {
                 return Err("duplicate or unknown pinned generation");
@@ -242,8 +255,7 @@ pub fn retention_candidates_with_byte_budget(
     // Sort generation sizes together. The previous path sorted an ID copy,
     // materialized eligible IDs, and then built a second hash table just
     // to look up each candidate's byte cost.
-    let mut ordered = generations.to_vec();
-    ordered.sort_unstable_by_key(|&(generation, _)| generation);
+    let ordered = ordered_generation_sizes(generations);
     if ordered[0].0 == 0
         || ordered.windows(2).any(|pair| pair[0].0 == pair[1].0)
         || ordered.binary_search_by_key(&active, |&(id, _)| id).is_err()
@@ -550,8 +562,9 @@ pub fn retention_candidates_with_replica_floors_and_budget(
         return Err("invalid replica-aware retention configuration");
     }
     let floor = *replica_floors.iter().min().expect("nonempty floors checked");
-    let mut ordered = generations.to_vec();
-    ordered.sort_unstable_by_key(|&(id, _)| id);
+    // Most generation inventories are chronological. Reuse their existing
+    // order instead of allocating and sorting up to 16K entries per plan.
+    let ordered = ordered_generation_sizes(generations);
     if ordered[0].0 == 0
         || ordered.windows(2).any(|pair| pair[0].0 == pair[1].0)
         || ordered.binary_search_by_key(&active, |&(id, _)| id).is_err()
@@ -560,9 +573,16 @@ pub fn retention_candidates_with_replica_floors_and_budget(
     }
     // Validate pins even when byte_budget is zero. A stale pin must not be
     // silently ignored when deleting older generations on another attempt.
-    let mut pins = std::collections::HashSet::with_capacity(pinned.len());
-    for &id in pinned {
-        if !pins.insert(id) || ordered.binary_search_by_key(&id, |&(key, _)| key).is_err() {
+    // Avoid a hash table for the common case of a few pinned readers.
+    let mut pins = (pinned.len() > 4)
+        .then(|| std::collections::HashSet::with_capacity(pinned.len()));
+    for (index, &id) in pinned.iter().enumerate() {
+        let duplicate = if let Some(seen) = pins.as_mut() {
+            !seen.insert(id)
+        } else {
+            pinned[..index].contains(&id)
+        };
+        if duplicate || ordered.binary_search_by_key(&id, |&(key, _)| key).is_err() {
             return Err("duplicate or unknown pinned generation");
         }
     }
@@ -570,7 +590,9 @@ pub fn retention_candidates_with_replica_floors_and_budget(
     let mut selected = Vec::new();
     let mut consumed = 0u64;
     for &(id, size) in ordered.iter().take(eligible) {
-        if id == active || id >= floor || pins.contains(&id) {
+        if id == active || id >= floor
+            || pins.as_ref().map_or_else(|| pinned.contains(&id), |seen| seen.contains(&id))
+        {
             continue;
         }
         // Subtraction cannot underflow because consumed never exceeds budget.
@@ -657,6 +679,195 @@ mod combined_replica_retention_tests {
         }
         assert!(retention_candidates_with_replica_floors_and_budget(
             &[(1, 10), (1, 20)], 1, 1, &[], &[2], 100,
+        ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod large_inventory_few_pins_tests {
+    use super::*;
+
+    #[test]
+    fn four_reader_pins_filter_large_inventories_without_a_hash_table() {
+        let generations = (1..=16_384u64).collect::<Vec<_>>();
+        let pins = [1, 17, 8_192, 16_380];
+        let candidates = retention_candidates_with_pins(
+            &generations, 16_384, 2, &pins,
+        ).unwrap();
+        assert_eq!(candidates.len(), 16_382 - pins.len());
+        for pin in pins {
+            assert!(!candidates.contains(&pin));
+        }
+        assert_eq!(candidates.first(), Some(&2));
+        assert_eq!(candidates.last(), Some(&16_382));
+        assert!(retention_candidates_with_pins(
+            &generations, 16_384, 2, &[1, 17, 17, 8_192],
+        ).is_err());
+        assert!(retention_candidates_with_pins(
+            &generations, 16_384, 2, &[1, 17, 8_192, 16_385],
+        ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod borrowed_budgeted_retention_tests {
+    use super::*;
+
+    #[test]
+    fn sorted_generation_sizes_borrow_and_unsorted_sizes_sort() {
+        let sorted = (1..=2048u64).map(|id| (id, id % 37)).collect::<Vec<_>>();
+        let reversed = sorted.iter().copied().rev().collect::<Vec<_>>();
+        assert!(matches!(ordered_generation_sizes(&sorted), Cow::Borrowed(_)));
+        assert!(matches!(ordered_generation_sizes(&reversed), Cow::Owned(_)));
+        assert_eq!(ordered_generation_sizes(&reversed).as_ref(), sorted.as_slice());
+        for budget in [0, 1, 100, 10_000, u64::MAX] {
+            for keep_latest in [1, 2, 512, 2048, usize::MAX] {
+                assert_eq!(
+                    retention_candidates_with_byte_budget(&sorted, 2048, keep_latest, &[1, 9, 37], budget),
+                    retention_candidates_with_byte_budget(&reversed, 2048, keep_latest, &[1, 9, 37], budget),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn already_sorted_duplicate_generations_still_fail_validation() {
+        assert!(matches!(ordered_generation_sizes(&[(1, 1), (1, 2)]), Cow::Borrowed(_)));
+        assert!(retention_candidates_with_byte_budget(&[(1, 1), (1, 2)], 1, 1, &[], 100).is_err());
+    }
+}
+
+/// Plan time-bounded generation reclamation without bypassing catch-up floors.
+///
+/// Each timestamp must come from verified immutable snapshot metadata.
+/// No filesystem operations are performed by this planner.
+pub fn retention_candidates_with_min_age(
+    generations: &[(u64, u64)],
+    active: u64,
+    keep_latest: usize,
+    pinned: &[u64],
+    oldest_needed_per_replica: &[u64],
+    now_seconds: u64,
+    minimum_age_seconds: u64,
+) -> Result<Vec<u64>, &'static str> {
+    if generations.is_empty() || generations.len() > MAX_RETENTION_GENERATIONS {
+        return Err("invalid generation retention inventory");
+    }
+    let mut timestamps = std::collections::HashMap::with_capacity(generations.len());
+    let mut ids = Vec::with_capacity(generations.len());
+    for &(generation, created_at) in generations {
+        if created_at > now_seconds {
+            return Err("generation timestamp is in the future");
+        }
+        if timestamps.insert(generation, created_at).is_some() {
+            return Err("duplicate generation timestamp");
+        }
+        ids.push(generation);
+    }
+    let eligible = retention_candidates_for_replica_floors(
+        &ids, active, keep_latest, pinned, oldest_needed_per_replica,
+    )?;
+    Ok(eligible.into_iter().filter(|generation| {
+        let created = timestamps[generation];
+        now_seconds - created >= minimum_age_seconds
+    }).collect())
+}
+
+#[cfg(test)]
+mod age_and_replica_floor_retention_tests {
+    use super::*;
+
+    #[test]
+    fn age_floor_combines_with_active_reader_pins_and_lagging_replicas() {
+        let snapshots = [(5, 200), (3, 130), (1, 100), (4, 160), (2, 190)];
+        assert_eq!(
+            retention_candidates_with_min_age(
+                &snapshots, 5, 1, &[3], &[5], 200, 40
+            ).unwrap(),
+            vec![1, 4]
+        );
+        assert_eq!(
+            retention_candidates_with_min_age(
+                &snapshots, 5, 1, &[3], &[4], 200, 40
+            ).unwrap(),
+            vec![1]
+        );
+        assert_eq!(
+            retention_candidates_with_min_age(
+                &snapshots, 5, 1, &[], &[1], 200, 0
+            ).unwrap(),
+            Vec::<u64>::new()
+        );
+        assert_eq!(
+            retention_candidates_with_min_age(
+                &snapshots, 5, 2, &[], &[5], 200, 40
+            ).unwrap(),
+            vec![1, 3]
+        );
+    }
+
+    #[test]
+    fn older_minimum_age_never_expands_retention_candidates() {
+        let generations = (1..=256u64).map(|id| (id, id * 3)).collect::<Vec<_>>();
+        let mut previous = retention_candidates_with_min_age(
+            &generations, 256, 1, &[], &[256], 768, 0
+        ).unwrap();
+        for age in [1, 3, 24, 96, 384, 768, u64::MAX] {
+            let candidate = retention_candidates_with_min_age(
+                &generations, 256, 1, &[], &[256], 768, age
+            ).unwrap();
+            assert!(candidate.iter().all(|generation| previous.contains(generation)));
+            previous = candidate;
+        }
+    }
+
+    #[test]
+    fn rejects_future_timestamps_stale_pins_and_missing_replica_floors() {
+        let snapshots = [(1, 100), (2, 101)];
+        assert!(retention_candidates_with_min_age(
+            &snapshots, 2, 1, &[], &[2], 100, 0
+        ).is_err());
+        assert!(retention_candidates_with_min_age(
+            &snapshots, 2, 1, &[3], &[2], 101, 0
+        ).is_err());
+        assert!(retention_candidates_with_min_age(
+            &snapshots, 2, 1, &[], &[], 101, 0
+        ).is_err());
+        assert!(retention_candidates_with_min_age(
+            &[(1, 0), (1, 0)], 1, 1, &[], &[1], 0, 0
+        ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod sorted_replica_aware_inventory_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_and_reversed_inventories_produce_identical_retention_plans() {
+        let sorted = (1..=10_000u64)
+            .map(|generation| (generation, generation % 7 + 1))
+            .collect::<Vec<_>>();
+        assert!(matches!(ordered_generation_sizes(&sorted), Cow::Borrowed(_)));
+        let mut reversed = sorted.clone();
+        reversed.reverse();
+        assert!(matches!(ordered_generation_sizes(&reversed), Cow::Owned(_)));
+
+        for pins in [&[][..], &[77, 500, 9000][..], &[77, 500, 900, 2000, 9000][..]] {
+            let expected = retention_candidates_with_replica_floors_and_budget(
+                &sorted, 10_000, 3, pins, &[9_000, 9_700], 3_000
+            ).unwrap();
+            let actual = retention_candidates_with_replica_floors_and_budget(
+                &reversed, 10_000, 3, pins, &[9_000, 9_700], 3_000
+            ).unwrap();
+            assert_eq!(actual, expected);
+            assert!(actual.0.iter().all(|&generation| generation < 9_000));
+            assert!(actual.0.iter().all(|generation| !pins.contains(generation)));
+            assert!(actual.1 <= 3_000);
+        }
+
+        assert!(retention_candidates_with_replica_floors_and_budget(
+            &sorted, 10_000, 3, &[77, 77], &[9000], 0
         ).is_err());
     }
 }

@@ -90,24 +90,53 @@ fn needs_copy(meta: &ObjectMetadata, destination: &HashMap<&str, &ObjectMetadata
         .is_none_or(|existing| !meta.same_contents(existing))
 }
 
+// Small immutable inventories are frequent when copying a fresh generation.
+// Validate borrowed keys directly instead of building two hash maps.
+fn validate_tiny_inventory(objects: &[ObjectMetadata]) -> Result<(), &'static str> {
+    for (index, object) in objects.iter().enumerate() {
+        if !valid_key(&object.key)
+            || objects[..index].iter().any(|prior| prior.key == object.key)
+        {
+            return Err("unsafe or duplicate replica object key");
+        }
+    }
+    Ok(())
+}
+
 /// Return missing or differing source objects in lexicographic key order.
 /// Deletions require a separate retention decision and are never planned here.
 pub fn plan_replica_copies(
     source: &[ObjectMetadata],
     destination: &[ObjectMetadata],
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
+    if source.len() <= 8 && destination.len() <= 8 {
+        validate_tiny_inventory(source)?;
+        validate_tiny_inventory(destination)?;
+        let mut missing = Vec::new();
+        for object in source {
+            match destination.iter().find(|candidate| candidate.key == object.key) {
+                Some(existing) if !object.same_contents(existing) => {
+                    return Err("replica copy conflicts with an existing immutable object");
+                }
+                None => missing.push(object.clone()),
+                Some(_) => {}
+            }
+        }
+        missing.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+        return Ok(missing);
+    }
     let source = index(source)?;
     let destination = index(destination)?;
     // A generation-scoped key is immutable: returning it for a conflicting
     // copy would ask the transport to overwrite an existing object.
     reject_immutable_conflicts(&source, &destination)?;
-    let mut changed: Vec<ObjectMetadata> = source
+    // Sort borrowed metadata first. Only clone final output in sorted order.
+    let mut changed: Vec<&ObjectMetadata> = source
         .into_values()
         .filter(|meta| needs_copy(meta, &destination))
-        .cloned()
         .collect();
     changed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
-    Ok(changed)
+    Ok(changed.into_iter().cloned().collect())
 }
 
 // Greedy ordering is by key, with oversized objects skipped. A small batch
@@ -140,8 +169,43 @@ pub fn plan_replica_copy_batch(
     max_bytes: u64,
     max_objects: usize,
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
+    plan_replica_copy_batch_after(source, destination, None, max_bytes, max_objects)
+}
+
+/// Page a lexicographic, immutable-object copy plan after an exclusive key.
+/// Cursor filtering happens before candidate ranking, without materializing
+/// the whole sorted copy inventory on each transfer batch.
+pub fn plan_replica_copy_batch_after(
+    source: &[ObjectMetadata],
+    destination: &[ObjectMetadata],
+    after_key: Option<&str>,
+    max_bytes: u64,
+    max_objects: usize,
+) -> Result<Vec<ObjectMetadata>, &'static str> {
+    if after_key.is_some_and(|key| !valid_key(key)) {
+        return Err("invalid replica copy continuation key");
+    }
     if max_objects > 65_536 {
         return Err("replica copy batch exceeds object limit");
+    }
+    if source.len() <= 8 && destination.len() <= 8 {
+        // Apply the same strict inventory and immutable conflict validation,
+        // including when the continuation cursor leaves no eligible objects.
+        validate_tiny_inventory(source)?;
+        validate_tiny_inventory(destination)?;
+        for object in source {
+            if let Some(existing) = destination.iter().find(|item| item.key == object.key) {
+                if !object.same_contents(existing) {
+                    return Err("replica copy conflicts with an existing immutable object");
+                }
+            }
+        }
+        let mut needed = source.iter()
+            .filter(|item| after_key.is_none_or(|cursor| item.key.as_str() > cursor))
+            .filter(|item| !destination.iter().any(|existing| existing.key == item.key))
+            .collect::<Vec<_>>();
+        needed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+        return Ok(select_copy_batch(&needed, max_bytes, max_objects));
     }
     // Validate all inventory entries before planning any copies.
     // Sort borrowed metadata, then clone only the objects admitted by
@@ -158,15 +222,47 @@ pub fn plan_replica_copy_batch(
         return Ok(source_index
             .into_values()
             .filter(|meta| meta.bytes <= max_bytes)
+            .filter(|meta| after_key.is_none_or(|cursor| meta.key.as_str() > cursor))
             .filter(|meta| needs_copy(meta, &destination_index))
             .min_by(|left, right| left.key.cmp(&right.key))
             .cloned()
             .into_iter()
             .collect());
     }
+    if max_objects == 2 {
+        // Two sequential minima reproduce the sorted greedy copy plan.
+        // Scan borrowed inventory values twice rather than allocating and
+        // sorting every missing object on a small transfer poll.
+        let first = source_index.values().copied()
+            .filter(|meta| {
+                meta.bytes <= max_bytes
+                    && after_key.is_none_or(|cursor| meta.key.as_str() > cursor)
+                    && needs_copy(meta, &destination_index)
+            })
+            .min_by(|left, right| left.key.cmp(&right.key));
+        let Some(first) = first else {
+            return Ok(Vec::new());
+        };
+        let remaining = max_bytes - first.bytes;
+        let second = source_index.values().copied()
+            .filter(|meta| {
+                meta.key != first.key
+                    && after_key.is_none_or(|cursor| meta.key.as_str() > cursor)
+                    && meta.bytes <= remaining
+                    && needs_copy(meta, &destination_index)
+            })
+            .min_by(|left, right| left.key.cmp(&right.key));
+        let mut selected = Vec::with_capacity(2);
+        selected.push(first.clone());
+        if let Some(second) = second {
+            selected.push(second.clone());
+        }
+        return Ok(selected);
+    }
     let mut needed = source_index
         .into_values()
         .filter(|meta| needs_copy(meta, &destination_index))
+        .filter(|meta| after_key.is_none_or(|cursor| meta.key.as_str() > cursor))
         // Remaining budget only decreases during the greedy copy walk.
         // Objects larger than the initial budget cannot enter this batch,
         // so exclude them before allocating and ranking candidates.
@@ -586,5 +682,169 @@ mod unaffordable_copy_candidates_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tiny_inventory_diff_tests {
+    use super::*;
+
+    fn item(key: &str, bytes: u64) -> ObjectMetadata {
+        ObjectMetadata { key: key.into(), bytes, crc32c: bytes as u32 }
+    }
+
+    #[test]
+    fn small_sources_keep_sorted_missing_keys_without_hash_maps() {
+        let source = [item("z/part", 2), item("a/part", 1), item("m/part", 3)];
+        let destination = [item("m/part", 3)];
+        let changed = plan_replica_copies(&source, &destination).unwrap();
+        assert_eq!(changed, vec![item("a/part", 1), item("z/part", 2)]);
+        assert!(plan_replica_copies(&source, &source).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tiny_and_large_paths_reject_conflicts_and_duplicates() {
+        let source = [item("a/part", 1), item("b/part", 2)];
+        assert!(plan_replica_copies(&source, &[item("a/part", 7)]).is_err());
+        assert!(plan_replica_copies(&source, &[item("a/part", 1), item("a/part", 1)]).is_err());
+        assert!(plan_replica_copies(&[item("../unsafe", 2)], &[]).is_err());
+        let many = (0..1024).map(|index| item(&format!("k{index:04}"), index)).collect::<Vec<_>>();
+        let result = plan_replica_copies(&many, &many[..512]).unwrap();
+        assert_eq!(result.len(), 512);
+        assert!(result.windows(2).all(|pair| pair[0].key < pair[1].key));
+    }
+}
+
+#[cfg(test)]
+mod two_replica_copy_selection_tests {
+    use super::*;
+
+    fn full_sort_greedy(source: &[ObjectMetadata], destination: &[ObjectMetadata], budget: u64) -> Vec<ObjectMetadata> {
+        let pending = plan_replica_copies(source, destination).unwrap();
+        let mut remaining = budget;
+        let mut selected = Vec::new();
+        for object in pending {
+            if object.bytes <= remaining {
+                remaining -= object.bytes;
+                selected.push(object);
+                if selected.len() == 2 {
+                    break;
+                }
+            }
+        }
+        selected
+    }
+
+    #[test]
+    fn two_copy_batch_matches_full_sorted_plan_across_budget_boundaries() {
+        let source = (0..1024).map(|index| ObjectMetadata {
+            key: format!("region/shard_1/g1/part/file_{index:04}.bin"),
+            bytes: if index % 17 == 0 { 0 } else { (index * 97 % 8191) as u64 },
+            crc32c: (index * 7777) as u32,
+        }).collect::<Vec<_>>();
+        let destination = source.iter().enumerate()
+            .filter(|(index, _)| index % 7 == 0)
+            .map(|(_, object)| object.clone())
+            .collect::<Vec<_>>();
+        for budget in [0, 1, 8, 512, 8192, 100_000, u64::MAX] {
+            assert_eq!(
+                plan_replica_copy_batch(&source, &destination, budget, 2).unwrap(),
+                full_sort_greedy(&source, &destination, budget),
+            );
+        }
+        assert!(plan_replica_copy_batch(&source, &destination, 1, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tiny_batch_still_rejects_existing_immutable_conflicts() {
+        let object = ObjectMetadata { key: "region/g1/item".into(), bytes: 4, crc32c: 7 };
+        let conflict = ObjectMetadata { crc32c: 8, ..object.clone() };
+        assert!(plan_replica_copy_batch(&[object.clone()], &[conflict], 10, 2).is_err());
+        assert!(plan_replica_copy_batch(&[object.clone(), object], &[], 10, 2).is_err());
+    }
+}
+
+#[cfg(test)]
+mod copy_diff_cursor_tests {
+    use super::*;
+
+    #[test]
+    fn paged_batches_follow_the_full_sorted_plan_for_tiny_and_large_inventories() {
+        let source = (0..4096usize).rev().map(|index| ObjectMetadata {
+            key: format!("part/object_{index:05}"),
+            bytes: if index % 19 == 0 { 0 } else { (index % 127) as u64 },
+            crc32c: index as u32,
+        }).collect::<Vec<_>>();
+        let destination = source.iter().step_by(7).cloned().collect::<Vec<_>>();
+        let full = plan_replica_copies(&source, &destination).unwrap();
+        for cursor in [None, Some("part/object_00000"), Some("part/object_01234"),
+            Some("part/object_04095"), Some("part/object_99999")] {
+            for budget in [0, 1, 100, 1000, u64::MAX] {
+                for limit in [0, 1, 2, 7, 100] {
+                    let mut remaining = budget;
+                    let expected = full.iter()
+                        .filter(|object| cursor.is_none_or(|key| object.key.as_str() > key))
+                        .filter(|object| {
+                            if object.bytes <= remaining {
+                                remaining -= object.bytes;
+                                true
+                            } else {
+                                false
+                            }
+                        }).take(limit).cloned().collect::<Vec<_>>();
+                    assert_eq!(
+                        plan_replica_copy_batch_after(
+                            &source, &destination, cursor, budget, limit
+                        ).unwrap(), expected
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cursor_is_validated_even_for_empty_pages() {
+        assert!(plan_replica_copy_batch_after(&[], &[], Some("../bad"), 0, 0).is_err());
+        assert_eq!(plan_replica_copy_batch_after(&[], &[], None, 0, 0).unwrap(),
+            Vec::<ObjectMetadata>::new());
+    }
+}
+
+#[cfg(test)]
+mod small_copy_batch_tests {
+    use super::*;
+
+    #[test]
+    fn tiny_batches_match_full_sorted_greedy_selection() {
+        let source = (0..8u64).rev().map(|index| ObjectMetadata {
+            key: format!("part/file_{index:02}"),
+            bytes: index % 4,
+            crc32c: index as u32,
+        }).collect::<Vec<_>>();
+        for existing in 0..=8 {
+            let destination = source.iter().take(existing).cloned().collect::<Vec<_>>();
+            let missing = plan_replica_copies(&source, &destination).unwrap();
+            let references = missing.iter().collect::<Vec<_>>();
+            for budget in [0, 1, 2, 3, 10, u64::MAX] {
+                for limit in 0..=9 {
+                    assert_eq!(
+                        plan_replica_copy_batch(&source, &destination, budget, limit).unwrap(),
+                        select_copy_batch(&references, budget, limit),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_limit_still_detects_conflicts_and_duplicate_keys() {
+        let a = ObjectMetadata {
+            key: "part/a".into(),
+            bytes: 1,
+            crc32c: 3,
+        };
+        let different = ObjectMetadata { bytes: 2, ..a.clone() };
+        assert!(plan_replica_copy_batch(&[a.clone()], &[different], 0, 0).is_err());
+        assert!(plan_replica_copy_batch(&[a.clone(), a], &[], 0, 0).is_err());
     }
 }

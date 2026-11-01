@@ -17,60 +17,39 @@ impl Drop for Spool {
     }
 }
 
+fn open_insert_spool_candidates(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Result<(Spool, File), String> {
+    for path in paths {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((Spool(path), file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("cannot create INSERT SELECT spool: {error}")),
+        }
+    }
+    Err("cannot create INSERT SELECT spool: no unique temporary filename".into())
+}
+
 fn create_insert_spool(database: &Path) -> Result<(Spool, File), String> {
-    let path = database.join(format!(
-        ".rusthouse-insert-select-{}-{}.tmp",
-        std::process::id(),
-        NEXT_SPOOL.fetch_add(1, Ordering::Relaxed)
-    ));
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|error| format!("cannot create INSERT SELECT spool: {error}"))?;
-    Ok((Spool(path), file))
+    // Stale files from a crashed process or reused PID must not block
+    // subsequent INSERT SELECT queries. Never overwrite an existing spool.
+    open_insert_spool_candidates((0..64).map(|_| {
+        database.join(format!(
+            ".rusthouse-insert-select-{}-{}.tmp",
+            std::process::id(),
+            NEXT_SPOOL.fetch_add(1, Ordering::Relaxed)
+        ))
+    }))
 }
 
 fn decode_field(value: &str) -> Result<Option<String>, String> {
     if value == r"\N" {
         return Ok(None);
     }
-    let mut decoded = Vec::with_capacity(value.len());
-    let mut bytes = value.bytes();
-    while let Some(byte) = bytes.next() {
-        if byte != b'\\' {
-            decoded.push(byte);
-            continue;
-        }
-        let escaped = bytes
-            .next()
-            .ok_or("invalid trailing escape in SELECT result")?;
-        match escaped {
-            b'\\' => decoded.push(b'\\'),
-            b't' => decoded.push(b'\t'),
-            b'n' => decoded.push(b'\n'),
-            b'r' => decoded.push(b'\r'),
-            b'0' => decoded.push(0),
-            b'x' => {
-                let high_hex_digit = bytes
-                    .next()
-                    .ok_or("incomplete hex escape in SELECT result")?;
-                let low_hex_digit = bytes
-                    .next()
-                    .ok_or("incomplete hex escape in SELECT result")?;
-                let digit = |byte: u8| match byte {
-                    b'0'..=b'9' => Some(byte - b'0'),
-                    b'a'..=b'f' => Some(byte - b'a' + 10),
-                    b'A'..=b'F' => Some(byte - b'A' + 10),
-                    _ => None,
-                };
-                let high_hex_digit = digit(high_hex_digit).ok_or("invalid hex escape in SELECT result")?;
-                let low_hex_digit = digit(low_hex_digit).ok_or("invalid hex escape in SELECT result")?;
-                decoded.push((high_hex_digit << 4) | low_hex_digit);
-            }
-            _ => return Err("invalid escape in SELECT result".into()),
-        }
-    }
+    // SELECT rows use the same TSV escape language as COPY and CLI output.
+    // Reuse its checked decoder so all control and hex escapes round-trip.
+    let decoded = crate::tsv_escape::decode_tsv_field(value.as_bytes())
+        .map_err(|error| format!("invalid escape in SELECT result: {error}"))?;
     String::from_utf8(decoded)
         .map(Some)
         .map_err(|_| "invalid UTF-8 in SELECT result".into())
@@ -164,6 +143,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retries_occupied_spool_names_without_replacing_existing_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-spool-collision-{}-{}",
+            std::process::id(),
+            NEXT_SPOOL.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let occupied = directory.join("occupied.tmp");
+        let available = directory.join("available.tmp");
+        fs::write(&occupied, b"keep-original").unwrap();
+        let (spool, mut file) = open_insert_spool_candidates([
+            occupied.clone(),
+            available.clone(),
+        ]).unwrap();
+        file.write_all(b"new").unwrap();
+        drop(file);
+        assert_eq!(fs::read(&available).unwrap(), b"new");
+        drop(spool);
+        assert_eq!(fs::read(&occupied).unwrap(), b"keep-original");
+        assert!(!available.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn streamed_records_preserve_nulls_escapes_and_line_boundaries() {
         let content = b"id\ttext\tnote\n1\tline\\nnext\t\\N\n2\t\\\\N\tback\\\\slash\n";
         let mut input = BufReader::with_capacity(4, &content[..]);
@@ -226,5 +229,32 @@ mod width_tests {
         assert_eq!(decode_row(within_limit.as_bytes()).unwrap().len(), 128);
         let over_limit = format!("{}\n", vec!["x"; 129].join("\t"));
         assert!(decode_row(over_limit.as_bytes()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod shared_insert_select_decoder_tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_all_tsv_control_escapes() {
+        assert_eq!(decode_field(r"\b\f\v\t\n\r\0").unwrap(),
+            Some("\u{0008}\u{000c}\u{000b}\t\n\r\0".into()));
+        assert_eq!(decode_field(r"\x41\x42\\").unwrap(), Some("AB\\".into()));
+        assert_eq!(decode_field(r"\N").unwrap(), None);
+        assert_eq!(decode_field(r"\\N").unwrap(), Some(r"\N".into()));
+    }
+
+    #[test]
+    fn malformed_sequences_still_fail_before_insert() {
+        for input in [r"\x", r"\xZ0", r"\q", "\\", r"\xff"] {
+            assert!(decode_field(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn long_plain_fields_keep_unicode_and_exact_contents() {
+        let value = "café🚀".repeat(8192);
+        assert_eq!(decode_field(&value).unwrap(), Some(value));
     }
 }

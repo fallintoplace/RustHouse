@@ -8,30 +8,37 @@ pub(super) fn push_varuint(mut value: u64, output: &mut Vec<u8>) {
     output.push(value as u8);
 }
 
+#[inline]
+fn uuid_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn push_uuid(value: &str, output: &mut Vec<u8>) -> Result<(), PartError> {
     let bytes = value.as_bytes();
     if bytes.len() != 36 || [8, 13, 18, 23].iter().any(|&index| bytes[index] != b'-') {
         return Err(invalid(format!("invalid UUID value: {value}")));
     }
+    // Decode complete hex pairs rather than visiting all 36 text positions
+    // and branching for every hyphen and every high/low nibble.
     let mut canonical = [0u8; 16];
-    let mut digit_index = 0usize;
-    for (position, &byte) in bytes.iter().enumerate() {
-        if matches!(position, 8 | 13 | 18 | 23) {
-            continue;
+    let mut source = 0usize;
+    for byte in &mut canonical {
+        if matches!(source, 8 | 13 | 18 | 23) {
+            source += 1;
         }
-        let digit = match byte {
-            b'0'..=b'9' => byte - b'0',
-            b'a'..=b'f' => byte - b'a' + 10,
-            b'A'..=b'F' => byte - b'A' + 10,
-            _ => return Err(invalid(format!("invalid UUID value: {value}"))),
+        let (Some(upper), Some(lower)) = (
+            uuid_hex_nibble(bytes[source]),
+            uuid_hex_nibble(bytes[source + 1]),
+        ) else {
+            return Err(invalid(format!("invalid UUID value: {value}")));
         };
-        let slot = &mut canonical[digit_index / 2];
-        if digit_index % 2 == 0 {
-            *slot = digit << 4;
-        } else {
-            *slot |= digit;
-        }
-        digit_index += 1;
+        *byte = (upper << 4) | lower;
+        source += 2;
     }
     // ClickHouse stores each UInt64 UUID half in little-endian order.
     for half in canonical.chunks_exact_mut(8) {
@@ -51,7 +58,13 @@ pub(super) fn push_cell(
     if is_null && !nullable {
         return Err(invalid(format!("NULL is not permitted for {kind}")));
     }
-    let value = value.unwrap_or(if base == "String" { "" } else { "0" });
+    // Nullable cells still occupy their physical value stream. UUID has
+    // no numeric "0" spelling: use the all-zero UUID as its ignored value.
+    let value = value.unwrap_or(match base {
+        "String" => "",
+        "UUID" => "00000000-0000-0000-0000-000000000000",
+        _ => "0",
+    });
     macro_rules! numeric {
         ($ty:ty) => {{
             let number = value
@@ -366,6 +379,79 @@ pub(super) fn checksum_hash(data: &[u8]) -> u128 {
     seed.into()
 }
 
+pub(super) struct StreamingChecksum {
+    seed: U128,
+    pending: Vec<u8>,
+}
+
+impl StreamingChecksum {
+    pub(super) fn new() -> Self {
+        Self {
+            seed: U128::new(0, 0),
+            pending: Vec::with_capacity(2048),
+        }
+    }
+
+    /// The ClickHouse checksum hashes consecutive 2048-byte frames. A frame
+    /// may straddle any two granules, so preserve the partial final frame.
+    pub(super) fn update(&mut self, mut bytes: &[u8]) {
+        const BLOCK: usize = 2048;
+        if !self.pending.is_empty() {
+            let take = bytes.len().min(BLOCK - self.pending.len());
+            self.pending.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+            if self.pending.len() == BLOCK {
+                self.seed = cityhash128_with_seed(&self.pending, self.seed);
+                self.pending.clear();
+            }
+        }
+        let mut chunks = bytes.chunks_exact(BLOCK);
+        for chunk in chunks.by_ref() {
+            self.seed = cityhash128_with_seed(chunk, self.seed);
+        }
+        self.pending.extend_from_slice(chunks.remainder());
+    }
+
+    pub(super) fn finish(self) -> u128 {
+        let seed = if self.pending.is_empty() {
+            self.seed
+        } else {
+            cityhash128_with_seed(&self.pending, self.seed)
+        };
+        seed.into()
+    }
+}
+
+#[cfg(test)]
+mod streaming_checksum_tests {
+    use super::*;
+
+    #[test]
+    fn granule_boundaries_do_not_change_checksum_bytes() {
+        let bytes = (0..(2048 * 4 + 19))
+            .map(|index| (index * 19 % 251) as u8)
+            .collect::<Vec<_>>();
+        for step in [1, 7, 31, 2047, 2048, 2049, 3072, 8192] {
+            let mut checksum = StreamingChecksum::new();
+            for chunk in bytes.chunks(step) {
+                checksum.update(chunk);
+            }
+            assert_eq!(checksum.finish(), checksum_hash(&bytes), "step {step}");
+        }
+    }
+
+    #[test]
+    fn empty_and_aligned_inputs_match_existing_manifest_hashes() {
+        for len in [0, 1, 2048, 4096, 6144] {
+            let bytes = vec![42u8; len];
+            let mut checksum = StreamingChecksum::new();
+            checksum.update(&bytes);
+            checksum.update(&[]);
+            assert_eq!(checksum.finish(), checksum_hash(&bytes));
+        }
+    }
+}
+
 pub(super) fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
     const HEADER: &[u8] = b"checksums format version: 3\n";
     // Account for names, checksums, and bounded varuint fields so metadata
@@ -518,5 +604,49 @@ mod atomic_nested_cell_encoding_tests {
             &mut elements, &mut sizes).unwrap();
         assert_eq!(elements.len(), before.0.len() + 8);
         assert_eq!(&sizes[before.1.len()..], &2u64.to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+mod direct_uuid_decode_tests {
+    use super::*;
+
+    #[test]
+    fn pairwise_hex_decode_preserves_clickhouse_uuid_halves() {
+        let mut output = Vec::new();
+        push_uuid("00112233-4455-6677-8899-AaBbCcDdEeFf", &mut output).unwrap();
+        assert_eq!(output, [
+            0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00,
+            0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88,
+        ]);
+        let original_len = output.len();
+        for bad in [
+            "00112233-4455-6677-8899-AaBbCcDdEeFg",
+            "00112233-4455-6677-8899-AaBbCcDdEeF",
+            "00112233X4455-6677-8899-AaBbCcDdEeFf",
+        ] {
+            assert!(push_uuid(bad, &mut output).is_err());
+            assert_eq!(output.len(), original_len);
+        }
+    }
+}
+
+#[cfg(test)]
+mod nullable_uuid_physical_placeholder_tests {
+    use super::*;
+
+    #[test]
+    fn null_uuid_uses_sixteen_zero_bytes_without_rejecting_nullable_type() {
+        let mut data = vec![0x42];
+        assert!(push_cell("Nullable(UUID)", None, &mut data).unwrap());
+        assert_eq!(&data[1..], &[0u8; 16]);
+        assert!(!push_cell(
+            "Nullable(UUID)",
+            Some("00112233-4455-6677-8899-aabbccddeeff"),
+            &mut data,
+        ).unwrap());
+        assert_eq!(data.len(), 33);
+        assert!(push_cell("UUID", None, &mut Vec::new()).is_err());
+        assert!(push_cell("Nullable(UUID)", Some("not-a-uuid"), &mut Vec::new()).is_err());
     }
 }
