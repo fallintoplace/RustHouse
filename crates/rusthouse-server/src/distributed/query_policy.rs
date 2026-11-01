@@ -1,5 +1,72 @@
 use super::*;
 
+/// Locate a SQL keyword outside strings, quoted identifiers and comments.
+/// Rewriter input is already parsed, but searching raw text for " FROM "
+/// or " WHERE " can select a decoy inside a leading SQL comment.
+fn clause_offset(sql: &str, keyword: &[u8]) -> Option<usize> {
+    let bytes = sql.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'\x60' => {
+                let quote = bytes[index];
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                        index += 2;
+                    } else if bytes[index] == quote {
+                        index += 1;
+                        if bytes.get(index) == Some(&quote) {
+                            index += 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+            b'#' => {
+                while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
+                    index += 1;
+                }
+            }
+            b'-' if bytes.get(index + 1) == Some(&b'-') => {
+                while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
+                    index += 1;
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                let mut depth = 1usize;
+                while index < bytes.len() && depth > 0 {
+                    if bytes[index..].starts_with(b"/*") {
+                        depth += 1;
+                        index += 2;
+                    } else if bytes[index..].starts_with(b"*/") {
+                        depth -= 1;
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
+            _ => {
+                let boundary = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+                if bytes.get(index..index + keyword.len())
+                    .is_some_and(|word| word.eq_ignore_ascii_case(keyword))
+                    && (index == 0 || !boundary(bytes[index - 1]))
+                    && bytes.get(index + keyword.len()).is_none_or(|&byte| !boundary(byte))
+                {
+                    return Some(index);
+                }
+                index += 1;
+            }
+        }
+    }
+    None
+}
+
 fn verify_rewritten_select(rewritten: String, expected: &Select) -> Option<String> {
     (parse_select(&rewritten).ok()? == *expected).then_some(rewritten)
 }
@@ -63,8 +130,8 @@ pub(super) fn uniq_state_shard_sql(sql: &str, select: &Select) -> Option<String>
     if !is_safe_uniq(select) {
         return None;
     }
-    let start = sql.to_ascii_uppercase().find(" FROM ")?;
-    let rewritten = format!("SELECT uniqState({column}){}", &sql[start..]);
+    let start = clause_offset(sql, b"FROM")?;
+    let rewritten = format!("SELECT uniqState({column}) {}", &sql[start..]);
     let mut expected = select.clone();
     expected.projection = Projection::ApproxDistinctState { column: column.clone() };
     expected.alias = None;
@@ -85,8 +152,8 @@ pub(super) fn distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
         _ => return None,
     };
     let mut rewritten = format!("SELECT DISTINCT {column} FROM {table}");
-    let upper = sql.to_ascii_uppercase();
-    if let Some(where_start) = upper.find(" WHERE ") {
+    if let Some(where_start) = clause_offset(sql, b"WHERE") {
+        rewritten.push(' ');
         rewritten.push_str(&sql[where_start..]);
     } else if !select.predicates.is_empty() || !select.or_predicates.is_empty() {
         return None;
@@ -349,5 +416,37 @@ mod reverse_clause_boundary_tests {
         let sql = format!("{bare} LIMIT 3");
         let parsed = parse_select(&sql).unwrap();
         assert_eq!(grouped_count_shard_sql(&sql, &parsed).as_deref(), Some(bare.as_str()));
+    }
+}
+
+
+#[cfg(test)]
+mod rewrite_sql_clause_scanner_tests {
+    use super::*;
+
+    #[test]
+    fn skips_decoy_clauses_in_comments_and_string_literals() {
+        let statement = "/* FROM wrong WHERE wrong */ SELECT uniq(number) FROM events WHERE number = 1";
+        let parsed = parse_select(statement).unwrap();
+        assert_eq!(
+            uniq_state_shard_sql(statement, &parsed).as_deref(),
+            Some("SELECT uniqState(number) FROM events WHERE number = 1"),
+        );
+
+        let distinct = "/* WHERE impossible */ SELECT COUNT(DISTINCT number) FROM events WHERE number = 5";
+        let parsed = parse_select(distinct).unwrap();
+        assert_eq!(
+            distinct_shard_sql(distinct, &parsed).as_deref(),
+            Some("SELECT DISTINCT number FROM events WHERE number = 5"),
+        );
+    }
+
+    #[test]
+    fn skips_nested_block_comments_and_quoted_keyword_text() {
+        let source = "/* FROM outer /* WHERE inner */ FROM */ SELECT 1 FROM t";
+        assert_eq!(clause_offset(source, b"FROM"), source.rfind("FROM"));
+        let quoted = "SELECT 'FROM' AS x FROM things";
+        assert_eq!(clause_offset(quoted, b"FROM"), quoted.rfind("FROM"));
+        assert!(clause_offset("SELECT 'FROM' /* WHERE */", b"WHERE").is_none());
     }
 }
