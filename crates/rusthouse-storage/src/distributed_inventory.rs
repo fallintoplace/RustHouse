@@ -105,6 +105,7 @@ pub struct CheckedInventoryEntry {
 fn checksum_inventory_entry(
     active: &Path,
     entry: &InventoryEntry,
+    allow_parallel_file: bool,
 ) -> Result<CheckedInventoryEntry, PartError> {
     let path = active.join(&entry.relative_path);
     let metadata = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
@@ -125,8 +126,21 @@ fn checksum_inventory_entry(
             "snapshot inventory file changed before hashing".into(),
         ));
     }
-    let (bytes, crc32c) = crate::distributed_crc32c::crc32c_reader(&mut file, entry.bytes)
-        .map_err(|error| io_error(&path, error))?;
+    // File-level parallelism is useful when there are too few entries to
+    // occupy the existing inventory worker pool. Avoid nested workers when
+    // many independent files are already being hashed concurrently.
+    #[cfg(unix)]
+    let result = if allow_parallel_file && entry.bytes >= 16 * 1024 * 1024 {
+        crate::distributed_crc32c::crc32c_file_parallel(&file, entry.bytes)
+    } else {
+        crate::distributed_crc32c::crc32c_reader(&mut file, entry.bytes)
+    };
+    #[cfg(not(unix))]
+    let result = {
+        let _ = allow_parallel_file;
+        crate::distributed_crc32c::crc32c_reader(&mut file, entry.bytes)
+    };
+    let (bytes, crc32c) = result.map_err(|error| io_error(&path, error))?;
     if bytes != entry.bytes {
         return Err(PartError::InvalidScan(
             "snapshot inventory file changed during hashing".into(),
@@ -192,7 +206,7 @@ fn collect_ordered_checksum_results(
             Some(result) => result?,
             // Revisit only unclaimed entries earlier than an observed
             // failure. No extra I/O occurs on successful inventory polls.
-            None if first_failure.is_some() => checksum_inventory_entry(active, &entries[index])?,
+            None if first_failure.is_some() => checksum_inventory_entry(active, &entries[index], false)?,
             None => return Err(PartError::InvalidScan("missing snapshot checksum result".into())),
         };
         checked.push(entry);
@@ -215,7 +229,7 @@ pub fn inventory_snapshot_crc32c(
     if entries.len() < PARALLEL_THRESHOLD {
         let result = entries
             .iter()
-            .map(|entry| checksum_inventory_entry(&active, entry))
+            .map(|entry| checksum_inventory_entry(&active, entry, true))
             .collect::<Result<Vec<_>, _>>()?;
         require_unchanged_generation(root, &active)?;
         return Ok(result);
@@ -227,7 +241,7 @@ pub fn inventory_snapshot_crc32c(
     if workers == 1 {
         let result = entries
             .iter()
-            .map(|entry| checksum_inventory_entry(&active, entry))
+            .map(|entry| checksum_inventory_entry(&active, entry, true))
             .collect::<Result<Vec<_>, _>>()?;
         require_unchanged_generation(root, &active)?;
         return Ok(result);
@@ -264,7 +278,7 @@ pub fn inventory_snapshot_crc32c(
                             break;
                         }
                         let index = work_order.map_or(position, |order| order[position]);
-                        let result = checksum_inventory_entry(active, &entries[index]);
+                        let result = checksum_inventory_entry(active, &entries[index], false);
                         if result.is_err() {
                             cancelled.store(true, Ordering::Release);
                         }

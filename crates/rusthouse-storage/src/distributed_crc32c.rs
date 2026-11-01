@@ -451,6 +451,79 @@ pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64,
     Ok((total, checksum.finish()))
 }
 
+#[cfg(unix)]
+fn crc32c_positioned_range(
+    file: &std::fs::File,
+    begin: u64,
+    length: u64,
+) -> io::Result<(u64, u32)> {
+    use std::os::unix::fs::FileExt;
+    let mut checksum = Crc32cState::new();
+    let mut read = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    while read < length {
+        let wanted = (length - read).min(buffer.len() as u64) as usize;
+        match file.read_at(&mut buffer[..wanted], begin + read) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+            Ok(bytes) => {
+                checksum.append(&buffer[..bytes]);
+                read += bytes as u64;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok((read, checksum.checksum()))
+}
+
+/// Hash a large frozen file in independent positioned chunks on Unix.
+/// The caller must still verify immutable-file identity and metadata.
+/// Check the expected size before and after to reject silent short reads.
+#[cfg(unix)]
+pub fn crc32c_file_parallel(file: &std::fs::File, expected_bytes: u64) -> io::Result<(u64, u32)> {
+    if file.metadata()?.len() != expected_bytes {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "checksum file length changed"));
+    }
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |available| available.get())
+        .min(4);
+    if workers < 2 || expected_bytes < 16 * 1024 * 1024 {
+        let result = crc32c_positioned_range(file, 0, expected_bytes)?;
+        if file.metadata()?.len() != expected_bytes {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "checksum file length changed"));
+        }
+        return Ok(result);
+    }
+    let worker_count = workers as u64;
+    let base = expected_bytes / worker_count;
+    let extra = expected_bytes % worker_count;
+    let result = std::thread::scope(|scope| -> io::Result<(u64, u32)> {
+        let mut handles = Vec::with_capacity(workers);
+        for index in 0..workers {
+            let slot = index as u64;
+            let begin = base * slot + slot.min(extra);
+            let length = base + u64::from(slot < extra);
+            let handle = std::thread::Builder::new()
+                .spawn_scoped(scope, move || crc32c_positioned_range(file, begin, length))?;
+            handles.push(handle);
+        }
+        let mut total = 0u64;
+        let mut combined = 0u32;
+        for handle in handles {
+            let (length, checksum) = handle.join()
+                .map_err(|_| io::Error::other("checksum worker panicked"))??;
+            combined = crc32c_combine(combined, checksum, length);
+            total = total.checked_add(length)
+                .ok_or_else(|| io::Error::other("checksum file length overflow"))?;
+        }
+        Ok((total, combined))
+    })?;
+    if result.0 != expected_bytes || file.metadata()?.len() != expected_bytes {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "checksum file length changed"));
+    }
+    Ok(result)
+}
+
 /// Incremental CRC32C for an ordered byte stream.
 /// The checksum is only a corruption check, not an authentication mechanism.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -711,6 +784,32 @@ mod sparse_gf2_matrix_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod positioned_parallel_crc32c_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn large_file_parallel_crc_matches_ordered_streaming_across_uneven_splits() {
+        let input = (0..(16 * 1024 * 1024 + 123))
+            .map(|index| ((index * 17 + index / 7) % 251) as u8)
+            .collect::<Vec<_>>();
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-parallel-crc-{}-{:?}", std::process::id(), std::thread::current().id()
+        ));
+        fs::write(&path, &input).unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(113)).unwrap();
+        let (bytes, parallel_hash) = crc32c_file_parallel(&file, input.len() as u64).unwrap();
+        assert_eq!(file.stream_position().unwrap(), 113);
+        assert_eq!(bytes, input.len() as u64);
+        assert_eq!(parallel_hash, crc32c(&input));
+        assert!(crc32c_file_parallel(&file, input.len() as u64 - 1).is_err());
+        fs::remove_file(path).unwrap();
     }
 }
 
