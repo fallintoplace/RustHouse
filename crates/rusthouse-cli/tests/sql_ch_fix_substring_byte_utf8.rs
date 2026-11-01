@@ -6,6 +6,8 @@ fn verifies_substring_byte_utf8_boundaries() {
         ("SELECT substring('éa', 1, 2) AS value", "value\né\n"),
         ("SELECT substringUTF8('éa', 1, 2) AS value", "value\néa\n"),
         ("SELECT substring('éa', 3, 1) AS value", "value\na\n"),
+        ("SELECT substring('🙂xy', 5, 2) AS value", "value\nxy\n"),
+        ("SELECT substringUTF8('🙂xy', 2, 2) AS value", "value\nxy\n"),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", query])
