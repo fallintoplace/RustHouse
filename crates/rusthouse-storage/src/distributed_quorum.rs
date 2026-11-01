@@ -27,7 +27,7 @@ impl QuorumPolicy {
     /// Require overlapping read/write and write/write quorums.
     pub fn new(replicas: usize, reads: usize, writes: usize) -> Result<Self, &'static str> {
         if replicas == 0
-            || replicas > 16
+            || replicas > 64
             || reads == 0
             || writes == 0
             || reads > replicas
@@ -60,7 +60,7 @@ impl QuorumPolicy {
         if members.len() != self.replicas || acknowledgements.len() > 256 {
             return Err("quorum membership or acknowledgement count mismatch");
         }
-        let mut acknowledgement_mask = 0u16;
+        let mut acknowledgement_mask = 0u64;
         if members.len() <= 8 || acknowledgements.len() <= 8 {
             // Small replication groups are the common case. A short borrowed
             // lookup avoids allocating and hashing a temporary member map.
@@ -74,13 +74,13 @@ impl QuorumPolicy {
                     .iter()
                     .position(|&member| member == replica)
                     .ok_or("acknowledgement from unknown replica")?;
-                acknowledgement_mask |= 1u16 << index;
+                acknowledgement_mask |= 1u64 << index;
             }
         } else {
-            // At most 16 members can be configured. A stack-backed sorted
+            // At most 64 members can be configured. A stack-backed sorted
             // index avoids allocating a HashMap for repeated acknowledgement
             // polls and still preserves the original membership bit positions.
-            let mut membership = [("", 0usize); 16];
+            let mut membership = [("", 0usize); 64];
             for (index, &member) in members.iter().enumerate() {
                 if !valid_member(member) {
                     return Err("invalid or duplicate quorum member");
@@ -96,7 +96,7 @@ impl QuorumPolicy {
                 let index = sorted
                     .binary_search_by(|(member, _)| member.cmp(&replica))
                     .map_err(|_| "acknowledgement from unknown replica")?;
-                acknowledgement_mask |= 1u16 << sorted[index].1;
+                acknowledgement_mask |= 1u64 << sorted[index].1;
             }
         }
         let distinct_acks = acknowledgement_mask.count_ones() as usize;
@@ -260,7 +260,7 @@ mod tests {
         assert!(QuorumPolicy::new(3, 1, 2).is_err());
         assert!(QuorumPolicy::new(4, 2, 2).is_err());
         assert!(QuorumPolicy::new(0, 0, 0).is_err());
-        assert!(QuorumPolicy::new(17, 9, 9).is_err());
+        assert!(QuorumPolicy::new(65, 33, 33).is_err());
     }
     #[test]
     fn all_accepted_quorum_policies_intersect() {
@@ -391,33 +391,33 @@ pub fn observe_joint_quorum(
         previous.observe(previous_members, &[])?;
         next.observe(next_members, &[])?;
     }
-    let mut previous_mask = 0u16;
-    let mut next_mask = 0u16;
+    let mut previous_mask = 0u64;
+    let mut next_mask = 0u64;
     if acknowledgements.len() > 32 {
         // Large retry batches often repeat the same acknowledgement. Resolve
         // a replica ID to its old/new bit positions only once, while sharing
         // nodes count as one vote in each membership configuration.
-        // A policy has at most sixteen members on each side. Build the
+        // A policy has at most 64 members on each side. Build the
         // combined old/new ID index on the stack, then binary-search up to
         // 256 acknowledgements without allocating a hash table.
-        let mut entries = [("", 0u16, 0u16); 32];
+        let mut entries = [("", 0u64, 0u64); 128];
         let mut len = 0usize;
         for (index, &member) in previous_members.iter().enumerate() {
             if !valid_member(member) {
                 return Err("invalid or duplicate quorum member");
             }
-            entries[len] = (member, 1u16 << index, 0);
+            entries[len] = (member, 1u64 << index, 0);
             len += 1;
         }
         for (index, &member) in next_members.iter().enumerate() {
             if !valid_member(member) {
                 return Err("invalid or duplicate quorum member");
             }
-            entries[len] = (member, 0, 1u16 << index);
+            entries[len] = (member, 0, 1u64 << index);
             len += 1;
         }
         entries[..len].sort_unstable_by(|left, right| left.0.cmp(right.0));
-        let mut index = [("", 0u16, 0u16); 32];
+        let mut index = [("", 0u64, 0u64); 128];
         let mut unique = 0usize;
         for (member, old, new) in entries[..len].iter().copied() {
             if unique > 0 && index[unique - 1].0 == member {
@@ -451,10 +451,10 @@ pub fn observe_joint_quorum(
                 return Err("acknowledgement from unknown replica");
             }
             if let Some(index) = old {
-                previous_mask |= 1u16 << index;
+                previous_mask |= 1u64 << index;
             }
             if let Some(index) = new {
-                next_mask |= 1u16 << index;
+                next_mask |= 1u64 << index;
             }
         }
     }
@@ -892,11 +892,11 @@ pub fn plan_joint_write_acknowledgements(
             return Ok(vec![shared.to_owned()]);
         }
     }
-    // Policies permit at most 16 members on either side. A 32-bit mask
-    // represents the complete candidate set without heap-backed DP paths.
-    debug_assert!(candidates.len() <= 32);
+    // Policies permit up to 64 members on either side. A 128-bit mask
+    // represents every candidate without heap-backed DP paths.
+    debug_assert!(candidates.len() <= 128);
     let width = next_missing + 1;
-    let mut best = vec![None::<u32>; (previous_missing + 1) * width];
+    let mut best = vec![None::<u128>; (previous_missing + 1) * width];
     best[0] = Some(0);
     for (index, candidate) in candidates.iter().enumerate() {
         let in_previous = usize::from(previous_members.contains(candidate));
@@ -911,7 +911,7 @@ pub fn plan_joint_write_acknowledgements(
                 if updated_old == old && updated_new == new {
                     continue;
                 }
-                let updated_mask = mask | (1u32 << index);
+                let updated_mask = mask | (1u128 << index);
                 let slot = &mut best[updated_old * width + updated_new];
                 let replace = match *slot {
                     None => true,
@@ -920,7 +920,7 @@ pub fn plan_joint_write_acknowledgements(
                         // Candidates are sorted. The set containing the first
                         // differing candidate is the lexicographically first.
                         let difference = updated_mask ^ existing;
-                        difference != 0 && updated_mask & (1u32 << difference.trailing_zeros()) != 0
+                        difference != 0 && updated_mask & (1u128 << difference.trailing_zeros()) != 0
                     }
                     _ => false,
                 };
@@ -935,7 +935,7 @@ pub fn plan_joint_write_acknowledgements(
     Ok(candidates
         .iter()
         .enumerate()
-        .filter(|&(index, _)| selected & (1u32 << index) != 0)
+        .filter(|&(index, _)| selected & (1u128 << index) != 0)
         .map(|(_, &candidate)| candidate.to_owned())
         .collect())
 }
@@ -1080,6 +1080,41 @@ mod optimal_joint_write_ack_tests {
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod wide_quorum_support_tests {
+    use super::*;
+
+    #[test]
+    fn full_width_membership_and_joint_memberships_count_distinct_votes() {
+        let old = (0..64).map(|i| format!("old{i}")).collect::<Vec<_>>();
+        let new = (0..64).map(|i| format!("new{i}")).collect::<Vec<_>>();
+        let a = old.iter().map(String::as_str).collect::<Vec<_>>();
+        let b = new.iter().map(String::as_str).collect::<Vec<_>>();
+        let policy = QuorumPolicy::new(64, 33, 33).unwrap();
+        assert_eq!(policy.observe(&a, &a).unwrap().distinct_acks, 64);
+        assert_eq!(policy.observe(&a, &[a[63], a[63]]).unwrap().distinct_acks, 1);
+        let observations = a.iter().chain(b.iter()).copied().collect::<Vec<_>>();
+        let joint = observe_joint_quorum(policy, &a, policy, &b, &observations).unwrap();
+        assert_eq!(joint.previous.distinct_acks, 64);
+        assert_eq!(joint.next.distinct_acks, 64);
+        assert!(joint.can_read && joint.can_write);
+        assert!(policy.observe(&a, &["unknown"]).is_err());
+    }
+
+    #[test]
+    fn joint_recovery_can_select_across_more_than_32_unique_members() {
+        let old = (0..40).map(|i| format!("old{i}")).collect::<Vec<_>>();
+        let new = (0..40).map(|i| format!("new{i}")).collect::<Vec<_>>();
+        let a = old.iter().map(String::as_str).collect::<Vec<_>>();
+        let b = new.iter().map(String::as_str).collect::<Vec<_>>();
+        let policy = QuorumPolicy::new(40, 21, 21).unwrap();
+        let selected = plan_joint_write_acknowledgements(policy, &a, policy, &b, &[]).unwrap();
+        assert_eq!(selected.len(), 42);
+        let references = selected.iter().map(String::as_str).collect::<Vec<_>>();
+        assert!(observe_joint_quorum(policy, &a, policy, &b, &references).unwrap().can_write);
     }
 }
 

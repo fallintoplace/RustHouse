@@ -52,7 +52,7 @@ pub fn newest_quorum_observed_snapshot(
     if observations.len() > members.len() {
         return Err("too many snapshot observations for membership");
     }
-    // The policy permits at most 16 members. Validate their identities once,
+    // The policy permits at most 64 members. Validate their identities once,
     // then accumulate observed generations and fingerprints in fixed storage.
     policy.observe(members, &[])?;
     let empty = SnapshotVersion {
@@ -60,16 +60,16 @@ pub fn newest_quorum_observed_snapshot(
         generation: 0,
         fingerprint: 0,
     };
-    let mut groups = [(empty, 0usize); 16];
+    let mut groups = [(empty, 0usize); 64];
     let mut groups_len = 0usize;
-    let mut seen = 0u16;
+    let mut seen = 0u64;
     let mut epoch = None;
     for &(node, version) in observations {
         let member_index = members
             .iter()
             .position(|&member| member == node)
             .ok_or("acknowledgement from unknown replica")?;
-        let bit = 1u16 << member_index;
+        let bit = 1u64 << member_index;
         if seen & bit != 0 {
             return Err("duplicate snapshot observation");
         }
@@ -282,7 +282,7 @@ pub fn newest_consistent_snapshot(
     }
     let epoch = versions[0].epoch;
     if versions.len() <= 16 {
-        // Replica groups are bounded to 16 members by the quorum policy.
+        // Short candidate histories use borrowed stack grouping.
         // Inspect previous generation fingerprints directly without a
         // temporary hash table for the common consensus-sized candidate set.
         let mut newest = versions[0];
@@ -435,18 +435,18 @@ pub fn highest_quorum_observed_snapshot(
     if observations.len() > members.len() {
         return Err("too many observed snapshot versions");
     }
-    let mut observed_nodes = 0u16;
+    let mut observed_nodes = 0u64;
     let mut epoch = None;
-    // A quorum policy supports at most sixteen replicas. Grouping their
+    // A quorum policy supports at most 64 replicas. Grouping their
     // snapshot identities on the stack avoids a tree allocation and sorting.
-    let mut groups = [(0u64, 0u128, 0usize); 16];
+    let mut groups = [(0u64, 0u128, 0usize); 64];
     let mut group_count = 0usize;
     for &(member, version) in observations {
         let index = members
             .iter()
             .position(|&known| member == known)
             .ok_or("snapshot observation from unknown replica")?;
-        let bit = 1u16 << index;
+        let bit = 1u64 << index;
         if observed_nodes & bit != 0 {
             return Err("duplicate snapshot observation");
         }
@@ -1107,5 +1107,26 @@ mod quorum_snapshot_lag_classification_tests {
         ] {
             assert!(classify_quorum_snapshot_lag(policy, &["a", "b", "c"], &reports,).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod wide_quorum_lineage_tests {
+    use super::*;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    #[test]
+    fn newest_and_highest_observations_accept_member_indexes_16_through_63() {
+        let names = (0..64).map(|i| format!("node{i}")).collect::<Vec<_>>();
+        let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+        let snapshot = SnapshotVersion { epoch: 5, generation: 91, fingerprint: 125 };
+        let observations = members.iter().copied().map(|node| (node, snapshot)).collect::<Vec<_>>();
+        let policy = QuorumPolicy::new(64, 33, 33).unwrap();
+        assert_eq!(newest_quorum_observed_snapshot(policy, &members, &observations).unwrap(), Some(snapshot));
+        assert_eq!(highest_quorum_observed_snapshot(policy, &members, &observations).unwrap(), Some(snapshot));
+        let mut duplicate = observations[..33].to_vec();
+        duplicate.push(observations[32]);
+        assert!(newest_quorum_observed_snapshot(policy, &members, &duplicate).is_err());
+        assert!(highest_quorum_observed_snapshot(policy, &members, &duplicate).is_err());
     }
 }
