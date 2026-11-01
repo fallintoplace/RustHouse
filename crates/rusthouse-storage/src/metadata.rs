@@ -52,11 +52,23 @@ pub fn read_part_row_count(path: impl AsRef<Path>) -> Result<u64, PartError> {
 
 pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     let path = path.as_ref();
+    // A part's row count and schema form one immutable generation. Each
+    // individual reader checks its own file, but a replacement between
+    // the two reads would otherwise return a mixed-generation schema.
+    validate_part_directory(path)?;
+    let count_path = path.join("count.txt");
+    let columns_path = path.join("columns.txt");
+    let count_before = fs::symlink_metadata(&count_path)
+        .map_err(|source| io_error(&count_path, source))?;
+    let columns_before = fs::symlink_metadata(&columns_path)
+        .map_err(|source| io_error(&columns_path, source))?;
     let rows = read_part_row_count(path)?;
     let columns = parse_columns(&read_metadata(
-        &path.join("columns.txt"),
+        &columns_path,
         MAX_COLUMNS_BYTES,
     )?)?;
+    ensure_inspection_generation(&count_path, &count_before)?;
+    ensure_inspection_generation(&columns_path, &columns_before)?;
 
     Ok(PartMetadata {
         path: path.to_path_buf(),
@@ -91,6 +103,14 @@ fn metadata_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     }
     #[cfg(not(unix))]
     true
+}
+
+fn ensure_inspection_generation(path: &Path, before: &fs::Metadata) -> Result<(), PartError> {
+    let after = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if !metadata_unchanged(before, &after) {
+        return Err(invalid_metadata(path, "part metadata changed during inspection"));
+    }
+    Ok(())
 }
 
 fn read_bounded_metadata_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, PartError> {
@@ -405,5 +425,52 @@ mod canonical_part_count_tests {
         assert_eq!(parse_count("42\r\n").unwrap(), 42);
         assert_eq!(parse_count("18446744073709551615").unwrap(), u64::MAX);
         assert!(parse_count("18446744073709551616").is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod consistent_part_metadata_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn cross_file_snapshot_catches_changes_after_the_first_metadata_read() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-metadata-snapshot-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let count = root.join("count.txt");
+        let columns = root.join("columns.txt");
+        fs::write(&count, b"42\n").unwrap();
+        fs::write(&columns, b"header").unwrap();
+        let count_before = fs::symlink_metadata(&count).unwrap();
+        let columns_before = fs::symlink_metadata(&columns).unwrap();
+        assert!(ensure_inspection_generation(&count, &count_before).is_ok());
+        assert!(ensure_inspection_generation(&columns, &columns_before).is_ok());
+
+        fs::write(&count, b"420\n").unwrap();
+        assert!(ensure_inspection_generation(&count, &count_before).is_err());
+        fs::write(&columns, b"new-schema-longer").unwrap();
+        assert!(ensure_inspection_generation(&columns, &columns_before).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_length_replacement_does_not_reuse_immutable_schema_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-metadata-inode-snapshot-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let count = root.join("count.txt");
+        let alternate = root.join("alternate.txt");
+        fs::write(&count, b"42\n").unwrap();
+        fs::write(&alternate, b"42\n").unwrap();
+        let before = fs::symlink_metadata(&count).unwrap();
+        fs::rename(alternate, &count).unwrap();
+        assert!(ensure_inspection_generation(&count, &before).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
