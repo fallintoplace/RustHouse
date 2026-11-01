@@ -32,17 +32,24 @@ pub(super) fn decode_compressed_checksums(
 ) -> Result<Vec<u8>, PartError> {
     let mut decoded = Vec::new();
     let mut blocks = CompressedBlockReader::new(Cursor::new(payload), path)?;
-    while let Some(block) = blocks.next_decoded() {
-        let block = block?;
-        if block.data.len() > MAX_CHECKSUMS_BYTES as usize - decoded.len() {
+    let mut scratch = Vec::new();
+    loop {
+        let Some(block) = blocks.next_decoded_reusing(scratch) else {
+            break;
+        };
+        let data = block?.data;
+        if data.len() > MAX_CHECKSUMS_BYTES as usize - decoded.len() {
             return Err(invalid(path, "decoded checksums exceed 64 MiB"));
         }
         if decoded.is_empty() {
-            // A single compressed checksums block is common. Take ownership
-            // of its decoded allocation instead of copying its entire body.
-            decoded = block.data;
+            // One-block manifests use the original decompressed allocation.
+            decoded = data;
+            scratch = Vec::new();
         } else {
-            decoded.extend_from_slice(&block.data);
+            decoded.extend_from_slice(&data);
+            // Large v4 manifests can span hundreds of compressed blocks.
+            // Reuse the previous block's allocation on the next decode.
+            scratch = data;
         }
     }
     Ok(decoded)
@@ -153,5 +160,45 @@ mod portable_manifest_path_tests {
         }
         #[cfg(not(windows))]
         assert!(valid_name("part/COM1.bin"));
+    }
+}
+
+#[cfg(test)]
+mod multiblock_checksums_reuse_tests {
+    use super::*;
+    use ch_cityhash102::cityhash128;
+
+    fn checked_uncompressed_block(payload: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0x02];
+        bytes.extend_from_slice(&(payload.len() as u32 + 9).to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(payload);
+        let mut wire = u128::from(cityhash128(&bytes)).to_le_bytes().to_vec();
+        wire.extend_from_slice(&bytes);
+        wire
+    }
+
+    #[test]
+    fn decodes_many_small_blocks_without_changing_byte_order_or_length() {
+        let mut wire = Vec::new();
+        let mut expected = Vec::new();
+        for index in 0..128usize {
+            let contents = vec![index as u8; 4096 + (index % 7)];
+            wire.extend_from_slice(&checked_uncompressed_block(&contents));
+            expected.extend_from_slice(&contents);
+        }
+        assert_eq!(
+            decode_compressed_checksums(&wire, Path::new("checksums.txt")).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn later_bad_block_does_not_return_partial_decoded_manifest() {
+        let mut wire = checked_uncompressed_block(&[7u8; 8192]);
+        let mut bad = checked_uncompressed_block(b"truncated");
+        bad[0] ^= 1;
+        wire.extend_from_slice(&bad);
+        assert!(decode_compressed_checksums(&wire, Path::new("checksums.txt")).is_err());
     }
 }
