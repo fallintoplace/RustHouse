@@ -5,7 +5,7 @@ use rusthouse_server::{
     Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
 };
 use std::io::{self, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -51,7 +51,7 @@ fn parse_max_connections(value: &str) -> io::Result<usize> {
 }
 
 fn usage() -> &'static str {
-    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--max-connections <1-64>] [--peer IPv4:<port>]... [--bind <IPv4>] [--allow-private-network]\n\
+    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--max-connections <1-64>] [--peer IPv4:<port>]... [--bind <IPv4-or-IPv6-loopback>] [--allow-private-network]\n\
      Listens on 127.0.0.1 by default. Private networking requires opt-in. No TLS or authentication.\n"
 }
 
@@ -102,8 +102,31 @@ fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
 /// Only numeric bind addresses (and localhost for loopback) are trusted as
 /// Host values. This prevents DNS rebinding against an unauthenticated server.
 fn host_matches_listener(host: &str, listener: SocketAddr) -> bool {
-    let (name, port) = match host.rsplit_once(':') {
-        Some((name, port)) => (name, Some(port)),
+    if let Some(value) = host.strip_prefix('[') {
+        // RFC 3986 requires IPv6 address literals in HTTP Host to be
+        // bracketed. Compare addresses, not spellings: compressed and
+        // expanded forms refer to the same bound listener.
+        let Some((address, suffix)) = value.split_once(']') else {
+            return false;
+        };
+        let port = if suffix.is_empty() {
+            None
+        } else if let Some(port) = suffix.strip_prefix(':') {
+            Some(port)
+        } else {
+            return false;
+        };
+        let SocketAddr::V6(bound) = listener else {
+            return false;
+        };
+        return address.parse::<std::net::Ipv6Addr>().ok() == Some(*bound.ip())
+            && port.is_none_or(|value| value.parse::<u16>().ok() == Some(bound.port()));
+    }
+    // Unbracketed IPv6 is not an HTTP authority. A textual IPv4 address or
+    // loopback hostname may have a single optional port.
+    let (name, port) = match host.split_once(':') {
+        Some((name, port)) if !port.contains(':') => (name, Some(port)),
+        Some(_) => return false,
         None => (host, None),
     };
     if port.is_some_and(|port| port.parse::<u16>().ok() != Some(listener.port())) {
@@ -437,6 +460,16 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let _ = respond(&mut stream, response, accept_lz4);
 }
 
+/// Allow IPv6 only on ::1 without extending the experimental
+/// unauthenticated peer transport beyond the existing private IPv4 policy.
+fn permitted_listener_bind(bind: IpAddr, allow_private_network: bool) -> bool {
+    match bind {
+        IpAddr::V4(address) => address == Ipv4Addr::LOCALHOST
+            || (allow_private_network && cluster::is_private_address(address)),
+        IpAddr::V6(address) => address == Ipv6Addr::LOCALHOST,
+    }
+}
+
 fn main() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
     let mut port = 8123u16;
@@ -445,7 +478,7 @@ fn main() -> io::Result<()> {
     let mut max_rows = 10_000usize;
     let mut max_connections = MAX_CONNECTIONS;
     let mut peers = Vec::new();
-    let mut bind = Ipv4Addr::LOCALHOST;
+    let mut bind = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let mut allow_private_network = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -489,9 +522,9 @@ fn main() -> io::Result<()> {
             "--bind" => {
                 bind = args
                     .next()
-                    .ok_or_else(|| io::Error::other("missing bind IPv4 address"))?
-                    .parse::<Ipv4Addr>()
-                    .map_err(|_| io::Error::other("bind address must be numeric IPv4"))?;
+                    .ok_or_else(|| io::Error::other("missing bind IP address"))?
+                    .parse::<IpAddr>()
+                    .map_err(|_| io::Error::other("bind address must be numeric IP"))?;
             }
             "--allow-private-network" => allow_private_network = true,
             "--max-rows" => {
@@ -515,10 +548,9 @@ fn main() -> io::Result<()> {
     if part.is_some() && database.is_some() {
         return Err(io::Error::other("--part and --database cannot be combined"));
     }
-    if bind != Ipv4Addr::LOCALHOST && (!allow_private_network || !cluster::is_private_address(bind))
-    {
+    if !permitted_listener_bind(bind, allow_private_network) {
         return Err(io::Error::other(
-            "non-loopback bind requires --allow-private-network and a private IPv4 address",
+            "non-loopback bind requires --allow-private-network and private IPv4; IPv6 supports only ::1",
         ));
     }
     let peers: Vec<Peer> = peers
@@ -532,7 +564,7 @@ fn main() -> io::Result<()> {
     if cluster
         .peers()
         .iter()
-        .any(|peer| *peer.address().ip() == bind && peer.port() == port)
+        .any(|peer| IpAddr::V4(*peer.address().ip()) == bind && peer.port() == port)
     {
         return Err(io::Error::other("server cannot be its own peer"));
     }
@@ -542,7 +574,7 @@ fn main() -> io::Result<()> {
         max_rows,
     });
     let listener = TcpListener::bind((bind, port))?;
-    eprintln!("RustHouse read-only HTTP listening on http://{bind}:{port}");
+    eprintln!("RustHouse read-only HTTP listening on http://{}", listener.local_addr()?);
     let active = Arc::new(AtomicUsize::new(0));
     for accepted in listener.incoming() {
         let stream = match accepted {
@@ -594,6 +626,25 @@ fn main() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod ipv6_bind_policy_tests {
+    use super::*;
+
+    #[test]
+    fn enables_ipv6_loopback_only_without_expanding_private_network_access() {
+        for allow_private in [false, true] {
+            assert!(permitted_listener_bind("127.0.0.1".parse().unwrap(), allow_private));
+            assert!(permitted_listener_bind("::1".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("::".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("fc00::1".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("fe80::1".parse().unwrap(), allow_private));
+            assert!(!permitted_listener_bind("8.8.8.8".parse().unwrap(), allow_private));
+        }
+        assert!(!permitted_listener_bind("10.1.2.3".parse().unwrap(), false));
+        assert!(permitted_listener_bind("10.1.2.3".parse().unwrap(), true));
+    }
 }
 
 #[cfg(test)]
@@ -966,6 +1017,24 @@ mod host_validation_tests {
         assert!(host_matches_listener("10.1.2.3:8080", private));
         assert!(!host_matches_listener("localhost:8080", private));
         assert!(!host_matches_listener("10.1.2.4:8080", private));
+    }
+
+    #[test]
+    fn accepts_bracketed_ipv6_without_disabling_host_validation() {
+        let listener: SocketAddr = "[::1]:8123".parse().unwrap();
+        for host in ["[::1]", "[::1]:8123", "[0:0:0:0:0:0:0:1]:8123"] {
+            assert!(host_matches_listener(host, listener), "{host}");
+        }
+        for host in [
+            "::1", "::1:8123", "[::1]:8124", "[::2]:8123",
+            "[::1]garbage", "[::1]:", "[::1]:1234:8123",
+            "[localhost]:8123", "[::1", "[::1]]:8123",
+        ] {
+            assert!(!host_matches_listener(host, listener), "{host}");
+        }
+        let v4: SocketAddr = "127.0.0.1:8123".parse().unwrap();
+        assert!(!host_matches_listener("[::1]:8123", v4));
+        assert!(host_matches_listener("localhost:8123", listener));
     }
 }
 
