@@ -176,7 +176,10 @@ pub fn membership_changes(
     let mut changes = Vec::new();
     let (mut left, mut right) = (0usize, 0usize);
     while left < old.len() || right < new.len() {
-        match (old.get(left).copied().flatten(), new.get(right).copied().flatten()) {
+        match (
+            old.get(left).copied().flatten(),
+            new.get(right).copied().flatten(),
+        ) {
             (Some(a), Some(b)) => match a.node.cmp(&b.node) {
                 std::cmp::Ordering::Less => {
                     changes.push(MembershipChange::Removed((*a).clone()));
@@ -642,7 +645,7 @@ mod stack_membership_index_tests {
             let mut duplicates = members.clone();
             if size == 1 {
                 let repeated = duplicates[0].clone();
-        duplicates.push(repeated);
+                duplicates.push(repeated);
             } else {
                 duplicates[size - 1].node = duplicates[0].node.clone();
             }
@@ -689,7 +692,10 @@ mod borrowed_membership_diff_tests {
         reversed_before.reverse();
         let mut reversed_after = after.clone();
         reversed_after.reverse();
-        assert_eq!(membership_changes(&reversed_before, &reversed_after).unwrap(), changes);
+        assert_eq!(
+            membership_changes(&reversed_before, &reversed_after).unwrap(),
+            changes
+        );
     }
 
     #[test]
@@ -718,8 +724,12 @@ pub fn canonical_membership_manifest(members: &[Member]) -> Result<String, &'sta
     sorted.sort_unstable_by(|left, right| left.node.cmp(&right.node));
     let mut output = String::with_capacity(bytes);
     for member in sorted {
-        writeln!(&mut output, "{} {} {}", member.node, member.zone, member.weight)
-            .expect("writing to String cannot fail");
+        writeln!(
+            &mut output,
+            "{} {} {}",
+            member.node, member.zone, member.weight
+        )
+        .expect("writing to String cannot fail");
     }
     debug_assert_eq!(output.len(), bytes);
     Ok(output)
