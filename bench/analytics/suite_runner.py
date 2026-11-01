@@ -15,7 +15,7 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
-from bench.common import cli_sql, emit_json, latency_summary
+from bench.common import cli_sql, emit_json, file_change_time_ns, latency_summary
 from bench.analytics.sqlite_oracle import assert_matches
 
 SCHEMA = (
@@ -59,7 +59,7 @@ def load_workload(path):
 
     def identity(metadata):
         return (metadata.st_dev, metadata.st_ino, metadata.st_size,
-                metadata.st_mtime_ns, metadata.st_ctime_ns)
+                metadata.st_mtime_ns, file_change_time_ns(metadata))
 
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)
                  | getattr(os, "O_NOFOLLOW", 0))
