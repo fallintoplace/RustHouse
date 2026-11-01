@@ -64,6 +64,14 @@ class ThroughputTests(unittest.TestCase):
         self.assertEqual(result["verified_executions"], 0)
         self.assertEqual(result["successful_executions"], 1)
 
+    def test_rejects_oversized_statement_before_dispatch(self):
+        invoked = []
+        with self.assertRaisesRegex(ValueError, "64 KiB"):
+            run_throughput([(1, "SELECT '" + "x" * 65_536 + "'")],
+                           lambda sql: invoked.append(sql), rounds=1)
+        self.assertEqual(invoked, [])
+
+
     def test_verified_mode_rejects_missing_or_partial_goldens(self):
         with self.assertRaisesRegex(ValueError, "reference"):
             run_throughput([(1, "SELECT 1")], lambda _: b"1\n",
