@@ -2,6 +2,7 @@
 """Generate reference TSV for the subset of TPC-H SQL that SQLite supports."""
 import argparse
 import json
+import math
 import os
 import tempfile
 import sqlite3
@@ -17,6 +18,8 @@ def tsv_cell(value, null_token="NULL"):
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("SQLite reference contains a nonfinite float")
         return format(value, ".17g")
     if not isinstance(value, str):
         raise ValueError(f"unsupported SQLite result type: {type(value).__name__}")

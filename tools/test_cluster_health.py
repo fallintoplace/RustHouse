@@ -122,5 +122,21 @@ class ClusterTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate peer-health JSON field"):
                 inspect("http://127.0.0.1:8123")
 
+    def test_http_503_never_passes_even_with_all_peers_healthy(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+        from unittest.mock import patch
+        from cluster_health import inspect
+
+        origin = "http://127.0.0.1:8123"
+        raw = BytesIO(b'{"total":1,"healthy":1,"peers":[{"address":"127.0.0.1:8124","healthy":true}]}')
+        error = HTTPError(origin + "/cluster/health", 503, "Unavailable", {}, raw)
+        with patch("cluster_health.NO_REDIRECT_OPENER") as opener:
+            opener.open.side_effect = error
+            ok, payload = inspect(origin, min_healthy=1)
+        self.assertFalse(ok)
+        self.assertEqual(payload["healthy"], 1)
+        self.assertTrue(raw.closed)
+
 if __name__ == "__main__":
     unittest.main()

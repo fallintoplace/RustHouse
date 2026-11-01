@@ -6,11 +6,16 @@ import argparse
 import json
 import math
 import re
+import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 MAX_SNAPSHOT_REPORT_BYTES = 2 * 1024 * 1024
+
+
+def reject_nonstandard_constant(value):
+    raise ValueError(f"nonstandard snapshot JSON constant: {value}")
 
 
 def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
@@ -24,11 +29,39 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
         raise ValueError("max_parts must be in 1..16384")
     command = [str(binary), "inspect-snapshot", str(path), "--json"]
     if run is None:
+        extra = {}
+        if os.name == "posix":
+            import resource
+
+            def limit_child_files():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                cap = MAX_SNAPSHOT_REPORT_BYTES + 1
+                if hard != resource.RLIM_INFINITY:
+                    cap = min(cap, hard)
+                resource.setrlimit(resource.RLIMIT_FSIZE, (cap, hard))
+
+            extra["preexec_fn"] = limit_child_files
+
         with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile() as errors:
+            extra = {}
+            if os.name == "posix":
+                import resource
+                def cap_report_file():
+                    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                    limit = MAX_SNAPSHOT_REPORT_BYTES + 1
+                    if soft != resource.RLIM_INFINITY:
+                        limit = min(limit, soft)
+                    if hard != resource.RLIM_INFINITY:
+                        limit = min(limit, hard)
+                    resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+                extra["preexec_fn"] = cap_report_file
             result = subprocess.run(
                 command, stdout=output, stderr=errors,
-                check=False, timeout=timeout,
+                check=False, timeout=timeout, **extra,
             )
+            output.seek(0, os.SEEK_END)
+            if output.tell() > MAX_SNAPSHOT_REPORT_BYTES:
+                raise ValueError("snapshot report exceeds 2 MiB")
             output.seek(0)
             payload = output.read(MAX_SNAPSHOT_REPORT_BYTES + 1)
             errors.seek(max(0, errors.tell() - 600))
@@ -49,7 +82,8 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
             fields[name] = value
         return fields
 
-    data = json.loads(payload, object_pairs_hook=unique_fields)
+    data = json.loads(payload, object_pairs_hook=unique_fields,
+                      parse_constant=reject_nonstandard_constant)
     if not isinstance(data, dict):
         raise ValueError("snapshot report must be a JSON object")
     rows, parts = data.get("rows"), data.get("parts")

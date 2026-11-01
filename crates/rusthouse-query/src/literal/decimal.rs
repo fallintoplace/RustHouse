@@ -66,16 +66,25 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
 
 pub(super) fn format_decimal(value: i128, scale: usize) -> String {
     let absolute = value.unsigned_abs();
-    let divisor = 10_u128.pow(scale as u32);
+    // 10^39 exceeds u128; never compute that power for a display scale.
+    // The usual <=38 case retains the cheap integer division path.
     let mut formatted = if scale == 0 {
         absolute.to_string()
-    } else {
+    } else if scale <= 38 {
+        let divisor = 10_u128.pow(scale as u32);
         format!(
             "{}.{:0width$}",
             absolute / divisor,
             absolute % divisor,
             width = scale
         )
+    } else {
+        let digits = absolute.to_string();
+        let mut output = String::with_capacity(scale.saturating_add(2));
+        output.push_str("0.");
+        output.extend(std::iter::repeat_n('0', scale - digits.len()));
+        output.push_str(&digits);
+        output
     };
     if scale > 0 {
         while formatted.ends_with('0') {
@@ -152,6 +161,22 @@ mod allocation_free_decimal_mantissa_tests {
             } else {
                 assert_eq!(fixed_decimal(repr).unwrap(), expected, "{repr}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod wide_display_scale_tests {
+    use super::*;
+
+    #[test]
+    fn formatting_large_scales_does_not_overflow_u128() {
+        assert_eq!(format_decimal(1, 39), format!("0.{}1", "0".repeat(38)));
+        assert_eq!(format_decimal(-10, 40), format!("-0.{}1", "0".repeat(38)));
+        assert_eq!(format_decimal(0, 40), "0");
+        assert_eq!(format_decimal(i128::MIN, 39).split('.').next(), Some("-0"));
+        for scale in [0usize, 1, 18, 38] {
+            assert_eq!(format_decimal(100, scale).starts_with('-'), false);
         }
     }
 }

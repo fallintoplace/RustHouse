@@ -46,42 +46,10 @@ fn decode_field(value: &str) -> Result<Option<String>, String> {
     if value == r"\N" {
         return Ok(None);
     }
-    let mut decoded = Vec::with_capacity(value.len());
-    let mut bytes = value.bytes();
-    while let Some(byte) = bytes.next() {
-        if byte != b'\\' {
-            decoded.push(byte);
-            continue;
-        }
-        let escaped = bytes
-            .next()
-            .ok_or("invalid trailing escape in SELECT result")?;
-        match escaped {
-            b'\\' => decoded.push(b'\\'),
-            b't' => decoded.push(b'\t'),
-            b'n' => decoded.push(b'\n'),
-            b'r' => decoded.push(b'\r'),
-            b'0' => decoded.push(0),
-            b'x' => {
-                let high_hex_digit = bytes
-                    .next()
-                    .ok_or("incomplete hex escape in SELECT result")?;
-                let low_hex_digit = bytes
-                    .next()
-                    .ok_or("incomplete hex escape in SELECT result")?;
-                let digit = |byte: u8| match byte {
-                    b'0'..=b'9' => Some(byte - b'0'),
-                    b'a'..=b'f' => Some(byte - b'a' + 10),
-                    b'A'..=b'F' => Some(byte - b'A' + 10),
-                    _ => None,
-                };
-                let high_hex_digit = digit(high_hex_digit).ok_or("invalid hex escape in SELECT result")?;
-                let low_hex_digit = digit(low_hex_digit).ok_or("invalid hex escape in SELECT result")?;
-                decoded.push((high_hex_digit << 4) | low_hex_digit);
-            }
-            _ => return Err("invalid escape in SELECT result".into()),
-        }
-    }
+    // SELECT rows use the same TSV escape language as COPY and CLI output.
+    // Reuse its checked decoder so all control and hex escapes round-trip.
+    let decoded = crate::tsv_escape::decode_tsv_field(value.as_bytes())
+        .map_err(|error| format!("invalid escape in SELECT result: {error}"))?;
     String::from_utf8(decoded)
         .map(Some)
         .map_err(|_| "invalid UTF-8 in SELECT result".into())
@@ -261,5 +229,32 @@ mod width_tests {
         assert_eq!(decode_row(within_limit.as_bytes()).unwrap().len(), 128);
         let over_limit = format!("{}\n", vec!["x"; 129].join("\t"));
         assert!(decode_row(over_limit.as_bytes()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod shared_insert_select_decoder_tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_all_tsv_control_escapes() {
+        assert_eq!(decode_field(r"\b\f\v\t\n\r\0").unwrap(),
+            Some("\u{0008}\u{000c}\u{000b}\t\n\r\0".into()));
+        assert_eq!(decode_field(r"\x41\x42\\").unwrap(), Some("AB\\".into()));
+        assert_eq!(decode_field(r"\N").unwrap(), None);
+        assert_eq!(decode_field(r"\\N").unwrap(), Some(r"\N".into()));
+    }
+
+    #[test]
+    fn malformed_sequences_still_fail_before_insert() {
+        for input in [r"\x", r"\xZ0", r"\q", "\\", r"\xff"] {
+            assert!(decode_field(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn long_plain_fields_keep_unicode_and_exact_contents() {
+        let value = "café🚀".repeat(8192);
+        assert_eq!(decode_field(&value).unwrap(), Some(value));
     }
 }

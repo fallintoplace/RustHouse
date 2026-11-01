@@ -6,7 +6,7 @@ import math
 import re
 import sys
 from urllib.parse import quote, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, Request, build_opener, ProxyHandler
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -16,7 +16,12 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-NO_REDIRECT_OPENER = build_opener(NoRedirect())
+NO_REDIRECT_OPENER = build_opener(ProxyHandler({}), NoRedirect())
+
+
+def _reject_nonfinite_json(value):
+    # Python's json.loads accepts NaN and Infinity unless explicitly blocked.
+    raise ValueError(f"nonfinite JSON constant: {value}")
 
 
 def _unique_object_pairs(pairs):
@@ -44,7 +49,8 @@ def read_json(url, timeout):
         payload = reply.read(1_048_577)
     if len(payload) > 1_048_576:
         raise ValueError("response exceeds 1 MiB")
-    return json.loads(payload, object_pairs_hook=_unique_object_pairs)
+    return json.loads(payload, object_pairs_hook=_unique_object_pairs,
+                      parse_constant=_reject_nonfinite_json)
 
 
 def scan_rows(base, table, timeout):
@@ -60,7 +66,7 @@ def scan_rows(base, table, timeout):
                       method="POST")
     with NO_REDIRECT_OPENER.open(request, timeout=timeout) as response:
         body = response.read(129)
-    if len(body) > 128 or not re.fullmatch(rb"rows_checked\n[0-9]{1,20}\n", body):
+    if len(body) > 128 or not re.fullmatch(rb"rows_checked\n(?:0|[1-9][0-9]{0,19})\n", body):
         raise ValueError("readiness scan returned invalid SQL count output")
     count = int(body.splitlines()[1])
     if count > (1 << 64) - 1:
