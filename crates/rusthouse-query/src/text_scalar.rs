@@ -4497,7 +4497,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("RPAD result is too large".into()));
                     }
-                    let size = if unicode { result.chars().count() } else { result.len() };
+                    let size = if unicode {
+                        result.chars().count()
+                    } else {
+                        result.len()
+                    };
                     let missing = width - size;
                     if missing > 0 && padding.is_empty() {
                         return Err(ParseError("RPAD padding cannot be empty".into()));
