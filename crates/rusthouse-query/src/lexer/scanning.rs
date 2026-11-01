@@ -102,8 +102,10 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             (b'\\', Some(b'r')) => Some(b'\r'),
             (b'\\', Some(b't')) => Some(b'\t'),
             (b'\\', Some(b'0')) => Some(0),
+            (b'\\', Some(b'a')) => Some(7),
             (b'\\', Some(b'b')) => Some(8),
             (b'\\', Some(b'f')) => Some(12),
+            (b'\\', Some(b'v')) => Some(11),
             (b'\'', Some(b'\'')) => Some(b'\''),
             _ => None,
         };
@@ -424,5 +426,21 @@ mod escaped_string_bulk_span_tests {
         for sql in ["'prefix\\nunterminated", "'prefix\\q"] {
             assert!(scan_string(sql, &mut 0).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_control_escape_tests {
+    use super::*;
+
+    #[test]
+    fn parses_bell_and_vertical_tab_without_modifying_unknown_escapes() {
+        let sql = r"'one\atwo\vthree\_four'";
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string(sql, &mut cursor).unwrap(),
+            Token::String("one\u{0007}two\u{000b}three\\_four".into())
+        );
+        assert_eq!(cursor, sql.len());
     }
 }
