@@ -21,6 +21,22 @@ def require_uint(value, name, *, zero=False):
     return value
 
 
+def expected_shard_bytes(start, rows, step):
+    """Exact TSV byte count of a validated UInt64 arithmetic progression.
+
+    Count decimal digit-boundary crossings in O(log10 UInt64), regardless of
+    shard row count, instead of allocating or iterating expected rows.
+    """
+    last = start + (rows - 1) * step
+    total = 2 * rows  # One decimal digit and one newline per row.
+    threshold = 10
+    while threshold <= last:
+        first_index = max(0, (threshold - start + step - 1) // step)
+        total += rows - min(rows, first_index)
+        threshold *= 10
+    return total
+
+
 def verify_file(path, start, rows, step=1):
     if (type(start) is not int or type(rows) is not int or type(step) is not int
             or not 0 <= start <= (1 << 64) - 1
@@ -42,6 +58,11 @@ def verify_file(path, start, rows, step=1):
                     (opened.st_dev, opened.st_ino, opened.st_size,
                      opened.st_mtime_ns, file_change_time_ns(opened))):
             raise ValueError("shard changed before verification")
+        expected_size = expected_shard_bytes(start, rows, step)
+        if opened.st_size < expected_size:
+            raise ValueError(f"{path}: incorrect or missing row data")
+        if opened.st_size > expected_size:
+            raise ValueError(f"{path}: contains additional rows")
         # Read exact bounded blocks rather than one readline and digest update
         # per UInt64 ID. An oversized/malformed line also fails without an
         # unbounded readline allocation.
