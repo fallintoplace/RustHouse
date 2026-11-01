@@ -528,11 +528,14 @@ mod vectored_csv_plain_field_tests {
     #[test]
     fn vectored_write_zero_fails_without_emitting_a_false_complete_field() {
         let mut output = ShortVectoredWriter {
-            data: Vec::new(), max_per_call: 0, vector_calls: 0,
+            data: Vec::new(),
+            max_per_call: 0,
+            vector_calls: 0,
         };
         assert_eq!(
             write_quoted_csv_field(&mut output, &vec![b'a'; 8191])
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::WriteZero
         );
         assert!(output.data.is_empty());
