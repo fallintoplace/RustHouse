@@ -92,6 +92,16 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
         }
         Some(Token::Minus) => {
             parser.index += 1;
+            // The magnitude of Int64::MIN does not fit in a positive Int64.
+            // The lexer already handles the adjacent "-922..." spelling,
+            // but whitespace between sign and number yields separate tokens.
+            if matches!(
+                parser.tokens.get(parser.index),
+                Some(Token::Number(number)) if number == "9223372036854775808"
+            ) {
+                parser.index += 1;
+                return Ok(ScalarExpr::Integer(i64::MIN));
+            }
             Ok(ScalarExpr::Subtract(
                 Box::new(ScalarExpr::Integer(0)),
                 Box::new(primary(parser, depth + 1)?),
@@ -186,5 +196,52 @@ mod modulo_expression_tests {
             )
         );
         assert!(super::super::parse_scalar_expression("amount %").is_err());
+    }
+}
+
+#[cfg(test)]
+mod separated_min_int64_literal_tests {
+    use super::*;
+
+    #[test]
+    fn whitespace_before_minimum_signed_integer_preserves_exact_value() {
+        for source in [
+            "-9223372036854775808",
+            "- 9223372036854775808",
+            "- 9_223_372_036_854_775_808",
+            "-\t9223372036854775808",
+        ] {
+            assert_eq!(
+                super::super::parse_scalar_expression(source).unwrap(),
+                ScalarExpr::Integer(i64::MIN),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unrepresentable_positive_or_more_negative_literals() {
+        for source in [
+            "9223372036854775808",
+            "+ 9223372036854775808",
+            "- 9223372036854775809",
+            "- 18446744073709551616",
+        ] {
+            assert!(
+                super::super::parse_scalar_expression(source).is_err(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn normal_separated_unary_minus_keeps_existing_ast() {
+        assert_eq!(
+            super::super::parse_scalar_expression("- 17").unwrap(),
+            ScalarExpr::Subtract(
+                Box::new(ScalarExpr::Integer(0)),
+                Box::new(ScalarExpr::Integer(17)),
+            )
+        );
     }
 }
