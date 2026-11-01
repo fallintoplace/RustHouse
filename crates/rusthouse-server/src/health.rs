@@ -15,6 +15,14 @@ fn is_peer_healthy(peer: Peer) -> bool {
 const MAX_INFLIGHT_HEALTH_PROBES: usize = 8;
 
 fn probe_peers_with(peers: &[Peer], ping: impl Fn(Peer) -> bool + Sync) -> Vec<bool> {
+    probe_peers_with_workers(peers, MAX_INFLIGHT_HEALTH_PROBES, ping)
+}
+
+fn probe_peers_with_workers(
+    peers: &[Peer],
+    max_workers: usize,
+    ping: impl Fn(Peer) -> bool + Sync,
+) -> Vec<bool> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     // Use at most eight workers per request, not eight fresh threads for
     // every chunk. Dynamic claims avoid waiting for all slow peers in one
@@ -30,29 +38,30 @@ fn probe_peers_with(peers: &[Peer], ping: impl Fn(Peer) -> bool + Sync) -> Vec<b
     let results = (0..peers.len())
         .map(|_| AtomicBool::new(false))
         .collect::<Vec<_>>();
-    std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(peers.len().min(MAX_INFLIGHT_HEALTH_PROBES));
-        for _ in 0..peers.len().min(MAX_INFLIGHT_HEALTH_PROBES) {
-            let cursor = &cursor;
-            let results = &results;
-            let ping = &ping;
-            handles.push(scope.spawn(move || {
-                loop {
-                    let index = cursor.fetch_add(1, Ordering::Relaxed);
-                    if index >= peers.len() {
-                        break;
-                    }
-                    // One faulty probe must not abort the worker and leave
-                    // unrelated peers untested. A panic counts as unhealthy.
-                    let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        ping(peers[index])
-                    }))
-                    .unwrap_or(false);
-                    results[index].store(healthy, Ordering::Relaxed);
-                }
-            }));
+    // Worker startup can fail under process thread limits. Service the
+    // remaining peers with fewer workers, or inline if no thread starts.
+    let process = || loop {
+        let index = cursor.fetch_add(1, Ordering::Relaxed);
+        if index >= peers.len() {
+            break;
         }
-        // A panicking probe leaves its uncompleted peer results unhealthy.
+        let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ping(peers[index])
+        }))
+        .unwrap_or(false);
+        results[index].store(healthy, Ordering::Relaxed);
+    };
+    std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(peers.len().min(max_workers));
+        for _ in 0..peers.len().min(max_workers) {
+            match std::thread::Builder::new().spawn_scoped(scope, &process) {
+                Ok(handle) => handles.push(handle),
+                Err(_) => break,
+            }
+        }
+        if handles.is_empty() {
+            process();
+        }
         for handle in handles {
             let _ = handle.join();
         }
@@ -322,5 +331,40 @@ mod incomplete_health_results_tests {
             render_health_response(&cluster, &[true, true]).status,
             "200 OK"
         );
+    }
+}
+
+#[cfg(test)]
+mod health_spawn_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn zero_available_workers_probe_all_peers_on_the_calling_thread() {
+        let caller = std::thread::current().id();
+        let peers = (0..12)
+            .map(|index| Peer::parse(&format!("127.0.0.1:{}", 55000 + index)).unwrap())
+            .collect::<Vec<_>>();
+        let result = probe_peers_with_workers(&peers, 0, |peer| {
+            assert_eq!(std::thread::current().id(), caller);
+            peer.port() % 2 == 0
+        });
+        assert_eq!(
+            result,
+            peers.iter().map(|peer| peer.port() % 2 == 0).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn inline_fallback_isolates_panicking_probes() {
+        let peers = (0..4)
+            .map(|index| Peer::parse(&format!("127.0.0.1:{}", 55100 + index)).unwrap())
+            .collect::<Vec<_>>();
+        let result = probe_peers_with_workers(&peers, 0, |peer| {
+            if peer.port() == 55101 {
+                panic!("simulated failed probe");
+            }
+            true
+        });
+        assert_eq!(result, vec![true, false, true, true]);
     }
 }
