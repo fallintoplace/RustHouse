@@ -191,8 +191,15 @@ fn merge_runs(
     if let [path] = inputs {
         let mut source = BufReader::with_capacity(64 * 1024, File::open(path)?);
         let mut scratch = Vec::new();
-        while let Some(row) = read_sorted_row_reusing(&mut source, descending, directions, &mut scratch)? {
+        let mut current = read_sorted_row_reusing(&mut source, descending, directions, &mut scratch)?;
+        while let Some(row) = current {
+            // Do not decode the next row when LIMIT has already stopped
+            // output. Otherwise check the complete sort tuple before reuse.
             if !output(&row)? { break; }
+            current = read_sorted_row_reusing(&mut source, descending, directions, &mut scratch)?;
+            if current.as_ref().is_some_and(|next| row.cmp(next) == Ordering::Greater) {
+                return Err(invalid("external sort run is not sorted"));
+            }
         }
         return Ok(());
     }
@@ -215,6 +222,9 @@ fn merge_runs(
         if let Some(next) = read_sorted_row_reusing(
             &mut streams[*index], descending, directions, &mut scratch[*index]
         )? {
+            if row.cmp(&next) == Ordering::Greater {
+                return Err(invalid("external sort run is not sorted"));
+            }
             *row = next;
         } else {
             std::collections::binary_heap::PeekMut::pop(top);
@@ -845,5 +855,57 @@ mod buffered_sort_record_tests {
             for &number in &row.values { write_number(&mut reference, number).unwrap(); }
         }
         assert_eq!(complete, reference);
+    }
+}
+
+
+#[cfg(test)]
+mod external_run_order_validation_tests {
+    use super::*;
+
+    fn run(scratch: &SortScratch, name: &str, keys: &[u128], descending: bool)
+        -> PathBuf {
+        let path = scratch.0.join(name);
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        let directions: Arc<[bool]> = Arc::from([]);
+        for (sequence, &key) in keys.iter().enumerate() {
+            write_sorted_row(&mut writer, &SortedRow {
+                key: Number::Unsigned(key),
+                extra_keys: Vec::new(),
+                values: vec![Number::Unsigned(key)],
+                sequence,
+                descending,
+                extra_descending: directions.clone(),
+            }).unwrap();
+        }
+        writer.flush().unwrap();
+        path
+    }
+
+    #[test]
+    fn validates_order_in_single_run_and_multi_run_merges() {
+        let scratch = SortScratch::new().unwrap();
+        let directions: Arc<[bool]> = Arc::from([]);
+        let invalid = run(&scratch, "bad", &[1, 9, 4], false);
+        let valid = run(&scratch, "good", &[2, 3, 5], false);
+        for paths in [vec![invalid.clone()], vec![invalid.clone(), valid.clone()]] {
+            let error = merge_runs(&paths, false, &directions, |_| Ok(true)).unwrap_err();
+            assert!(error.to_string().contains("not sorted"), "{error}");
+        }
+    }
+
+    #[test]
+    fn validates_descending_order_and_preserves_early_page_stop() {
+        let scratch = SortScratch::new().unwrap();
+        let directions: Arc<[bool]> = Arc::from([]);
+        let invalid = run(&scratch, "bad-desc", &[9, 4, 8], true);
+        assert!(merge_runs(&[invalid.clone()], true, &directions, |_| Ok(true)).is_err());
+        // Do not inspect a later corrupt or out-of-order row after LIMIT.
+        let mut seen = 0;
+        merge_runs(&[invalid], true, &directions, |_| {
+            seen += 1;
+            Ok(false)
+        }).unwrap();
+        assert_eq!(seen, 1);
     }
 }

@@ -57,20 +57,12 @@ fn weighted_rank_order(left: &(f64, &str), right: &(f64, &str)) -> std::cmp::Ord
         .then_with(|| left.1.cmp(right.1))
 }
 
-/// Rank up to 64 distinct nodes for one shard. This is placement, not membership consensus.
-pub fn replicas_for(
-    shard: &str,
-    nodes: &[String],
-    replicas: usize,
-) -> Result<Vec<String>, &'static str> {
-    if !valid_shard(shard) {
-        return Err("invalid shard identifier");
-    }
-    if nodes.is_empty() || nodes.len() > MAX_PLACEMENT_NODES || replicas == 0 || replicas > nodes.len() {
+fn validate_replica_nodes(nodes: &[String], replicas: usize) -> Result<(), &'static str> {
+    if nodes.is_empty() || nodes.len() > MAX_PLACEMENT_NODES
+        || replicas == 0 || replicas > nodes.len()
+    {
         return Err("invalid replica placement configuration");
     }
-    // Most replica sets fit in a handful of nodes. Validate borrowed names
-    // in-place instead of allocating a hash table for every shard placement.
     if nodes.len() <= 8 {
         for (index, node) in nodes.iter().enumerate() {
             if !valid_node(node) || nodes[..index].contains(node) {
@@ -85,8 +77,11 @@ pub fn replicas_for(
             }
         }
     }
-    let seed = shard_seed(shard);
-    // A single winner does not need sorting all candidate replicas.
+    Ok(())
+}
+
+/// Place one shard with already validated candidate membership.
+fn rank_replicas_with_seed(seed: u64, nodes: &[String], replicas: usize) -> Vec<String> {
     if replicas == 1 {
         let mut winning_node = nodes[0].as_str();
         let mut winning_score = score_with_seed(seed, winning_node);
@@ -97,10 +92,8 @@ pub fn replicas_for(
                 winning_score = score;
             }
         }
-        return Ok(vec![winning_node.to_owned()]);
+        return vec![winning_node.to_owned()];
     }
-    // Two replicas are common: select the top two without allocating and
-    // partitioning a ranking vector for all candidates.
     if replicas == 2 {
         let outranks = |left: (u64, &str), right: (u64, &str)| {
             left.0 > right.0 || (left.0 == right.0 && left.1 < right.1)
@@ -116,27 +109,55 @@ pub fn replicas_for(
                 second = Some(candidate);
             }
         }
-        return Ok(vec![
+        return vec![
             first.expect("at least two validated nodes").1.to_owned(),
             second.expect("at least two validated nodes").1.to_owned(),
-        ]);
+        ];
     }
     let mut ranked: Vec<(u64, &str)> = nodes
         .iter()
         .map(|node| (score_with_seed(seed, node), node.as_str()))
         .collect();
     if replicas < ranked.len() {
-        // Partition the ranking when only a prefix is requested.
         ranked.select_nth_unstable_by(replicas, |left, right| {
             right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
         });
         ranked.truncate(replicas);
     }
     ranked.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
-    Ok(ranked
-        .into_iter()
-        .take(replicas)
-        .map(|(_, node)| node.to_owned())
+    ranked.into_iter().take(replicas).map(|(_, node)| node.to_owned()).collect()
+}
+
+/// Rank up to 64 distinct nodes for one shard. This is placement, not membership consensus.
+pub fn replicas_for(
+    shard: &str,
+    nodes: &[String],
+    replicas: usize,
+) -> Result<Vec<String>, &'static str> {
+    if !valid_shard(shard) {
+        return Err("invalid shard identifier");
+    }
+    validate_replica_nodes(nodes, replicas)?;
+    Ok(rank_replicas_with_seed(shard_seed(shard), nodes, replicas))
+}
+
+/// Place a bounded set of shards using one shared membership validation.
+/// Each shard still has its own deterministic rendezvous seed and ranking.
+pub fn replicas_for_many(
+    shards: &[&str],
+    nodes: &[String],
+    replicas: usize,
+) -> Result<Vec<Vec<String>>, &'static str> {
+    if shards.len() > 4096 {
+        return Err("too many shards in placement batch");
+    }
+    validate_replica_nodes(nodes, replicas)?;
+    // Reject malformed shards before allocating or producing any placements.
+    if shards.iter().any(|&shard| !valid_shard(shard)) {
+        return Err("invalid shard identifier");
+    }
+    Ok(shards.iter()
+        .map(|&shard| rank_replicas_with_seed(shard_seed(shard), nodes, replicas))
         .collect())
 }
 
@@ -159,9 +180,10 @@ pub fn weighted_replicas_for(
         return Err("invalid weighted replica placement configuration");
     }
     let mut seen = (nodes.len() > 8).then(|| HashSet::with_capacity(nodes.len()));
-    let mut ranked = Vec::with_capacity(if replicas == 1 { 0 } else { nodes.len() });
+    let mut ranked = Vec::with_capacity(if replicas <= 2 { 0 } else { nodes.len() });
     let seed = shard_seed(shard);
     let mut winner: Option<(f64, &str)> = None;
+    let mut runner_up: Option<(f64, &str)> = None;
     for (index, &(node, weight)) in nodes.iter().enumerate() {
         let duplicate = if let Some(seen) = seen.as_mut() {
             !seen.insert(node)
@@ -172,22 +194,26 @@ pub fn weighted_replicas_for(
             return Err("invalid weighted replica node or weight");
         }
         let uniform = hash_to_open_unit_interval(score_with_seed(seed, node));
-        let priority = -uniform.ln() / f64::from(weight);
-        if replicas == 1 {
-            if winner.is_none_or(|(best, best_node)| {
-                priority
-                    .total_cmp(&best)
-                    .then_with(|| node.cmp(best_node))
-                    .is_lt()
-            }) {
-                winner = Some((priority, node));
+        let candidate = (-uniform.ln() / f64::from(weight), node);
+        if replicas <= 2 {
+            if winner.is_none_or(|best| weighted_rank_order(&candidate, &best).is_lt()) {
+                runner_up = winner;
+                winner = Some(candidate);
+            } else if replicas == 2
+                && runner_up.is_none_or(|second| weighted_rank_order(&candidate, &second).is_lt())
+            {
+                runner_up = Some(candidate);
             }
         } else {
-            ranked.push((priority, node));
+            ranked.push(candidate);
         }
     }
-    if replicas == 1 {
-        return Ok(vec![winner.expect("valid nonempty nodes").1.to_owned()]);
+    if replicas <= 2 {
+        let mut selected = vec![winner.expect("valid nonempty nodes").1.to_owned()];
+        if replicas == 2 {
+            selected.push(runner_up.expect("at least two validated nodes").1.to_owned());
+        }
+        return Ok(selected);
     }
     if replicas < ranked.len() {
         // Partition first; sorting just the selected replica prefix is enough.
@@ -334,32 +360,56 @@ pub fn capacity_aware_replicas_for(
     if replicas == 0 || replicas > members.len() || capacities.len() != members.len() {
         return Err("invalid capacity-aware replica configuration");
     }
-    let mut by_node = std::collections::HashMap::with_capacity(capacities.len());
-    for &(node, capacity) in capacities {
-        if by_node.insert(node, capacity).is_some() {
-            return Err("duplicate replica capacity entry");
-        }
-    }
-    // The common case has enough capacity on every node. Borrow the
-    // original membership instead of cloning every node on each placement.
-    // Allocate a filtered member list only after finding an ineligible node.
+    // Keep validated full membership borrowed unless capacity filters a node.
+    // Cloning eligible members is only necessary once filtering begins.
     let mut eligible: Option<Vec<crate::distributed_membership::Member>> = None;
-    for (index, member) in members.iter().enumerate() {
-        let capacity = by_node.get(member.node.as_str())
-            .ok_or("missing replica capacity")?;
-        if capacity.available()? >= object_bytes {
-            if let Some(filtered) = eligible.as_mut() {
-                filtered.push(member.clone());
+    if capacities.len() <= 8 {
+        // A typical replica group has only a few nodes. Validate every
+        // capacity name before matching, while keeping the lookup borrowed
+        // and allocation-free. The planner still validates every capacity
+        // state and rejects missing or duplicate entries.
+        for (index, &(node, _)) in capacities.iter().enumerate() {
+            if capacities[..index].iter().any(|&(previous, _)| previous == node) {
+                return Err("duplicate replica capacity entry");
             }
-        } else if eligible.is_none() {
-            eligible = Some(members[..index].to_vec());
+        }
+        for (index, member) in members.iter().enumerate() {
+            let capacity = capacities.iter()
+                .find(|&&(node, _)| node == member.node.as_str())
+                .map(|&(_, capacity)| capacity)
+                .ok_or("missing replica capacity")?;
+            if capacity.available()? >= object_bytes {
+                if let Some(filtered) = eligible.as_mut() {
+                    filtered.push(member.clone());
+                }
+            } else if eligible.is_none() {
+                eligible = Some(members[..index].to_vec());
+            }
+        }
+    } else {
+        let mut by_node = std::collections::HashMap::with_capacity(capacities.len());
+        for &(node, capacity) in capacities {
+            if by_node.insert(node, capacity).is_some() {
+                return Err("duplicate replica capacity entry");
+            }
+        }
+        for (index, member) in members.iter().enumerate() {
+            let capacity = by_node.get(member.node.as_str())
+                .ok_or("missing replica capacity")?;
+            if capacity.available()? >= object_bytes {
+                if let Some(filtered) = eligible.as_mut() {
+                    filtered.push(member.clone());
+                }
+            } else if eligible.is_none() {
+                eligible = Some(members[..index].to_vec());
+            }
         }
     }
-    if let Some(eligible) = eligible {
-        if eligible.len() < replicas {
+    if let Some(filtered) = eligible {
+        if filtered.len() < replicas {
             return Err("insufficient replica capacity for requested redundancy");
         }
-        zone_aware_replicas_for(shard, &eligible, replicas)
+        zone_aware_replicas_for(shard, &filtered, replicas)
     } else {
         zone_aware_replicas_for(shard, members, replicas)
     }
@@ -1017,6 +1067,242 @@ mod hash_threshold_rebalance_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod inline_capacity_lookup_tests {
+    use super::*;
+    use crate::distributed_capacity::Capacity;
+    use crate::distributed_membership::Member;
+
+    #[test]
+    fn small_capacity_lookup_matches_validated_zone_placement() {
+        for count in [2usize, 3, 8, 9, 16] {
+            let members = (0..count).map(|i| Member {
+                node: format!("replica{i}"),
+                zone: format!("zone{}", i % 3),
+                weight: (i as u16 % 4) + 1,
+            }).collect::<Vec<_>>();
+            let slots = members.iter().rev().map(|member| (
+                member.node.as_str(),
+                Capacity { total: 100, used: 10, reserved: 5 },
+            )).collect::<Vec<_>>();
+            for replicas in 1..=count.min(4) {
+                let expected = zone_aware_replicas_for("snapshot1", &members, replicas).unwrap();
+                assert_eq!(
+                    capacity_aware_replicas_for("snapshot1", &members, &slots, 85, replicas).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn small_capacity_lookup_rejects_duplicates_missing_and_invalid_states() {
+        let members = vec![
+            Member { node: "a".into(), zone: "z1".into(), weight: 1 },
+            Member { node: "b".into(), zone: "z2".into(), weight: 1 },
+        ];
+        let valid = Capacity { total: 10, used: 0, reserved: 0 };
+        assert!(capacity_aware_replicas_for(
+            "shard", &members, &[("a", valid), ("a", valid)], 1, 1,
+        ).is_err());
+        assert!(capacity_aware_replicas_for(
+            "shard", &members, &[("a", valid), ("foreign", valid)], 1, 1,
+        ).is_err());
+        assert!(capacity_aware_replicas_for(
+            "shard", &members,
+            &[("a", valid), ("b", Capacity { total: 1, used: 2, reserved: 0 })],
+            1, 1,
+        ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod weighted_top_two_reference_tests {
+    use super::*;
+
+    #[test]
+    fn stack_winners_match_full_weighted_sort_for_many_shards_and_memberships() {
+        let names = ["node_a", "node_b", "node_c", "node_d", "node_e", "node_f", "node_g", "node_h"];
+        let weights = [1u16, 2, 7, 31, 127, 509, 1000, 1024];
+        for count in 2..=names.len() {
+            let nodes = names.iter().zip(weights).take(count).map(|(&name, weight)| (name, weight))
+                .collect::<Vec<_>>();
+            for id in 0..256 {
+                let shard = format!("shard_{id}");
+                let seed = shard_seed(&shard);
+                let mut ranked = nodes.iter().map(|&(name, weight)| {
+                    let score = score_with_seed(seed, name);
+                    (-hash_to_open_unit_interval(score).ln() / f64::from(weight), name)
+                }).collect::<Vec<_>>();
+                ranked.sort_unstable_by(weighted_rank_order);
+                for replicas in [1, 2] {
+                    let expected = ranked.iter().take(replicas)
+                        .map(|&(_, name)| name.to_owned()).collect::<Vec<_>>();
+                    assert_eq!(weighted_replicas_for(&shard, &nodes, replicas).unwrap(), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn still_validates_late_invalid_nodes_before_returning_primary() {
+        for count in [1, 2] {
+            let invalid = [("node_a", 2), ("node_b", 0)];
+            assert!(weighted_replicas_for("shard_1", &invalid, count).is_err());
+            let duplicate = [("node_a", 2), ("node_a", 3)];
+            assert!(weighted_replicas_for("shard_1", &duplicate, count).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod batched_rendezvous_placement_tests {
+    use super::*;
+
+    #[test]
+    fn batch_ranking_matches_per_shard_placement_for_all_replica_counts() {
+        let nodes = (0..32).map(|i| format!("node_{i:02}")).collect::<Vec<_>>();
+        let shard_names = (0..256).map(|i| format!("tenant_{i:04}")).collect::<Vec<_>>();
+        let shards = shard_names.iter().map(String::as_str).collect::<Vec<_>>();
+        for replicas in [1, 2, 3, 7, 16, 32] {
+            let batch = replicas_for_many(&shards, &nodes, replicas).unwrap();
+            assert_eq!(batch.len(), shards.len());
+            for (shard, actual) in shards.iter().zip(batch) {
+                assert_eq!(actual, replicas_for(shard, &nodes, replicas).unwrap(), "{shard}");
+            }
+        }
+    }
+
+    #[test]
+    fn bad_node_sets_and_invalid_shards_fail_atomically() {
+        let nodes = vec!["n1".to_owned(), "n2".to_owned(), "n3".to_owned()];
+        assert_eq!(replicas_for_many(&[], &nodes, 2).unwrap(), Vec::<Vec<String>>::new());
+        assert!(replicas_for_many(&["good", "../bad"], &nodes, 2).is_err());
+        assert!(replicas_for_many(&["good"], &["duplicate".into(), "duplicate".into()], 1).is_err());
+        assert!(replicas_for_many(&["good"], &nodes, 4).is_err());
+        assert!(replicas_for_many(&vec!["shard"; 4097], &nodes, 1).is_err());
+    }
+}
+
+
+/// A side-effect-free step of replica placement migration.
+///
+/// The caller must authenticate every reported completed copy before passing
+/// it as verified. No output here performs I/O or authorizes a physical delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardedRebalanceStep {
+    pub new_placement: Vec<String>,
+    /// Destinations requiring a copy in the current bounded scheduling round.
+    pub copy_to: Vec<String>,
+    /// Every incoming destination that has not yet been verified.
+    pub awaiting_verification: Vec<String>,
+    /// Only released after all incoming destinations are verified.
+    pub retire_after_verification: Vec<String>,
+}
+
+/// Compute a two-phase migration. Outgoing nodes cannot be retired while any
+/// incoming node is unverified, even when the current copy batch is empty.
+/// Verification records must name actual new destinations without duplicates.
+pub fn plan_guarded_zone_rebalance_step(
+    shard: &str,
+    previous_members: &[crate::distributed_membership::Member],
+    next_members: &[crate::distributed_membership::Member],
+    replicas: usize,
+    verified_incoming: &[&str],
+    max_copy_requests: usize,
+) -> Result<GuardedRebalanceStep, &'static str> {
+    if max_copy_requests > 64 {
+        return Err("rebalance copy batch exceeds limit");
+    }
+    let movement = plan_zone_aware_rebalance(
+        shard, previous_members, next_members, replicas,
+    )?;
+    if verified_incoming.len() > movement.incoming.len() {
+        return Err("rebalance verification count exceeds incoming set");
+    }
+    for (index, &verified) in verified_incoming.iter().enumerate() {
+        if !movement.incoming.iter().any(|candidate| candidate == verified)
+            || verified_incoming[..index].contains(&verified)
+        {
+            return Err("unknown or duplicate verified rebalance destination");
+        }
+    }
+
+    let awaiting_verification = movement.incoming.iter()
+        .filter(|node| !verified_incoming.contains(&node.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let copy_to = awaiting_verification.iter()
+        .take(max_copy_requests)
+        .cloned()
+        .collect();
+    let retire_after_verification = if awaiting_verification.is_empty() {
+        movement.outgoing
+    } else {
+        Vec::new()
+    };
+    Ok(GuardedRebalanceStep {
+        new_placement: movement.new_placement,
+        copy_to,
+        awaiting_verification,
+        retire_after_verification,
+    })
+}
+
+#[cfg(test)]
+mod verified_rebalance_barrier_tests {
+    use super::*;
+    use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn old_replicas_wait_until_all_incoming_copies_are_verified() {
+        let previous = parse_membership("a west 5\nb east 3\nc north 2\n").unwrap();
+        let next = parse_membership("c north 2\nd south 8\ne east 1\n").unwrap();
+        let movement = plan_zone_aware_rebalance("events", &previous, &next, 3).unwrap();
+        assert_eq!(movement.incoming.len(), 2);
+        assert_eq!(movement.outgoing.len(), 2);
+
+        let initial = plan_guarded_zone_rebalance_step(
+            "events", &previous, &next, 3, &[], 1,
+        ).unwrap();
+        assert_eq!(initial.copy_to, movement.incoming[..1]);
+        assert_eq!(initial.awaiting_verification, movement.incoming);
+        assert!(initial.retire_after_verification.is_empty());
+
+        let first = movement.incoming[0].as_str();
+        let partial = plan_guarded_zone_rebalance_step(
+            "events", &previous, &next, 3, &[first], 1,
+        ).unwrap();
+        assert_eq!(partial.awaiting_verification, movement.incoming[1..]);
+        assert_eq!(partial.copy_to, movement.incoming[1..]);
+        assert!(partial.retire_after_verification.is_empty());
+
+        let verified = movement.incoming.iter().map(String::as_str)
+            .collect::<Vec<_>>();
+        let completed = plan_guarded_zone_rebalance_step(
+            "events", &previous, &next, 3, &verified, 0,
+        ).unwrap();
+        assert!(completed.copy_to.is_empty());
+        assert!(completed.awaiting_verification.is_empty());
+        assert_eq!(completed.retire_after_verification, movement.outgoing);
+        assert_eq!(completed.new_placement, movement.new_placement);
+    }
+
+    #[test]
+    fn validates_verification_even_if_no_new_copy_can_be_scheduled() {
+        let previous = parse_membership("a west 1\nb east 1\n").unwrap();
+        let next = parse_membership("c west 1\nd east 1\n").unwrap();
+        for verified in [vec!["unknown"], vec!["c", "c"]] {
+            assert!(plan_guarded_zone_rebalance_step(
+                "events", &previous, &next, 2, &verified, 0,
+            ).is_err());
+        }
+        assert!(plan_guarded_zone_rebalance_step(
+            "events", &previous, &next, 2, &[], 65,
+        ).is_err());
     }
 }
 

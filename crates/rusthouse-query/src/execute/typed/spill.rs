@@ -403,8 +403,18 @@ impl TypedExternalSort {
         if let [path] = paths {
             // A single pre-sorted run does not need a heap or comparisons.
             let mut source = BufReader::with_capacity(64 * 1024, File::open(path)?);
-            while let Some(entry) = read_entry(&mut source)? {
+            let mut current = read_entry(&mut source)?;
+            while let Some(entry) = current {
+                // LIMIT may stop before a corrupt trailing record. If another
+                // row is needed, validate its position in this sorted run.
                 if !emit(&entry)? { break; }
+                current = read_entry(&mut source)?;
+                if current.as_ref().is_some_and(|next| {
+                    compare_entries(&entry, next,
+                        self.descending, self.nulls_first, self.nulls_last).is_gt()
+                }) {
+                    return Err(invalid("typed sort run is not sorted"));
+                }
             }
             return Ok(());
         }
@@ -431,6 +441,11 @@ impl TypedExternalSort {
             }
             let source = root.source;
             if let Some(entry) = read_entry(&mut sources[source])? {
+                if compare_entries(&root.entry, &entry,
+                    self.descending, self.nulls_first, self.nulls_last).is_gt()
+                {
+                    return Err(invalid("typed sort run is not sorted"));
+                }
                 root.entry = entry;
             } else {
                 std::collections::binary_heap::PeekMut::pop(root);
@@ -772,5 +787,53 @@ mod framed_text_spill_tests {
         let mut budget = MAX_BUFFER_BYTES;
         let decoded = read_cell(&mut output.bytes.as_slice(), &mut budget).unwrap();
         assert!(matches!(decoded, Cell::Uuid(value) if value == uuid));
+    }
+}
+
+
+#[cfg(test)]
+mod typed_spill_order_validation_tests {
+    use super::*;
+
+    fn run(scratch: &Scratch, filename: &str, keys: &[u64]) -> PathBuf {
+        let path = scratch.0.join(filename);
+        let mut output = BufWriter::new(File::create(&path).unwrap());
+        for (ordinal, &key) in keys.iter().enumerate() {
+            write_entry(&mut output, &SortEntry {
+                row: Row {
+                    values: vec![Cell::Text(format!("row-{ordinal}").into_bytes())],
+                    sort_keys: vec![Cell::Numeric(Number::Unsigned(key.into()))],
+                },
+                ordinal,
+            }).unwrap();
+        }
+        output.flush().unwrap();
+        path
+    }
+
+    #[test]
+    fn rejects_unsorted_typed_rows_in_both_merge_paths() {
+        let scratch = Scratch::new().unwrap();
+        let invalid = run(&scratch, "invalid", &[1, 5, 3]);
+        let valid = run(&scratch, "valid", &[2, 4, 6]);
+        let sorter = TypedExternalSort::new(0, 0, 0);
+        for paths in [vec![invalid.clone()], vec![invalid.clone(), valid.clone()]] {
+            let error = sorter.merge_group(&paths, |_| Ok(true)).unwrap_err();
+            assert!(error.to_string().contains("not sorted"), "{error}");
+        }
+    }
+
+    #[test]
+    fn respects_descending_order_and_limit_short_circuit() {
+        let scratch = Scratch::new().unwrap();
+        let bad_desc = run(&scratch, "descending", &[6, 2, 4]);
+        let sorter = TypedExternalSort::new(1, 0, 0);
+        assert!(sorter.merge_group(&[bad_desc.clone()], |_| Ok(true)).is_err());
+        let mut seen = 0;
+        sorter.merge_group(&[bad_desc], |_| {
+            seen += 1;
+            Ok(false)
+        }).unwrap();
+        assert_eq!(seen, 1);
     }
 }

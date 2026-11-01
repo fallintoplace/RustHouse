@@ -155,6 +155,12 @@ fn merge_until(
             }
         }
         if let Some((next, next_count)) = read_group(&mut streams[index])? {
+            // Each immutable spill run must be nondecreasing. A malformed
+            // run can otherwise be merged into the wrong global group and
+            // silently change both counts and pagination.
+            if next < key {
+                return Err(invalid("GROUP BY spill run is not sorted"));
+            }
             *top = Reverse((next, index, next_count));
         } else {
             std::collections::binary_heap::PeekMut::pop(top);
@@ -752,5 +758,54 @@ mod root_replacement_merge_tests {
             Ok(())
         }).unwrap();
         assert_eq!(items, (0..FAN_IN + 1).map(|k| (k as u64, 1)).collect::<Vec<_>>());
+    }
+}
+
+
+#[cfg(test)]
+mod spill_order_validation_tests {
+    use super::*;
+
+    #[test]
+    fn refuses_descending_keys_inside_one_spill_run() {
+        let scratch = Scratch::create().unwrap();
+        let path = scratch.0.join("invalid.run");
+        let mut out = BufWriter::new(File::create(&path).unwrap());
+        for (key, count) in [(2, 3), (5, 1), (4, 8)] {
+            write_group(&mut out, key, count).unwrap();
+        }
+        out.flush().unwrap();
+        drop(out);
+
+        let mut rows = Vec::new();
+        let error = merge_until(&[path], |key, count| {
+            rows.push((key, count));
+            Ok(true)
+        }).unwrap_err();
+        assert!(error.to_string().contains("not sorted"), "{error}");
+    }
+
+    #[test]
+    fn allows_duplicate_keys_within_a_run_and_sums_across_runs() {
+        let scratch = Scratch::create().unwrap();
+        let mut paths = Vec::new();
+        for (name, rows) in [
+            ("first", vec![(1u64, 2u64), (1, 3), (4, 7)]),
+            ("second", vec![(1u64, 1u64), (2, 9), (4, 2)]),
+        ] {
+            let path = scratch.0.join(name);
+            let mut out = BufWriter::new(File::create(&path).unwrap());
+            for (key, count) in rows {
+                write_group(&mut out, key, count).unwrap();
+            }
+            out.flush().unwrap();
+            paths.push(path);
+        }
+        let mut merged = Vec::new();
+        merge_until(&paths, |key, count| {
+            merged.push((key, count));
+            Ok(true)
+        }).unwrap();
+        assert_eq!(merged, vec![(1, 6), (2, 9), (4, 9)]);
     }
 }
