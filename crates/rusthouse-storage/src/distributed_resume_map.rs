@@ -1531,6 +1531,96 @@ mod resume_rank_select_tests {
     }
 }
 
+impl ResumeMap {
+    /// Return a bounded page of chunk indexes on which two authenticated
+    /// checkpoints disagree. This is a comparison, not permission to treat
+    /// either checkpoint as verified for the other replica.
+    ///
+    /// Starting at a cursor operates on packed bytes and never materializes
+    /// the complete set of changed chunks.
+    pub fn differing_indices_from(
+        &self,
+        other: &Self,
+        start: usize,
+        max_results: usize,
+    ) -> Result<Vec<usize>, &'static str> {
+        if self.chunks != other.chunks || start > self.chunks {
+            return Err("checkpoint comparison requires matching layouts and a valid cursor");
+        }
+        if max_results > 65_536 {
+            return Err("checkpoint difference page exceeds limit");
+        }
+        if max_results == 0 || start == self.chunks {
+            return Ok(Vec::new());
+        }
+        let first_byte = start / 8;
+        let mut changes = Vec::with_capacity(max_results.min(self.chunks - start));
+        for byte_index in first_byte..self.completed.len() {
+            let mut changed = self.completed[byte_index] ^ other.completed[byte_index];
+            if byte_index == first_byte {
+                changed &= u8::MAX << (start % 8);
+            }
+            changed &= low_bit_mask((self.chunks - byte_index * 8).min(8));
+            while changed != 0 {
+                let bit = changed.trailing_zeros() as usize;
+                changes.push(byte_index * 8 + bit);
+                if changes.len() == max_results {
+                    return Ok(changes);
+                }
+                changed &= changed - 1;
+            }
+        }
+        Ok(changes)
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_difference_tests {
+    use super::*;
+
+    #[test]
+    fn paged_differences_match_bitwise_oracle_at_word_boundaries() {
+        for chunks in [0, 1, 7, 8, 9, 63, 64, 65, 127, 128, 129, 1023, 65_535, 65_536] {
+            let mut left = ResumeMap::new(chunks).unwrap();
+            let mut right = ResumeMap::new(chunks).unwrap();
+            for index in 0..chunks {
+                if index % 5 < 3 {
+                    left.mark_complete(index).unwrap();
+                }
+                if index % 7 < 3 {
+                    right.mark_complete(index).unwrap();
+                }
+            }
+            for cursor in [0, 1, 7, 8, 63, 64, 65, chunks / 2, chunks] {
+                if cursor > chunks {
+                    continue;
+                }
+                let expected = (cursor..chunks)
+                    .filter(|&index| (index % 5 < 3) != (index % 7 < 3))
+                    .collect::<Vec<_>>();
+                for limit in [0, 1, 3, 64, 65_536] {
+                    let actual = left.differing_indices_from(&right, cursor, limit).unwrap();
+                    assert_eq!(
+                        actual,
+                        expected[..expected.len().min(limit)],
+                        "chunks={chunks}, cursor={cursor}, limit={limit}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn refuses_mismatched_layouts_and_oversized_pages() {
+        let a = ResumeMap::new(8).unwrap();
+        let b = ResumeMap::new(9).unwrap();
+        assert!(a.differing_indices_from(&b, 0, 1).is_err());
+        assert!(a.differing_indices_from(&a, 9, 1).is_err());
+        assert!(a.differing_indices_from(&a, 0, 65_537).is_err());
+    }
+}
+
+
 #[cfg(test)]
 mod atomic_chunk_run_progress_tests {
     use super::*;
