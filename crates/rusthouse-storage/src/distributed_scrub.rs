@@ -60,7 +60,11 @@ pub fn scrub_snapshot_with_byte_limit(
         ));
     }
     if max_bytes != u64::MAX {
-        crate::distributed_inventory::inventory_snapshot(&active, 1_048_576, max_bytes)?;
+        // The active generation was resolved above. Avoid resolving it a
+        // second time while preflighting the byte budget.
+        crate::distributed_inventory::inventory_active_snapshot(
+            &active, 1_048_576, max_bytes,
+        )?;
     }
     const PARALLEL_THRESHOLD: usize = 16;
     let mut report = ScrubReport::default();
@@ -398,6 +402,41 @@ mod hash_first_scrub_tests {
             scrub_part(&part),
             Err(PartError::InvalidChecksums { .. }),
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod resolved_scrub_preflight_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn bounded_scrub_preflight_uses_the_selected_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-scrub-resolved-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let old = root.join(".rusthouse-versions/g1");
+        let newer = root.join(".rusthouse-versions/g2");
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&newer).unwrap();
+        write_wide_part(&old.join("all_0_0_0"),
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("1".into())]],
+        ).unwrap();
+        write_wide_part(&newer.join("all_0_0_0"),
+            &[Column { name: "text".into(), data_type: "String".into() }],
+            &[vec![Some("x".repeat(8192))]],
+        ).unwrap();
+        fs::write(root.join(".rusthouse-active"), "g1\n").unwrap();
+        let old_bytes = crate::distributed_inventory::inventory_active_snapshot(
+            &old, 128, u64::MAX,
+        ).unwrap().iter().map(|file| file.bytes).sum();
+        assert!(scrub_snapshot_with_byte_limit(&root, 1, old_bytes).is_ok());
+        fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
+        assert!(scrub_snapshot_with_byte_limit(&root, 1, old_bytes).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }

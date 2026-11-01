@@ -342,6 +342,21 @@ impl ResumeMap {
         Ok(())
     }
 
+    /// Retain only chunks that both authenticated checkpoints independently
+    /// confirm as complete. No new completion bit can be introduced.
+    ///
+    /// Both maps must describe the same immutable object and chunk layout.
+    /// The caller is responsible for authenticating object identity.
+    pub fn retain_common_verified(&mut self, other: &Self) -> Result<(), &'static str> {
+        if self.chunks != other.chunks {
+            return Err("cannot intersect mismatched transfer layouts");
+        }
+        for (destination, &source) in self.completed.iter_mut().zip(&other.completed) {
+            *destination &= source;
+        }
+        Ok(())
+    }
+
     /// Write an authenticated-by-checksum checkpoint envelope.
     ///
     /// A flipped completion bit must never silently skip an unverified chunk.
@@ -366,8 +381,13 @@ impl ResumeMap {
         let chunks = u32::from_le_bytes(
             count.try_into().map_err(|_| "invalid resume checkpoint header")?,
         ) as usize;
-        let map = Self::new(chunks)?;
-        let body_end = 8 + map.completed.len();
+        // The checksum envelope only needs the encoded bitmap length.
+        // Do not allocate a throwaway ResumeMap before decode_binary builds
+        // the validated result.
+        if chunks > 65_536 {
+            return Err("resume map exceeds chunk limit");
+        }
+        let body_end = 8 + chunks.div_ceil(8);
         if encoded.len() != body_end + 4 {
             return Err("invalid resume checkpoint length");
         }
@@ -1008,5 +1028,75 @@ mod dense_ascii_checkpoint_tests {
         let encoded = map.encode();
         assert_eq!(encoded.bytes().filter(|&byte| byte == b'1').count(), 4);
         assert_eq!(ResumeMap::decode(&encoded).unwrap(), map);
+    }
+}
+
+#[cfg(test)]
+mod authenticated_checkpoint_intersection_tests {
+    use super::*;
+
+    #[test]
+    fn intersection_never_promotes_a_chunk_without_both_verifications() {
+        for chunks in [0, 1, 7, 8, 9, 63, 64, 65, 511, 512, 65_535, 65_536] {
+            let mut a = ResumeMap::new(chunks).unwrap();
+            let mut b = ResumeMap::new(chunks).unwrap();
+            for index in 0..chunks {
+                if index % 3 != 0 {
+                    a.mark_complete(index).unwrap();
+                }
+                if index % 5 != 0 {
+                    b.mark_complete(index).unwrap();
+                }
+            }
+            let mut intersection = a.clone();
+            intersection.retain_common_verified(&b).unwrap();
+            let expected = (0..chunks).filter(|index| index % 3 != 0 && index % 5 != 0)
+                .collect::<Vec<_>>();
+            assert_eq!(intersection.completed_count(), expected.len());
+            let actual = intersection.encode().bytes().enumerate()
+                .filter_map(|(index, flag)| (flag == b'1').then_some(index))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+            let mut reverse = b.clone();
+            reverse.retain_common_verified(&a).unwrap();
+            assert_eq!(reverse, intersection);
+            intersection.retain_common_verified(&intersection.clone()).unwrap();
+            assert_eq!(reverse, intersection);
+        }
+    }
+
+    #[test]
+    fn mismatched_layout_rejection_does_not_change_destination() {
+        let mut original = ResumeMap::new(9).unwrap();
+        original.mark_complete(8).unwrap();
+        let before = original.clone();
+        assert!(original.retain_common_verified(&ResumeMap::new(8).unwrap()).is_err());
+        assert_eq!(original, before);
+    }
+}
+
+#[cfg(test)]
+mod checked_decode_allocation_regression_tests {
+    use super::*;
+
+    #[test]
+    fn checked_decoder_keeps_all_boundary_layouts_and_tail_checks() {
+        for chunks in [0usize, 1, 7, 8, 9, 63, 64, 65, 65_535, 65_536] {
+            let mut map = ResumeMap::new(chunks).unwrap();
+            for index in (0..chunks).step_by(3) {
+                map.mark_complete(index).unwrap();
+            }
+            let wire = map.encode_binary_checked();
+            assert_eq!(ResumeMap::decode_binary_checked(&wire).unwrap(), map);
+            let mut corrupt = wire;
+            if chunks % 8 != 0 {
+                let last_bitmap = 8 + chunks / 8;
+                corrupt[last_bitmap] |= 0x80;
+                let crc = crate::distributed_crc32c::crc32c(&corrupt[..corrupt.len() - 4]);
+                let end = corrupt.len();
+                corrupt[end - 4..].copy_from_slice(&crc.to_le_bytes());
+                assert!(ResumeMap::decode_binary_checked(&corrupt).is_err());
+            }
+        }
     }
 }

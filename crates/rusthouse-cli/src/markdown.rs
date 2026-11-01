@@ -103,6 +103,19 @@ fn write_tsv_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool)
 }
 
 fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Result<()> {
+    // Most query projections contain at most 64 columns. Frame the entire
+    // separator once instead of making a write call for every column.
+    if columns <= 64 {
+        let mut framed = [0u8; 1 + 64 * 6 + 1];
+        framed[0] = b'|';
+        let mut used = 1;
+        for _ in 0..columns {
+            framed[used..used + 6].copy_from_slice(b" --- |");
+            used += 6;
+        }
+        framed[used] = b'\n';
+        return output.write_all(&framed[..used + 1]);
+    }
     output.write_all(b"|")?;
     for _ in 0..columns {
         output.write_all(b" --- |")?;
@@ -387,5 +400,38 @@ mod framed_markdown_cell_tests {
         assert_eq!(output.bytes, " café | 42 |".as_bytes());
         write_framed_cell(&mut output, b"<unsafe>&|").unwrap();
         assert!(output.bytes.ends_with(b" &lt;unsafe&gt;&amp;\\| |"));
+    }
+}
+
+#[cfg(test)]
+mod bounded_separator_write_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Counted { writes: usize, bytes: Vec<u8> }
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn common_width_separators_are_one_write() {
+        for width in [1usize, 2, 16, 64] {
+            let mut writer = Counted::default();
+            write_header_separator(&mut writer, width).unwrap();
+            assert_eq!(writer.writes, 1);
+            assert_eq!(writer.bytes, format!("|{}\n", " --- |".repeat(width)).as_bytes());
+        }
+    }
+
+    #[test]
+    fn very_wide_separators_preserve_existing_fallback() {
+        let mut output = Vec::new();
+        write_header_separator(&mut output, 65).unwrap();
+        assert_eq!(output, format!("|{}\n", " --- |".repeat(65)).as_bytes());
     }
 }

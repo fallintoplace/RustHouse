@@ -80,25 +80,25 @@ pub fn coalesce_indexed_chunks(
     }
     let mut previous_end = 0u64;
     let mut previous_index = None;
+    let mut runs: Vec<ChunkRun> = Vec::new();
+    // The output stays local until the entire input has been validated.
+    // Validate and coalesce in one walk instead of traversing all chunks twice.
     for chunk in chunks {
-        let end = chunk.chunk.offset.checked_add(chunk.chunk.length)
+        let item = chunk.chunk;
+        let end = item.offset.checked_add(item.length)
             .ok_or("transfer chunk range overflow")?;
-        if chunk.chunk.length == 0 || chunk.chunk.length > max_run_bytes
-            || chunk.chunk.offset < previous_end
+        if item.length == 0 || item.length > max_run_bytes
+            || item.offset < previous_end
             || previous_index.is_some_and(|index| chunk.index <= index)
         {
             return Err("invalid or overlapping transfer chunk");
         }
         previous_end = end;
         previous_index = Some(chunk.index);
-    }
-    let mut runs: Vec<ChunkRun> = Vec::new();
-    for chunk in chunks {
-        let item = chunk.chunk;
         if let Some(last) = runs.last_mut() {
             let next_index = last.first_index + last.chunk_count;
-            let end = last.offset + last.length;
-            if chunk.index == next_index && item.offset == end
+            let run_end = last.offset + last.length;
+            if chunk.index == next_index && item.offset == run_end
                 && item.length <= max_run_bytes - last.length
             {
                 last.chunk_count += 1;
@@ -211,6 +211,19 @@ pub fn plan_missing_chunks(
     if byte_budget == 0 || max_batch_chunks == 0 || remaining_indices.is_empty() {
         return Ok(Vec::new());
     }
+    // When a budget cannot fit a normal chunk, only the short final chunk
+    // can qualify. The missing indices are validated and strictly sorted,
+    // so avoid a full scan of a large resume inventory.
+    if byte_budget < chunk_bytes {
+        let final_index = chunk_count - 1;
+        if remaining_indices.binary_search(&final_index).is_ok() {
+            let final_chunk = indexed_chunk_at(total_bytes, chunk_bytes, final_index);
+            if final_chunk.chunk.length <= byte_budget {
+                return Ok(vec![final_chunk]);
+            }
+        }
+        return Ok(Vec::new());
+    }
     // Only full chunks plus possibly one short final chunk can fit this budget.
     let budget_chunks = byte_budget / chunk_bytes;
     let reserve = remaining_indices
@@ -283,6 +296,108 @@ pub fn plan_missing_chunks_from_resume(
         }
     }
     Ok(selected)
+}
+
+
+/// Schedule coalesced transfer I/O directly from a packed completion map.
+///
+/// Unlike planning individual missing chunks and merging them afterwards,
+/// memory is proportional to the output run count, even for dense transfers.
+pub fn plan_missing_runs_from_resume(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    progress: &crate::distributed_resume_map::ResumeMap,
+    byte_budget: u64,
+    max_batch_chunks: usize,
+    max_run_bytes: u64,
+) -> Result<Vec<ChunkRun>, &'static str> {
+    if max_run_bytes == 0 || max_batch_chunks > 65_536 {
+        return Err("invalid coalesced chunk limits");
+    }
+    let chunk_count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    if progress.len() != chunk_count {
+        return Err("resume checkpoint does not match transfer layout");
+    }
+    let mut runs: Vec<ChunkRun> = Vec::new();
+    let mut scheduled = 0usize;
+    let mut remaining = byte_budget;
+    for index in progress.remaining_indices() {
+        if scheduled == max_batch_chunks || remaining == 0 {
+            break;
+        }
+        let chunk = chunk_at_index(total_bytes, chunk_bytes, index);
+        if chunk.length > remaining {
+            continue;
+        }
+        if chunk.length > max_run_bytes {
+            return Err("invalid or overlapping transfer chunk");
+        }
+        if let Some(last) = runs.last_mut() {
+            if last.first_index + last.chunk_count == index
+                && last.offset + last.length == chunk.offset
+                && chunk.length <= max_run_bytes - last.length
+            {
+                last.chunk_count += 1;
+                last.length += chunk.length;
+                scheduled += 1;
+                remaining -= chunk.length;
+                continue;
+            }
+        }
+        runs.push(ChunkRun {
+            first_index: index,
+            chunk_count: 1,
+            offset: chunk.offset,
+            length: chunk.length,
+        });
+        scheduled += 1;
+        remaining -= chunk.length;
+    }
+    Ok(runs)
+}
+
+#[cfg(test)]
+mod direct_resumable_run_tests {
+    use super::*;
+
+    #[test]
+    fn direct_runs_match_materialize_then_coalesce_over_sparse_checkpoints() {
+        for bytes in [0u64, 1, 7, 8, 9, 63, 65, 4097, 65_536] {
+            let count = bytes.div_ceil(7) as usize;
+            for stride in [1usize, 2, 3, 13, 31] {
+                let mut progress = crate::distributed_resume_map::ResumeMap::new(count).unwrap();
+                for index in (0..count).step_by(stride) {
+                    progress.mark_complete(index).unwrap();
+                }
+                for budget in [0, 1, 6, 7, 13, 21, 1000] {
+                    for limit in [0, 1, 2, 7, 128] {
+                        for max_run in [1, 6, 7, 14, 63, 8192] {
+                            let reference = plan_missing_chunks_from_resume(
+                                bytes, 7, 65_536, &progress, budget, limit
+                            ).and_then(|chunks| coalesce_indexed_chunks(&chunks, max_run));
+                            let planned = plan_missing_runs_from_resume(
+                                bytes, 7, 65_536, &progress, budget, limit, max_run
+                            );
+                            assert_eq!(planned, reference, "{bytes}:{stride}:{budget}:{limit}:{max_run}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_budgets_and_layouts_without_partial_runs() {
+        let map = crate::distributed_resume_map::ResumeMap::new(2).unwrap();
+        assert!(plan_missing_runs_from_resume(10, 4, 3, &map, 8, 2, 8).is_err());
+        assert!(plan_missing_runs_from_resume(8, 4, 3, &map, 8, 2, 0).is_err());
+        assert!(plan_missing_runs_from_resume(8, 4, 3, &map, 8, 65_537, 8).is_err());
+        assert_eq!(
+            plan_missing_runs_from_resume(8, 4, 3, &map, 8, 2, 8).unwrap(),
+            vec![ChunkRun { first_index: 0, chunk_count: 2, offset: 0, length: 8 }]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -634,5 +749,51 @@ mod tiny_checkpoint_page_tests {
                 assert_eq!(actual, expected, "page_limit={page_limit} budget={byte_budget}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod short_tail_binary_search_tests {
+    use super::*;
+
+    #[test]
+    fn tiny_budget_only_schedules_the_short_final_chunk() {
+        let missing = (0..65_536).collect::<Vec<_>>();
+        let total_bytes = 65_535 * 8 + 3;
+        let selected = plan_missing_chunks(total_bytes, 8, 65_536, &missing, 3, 4).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].index, 65_535);
+        assert_eq!(selected[0].chunk.length, 3);
+        assert!(plan_missing_chunks(total_bytes, 8, 65_536, &missing, 2, 4).unwrap().is_empty());
+        assert!(plan_missing_chunks(total_bytes, 8, 65_536, &missing[..65_535], 3, 4).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod single_pass_coalescing_regression_tests {
+    use super::*;
+
+    #[test]
+    fn consecutive_runs_and_completed_gaps_keep_original_indices() {
+        let chunks = [
+            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
+            IndexedChunk { index: 1, chunk: Chunk { offset: 4, length: 4 } },
+            IndexedChunk { index: 4, chunk: Chunk { offset: 16, length: 4 } },
+            IndexedChunk { index: 5, chunk: Chunk { offset: 20, length: 4 } },
+        ];
+        assert_eq!(coalesce_indexed_chunks(&chunks, 8).unwrap(), vec![
+            ChunkRun { first_index: 0, chunk_count: 2, offset: 0, length: 8 },
+            ChunkRun { first_index: 4, chunk_count: 2, offset: 16, length: 8 },
+        ]);
+    }
+
+    #[test]
+    fn late_invalid_chunk_rejects_whole_coalescing_plan() {
+        let chunks = [
+            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
+            IndexedChunk { index: 1, chunk: Chunk { offset: 4, length: 4 } },
+            IndexedChunk { index: 2, chunk: Chunk { offset: u64::MAX, length: 2 } },
+        ];
+        assert_eq!(coalesce_indexed_chunks(&chunks, 8), Err("transfer chunk range overflow"));
     }
 }

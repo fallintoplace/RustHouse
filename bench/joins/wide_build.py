@@ -27,6 +27,8 @@ def write_dimensions(directory, rows, payload_bytes):
     wide = directory / "wide.tsv"
     if narrow.is_symlink() or wide.is_symlink():
         raise ValueError("refusing symlinked wide JOIN fixture output")
+    if narrow.exists() or wide.exists():
+        raise FileExistsError("refusing to overwrite wide JOIN fixture output")
     payload = "x" * payload_bytes
     with narrow.open("w", encoding="ascii") as small, wide.open("w", encoding="ascii") as large:
         small.write("id\n")
