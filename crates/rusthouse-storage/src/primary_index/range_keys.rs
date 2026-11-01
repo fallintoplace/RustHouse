@@ -132,6 +132,29 @@ pub(super) fn i64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize)
     Some(i64::from_le_bytes(key_bytes(index, mark, field)?))
 }
 
+/// Decode a narrow physical key without sign loss or host-endian assumptions.
+pub(super) fn narrow_unsigned_mark_key(
+    index: &FixedPrimaryIndex, mark: usize, field: usize,
+) -> Option<u64> {
+    match index.field(mark, field)? {
+        [a] => Some(u64::from(*a)),
+        [a, b] => Some(u64::from(u16::from_le_bytes([*a, *b]))),
+        [a, b, c, d] => Some(u64::from(u32::from_le_bytes([*a, *b, *c, *d]))),
+        _ => None,
+    }
+}
+
+pub(super) fn narrow_signed_mark_key(
+    index: &FixedPrimaryIndex, mark: usize, field: usize,
+) -> Option<i64> {
+    match index.field(mark, field)? {
+        [a] => Some(i64::from(i8::from_le_bytes([*a]))),
+        [a, b] => Some(i64::from(i16::from_le_bytes([*a, *b]))),
+        [a, b, c, d] => Some(i64::from(i32::from_le_bytes([*a, *b, *c, *d]))),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod ordered_intervals_tests {
     use super::*;
