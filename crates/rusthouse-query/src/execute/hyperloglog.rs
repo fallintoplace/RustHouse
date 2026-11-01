@@ -197,6 +197,7 @@ impl HyperLogLog {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn merge(&mut self, other: &Self) {
         for (target, &register) in self.registers.iter_mut().zip(other.registers.iter()) {
             *target = (*target).max(register);

@@ -156,6 +156,7 @@ fn parallel_dense_grouped_count(
 /// external key sorter. Small groups keep the in-memory hash fast path.
 /// The retry rescans an immutable snapshot rather than attempting to recover
 /// partial in-memory counts or double-count the final batch.
+#[allow(clippy::too_many_arguments)]
 fn spill_unordered_groups<W: Write>(
     query: &Select,
     part: &Path,

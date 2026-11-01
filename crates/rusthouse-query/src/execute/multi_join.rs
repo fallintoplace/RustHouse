@@ -97,13 +97,6 @@ struct Relation {
     rows: u64,
 }
 
-fn base_type(value: &str) -> &str {
-    value
-        .strip_prefix("Nullable(")
-        .and_then(|value| value.strip_suffix(')'))
-        .unwrap_or(value)
-}
-
 fn column_index(relations: &[Relation], column: &JoinColumn) -> Result<usize, ExecutionError> {
     let relation = relations
         .iter()

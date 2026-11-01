@@ -375,57 +375,6 @@ fn stage_existing_parts(existing: &[std::path::PathBuf], staging: &Path) -> Resu
     stage_existing_parts_with_workers(existing, staging, workers)
 }
 
-/// Append multiple new parts as one snapshot generation. Reuse immutable
-/// existing part files through checked hard links, never partial live renames.
-pub(super) fn append_parts(
-    database: &Path,
-    table: &str,
-    cols: &[Column],
-    existing: &[std::path::PathBuf],
-    rows: &[Vec<Option<String>>],
-) -> Result<(), String> {
-    let count = rows.len().div_ceil(PART_ROWS);
-    if existing
-        .len()
-        .checked_add(count)
-        .is_none_or(|parts| parts > 16_384)
-    {
-        return Err("database table would exceed its 16384-part limit".into());
-    }
-    let mut last = 0u64;
-    for part in existing {
-        let name = part
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or("invalid stored part filename")?;
-        let (first, second) = name
-            .strip_prefix("all_")
-            .and_then(|name| name.strip_suffix("_0"))
-            .and_then(|name| name.split_once('_'))
-            .ok_or_else(|| format!("unexpected stored part name: {name}"))?;
-        let first = first.parse::<u64>().map_err(|_| "invalid part number")?;
-        let second = second.parse::<u64>().map_err(|_| "invalid part number")?;
-        if first != second {
-            return Err("non-local part block ranges cannot be appended".into());
-        }
-        last = last.max(first);
-    }
-
-    publish_snapshot_with(database, table, |staging| {
-        stage_existing_parts(existing, staging)?;
-        for (index, chunk) in rows.chunks(PART_ROWS).enumerate() {
-            let next = last
-                .checked_add(u64::try_from(index).map_err(|_| "part index overflow")?)
-                .and_then(|number| number.checked_add(1))
-                .ok_or("part block number overflow")?;
-            let part = staging.join(format!("all_{next}_{next}_0"));
-            write_wide_part(&part, cols, chunk).map_err(|error| error.to_string())?;
-            verify_wide_part(&part).map_err(|error| error.to_string())?;
-        }
-        Ok(())
-    })
-}
-
 /// Estimate retained COPY row sizes once. A reusable scratch vector avoids
 /// per-record allocations and repeated String length/accounting passes.
 fn estimate_streamed_row(

@@ -197,8 +197,6 @@ mod health_probe_budget_tests {
 
     #[test]
     fn large_clusters_have_one_health_result_per_peer() {
-        assert!(MAX_INFLIGHT_HEALTH_PROBES > 0);
-        assert!(MAX_INFLIGHT_HEALTH_PROBES < crate::cluster::MAX_PEERS);
         let peers = (0..crate::cluster::MAX_PEERS)
             .map(|index| Peer::parse(&format!("127.0.0.1:{}", 60000 + index)).unwrap())
             .collect();

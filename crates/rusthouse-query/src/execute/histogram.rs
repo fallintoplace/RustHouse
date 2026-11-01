@@ -171,6 +171,7 @@ fn output_counts<W: Write>(
 
 /// Iterates a verified snapshot from the beginning, using identical compiled
 /// filters in both passes. No values or rows are retained between passes.
+#[allow(clippy::too_many_arguments)]
 fn visit_part(
     part: &Path,
     metadata: &PartMetadata,
@@ -196,8 +197,8 @@ fn visit_part(
                 }
             }
             TypedColumn::NullableNumeric { values, nulls } => {
-                for row in 0..rows {
-                    if nulls[row] == 0 && (no_filters || typed::passes(&batch, row, conditions)) {
+                for (row, &is_null) in nulls[..rows].iter().enumerate() {
+                    if is_null == 0 && (no_filters || typed::passes(&batch, row, conditions)) {
                         observe(finite_number_as_f64(number_at(values, row))?)?;
                     }
                 }
@@ -503,7 +504,7 @@ mod tests {
             calls: 0,
             bytes: Vec::new(),
         };
-        output_bins(&query, &mut writer, "number", 3, bins.into_iter()).unwrap();
+        output_bins(&query, &mut writer, "number", 3, bins).unwrap();
         assert!(writer.bytes.ends_with(b"[(0,3,3),(3,6,3),(6,9,4)]\n"));
         // Header, brackets and the three bins need a bounded number of writes.
         assert!(writer.calls <= 12, "too many writes: {}", writer.calls);
@@ -564,12 +565,12 @@ mod tests {
 
     #[test]
     fn equal_width_boundaries_include_maximum_and_empty() {
-        let mut counts = vec![0u64; 8];
+        let mut counts = [0u64; 8];
         for index in 0..10_000 {
             counts[bucket(index as f64, 0.0, 9999.0, 8)] += 1;
         }
         assert_eq!(counts.iter().sum::<u64>(), 10_000);
-        let mut uniform = vec![0u64; 4];
+        let mut uniform = [0u64; 4];
         for _ in 0..1000 {
             uniform[bucket(17.0, 17.0, 17.0, 4)] += 1;
         }
@@ -783,14 +784,7 @@ mod streaming_histogram_bin_tests {
             let query =
                 crate::parse_select("SELECT histogram(7)(number) FROM numbers(10)").unwrap();
             let mut eager = Vec::new();
-            output_bins(
-                &query,
-                &mut eager,
-                "number",
-                7,
-                to_bins(min, max, &counts).into_iter(),
-            )
-            .unwrap();
+            output_bins(&query, &mut eager, "number", 7, to_bins(min, max, &counts)).unwrap();
             let mut streamed = Vec::new();
             output_counts(&query, &mut streamed, "number", 7, min, max, &counts).unwrap();
             assert_eq!(streamed, eager, "min={min} max={max}");
@@ -815,7 +809,6 @@ mod streaming_histogram_bin_tests {
 
 #[cfg(test)]
 mod batched_histogram_column_dispatch_tests {
-    use super::*;
     use rusthouse_storage::{Column, write_wide_part};
     use std::fs;
 

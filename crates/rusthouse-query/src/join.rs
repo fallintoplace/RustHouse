@@ -1351,9 +1351,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(comparison.where_comparison.is_some());
-        for sql in ["SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id IS UNKNOWN"] {
-            assert!(parse_join(sql).is_err(), "{sql}");
-        }
+        let sql = "SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id IS UNKNOWN";
+        assert!(parse_join(sql).is_err(), "{sql}");
     }
 
     #[test]

@@ -308,11 +308,10 @@ mod bounded_response_header_scan_tests {
         let mut malicious = vec![b'a'; MAX_HEADER_BYTES + 1_000_000];
         malicious.extend_from_slice(b"\r\n\r\n");
         assert!(response_head(&malicious).is_err());
-        assert_eq!(
+        assert!(
             response_head(&vec![b'a'; MAX_HEADER_BYTES - 1])
                 .unwrap()
-                .is_none(),
-            true
+                .is_none()
         );
     }
 

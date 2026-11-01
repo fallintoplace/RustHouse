@@ -39,6 +39,7 @@ fn charge_group_states(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute<W: Write>(
     query: &Select,
     start: u64,

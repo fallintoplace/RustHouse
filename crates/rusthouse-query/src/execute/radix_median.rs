@@ -114,6 +114,7 @@ fn render_middle_pair(low_key: u128, high_key: u128, bits: usize, signed: bool) 
 
 /// Add the native integer batch directly to two radix histograms. Nullable
 /// rows are skipped before key encoding, so NULLs never affect rank.
+#[allow(clippy::too_many_arguments)]
 fn count_column(
     column: &NumericColumn,
     nulls: Option<&[u8]>,

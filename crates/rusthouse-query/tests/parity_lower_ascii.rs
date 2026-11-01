@@ -21,7 +21,6 @@ fn clickhouse_compatibility_cases() {
 
 #[test]
 fn rejects_invalid_arguments() {
-    for sql in ["SELECT lower('a', 'b')"] {
-        assert!(parse_select(sql).is_err(), "{sql}");
-    }
+    let sql = "SELECT lower('a', 'b')";
+    assert!(parse_select(sql).is_err(), "{sql}");
 }

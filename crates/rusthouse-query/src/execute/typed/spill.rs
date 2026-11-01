@@ -760,8 +760,8 @@ mod tests {
             },
         )
         .unwrap();
-        let short = &data[..data.len() - 1];
-        assert!(read_entry(&mut short.as_ref()).is_err());
+        let mut short = &data[..data.len() - 1];
+        assert!(read_entry(&mut short).is_err());
         let mut malformed = data;
         malformed[12] = 99;
         assert!(read_entry(&mut malformed.as_slice()).is_err());
@@ -961,7 +961,7 @@ mod typed_spill_order_validation_tests {
         let sorter = TypedExternalSort::new(1, 0, 0);
         assert!(
             sorter
-                .merge_group(&[bad_desc.clone()], |_| Ok(true))
+                .merge_group(std::slice::from_ref(&bad_desc), |_| Ok(true))
                 .is_err()
         );
         let mut seen = 0;

@@ -188,7 +188,7 @@ mod wide_display_scale_tests {
         assert_eq!(format_decimal(0, 40), "0");
         assert_eq!(format_decimal(i128::MIN, 39).split('.').next(), Some("-0"));
         for scale in [0usize, 1, 18, 38] {
-            assert_eq!(format_decimal(100, scale).starts_with('-'), false);
+            assert!(!format_decimal(100, scale).starts_with('-'));
         }
     }
 }

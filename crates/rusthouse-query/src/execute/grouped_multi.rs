@@ -110,6 +110,8 @@ fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
     }
 }
 
+type GroupedRows = Vec<(Vec<Cell>, u64)>;
+
 fn parallel_grouped_parts(
     part: &Path,
     names: &[String],
@@ -117,7 +119,7 @@ fn parallel_grouped_parts(
     conditions: &[Vec<typed::Condition>],
     has_text_key: bool,
     no_filters: bool,
-) -> Result<Option<Vec<(Vec<Cell>, u64)>>, ExecutionError> {
+) -> Result<Option<GroupedRows>, ExecutionError> {
     let parts = rusthouse_storage::query_parts(part)?;
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())

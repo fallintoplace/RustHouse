@@ -448,7 +448,7 @@ mod peer_schema_json_whitespace_tests {
     #[test]
     fn schema_parser_only_accepts_rfc_json_whitespace() {
         let canonical = br#"{"rows":1,"columns":[{"name":"id","type":"UInt64"}]}"#;
-        for space in [b' ', b'\t', b'\r', b'\n'] {
+        for &space in b" \t\r\n" {
             let mut encoded = canonical.to_vec();
             encoded.insert(1, space);
             assert!(
@@ -456,7 +456,7 @@ mod peer_schema_json_whitespace_tests {
                 "valid JSON whitespace: {space}"
             );
         }
-        for invalid in [b'\x0b', b'\x0c'] {
+        for &invalid in b"\x0b\x0c" {
             let mut encoded = canonical.to_vec();
             encoded.insert(1, invalid);
             assert!(
@@ -550,13 +550,22 @@ struct ShardResponse {
 const MAX_SHARD_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
 fn reserve_shard_bytes(used: &AtomicUsize, amount: usize) -> Result<(), String> {
-    used.fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
-        current
+    let mut current = used.load(AtomicOrdering::Acquire);
+    loop {
+        let next = current
             .checked_add(amount)
             .filter(|&total| total <= MAX_SHARD_INPUT_BYTES)
-    })
-    .map(|_| ())
-    .map_err(|_| "distributed shard input exceeds 64 MiB".into())
+            .ok_or("distributed shard input exceeds 64 MiB")?;
+        match used.compare_exchange_weak(
+            current,
+            next,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        ) {
+            Ok(_) => return Ok(()),
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 fn read_shard(
@@ -2778,9 +2787,9 @@ mod distributed_grouped_sum_selection_tests {
         for descending in [true, false] {
             let mut order = canonical.clone();
             if descending {
-                order.sort_by(|a, b| b.1.cmp(&a.1));
+                order.sort_by_key(|entry| std::cmp::Reverse(entry.1));
             } else {
-                order.sort_by(|a, b| a.1.cmp(&b.1));
+                order.sort_by_key(|entry| entry.1);
             }
             for offset in [0, 1, 25, 2999, 3000] {
                 for limit in [0, 1, 7, 100, 3000] {

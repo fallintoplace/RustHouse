@@ -1414,7 +1414,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 if max_index > min_index {
                     return Err(ParseError("minimum unit exceeds maximum unit".into()));
                 }
-                let seconds = value.expect("validated nonnull time value");
+                let seconds = value.ok_or_else(|| ParseError("missing time delta".into()))?;
                 let mut remaining = seconds.unsigned_abs();
                 let mut parts = Vec::new();
                 for (index, &(name, unit_seconds)) in UNITS
@@ -3235,12 +3235,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::Comma, "if requires an else branch")?;
             let when_false = constant_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "if requires three arguments")?;
-            let types_match = match (&when_true, &when_false) {
-                (ConstantValue::Null, _) | (_, ConstantValue::Null) => true,
-                (ConstantValue::Integer(_), ConstantValue::Integer(_)) => true,
-                (ConstantValue::Text(_), ConstantValue::Text(_)) => true,
-                _ => false,
-            };
+            let types_match = matches!(
+                (&when_true, &when_false),
+                (ConstantValue::Null, _)
+                    | (_, ConstantValue::Null)
+                    | (ConstantValue::Integer(_), ConstantValue::Integer(_))
+                    | (ConstantValue::Text(_), ConstantValue::Text(_))
+            );
             if !types_match {
                 return Err(ParseError("if branches need a common type".into()));
             }

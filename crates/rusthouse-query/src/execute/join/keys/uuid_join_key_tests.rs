@@ -6,7 +6,7 @@ fn build_and_probe_share_raw_uuid_keys() {
     let mut disk = [0u8; 32];
     disk[16] = 1;
     let values = read_uuid_values(&mut disk.as_slice(), 2).unwrap();
-    let rows = vec![
+    let rows = [
         typed::Cell::Uuid(values[0].to_string()),
         typed::Cell::Uuid(values[1].to_string()),
     ];
