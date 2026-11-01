@@ -1,5 +1,4 @@
 //! Strict, explicit membership file for experimental storage clusters.
-use std::collections::HashSet;
 use std::fmt::Write;
 
 const MAX_MEMBER_RECORDS: usize = 64;
@@ -67,29 +66,21 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
         return Err("membership manifest too large");
     }
     let mut members = Vec::new();
-    // Most deployments have only a few members. Avoid allocating a hash
-    // table until the ninth record while still checking every duplicate.
-    let mut first_eight = [""; 8];
-    let mut seen: Option<HashSet<&str>> = None;
+    // Keep borrowed names in a sorted stack index. Duplicate detection is
+    // logarithmic per record and never needs a temporary hash allocation.
+    let mut seen = [""; MAX_MEMBER_RECORDS];
     for line in text.lines() {
-        // Inspect borrowed tokens before allocating the owned output fields.
-        // Invalid, duplicate and over-limit entries do not allocate Strings.
+        // Validate and deduplicate borrowed tokens before allocating output.
         let (node, zone, weight) = parse_member(line)?;
-        let duplicate = if members.len() < first_eight.len() {
-            let duplicate = first_eight[..members.len()].contains(&node);
-            first_eight[members.len()] = node;
-            duplicate
-        } else {
-            !seen
-                .get_or_insert_with(|| first_eight.iter().copied().collect())
-                .insert(node)
+        let position = match seen[..members.len()].binary_search(&node) {
+            Ok(_) => return Err("duplicate member or invalid weight"),
+            Err(position) => position,
         };
-        if duplicate {
-            return Err("duplicate member or invalid weight");
-        }
         if members.len() >= MAX_MEMBER_RECORDS {
             return Err("too many cluster members");
         }
+        seen.copy_within(position..members.len(), position + 1);
+        seen[position] = node;
         members.push(Member {
             node: node.to_owned(),
             zone: zone.to_owned(),
@@ -108,20 +99,20 @@ fn serialized_membership_bytes(members: &[Member]) -> Result<usize, &'static str
     if members.is_empty() || members.len() > MAX_MEMBER_RECORDS {
         return Err("invalid membership record count");
     }
-    let mut seen = (members.len() > 8).then(|| HashSet::with_capacity(members.len()));
+    let mut seen = [""; MAX_MEMBER_RECORDS];
     let mut bytes = 0usize;
     for (index, member) in members.iter().enumerate() {
-        let duplicate = if let Some(seen) = seen.as_mut() {
-            !seen.insert(member.node.as_str())
-        } else {
-            members[..index].iter().any(|previous| previous.node == member.node)
-        };
         if !valid_member_identity(&member.node, &member.zone)
             || !valid_member_weight(member.weight)
-            || duplicate
         {
             return Err("invalid or duplicate membership record");
         }
+        let position = match seen[..index].binary_search(&member.node.as_str()) {
+            Ok(_) => return Err("invalid or duplicate membership record"),
+            Err(position) => position,
+        };
+        seen.copy_within(position..index, position + 1);
+        seen[position] = member.node.as_str();
         // Two spaces and one newline. Weight is always a positive u16.
         bytes += member.node.len() + member.zone.len()
             + member.weight.ilog10() as usize + 1 + 3;
@@ -475,5 +466,43 @@ mod small_zone_capacity_regressions {
         let mut members = membership(3);
         members[2].node = members[0].node.clone();
         assert!(membership_capacity_by_zone(&members).is_err());
+    }
+}
+
+#[cfg(test)]
+mod stack_membership_index_tests {
+    use super::*;
+
+    #[test]
+    fn full_membership_roundtrips_without_losing_duplicate_detection() {
+        for size in [1usize, 2, 8, 9, 16, 32, 64] {
+            let records = (0..size).rev().map(|index| {
+                format!("node_{index:02} zone_{} {}\n", index % 7, index % 1000 + 1)
+            }).collect::<String>();
+            let members = parse_membership(&records).unwrap();
+            assert_eq!(members.len(), size);
+            assert_eq!(serialized_membership_bytes(&members).unwrap(), records.len());
+            assert_eq!(format_membership(&members).unwrap(), records);
+            let mut duplicates = members.clone();
+            if size == 1 {
+                duplicates.push(duplicates[0].clone());
+            } else {
+                duplicates[size - 1].node = duplicates[0].node.clone();
+            }
+            assert!(serialized_membership_bytes(&duplicates).is_err());
+            let mut duplicate_text = records.clone();
+            duplicate_text.push_str("node_00 zone_extra 1\n");
+            assert!(parse_membership(&duplicate_text).is_err());
+        }
+    }
+
+    #[test]
+    fn exhausted_index_rejects_new_names_and_old_duplicates() {
+        let text = (0..64).map(|index| {
+            format!("node_{index:02} zone_{} 1\n", index % 4)
+        }).collect::<String>();
+        assert_eq!(parse_membership(&text).unwrap().len(), 64);
+        assert!(parse_membership(&(text.clone() + "new_node zone_0 1\n")).is_err());
+        assert!(parse_membership(&(text + "node_00 zone_0 1\n")).is_err());
     }
 }
