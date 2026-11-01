@@ -78,6 +78,8 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
         raise
     peak = 0
     disk = {"read_bytes": 0, "write_bytes": 0}
+    sampled_rss = False
+    sampled_io = False
     failed_budget = False
     failed_read_budget = False
     timed_out = False
@@ -85,10 +87,20 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
         proc = Path("/proc") / str(process.pid)
         while process.poll() is None:
             try:
-                peak = max(peak, parse_rss((proc / "status").read_text()))
-                disk = parse_io((proc / "io").read_text())
+                observed_rss = parse_rss((proc / "status").read_text())
+                if observed_rss > 0:
+                    peak = max(peak, observed_rss)
+                    sampled_rss = True
             except (OSError, ValueError):
                 pass  # The process may exit between poll() and the /proc reads.
+            try:
+                io_text = (proc / "io").read_text()
+                observed_io = parse_io(io_text)
+                if "read_bytes:" in io_text and "write_bytes:" in io_text:
+                    disk = observed_io
+                    sampled_io = True
+            except (OSError, ValueError):
+                pass
             if rss_budget_bytes is not None and peak > rss_budget_bytes:
                 failed_budget = True
                 process.kill()
@@ -113,6 +125,10 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
     finally:
         stderr_file.close()
     elapsed = time.perf_counter() - started
+    if rss_budget_bytes is not None and not sampled_rss:
+        raise RuntimeError("RSS budget cannot be verified without a valid /proc sample")
+    if read_budget_bytes is not None and not sampled_io:
+        raise RuntimeError("physical read budget cannot be verified without a valid /proc sample")
     if failed_budget:
         raise RuntimeError(f"query exceeded sampled RSS budget: {peak} bytes")
     if failed_read_budget:
