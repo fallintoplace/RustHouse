@@ -27,6 +27,12 @@ fn prefilter_dimension_rows(
     }
 }
 
+fn paged_match_limit(offset: usize, limit: Option<usize>) -> Option<u64> {
+    limit
+        .filter(|&limit| limit <= MAX_RESULT_ROWS)
+        .map(|limit| offset.saturating_add(limit) as u64)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn scan<W: Write>(
     left_path: &Path,
@@ -50,10 +56,10 @@ fn scan<W: Write>(
     let mut left_cells = vec![None; width];
     let mut matched = 0u64;
     let mut written = 0usize;
-    let max_matches = match limit {
-        Some(limit) if limit <= MAX_RESULT_ROWS => offset.checked_add(limit).map(|end| end as u64),
-        _ => None,
-    };
+    // A bounded page is still bounded when OFFSET + LIMIT overflows usize.
+    // Treat the saturated end as an unreachable match count, rather than
+    // incorrectly falling into the unpaged 131072-row result cap.
+    let max_matches = paged_match_limit(offset, limit);
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
             // INNER JOIN predicates referencing only the fact side are safe
@@ -276,5 +282,26 @@ mod prefilter_right_comparison_tests {
         };
         prefilter_dimension_rows(&mut fact_filter, &left_filter, 2, false);
         assert_eq!(values(&fact_filter), vec![5, 15, 20]);
+    }
+}
+
+#[cfg(test)]
+mod paged_join_match_limit_tests {
+    use super::*;
+
+    #[test]
+    fn overflowing_offset_does_not_turn_a_bounded_page_into_an_unpaged_join() {
+        assert_eq!(paged_match_limit(0, Some(1)), Some(1));
+        assert_eq!(paged_match_limit(10, Some(20)), Some(30));
+        assert_eq!(
+            paged_match_limit(usize::MAX, Some(1)),
+            Some(usize::MAX as u64)
+        );
+        assert_eq!(
+            paged_match_limit(usize::MAX - 1, Some(20)),
+            Some(usize::MAX as u64)
+        );
+        assert_eq!(paged_match_limit(0, Some(MAX_RESULT_ROWS + 1)), None);
+        assert_eq!(paged_match_limit(0, None), None);
     }
 }
