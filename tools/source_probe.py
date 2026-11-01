@@ -5,7 +5,8 @@ import json
 import math
 import re
 import sys
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
+from loopback_origin import require_loopback_http_origin
 from urllib.request import HTTPRedirectHandler, Request, build_opener, ProxyHandler
 
 
@@ -34,12 +35,7 @@ def _unique_object_pairs(pairs):
 
 
 def verify_origin(value):
-    parsed = urlsplit(value)
-    if (parsed.scheme != "http" or parsed.hostname not in ("localhost", "127.0.0.1")
-            or parsed.path not in ("", "/") or parsed.query or parsed.fragment
-            or parsed.username or parsed.password):
-        raise ValueError("source probe accepts loopback HTTP origins only")
-    return value.rstrip("/")
+    return require_loopback_http_origin(value)
 
 
 def read_json(url, timeout):
