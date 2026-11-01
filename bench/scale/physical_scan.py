@@ -51,7 +51,9 @@ def invoke(binary, database, sql, *, timeout, no_header=False):
     if no_header:
         command.extend(["--format", "tsv-no-header"])
     extra = {}
-    if os.name == "posix":
+    # RLIMIT_FSIZE applies to all child file writes, including COPY data
+    # files. Only cap read-only query processes, never ingestion or DDL.
+    if os.name == "posix" and sql.lstrip().upper().startswith("SELECT "):
         import resource
 
         def cap_spooled_output():
