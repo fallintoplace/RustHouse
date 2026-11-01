@@ -161,6 +161,46 @@ def sync_parent_directory(path):
         os.close(fd)
 
 
+def publish_new_directory(stage, destination):
+    """Atomically publish a verified backup without replacing an existing path."""
+    if sys.platform.startswith("linux"):
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise OSError("atomic RENAME_NOREPLACE is unavailable")
+        renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                              ctypes.c_char_p, ctypes.c_uint)
+        renameat2.restype = ctypes.c_int
+        # AT_FDCWD, RENAME_NOREPLACE. No check-then-rename race.
+        result = renameat2(-100, os.fsencode(stage), -100,
+                           os.fsencode(destination), 1)
+    elif sys.platform == "darwin":
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        rename_exclusive = getattr(libc, "renamex_np", None)
+        if rename_exclusive is None:
+            raise OSError("atomic RENAME_EXCL is unavailable")
+        rename_exclusive.argtypes = (ctypes.c_char_p, ctypes.c_char_p,
+                                     ctypes.c_uint)
+        rename_exclusive.restype = ctypes.c_int
+        # macOS RENAME_EXCL disallows replacement even when the target
+        # is an empty directory.
+        result = rename_exclusive(os.fsencode(stage), os.fsencode(destination), 4)
+    elif os.name == "nt":
+        # MoveFileEx without MOVEFILE_REPLACE_EXISTING fails on collisions.
+        stage.rename(destination)
+        return
+    else:
+        # Never silently fall back to an overwriting POSIX rename.
+        raise OSError("atomic no-replace backup publication is unsupported")
+    if result:
+        import ctypes
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(destination))
+
+
+
 
 
 def preflight(source, destination, max_bytes=None, max_entries=1_000_000):
@@ -235,7 +275,7 @@ def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeo
             raise RuntimeError("doctor rejected staged backup at " + str(stage) +
                                ": " + diagnostic)
         sync_copied_tree(stage)
-        stage.rename(destination)
+        publish_new_directory(stage, destination)
         sync_parent_directory(destination)
         return destination
 
