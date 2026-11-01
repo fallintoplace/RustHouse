@@ -117,6 +117,28 @@ class BackupTests(unittest.TestCase):
             self.assertTrue((base / "backup.partial").exists())
             self.assertFalse((base / "backup").exists())
 
+    @unittest.skipUnless(__import__("os").name == "posix", "POSIX child limits required")
+    def test_noisy_doctor_cannot_fill_backup_verification_disk(self):
+        import sys
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            source = base / "db"
+            source.mkdir()
+            (source / "part.bin").write_bytes(b"data")
+            binary = base / "noisy-doctor"
+            binary.write_text(
+                "#!" + sys.executable + "\\n"
+                "import os\\n"
+                "for _ in range(256):\\n"
+                "    os.write(2, b'x' * 65536)\\n"
+            )
+            binary.chmod(0o700)
+            with self.assertRaisesRegex(RuntimeError, "output exceeded 8 MiB"):
+                backup(source, base / "backup", binary=binary, doctor_timeout=10)
+            self.assertEqual((source / "part.bin").read_bytes(), b"data")
+            self.assertFalse((base / "backup").exists())
+            self.assertTrue((base / "backup.partial").exists())
+
     @unittest.skipUnless(__import__("os").name == "posix", "POSIX flock required")
     def test_missing_flock_support_fails_closed(self):
         from offline_backup import refuse_live_database
