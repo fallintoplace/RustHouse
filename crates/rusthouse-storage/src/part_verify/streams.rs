@@ -164,3 +164,45 @@ mod reused_verification_decode_tests {
         assert_eq!(report.decompressed_bytes, 8192 + 16_384 + 17);
     }
 }
+
+#[cfg(test)]
+mod adaptive_stream_single_pass_tests {
+    use super::*;
+    use crate::WideMark;
+
+    fn marks(rows: &[u64]) -> WideMarks {
+        WideMarks {
+            path: "values.mrk2".into(),
+            format: WideMarkFormat::Adaptive,
+            marks: rows.iter().enumerate().map(|(index, &rows)| WideMark {
+                compressed_offset: index as u64 * 16,
+                decompressed_offset: 0,
+                rows: Some(rows),
+            }).collect(),
+        }
+    }
+
+    #[test]
+    fn detects_total_row_mismatches_and_overflow() {
+        let mut layout = ScanLayout::default();
+        validate_adaptive_stream(Path::new("a.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
+        let mismatch = validate_adaptive_stream(
+            Path::new("b.bin"), &marks(&[2, 4]), 5, &mut layout
+        ).unwrap_err();
+        assert!(matches!(mismatch, PartError::InvalidPart { reason: "mark row counts do not match count.txt", .. }));
+        let overflow = validate_adaptive_stream(
+            Path::new("c.bin"), &marks(&[u64::MAX, 1]), u64::MAX, &mut ScanLayout::default()
+        ).unwrap_err();
+        assert!(matches!(overflow, PartError::InvalidPart { reason: "mark row counts do not match count.txt", .. }));
+    }
+
+    #[test]
+    fn validates_shared_granules_after_first_column() {
+        let mut layout = ScanLayout::default();
+        validate_adaptive_stream(Path::new("a.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
+        validate_adaptive_stream(Path::new("b.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
+        assert!(validate_adaptive_stream(
+            Path::new("c.bin"), &marks(&[3, 2]), 5, &mut layout
+        ).is_err());
+    }
+}
