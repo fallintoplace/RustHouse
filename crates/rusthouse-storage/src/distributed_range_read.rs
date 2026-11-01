@@ -67,21 +67,44 @@ fn open_verified_object(path: &Path) -> io::Result<(File, fs::Metadata)> {
     Ok((file, opened))
 }
 
-fn read_at(file: &mut File, offset: u64, length: usize) -> io::Result<Vec<u8>> {
-    let mut bytes = vec![0; length];
+fn read_at_into(file: &mut File, offset: u64, bytes: &mut [u8]) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileExt;
-        // Positioned reads do not mutate the shared descriptor offset.
-        // This removes seek syscalls for scattered immutable object ranges.
-        file.read_exact_at(&mut bytes, offset)?;
+        file.read_exact_at(bytes, offset)?;
     }
     #[cfg(not(unix))]
     {
         file.seek(SeekFrom::Start(offset))?;
-        file.read_exact(&mut bytes)?;
+        file.read_exact(bytes)?;
     }
+    Ok(())
+}
+
+fn read_at(file: &mut File, offset: u64, length: usize) -> io::Result<Vec<u8>> {
+    let mut bytes = vec![0; length];
+    read_at_into(file, offset, &mut bytes)?;
     Ok(bytes)
+}
+
+/// Read one verified immutable range into an existing caller-owned buffer.
+///
+/// This avoids allocating and copying another buffer for repeated replica
+/// pulls. On error, the destination may have been partially modified and
+/// must not be used.
+pub fn read_object_range_into(
+    path: &Path,
+    offset: u64,
+    destination: &mut [u8],
+    max_length: usize,
+) -> io::Result<()> {
+    if destination.len() > max_length || destination.len() > ABSOLUTE_MAX_RANGE {
+        return Err(io::Error::other("object byte range exceeds limit"));
+    }
+    let (mut file, baseline) = open_verified_object(path)?;
+    validate_range(offset, destination.len(), baseline.len())?;
+    read_at_into(&mut file, offset, destination)?;
+    verify_object_after_read(path, &file, &baseline)
 }
 
 // A handful of out-of-order mark ranges can be proven disjoint with
@@ -1002,5 +1025,36 @@ mod coalesced_scrub_crc_tests {
             io::ErrorKind::InvalidData
         );
         std::fs::remove_file(&path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod in_place_range_tests {
+    use super::*;
+
+    #[test]
+    fn existing_buffers_match_owned_exact_reads_at_unaligned_offsets() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-inplace-range-{}-{}", std::process::id(), line!()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("object.bin");
+        let source = (0..16384u32).map(|value| (value % 251) as u8).collect::<Vec<_>>();
+        fs::write(&path, &source).unwrap();
+        for &(offset, length) in &[(0, 0), (0, 1), (3, 7), (4095, 4096), (16384, 0)] {
+            let mut destination = vec![0xcc; length];
+            read_object_range_into(&path, offset, &mut destination, length).unwrap();
+            assert_eq!(
+                destination,
+                read_object_range(&path, offset, length, length).unwrap()
+            );
+        }
+        let mut untouched = [0xabu8; 16];
+        assert!(read_object_range_into(&path, 16380, &mut untouched, 16).is_err());
+        assert_eq!(untouched, [0xab; 16]);
+        assert!(read_object_range_into(&path, 0, &mut untouched, 15).is_err());
+        assert_eq!(untouched, [0xab; 16]);
+        fs::remove_dir_all(directory).unwrap();
     }
 }
