@@ -79,6 +79,20 @@ fn verify_active_pointer_unchanged(
     Ok(())
 }
 
+// Both promotion and read-only discovery must apply exactly the same
+// canonical grammar. A fixed-size ASCII pointer never needs a String or
+// format! allocation. Leading zeros and zero generations are not valid.
+fn parse_canonical_generation_pointer(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 3 || bytes[0] != b'g' || *bytes.last()? != b'\n' {
+        return None;
+    }
+    let digits = &bytes[1..bytes.len() - 1];
+    if digits[0] == b'0' || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(digits).ok()?.parse::<u64>().ok()
+}
+
 fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), PartError> {
     match fs::symlink_metadata(pointer) {
         Ok(meta) => {
@@ -90,22 +104,12 @@ fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), Part
             if opened.len() > 64 || !same_active_pointer_state(&meta, &opened) {
                 return Err(PartError::InvalidScan("active pointer changed".into()));
             }
-            let mut current = String::new();
+            let mut buffer = [0u8; 64];
             (&file)
-                .take(65)
-                .read_to_string(&mut current)
+                .read_exact(&mut buffer[..opened.len() as usize])
                 .map_err(|error| io_error(pointer, error))?;
-            if current.len() > 64 || current.len() as u64 != opened.len() {
-                return Err(PartError::InvalidScan(
-                    "active pointer changed during read".into(),
-                ));
-            }
             verify_active_pointer_unchanged(pointer, &file, &meta)?;
-            let prior = current
-                .strip_prefix('g')
-                .and_then(|text| text.strip_suffix('\n'))
-                .and_then(|text| text.parse::<u64>().ok())
-                .filter(|&value| value > 0 && current == format!("g{value}\n"))
+            let prior = parse_canonical_generation_pointer(&buffer[..opened.len() as usize])
                 .ok_or_else(|| PartError::InvalidScan("invalid active generation".into()))?;
             if generation <= prior {
                 return Err(PartError::InvalidScan(
@@ -224,29 +228,16 @@ pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
             "active generation pointer changed".into(),
         ));
     }
-    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 64];
     (&file)
-        .take(65)
-        .read_to_end(&mut bytes)
+        .read_exact(&mut buffer[..opened.len() as usize])
         .map_err(|error| io_error(&pointer, error))?;
-    if bytes.len() as u64 != opened.len() {
-        return Err(PartError::InvalidScan(
-            "active generation pointer changed during read".into(),
-        ));
-    }
     verify_active_pointer_unchanged(&pointer, &file, &initial)?;
-    let text = std::str::from_utf8(&bytes)
+    let bytes = &buffer[..opened.len() as usize];
+    std::str::from_utf8(bytes)
         .map_err(|_| PartError::InvalidScan("active generation pointer is not UTF8".into()))?;
-    let generation = text
-        .strip_prefix('g')
-        .and_then(|value| value.strip_suffix('\n'))
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or_else(|| PartError::InvalidScan("invalid active generation pointer".into()))?;
-    if generation == 0 || text != format!("g{generation}\n") {
-        return Err(PartError::InvalidScan(
-            "noncanonical active generation pointer".into(),
-        ));
-    }
+    let generation = parse_canonical_generation_pointer(bytes)
+        .ok_or_else(|| PartError::InvalidScan("noncanonical active generation pointer".into()))?;
     Ok(Some(generation))
 }
 
@@ -511,6 +502,44 @@ mod pointer_metadata_stability_tests {
         ));
         assert!(verify_active_pointer_unchanged(&pointer, &file, &before).is_err());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod active_pointer_stack_decoder_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_decoder_accepts_every_supported_length_boundary() {
+        for value in [1u64, 9, 10, 99, 100, u32::MAX as u64, u64::MAX] {
+            let bytes = format!("g{value}\n").into_bytes();
+            assert_eq!(parse_canonical_generation_pointer(&bytes), Some(value));
+        }
+        for invalid in [
+            "".as_bytes(), b"g", b"g\n", b"g0\n", b"g01\n", b"g+1\n",
+            b"g-1\n", b"g1\r\n", b"g1", b"g1\nextra",
+            b"g18446744073709551616\n", b"G1\n", b"g1\0\n",
+        ] {
+            assert_eq!(parse_canonical_generation_pointer(invalid), None);
+        }
+    }
+
+    #[test]
+    fn stack_decoder_matches_read_path_after_pointer_rewrites() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-pointer-stack-{}-{}",
+            std::process::id(),
+            NEXT_PENDING.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        for value in [1u64, 1234, u64::MAX] {
+            fs::write(&pointer, format!("g{value}\n")).unwrap();
+            assert_eq!(read_active_generation(&root).unwrap(), Some(value));
+        }
+        fs::write(&pointer, b"g0001\n").unwrap();
+        assert!(read_active_generation(&root).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
