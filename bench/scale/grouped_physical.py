@@ -130,9 +130,25 @@ def _verification_failure(inspection):
 
 def inspect_persisted_snapshot(binary, directory, rows, timeout):
     command = [str(binary), "doctor", "--database", str(directory)]
+    # The doctor output is small. Cap the child while writing so a broken
+    # inspection cannot exhaust temporary storage before verification runs.
+    extra = {}
+    if os.name == "posix":
+        import resource
+
+        def cap_doctor_output():
+            soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            cap = 256 * 1024 + 1
+            if soft != resource.RLIM_INFINITY:
+                cap = min(cap, soft)
+            if hard != resource.RLIM_INFINITY:
+                cap = min(cap, hard)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (cap, hard))
+
+        extra["preexec_fn"] = cap_doctor_output
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         result = subprocess.run(command, stdout=output, stderr=errors,
-                                check=False, timeout=timeout)
+                                check=False, timeout=timeout, **extra)
         output.seek(0)
         stdout = output.read(256 * 1024 + 1)
         if len(stdout) > 256 * 1024:
