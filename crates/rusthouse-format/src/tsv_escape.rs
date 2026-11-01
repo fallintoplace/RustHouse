@@ -238,19 +238,19 @@ mod atomic_tsv_field_decode_tests {
     #[test]
     fn late_bad_escape_does_not_leave_partial_reusable_field() {
         let mut output = Vec::with_capacity(256);
-        decode_tsv_field_into(br"first\\tsecond", &mut output).unwrap();
+        decode_tsv_field_into(br"first\tsecond", &mut output).unwrap();
         let retained_capacity = output.capacity();
         for invalid in [
-            &br"good\\ntext\\xG0"[..],
-            &br"good\\ntext\\"[..],
-            &br"good\\ntext\\y"[..],
-            &br"good\\ntext\\x2"[..],
+            &br"good\ntext\xG0"[..],
+            &br"good\ntext\"[..],
+            &br"good\ntext\y"[..],
+            &br"good\ntext\x2"[..],
         ] {
             assert!(decode_tsv_field_into(invalid, &mut output).is_err());
             assert!(output.is_empty(), "a failed field leaked decoded bytes");
             assert_eq!(output.capacity(), retained_capacity);
         }
-        decode_tsv_field_into(br"valid\\x20again", &mut output).unwrap();
+        decode_tsv_field_into(br"valid\x20again", &mut output).unwrap();
         assert_eq!(output, b"valid again");
         assert_eq!(output.capacity(), retained_capacity);
     }
