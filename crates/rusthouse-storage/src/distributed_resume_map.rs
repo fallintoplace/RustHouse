@@ -175,6 +175,50 @@ impl ResumeMap {
         Ok(())
     }
 
+    /// Apply an out-of-order batch only after validating every chunk index.
+    /// Concurrent replicas can finish transfers in arbitrary order. A packed
+    /// duplicate bitmap (at most 8 KiB) validates the entire batch before
+    /// modifying any persistent completion bit.
+    fn apply_unordered_indices(
+        &mut self,
+        indexes: &[usize],
+        complete: bool,
+    ) -> Result<(), &'static str> {
+        let mut changes = vec![0u8; self.completed.len()];
+        for &index in indexes {
+            if index >= self.chunks {
+                return Err("unordered chunk index out of bounds");
+            }
+            let (byte, mask) = Self::bit_position(index);
+            if changes[byte] & mask != 0 {
+                return Err("duplicate chunk index in unordered batch");
+            }
+            changes[byte] |= mask;
+        }
+        if complete {
+            for (current, mask) in self.completed.iter_mut().zip(changes) {
+                *current |= mask;
+            }
+        } else {
+            for (current, mask) in self.completed.iter_mut().zip(changes) {
+                *current &= !mask;
+            }
+        }
+        Ok(())
+    }
+
+    /// Atomically record verified chunk indices in arbitrary completion order.
+    /// Duplicate and out-of-bounds indices reject the whole batch.
+    pub fn mark_complete_unordered(&mut self, indexes: &[usize]) -> Result<(), &'static str> {
+        self.apply_unordered_indices(indexes, true)
+    }
+
+    /// Atomically invalidate arbitrarily ordered chunk indices after a scrub.
+    /// Other independently verified completion flags remain unchanged.
+    pub fn invalidate_unordered(&mut self, indexes: &[usize]) -> Result<(), &'static str> {
+        self.apply_unordered_indices(indexes, false)
+    }
+
     /// Mark a half-open range of verified chunks complete in one operation.
     /// Fully covered bytes are updated in bulk instead of one bit at a time.
     pub fn mark_complete_range(&mut self, start: usize, end: usize) -> Result<(), &'static str> {
@@ -1433,5 +1477,44 @@ mod resume_rank_select_tests {
         tail.mark_complete_range(0, 64).unwrap();
         assert_eq!(tail.nth_missing(0), Some(64));
         assert_eq!(tail.nth_missing(1), None);
+    }
+}
+
+#[cfg(test)]
+mod unordered_atomic_batch_tests {
+    use super::*;
+
+    #[test]
+    fn unordered_batches_match_individual_updates_across_bitmap_boundaries() {
+        for chunks in [0usize, 1, 7, 8, 9, 63, 64, 65, 257, 65_536] {
+            let mut map = ResumeMap::new(chunks).unwrap();
+            let indexes: Vec<usize> = (0..chunks).rev().filter(|i| i % 3 == 0).collect();
+            let mut reference = ResumeMap::new(chunks).unwrap();
+            for &index in &indexes {
+                reference.mark_complete(index).unwrap();
+            }
+            map.mark_complete_unordered(&indexes).unwrap();
+            assert_eq!(map, reference, "chunks={chunks}");
+            map.invalidate_unordered(&indexes).unwrap();
+            assert_eq!(map.completed_count(), 0);
+            assert_eq!(map.remaining_count(), chunks);
+        }
+    }
+
+    #[test]
+    fn failed_unordered_updates_are_atomic_even_after_valid_indices() {
+        let mut checkpoint = ResumeMap::new(130).unwrap();
+        checkpoint.mark_complete_range(0, 70).unwrap();
+        let original = checkpoint.clone();
+        for bad in [vec![100, 1, 100], vec![3, 129, 130], vec![129, 0, usize::MAX]] {
+            assert!(checkpoint.mark_complete_unordered(&bad).is_err());
+            assert_eq!(checkpoint, original);
+            assert!(checkpoint.invalidate_unordered(&bad).is_err());
+            assert_eq!(checkpoint, original);
+        }
+        checkpoint.mark_complete_unordered(&[129, 128, 71, 70]).unwrap();
+        assert_eq!(checkpoint.completed_count(), 74);
+        checkpoint.invalidate_unordered(&[71, 129, 0]).unwrap();
+        assert_eq!(checkpoint.completed_count(), 71);
     }
 }
