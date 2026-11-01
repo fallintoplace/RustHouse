@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SUITES = (
     "bench", "bench/analytics", "bench/clickbench", "bench/interop",
-    "bench/joins", "bench/latency", "bench/measurements", "bench/ssb",
+    "bench/joins", "bench/latency", "bench/measurements", "bench/scale", "bench/ssb",
     "bench/tpch", "tools",
 )
 BENCHMARK_SUITES = ("queries", "parts-sorted", "parts-shuffled", "grouped")
