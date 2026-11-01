@@ -103,31 +103,35 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
     let opened = file
         .metadata()
         .map_err(|source| marks_io_error(path, source))?;
-    if !opened.file_type().is_file() || opened.len() != entry.len() {
+    // The same-length path could have been rewritten in place between stat
+    // and open. Check the baseline timestamps, not only its inode and length.
+    if !marks_file_unchanged(&entry, &opened) {
         return Err(marks_io_error(
             path,
             io::Error::new(io::ErrorKind::InvalidData, "marks file changed before open"),
         ));
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if entry.dev() != opened.dev() || entry.ino() != opened.ino() {
-            return Err(marks_io_error(
-                path,
-                io::Error::new(io::ErrorKind::InvalidData, "marks file inode changed"),
-            ));
-        }
-    }
     let size = opened.len();
     if size > MAX_MARKS_BYTES as u64 {
         return Err(marks_too_large(path));
+    }
+    // Malformed lengths cannot contain complete mark records. Reject them
+    // before allocating or reading the potentially 64 MiB backing file.
+    if size == 0 {
+        return Err(PartError::EmptyMarksFile(path.to_path_buf()));
+    }
+    let record_size = format.record_size();
+    if size % record_size as u64 != 0 {
+        return Err(PartError::InvalidMarksLength {
+            path: path.to_path_buf(),
+            size: size as usize,
+            record_size,
+        });
     }
     // A mark file may contain millions of records. Decode in bounded
     // batches instead of retaining both a complete raw copy and all marks.
     // 24 KiB is divisible by both 16-byte and 24-byte record formats.
     const MARK_READ_BYTES: usize = 24 * 1024;
-    let record_size = format.record_size();
     let size = size as usize; // checked against the 64 MiB cap above
     let mut marks = Vec::with_capacity(size / record_size);
     let mut buffer = [0u8; MARK_READ_BYTES];
@@ -157,16 +161,6 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
             path,
             io::Error::new(io::ErrorKind::InvalidData, "marks file changed during read"),
         ));
-    }
-    if size == 0 {
-        return Err(PartError::EmptyMarksFile(path.to_path_buf()));
-    }
-    if size % record_size != 0 {
-        return Err(PartError::InvalidMarksLength {
-            path: path.to_path_buf(),
-            size,
-            record_size,
-        });
     }
     Ok(marks)
 }
@@ -661,6 +655,52 @@ mod bounded_plain_mark_reader_tests {
                 assert_eq!(mark.rows, (format == WideMarkFormat::Adaptive)
                     .then_some(index as u64 % 7 + 1));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod plain_marks_open_stability_tests {
+    use super::*;
+
+    #[test]
+    fn same_length_rewritten_marks_fail_the_open_metadata_guard() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-marks-open-stability-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("marks.mrk2");
+        std::fs::write(&path, [0u8; 24]).unwrap();
+        let before = std::fs::symlink_metadata(&path).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        assert!(marks_file_unchanged(&before, &file.metadata().unwrap()));
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        assert!(!marks_file_unchanged(&before, &file.metadata().unwrap()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod plain_marks_size_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_record_lengths_without_decoding_entire_file() {
+        for (extension, record_size) in [("mrk", 16usize), ("mrk2", 24usize)] {
+            let path = std::env::temp_dir().join(format!(
+                "rusthouse-plain-marks-preflight-{}-{:?}.{}",
+                std::process::id(), std::thread::current().id(), extension
+            ));
+            let file = File::create(&path).unwrap();
+            file.set_len(1_048_577).unwrap();
+            drop(file);
+            assert!(matches!(
+                read_wide_marks(&path),
+                Err(PartError::InvalidMarksLength { size: 1_048_577, record_size: width, .. }) if width == record_size
+            ));
+            std::fs::remove_file(path).unwrap();
         }
     }
 }

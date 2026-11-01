@@ -39,6 +39,28 @@ pub struct CompressedBlockReader<R: Read + Seek> {
     encoded_scratch: Vec<u8>,
 }
 
+// Opening a frozen part stream must not accept an in-place rewrite between
+// the path metadata read and the opened file metadata read.
+fn same_compressed_stream_state(path: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    if !path.file_type().is_file()
+        || !opened.file_type().is_file()
+        || path.len() != opened.len()
+        || path.modified().ok() != opened.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return path.dev() == opened.dev()
+            && path.ino() == opened.ino()
+            && path.ctime() == opened.ctime()
+            && path.ctime_nsec() == opened.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 impl CompressedBlockReader<File> {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, PartError> {
         let path = path.as_ref();
@@ -66,18 +88,14 @@ impl CompressedBlockReader<File> {
                 source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular file"),
             });
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if entry.dev() != metadata.dev() || entry.ino() != metadata.ino() {
-                return Err(PartError::Io {
-                    path: path.to_path_buf(),
-                    source: io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "compressed stream replaced before open",
-                    ),
-                });
-            }
+        if !same_compressed_stream_state(&entry, &metadata) {
+            return Err(PartError::Io {
+                path: path.to_path_buf(),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "compressed stream changed before open",
+                ),
+            });
         }
         // File::open starts at offset zero. Reuse the validated metadata size
         // instead of stat-ing and seeking the file a second time.
@@ -954,5 +972,34 @@ mod compressed_stream_identity_tests {
         assert_eq!(old.len(), replacement.len());
         assert_ne!(old.ino(), replacement.ino());
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod compressed_stream_identity_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_size_and_timestamp_changes_between_stat_and_open() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-compressed-open-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::write(&path, b"original").unwrap();
+        let before = std::fs::symlink_metadata(&path).unwrap();
+        let opened = std::fs::File::open(&path).unwrap().metadata().unwrap();
+        assert!(same_compressed_stream_state(&before, &opened));
+
+        std::fs::write(&path, b"longer contents").unwrap();
+        let length_changed = std::fs::File::open(&path).unwrap().metadata().unwrap();
+        assert!(!same_compressed_stream_state(&before, &length_changed));
+
+        std::fs::write(&path, b"original").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        assert!(!same_compressed_stream_state(&before, &file.metadata().unwrap()));
+
+        std::fs::remove_file(path).unwrap();
     }
 }

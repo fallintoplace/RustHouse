@@ -116,12 +116,9 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     }
     let mut file = File::open(path).map_err(|source| checksums_io_error(path, source))?;
     let opened = file.metadata().map_err(|source| checksums_io_error(path, source))?;
-    if !opened.file_type().is_file() || opened.len() != metadata.len() {
+    // Also reject same-size in-place edits between stat and open.
+    if !manifest_source_unchanged(&metadata, &opened) {
         return Err(invalid(path, "checksums file changed before open"));
-    }
-    #[cfg(unix)]
-    if !same_checksums_inode(&metadata, &opened) {
-        return Err(invalid(path, "checksums inode changed before open"));
     }
     let size = opened.len();
     if size > MAX_CHECKSUMS_BYTES {
@@ -675,5 +672,28 @@ mod borrowed_manifest_name_tests {
                 assert!(has_duplicate_file_names(&duplicate));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod checksums_initial_open_stability_tests {
+    use super::*;
+
+    #[test]
+    fn same_size_mutation_is_detected_before_manifest_read() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-checksums-initial-open-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("checksums.txt");
+        fs::write(&path, b"checksums-data").unwrap();
+        let before = fs::symlink_metadata(&path).unwrap();
+        let file = File::open(&path).unwrap();
+        assert!(manifest_source_unchanged(&before, &file.metadata().unwrap()));
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        assert!(!manifest_source_unchanged(&before, &file.metadata().unwrap()));
+        fs::remove_dir_all(root).unwrap();
     }
 }

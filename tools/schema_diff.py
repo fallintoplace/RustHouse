@@ -55,6 +55,8 @@ def columns(payload):
     for col in result:
         if not isinstance(col, dict) or not isinstance(col.get("name"), str) or not isinstance(col.get("type"), str):
             raise ValueError("malformed column")
+        if not col["name"]:
+            raise ValueError("empty schema column name")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", col["name"]):
             raise ValueError("invalid schema column identifier")
         if not col["type"].strip() or col["name"] in seen:

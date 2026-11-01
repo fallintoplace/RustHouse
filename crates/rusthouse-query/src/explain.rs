@@ -135,21 +135,20 @@ fn describe_sort_term(column: &str, descending: bool, nulls_first: Option<bool>)
 
 fn describe_sort(query: &Select) -> String {
     format_comma_separated_labels(query.order_terms().map(|order| {
-            let label = if order.column == "#aggregate" {
-                if let Projection::GroupedAggregate {
-                    function,
-                    value_column,
-                    ..
-                } = &query.projection
-                {
-                    format!("{}({value_column})", function.name())
-                } else {
-                    order.column.clone()
-                }
-            } else {
-                order.column.clone()
-            };
-            describe_sort_term(&label, order.descending, order.nulls_first)
+        if order.column == "#aggregate" {
+            if let Projection::GroupedAggregate {
+                function,
+                value_column,
+                ..
+            } = &query.projection
+            {
+                let label = format!("{}({value_column})", function.name());
+                return describe_sort_term(&label, order.descending, order.nulls_first);
+            }
+        }
+        // Ordinary labels already belong to the parsed plan. Do not clone
+        // a String before immediately formatting its borrowed contents.
+        describe_sort_term(&order.column, order.descending, order.nulls_first)
     }))
 }
 
@@ -310,5 +309,21 @@ mod streamed_sort_label_tests {
             "SELECT number FROM numbers(3) ORDER BY number DESC NULLS LAST"
         ).unwrap();
         assert_eq!(describe_sort(&sorted), "number DESC NULLS LAST");
+    }
+}
+
+#[cfg(test)]
+mod borrowed_explain_sort_label_tests {
+    use super::*;
+    use crate::parse_select;
+
+    #[test]
+    fn order_labels_and_explicit_null_placement_are_unchanged() {
+        let query = parse_select(
+            "SELECT number FROM numbers(5) ORDER BY number DESC NULLS FIRST"
+        )
+        .unwrap();
+        assert_eq!(describe_sort(&query), "number DESC NULLS FIRST");
+        assert!(explain_select(&query).contains("Sort: number DESC NULLS FIRST"));
     }
 }

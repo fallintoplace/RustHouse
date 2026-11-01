@@ -29,6 +29,28 @@ class PhysicalGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "non-symlinked"):
                 parse_report(link)
 
+    def test_report_replacement_between_stat_and_open_is_rejected(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from bench.scale.physical_gate import parse_report
+        with tempfile.TemporaryDirectory() as folder:
+            original = Path(folder) / "report.json"
+            swapped = Path(folder) / "replacement.json"
+            original.write_text('{"workload":"old"}')
+            swapped.write_text('{"workload":"new"}')
+            real_open = os.open
+
+            def replace_before_open(path, flags):
+                if Path(path) == original:
+                    os.replace(swapped, original)
+                return real_open(path, flags)
+
+            with patch("bench.scale.physical_gate.os.open", side_effect=replace_before_open):
+                with self.assertRaisesRegex(ValueError, "changed before opening"):
+                    parse_report(original)
+
     def test_optional_samples_produce_no_spread(self):
         result = validate(example())
         self.assertTrue(result["all_passed"])

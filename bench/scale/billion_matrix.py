@@ -13,7 +13,6 @@ import math
 import os
 import platform
 import re
-import stat
 import statistics
 import subprocess
 import tempfile
@@ -192,13 +191,17 @@ def unique_case_fields(pairs):
     return values
 
 
+def _reject_nonstandard_case_number(token):
+    raise ValueError(f"nonstandard billion-row case JSON number: {token}")
+
+
 def _file_identity(metadata):
     return (metadata.st_dev, metadata.st_ino, metadata.st_size,
             metadata.st_mtime_ns, metadata.st_ctime_ns)
 
 
 def read_case_json(path):
-    """Read the same bounded regular case file that was checked before opening."""
+    """Read the same bounded regular case file checked before opening."""
     before = path.lstat()
     if not stat.S_ISREG(before.st_mode):
         raise ValueError(f"unsafe benchmark case file: {path}")
@@ -215,7 +218,8 @@ def read_case_json(path):
             raise ValueError(f"benchmark case changed during reading: {path}")
     if _file_identity(before) != _file_identity(path.lstat()):
         raise ValueError(f"benchmark case changed during reading: {path}")
-    return json.loads(payload, object_pairs_hook=unique_case_fields)
+    return json.loads(payload, object_pairs_hook=unique_case_fields,
+                      parse_constant=_reject_nonstandard_case_number)
 
 
 def load_cases(directory):

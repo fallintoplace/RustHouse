@@ -30,6 +30,20 @@ class SnapshotFingerprintTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "expected_sha256"):
                 fingerprint(root, expected_sha256="0" * 63)
 
+    def test_empty_directory_changes_snapshot_identity(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            (base / "data.bin").write_bytes(b"unchanged")
+            original = fingerprint(base)
+            (base / "empty").mkdir()
+            with_empty = fingerprint(base)
+            self.assertNotEqual(original["sha256"], with_empty["sha256"])
+            self.assertEqual(original["files"], with_empty["files"])
+            self.assertEqual(original["bytes"], with_empty["bytes"])
+            self.assertEqual(with_empty, fingerprint(base))
+            (base / "empty").rmdir()
+            self.assertEqual(original, fingerprint(base))
+
     def test_rejects_empty_directory(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(ValueError, "no files"):
