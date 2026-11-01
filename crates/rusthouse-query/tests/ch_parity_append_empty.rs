@@ -17,7 +17,10 @@ fn append_trailing_char_skips_empty_input() {
     ] {
         assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
     }
-    assert_eq!(value("SELECT appendTrailingCharIfAbsent(NULL, '/')"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT appendTrailingCharIfAbsent(NULL, '/')"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
