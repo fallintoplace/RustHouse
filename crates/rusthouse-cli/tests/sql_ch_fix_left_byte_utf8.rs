@@ -6,6 +6,8 @@ fn verifies_left_byte_utf8_boundaries() {
         ("SELECT left('éa', 2) AS value", "value\né\n"),
         ("SELECT leftUTF8('éa', 2) AS value", "value\néa\n"),
         ("SELECT left('aé', 1) AS value", "value\na\n"),
+        ("SELECT left('🙂xy', 4) AS value", "value\n🙂\n"),
+        ("SELECT leftUTF8('🙂xy', 2) AS value", "value\n🙂x\n"),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", query])
