@@ -139,6 +139,20 @@ class ChunkCopyTests(unittest.TestCase):
             self.assertTrue(swapped)
             self.assertTrue(manifest.is_symlink())
 
+    def test_size_mismatch_fails_before_open(self):
+        from unittest.mock import patch
+        from bench.scale.chunk_copy import verify_shard
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "part-000000.tsv"
+            path.write_bytes(b"x" * 100)
+            entry = {"rows": 1, "bytes": 2,
+                     "sha256": hashlib.sha256(b"1\n").hexdigest()}
+            with patch("bench.scale.chunk_copy.os.open",
+                       side_effect=AssertionError("should not open oversized shard")):
+                with self.assertRaisesRegex(ValueError, "mismatch"):
+                    verify_shard(path, entry)
+
+
     def test_direct_shard_verification_rejects_symlink_sources(self):
         import os
         from bench.scale.chunk_copy import verify_shard

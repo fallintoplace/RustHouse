@@ -27,20 +27,19 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
 
 fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
     output.push(b'\'');
-    let bytes = value.as_bytes();
-    let mut start = 0;
-    for (index, &byte) in bytes.iter().enumerate() {
-        if byte == b'\'' || byte == b'\\' {
-            output.extend_from_slice(&bytes[start..index]);
-            if byte == b'\'' {
-                output.extend_from_slice(b"''");
-            } else {
-                output.extend_from_slice(b"\\\\");
-            }
-            start = index + 1;
+    let mut remaining = value.as_bytes();
+    // Most SQL result values contain neither quotes nor backslashes. Copy
+    // those spans directly rather than branching for every ordinary byte.
+    while let Some(index) = remaining.iter().position(|&byte| byte == b'\'' || byte == b'\\') {
+        output.extend_from_slice(&remaining[..index]);
+        if remaining[index] == b'\'' {
+            output.extend_from_slice(b"''");
+        } else {
+            output.extend_from_slice(br"\\");
         }
+        remaining = &remaining[index + 1..];
     }
-    output.extend_from_slice(&bytes[start..]);
+    output.extend_from_slice(remaining);
     output.push(b'\'');
 }
 
@@ -375,5 +374,30 @@ mod single_write_cli_values_row_tests {
         assert_eq!(output.calls, 2);
         assert_eq!(output.bytes, b"VALUES ('one'),\n('two')");
         assert_eq!(encode_values_row(b"two", 1).unwrap(), b"('two')");
+    }
+}
+
+#[cfg(test)]
+mod bulk_sql_literal_escape_tests {
+    use super::*;
+
+    #[test]
+    fn long_text_spans_match_individual_character_escaping() {
+        for size in [0, 1, 63, 512, 8192] {
+            let text = format!("{}'\\{}'tail", "café".repeat(size), "🦀".repeat(size));
+            let expected = format!("'{}'", text.replace('\\', r"\\").replace('\'', "''"));
+            let mut actual = Vec::new();
+            append_quoted_text(&mut actual, &text);
+            assert_eq!(actual, expected.as_bytes(), "size={size}");
+        }
+    }
+
+    #[test]
+    fn ordinary_utf8_literal_is_copied_without_extra_escaping() {
+        let text = "Ångström東京".repeat(4096);
+        let mut encoded = Vec::new();
+        append_quoted_text(&mut encoded, &text);
+        assert_eq!(encoded.len(), text.len() + 2);
+        assert_eq!(&encoded[1..encoded.len() - 1], text.as_bytes());
     }
 }

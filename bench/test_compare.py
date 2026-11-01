@@ -30,6 +30,29 @@ class BenchmarkComparisonTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate"):
                 load_report(path)
 
+    def test_report_swapped_after_preflight_is_rejected(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from bench.compare import load_report
+
+        with tempfile.TemporaryDirectory() as folder:
+            report = Path(folder) / "report.json"
+            replacement = Path(folder) / "replacement.json"
+            report.write_text('{"results":[]}', encoding="utf-8")
+            replacement.write_text('{"results":[1]}', encoding="utf-8")
+            real_open = os.open
+
+            def swapped_open(path, flags):
+                report.unlink()
+                replacement.rename(report)
+                return real_open(path, flags)
+
+            with patch("bench.compare.os.open", side_effect=swapped_open):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    load_report(report)
+
     def test_detects_slowdowns_and_speedups(self):
         baseline = {"engine": "rusthouse-cli", "rows": 100,
                     "results": [result(1, "passed", 0.01), result(2, "passed", 0.02)]}

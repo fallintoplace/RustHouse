@@ -310,35 +310,50 @@ fn stage_existing_parts_with_workers(
         return Ok(());
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     let next = AtomicUsize::new(0);
-    let completed = std::thread::scope(|scope| -> Result<Vec<Result<(), String>>, String> {
+    // Workers claim parts in input order. Record the earliest failing index
+    // rather than returning whichever concurrent worker happens to finish first.
+    let stop_after = AtomicUsize::new(usize::MAX);
+    let first_error = Mutex::new(None::<(usize, String)>);
+    std::thread::scope(|scope| -> Result<(), String> {
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
             let next = &next;
+            let stop_after = &stop_after;
+            let first_error = &first_error;
             let handle = std::thread::Builder::new()
                 .spawn_scoped(scope, move || -> Result<(), String> {
                     loop {
                         let index = next.fetch_add(1, Ordering::Relaxed);
-                        if index >= existing.len() {
+                        if index >= existing.len() || index > stop_after.load(Ordering::Acquire) {
                             return Ok(());
                         }
-                        stage_existing_part(&existing[index], staging)?;
+                        if let Err(error) = stage_existing_part(&existing[index], staging) {
+                            // Success never takes the lock. Preserve serial
+                            // error ordering even when a later part fails first.
+                            let mut first = first_error.lock()
+                                .map_err(|_| "immutable staging error state poisoned")?;
+                            if first.as_ref().is_none_or(|(previous, _)| index < *previous) {
+                                *first = Some((index, error));
+                            }
+                            stop_after.fetch_min(index, Ordering::AcqRel);
+                            return Ok(());
+                        }
                     }
                 })
                 .map_err(|error| format!("cannot start immutable part staging worker: {error}"))?;
             handles.push(handle);
         }
-        Ok(handles
-            .into_iter()
-            .map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| Err("immutable part staging worker panicked".into()))
-            })
-            .collect::<Vec<_>>())
+        for handle in handles {
+            handle.join().map_err(|_| "immutable part staging worker panicked".to_string())??;
+        }
+        Ok(())
     })?;
-    for result in completed {
-        result?;
+    if let Some((_, error)) = first_error.into_inner()
+        .map_err(|_| "immutable staging error state poisoned".to_string())?
+    {
+        return Err(error);
     }
     Ok(())
 }
@@ -773,6 +788,24 @@ mod parallel_snapshot_staging_tests {
             verify_wide_part(&copied).unwrap();
             let original = fs::read(source.join("count.txt")).unwrap();
             assert_eq!(fs::read(copied.join("count.txt")).unwrap(), original);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_staging_returns_the_earliest_part_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-staging-failure-order-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let inputs = (0..48)
+            .map(|index| root.join(format!("missing-part-{index:03}")))
+            .collect::<Vec<_>>();
+        let serial = stage_existing_parts_with_workers(&inputs, &root, 1).unwrap_err();
+        for workers in [2, 4, 8] {
+            let parallel = stage_existing_parts_with_workers(&inputs, &root, workers).unwrap_err();
+            assert_eq!(parallel, serial, "workers={workers}");
         }
         fs::remove_dir_all(root).unwrap();
     }
