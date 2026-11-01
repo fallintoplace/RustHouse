@@ -33,7 +33,7 @@ mod compressed_primary_index_identity_tests {
         fs::write(&source, b"not a compressed index").unwrap();
         symlink(&source, &alias).unwrap();
         assert!(matches!(read_fixed_primary_index(&alias, &[8]),
-            Err(PartError::InvalidPrimaryIndex { .. })));
+            Err(PartError::Io { .. })));
         fs::remove_file(&alias).unwrap();
         fs::remove_file(&source).unwrap();
     }
