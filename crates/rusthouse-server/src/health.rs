@@ -19,6 +19,13 @@ fn probe_peers_with(peers: &[Peer], ping: impl Fn(Peer) -> bool + Sync) -> Vec<b
     // Use at most eight workers per request, not eight fresh threads for
     // every chunk. Dynamic claims avoid waiting for all slow peers in one
     // chunk before starting probes in the next one.
+    // Most deployments have just one peer. Avoid a scoped-thread spawn
+    // while preserving panic isolation for that peer.
+    if let [peer] = peers {
+        let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ping(*peer)))
+            .unwrap_or(false);
+        return vec![healthy];
+    }
     let cursor = AtomicUsize::new(0);
     let results = (0..peers.len()).map(|_| AtomicBool::new(false)).collect::<Vec<_>>();
     std::thread::scope(|scope| {
@@ -249,5 +256,21 @@ mod panicking_health_probe_tests {
             assert_eq!(count.load(Ordering::SeqCst), 1, "probe {index} was skipped");
             assert_eq!(result[index], index != 0 && index % 2 == 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod inline_health_probe_tests {
+    use super::*;
+
+    #[test]
+    fn one_peer_is_checked_inline_and_panics_stay_unhealthy() {
+        let owner = std::thread::current().id();
+        let peers = [Peer::parse("127.0.0.1:50123").unwrap()];
+        assert_eq!(probe_peers_with(&peers, |_| {
+            assert_eq!(std::thread::current().id(), owner);
+            true
+        }), vec![true]);
+        assert_eq!(probe_peers_with(&peers, |_| panic!("probe failed")), vec![false]);
     }
 }

@@ -21,6 +21,14 @@ impl<W: Write> JsonSeqSink<W> {
             return Ok(());
         }
         if self.at_row_start {
+            if chunk.len() <= 4095 {
+                let mut framed = [0u8; 4096];
+                framed[0] = 0x1e;
+                framed[1..chunk.len() + 1].copy_from_slice(chunk);
+                self.output.write_all(&framed[..chunk.len() + 1])?;
+                self.at_row_start = chunk.ends_with(b"\n");
+                return Ok(());
+            }
             self.output.write_all(b"\x1e")?;
             self.at_row_start = false;
         }
@@ -95,5 +103,37 @@ mod tests {
             writer.inner.into_inner().output,
             b"\x1e{\"name\":\"value\"}\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod small_record_frame_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Counted {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn small_complete_records_use_one_sink_call_each() {
+        let mut sink = JsonSeqSink::new(Counted::default());
+        sink.write_all(b"{}\n{}\n").unwrap();
+        assert_eq!(sink.output.writes, 2);
+        assert_eq!(sink.output.bytes, b"\x1e{}\n\x1e{}\n");
+        sink.write_all(b"{\"x\":").unwrap();
+        sink.write_all(b"1}\n").unwrap();
+        assert_eq!(sink.output.bytes, b"\x1e{}\n\x1e{}\n\x1e{\"x\":1}\n");
+        assert_eq!(sink.output.writes, 4);
     }
 }

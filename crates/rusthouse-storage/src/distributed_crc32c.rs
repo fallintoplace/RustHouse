@@ -1,5 +1,6 @@
 //! Streaming CRC32C for accidental corruption checks, not authentication.
 use std::io::{self, Read};
+use std::sync::OnceLock;
 
 const POLYNOMIAL: u32 = 0x82f6_3b78;
 const INITIAL_CRC32C: u32 = !0;
@@ -149,13 +150,11 @@ fn update_software(mut crc: u32, bytes: &[u8]) -> u32 {
 /// Apply a GF(2) operator to a 32-bit CRC state.
 fn gf2_matrix_times(matrix: &[u32; 32], mut vector: u32) -> u32 {
     let mut result = 0u32;
-    let mut bit = 0;
+    // Only the set bits contribute to a GF(2) dot product. Sparse CRC
+    // states avoid testing every intervening zero bit.
     while vector != 0 {
-        if vector & 1 != 0 {
-            result ^= matrix[bit];
-        }
-        vector >>= 1;
-        bit += 1;
+        result ^= matrix[vector.trailing_zeros() as usize];
+        vector &= vector - 1;
     }
     result
 }
@@ -166,7 +165,7 @@ fn gf2_matrix_square(matrix: &[u32; 32]) -> [u32; 32] {
 
 /// Precomputed CRC32C zero-byte shift for repeatedly appending fixed-size chunks.
 ///
-/// The ordinary crc32c_combine rebuilds GF(2) matrices for each length.
+/// The generic crc32c_combine uses shared powers for arbitrary lengths.
 /// A transfer with thousands of equal-size verified chunks can reuse this
 /// operator, reducing each combination to one 32-bit matrix-vector multiply.
 #[derive(Clone)]
@@ -260,6 +259,21 @@ mod reusable_crc_shift_tests {
     }
 }
 
+// The 64 powers of the one-zero-byte CRC shift cover every u64 byte length.
+// Initialize once, rather than rebuilding GF(2) matrices for every merge.
+static CRC32C_BYTE_SHIFTS: OnceLock<[[u32; 32]; 64]> = OnceLock::new();
+
+fn crc32c_byte_shifts() -> &'static [[u32; 32]; 64] {
+    CRC32C_BYTE_SHIFTS.get_or_init(|| {
+        let mut powers = [[0u32; 32]; 64];
+        powers[0] = Crc32cShift::new(1).operator;
+        for bit in 1..powers.len() {
+            powers[bit] = gf2_matrix_square(&powers[bit - 1]);
+        }
+        powers
+    })
+}
+
 /// Combine two finalized CRC32C values as if their byte ranges were concatenated.
 ///
 /// The inputs must be checksums of consecutive byte ranges in the same order.
@@ -269,38 +283,54 @@ pub fn crc32c_combine(mut left: u32, right: u32, mut right_len: u64) -> u32 {
     if right_len == 0 {
         return left;
     }
-
-    // Build the one-zero-bit operator for the reflected Castagnoli polynomial.
-    let mut odd = [0u32; 32];
-    odd[0] = POLYNOMIAL;
-    let mut row = 1u32;
-    for slot in odd.iter_mut().skip(1) {
-        *slot = row;
-        row <<= 1;
-    }
-
-    let mut even = gf2_matrix_square(&odd); // two zero bits
-    odd = gf2_matrix_square(&even); // four zero bits
-
-    loop {
-        even = gf2_matrix_square(&odd); // one zero byte, then powers of four bytes
+    let powers = crc32c_byte_shifts();
+    let mut bit = 0;
+    while right_len != 0 {
         if right_len & 1 != 0 {
-            left = gf2_matrix_times(&even, left);
+            left = gf2_matrix_times(&powers[bit], left);
         }
+        bit += 1;
         right_len >>= 1;
-        if right_len == 0 {
-            break;
-        }
-        odd = gf2_matrix_square(&even);
-        if right_len & 1 != 0 {
-            left = gf2_matrix_times(&odd, left);
-        }
-        right_len >>= 1;
-        if right_len == 0 {
-            break;
-        }
     }
     left ^ right
+}
+
+#[cfg(test)]
+mod cached_crc_byte_shift_tests {
+    use super::*;
+
+    #[test]
+    fn cached_powers_match_independent_shift_for_every_length_bit() {
+        for bit in 0..64 {
+            let len = 1u64 << bit;
+            let expected = Crc32cShift::new(len);
+            for left in [0, 1, 0x1234_5678, 0xffff_ffff] {
+                for right in [0, 1, 0xabcd_ef01, 0xffff_ffff] {
+                    assert_eq!(
+                        crc32c_combine(left, right, len),
+                        expected.combine(left, right),
+                        "length bit {bit}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn combined_bit_lengths_are_equivalent_and_order_independent() {
+        for len in [0, 1, 3, 7, 9, 127, 255, 4095, 1 << 32, u64::MAX] {
+            let shift = Crc32cShift::new(len);
+            for left in [0, 1, 0xdead_beef, u32::MAX] {
+                // The checksum of an empty right range is zero. A nonzero
+                // right checksum is not meaningful when its length is zero.
+                let right = if len == 0 { 0 } else { 0x1234_abcd };
+                assert_eq!(
+                    crc32c_combine(left, right, len),
+                    shift.combine(left, right)
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -601,5 +631,54 @@ mod incremental_crc_tests {
         assert_eq!(crc.checksum(), crc32c(b"part-one"));
         crc.append(b"-part-two");
         assert_eq!(crc.checksum(), crc32c(b"part-one-part-two"));
+    }
+}
+
+#[cfg(test)]
+mod sparse_gf2_matrix_tests {
+    use super::*;
+
+    fn reference(matrix: &[u32; 32], mut vector: u32) -> u32 {
+        let mut result = 0;
+        for &value in matrix {
+            if vector & 1 != 0 {
+                result ^= value;
+            }
+            vector >>= 1;
+        }
+        result
+    }
+
+    #[test]
+    fn set_bit_iteration_matches_full_32_bit_reference() {
+        let matrix = std::array::from_fn(|index| {
+            (index as u32).wrapping_mul(0x9e37_79b9).rotate_left(index as u32)
+        });
+        for vector in [0, 1, u32::MAX, 0x8000_0000, 0x8000_0001, 0xaaaa_aaaa, 0x5555_5555] {
+            assert_eq!(gf2_matrix_times(&matrix, vector), reference(&matrix, vector));
+        }
+        for bit in 0..32 {
+            assert_eq!(gf2_matrix_times(&matrix, 1u32 << bit), matrix[bit]);
+        }
+        for seed in 0u32..4096 {
+            let vector = seed.wrapping_mul(0x85eb_ca6b).rotate_left(seed & 31);
+            assert_eq!(gf2_matrix_times(&matrix, vector), reference(&matrix, vector));
+        }
+    }
+
+    #[test]
+    fn crc_combination_is_unchanged_for_sparse_and_dense_states() {
+        for len in [0, 1, 7, 64, 8192, 1 << 20, u64::MAX] {
+            let shift = Crc32cShift::new(len);
+            for left in [0, 1, 0x8000_0000, 0x1234_5678, u32::MAX] {
+                for right in [0, 0xdead_beef, u32::MAX] {
+                    // The checksum of an empty right-hand range is zero.
+                    if len == 0 && right != 0 {
+                        continue;
+                    }
+                    assert_eq!(shift.combine(left, right), crc32c_combine(left, right, len));
+                }
+            }
+        }
     }
 }

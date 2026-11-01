@@ -34,9 +34,8 @@ def validate_existing(path, start, count):
             raise ValueError(f"reused shard changed before opening: {path}")
         for offset in range(0, count, 4096):
             batch_rows = min(4096, count - offset)
-            expected = "".join(
-                f"{start + offset + index}\n" for index in range(batch_rows)
-            ).encode("ascii")
+            expected = ("\n".join(map(str, range(start + offset, start + offset + batch_rows)))
+                        + "\n").encode("ascii")
             actual = source.read(len(expected))
             if actual != expected:
                 raise ValueError(f"invalid or incomplete shard {path} near row {start + offset}")
@@ -44,11 +43,11 @@ def validate_existing(path, start, count):
         if source.read(1):
             raise ValueError(f"unexpected trailing rows in {path}")
         finished = os.fstat(source.fileno())
-        if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
             raise ValueError(f"reused shard changed while reading: {path}")
     after = path.lstat()
-    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
         raise ValueError(f"reused shard changed while reading: {path}")
     return digest.hexdigest()
 
@@ -68,7 +67,7 @@ def write_shard(path, start, count):
             # retaining more than one 4096-row block in memory.
             for first in range(start, start + count, 4096):
                 last = min(first + 4096, start + count)
-                block = "".join(f"{value}\n" for value in range(first, last)).encode("ascii")
+                block = ("\n".join(map(str, range(first, last))) + "\n").encode("ascii")
                 output.write(block)
                 digest.update(block)
             output.flush()

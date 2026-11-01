@@ -69,37 +69,38 @@ fn bucket(value: f64, min: f64, max: f64, bins: usize) -> usize {
     BucketLayout::new(min, max, bins).bucket(value)
 }
 
+// Derive floating-point bin boundaries lazily from compact counts instead
+// of retaining an additional vector of Bin descriptors before output.
+fn bins_iter(min: f64, max: f64, counts: &[u64]) -> impl Iterator<Item = Bin> + '_ {
+    let span = max - min;
+    let bin_count = counts.len() as f64;
+    counts.iter().enumerate().map(move |(index, &count)| Bin {
+        min: if span.is_finite() {
+            min + span * (index as f64 / bin_count)
+        } else {
+            let t = index as f64 / bin_count;
+            min * (1.0 - t) + max * t
+        },
+        max: if index + 1 == counts.len() {
+            max
+        } else if span.is_finite() {
+            min + span * ((index + 1) as f64 / bin_count)
+        } else {
+            let t = (index + 1) as f64 / bin_count;
+            min * (1.0 - t) + max * t
+        },
+        count,
+    })
+}
+
+#[cfg(test)]
 fn to_bins(min: f64, max: f64, counts: &[u64]) -> Vec<Bin> {
     if min == max {
         return vec![Bin {
-            min,
-            max,
-            count: counts.iter().copied().sum(),
+            min, max, count: counts.iter().copied().sum(),
         }];
     }
-    let span = max - min;
-    let bin_count = counts.len() as f64;
-    counts
-        .iter()
-        .enumerate()
-        .map(|(index, &count)| Bin {
-            min: if span.is_finite() {
-                min + span * (index as f64 / bin_count)
-            } else {
-                let t = index as f64 / bin_count;
-                min * (1.0 - t) + max * t
-            },
-            max: if index + 1 == counts.len() {
-                max
-            } else if span.is_finite() {
-                min + span * ((index + 1) as f64 / bin_count)
-            } else {
-                let t = (index + 1) as f64 / bin_count;
-                min * (1.0 - t) + max * t
-            },
-            count,
-        })
-        .collect()
+    bins_iter(min, max, counts).collect()
 }
 
 fn output_bins<W: Write>(
@@ -107,7 +108,7 @@ fn output_bins<W: Write>(
     output: &mut W,
     column: &str,
     bins: usize,
-    result: &[Bin],
+    result: impl IntoIterator<Item = Bin>,
 ) -> Result<(), ExecutionError> {
     write_header(query, output, &format!("histogram({bins})({column})"))?;
     if query.limit == Some(0) || query.offset.unwrap_or(0) > 0 {
@@ -117,7 +118,7 @@ fn output_bins<W: Write>(
     // Formatting directly into a writer emits several tiny writes per bin.
     // Reuse one short String so each result tuple is written in one call.
     let mut formatted = String::with_capacity(96);
-    for (index, bin) in result.iter().enumerate() {
+    for (index, bin) in result.into_iter().enumerate() {
         formatted.clear();
         if index > 0 {
             formatted.push(',');
@@ -130,6 +131,24 @@ fn output_bins<W: Write>(
     }
     output.write_all(b"]\n")?;
     Ok(())
+}
+
+/// Render histogram counts without an intermediate floating-point bin vector.
+fn output_counts<W: Write>(
+    query: &Select,
+    output: &mut W,
+    column: &str,
+    bins: usize,
+    min: f64,
+    max: f64,
+    counts: &[u64],
+) -> Result<(), ExecutionError> {
+    if min == max {
+        return output_bins(query, output, column, bins, std::iter::once(Bin {
+            min, max, count: counts.iter().copied().sum(),
+        }));
+    }
+    output_bins(query, output, column, bins, bins_iter(min, max, counts))
 }
 
 /// Iterates a verified snapshot from the beginning, using identical compiled
@@ -147,22 +166,27 @@ fn visit_part(
     let selected = indices[column];
     let mut reader = TypedQueryReader::open_with_metadata(part, names, metadata)?;
     while let Some(batch) = reader.next_batch()? {
-        for row in 0..batch[0].len() {
-            if !no_filters && !typed::passes(&batch, row, &conditions) {
-                continue;
-            }
-            match &batch[selected] {
-                TypedColumn::Numeric(values) => {
-                    observe(finite_number_as_f64(number_at(values, row))?)?
+        // The physical column variant stays constant throughout one batch.
+        // Specialize the row loop once instead of matching on every row.
+        let rows = batch[0].len();
+        match &batch[selected] {
+            TypedColumn::Numeric(values) => {
+                for row in 0..rows {
+                    if no_filters || typed::passes(&batch, row, conditions) {
+                        observe(finite_number_as_f64(number_at(values, row))?)?;
+                    }
                 }
-                TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
-                    observe(finite_number_as_f64(number_at(values, row))?)?
-                }
-                TypedColumn::NullableNumeric { .. } => {}
-                _ => return Err(ExecutionError::Invalid(
-                    "histogram requires numerical columns".into(),
-                )),
             }
+            TypedColumn::NullableNumeric { values, nulls } => {
+                for row in 0..rows {
+                    if nulls[row] == 0 && (no_filters || typed::passes(&batch, row, conditions)) {
+                        observe(finite_number_as_f64(number_at(values, row))?)?;
+                    }
+                }
+            }
+            _ => return Err(ExecutionError::Invalid(
+                "histogram requires numerical columns".into(),
+            )),
         }
     }
     Ok(())
@@ -194,7 +218,7 @@ pub(super) fn execute_part<W: Write>(
         ));
     }
     if query.limit == Some(0) {
-        return output_bins(query, output, column, *bins, &[]);
+        return output_bins(query, output, column, *bins, std::iter::empty());
     }
     let mut names = vec![column.clone()];
     for predicate in query
@@ -235,15 +259,15 @@ pub(super) fn execute_part<W: Write>(
         Ok(())
     })?;
     if rows == 0 {
-        return output_bins(query, output, column, *bins, &[]);
+        return output_bins(query, output, column, *bins, std::iter::empty());
     }
     // The first pass established that every qualifying value is identical.
     // One exact bucket already contains all rows, so a second disk scan
     // cannot change the result.
     if min == max {
-        return output_bins(query, output, column, *bins, &[Bin {
+        return output_bins(query, output, column, *bins, std::iter::once(Bin {
             min, max, count: rows,
-        }]);
+        }));
     }
     // Both BucketLayout and to_bins use overflow-safe interpolation for
     // finite extrema whose difference is not representable as Float64.
@@ -262,13 +286,13 @@ pub(super) fn execute_part<W: Write>(
             "histogram input changed between passes".into(),
         ));
     }
-    output_bins(query, output, column, *bins, &to_bins(min, max, &counts))
+    output_counts(query, output, column, *bins, min, max, &counts)
 }
 
 /// Find exact bucket boundaries using the same floating-point placement as
 /// the physical two-pass histogram. Binary search keeps O(bins * log(rows))
 /// work even when the generated source contains billions of values.
-fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: usize) -> Vec<Bin> {
+fn uniform_generated_counts(start: u64, lower: u64, count: u64, step: u64, bins: usize) -> (f64, f64, Vec<u64>) {
     let value = |relative: u64| -> f64 {
         let index = u128::from(lower) + u128::from(relative);
         (u128::from(start) + index * u128::from(step)) as f64
@@ -276,7 +300,7 @@ fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: u
     let min = value(0);
     let max = value(count - 1);
     if min == max {
-        return vec![Bin { min, max, count }];
+        return (min, max, vec![count]);
     }
     let mut counts = vec![0u64; bins];
     let layout = BucketLayout::new(min, max, bins);
@@ -287,7 +311,7 @@ fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: u
         for relative in 0..count {
             counts[layout.bucket(value(relative))] += 1;
         }
-        return to_bins(min, max, &counts);
+        return (min, max, counts);
     }
     let mut start_row = 0u64;
     for (bin, slot) in counts.iter_mut().enumerate() {
@@ -309,6 +333,12 @@ fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: u
     }
     // Match the stored-part executor: return equal-width boundaries and
     // retain empty buckets rather than replacing them with observed extrema.
+    (min, max, counts)
+}
+
+#[cfg(test)]
+fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: usize) -> Vec<Bin> {
+    let (min, max, counts) = uniform_generated_counts(start, lower, count, step, bins);
     to_bins(min, max, &counts)
 }
 
@@ -328,7 +358,7 @@ pub(super) fn execute_numbers<W: Write>(
         ));
     }
     if query.limit == Some(0) {
-        return output_bins(query, output, column, *bins, &[]);
+        return output_bins(query, output, column, *bins, std::iter::empty());
     }
     let conditions = compile_numbers_predicates(query)?;
     let range = if query.predicates.is_empty() && query.or_predicates.is_empty() {
@@ -341,10 +371,10 @@ pub(super) fn execute_numbers<W: Write>(
     if let Some((lower, upper)) = range {
         let count = upper - lower;
         if count == 0 {
-            return output_bins(query, output, column, *bins, &[]);
+            return output_bins(query, output, column, *bins, std::iter::empty());
         }
-        let result = uniform_generated_bins(start, lower, count, step, *bins);
-        return output_bins(query, output, column, *bins, &result);
+        let (min, max, counts) = uniform_generated_counts(start, lower, count, step, *bins);
+        return output_counts(query, output, column, *bins, min, max, &counts);
     }
     if rows > MAX_GENERATED_HISTOGRAM_ROWS {
         return Err(ExecutionError::Invalid(
@@ -362,7 +392,7 @@ pub(super) fn execute_numbers<W: Write>(
         }
     }
     if min == f64::INFINITY {
-        return output_bins(query, output, column, *bins, &[]);
+        return output_bins(query, output, column, *bins, std::iter::empty());
     }
     let mut counts = vec![0u64; *bins];
     let layout = BucketLayout::new(min, max, *bins);
@@ -372,7 +402,7 @@ pub(super) fn execute_numbers<W: Write>(
             counts[layout.bucket(number as f64)] += 1;
         }
     }
-    output_bins(query, output, column, *bins, &to_bins(min, max, &counts))
+    output_counts(query, output, column, *bins, min, max, &counts)
 }
 
 #[cfg(test)]
@@ -401,7 +431,7 @@ mod tests {
             Bin { min: 6.0, max: 9.0, count: 4 },
         ];
         let mut writer = Counting { calls: 0, bytes: Vec::new() };
-        output_bins(&query, &mut writer, "number", 3, &bins).unwrap();
+        output_bins(&query, &mut writer, "number", 3, bins.into_iter()).unwrap();
         assert!(writer.bytes.ends_with(b"[(0,3,3),(3,6,3),(6,9,4)]\n"));
         // Header, brackets and the three bins need a bounded number of writes.
         assert!(writer.calls <= 12, "too many writes: {}", writer.calls);
@@ -583,5 +613,67 @@ mod sparse_generated_histogram_tests {
                 "count={count} bins={bins}",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod streaming_histogram_bin_tests {
+    use super::*;
+
+    #[test]
+    fn lazy_bins_match_materialized_reference_for_normal_and_extreme_ranges() {
+        for (min, max, counts) in [
+            (0.0, 100.0, vec![1u64, 2, 3, 4, 5, 6, 7]),
+            (-f64::MAX, f64::MAX, vec![3, 0, 1, 0, 5]),
+            (1e100, 1e101, vec![1, 9, 4, 0]),
+            (13.0, 13.0, vec![2, 0, 5]),
+        ] {
+            let query = crate::parse_select(
+                "SELECT histogram(7)(number) FROM numbers(10)"
+            ).unwrap();
+            let mut eager = Vec::new();
+            output_bins(&query, &mut eager, "number", 7,
+                to_bins(min, max, &counts).into_iter()).unwrap();
+            let mut streamed = Vec::new();
+            output_counts(&query, &mut streamed, "number", 7,
+                min, max, &counts).unwrap();
+            assert_eq!(streamed, eager, "min={min} max={max}");
+        }
+    }
+
+    #[test]
+    fn million_generated_rows_stream_same_bin_counts_as_reference() {
+        let (min, max, counts) = uniform_generated_counts(0, 0, 1_000_000, 1, 256);
+        let eager = uniform_generated_bins(0, 0, 1_000_000, 1, 256);
+        assert_eq!(bins_iter(min, max, &counts).map(|bin|
+            (bin.min, bin.max, bin.count)).collect::<Vec<_>>(),
+            eager.iter().map(|bin| (bin.min, bin.max, bin.count))
+                .collect::<Vec<_>>());
+    }
+}
+
+#[cfg(test)]
+mod batched_histogram_column_dispatch_tests {
+    use super::*;
+    use rusthouse_storage::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn nullable_stored_histogram_ignores_null_rows() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-batched-histogram-{}-{}", std::process::id(), line!(),
+        ));
+        let _ = fs::remove_dir_all(&path);
+        let columns = [Column { name: "value".into(), data_type: "Nullable(UInt64)".into() }];
+        let rows = [
+            vec![None], vec![Some("7".to_string())], vec![Some("7".to_string())],
+            vec![None], vec![Some("7".to_string())],
+        ];
+        write_wide_part(&path, &columns, &rows).unwrap();
+        let query = crate::parse_select("SELECT histogram(8)(value) FROM part").unwrap();
+        let mut output = Vec::new();
+        crate::execute(&query, Some(&path), &mut output).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "histogram(8)(value)\n[(7,7,3)]\n");
+        fs::remove_dir_all(path).unwrap();
     }
 }

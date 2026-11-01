@@ -43,13 +43,22 @@ fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
     output.push(b'\'');
 }
 
+#[cfg(test)]
 fn encode_values_row(line: &[u8], columns: usize, values: &mut Vec<u8>) -> io::Result<()> {
+    encode_values_row_prefixed(line, columns, values, b"")
+}
+
+fn encode_values_row_prefixed(
+    line: &[u8], columns: usize, values: &mut Vec<u8>, prefix: &[u8],
+) -> io::Result<()> {
     values.clear();
     values.reserve(
         line.len()
             .saturating_add(columns.saturating_mul(3))
+            .saturating_add(prefix.len())
             .saturating_add(2),
     );
+    values.extend_from_slice(prefix);
     let mut count = 0;
     values.push(b'(');
     for field in line.split(|&byte| byte == b'\t') {
@@ -76,12 +85,8 @@ fn emit_values_row<W: Write>(
     line: &[u8],
     columns: usize,
 ) -> io::Result<()> {
-    encode_values_row(line, columns, values)?;
-    if *rows == 0 {
-        output.write_all(b"VALUES ")?;
-    } else {
-        output.write_all(b",\n")?;
-    }
+    let prefix: &[u8] = if *rows == 0 { b"VALUES " } else { b",\n" };
+    encode_values_row_prefixed(line, columns, values, prefix)?;
     output.write_all(values)?;
     *rows += 1;
     Ok(())
@@ -326,5 +331,35 @@ mod crlf_values_regressions {
         }
         writer.finish().unwrap();
         assert_eq!(writer.output, b"VALUES ('value');\n");
+    }
+}
+
+#[cfg(test)]
+mod single_write_server_values_row_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Counted { calls: usize, bytes: Vec<u8> }
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn prefixed_rows_are_written_once_without_changing_sql() {
+        let mut output = Counted::default();
+        let mut encoded = Vec::new();
+        let mut rows = 0;
+        emit_values_row(&mut output, &mut encoded, &mut rows, b"one", 1).unwrap();
+        emit_values_row(&mut output, &mut encoded, &mut rows, b"two", 1).unwrap();
+        assert_eq!(rows, 2);
+        assert_eq!(output.calls, 2);
+        assert_eq!(output.bytes, b"VALUES ('one'),\n('two')");
+        encode_values_row(b"three", 1, &mut encoded).unwrap();
+        assert_eq!(encoded, b"('three')");
     }
 }

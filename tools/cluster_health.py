@@ -5,7 +5,7 @@ import json
 import math
 import sys
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, build_opener
+from urllib.request import HTTPRedirectHandler, build_opener, ProxyHandler
 from urllib.error import HTTPError
 
 
@@ -16,8 +16,13 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-NO_REDIRECT_OPENER = build_opener(NoRedirect())
+NO_REDIRECT_OPENER = build_opener(ProxyHandler({}), NoRedirect())
 MAX_PEERS = 32
+
+
+def _reject_nonfinite_json(value):
+    # Python's json.loads accepts NaN and Infinity unless explicitly blocked.
+    raise ValueError(f"nonfinite JSON constant: {value}")
 
 
 def _unique_object_pairs(pairs):
@@ -71,17 +76,24 @@ def inspect(origin, timeout=5, min_healthy=None, expected_peers=None):
             or url.path not in ("", "/") or url.query or url.fragment
             or url.username or url.password):
         raise ValueError("only loopback HTTP origins are accepted")
+    unavailable = False
     try:
         with NO_REDIRECT_OPENER.open(origin.rstrip("/") + "/cluster/health", timeout=timeout) as response:
             raw = response.read(1_048_577)
     except HTTPError as exc:
-        if exc.code != 503:
-            raise
-        raw = exc.read(1_048_577)
+        try:
+            if exc.code != 503:
+                raise
+            unavailable = True
+            raw = exc.read(1_048_577)
+        finally:
+            exc.close()
     if len(raw) > 1_048_576:
         raise ValueError("peer-health response too large")
-    payload = json.loads(raw, object_pairs_hook=_unique_object_pairs)
-    return validate(payload, min_healthy=min_healthy, expected_peers=expected_peers), payload
+    payload = json.loads(raw, object_pairs_hook=_unique_object_pairs,
+                         parse_constant=_reject_nonfinite_json)
+    healthy = validate(payload, min_healthy=min_healthy, expected_peers=expected_peers)
+    return healthy and not unavailable, payload
 
 
 def main():

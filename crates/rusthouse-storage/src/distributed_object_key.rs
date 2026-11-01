@@ -123,25 +123,21 @@ impl ObjectKey {
         let generation = generation_text
             .parse::<u64>()
             .map_err(|_| "invalid distributed generation")?;
-        let key = Self::new(fields[0], fields[1], generation, fields[3], fields[4])?;
         let original = path.to_str().ok_or("invalid distributed object key path")?;
-        let canonical = key.relative_path();
-        let canonical = canonical.to_str().ok_or("invalid distributed object key path")?;
-        // Unix paths use '/' natively. Comparing borrowed strings avoids
-        // allocating two full replacement paths for every object key.
+        // Path::components() normalizes duplicate separators and '.'.
+        // Verify exact raw segments before creating owned fields; otherwise
+        // those filesystem aliases could bypass canonical key validation.
         #[cfg(not(windows))]
-        if original != canonical {
-            return Err("noncanonical distributed object key path");
-        }
-        // Windows accepts both slash spellings. Preserve normalized
-        // comparison without discarding duplicate or dot components.
+        let raw_segments = original.split('/');
         #[cfg(windows)]
-        if original.replace(std::path::MAIN_SEPARATOR, "/")
-            != canonical.replace(std::path::MAIN_SEPARATOR, "/")
-        {
+        let raw_segments = original.split(|separator| separator == '/' || separator == '\\');
+        if !raw_segments.eq(fields) {
             return Err("noncanonical distributed object key path");
         }
-        Ok(key)
+        // Canonical positive decimal generation was checked above, so these
+        // five exact segments are the same as relative_path() without ever
+        // allocating a PathBuf or formatting the generation again.
+        Self::new(fields[0], fields[1], generation, fields[3], fields[4])
     }
 }
 
@@ -310,5 +306,47 @@ mod portable_device_name_tests {
             assert!(ObjectKey::new("cluster", "shard", 1, "part", name).is_ok(), "{name}");
         }
         assert!(ObjectKey::parse_relative(std::path::Path::new("cluster/shard/g1/part/NUL.txt")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod borrowed_canonical_key_tests {
+    use super::*;
+
+    #[test]
+    fn exact_path_segments_accept_canonical_generation_extremes() {
+        for generation in [1, 10, 10000, u64::MAX] {
+            let text = format!("region/shard/g{generation}/part_5/checksums.txt");
+            let value = ObjectKey::parse_relative(std::path::Path::new(&text)).unwrap();
+            assert_eq!(value.generation(), generation);
+            assert_eq!(value.relative_path(), std::path::Path::new(&text));
+        }
+    }
+
+    #[test]
+    fn normalized_dot_and_repeated_separators_are_never_accepted() {
+        for alias in [
+            "./region/shard/g1/part/file.bin",
+            "region/./shard/g1/part/file.bin",
+            "region//shard/g1/part/file.bin",
+            "region/shard/g1//part/file.bin",
+            "region/shard/g1/part/file.bin/",
+            "region/shard/g1/part/./file.bin",
+        ] {
+            assert!(ObjectKey::parse_relative(std::path::Path::new(alias)).is_err(), "{alias}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_slash_spellings_are_equivalent_without_allowing_aliases() {
+        let value = ObjectKey::parse_relative(std::path::Path::new(
+            "region\\shard/g3\\part/file.bin",
+        )).unwrap();
+        assert_eq!(value.relative_path(),
+            std::path::Path::new("region/shard/g3/part/file.bin"));
+        assert!(ObjectKey::parse_relative(std::path::Path::new(
+            "region\\\\shard/g3/part/file.bin",
+        )).is_err());
     }
 }
