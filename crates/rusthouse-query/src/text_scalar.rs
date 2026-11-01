@@ -244,6 +244,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "TO_BASE32"
                 | "ENDSWITHCASEINSENSITIVE"
                 | "STARTSWITHCASEINSENSITIVE"
+                | "STARTSWITHCASEINSENSITIVEUTF8"
                 | "BIN"
                 | "ISNOTNULL"
                 | "ISNULL"
@@ -3843,6 +3844,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Null => ConstantValue::Null,
             }
         }
+        "STARTSWITHCASEINSENSITIVEUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "startsWithCaseInsensitiveUTF8 requires a prefix",
+            )?;
+            let prefix = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "startsWithCaseInsensitiveUTF8 requires two arguments",
+            )?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => ConstantValue::Integer(i64::from(
+                    input.to_lowercase().starts_with(&prefix.to_lowercase()),
+                )),
+                _ => ConstantValue::Null,
+            }
+        }
         "STARTSWITHCASEINSENSITIVE" => {
             let input = text_arg(parser, depth + 1)?;
             require(
@@ -6154,6 +6175,36 @@ mod utf8_prefix_suffix_inplace_tests {
         }
         let input = format!("{}🙂Z", "a".repeat(10_000));
         assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_starts_with_case_insensitive_utf8_parity_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matches_unicode_prefixes_and_empty_needle() {
+        for (sql, expected) in [
+            ("SELECT startsWithCaseInsensitiveUTF8('приставка', 'ПРИ')", 1),
+            ("SELECT startsWithCaseInsensitiveUTF8('Äpfel', 'äP')", 1),
+            ("SELECT startsWithCaseInsensitiveUTF8('ClickHouse', 'cli')", 1),
+            ("SELECT startsWithCaseInsensitiveUTF8('ClickHouse', 'house')", 0),
+            ("SELECT startsWithCaseInsensitiveUTF8('Ёжик', '')", 1),
+            ("SELECT startsWithCaseInsensitiveUTF8('', '')", 1),
+            ("SELECT startsWithCaseInsensitiveUTF8('', 'a')", 0),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT startsWithCaseInsensitiveUTF8(NULL, 'a')"), ConstantValue::Null);
+        assert!(parse_select("SELECT startsWithCaseInsensitiveUTF8('a')").is_err());
+        assert!(parse_select("SELECT startsWithCaseInsensitiveUTF8('a', 'b', 'c')").is_err());
     }
 }
 
