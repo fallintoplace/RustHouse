@@ -19,6 +19,60 @@ class ReportCSVTests(unittest.TestCase):
                     load_report(source)
 
 
+    def test_rejects_report_replaced_between_stat_and_open(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from report_csv import load_report
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "report.json"
+            alternate = Path(root) / "alternate.json"
+            path.write_text('{"results":[]}', encoding="utf-8")
+            alternate.write_text('{"results":[1]}', encoding="utf-8")
+            original_open = os.open
+
+            def swap(filename, flags):
+                path.unlink()
+                alternate.rename(path)
+                return original_open(filename, flags)
+
+            with patch("report_csv.os.open", side_effect=swap):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    load_report(path)
+
+    def test_failed_csv_export_does_not_truncate_existing_file(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from report_csv import main
+
+        with tempfile.TemporaryDirectory() as root:
+            input_path = Path(root) / "report.json"
+            output_path = Path(root) / "summary.csv"
+            output_path.write_text("old-complete-report\\n", encoding="utf-8")
+            input_path.write_text(json.dumps({"results": [{"query": 1,
+                "status": "passed", "timings_seconds": [0]}]}), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                main(["--input", str(input_path), "--output", str(output_path)])
+            self.assertEqual(output_path.read_text(), "old-complete-report\\n")
+            self.assertFalse(list(output_path.parent.glob(".summary.csv.*.tmp")))
+
+    def test_csv_output_cannot_overwrite_source_json(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from report_csv import main
+
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "report.json"
+            initial = json.dumps({"results": [{"query": 1, "status": "timeout"}]})
+            source.write_text(initial, encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                main(["--input", str(source), "--output", str(source)])
+            self.assertEqual(source.read_text(), initial)
+
     def test_exports_verified_timings_without_fake_failure_numbers(self):
         report = {"results": [
             {"query": 6, "status": "passed",

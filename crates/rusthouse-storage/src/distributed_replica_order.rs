@@ -1,5 +1,4 @@
 //! Rank candidate storage replicas for reads without claiming consistency.
-use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicaStatus {
@@ -30,55 +29,42 @@ fn newest_first(left: &ReplicaStatus, right: &ReplicaStatus) -> std::cmp::Orderi
 }
 
 fn validate_replica_nodes(replicas: &[ReplicaStatus]) -> Result<(), &'static str> {
-    if replicas.len() <= 8 {
-        for (index, replica) in replicas.iter().enumerate() {
-            if !valid_replica_version(replica)
-                || replicas[..index].iter().any(|prior| prior.node == replica.node)
-            {
-                return Err("invalid or duplicate replica version or node");
-            }
-        }
-        return Ok(());
-    }
-    let mut seen = HashSet::with_capacity(replicas.len());
-    for replica in replicas {
-        if !valid_replica_version(replica)
-            || !seen.insert(replica.node.as_str())
-        {
+    // All callers enforce a maximum of 64 replicas. Sorting borrowed IDs
+    // on the stack avoids allocating a hash table for every read request.
+    let mut nodes = [""; 64];
+    for (index, replica) in replicas.iter().enumerate() {
+        if !valid_replica_version(replica) {
             return Err("invalid or duplicate replica version or node");
         }
+        nodes[index] = replica.node.as_str();
+    }
+    let sorted = &mut nodes[..replicas.len()];
+    sorted.sort_unstable();
+    if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("invalid or duplicate replica version or node");
     }
     Ok(())
 }
 
 fn ranked_node_ids<'a>(replicas: impl Iterator<Item = &'a ReplicaStatus>) -> Vec<String> {
-    let mut inline = [None; 8];
-    let mut count = 0usize;
-    let mut overflow: Option<Vec<&ReplicaStatus>> = None;
+    // Up to 64 validated replicas. Keep borrowed references inline; only
+    // the public result allocates owned node IDs.
+    let mut ranked = [None; 64];
+    let mut count = 0;
     for replica in replicas {
-        if let Some(items) = overflow.as_mut() {
-            items.push(replica);
-        } else if count < inline.len() {
-            inline[count] = Some(replica);
-            count += 1;
-        } else {
-            let mut items = Vec::with_capacity(16);
-            items.extend(inline.iter().copied().flatten());
-            items.push(replica);
-            overflow = Some(items);
-        }
+        ranked[count] = Some(replica);
+        count += 1;
     }
-    if let Some(mut items) = overflow {
-        items.sort_unstable_by(|left, right| newest_first(left, right));
-        items.into_iter().map(|replica| replica.node.clone()).collect()
-    } else {
-        inline[..count].sort_unstable_by(|left, right| {
-            newest_first(left.expect("initialized replica"), right.expect("initialized replica"))
-        });
-        inline[..count].iter().map(|replica| {
-            replica.expect("initialized replica").node.clone()
-        }).collect()
-    }
+    let ranked = &mut ranked[..count];
+    ranked.sort_unstable_by(|left, right| {
+        newest_first(
+            left.expect("initialized replica ranking"),
+            right.expect("initialized replica ranking"),
+        )
+    });
+    ranked.iter().map(|item| {
+        item.expect("initialized replica ranking").node.clone()
+    }).collect()
 }
 
 /// Return healthy node IDs, newest advertised version first.
@@ -524,5 +510,55 @@ mod inline_replica_ranking_tests {
             assert_eq!(ranked_floor.len(), expected_floor.len());
             assert!(ranked_floor.iter().all(|node| expected_floor.contains(node)));
         }
+    }
+}
+
+#[cfg(test)]
+mod stack_read_replica_order_tests {
+    use super::*;
+
+    #[test]
+    fn full_size_rank_matches_reference_with_ties_and_unhealthy_nodes() {
+        for size in [1usize, 2, 8, 9, 16, 32, 64] {
+            let statuses = (0..size)
+                .rev()
+                .map(|index| ReplicaStatus {
+                    node: format!("replica_{index:02}"),
+                    epoch: 1 + (index % 4) as u64,
+                    generation: 1 + (index % 3) as u64,
+                    healthy: index % 7 != 0,
+                })
+                .collect::<Vec<_>>();
+            let mut expected = statuses.iter()
+                .filter(|status| status.healthy).collect::<Vec<_>>();
+            expected.sort_unstable_by(|a, b| newest_first(a, b));
+            let expected = expected.iter().map(|item| item.node.clone()).collect::<Vec<_>>();
+            assert_eq!(rank_read_replicas(&statuses).unwrap_or_default(), expected);
+            if size > 1 {
+                let mut duplicates = statuses.clone();
+                duplicates[size - 1].node = duplicates[0].node.clone();
+                assert!(rank_read_replicas(&duplicates).is_err());
+                assert!(best_read_replica(&duplicates).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn freshness_rank_uses_same_order_and_rejects_bad_versions() {
+        let statuses = (0..64).map(|index| ReplicaStatus {
+            node: format!("node_{index:02}"),
+            epoch: 4,
+            generation: 1 + (index % 12) as u64,
+            healthy: true,
+        }).collect::<Vec<_>>();
+        let expected = statuses.iter().filter(|status| status.generation >= 5)
+            .cloned().collect::<Vec<_>>();
+        let mut sorted = expected;
+        sorted.sort_unstable_by(newest_first);
+        let names = sorted.iter().map(|status| status.node.clone()).collect::<Vec<_>>();
+        assert_eq!(rank_read_replicas_at_least(&statuses, 4, 5).unwrap(), names);
+        let mut invalid = statuses;
+        invalid[63].epoch = 0;
+        assert!(rank_read_replicas(&invalid).is_err());
     }
 }
