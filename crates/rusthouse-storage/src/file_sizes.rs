@@ -131,11 +131,40 @@ fn verify_stored_hash(
     Ok(())
 }
 
+// The compressed input is read through an opened, validated file descriptor.
+// The path and inode must still describe the same immutable bytes after decode.
+fn verify_compressed_input_unchanged(
+    path: &Path,
+    initial: &fs::Metadata,
+    finished: &fs::Metadata,
+) -> Result<(), PartError> {
+    let current = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if !current.file_type().is_file()
+        || !stored_file_state_unchanged(initial, finished).map_err(|source| io_error(path, source))?
+        || !stored_file_state_unchanged(initial, &current).map_err(|source| io_error(path, source))?
+    {
+        return Err(invalid(path, "compressed stream changed during hash verification"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if initial.dev() != current.dev()
+            || initial.ino() != current.ino()
+            || initial.dev() != finished.dev()
+            || initial.ino() != finished.ino()
+        {
+            return Err(invalid(path, "compressed stream replaced during hash verification"));
+        }
+    }
+    Ok(())
+}
+
 /// Hash the logical byte stream, not the individual compressed block boundaries.
 /// ClickHouse's HashingWriteBuffer uses a continuous 2048-byte chunk sequence.
 fn verify_uncompressed_hash(path: &Path, expected: &UncompressedChecksum) -> Result<(), PartError> {
     const BLOCK_BYTES: usize = 2048;
     let mut reader = CompressedBlockReader::open(path)?;
+    let initial = reader.opened_metadata().map_err(|source| io_error(path, source))?;
     let mut hash = U128::new(0, 0);
     let mut chunk = [0u8; BLOCK_BYTES];
     let mut filled = 0usize;
@@ -178,6 +207,8 @@ fn verify_uncompressed_hash(path: &Path, expected: &UncompressedChecksum) -> Res
             "uncompressed file hash differs from checksums.txt",
         ));
     }
+    let finished = reader.opened_metadata().map_err(|source| io_error(path, source))?;
+    verify_compressed_input_unchanged(path, &initial, &finished)?;
     Ok(())
 }
 
@@ -703,5 +734,48 @@ mod stored_hash_change_time_tests {
         assert_eq!(before.modified().unwrap(), after.modified().unwrap());
         assert!(!stored_file_state_unchanged(&before, &after).unwrap());
         fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod compressed_hash_identity_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_replaced_compressed_stream_after_a_successful_decode() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-decompressed-hash-swap-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let path = root.join("stream.bin");
+        fs::write(&path, b"old identical-sized bytes").unwrap();
+        // This fixture is not compressed, so inspect file metadata directly.
+        let file = fs::File::open(&path).unwrap();
+        let original = file.metadata().unwrap();
+        fs::rename(&path, root.join("old.bin")).unwrap();
+        fs::write(&path, b"new identical-sized bytes").unwrap();
+        let outcome = verify_compressed_input_unchanged(&path, &original, &file.metadata().unwrap());
+        assert!(outcome.is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unchanged_metadata_is_accepted_without_any_new_file_reads() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-decompressed-hash-stable-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let path = root.join("stream.bin");
+        fs::write(&path, b"unchanged").unwrap();
+        let initial = fs::metadata(&path).unwrap();
+        assert!(verify_compressed_input_unchanged(&path, &initial, &initial).is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
 }
