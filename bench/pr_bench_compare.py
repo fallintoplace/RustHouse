@@ -89,7 +89,7 @@ def _read_bounded_report(path):
         contents = source.read(MAX_REPORT_BYTES + 1)
     if len(contents) > MAX_REPORT_BYTES:
         raise ValueError("PR comparison artifact exceeds 16 MiB")
-    return contents.decode("utf-8")
+    return contents.decode("utf-8").replace("\r\n", "\n")
 
 
 def main(argv=None):
