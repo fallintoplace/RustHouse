@@ -6,7 +6,9 @@ import argparse
 import concurrent.futures
 import json
 import math
+import os
 import re
+import stat
 import statistics
 import subprocess
 import tempfile
@@ -39,10 +41,24 @@ def _has_separator(statement):
 
 def read_reference(path):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("reference must be a regular non-symlinked file")
-    with path.open("rb") as stream:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("reference changed before opening")
         payload = stream.read(1024 * 1024 + 1)
+        finished = os.fstat(stream.fileno())
+        identity = lambda item: (item.st_dev, item.st_ino, item.st_size,
+                                 item.st_mtime_ns, item.st_ctime_ns)
+        if identity(opened) != identity(finished):
+            raise ValueError("reference changed during read")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError("reference changed during read")
     if len(payload) > 1024 * 1024:
         raise ValueError("reference exceeds 1 MiB")
     return payload
