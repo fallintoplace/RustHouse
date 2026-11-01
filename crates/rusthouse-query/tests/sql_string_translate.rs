@@ -15,16 +15,24 @@ fn translates_unicode_and_deletes_unmapped_characters() {
         ConstantValue::Text("XYrXZXdXYrX".into())
     );
     assert_eq!(
-        value("SELECT TRANSLATE('aé🙂b', 'é🙂', 'E')"),
+        value("SELECT TRANSLATEUTF8('aé🙂b', 'é🙂', 'E')"),
         ConstantValue::Text("aEb".into())
     );
     assert_eq!(
         value("SELECT TRANSLATE('abc', 'aa', 'XY')"),
-        ConstantValue::Text("Xbc".into())
+        ConstantValue::Text("Ybc".into())
     );
     assert_eq!(
         value("SELECT TRANSLATE('abc', '', '')"),
         ConstantValue::Text("abc".into())
+    );
+    assert_eq!(
+        value("SELECT TRANSLATE('abc', 'bc', 'X')"),
+        ConstantValue::Text("aX".into())
+    );
+    assert_eq!(
+        value("SELECT TRANSLATE('aé🙂b', 'ab', 'XY')"),
+        ConstantValue::Text("Xé🙂Y".into())
     );
     assert_eq!(
         value("SELECT TRANSLATE(NULL, 'a', 'b')"),
@@ -42,6 +50,9 @@ fn translate_rejects_wrong_arity() {
         "SELECT TRANSLATE()",
         "SELECT TRANSLATE('a', 'b')",
         "SELECT TRANSLATE('a', 'b', 'c', 'd')",
+        "SELECT TRANSLATE('abc', 'a', 'bc')",
+        "SELECT TRANSLATE('aé', 'é', 'E')",
+        "SELECT TRANSLATEUTF8('abc', 'a', 'bc')",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
