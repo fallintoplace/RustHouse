@@ -1234,7 +1234,6 @@ mod interrupted_request_body_tests {
                 Instant::now(),
                 Duration::from_secs(5),
             )
-            .ok()
             .expect("interrupted body read should succeed"),
             2,
         );
