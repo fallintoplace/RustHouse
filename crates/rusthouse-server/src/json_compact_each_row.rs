@@ -89,6 +89,10 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
+        // Discard the physical CRLF separator across fragmented writes.
+        if self.line.last() == Some(&b'\r') {
+            self.line.pop();
+        }
         let Some(columns) = self.columns else {
             std::str::from_utf8(&self.line)
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid TSV header"))?;
@@ -128,6 +132,13 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
                 &chunk[..chunk.len() - 1]
             } else {
                 chunk
+            };
+            // Normalize CRLF only when LF completes the record. An escaped
+            // TSV carriage return inside a field remains meaningful data.
+            let fragment = if complete && self.line.is_empty() {
+                fragment.strip_suffix(b"\r").unwrap_or(fragment)
+            } else {
+                fragment
             };
             if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
                 return Err(io::Error::new(
@@ -326,5 +337,21 @@ mod safe_ascii_compact_field_tests {
         write_compact_field(&mut null, b"\\N").unwrap();
         assert_eq!(null, b"null");
         assert!(write_compact_field(&mut Vec::new(), &[0xff, 0xfe]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod crlf_record_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn contiguous_and_fragmented_crlf_lines_do_not_leak_carriage_returns() {
+        let mut writer = JsonCompactEachRowWriter::new(Vec::new());
+        writer.write_all(b"name\r\nalice\r\n").unwrap();
+        writer.write_all(b"bo").unwrap();
+        writer.write_all(b"b\r").unwrap();
+        writer.write_all(b"\n").unwrap();
+        assert_eq!(writer.output, "[\"alice\"]\n[\"bob\"]\n".as_bytes());
     }
 }

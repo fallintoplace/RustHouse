@@ -129,6 +129,10 @@ impl<W: Write> JsonlWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
+        // Discard the physical CRLF separator across fragmented writes.
+        if self.line.last() == Some(&b'\r') {
+            self.line.pop();
+        }
         if let Some(headers) = &self.headers {
             let result =
                 write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded);
@@ -159,6 +163,13 @@ impl<W: Write> Write for JsonlWriter<W> {
                 &chunk[..chunk.len() - 1]
             } else {
                 chunk
+            };
+            // Normalize CRLF only when LF completes the record. An escaped
+            // TSV carriage return inside a field remains meaningful data.
+            let fragment = if complete && self.line.is_empty() {
+                fragment.strip_suffix(b"\r").unwrap_or(fragment)
+            } else {
+                fragment
             };
             if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
                 return Err(invalid("JSONL row exceeds 1 MiB"));
@@ -419,5 +430,21 @@ mod bounded_jsonl_header_set_tests {
             .join("\t");
         assert!(parse_headers(oversized.as_bytes()).is_err());
         assert!(parse_headers(b"v0\t\xff").is_err());
+    }
+}
+
+#[cfg(test)]
+mod crlf_record_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn contiguous_and_fragmented_crlf_lines_do_not_leak_carriage_returns() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"name\r\nalice\r\n").unwrap();
+        writer.write_all(b"bo").unwrap();
+        writer.write_all(b"b\r").unwrap();
+        writer.write_all(b"\n").unwrap();
+        assert_eq!(writer.output, "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n".as_bytes());
     }
 }
