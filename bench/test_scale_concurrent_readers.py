@@ -64,6 +64,31 @@ class ConcurrentReadersTests(unittest.TestCase):
                              SimpleNamespace(returncode=0, stdout=b";\n", stderr=b""))
         self.assertTrue(report["all_verified"])
 
+    def test_comment_semicolons_do_not_create_extra_statements(self):
+        from bench.scale.concurrent_readers import _has_separator
+        for statement in (
+            "SELECT 1 /* hidden ; */",
+            "SELECT /* outer /* inner ; */ tail ; */ 1",
+            "SELECT 1 -- ignored ;\r\n + 2",
+            "SELECT 1 # ignored ;\n + 2",
+            "SELECT `table;name`",
+            "SELECT 'literal;inside' AS name",
+        ):
+            self.assertFalse(_has_separator(statement), statement)
+        for statement in (
+            "SELECT 1 /* comment */ ; DELETE FROM data",
+            "SELECT 1 /* unclosed ;",
+            "SELECT 1 /* " * 33 + " */" * 33,
+            "SELECT 1 # comment\n; SELECT 2",
+        ):
+            self.assertTrue(_has_separator(statement), statement)
+        report = run_readers(
+            "rusthouse", "part", "SELECT 1 /* ; */", b"1\n",
+            clients=1, rounds=1, execute=lambda *_a, **_k:
+            SimpleNamespace(returncode=0, stdout=b"1\n", stderr=b""),
+        )
+        self.assertTrue(report["all_verified"])
+
     def test_rejects_nonstring_sql_without_launching_workers(self):
         for sql in (None, 42, b"SELECT 1", ["SELECT 1"]):
             with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "SQL must"):
