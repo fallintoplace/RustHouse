@@ -52,10 +52,27 @@ fn create_snapshot_staging_with(mut candidate: impl FnMut() -> PathBuf) -> io::R
     ))
 }
 
+// Windows does not support fsync on ordinary directory handles opened by
+// File::open. Preserve strict directory durability on Unix, where it works.
+#[cfg(not(windows))]
 fn sync_directory(path: &Path) -> Result<(), PartError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| io_error(path, error))
+}
+
+#[cfg(windows)]
+fn sync_directory(path: &Path) -> Result<(), PartError> {
+    // The files themselves have already been synced by the atomic copier.
+    // Still validate the target rather than silently accepting a missing
+    // or substituted directory, even though Windows cannot sync its entry.
+    let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
+    if !metadata.file_type().is_dir() {
+        return Err(PartError::InvalidScan(
+            "snapshot sync target is not a directory".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_destination_absent(destination: &Path) -> Result<(), PartError> {
