@@ -20,7 +20,8 @@ mod compressed_primary_index_identity_tests {
     fn temporary_path() -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
             "rusthouse-primary-compressed-{}-{}.cidx",
-            std::process::id(), SERIAL.fetch_add(1, Ordering::Relaxed)
+            std::process::id(),
+            SERIAL.fetch_add(1, Ordering::Relaxed)
         ))
     }
 
@@ -32,8 +33,10 @@ mod compressed_primary_index_identity_tests {
         let alias = source.with_extension("alias.cidx");
         fs::write(&source, b"not a compressed index").unwrap();
         symlink(&source, &alias).unwrap();
-        assert!(matches!(read_fixed_primary_index(&alias, &[8]),
-            Err(PartError::Io { .. })));
+        assert!(matches!(
+            read_fixed_primary_index(&alias, &[8]),
+            Err(PartError::Io { .. })
+        ));
         fs::remove_file(&alias).unwrap();
         fs::remove_file(&source).unwrap();
     }
@@ -83,9 +86,7 @@ impl FixedPrimaryIndex {
 /// matching mark can also contain matching rows, so range selection must
 /// retain it. Callers still apply the exact row predicate.
 /// Decode a narrow physical key without sign loss or host-endian assumptions.
-fn narrow_unsigned_mark_key(
-    index: &FixedPrimaryIndex, mark: usize, field: usize,
-) -> Option<u64> {
+fn narrow_unsigned_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<u64> {
     match index.field(mark, field)? {
         [a] => Some(u64::from(*a)),
         [a, b] => Some(u64::from(u16::from_le_bytes([*a, *b]))),
@@ -94,9 +95,7 @@ fn narrow_unsigned_mark_key(
     }
 }
 
-fn narrow_signed_mark_key(
-    index: &FixedPrimaryIndex, mark: usize, field: usize,
-) -> Option<i64> {
+fn narrow_signed_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<i64> {
     match index.field(mark, field)? {
         [a] => Some(i64::from(i8::from_le_bytes([*a]))),
         [a, b] => Some(i64::from(i16::from_le_bytes([*a, *b]))),
@@ -114,7 +113,12 @@ pub fn candidate_narrow_unsigned_mark_range(
     lower: Bound<u64>,
     upper: Bound<u64>,
 ) -> Option<Range<usize>> {
-    candidate_mark_range(index.len(), |mark| narrow_unsigned_mark_key(index, mark, field), lower, upper)
+    candidate_mark_range(
+        index.len(),
+        |mark| narrow_unsigned_mark_key(index, mark, field),
+        lower,
+        upper,
+    )
 }
 
 /// Select mark ranges for signed Int8, Int16, or Int32 primary-key fields.
@@ -124,7 +128,12 @@ pub fn candidate_narrow_signed_mark_range(
     lower: Bound<i64>,
     upper: Bound<i64>,
 ) -> Option<Range<usize>> {
-    candidate_mark_range(index.len(), |mark| narrow_signed_mark_key(index, mark, field), lower, upper)
+    candidate_mark_range(
+        index.len(),
+        |mark| narrow_signed_mark_key(index, mark, field),
+        lower,
+        upper,
+    )
 }
 
 /// Merge disjunctive intervals for UInt8/16/32 primary-key fields.
@@ -133,7 +142,11 @@ pub fn candidate_narrow_unsigned_mark_ranges(
     field: usize,
     intervals: &[(Bound<u64>, Bound<u64>)],
 ) -> Option<Vec<Range<usize>>> {
-    candidate_mark_ranges(index.len(), |mark| narrow_unsigned_mark_key(index, mark, field), intervals)
+    candidate_mark_ranges(
+        index.len(),
+        |mark| narrow_unsigned_mark_key(index, mark, field),
+        intervals,
+    )
 }
 
 /// Merge disjunctive intervals for Int8/16/32 primary-key fields.
@@ -142,7 +155,11 @@ pub fn candidate_narrow_signed_mark_ranges(
     field: usize,
     intervals: &[(Bound<i64>, Bound<i64>)],
 ) -> Option<Vec<Range<usize>>> {
-    candidate_mark_ranges(index.len(), |mark| narrow_signed_mark_key(index, mark, field), intervals)
+    candidate_mark_ranges(
+        index.len(),
+        |mark| narrow_signed_mark_key(index, mark, field),
+        intervals,
+    )
 }
 
 /// Returns a conservative mark range for an ascending UInt64 key.
@@ -215,7 +232,12 @@ pub fn candidate_u64_pair_mark_range(
     lower: Bound<(u64, u64)>,
     upper: Bound<(u64, u64)>,
 ) -> Option<Range<usize>> {
-    candidate_mark_range(index.len(), |mark| u64_pair_mark_key(index, mark, first, second), lower, upper)
+    candidate_mark_range(
+        index.len(),
+        |mark| u64_pair_mark_key(index, mark, first, second),
+        lower,
+        upper,
+    )
 }
 
 /// Plan conservative lexicographic granules for two signed Int64 key fields.
@@ -226,7 +248,12 @@ pub fn candidate_i64_pair_mark_range(
     lower: Bound<(i64, i64)>,
     upper: Bound<(i64, i64)>,
 ) -> Option<Range<usize>> {
-    candidate_mark_range(index.len(), |mark| i64_pair_mark_key(index, mark, first, second), lower, upper)
+    candidate_mark_range(
+        index.len(),
+        |mark| i64_pair_mark_key(index, mark, first, second),
+        lower,
+        upper,
+    )
 }
 
 /// Union disjunctive lexicographic UInt64 tuple intervals.
@@ -236,7 +263,11 @@ pub fn candidate_u64_pair_mark_ranges(
     second: usize,
     intervals: &[(Bound<(u64, u64)>, Bound<(u64, u64)>)],
 ) -> Option<Vec<Range<usize>>> {
-    candidate_mark_ranges(index.len(), |mark| u64_pair_mark_key(index, mark, first, second), intervals)
+    candidate_mark_ranges(
+        index.len(),
+        |mark| u64_pair_mark_key(index, mark, first, second),
+        intervals,
+    )
 }
 
 /// Union disjunctive lexicographic Int64 tuple intervals.
@@ -246,7 +277,11 @@ pub fn candidate_i64_pair_mark_ranges(
     second: usize,
     intervals: &[(Bound<(i64, i64)>, Bound<(i64, i64)>)],
 ) -> Option<Vec<Range<usize>>> {
-    candidate_mark_ranges(index.len(), |mark| i64_pair_mark_key(index, mark, first, second), intervals)
+    candidate_mark_ranges(
+        index.len(),
+        |mark| i64_pair_mark_key(index, mark, first, second),
+        intervals,
+    )
 }
 
 /// Plan and coalesce candidate granules for UInt64 IN and OR predicates.
@@ -283,7 +318,12 @@ pub fn candidate_u128_mark_range(
     lower: Bound<u128>,
     upper: Bound<u128>,
 ) -> Option<Range<usize>> {
-    candidate_mark_range(index.len(), |mark| u128_mark_key(index, mark, field), lower, upper)
+    candidate_mark_range(
+        index.len(),
+        |mark| u128_mark_key(index, mark, field),
+        lower,
+        upper,
+    )
 }
 
 /// Conservatively prune a signed Int128 primary key.
@@ -293,7 +333,12 @@ pub fn candidate_i128_mark_range(
     lower: Bound<i128>,
     upper: Bound<i128>,
 ) -> Option<Range<usize>> {
-    candidate_mark_range(index.len(), |mark| i128_mark_key(index, mark, field), lower, upper)
+    candidate_mark_range(
+        index.len(),
+        |mark| i128_mark_key(index, mark, field),
+        lower,
+        upper,
+    )
 }
 
 /// Coalesce disjunctive UInt128 primary key intervals into mark ranges.
@@ -302,7 +347,11 @@ pub fn candidate_u128_mark_ranges(
     field: usize,
     intervals: &[(Bound<u128>, Bound<u128>)],
 ) -> Option<Vec<Range<usize>>> {
-    candidate_mark_ranges(index.len(), |mark| u128_mark_key(index, mark, field), intervals)
+    candidate_mark_ranges(
+        index.len(),
+        |mark| u128_mark_key(index, mark, field),
+        intervals,
+    )
 }
 
 /// Coalesce disjunctive Int128 primary key intervals into mark ranges.
@@ -311,7 +360,11 @@ pub fn candidate_i128_mark_ranges(
     field: usize,
     intervals: &[(Bound<i128>, Bound<i128>)],
 ) -> Option<Vec<Range<usize>>> {
-    candidate_mark_ranges(index.len(), |mark| i128_mark_key(index, mark, field), intervals)
+    candidate_mark_ranges(
+        index.len(),
+        |mark| i128_mark_key(index, mark, field),
+        intervals,
+    )
 }
 
 pub fn read_fixed_primary_index(
@@ -418,9 +471,14 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
 fn read_compressed(path: &Path) -> Result<Vec<u8>, PartError> {
     let baseline = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     let mut blocks = CompressedBlockReader::open(path)?;
-    let opened = blocks.opened_metadata().map_err(|source| io_error(path, source))?;
+    let opened = blocks
+        .opened_metadata()
+        .map_err(|source| io_error(path, source))?;
     if !raw_index_unchanged(&baseline, &opened) {
-        return Err(invalid(path, "compressed primary index changed before read"));
+        return Err(invalid(
+            path,
+            "compressed primary index changed before read",
+        ));
     }
     let mut data = Vec::new();
     let mut scratch = Vec::new();
@@ -435,10 +493,15 @@ fn read_compressed(path: &Path) -> Result<Vec<u8>, PartError> {
     // Individual compressed blocks have checksums, but a concurrent writer
     // could replace an entire file between two independently valid blocks.
     // Reject mixed-generation indexes before returning any primary keys.
-    let finished = blocks.opened_metadata().map_err(|source| io_error(path, source))?;
+    let finished = blocks
+        .opened_metadata()
+        .map_err(|source| io_error(path, source))?;
     let current = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !raw_index_unchanged(&opened, &finished) || !raw_index_unchanged(&opened, &current) {
-        return Err(invalid(path, "compressed primary index changed during read"));
+        return Err(invalid(
+            path,
+            "compressed primary index changed during read",
+        ));
     }
     Ok(data)
 }
@@ -1002,7 +1065,8 @@ mod compressed_index_identity_tests {
     fn opened_compressed_index_identity_rejects_path_replacement() {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-compressed-index-identity-{}-{}",
-            std::process::id(), NEXT_TEST.fetch_add(1, Ordering::Relaxed)
+            std::process::id(),
+            NEXT_TEST.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&root).unwrap();
         let path = root.join("primary.cidx");
@@ -1021,10 +1085,16 @@ mod compressed_index_identity_tests {
         assert_eq!(read_fixed_primary_index(&path, &[8]).unwrap().len(), 1);
         let mut reader = CompressedBlockReader::open(&path).unwrap();
         let before = reader.opened_metadata().unwrap();
-        assert!(raw_index_unchanged(&before, &fs::symlink_metadata(&path).unwrap()));
+        assert!(raw_index_unchanged(
+            &before,
+            &fs::symlink_metadata(&path).unwrap()
+        ));
         fs::rename(&path, root.join("old.cidx")).unwrap();
         fs::write(&path, &encoded).unwrap();
-        assert!(!raw_index_unchanged(&before, &fs::symlink_metadata(&path).unwrap()));
+        assert!(!raw_index_unchanged(
+            &before,
+            &fs::symlink_metadata(&path).unwrap()
+        ));
         assert!(reader.next_decoded().unwrap().is_ok());
         fs::remove_dir_all(root).unwrap();
     }
@@ -1042,16 +1112,39 @@ mod wide_integer_pruning_tests {
             field_offsets: vec![0, 16],
             row_width: 16,
         };
-        assert_eq!(candidate_u128_mark_range(&index, 0,
-            Bound::Included((1u128 << 64) + 1), Bound::Included(1u128 << 100)), Some(1..3));
-        assert_eq!(candidate_u128_mark_ranges(&index, 0, &[
-            (Bound::Included(1u128 << 100), Bound::Included(1u128 << 100)),
-            (Bound::Included(1), Bound::Included(1)),
-        ]), Some(vec![0..3]));
-        assert_eq!(candidate_u128_mark_range(&index, 0,
-            Bound::Included(u128::MAX), Bound::Included(u128::MAX)), Some(2..4));
-        assert_eq!(candidate_u128_mark_range(&index, 1,
-            Bound::Included(0), Bound::Included(1)), None);
+        assert_eq!(
+            candidate_u128_mark_range(
+                &index,
+                0,
+                Bound::Included((1u128 << 64) + 1),
+                Bound::Included(1u128 << 100)
+            ),
+            Some(1..3)
+        );
+        assert_eq!(
+            candidate_u128_mark_ranges(
+                &index,
+                0,
+                &[
+                    (Bound::Included(1u128 << 100), Bound::Included(1u128 << 100)),
+                    (Bound::Included(1), Bound::Included(1)),
+                ]
+            ),
+            Some(vec![0..3])
+        );
+        assert_eq!(
+            candidate_u128_mark_range(
+                &index,
+                0,
+                Bound::Included(u128::MAX),
+                Bound::Included(u128::MAX)
+            ),
+            Some(2..4)
+        );
+        assert_eq!(
+            candidate_u128_mark_range(&index, 1, Bound::Included(0), Bound::Included(1)),
+            None
+        );
     }
 
     #[test]
@@ -1062,18 +1155,33 @@ mod wide_integer_pruning_tests {
             field_offsets: vec![0, 16],
             row_width: 16,
         };
-        assert_eq!(candidate_i128_mark_range(&index, 0,
-            Bound::Included(-1), Bound::Included(0)), Some(0..3));
-        assert_eq!(candidate_i128_mark_ranges(&index, 0, &[
-            (Bound::Included(i128::MIN), Bound::Included(i128::MIN)),
-            (Bound::Included(i128::MAX), Bound::Included(i128::MAX)),
-        ]), Some(vec![0..1, 2..4]));
+        assert_eq!(
+            candidate_i128_mark_range(&index, 0, Bound::Included(-1), Bound::Included(0)),
+            Some(0..3)
+        );
+        assert_eq!(
+            candidate_i128_mark_ranges(
+                &index,
+                0,
+                &[
+                    (Bound::Included(i128::MIN), Bound::Included(i128::MIN)),
+                    (Bound::Included(i128::MAX), Bound::Included(i128::MAX)),
+                ]
+            ),
+            Some(vec![0..1, 2..4])
+        );
         let invalid = FixedPrimaryIndex {
-            data: [1i128, -1].into_iter().flat_map(i128::to_le_bytes).collect(),
-            field_offsets: vec![0, 16], row_width: 16,
+            data: [1i128, -1]
+                .into_iter()
+                .flat_map(i128::to_le_bytes)
+                .collect(),
+            field_offsets: vec![0, 16],
+            row_width: 16,
         };
-        assert_eq!(candidate_i128_mark_range(&invalid, 0,
-            Bound::Included(0), Bound::Included(1)), None);
+        assert_eq!(
+            candidate_i128_mark_range(&invalid, 0, Bound::Included(0), Bound::Included(1)),
+            None
+        );
     }
 }
 
@@ -1082,46 +1190,112 @@ mod composite_mark_pruning_tests {
     use super::*;
 
     fn unsigned_index(pairs: &[(u64, u64)]) -> FixedPrimaryIndex {
-        let data = pairs.iter().flat_map(|&(a, b)| [a.to_le_bytes(), b.to_le_bytes()].concat()).collect();
-        FixedPrimaryIndex { data, field_offsets: vec![0, 8, 16], row_width: 16 }
+        let data = pairs
+            .iter()
+            .flat_map(|&(a, b)| [a.to_le_bytes(), b.to_le_bytes()].concat())
+            .collect();
+        FixedPrimaryIndex {
+            data,
+            field_offsets: vec![0, 8, 16],
+            row_width: 16,
+        }
     }
 
     #[test]
     fn lexicographic_order_handles_secondary_key_resets() {
-        let index = unsigned_index(&[(1,0), (1,10), (1,20), (2,0), (2,5), (3,0)]);
-        assert_eq!(candidate_u64_pair_mark_range(&index, 0, 1,
-            Bound::Included((1,11)), Bound::Included((2,0))), Some(1..4));
-        assert_eq!(candidate_u64_pair_mark_ranges(&index, 0, 1, &[
-            (Bound::Included((1,0)), Bound::Included((1,0))),
-            (Bound::Included((3,0)), Bound::Included((3,0))),
-        ]), Some(vec![0..1, 4..6]));
-        assert_eq!(candidate_u64_pair_mark_range(&index, 0, 2,
-            Bound::Included((0,0)), Bound::Included((1,0))), None);
+        let index = unsigned_index(&[(1, 0), (1, 10), (1, 20), (2, 0), (2, 5), (3, 0)]);
+        assert_eq!(
+            candidate_u64_pair_mark_range(
+                &index,
+                0,
+                1,
+                Bound::Included((1, 11)),
+                Bound::Included((2, 0))
+            ),
+            Some(1..4)
+        );
+        assert_eq!(
+            candidate_u64_pair_mark_ranges(
+                &index,
+                0,
+                1,
+                &[
+                    (Bound::Included((1, 0)), Bound::Included((1, 0))),
+                    (Bound::Included((3, 0)), Bound::Included((3, 0))),
+                ]
+            ),
+            Some(vec![0..1, 4..6])
+        );
+        assert_eq!(
+            candidate_u64_pair_mark_range(
+                &index,
+                0,
+                2,
+                Bound::Included((0, 0)),
+                Bound::Included((1, 0))
+            ),
+            None
+        );
     }
 
     #[test]
     fn signed_tuple_order_preserves_negative_components() {
         let mut data = Vec::new();
-        for (a,b) in [(-2i64, 99i64), (-2,100), (-1,-1), (-1,0), (0,-5)] {
+        for (a, b) in [(-2i64, 99i64), (-2, 100), (-1, -1), (-1, 0), (0, -5)] {
             data.extend_from_slice(&a.to_le_bytes());
             data.extend_from_slice(&b.to_le_bytes());
         }
-        let index = FixedPrimaryIndex { data, field_offsets: vec![0,8,16], row_width:16 };
-        assert_eq!(candidate_i64_pair_mark_range(&index, 0, 1,
-            Bound::Included((-1,-1)), Bound::Included((-1,0))), Some(1..4));
-        assert_eq!(candidate_i64_pair_mark_ranges(&index, 0, 1, &[
-            (Bound::Included((-2,99)), Bound::Included((-2,100))),
-            (Bound::Included((0,-5)), Bound::Included((0,-5))),
-        ]), Some(vec![0..2, 3..5]));
+        let index = FixedPrimaryIndex {
+            data,
+            field_offsets: vec![0, 8, 16],
+            row_width: 16,
+        };
+        assert_eq!(
+            candidate_i64_pair_mark_range(
+                &index,
+                0,
+                1,
+                Bound::Included((-1, -1)),
+                Bound::Included((-1, 0))
+            ),
+            Some(1..4)
+        );
+        assert_eq!(
+            candidate_i64_pair_mark_ranges(
+                &index,
+                0,
+                1,
+                &[
+                    (Bound::Included((-2, 99)), Bound::Included((-2, 100))),
+                    (Bound::Included((0, -5)), Bound::Included((0, -5))),
+                ]
+            ),
+            Some(vec![0..2, 3..5])
+        );
     }
 
     #[test]
     fn malformed_composite_order_fails_closed() {
-        let invalid = unsigned_index(&[(1,10), (1,5)]);
-        assert_eq!(candidate_u64_pair_mark_range(&invalid,0,1,
-            Bound::Included((1,5)), Bound::Included((1,10))), None);
-        assert_eq!(candidate_u64_pair_mark_ranges(&invalid,0,1,
-            &[(Bound::Included((1,5)), Bound::Included((1,10)))]), None);
+        let invalid = unsigned_index(&[(1, 10), (1, 5)]);
+        assert_eq!(
+            candidate_u64_pair_mark_range(
+                &invalid,
+                0,
+                1,
+                Bound::Included((1, 5)),
+                Bound::Included((1, 10))
+            ),
+            None
+        );
+        assert_eq!(
+            candidate_u64_pair_mark_ranges(
+                &invalid,
+                0,
+                1,
+                &[(Bound::Included((1, 5)), Bound::Included((1, 10)))]
+            ),
+            None
+        );
     }
 }
 
@@ -1131,7 +1305,9 @@ mod narrow_integer_pruning_tests {
 
     fn index(values: Vec<u8>, width: usize) -> FixedPrimaryIndex {
         FixedPrimaryIndex {
-            data: values, field_offsets: vec![0, width], row_width: width,
+            data: values,
+            field_offsets: vec![0, width],
+            row_width: width,
         }
     }
 
@@ -1139,48 +1315,125 @@ mod narrow_integer_pruning_tests {
     fn unsigned_ranges_preserve_width_and_type_boundaries() {
         let bytes = [1u8, 10, 200, 255].to_vec();
         let eight = index(bytes, 1);
-        assert_eq!(candidate_narrow_unsigned_mark_range(&eight, 0,
-            Bound::Included(11), Bound::Included(200)), Some(1..3));
-        assert_eq!(candidate_narrow_unsigned_mark_range(&eight, 0,
-            Bound::Included(256), Bound::Unbounded), Some(3..4));
+        assert_eq!(
+            candidate_narrow_unsigned_mark_range(
+                &eight,
+                0,
+                Bound::Included(11),
+                Bound::Included(200)
+            ),
+            Some(1..3)
+        );
+        assert_eq!(
+            candidate_narrow_unsigned_mark_range(&eight, 0, Bound::Included(256), Bound::Unbounded),
+            Some(3..4)
+        );
         for (values, width) in [
-            (vec![1u16, 256, 4096, u16::MAX].iter().flat_map(|v| v.to_le_bytes()).collect(), 2),
-            (vec![1u32, 256, 4096, u32::MAX].iter().flat_map(|v| v.to_le_bytes()).collect(), 4),
+            (
+                vec![1u16, 256, 4096, u16::MAX]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+                2,
+            ),
+            (
+                vec![1u32, 256, 4096, u32::MAX]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+                4,
+            ),
         ] {
             let idx = index(values, width);
-            assert_eq!(candidate_narrow_unsigned_mark_range(&idx, 0,
-                Bound::Included(257), Bound::Included(4096)), Some(1..3));
-            assert_eq!(candidate_narrow_unsigned_mark_ranges(&idx, 0, &[
-                (Bound::Included(1), Bound::Included(1)),
-                (Bound::Included(4096), Bound::Included(4096)),
-            ]), Some(vec![0..3]));
+            assert_eq!(
+                candidate_narrow_unsigned_mark_range(
+                    &idx,
+                    0,
+                    Bound::Included(257),
+                    Bound::Included(4096)
+                ),
+                Some(1..3)
+            );
+            assert_eq!(
+                candidate_narrow_unsigned_mark_ranges(
+                    &idx,
+                    0,
+                    &[
+                        (Bound::Included(1), Bound::Included(1)),
+                        (Bound::Included(4096), Bound::Included(4096)),
+                    ]
+                ),
+                Some(vec![0..3])
+            );
         }
     }
 
     #[test]
     fn signed_ranges_use_signed_numeric_order() {
         let eight = index(vec![i8::MIN as u8, 255, 0, i8::MAX as u8], 1);
-        assert_eq!(candidate_narrow_signed_mark_range(&eight, 0,
-            Bound::Included(-1), Bound::Included(0)), Some(0..3));
+        assert_eq!(
+            candidate_narrow_signed_mark_range(&eight, 0, Bound::Included(-1), Bound::Included(0)),
+            Some(0..3)
+        );
         for (values, width) in [
-            (vec![i16::MIN, -10, 0, i16::MAX].iter().flat_map(|v| v.to_le_bytes()).collect(), 2),
-            (vec![i32::MIN, -10, 0, i32::MAX].iter().flat_map(|v| v.to_le_bytes()).collect(), 4),
+            (
+                vec![i16::MIN, -10, 0, i16::MAX]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+                2,
+            ),
+            (
+                vec![i32::MIN, -10, 0, i32::MAX]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect(),
+                4,
+            ),
         ] {
             let idx = index(values, width);
-            assert_eq!(candidate_narrow_signed_mark_range(&idx, 0,
-                Bound::Included(-9), Bound::Included(0)), Some(1..3));
+            assert_eq!(
+                candidate_narrow_signed_mark_range(
+                    &idx,
+                    0,
+                    Bound::Included(-9),
+                    Bound::Included(0)
+                ),
+                Some(1..3)
+            );
         }
     }
 
     #[test]
     fn invalid_widths_and_unsorted_keys_fail_closed() {
-        let invalid = index(vec![4,3,2], 1);
-        assert_eq!(candidate_narrow_unsigned_mark_range(&invalid, 0,
-            Bound::Included(0), Bound::Included(4)), None);
+        let invalid = index(vec![4, 3, 2], 1);
+        assert_eq!(
+            candidate_narrow_unsigned_mark_range(
+                &invalid,
+                0,
+                Bound::Included(0),
+                Bound::Included(4)
+            ),
+            None
+        );
         let wrong_width = index(9u64.to_le_bytes().to_vec(), 8);
-        assert_eq!(candidate_narrow_unsigned_mark_range(&wrong_width, 0,
-            Bound::Included(0), Bound::Included(9)), None);
-        assert_eq!(candidate_narrow_signed_mark_range(&wrong_width, 0,
-            Bound::Included(0), Bound::Included(9)), None);
+        assert_eq!(
+            candidate_narrow_unsigned_mark_range(
+                &wrong_width,
+                0,
+                Bound::Included(0),
+                Bound::Included(9)
+            ),
+            None
+        );
+        assert_eq!(
+            candidate_narrow_signed_mark_range(
+                &wrong_width,
+                0,
+                Bound::Included(0),
+                Bound::Included(9)
+            ),
+            None
+        );
     }
 }
