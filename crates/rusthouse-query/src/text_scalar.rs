@@ -4188,7 +4188,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     } else if count == 0 {
                         value.len()
                     } else {
-                        value.char_indices().rev().nth(count - 1).map_or(0, |(offset, _)| offset)
+                        value
+                            .char_indices()
+                            .rev()
+                            .nth(count - 1)
+                            .map_or(0, |(offset, _)| offset)
                     };
                     if !value.is_char_boundary(start) {
                         return Err(ParseError("RIGHT byte count splits UTF-8 text".into()));
