@@ -213,6 +213,39 @@ impl<'a> ReplicaCopyPlanner<'a> {
         source: &'a [ObjectMetadata],
         destination: &[ObjectMetadata],
     ) -> Result<Self, &'static str> {
+        if source.len() > 65_536 || destination.len() > 65_536 {
+            return Err("replica inventory too large");
+        }
+        let sorted = |objects: &[ObjectMetadata]| {
+            objects.windows(2).all(|pair| pair[0].key < pair[1].key)
+        };
+        if sorted(source) && sorted(destination) {
+            if source
+                .iter()
+                .chain(destination)
+                .any(|object| !valid_key(&object.key))
+            {
+                return Err("unsafe or duplicate replica object key");
+            }
+            let mut missing = Vec::new();
+            let mut dst = 0usize;
+            for object in source {
+                while dst < destination.len()
+                    && destination[dst].key.as_str() < object.key.as_str()
+                {
+                    dst += 1;
+                }
+                match destination.get(dst) {
+                    Some(existing) if existing.key == object.key => {
+                        if !object.same_contents(existing) {
+                            return Err("replica copy conflicts with an existing immutable object");
+                        }
+                    }
+                    _ => missing.push(object),
+                }
+            }
+            return Ok(Self { missing });
+        }
         let source_index = index(source)?;
         let destination_index = index(destination)?;
         reject_immutable_conflicts(&source_index, &destination_index)?;
@@ -1587,6 +1620,52 @@ mod symmetric_replica_inventory_tests {
         assert!(compare_replica_inventories(&[good.clone(), good.clone()], &[],).is_err());
         assert!(compare_replica_inventories(&[], &[good.clone(), good.clone()],).is_err());
         assert!(compare_replica_inventories(&[item("../escaped", 1, 0)], &[],).is_err());
+    }
+}
+
+#[cfg(test)]
+mod sorted_borrowed_planner_tests {
+    use super::*;
+
+    #[test]
+    fn sorted_inventories_match_unordered_reference_across_pages() {
+        let source = (0..2048)
+            .map(|index| ObjectMetadata {
+                key: format!("part_{index:05}/data.bin"),
+                bytes: 1 + (index % 19) as u64,
+                crc32c: index,
+            })
+            .collect::<Vec<_>>();
+        let destination = source.iter().step_by(3).cloned().collect::<Vec<_>>();
+        let sorted = ReplicaCopyPlanner::new(&source, &destination).unwrap();
+        let mut reversed_source = source.clone();
+        let mut reversed_destination = destination.clone();
+        reversed_source.reverse();
+        reversed_destination.reverse();
+        let unordered = ReplicaCopyPlanner::new(&reversed_source, &reversed_destination).unwrap();
+        assert_eq!(sorted.len(), unordered.len());
+        for cursor in [None, Some("part_00400/data.bin"), Some("part_02047/data.bin")] {
+            for limit in [0, 1, 2, 9, 5000] {
+                assert_eq!(
+                    sorted.batch_after(cursor, 500, limit).unwrap(),
+                    unordered.batch_after(cursor, 500, limit).unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sorted_planner_rejects_conflicts_and_invalid_keys() {
+        let a = ObjectMetadata {
+            key: "part_1/data.bin".into(),
+            bytes: 1,
+            crc32c: 1,
+        };
+        let b = ObjectMetadata { crc32c: 2, ..a.clone() };
+        assert!(ReplicaCopyPlanner::new(&[a.clone()], &[b]).is_err());
+        assert!(ReplicaCopyPlanner::new(&[a.clone(), a.clone()], &[]).is_err());
+        let invalid = ObjectMetadata { key: "../oops".into(), ..a };
+        assert!(ReplicaCopyPlanner::new(&[invalid], &[]).is_err());
     }
 }
 
