@@ -268,7 +268,7 @@ pub struct ReplicaCopyPage {
     pub next_after: Option<String>,
 }
 
-impl ReplicaCopyPlanner<'_> {
+impl<'a> ReplicaCopyPlanner<'a> {
     /// Bound output memory and bytes without skipping earlier missing keys.
     ///
     /// Unlike greedy batch selection, a page stops at the first object that
