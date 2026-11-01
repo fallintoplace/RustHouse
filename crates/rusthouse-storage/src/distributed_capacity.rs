@@ -389,24 +389,51 @@ pub fn reserve_replica_capacity_plan(
     if nodes.is_empty() || nodes.len() > 64 || requests.len() > MAX_RESERVATION_OBJECTS {
         return Err("invalid multi-replica reservation limits");
     }
-    let mut index = std::collections::HashMap::with_capacity(nodes.len());
+    // Keep small node lookups borrowed; large groups use the indexed path.
+    let mut index = (nodes.len() > 8)
+        .then(|| std::collections::HashMap::with_capacity(nodes.len()));
+    let mut available = [0u64; 64];
     for (position, node) in nodes.iter().enumerate() {
+        let duplicate = if let Some(index) = index.as_mut() {
+            index.insert(node.node.as_str(), position).is_some()
+        } else {
+            nodes[..position].iter().any(|previous| previous.node == node.node)
+        };
         if node.node.is_empty()
             || node.node.len() > 64
             || !node.node.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
             })
-            || index.insert(node.node.as_str(), position).is_some()
+            || duplicate
         {
             return Err("invalid or duplicate reservation node");
         }
-        node.capacity.available()?;
+        available[position] = node.capacity.available()?;
     }
 
-    let mut result = nodes.to_vec();
+    // Aggregate on the stack before creating the owned result. In large
+    // batches, thousands of requests may target one replica. Preserve
+    // the first-overcommit error by checking each incremental total.
+    let mut reserved = [0u64; 64];
     for &(node, bytes) in requests {
-        let position = *index.get(node).ok_or("unknown replica reservation node")?;
-        result[position].capacity = result[position].capacity.reserve(bytes)?;
+        let position = if let Some(index) = &index {
+            *index.get(node).ok_or("unknown replica reservation node")?
+        } else {
+            nodes.iter().position(|entry| entry.node == node)
+                .ok_or("unknown replica reservation node")?
+        };
+        let updated = reserved[position].checked_add(bytes)
+            .ok_or("insufficient replica capacity")?;
+        if updated > available[position] {
+            return Err("insufficient replica capacity");
+        }
+        reserved[position] = updated;
+    }
+    let mut result = nodes.to_vec();
+    for (node, &bytes) in result.iter_mut().zip(reserved.iter()) {
+        if bytes != 0 {
+            node.capacity = node.capacity.reserve(bytes)?;
+        }
     }
     Ok(result)
 }
@@ -513,5 +540,70 @@ mod release_invalid_state_tests {
             reserved: 3,
         };
         assert_eq!(valid.release(2).unwrap().available().unwrap(), 5);
+    }
+}
+
+#[cfg(test)]
+mod batched_replica_reservation_tests {
+    use super::*;
+
+    fn reference(
+        nodes: &[ReplicaNodeCapacity],
+        requests: &[(&str, u64)],
+    ) -> Result<Vec<ReplicaNodeCapacity>, &'static str> {
+        let mut planned = nodes.to_vec();
+        for &(node, bytes) in requests {
+            let position = planned.iter().position(|item| item.node == node)
+                .ok_or("unknown replica reservation node")?;
+            planned[position].capacity = planned[position].capacity.reserve(bytes)?;
+        }
+        Ok(planned)
+    }
+
+    #[test]
+    fn batched_totals_match_sequential_plans_for_all_replica_counts() {
+        for size in [1usize, 2, 8, 9, 16, 64] {
+            let nodes = (0..size).map(|index| ReplicaNodeCapacity {
+                node: format!("replica_{index:02}"),
+                capacity: Capacity {
+                    total: 100_000, used: (index as u64) * 3, reserved: 7,
+                },
+            }).collect::<Vec<_>>();
+            for request_count in [0usize, 1, 8, 9, 128, 4_096, 65_536] {
+                let requests = (0..request_count).map(|index| {
+                    (nodes[(index * 37 + 11) % size].node.as_str(), (index % 3) as u64)
+                }).collect::<Vec<_>>();
+                assert_eq!(
+                    reserve_replica_capacity_plan(&nodes, &requests),
+                    reference(&nodes, &requests),
+                    "size={size}, requests={request_count}",
+                );
+            }
+            let mut over_budget = vec![(nodes[0].node.as_str(), 100_000)];
+            over_budget.push((nodes[0].node.as_str(), 1));
+            assert_eq!(
+                reserve_replica_capacity_plan(&nodes, &over_budget).is_err(),
+                reference(&nodes, &over_budget).is_err(),
+            );
+            let mut bad = vec![(nodes[0].node.as_str(), 0); 128];
+            bad.push(("foreign", 1));
+            assert!(reserve_replica_capacity_plan(&nodes, &bad).is_err());
+        }
+    }
+
+    #[test]
+    fn max_request_batch_preserves_exact_capacity_and_input() {
+        let before = [ReplicaNodeCapacity {
+            node: "replica".into(),
+            capacity: Capacity { total: 65_536, used: 0, reserved: 0 },
+        }];
+        let requests = vec![("replica", 1); 65_536];
+        let result = reserve_replica_capacity_plan(&before, &requests).unwrap();
+        assert_eq!(result[0].capacity.reserved, 65_536);
+        assert_eq!(result[0].capacity.available().unwrap(), 0);
+        assert_eq!(before[0].capacity.reserved, 0);
+        assert!(reserve_replica_capacity_plan(
+            &before, &vec![("replica", u64::MAX); 65_536]
+        ).is_err());
     }
 }
