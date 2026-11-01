@@ -9,6 +9,8 @@ import math
 import os
 import stat
 import tempfile
+
+from bench.common import file_change_time_ns
 from pathlib import Path
 
 
@@ -49,13 +51,13 @@ def load_report(path):
             raise ValueError("comparison report changed while opening")
         payload = stream.read(MAX_REPORT_BYTES + 1)
         finished = os.fstat(stream.fileno())
-        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
-                finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
+        if (opened.st_size, opened.st_mtime_ns, file_change_time_ns(opened)) != (
+                finished.st_size, finished.st_mtime_ns, file_change_time_ns(finished)):
             raise ValueError("comparison report changed while reading")
     after = path.lstat()
     if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
-            before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size,
-                                   after.st_mtime_ns, after.st_ctime_ns):
+            file_change_time_ns(before)) != (after.st_dev, after.st_ino, after.st_size,
+                                   after.st_mtime_ns, file_change_time_ns(after)):
         raise ValueError("comparison report changed while reading")
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("comparison report exceeds 2 MiB")
