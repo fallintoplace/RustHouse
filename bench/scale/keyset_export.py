@@ -91,6 +91,7 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
         raise ValueError("refusing to overwrite an existing export")
     use_default_query = execute is None
     temporary = None
+    published = False
     digest = hashlib.sha256()
     pages = 0
     started = time.monotonic()
@@ -133,12 +134,17 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
         if output.exists() or output.is_symlink():
             raise ValueError("refusing to overwrite an existing export")
         os.link(temporary, output)
+        published = True
         if os.name == "posix":
             descriptor = os.open(output.parent, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+    except Exception:
+        if published:
+            output.unlink(missing_ok=True)
+        raise
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
