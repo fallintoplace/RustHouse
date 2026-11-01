@@ -93,6 +93,11 @@ def validate_tree(root, max_bytes=None, max_entries=1_000_000):
     return total_bytes
 
 
+def _metadata_change_time_ns(metadata):
+    return (getattr(metadata, "st_birthtime_ns", metadata.st_ctime_ns)
+            if os.name == "nt" else metadata.st_ctime_ns)
+
+
 def copy_regular_file(source, destination):
     """Copy only the exact regular inode checked before opening."""
     source = Path(source)
@@ -109,13 +114,13 @@ def copy_regular_file(source, destination):
         with open(destination, "xb") as writer:
             shutil.copyfileobj(reader, writer, 1024 * 1024)
         finished = os.fstat(reader.fileno())
-        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
-                finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
+        if (opened.st_size, opened.st_mtime_ns, _metadata_change_time_ns(opened)) != (
+                finished.st_size, finished.st_mtime_ns, _metadata_change_time_ns(finished)):
             raise ValueError("backup source changed during copying")
     after = source.lstat()
     if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
-            before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size,
-                                   after.st_mtime_ns, after.st_ctime_ns):
+            _metadata_change_time_ns(before)) != (after.st_dev, after.st_ino, after.st_size,
+                                                   after.st_mtime_ns, _metadata_change_time_ns(after)):
         raise ValueError("backup source changed during copying")
     shutil.copystat(source, destination, follow_symlinks=False)
     return destination
@@ -129,7 +134,10 @@ def sync_copied_tree(root):
             path = folder / name
             if path.is_symlink() or not path.is_file():
                 raise ValueError("backup contains a non-regular file: " + str(path))
-            with path.open("rb") as copied:
+            # Windows _commit (os.fsync) needs a writable file descriptor.
+            # POSIX can fsync an existing read-only descriptor.
+            mode = "rb+" if os.name == "nt" else "rb"
+            with path.open(mode) as copied:
                 os.fsync(copied.fileno())
         if os.name == "posix":
             fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
