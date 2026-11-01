@@ -3911,7 +3911,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let end = if name == "LEFT" {
                         count
                     } else {
-                        value.char_indices().nth(count).map_or(value.len(), |(offset, _)| offset)
+                        value
+                            .char_indices()
+                            .nth(count)
+                            .map_or(value.len(), |(offset, _)| offset)
                     };
                     if !value.is_char_boundary(end) {
                         return Err(ParseError("LEFT byte count splits UTF-8 text".into()));
