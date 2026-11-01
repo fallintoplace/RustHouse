@@ -2990,20 +2990,44 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if width > MAX_TEXT_BYTES {
                         return Err(ParseError("LPAD result is too large".into()));
                     }
-                    let tail: String = input.chars().take(width).collect();
+                    let unicode = name == "LEFTPADUTF8";
+                    let tail = if unicode {
+                        input.chars().take(width).collect::<String>()
+                    } else {
+                        let end = width.min(input.len());
+                        if !input.is_char_boundary(end) {
+                            return Err(ParseError("LPAD byte width splits UTF-8 text".into()));
+                        }
+                        input[..end].to_owned()
+                    };
                     if tail.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("LPAD result is too large".into()));
                     }
-                    let missing = width - tail.chars().count();
+                    let size = if unicode { tail.chars().count() } else { tail.len() };
+                    let missing = width - size;
                     if missing > 0 && padding.is_empty() {
                         return Err(ParseError("LPAD padding cannot be empty".into()));
                     }
-                    let mut result = String::new();
-                    for character in padding.chars().cycle().take(missing) {
-                        if result.len() + character.len_utf8() + tail.len() > MAX_TEXT_BYTES {
-                            return Err(ParseError("LPAD result is too large".into()));
+                    let mut result = String::with_capacity(width);
+                    if missing > 0 {
+                        if unicode {
+                            for character in padding.chars().cycle().take(missing) {
+                                if result.len() + character.len_utf8() + tail.len() > MAX_TEXT_BYTES {
+                                    return Err(ParseError("LPAD result is too large".into()));
+                                }
+                                result.push(character);
+                            }
+                        } else {
+                            let repeated = missing / padding.len();
+                            let remainder = missing % padding.len();
+                            if !padding.is_char_boundary(remainder) {
+                                return Err(ParseError("LPAD padding splits UTF-8 text".into()));
+                            }
+                            for _ in 0..repeated {
+                                result.push_str(&padding);
+                            }
+                            result.push_str(&padding[..remainder]);
                         }
-                        result.push(character);
                     }
                     result.push_str(&tail);
                     ConstantValue::Text(result)
