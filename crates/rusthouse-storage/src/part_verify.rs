@@ -75,10 +75,28 @@ fn verify_pinned_files(pinned: &[(PathBuf, fs::Metadata)]) -> Result<(), PartErr
     Ok(())
 }
 
+/// Reject a part directory whose data streams or mark layout changed
+/// while verification was scanning earlier streams. File identity checks
+/// alone cannot detect newly added files that were never opened.
+fn verify_stream_set_unchanged(
+    part: &Path,
+    initial_data: &BTreeSet<PathBuf>,
+    initial_marks: &BTreeMap<PathBuf, PathBuf>,
+) -> Result<(), PartError> {
+    let (current_data, current_marks) = collect_wide_file_pairs(part)?;
+    if &current_data != initial_data || &current_marks != initial_marks {
+        return Err(invalid(
+            part,
+            "wide part stream set changed during verification",
+        ));
+    }
+    Ok(())
+}
+
 pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, PartError> {
     let path = path.as_ref();
     let metadata = inspect_part(path)?;
-    let (data_files, mut mark_files) = collect_wide_file_pairs(path)?;
+    let (data_files, mark_files) = collect_wide_file_pairs(path)?;
 
     validate_stream_pairs(path, metadata.rows, &data_files, &mark_files)?;
 
@@ -99,35 +117,39 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         decompressed_bytes: 0,
     };
     let mut layout = ScanLayout::default();
-    for data in data_files {
+    // Borrow paths throughout the scan. Retain the original directory
+    // inventory so we can check for additions and removals at the end.
+    for data in &data_files {
+        let data = data.as_path();
         let marks_path = mark_files
-            .remove(&data)
-            .ok_or_else(|| invalid(&data, "missing wide mark file during verification"))?;
+            .get(data)
+            .ok_or_else(|| invalid(data, "missing wide mark file during verification"))?
+            .as_path();
         let data_generation =
-            fs::symlink_metadata(&data).map_err(|source| io_error(&data, source))?;
+            fs::symlink_metadata(data).map_err(|source| io_error(data, source))?;
         let marks_generation =
-            fs::symlink_metadata(&marks_path).map_err(|source| io_error(&marks_path, source))?;
-        let marks = read_wide_marks(&marks_path)?;
-        validate_adaptive_stream(&data, &marks, metadata.rows, &mut layout)?;
-        validate_wide_marks(&marks, CompressedBlockReader::open(&data)?)?;
+            fs::symlink_metadata(marks_path).map_err(|source| io_error(marks_path, source))?;
+        let marks = read_wide_marks(marks_path)?;
+        validate_adaptive_stream(data, &marks, metadata.rows, &mut layout)?;
+        validate_wide_marks(&marks, CompressedBlockReader::open(data)?)?;
 
-        let decoded_size = account_decoded_blocks(&data, &mut report)?;
-        let data_after = fs::symlink_metadata(&data).map_err(|source| io_error(&data, source))?;
+        let decoded_size = account_decoded_blocks(data, &mut report)?;
+        let data_after = fs::symlink_metadata(data).map_err(|source| io_error(data, source))?;
         if !same_verification_generation(&data_generation, &data_after) {
-            return Err(invalid(&data, "wide stream changed during verification"));
+            return Err(invalid(data, "wide stream changed during verification"));
         }
         let marks_after =
-            fs::symlink_metadata(&marks_path).map_err(|source| io_error(&marks_path, source))?;
+            fs::symlink_metadata(marks_path).map_err(|source| io_error(marks_path, source))?;
         if !same_verification_generation(&marks_generation, &marks_after) {
             return Err(invalid(
-                &marks_path,
+                marks_path,
                 "wide marks changed during verification",
             ));
         }
-        if let Some(expected) = expected_fixed_stream_bytes(&data, &metadata)? {
+        if let Some(expected) = expected_fixed_stream_bytes(data, &metadata)? {
             if decoded_size != expected {
                 return Err(invalid(
-                    &data,
+                    data,
                     "fixed-width stream byte count differs from count.txt",
                 ));
             }
@@ -135,7 +157,7 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         report.marks = report
             .marks
             .checked_add(marks.marks.len())
-            .ok_or_else(|| invalid(&data, "mark count overflows"))?;
+            .ok_or_else(|| invalid(data, "mark count overflows"))?;
         report.streams += 1;
     }
     // Re-reading the small metadata also catches changes between inspect_part
@@ -147,6 +169,7 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
             "wide part metadata changed during verification",
         ));
     }
+    verify_stream_set_unchanged(path, &data_files, &mark_files)?;
     verify_pinned_files(&pinned)?;
     Ok(report)
 }
@@ -687,6 +710,70 @@ mod complete_wide_generation_pin_tests {
         fs::remove_file(&first).unwrap();
         symlink(&alternate, &first).unwrap();
         assert!(verify_pinned_files(&pinned).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod complete_wide_stream_set_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    fn fixture() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-wide-stream-set-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("value.bin"), b"data").unwrap();
+        fs::write(root.join("value.mrk2"), b"marks").unwrap();
+        root
+    }
+
+    #[test]
+    fn rejects_new_data_stream_and_marks_added_after_the_initial_scan() {
+        let root = fixture();
+        let (data, marks) = collect_wide_file_pairs(&root).unwrap();
+        verify_stream_set_unchanged(&root, &data, &marks).unwrap();
+
+        // Unrelated files are not streams and must not invalidate a frozen part.
+        fs::write(root.join("checksums.txt"), b"other metadata").unwrap();
+        verify_stream_set_unchanged(&root, &data, &marks).unwrap();
+
+        fs::write(root.join("late.bin"), b"late").unwrap();
+        fs::write(root.join("late.mrk2"), b"marks").unwrap();
+        assert!(verify_stream_set_unchanged(&root, &data, &marks).is_err());
+        fs::remove_file(root.join("late.bin")).unwrap();
+        fs::remove_file(root.join("late.mrk2")).unwrap();
+
+        // A newly added marks file for an existing data stream is also
+        // rejected, even when the original marks file still exists.
+        fs::write(root.join("value.mrk"), b"second marks").unwrap();
+        assert!(verify_stream_set_unchanged(&root, &data, &marks).is_err());
+        fs::remove_file(root.join("value.mrk")).unwrap();
+        verify_stream_set_unchanged(&root, &data, &marks).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_removed_and_renamed_streams_even_when_file_counts_match() {
+        let root = fixture();
+        let (data, marks) = collect_wide_file_pairs(&root).unwrap();
+        fs::rename(root.join("value.mrk2"), root.join("value.mrk")).unwrap();
+        assert!(verify_stream_set_unchanged(&root, &data, &marks).is_err());
+        fs::rename(root.join("value.mrk"), root.join("value.mrk2")).unwrap();
+
+        // Replacing both paths with another complete pair has the same
+        // number of files, but it is a different immutable part layout.
+        fs::remove_file(root.join("value.bin")).unwrap();
+        fs::remove_file(root.join("value.mrk2")).unwrap();
+        fs::write(root.join("other.bin"), b"new").unwrap();
+        fs::write(root.join("other.mrk2"), b"marks").unwrap();
+        assert!(verify_stream_set_unchanged(&root, &data, &marks).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
