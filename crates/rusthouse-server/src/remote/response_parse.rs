@@ -44,12 +44,22 @@ pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
 }
 
 pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
-    if !is_ascii_decimal(value) {
+    if value.is_empty() {
         return Err("invalid peer Content-Length".into());
     }
-    value
-        .parse::<usize>()
-        .map_err(|_| "invalid peer Content-Length".into())
+    // Validate and accumulate in one scan. Headers are untrusted, so neither
+    // signs nor arithmetic overflow may be accepted by the peer parser.
+    let mut length = 0usize;
+    for byte in value.bytes() {
+        if !byte.is_ascii_digit() {
+            return Err("invalid peer Content-Length".into());
+        }
+        length = length
+            .checked_mul(10)
+            .and_then(|length| length.checked_add(usize::from(byte - b'0')))
+            .ok_or("invalid peer Content-Length")?;
+    }
+    Ok(length)
 }
 
 fn parse_required_peer_headers<'a>(
@@ -353,6 +363,26 @@ mod strict_peer_header_ows_tests {
         assert_eq!(
             parse_peer_header("X-Trace: a\tb").unwrap(),
             ("X-Trace", "a\tb"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod one_pass_content_length_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_decimal_lengths_and_rejects_invalid_or_overflowing_headers() {
+        for (input, expected) in [("0", 0), ("0003", 3), ("8192", 8192)] {
+            assert_eq!(parse_content_length(input).unwrap(), expected);
+        }
+        for invalid in ["", " 3", "+3", "-1", "2 ", "2\n", "2a"] {
+            assert!(parse_content_length(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(parse_content_length(&format!("{}0", usize::MAX)).is_err());
+        assert_eq!(
+            parse_content_length(&usize::MAX.to_string()).unwrap(),
+            usize::MAX
         );
     }
 }
