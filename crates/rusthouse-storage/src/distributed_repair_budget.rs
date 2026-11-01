@@ -1116,7 +1116,7 @@ mod wide_replication_repair_planning_tests {
         assert!(planned.iter().all(|job| job.missing_replicas == 64));
 
         let aggregate = [RepairJob { shard: "under_replicated".into(), bytes: 64, missing_replicas: 64 }];
-        assert_eq!(plan_repairs_for_replication_factor(&aggregate, 64, 64, 1).unwrap(), aggregate);
+        assert_eq!(plan_repairs_for_replication_factor(&aggregate, 64, 64, 1).unwrap(), aggregate.to_vec());
         assert!(plan_repairs_for_replication_factor(&aggregate, 63, 64, 1).is_err());
         let mut invalid = jobs;
         invalid[0].missing_replicas = 65;
