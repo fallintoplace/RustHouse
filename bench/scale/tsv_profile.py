@@ -7,13 +7,15 @@ import re
 import stat
 
 from bench.common import file_change_time_ns
+from bench.scale.tsv_shards import validate_copy_tsv_record
 from pathlib import Path
 
 MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 
 def profile(path, *, columns=1, header=False, min_rows=1,
-            verify_sorted_uint64=False, expected_sha256=None):
+            verify_sorted_uint64=False, expected_sha256=None,
+            verify_copy_escapes=False):
     if type(columns) is not int or not 1 <= columns <= 1024:
         raise ValueError("columns must be in 1..1024")
     if type(min_rows) is not int or min_rows < 1:
@@ -22,6 +24,8 @@ def profile(path, *, columns=1, header=False, min_rows=1,
         raise ValueError("header must be a boolean")
     if type(verify_sorted_uint64) is not bool or (verify_sorted_uint64 and columns != 1):
         raise ValueError("sorted UInt64 verification requires one column")
+    if type(verify_copy_escapes) is not bool or (verify_copy_escapes and columns > 128):
+        raise ValueError("verify_copy_escapes requires at most 128 columns and a boolean flag")
     if expected_sha256 is not None and (
             not isinstance(expected_sha256, str)
             or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
@@ -52,6 +56,10 @@ def profile(path, *, columns=1, header=False, min_rows=1,
                 raise ValueError(f"record {records + 1}: invalid column count or empty row")
             if b"\x00" in row:
                 raise ValueError(f"record {records + 1}: raw NUL byte")
+            if verify_copy_escapes and not (header and records == 0):
+                # COPY validates escaped values as UTF-8, not only raw TSV.
+                # Reuse the shard splitter's exact escape grammar.
+                validate_copy_tsv_record(raw)
             # Sorted numeric records are validated as ASCII bytes below.
             # Skip a redundant Unicode allocation per row in large fixtures.
             if not (verify_sorted_uint64 and not (header and records == 0)):
@@ -86,6 +94,8 @@ def profile(path, *, columns=1, header=False, min_rows=1,
               "bytes": bytes_read, "sha256": actual_sha256}
     if expected_sha256 is not None:
         result["sha256_verified"] = True
+    if verify_copy_escapes:
+        result["copy_escapes_verified"] = True
     return result
 
 
@@ -96,6 +106,8 @@ def main(argv=None):
     parser.add_argument("--header", action="store_true")
     parser.add_argument("--min-rows", type=int, default=1)
     parser.add_argument("--verify-sorted-uint64", action="store_true")
+    parser.add_argument("--verify-copy-escapes", action="store_true",
+                        help="Also validate decoded COPY TSV escapes and UTF-8")
     parser.add_argument("--expected-sha256")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
@@ -103,7 +115,8 @@ def main(argv=None):
         result = profile(args.input, columns=args.columns, header=args.header,
                          min_rows=args.min_rows,
                          verify_sorted_uint64=args.verify_sorted_uint64,
-                         expected_sha256=args.expected_sha256)
+                         expected_sha256=args.expected_sha256,
+                         verify_copy_escapes=args.verify_copy_escapes)
         content = json.dumps(result, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
