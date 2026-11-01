@@ -292,9 +292,21 @@ impl BitmapDistinct32 {
             }
             (Block::Single(left), Block::Sparse(right)) => {
                 let additions = right.len() - usize::from(right.contains(left));
-                let mut values = right.clone();
-                values.insert(*left);
-                *current = Block::Sparse(values);
+                if additions + 1 >= DENSE_THRESHOLD {
+                    // A singleton plus this sparse state will be dense.
+                    // Build its bitmap directly instead of cloning thousands
+                    // of hash-set entries only to discard that set.
+                    let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
+                    for &suffix in right {
+                        set_bitmap_bit_if_unset(bitmap.as_mut(), suffix);
+                    }
+                    set_bitmap_bit_if_unset(bitmap.as_mut(), *left);
+                    *current = Block::Dense(bitmap);
+                } else {
+                    let mut values = right.clone();
+                    values.insert(*left);
+                    *current = Block::Sparse(values);
+                }
                 additions as u64
             }
             (Block::Single(_) | Block::Sparse(_), Block::Dense(_)) => {
@@ -613,5 +625,24 @@ mod inline_singleton_distinct_tests {
         assert_eq!(other.len(), 4097);
         other.merge_from(&left).unwrap();
         assert_eq!(other.len(), 4097);
+    }
+}
+
+#[cfg(test)]
+mod singleton_dense_union_tests {
+    use super::*;
+
+    #[test]
+    fn threshold_union_builds_the_exact_dense_bitmap() {
+        let mut current = Block::Single(4_095);
+        let incoming = Block::Sparse((0..4_095).collect());
+        assert_eq!(BitmapDistinct32::merge_block(&mut current, &incoming), 4_095);
+        let Block::Dense(bits) = current else { panic!("expected dense union"); };
+        assert_eq!(bits.iter().map(|word| word.count_ones() as usize).sum::<usize>(), 4_096);
+        assert_eq!(bits[63] & (1 << 63), 1 << 63);
+
+        let mut duplicate = Block::Single(4_094);
+        assert_eq!(BitmapDistinct32::merge_block(&mut duplicate, &incoming), 4_094);
+        assert!(matches!(duplicate, Block::Sparse(_)));
     }
 }
