@@ -31,6 +31,26 @@ class DuckDBGoldensTests(unittest.TestCase):
             self.assertEqual((root / "goldens" / "q22.tsv").read_bytes(), b"1\t2\n")
             self.assertFalse(report["logical_input_equivalence_established"])
 
+    def test_default_runner_spools_output_and_bounds_memory(self):
+        from unittest.mock import patch
+        import duckdb_goldens
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            queries = root / "queries"
+            queries.mkdir()
+            self.make_queries(queries)
+
+            def fake_run(cmd, **kwargs):
+                self.assertNotIn("capture_output", kwargs)
+                self.assertTrue(hasattr(kwargs["stdout"], "write"))
+                kwargs["stdout"].write(b"1\n")
+                return subprocess.CompletedProcess(cmd, 0)
+
+            with patch.object(duckdb_goldens.subprocess, "run", side_effect=fake_run):
+                report = generate("duckdb", "db", queries, root / "goldens")
+            self.assertEqual(len(report["queries"]), 22)
+            self.assertEqual((root / "goldens" / "q01.tsv").read_bytes(), b"1\n")
+
     def test_concurrent_reference_generation_keeps_query_order(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)

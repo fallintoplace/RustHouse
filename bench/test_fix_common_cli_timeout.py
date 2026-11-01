@@ -1,6 +1,7 @@
 import math
 import unittest
-from unittest.mock import patch, SimpleNamespace
+from types import SimpleNamespace
+from unittest.mock import patch
 from bench.common import cli_sql
 
 class SharedRunnerTimeoutTests(unittest.TestCase):

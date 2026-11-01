@@ -48,3 +48,15 @@ fn upper_folds_unicode_with_multichar_expansions() {
         ConstantValue::Text("STRASSE ÉLÈVE".into())
     );
 }
+
+#[test]
+fn upper_expands_german_sharp_s_and_preserves_accents() {
+    assert_eq!(
+        value("SELECT UPPER('weiß élève')"),
+        ConstantValue::Text("WEISS ÉLÈVE".into())
+    );
+    assert_eq!(
+        value("SELECT UPPER('é😀')"),
+        ConstantValue::Text("É😀".into())
+    );
+}

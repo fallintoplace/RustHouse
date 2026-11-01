@@ -24,17 +24,31 @@ def real_directory(path):
 
 
 def active_label(parts):
+    """Read a bounded, stable active-generation pointer without following links."""
     pointer = parts / ".rusthouse-active"
-    if pointer.is_symlink() or not pointer.is_file() or pointer.stat().st_size > 64:
+    before = pointer.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_size > 64:
         raise ValueError(f"invalid active generation pointer: {pointer}")
-    raw = pointer.read_bytes()
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(pointer, flags)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError(f"active generation pointer changed while opening: {pointer}")
+        raw = source.read(65)
+        finished = os.fstat(source.fileno())
+    after = pointer.lstat()
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                             info.st_mtime_ns, info.st_ctime_ns)
+    if identity(before) != identity(opened) or identity(opened) != identity(finished) or identity(finished) != identity(after):
+        raise ValueError(f"active generation pointer changed while reading: {pointer}")
     if not raw.endswith(b"\n") or len(raw) > 64:
         raise ValueError(f"invalid active generation pointer: {pointer}")
     label = raw[:-1].decode("ascii")
     if not GENERATION.fullmatch(label) or int(label[1:]) > (1 << 64) - 1:
         raise ValueError(f"noncanonical active generation: {pointer}")
     return label
-
 
 def plan(database, keep=3):
     database = Path(database)
@@ -66,6 +80,11 @@ def plan(database, keep=3):
             if scanned > MAX_GENERATIONS:
                 raise ValueError(f"invalid generation inventory: {versions}")
             if entry.name.startswith(".pending-"):
+                # Interrupted staging directories are safe to leave alone.
+                # Symlinks and files with the same prefix are not expected
+                # snapshot state and must fail closed before any deletion.
+                if not real_directory(entry):
+                    raise ValueError(f"invalid pending generation entry: {entry}")
                 continue
             if not GENERATION.fullmatch(entry.name) or not real_directory(entry):
                 raise ValueError(f"unexpected snapshot generation entry: {entry}")
@@ -85,25 +104,67 @@ def plan(database, keep=3):
     return candidates
 
 
+def _stable_lock_identity(path, fd):
+    opened = os.fstat(fd)
+    current = os.stat(path, follow_symlinks=False)
+    if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode)
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)):
+        raise ValueError("database lock path changed while acquiring flock")
+
+
 @contextmanager
 def exclusive_database_lock(database):
     if fcntl is None or not shutil.rmtree.avoids_symlink_attacks:
         raise ValueError("offline vacuum execute requires safe POSIX flock and rmtree")
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(Path(database) / ".rusthouse-write.lock", flags, 0o600)
+    lock = Path(database) / ".rusthouse-write.lock"
+    fd = os.open(lock, flags, 0o600)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("database lock is not a regular file")
+        _stable_lock_identity(lock, fd)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError("database is busy; stop all readers and writers") from exc
+        _stable_lock_identity(lock, fd)
         yield
     finally:
         os.close(fd)
 
 
-def vacuum(database, keep=3, execute=False, offline_confirmed=False):
+def validate_deletion_budget(candidates, max_delete_bytes=None, max_delete_entries=1_000_000):
+    if max_delete_bytes is not None and (
+            type(max_delete_bytes) is not int or max_delete_bytes < 0):
+        raise ValueError("max_delete_bytes must be nonnegative")
+    if type(max_delete_entries) is not int or not 1 <= max_delete_entries <= 10_000_000:
+        raise ValueError("max_delete_entries must be between 1 and 10000000")
+    byte_count = 0
+    entry_count = 0
+
+    def raise_walk_error(error):
+        raise error
+
+    for _parts, _active, candidate in candidates:
+        for directory, dirs, files in os.walk(
+                candidate, followlinks=False, onerror=raise_walk_error):
+            entry_count += 1
+            for name in dirs:
+                if (Path(directory) / name).is_symlink():
+                    raise ValueError("vacuum refuses symlinked generation entries")
+            for name in files:
+                entry = (Path(directory) / name).lstat()
+                if not stat.S_ISREG(entry.st_mode):
+                    raise ValueError("vacuum requires regular generation files")
+                entry_count += 1
+                byte_count += entry.st_size
+            if entry_count > max_delete_entries:
+                raise ValueError("vacuum exceeds max_delete_entries")
+            if max_delete_bytes is not None and byte_count > max_delete_bytes:
+                raise ValueError("vacuum exceeds max_delete_bytes")
+    return byte_count, entry_count
+
+
+def vacuum(database, keep=3, execute=False, offline_confirmed=False,
+           max_delete_bytes=None, max_delete_entries=1_000_000):
     database = Path(database)
     if not execute:
         return plan(database, keep)
@@ -113,6 +174,7 @@ def vacuum(database, keep=3, execute=False, offline_confirmed=False):
         raise ValueError("database must be an existing real directory")
     with exclusive_database_lock(database):
         candidates = plan(database, keep)
+        validate_deletion_budget(candidates, max_delete_bytes, max_delete_entries)
         for parts, active, candidate in candidates:
             if active_label(parts) != active or not real_directory(candidate):
                 raise ValueError("generation changed before offline vacuum deletion")
@@ -132,9 +194,13 @@ def main(argv=None):
     parser.add_argument("--keep", type=int, default=3)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--offline-confirmed", action="store_true")
+    parser.add_argument("--max-delete-bytes", type=int)
+    parser.add_argument("--max-delete-entries", type=int, default=1_000_000)
     args = parser.parse_args(argv)
     try:
-        candidates = vacuum(args.database, args.keep, args.execute, args.offline_confirmed)
+        candidates = vacuum(args.database, args.keep, args.execute, args.offline_confirmed,
+                            max_delete_bytes=args.max_delete_bytes,
+                            max_delete_entries=args.max_delete_entries)
     except (OSError, ValueError, UnicodeDecodeError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1

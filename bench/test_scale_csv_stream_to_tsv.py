@@ -52,6 +52,28 @@ class CsvToTsvTests(unittest.TestCase):
             self.assertEqual(collision.read_bytes(), b"existing")
             self.assertFalse(output.exists())
 
+    def test_same_size_source_rewrites_abort_without_publishing_output(self):
+        from unittest.mock import patch
+        from bench.scale import csv_stream_to_tsv as module
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source.csv"
+            target = root / "out.tsv"
+            source.write_bytes(b"1,hello\n")
+            original_reader = module.csv.reader
+
+            def mutate_during_stream(stream, **kwargs):
+                for row in original_reader(stream, **kwargs):
+                    yield row
+                    source.write_bytes(b"2,hello\n")
+
+            with patch.object(module.csv, "reader", mutate_during_stream):
+                with self.assertRaisesRegex(ValueError, "changed"):
+                    convert(source, target)
+            self.assertFalse(target.exists())
+            self.assertEqual(list(root.glob("*.pending")), [])
+
+
     def test_quotes_embedded_newlines_tabs_and_backslashes(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "in.csv"

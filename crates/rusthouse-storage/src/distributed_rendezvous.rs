@@ -99,6 +99,28 @@ pub fn replicas_for(
         }
         return Ok(vec![winning_node.to_owned()]);
     }
+    // Two replicas are common: select the top two without allocating and
+    // partitioning a ranking vector for all candidates.
+    if replicas == 2 {
+        let outranks = |left: (u64, &str), right: (u64, &str)| {
+            left.0 > right.0 || (left.0 == right.0 && left.1 < right.1)
+        };
+        let mut first: Option<(u64, &str)> = None;
+        let mut second: Option<(u64, &str)> = None;
+        for node in nodes {
+            let candidate = (score_with_seed(seed, node), node.as_str());
+            if first.is_none_or(|best| outranks(candidate, best)) {
+                second = first;
+                first = Some(candidate);
+            } else if second.is_none_or(|runner_up| outranks(candidate, runner_up)) {
+                second = Some(candidate);
+            }
+        }
+        return Ok(vec![
+            first.expect("at least two validated nodes").1.to_owned(),
+            second.expect("at least two validated nodes").1.to_owned(),
+        ]);
+    }
     let mut ranked: Vec<(u64, &str)> = nodes
         .iter()
         .map(|node| (score_with_seed(seed, node), node.as_str()))
@@ -295,6 +317,93 @@ pub fn zone_aware_replicas_for(
         }
     }
     Ok(selected)
+}
+
+/// Rank only eligible replica nodes, without silently assigning a full node.
+///
+/// This is placement planning, not an allocation or an on-disk reservation.
+/// The transfer executor must reserve capacity again before copying.
+pub fn capacity_aware_replicas_for(
+    shard: &str,
+    members: &[crate::distributed_membership::Member],
+    capacities: &[(&str, crate::distributed_capacity::Capacity)],
+    object_bytes: u64,
+    replicas: usize,
+) -> Result<Vec<String>, &'static str> {
+    crate::distributed_membership::validate_membership(members)?;
+    if replicas == 0 || replicas > members.len() || capacities.len() != members.len() {
+        return Err("invalid capacity-aware replica configuration");
+    }
+    let mut by_node = std::collections::HashMap::with_capacity(capacities.len());
+    for &(node, capacity) in capacities {
+        if by_node.insert(node, capacity).is_some() {
+            return Err("duplicate replica capacity entry");
+        }
+    }
+    let mut eligible = Vec::with_capacity(members.len());
+    for member in members {
+        let capacity = by_node.get(member.node.as_str())
+            .ok_or("missing replica capacity")?;
+        if capacity.available()? >= object_bytes {
+            eligible.push(member.clone());
+        }
+    }
+    if eligible.len() < replicas {
+        return Err("insufficient replica capacity for requested redundancy");
+    }
+    zone_aware_replicas_for(shard, &eligible, replicas)
+}
+
+#[cfg(test)]
+mod capacity_aware_replica_tests {
+    use super::*;
+    use crate::distributed_capacity::Capacity;
+    use crate::distributed_membership::parse_membership;
+
+    fn capacity(free: u64) -> Capacity {
+        Capacity { total: 100, used: 100 - free, reserved: 0 }
+    }
+
+    #[test]
+    fn placement_matches_zone_rank_after_excluding_full_nodes() {
+        let members = parse_membership("a z1 9\nb z2 4\nc z3 2\nd z1 1\n")
+            .unwrap();
+        let capacities = [
+            ("c", capacity(10)), ("a", capacity(1)),
+            ("d", capacity(10)), ("b", capacity(10)),
+        ];
+        for shard in ["logs", "metrics", "events"] {
+            let expected = zone_aware_replicas_for(shard, &members[1..], 3).unwrap();
+            let chosen = capacity_aware_replicas_for(
+                shard, &members, &capacities, 2, 3
+            ).unwrap();
+            assert_eq!(chosen, expected);
+            let all = [("a", capacity(10)), ("b", capacity(10)),
+                ("c", capacity(10)), ("d", capacity(10))];
+            assert_eq!(
+                capacity_aware_replicas_for(shard, &members, &all, 2, 2).unwrap(),
+                zone_aware_replicas_for(shard, &members, 2).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_duplicate_and_overcommitted_capacity_data() {
+        let members = parse_membership("a z1 1\nb z2 1\n").unwrap();
+        assert!(capacity_aware_replicas_for(
+            "x", &members, &[("a", capacity(1)), ("b", capacity(1))], 2, 1
+        ).is_err());
+        assert!(capacity_aware_replicas_for(
+            "x", &members, &[("a", capacity(10)), ("a", capacity(10))], 1, 1
+        ).is_err());
+        assert!(capacity_aware_replicas_for(
+            "x", &members, &[("a", capacity(10)), ("unknown", capacity(10))], 1, 1
+        ).is_err());
+        let invalid = Capacity { total: 10, used: 9, reserved: 2 };
+        assert!(capacity_aware_replicas_for(
+            "x", &members, &[("a", invalid), ("b", capacity(10))], 1, 1
+        ).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -826,6 +935,39 @@ mod stack_zone_ranking_parity_tests {
             first.extend(later);
             for count in [3, 4, 8, 11, 12, 32, 64] {
                 assert_eq!(zone_aware_replicas_for(shard, &members, count).unwrap(), first[..count]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod two_replica_rendezvous_selection_tests {
+    use super::*;
+
+    #[test]
+    fn two_replicas_match_full_sort_for_tiny_and_large_candidate_sets() {
+        for count in [2usize, 3, 8, 9, 16, 64] {
+            let nodes = (0..count)
+                .map(|index| format!("node_{index:02}"))
+                .collect::<Vec<_>>();
+            for index in 0..64 {
+                let shard = format!("placement_{index}");
+                let seed = shard_seed(&shard);
+                let mut ranked = nodes
+                    .iter()
+                    .map(|node| (score_with_seed(seed, node), node.as_str()))
+                    .collect::<Vec<_>>();
+                ranked.sort_unstable_by(|left, right| {
+                    right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
+                });
+                let expected = ranked
+                    .iter()
+                    .take(2)
+                    .map(|(_, node)| node.to_string())
+                    .collect::<Vec<_>>();
+                assert_eq!(replicas_for(&shard, &nodes, 2).unwrap(), expected);
+                let reversed = nodes.iter().rev().cloned().collect::<Vec<_>>();
+                assert_eq!(replicas_for(&shard, &reversed, 2).unwrap(), expected);
             }
         }
     }

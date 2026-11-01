@@ -57,6 +57,19 @@ class IngestBenchmarkTests(unittest.TestCase):
                 runner.verify(Path("binary"), Path("db"), 3, 2, 0, 100000000,
                               100000000, 5)
 
+    def test_copy_escapes_quote_in_temporary_source_path(self):
+        source = Path("/tmp/rusthouse-O'Brien/measurements.txt")
+        self.assertEqual(
+            runner.copy_sql(source, "TSV"),
+            "COPY measurements FROM '/tmp/rusthouse-O''Brien/measurements.txt' WITH (FORMAT TSV)",
+        )
+        self.assertEqual(
+            runner.copy_sql(source, "SSV"),
+            "COPY measurements FROM '/tmp/rusthouse-O''Brien/measurements.txt' WITH (FORMAT SSV)",
+        )
+        with self.assertRaisesRegex(ValueError, "format"):
+            runner.copy_sql(source, "TSV); DROP TABLE measurements")
+
     def test_semicolon_input_uses_the_same_oracle(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "readings.ssv"
@@ -100,6 +113,17 @@ class IngestBenchmarkTests(unittest.TestCase):
         for rows, runs in ((True, 1), (10, True), (10, 1.5)):
             with self.subTest(rows=rows, runs=runs), self.assertRaises(ValueError):
                 runner.benchmark(Path("rusthouse"), rows, 1, runs, 0, 3, "TSV")
+
+    def test_cached_temperatures_match_float_reference_exactly(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "temperatures.tsv"
+            runner.write_input(path, 1602, 17)
+            actual = path.read_text(encoding="utf-8")
+            expected = "".join(
+                f"station-{row % 17:05}\t{runner.temperature_tenths(row) / 10:.1f}\n"
+                for row in range(1602)
+            )
+            self.assertEqual(actual, expected)
 
     def test_buffered_fixture_matches_one_row_reference(self):
         with tempfile.TemporaryDirectory() as temp:

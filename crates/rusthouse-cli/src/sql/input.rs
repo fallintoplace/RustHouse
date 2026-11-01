@@ -93,8 +93,11 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             && (bytes[index] == b'#'
                 || (bytes[index] == b'-' && bytes.get(index + 1) == Some(&b'-')))
         {
-            current.push_str(&input[segment..index]);
-            current.push(' ');
+            current.push_str(input[segment..index].trim_start());
+            current.truncate(current.trim_end().len());
+            if !current.is_empty() {
+                current.push(' ');
+            }
             index += if bytes[index] == b'#' { 1 } else { 2 };
             while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
                 index += 1;
@@ -103,8 +106,11 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             continue;
         }
         if !quoted && bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
-            current.push_str(&input[segment..index]);
-            current.push(' ');
+            current.push_str(input[segment..index].trim_start());
+            current.truncate(current.trim_end().len());
+            if !current.is_empty() {
+                current.push(' ');
+            }
             index += 2;
             // ClickHouse block comments can be nested. Stop at the matching
             // close, not the first inner close, so embedded semicolons never
@@ -131,7 +137,7 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             let statement = if current.is_empty() {
                 input[segment..index].trim()
             } else {
-                current.push_str(&input[segment..index]);
+                current.push_str(input[segment..index].trim_start());
                 current.trim()
             };
             push_sql_statement(&mut statements, statement)?;
@@ -148,7 +154,7 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
     let statement = if current.is_empty() {
         input[segment..].trim()
     } else {
-        current.push_str(&input[segment..]);
+        current.push_str(input[segment..].trim_start());
         current.trim()
     };
     push_sql_statement(&mut statements, statement)?;
@@ -294,6 +300,10 @@ mod nested_sql_script_comment_tests {
         assert_eq!(
             split_sql_script("SELECT 1 /* a /* b /* c */ d */ e */ + 2;").unwrap(),
             ["SELECT 1 + 2"],
+        );
+        assert_eq!(
+            split_sql_script("SELECT/* first */  42 /* second */ + 1;").unwrap(),
+            ["SELECT 42 + 1"]
         );
         assert!(split_sql_script("SELECT 1 /* outer /* inner */").is_err());
     }

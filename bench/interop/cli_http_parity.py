@@ -23,7 +23,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-NO_REDIRECT_OPENER = urllib.request.build_opener(NoRedirect())
+NO_REDIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
 
 QUERIES = (
@@ -98,13 +98,21 @@ def _unique_object_pairs(pairs):
     return result
 
 
+def _strict_response_json(payload):
+    def reject_constant(token):
+        raise ValueError(f"nonstandard HTTP parity JSON number: {token}")
+
+    return json.loads(payload, object_pairs_hook=_unique_object_pairs,
+                      parse_constant=reject_constant)
+
+
 def verify_server_identity(port):
     """Require the intended RustHouse database-mode read-only endpoint."""
     with NO_REDIRECT_OPENER.open(f"http://127.0.0.1:{port}/capabilities", timeout=5) as response:
         body = response.read(1_048_577)
     if len(body) > 1_048_576:
         raise ValueError("HTTP parity capabilities response exceeds 1 MiB")
-    data = json.loads(body, object_pairs_hook=_unique_object_pairs)
+    data = _strict_response_json(body)
     if (not isinstance(data, dict) or data.get("name") != "RustHouse"
             or data.get("source") != "database" or data.get("read_only") is not True):
         raise ValueError("HTTP parity server capabilities do not match RustHouse database mode")
@@ -131,7 +139,7 @@ def fetch_schema(port):
         payload = response.read(1_048_577)
     if len(payload) > 1_048_576:
         raise ValueError("HTTP parity schema response exceeds 1 MiB")
-    schema = json.loads(payload, object_pairs_hook=_unique_object_pairs)
+    schema = _strict_response_json(payload)
     if not isinstance(schema, dict):
         raise ValueError("HTTP parity schema must be a JSON object")
     return schema
