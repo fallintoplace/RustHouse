@@ -236,8 +236,26 @@ class BackupTests(unittest.TestCase):
                 return original(fd)
             with patch("offline_backup.os.fsync", side_effect=counted):
                 sync_copied_tree(folder)
-            self.assertGreaterEqual(len(calls), 3 if os.name == "posix" else 1)
+            self.assertGreaterEqual(len(calls), 3 if os.name == "posix" else 0)
 
+
+    def test_file_copy_syncs_while_its_writable_handle_is_open(self):
+        import os
+        from offline_backup import copy_regular_file
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            source = base / "source"
+            destination = base / "copied"
+            source.write_bytes(b"immutable wide-part bytes" * 1024)
+            original = os.fsync
+            calls = []
+            def record(fd):
+                calls.append(fd)
+                return original(fd)
+            with patch("offline_backup.os.fsync", side_effect=record):
+                copy_regular_file(source, destination)
+            self.assertGreaterEqual(len(calls), 1)
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
 
     def test_allows_fresh_sibling(self):
         with tempfile.TemporaryDirectory() as root:

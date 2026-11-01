@@ -113,6 +113,10 @@ def copy_regular_file(source, destination):
             raise ValueError("backup source changed while opening")
         with open(destination, "xb") as writer:
             shutil.copyfileobj(reader, writer, 1024 * 1024)
+            # Windows requires a writable descriptor to flush copied data.
+            # Sync before copying source permissions that may be read-only.
+            writer.flush()
+            os.fsync(writer.fileno())
         finished = os.fstat(reader.fileno())
         if (opened.st_size, opened.st_mtime_ns, _metadata_change_time_ns(opened)) != (
                 finished.st_size, finished.st_mtime_ns, _metadata_change_time_ns(finished)):
@@ -134,11 +138,11 @@ def sync_copied_tree(root):
             path = folder / name
             if path.is_symlink() or not path.is_file():
                 raise ValueError("backup contains a non-regular file: " + str(path))
-            # Windows _commit (os.fsync) needs a writable file descriptor.
-            # POSIX can fsync an existing read-only descriptor.
-            mode = "rb+" if os.name == "nt" else "rb"
-            with path.open(mode) as copied:
-                os.fsync(copied.fileno())
+            # The file was synced through its writable copy handle on
+            # Windows, before restoring potentially read-only permissions.
+            if os.name == "posix":
+                with path.open("rb") as copied:
+                    os.fsync(copied.fileno())
         if os.name == "posix":
             fd = os.open(folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
