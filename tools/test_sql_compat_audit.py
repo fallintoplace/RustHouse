@@ -138,10 +138,10 @@ class AuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "noisy-parser"
             binary.write_text(
-                "#!" + sys.executable + "\\n"
-                "import os\\n"
-                "for _ in range(256):\\n"
-                "    os.write(2, b'x' * 65536)\\n"
+                "#!" + sys.executable + "\n"
+                "import os\n"
+                "for _ in range(256):\n"
+                "    os.write(2, b'x' * 65536)\n"
             )
             binary.chmod(0o700)
             result = audit(binary, [(1, "SELECT 1")], timeout=10)
