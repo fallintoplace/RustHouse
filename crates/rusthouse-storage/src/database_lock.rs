@@ -3,7 +3,7 @@
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::Path;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 use std::path::PathBuf;
 
 #[cfg(unix)]
@@ -31,18 +31,72 @@ mod advisory {
     }
 }
 
+
+#[cfg(windows)]
+mod windows_advisory {
+    use std::ffi::c_void;
+    use std::fs::File;
+    use std::io;
+    use std::os::windows::io::AsRawHandle;
+
+    // The kernel uses the same OVERLAPPED layout on 32- and 64-bit Windows.
+    // Lock one byte of the persistent lock inode, never its data contents.
+    #[repr(C)]
+    struct Overlapped {
+        internal: usize,
+        internal_high: usize,
+        offset: u32,
+        offset_high: u32,
+        event: *mut c_void,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LockFileEx(
+            file: *mut c_void,
+            flags: u32,
+            reserved: u32,
+            length_low: u32,
+            length_high: u32,
+            overlapped: *mut Overlapped,
+        ) -> i32;
+    }
+
+    pub(super) fn try_lock(file: &File, exclusive: bool) -> io::Result<()> {
+        const LOCKFILE_FAIL_IMMEDIATELY: u32 = 1;
+        const LOCKFILE_EXCLUSIVE_LOCK: u32 = 2;
+        let mut overlapped = Overlapped {
+            internal: 0,
+            internal_high: 0,
+            offset: 0,
+            offset_high: 0,
+            event: std::ptr::null_mut(),
+        };
+        let flags = LOCKFILE_FAIL_IMMEDIATELY
+            | if exclusive { LOCKFILE_EXCLUSIVE_LOCK } else { 0 };
+        // SAFETY: the handle belongs to an open File and the stack OVERLAPPED
+        // remains live for the nonblocking call. Closing File releases the lock.
+        let result = unsafe { LockFileEx(file.as_raw_handle(), flags, 0, 1, 0, &mut overlapped) };
+        if result == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Hold this guard until a query finishes consuming its active snapshot.
 pub struct DatabaseLock {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     _file: fs::File,
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     _file: Option<fs::File>,
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     path: PathBuf,
 }
 
-// The non-Unix fallback retains the existing create-new lock-file behavior.
-#[cfg(not(unix))]
+// The fallback for other platforms retains the create-new lock-file behavior.
+#[cfg(not(any(unix, windows)))]
 impl Drop for DatabaseLock {
     fn drop(&mut self) {
         // Windows may refuse deletion while this process still has the
@@ -133,7 +187,23 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         validate_lock_identity(&path, &file)?;
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let file = {
+        // Keep the inode in place across crashes so a stale pathname cannot
+        // permanently prevent startup. Multiple readers hold shared locks.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| format_database_lock_error("open", lock_kind, &path, error))?;
+        windows_advisory::try_lock(&file, exclusive)
+            .map_err(|error| format_database_lock_error("acquire", lock_kind, &path, error))?;
+        file
+    };
+
+    #[cfg(not(any(unix, windows)))]
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -141,11 +211,11 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         .map_err(|error| format_database_lock_error("acquire", lock_kind, &path, error))?;
 
     Ok(DatabaseLock {
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         _file: file,
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         _file: Some(file),
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         path,
     })
 }
@@ -208,7 +278,7 @@ mod read_only_lock_tests {
     }
 }
 
-#[cfg(all(test, not(unix)))]
+#[cfg(all(test, not(any(unix, windows))))]
 mod non_unix_lock_release_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -233,6 +303,40 @@ mod non_unix_lock_release_tests {
         let retry = acquire_database_lock(&directory, true).unwrap();
         drop(retry);
         assert!(!path.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_advisory_lock_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn concurrent_readers_do_not_block_one_another_or_admit_a_writer() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-advisory-win-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let first = acquire_database_lock(&directory, false).unwrap();
+        let second = acquire_database_lock(&directory, false).unwrap();
+        assert!(acquire_database_lock(&directory, true).is_err());
+        drop(first);
+        assert!(acquire_database_lock(&directory, true).is_err());
+        drop(second);
+
+        let writer = acquire_database_lock(&directory, true).unwrap();
+        assert!(acquire_database_lock(&directory, false).is_err());
+        drop(writer);
+
+        let lock_path = directory.join(".rusthouse-write.lock");
+        assert!(lock_path.is_file(), "the lock inode must survive guard drops");
+        let recovered = acquire_database_lock(&directory, true).unwrap();
+        drop(recovered);
         fs::remove_dir_all(directory).unwrap();
     }
 }
