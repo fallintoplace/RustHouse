@@ -23,6 +23,8 @@ def refuse_live_database(source):
     """Hold the database advisory lock for the entire cold backup."""
     lock = source / ".rusthouse-write.lock"
     if fcntl is None:
+        if os.name == "posix":
+            raise ValueError("cold backup requires POSIX advisory file locking")
         yield
         return
     fd = None

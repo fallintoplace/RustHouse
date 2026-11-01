@@ -91,6 +91,15 @@ class BackupTests(unittest.TestCase):
             self.assertTrue((base / "backup.partial").exists())
             self.assertFalse((base / "backup").exists())
 
+    @unittest.skipUnless(__import__("os").name == "posix", "POSIX flock required")
+    def test_missing_flock_support_fails_closed(self):
+        from offline_backup import refuse_live_database
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("offline_backup.fcntl", None):
+                with self.assertRaisesRegex(ValueError, "requires POSIX advisory"):
+                    with refuse_live_database(Path(folder)):
+                        self.fail("backup must not run without its database lock")
+
     @unittest.skipUnless(__import__("os").name == "posix", "flock is POSIX-only")
     def test_refuses_a_live_database_lock(self):
         import fcntl
