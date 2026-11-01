@@ -474,7 +474,7 @@ mod reusable_tsv_decode_buffer_tests {
         let mut writer = JsonlWriter::new(Vec::new());
         writer.write_all(b"a\tb\nleft\tright\n").unwrap();
         let committed = writer.output.clone();
-        assert!(writer.write_all(br"ok\tbad\xFF").is_ok());
+        assert!(writer.write_all(b"ok\tbad\\xFF").is_ok());
         assert!(writer.write_all(b"\n").is_err());
         assert_eq!(writer.output, committed);
     }
