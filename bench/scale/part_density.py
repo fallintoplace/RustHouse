@@ -12,7 +12,8 @@ import stat
 from pathlib import Path
 
 
-def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
+def part_density(root, *, small_part_rows=8192, target_part_rows=65536,
+                 max_entries=1_000_000):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected a frozen snapshot directory")
@@ -20,8 +21,14 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
         raise ValueError("small_part_rows must be positive")
     if type(target_part_rows) is not int or target_part_rows < 1:
         raise ValueError("target_part_rows must be positive")
+    if type(max_entries) is not int or max_entries < 1:
+        raise ValueError("max_entries must be a positive integer")
     rows = []
+    scanned = 0
     for child in root.iterdir():
+        scanned += 1
+        if scanned > max_entries:
+            raise ValueError("part density directory exceeds max_entries")
         if child.is_symlink():
             raise ValueError(f"refusing symlink: {child.name}")
         count_file = child / "count.txt"
@@ -35,12 +42,28 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
         with os.fdopen(fd, "rb") as source:
             opened = os.fstat(source.fileno())
             if (not stat.S_ISREG(opened.st_mode) or
-                    (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+                    (before.st_dev, before.st_ino) !=
+                    (opened.st_dev, opened.st_ino)):
                 raise ValueError(f"count.txt changed while opening: {child.name}")
             payload = source.read(23)
+            finished = os.fstat(source.fileno())
+            if (opened.st_dev, opened.st_ino, opened.st_size,
+                    opened.st_mtime_ns, opened.st_ctime_ns) != (
+                    finished.st_dev, finished.st_ino, finished.st_size,
+                    finished.st_mtime_ns, finished.st_ctime_ns):
+                raise ValueError(f"count.txt changed during read: {child.name}")
+        after = count_file.lstat()
+        if (before.st_dev, before.st_ino, before.st_size,
+                before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_dev, after.st_ino, after.st_size,
+                after.st_mtime_ns, after.st_ctime_ns):
+            raise ValueError(f"count.txt changed during read: {child.name}")
         if len(payload) > 22:
             raise ValueError(f"invalid oversized count.txt in {child.name}")
-        raw = payload.decode("ascii")
+        try:
+            raw = payload.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise ValueError(f"invalid non-ASCII count.txt in {child.name}") from error
         digits = raw.removesuffix("\n").removesuffix("\r")
         if (not digits or not digits.isascii() or not digits.isdecimal()
                 or (len(digits) > 1 and digits.startswith("0"))):
@@ -96,11 +119,13 @@ def main(argv=None):
     parser.add_argument("--part-dir", type=Path, required=True)
     parser.add_argument("--small-part-rows", type=int, default=8192)
     parser.add_argument("--target-part-rows", type=int, default=65536)
+    parser.add_argument("--max-entries", type=int, default=1_000_000)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         report = part_density(args.part_dir, small_part_rows=args.small_part_rows,
-                              target_part_rows=args.target_part_rows)
+                              target_part_rows=args.target_part_rows,
+                              max_entries=args.max_entries)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -39,6 +39,109 @@ pub fn compare_snapshots(local: SnapshotVersion, remote: SnapshotVersion) -> Ver
     }
 }
 
+
+/// Find the newest snapshot that was independently observed on enough
+/// distinct replica members to satisfy a read quorum.
+///
+/// This checks metadata agreement only. It does not prove snapshot ancestry,
+/// committed writes, election safety, or consensus.
+pub fn newest_quorum_observed_snapshot(
+    policy: crate::distributed_quorum::QuorumPolicy,
+    members: &[&str],
+    observations: &[(&str, SnapshotVersion)],
+) -> Result<Option<SnapshotVersion>, &'static str> {
+    if observations.len() > members.len() {
+        return Err("too many snapshot observations for membership");
+    }
+    let mut acknowledging = Vec::with_capacity(observations.len());
+    for (index, &(node, _)) in observations.iter().enumerate() {
+        if observations[..index].iter().any(|(prior, _)| *prior == node) {
+            return Err("duplicate snapshot observation");
+        }
+        acknowledging.push(node);
+    }
+    // Also validate the policy and the full member set for an empty poll.
+    policy.observe(members, &acknowledging)?;
+    if observations.is_empty() {
+        return Ok(None);
+    }
+    let versions = observations.iter().map(|&(_, version)| version)
+        .collect::<Vec<_>>();
+    // A disagreement about the epoch or the bytes at a generation fails
+    // closed, even if one candidate appears to have enough supporters.
+    newest_consistent_snapshot(&versions)?;
+    let mut newest = None;
+    for &version in &versions {
+        let support = versions.iter().filter(|&&other| other == version).count();
+        if support >= policy.reads
+            && newest.is_none_or(|chosen: SnapshotVersion| {
+                version.generation > chosen.generation
+            })
+        {
+            newest = Some(version);
+        }
+    }
+    Ok(newest)
+}
+
+#[cfg(test)]
+mod quorum_snapshot_observation_tests {
+    use super::*;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    #[test]
+    fn picks_only_quorum_supported_versions() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let members = ["a", "b", "c"];
+        let v4 = SnapshotVersion { epoch: 2, generation: 4, fingerprint: 44 };
+        let v5 = SnapshotVersion { generation: 5, fingerprint: 55, ..v4 };
+        assert_eq!(
+            newest_quorum_observed_snapshot(
+                policy, &members, &[("a", v4), ("b", v4), ("c", v5)]
+            ).unwrap(), Some(v4)
+        );
+        assert_eq!(
+            newest_quorum_observed_snapshot(
+                policy, &members, &[("a", v5), ("b", v5), ("c", v4)]
+            ).unwrap(), Some(v5)
+        );
+        assert_eq!(
+            newest_quorum_observed_snapshot(
+                policy, &members, &[("a", v4), ("b", v5)]
+            ).unwrap(), None
+        );
+        assert_eq!(
+            newest_quorum_observed_snapshot(policy, &members, &[]).unwrap(), None
+        );
+    }
+
+    #[test]
+    fn refuses_duplicates_unknowns_and_conflicting_histories() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let members = ["a", "b", "c"];
+        let version = SnapshotVersion { epoch: 1, generation: 1, fingerprint: 1 };
+        assert!(newest_quorum_observed_snapshot(
+            policy, &members, &[("a", version), ("a", version)]
+        ).is_err());
+        assert!(newest_quorum_observed_snapshot(
+            policy, &members, &[("unknown", version)]
+        ).is_err());
+        assert!(newest_quorum_observed_snapshot(
+            policy, &members, &[("a", version), ("b", SnapshotVersion {
+                fingerprint: 2, ..version
+            })]
+        ).is_err());
+        assert!(newest_quorum_observed_snapshot(
+            policy, &members, &[("a", version), ("b", SnapshotVersion {
+                epoch: 2, ..version
+            })]
+        ).is_err());
+        assert!(newest_quorum_observed_snapshot(
+            policy, &["a", "a", "c"], &[]
+        ).is_err());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

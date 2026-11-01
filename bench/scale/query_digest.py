@@ -15,6 +15,52 @@ import time
 from pathlib import Path
 
 
+def _has_sql_separator(statement):
+    """Find executable semicolons without mistaking literals or comments."""
+    quoted = None
+    nested = 0
+    cursor = 0
+    while cursor < len(statement):
+        character = statement[cursor]
+        next_char = statement[cursor + 1:cursor + 2]
+        if quoted:
+            if character == "\\" and next_char:
+                cursor += 2
+                continue
+            if character == quoted:
+                if next_char == quoted:
+                    cursor += 2
+                    continue
+                quoted = None
+        elif nested:
+            if character == "/" and next_char == "*":
+                nested += 1
+                if nested > 32:
+                    return True
+                cursor += 2
+                continue
+            if character == "*" and next_char == "/":
+                nested -= 1
+                cursor += 2
+                continue
+        elif character in ("'", '"') or character == chr(96):
+            quoted = character
+        elif character == "#" or (character == "-" and next_char == "-"):
+            cursor += 1 if character == "#" else 2
+            while cursor < len(statement) and statement[cursor] not in "\r\n":
+                cursor += 1
+            continue
+        elif character == "/" and next_char == "*":
+            nested = 1
+            cursor += 2
+            continue
+        elif character == ";":
+            return True
+        cursor += 1
+    return quoted is not None or nested != 0
+
+
+
 def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None,
                  max_rows=10000, max_output_bytes=100_000_000,
                  timeout=600, run=None):
@@ -34,7 +80,7 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
     if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
         raise ValueError("SQL must be nonempty and at most 64 KiB")
     statement = sql.strip().removesuffix(";").rstrip()
-    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
+    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or _has_sql_separator(statement):
         raise ValueError("digest requires one read-only SELECT")
     execute = run or subprocess.run
     started = time.perf_counter()
