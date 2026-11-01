@@ -100,7 +100,7 @@ pub fn write_pretty_json_row_prefixed<W: Write>(
     // A public formatter must not emit its prefix for malformed JSON.
     // The shared parser validates strings, escapes, numbers and nesting
     // before the first byte reaches a writer.
-    super::json_validate::validate_json_object(row)?;
+    super::json_validate::validate_json_value(row)?;
     output.write_all(prefix)?;
     let mut writer = RowWriter::new(output);
     write_pretty_json_row_into(&mut writer, row)?;
@@ -601,7 +601,7 @@ mod strict_preflight_tests {
             br#"{"x":[1,,2]}"#.as_slice(),
             br#"{"x":"\u12G4"}"#.as_slice(),
             br#"{"x":true,}"#.as_slice(),
-            br#"[1,2]"#.as_slice(),
+            br#"[1,,2]"#.as_slice(),
             br#"{"x":1}{"y":2}"#.as_slice(),
         ] {
             let mut output = Vec::new();
@@ -625,5 +625,24 @@ mod strict_preflight_tests {
         .unwrap();
         assert!(output.starts_with(b"record:{"));
         assert!(output.windows(12).any(|span| span == br#"\uD83D\uDE03"#));
+    }
+}
+
+#[cfg(test)]
+mod valid_root_json_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn arrays_scalars_and_nested_json_remain_pretty_printable() {
+        for input in [
+            br#"[1,2,{"x":3}]"#.as_slice(),
+            br#""literal""#.as_slice(),
+            br#"123"#.as_slice(),
+            br#"true"#.as_slice(),
+        ] {
+            let mut rendered = Vec::new();
+            write_pretty_json_row_prefixed(&mut rendered, b"row:", input).unwrap();
+            assert!(rendered.starts_with(b"row:"));
+        }
     }
 }
