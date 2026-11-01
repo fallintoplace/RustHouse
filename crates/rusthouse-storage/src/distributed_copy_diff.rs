@@ -161,6 +161,60 @@ fn select_copy_batch(
     selected
 }
 
+/// Reuse validated immutable-object inventories across many transfer pages.
+///
+/// Building the source and destination indexes only once avoids O(inventory)
+/// hashing and sorting on every small paged reconciliation request. The source
+/// slice must remain frozen while this borrowed planner is in use.
+pub struct ReplicaCopyPlanner<'a> {
+    missing: Vec<&'a ObjectMetadata>,
+}
+
+impl<'a> ReplicaCopyPlanner<'a> {
+    /// Reject duplicate keys and immutable-content conflicts before planning.
+    pub fn new(
+        source: &'a [ObjectMetadata],
+        destination: &[ObjectMetadata],
+    ) -> Result<Self, &'static str> {
+        let source_index = index(source)?;
+        let destination_index = index(destination)?;
+        reject_immutable_conflicts(&source_index, &destination_index)?;
+        let mut missing = source_index.into_values()
+            .filter(|object| needs_copy(object, &destination_index))
+            .collect::<Vec<_>>();
+        missing.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+        Ok(Self { missing })
+    }
+
+    pub fn len(&self) -> usize {
+        self.missing.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.missing.is_empty()
+    }
+
+    /// Resume strictly after the named object key in O(log N), then perform
+    /// the same budget-constrained greedy selection as the one-shot planner.
+    pub fn batch_after(
+        &self,
+        after_key: Option<&str>,
+        max_bytes: u64,
+        max_objects: usize,
+    ) -> Result<Vec<ObjectMetadata>, &'static str> {
+        if after_key.is_some_and(|key| !valid_key(key)) {
+            return Err("invalid replica copy continuation key");
+        }
+        if max_objects > 65_536 {
+            return Err("replica copy batch exceeds object limit");
+        }
+        let first = after_key.map_or(0, |cursor| {
+            self.missing.partition_point(|object| object.key.as_str() <= cursor)
+        });
+        Ok(select_copy_batch(&self.missing[first..], max_bytes, max_objects))
+    }
+}
+
 /// Select a bounded batch from the deterministic copy-only reconciliation plan.
 /// Oversized objects are skipped so smaller copies can still make progress.
 pub fn plan_replica_copy_batch(
@@ -846,5 +900,53 @@ mod small_copy_batch_tests {
         let different = ObjectMetadata { bytes: 2, ..a.clone() };
         assert!(plan_replica_copy_batch(&[a.clone()], &[different], 0, 0).is_err());
         assert!(plan_replica_copy_batch(&[a.clone(), a], &[], 0, 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod reusable_reconciliation_plan_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_pages_match_one_shot_copy_planner_for_skewed_inventories() {
+        let source = (0..8_192usize).rev().map(|index| ObjectMetadata {
+            key: format!("part/object_{index:05}"),
+            bytes: if index % 9 == 0 { 0 } else { (index % 101) as u64 },
+            crc32c: index as u32,
+        }).collect::<Vec<_>>();
+        let destination = source.iter().step_by(5).cloned().collect::<Vec<_>>();
+        let planner = ReplicaCopyPlanner::new(&source, &destination).unwrap();
+        assert_eq!(planner.len(), source.len() - destination.len());
+        assert!(!planner.is_empty());
+
+        for cursor in [None, Some("part/object_00000"), Some("part/object_04096"),
+                       Some("part/object_08191")] {
+            for budget in [0u64, 1, 49, 255, 4096, u64::MAX] {
+                for limit in [0usize, 1, 2, 17, 127] {
+                    assert_eq!(
+                        planner.batch_after(cursor, budget, limit).unwrap(),
+                        plan_replica_copy_batch_after(
+                            &source, &destination, cursor, budget, limit
+                        ).unwrap(),
+                        "cursor={cursor:?} budget={budget} limit={limit}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_inventories_and_cursor_rejected_without_mutations() {
+        let object = ObjectMetadata { key: "safe/one".into(), bytes: 3, crc32c: 10 };
+        let source = [object.clone()];
+        assert!(ReplicaCopyPlanner::new(&[object.clone(), object.clone()], &[]).is_err());
+        assert!(ReplicaCopyPlanner::new(&source, &[
+            ObjectMetadata { crc32c: 11, ..object.clone() }
+        ]).is_err());
+        let planner = ReplicaCopyPlanner::new(&source, &[]).unwrap();
+        assert_eq!(planner.batch_after(None, 3, 1).unwrap(), source);
+        assert!(planner.batch_after(Some("../invalid"), 3, 1).is_err());
+        assert!(planner.batch_after(None, 3, 65_537).is_err());
+        assert!(ReplicaCopyPlanner::new(&[], &[]).unwrap().is_empty());
     }
 }
