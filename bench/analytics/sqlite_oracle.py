@@ -144,6 +144,43 @@ def assert_unordered_rows(actual, expected_rows):
         if actual_counts != expected_counts:
             raise ValueError("result multiset differs from SQLite")
         return
+    # Float comparisons use tolerance and cannot be keyed exactly. Index
+    # the columns that are always exact instead. The common grouped-query
+    # result has a fixed dimension key and one floating aggregate, so this
+    # reduces mixed-result matching from O(rows^2) to near-linear time.
+    width = len(expected_rows[0]) if expected_rows else 0
+    if any(len(row) != width for row in expected_rows):
+        raise ValueError("result multiset differs from SQLite")
+    exact_columns = tuple(
+        column for column in range(width)
+        if all(not isinstance(row[column], float) for row in expected_rows)
+    )
+    if exact_columns:
+        def expected_key(row):
+            return tuple(None if row[column] is None else
+                         str(int(row[column])) if isinstance(row[column], bool) else
+                         str(row[column]) for column in exact_columns)
+
+        buckets = {}
+        try:
+            for row in actual:
+                if len(row) != width:
+                    raise ValueError("result multiset differs from SQLite")
+                key = tuple(decode_tsv_value(row[column]) for column in exact_columns)
+                buckets.setdefault(key, []).append(row)
+        except (UnicodeError, ValueError, TypeError) as error:
+            raise ValueError("result multiset differs from SQLite") from error
+
+        for expected in expected_rows:
+            bucket = buckets.get(expected_key(expected), [])
+            position = next((i for i, row in enumerate(bucket) if row_equal(row, expected)), None)
+            if position is None:
+                raise ValueError("result multiset differs from SQLite")
+            bucket.pop(position)
+        return
+
+    # All columns have tolerant floating semantics. Preserve the original
+    # matching order rather than assuming tolerance is transitive.
     unmatched = list(actual)
     for expected in expected_rows:
         position = next((i for i, row in enumerate(unmatched) if row_equal(row, expected)), None)
