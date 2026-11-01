@@ -187,6 +187,36 @@ fn checksum_work_order(entries: &[InventoryEntry], workers: usize) -> Option<Vec
     Some(order)
 }
 
+/// Preserve the earliest inventory-path error even when the parallel
+/// work queue was scheduled out of path order and cancelled after a failure.
+fn collect_ordered_checksum_results(
+    active: &Path,
+    entries: &[InventoryEntry],
+    slots: Vec<std::sync::OnceLock<Result<CheckedInventoryEntry, PartError>>>,
+) -> Result<Vec<CheckedInventoryEntry>, PartError> {
+    let first_failure = slots.iter().position(|slot| {
+        slot.get().is_some_and(Result::is_err)
+    });
+    let mut checked = Vec::with_capacity(entries.len());
+    for (index, slot) in slots.into_iter().enumerate() {
+        if first_failure.is_some_and(|failure| index > failure) {
+            break;
+        }
+        let entry = match slot.into_inner() {
+            Some(result) => result?,
+            // Revisit only unclaimed entries earlier than an observed
+            // failure. No extra I/O occurs on successful inventory polls.
+            None if first_failure.is_some() => checksum_inventory_entry(active, &entries[index], false)?,
+            None => return Err(PartError::InvalidScan("missing snapshot checksum result".into())),
+        };
+        checked.push(entry);
+    }
+    if checked.len() != entries.len() {
+        return Err(PartError::InvalidScan("missing snapshot checksum result".into()));
+    }
+    Ok(checked)
+}
+
 pub fn inventory_snapshot_crc32c(
     root: &Path,
     max_files: usize,
@@ -269,16 +299,10 @@ pub fn inventory_snapshot_crc32c(
         }
         Ok(())
     })?;
-    // The checksum work order can be size-prioritized rather than lexical.
-    // Read result slots in original inventory order for deterministic errors.
-    // On failure, intentionally unclaimed slots have no value.
-    let result = slots
-        .into_iter()
-        .filter_map(|slot| slot.into_inner())
-        .collect::<Result<Vec<_>, _>>()?;
-    if result.len() != entries.len() {
-        return Err(PartError::InvalidScan("missing snapshot checksum result".into()));
-    }
+    // Size-first scheduling may leave an earlier lexicographic entry
+    // unclaimed when another worker fails. Verify those earlier entries
+    // before choosing the error, so corruption reports stay deterministic.
+    let result = collect_ordered_checksum_results(&active, &entries, slots)?;
     require_unchanged_generation(root, &active)?;
     Ok(result)
 }
@@ -683,5 +707,45 @@ mod inventory_open_consistency_tests {
         assert_eq!(original.len(), opened.len());
         assert!(!same_file_state(&original, &opened));
         fs::remove_file(&root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod deterministic_checksum_failure_tests {
+    use super::*;
+    use std::sync::OnceLock;
+
+    #[test]
+    fn unclaimed_earlier_path_precedes_later_worker_failure() {
+        let entries = vec![
+            InventoryEntry { relative_path: "missing-first".into(), bytes: 1 },
+            InventoryEntry { relative_path: "later".into(), bytes: 1 },
+        ];
+        let slots: Vec<OnceLock<Result<CheckedInventoryEntry, PartError>>> =
+            (0..2).map(|_| OnceLock::new()).collect();
+        slots[1].set(Err(PartError::InvalidScan("later worker error".into()))).unwrap();
+        let error = collect_ordered_checksum_results(
+            Path::new("/rusthouse-inventory-nonexistent-root"),
+            &entries, slots,
+        ).unwrap_err();
+        assert!(!format!("{error:?}").contains("later worker error"));
+    }
+
+    #[test]
+    fn successful_parallel_slots_keep_original_path_order() {
+        let entries = ["one", "two", "three"].map(|name| InventoryEntry {
+            relative_path: name.into(), bytes: 1,
+        });
+        let slots: Vec<OnceLock<Result<CheckedInventoryEntry, PartError>>> =
+            (0..3).map(|_| OnceLock::new()).collect();
+        for index in [2usize, 0, 1] {
+            slots[index].set(Ok(CheckedInventoryEntry {
+                relative_path: entries[index].relative_path.clone(),
+                bytes: 1,
+                crc32c: index as u32,
+            })).unwrap();
+        }
+        let found = collect_ordered_checksum_results(Path::new("."), &entries, slots).unwrap();
+        assert_eq!(found.iter().map(|entry| entry.crc32c).collect::<Vec<_>>(), vec![0, 1, 2]);
     }
 }
