@@ -12,9 +12,7 @@ from pathlib import Path
 
 
 def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
-                expected_sha256=None, max_total_bytes=None, max_dirs=1_000_000):
-    if type(max_dirs) is not int or max_dirs < 1:
-        raise ValueError("max_dirs must be a positive integer")
+                expected_sha256=None, max_total_bytes=None):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected an offline snapshot directory")
@@ -29,15 +27,11 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
         raise ValueError("expected_sha256 must be lowercase SHA256 hex")
     aggregate = hashlib.sha256()
     count = 0
-    directory_count = 0
     total_bytes = 0
     def fail_walk(error):
         raise error
 
     for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail_walk):
-        directory_count += 1
-        if directory_count > max_dirs:
-            raise ValueError("snapshot exceeds max_dirs")
         dirs.sort()
         files.sort()
         for name in dirs:
@@ -101,14 +95,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--max-files", type=int, default=1_000_000)
-    parser.add_argument("--max-dirs", type=int, default=1_000_000)
     parser.add_argument("--max-total-bytes", type=int)
     parser.add_argument("--block-size-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--expected-sha256")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = fingerprint(args.part, max_files=args.max_files, max_dirs=args.max_dirs,
+        report = fingerprint(args.part, max_files=args.max_files,
                              block_size=args.block_size_bytes,
                              expected_sha256=args.expected_sha256,
                              max_total_bytes=args.max_total_bytes)
