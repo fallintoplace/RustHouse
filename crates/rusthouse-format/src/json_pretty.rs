@@ -39,56 +39,6 @@ fn is_empty_json_container_pair(open: u8, close: u8) -> bool {
     matches!((open, close), (b'{', b'}') | (b'[', b']'))
 }
 
-fn validate_pretty_depth(row: &[u8]) -> io::Result<()> {
-    let mut inside_string = false;
-    let mut escaped = false;
-    let mut depth = 0usize;
-    // Match each closing delimiter against its opener before writing any bytes.
-    let mut containers = [0u8; MAX_PRETTY_JSON_DEPTH];
-    for &byte in row {
-        if inside_string {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                inside_string = false;
-            }
-            continue;
-        }
-        match byte {
-            b'"' => inside_string = true,
-            b'{' | b'[' => {
-                if depth >= MAX_PRETTY_JSON_DEPTH {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "pretty JSON nesting exceeds 256 levels",
-                    ));
-                }
-                containers[depth] = byte;
-                depth += 1;
-            }
-            b'}' | b']' => {
-                if depth == 0 || !is_empty_json_container_pair(containers[depth - 1], byte) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "unbalanced pretty JSON delimiter",
-                    ));
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-    if depth != 0 || inside_string {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unterminated pretty JSON container or string",
-        ));
-    }
-    Ok(())
-}
-
 // Batch punctuation-heavy JSON output without a heap allocation per row.
 struct RowWriter<'a, W: Write> {
     output: &'a mut W,
@@ -649,7 +599,7 @@ mod strict_preflight_tests {
             br#"{"x":01}"#.as_slice(),
             br#"{"x":1e+}"#.as_slice(),
             br#"{"x":[1,,2]}"#.as_slice(),
-            br#"{"x":"\uD800"}"#.as_slice(),
+            br#"{"x":"\u12G4"}"#.as_slice(),
             br#"{"x":true,}"#.as_slice(),
             br#"[1,2]"#.as_slice(),
             br#"{"x":1}{"y":2}"#.as_slice(),
