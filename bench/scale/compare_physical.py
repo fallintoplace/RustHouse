@@ -118,8 +118,13 @@ def _unique_fields(pairs):
     return values
 
 
+def _reject_nonstandard_number(token):
+    raise ValueError(f"nonstandard physical comparison JSON number: {token}")
+
+
 def parse_report(path):
-    return json.loads(_read_bounded_report(path), object_pairs_hook=_unique_fields)
+    return json.loads(_read_bounded_report(path), object_pairs_hook=_unique_fields,
+                      parse_constant=_reject_nonstandard_number)
 
 
 def _read_bounded_report(path):
