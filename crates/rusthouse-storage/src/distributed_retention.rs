@@ -927,13 +927,16 @@ pub fn retention_candidates_with_min_age(
     if generations.is_empty() || generations.len() > MAX_RETENTION_GENERATIONS {
         return Err("invalid generation retention inventory");
     }
-    let mut timestamps = std::collections::HashMap::with_capacity(generations.len());
-    let mut ids = Vec::with_capacity(generations.len());
-    for &(generation, created_at) in generations {
+    // Snapshot inventories are normally chronological. Borrow their sorted
+    // generation/timestamp pairs rather than building a hash table for every
+    // retention poll. An unordered inventory still gets one owned sort.
+    let ordered = ordered_generation_sizes(generations);
+    let mut ids = Vec::with_capacity(ordered.len());
+    for (index, &(generation, created_at)) in ordered.iter().enumerate() {
         if created_at > now_seconds {
             return Err("generation timestamp is in the future");
         }
-        if timestamps.insert(generation, created_at).is_some() {
+        if index > 0 && ordered[index - 1].0 == generation {
             return Err("duplicate generation timestamp");
         }
         ids.push(generation);
@@ -948,10 +951,53 @@ pub fn retention_candidates_with_min_age(
     Ok(eligible
         .into_iter()
         .filter(|generation| {
-            let created = timestamps[generation];
-            now_seconds - created >= minimum_age_seconds
+            let index = ids
+                .binary_search(generation)
+                .expect("eligible generation was validated against sorted inventory");
+            now_seconds - ordered[index].1 >= minimum_age_seconds
         })
         .collect())
+}
+
+#[cfg(test)]
+mod min_age_sorted_inventory_tests {
+    use super::*;
+
+    #[test]
+    fn chronological_and_shuffled_ages_match_exact_retention_policy() {
+        let forward = (1..=4_096u64)
+            .map(|generation| (generation, generation * 4))
+            .collect::<Vec<_>>();
+        let reversed = forward.iter().copied().rev().collect::<Vec<_>>();
+        let planned = |inventory: &[(u64, u64)]| {
+            retention_candidates_with_min_age(
+                inventory,
+                4_096,
+                16,
+                &[10, 200],
+                &[3_500],
+                16_384,
+                800,
+            )
+            .unwrap()
+        };
+        assert_eq!(planned(&forward), planned(&reversed));
+        assert!(
+            planned(&forward)
+                .iter()
+                .all(|&generation| generation != 10 && generation != 200)
+        );
+        let mut duplicate = forward.clone();
+        duplicate.push((4_096, 16_384));
+        assert!(retention_candidates_with_min_age(
+            &duplicate, 4_096, 2, &[], &[4_096], 16_384, 0
+        ).is_err());
+        let mut future = forward;
+        future[0].1 = 16_385;
+        assert!(retention_candidates_with_min_age(
+            &future, 4_096, 2, &[], &[4_096], 16_384, 0
+        ).is_err());
+    }
 }
 
 #[cfg(test)]
