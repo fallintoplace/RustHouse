@@ -21,7 +21,10 @@ fn finds_case_insensitive_unicode_positions_in_code_points() {
     ] {
         assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
     }
-    assert_eq!(value("SELECT positionCaseInsensitiveUTF8(NULL, 'a')"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT positionCaseInsensitiveUTF8(NULL, 'a')"),
+        ConstantValue::Null
+    );
     assert!(parse_select("SELECT positionCaseInsensitiveUTF8('abc')").is_err());
     assert!(parse_select("SELECT positionCaseInsensitiveUTF8('abc', 'a', -1)").is_err());
 }
