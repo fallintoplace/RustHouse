@@ -70,11 +70,19 @@ fn validate_replica_nodes(nodes: &[String], replicas: usize) -> Result<(), &'sta
             }
         }
     } else {
-        let mut unique = HashSet::with_capacity(nodes.len());
-        for node in nodes {
-            if !valid_node(node) || !unique.insert(node.as_str()) {
+        // Membership has a fixed upper bound. Sort borrowed node IDs on
+        // the stack instead of allocating a hash table for every placement.
+        let mut names = [""; MAX_PLACEMENT_NODES];
+        for (index, node) in nodes.iter().enumerate() {
+            if !valid_node(node) {
                 return Err("invalid or duplicate replica node");
             }
+            names[index] = node.as_str();
+        }
+        let sorted = &mut names[..nodes.len()];
+        sorted.sort_unstable();
+        if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("invalid or duplicate replica node");
         }
     }
     Ok(())
@@ -1614,5 +1622,34 @@ mod borrowed_capacity_placement_tests {
         let mut broken = capacities.clone();
         broken[20].1.reserved = u64::MAX;
         assert!(capacity_aware_replicas_for("shard", &members, &broken, 2, 1).is_err());
+    }
+}
+
+#[cfg(test)]
+mod stack_placement_validation_tests {
+    use super::*;
+
+    #[test]
+    fn large_placement_memberships_remain_deterministic_and_duplicate_safe() {
+        for count in [9usize, 16, 32, 64] {
+            let nodes = (0..count)
+                .rev()
+                .map(|n| format!("node_{n:02}"))
+                .collect::<Vec<_>>();
+            let first = replicas_for("analytics", &nodes, count.min(3)).unwrap();
+            let mut ascending = nodes.clone();
+            ascending.reverse();
+            assert_eq!(first, replicas_for("analytics", &ascending, count.min(3)).unwrap());
+            assert_eq!(
+                replicas_for_many(&["analytics"], &nodes, count.min(3)).unwrap(),
+                vec![first]
+            );
+            let mut duplicate = nodes.clone();
+            duplicate[count - 1] = duplicate[0].clone();
+            assert!(replicas_for("analytics", &duplicate, 1).is_err());
+            let mut invalid = nodes;
+            invalid[count - 1] = "../invalid".into();
+            assert!(replicas_for("analytics", &invalid, 1).is_err());
+        }
     }
 }
