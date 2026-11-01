@@ -901,3 +901,88 @@ mod parallel_immutable_buffer_checksum_tests {
         }
     }
 }
+
+/// Combine ordered, independently verified chunk checksums without rereading
+/// payload bytes. Reject noncanonical empty chunks and lengths that exceed
+/// the caller's transfer budget before returning any combined checksum.
+///
+/// CRC32C only checks accidental corruption and does not authenticate peers.
+pub fn crc32c_combine_chunks(
+    chunks: &[(u64, u32)],
+    max_total_bytes: u64,
+) -> io::Result<(u64, u32)> {
+    if chunks.len() > 65_536 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "checksum chunk count exceeds limit",
+        ));
+    }
+    let mut total = 0u64;
+    let mut combined = 0u32;
+    for &(length, checksum) in chunks {
+        if length == 0 && checksum != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "empty checksum chunk must have CRC32C zero",
+            ));
+        }
+        total = total.checked_add(length).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "checksum byte count overflow")
+        })?;
+        if total > max_total_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "checksum chunks exceed transfer byte budget",
+            ));
+        }
+        combined = crc32c_combine(combined, checksum, length);
+    }
+    Ok((total, combined))
+}
+
+#[cfg(test)]
+mod checked_crc_chunk_reduction_tests {
+    use super::*;
+
+    #[test]
+    fn arbitrary_chunk_layouts_match_single_pass_checksum() {
+        let payload = (0..131_073usize)
+            .map(|index| ((index * 113) % 251) as u8)
+            .collect::<Vec<_>>();
+        for size in [1usize, 3, 7, 64, 4096, 65_537] {
+            let chunks = payload
+                .chunks(size)
+                .map(|chunk| (chunk.len() as u64, crc32c(chunk)))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                crc32c_combine_chunks(&chunks, payload.len() as u64).unwrap(),
+                (payload.len() as u64, crc32c(&payload))
+            );
+        }
+        assert_eq!(crc32c_combine_chunks(&[], 0).unwrap(), (0, 0));
+        assert_eq!(crc32c_combine_chunks(&[(0, 0)], 0).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn rejects_bad_empty_checkpoints_budgets_and_overflow() {
+        assert_eq!(
+            crc32c_combine_chunks(&[(0, 1)], 5).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            crc32c_combine_chunks(&[(3, crc32c(b"abc"))], 2)
+                .unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            crc32c_combine_chunks(&[(u64::MAX, 5), (1, 7)], u64::MAX)
+                .unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            crc32c_combine_chunks(&vec![(0, 0); 65_537], 0)
+                .unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+}
