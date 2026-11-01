@@ -982,7 +982,11 @@ mod min_age_sorted_inventory_tests {
             .unwrap()
         };
         assert_eq!(planned(&forward), planned(&reversed));
-        assert!(planned(&forward).iter().all(|&generation| generation != 10 && generation != 200));
+        assert!(
+            planned(&forward)
+                .iter()
+                .all(|&generation| generation != 10 && generation != 200)
+        );
         let mut duplicate = forward.clone();
         duplicate.push((4_096, 16_384));
         assert!(retention_candidates_with_min_age(
