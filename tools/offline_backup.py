@@ -126,10 +126,13 @@ def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeo
     if (type(doctor_timeout) not in (int, float) or
             not math.isfinite(doctor_timeout) or doctor_timeout <= 0):
         raise ValueError("doctor_timeout must be positive and finite")
-    source, destination, stage = preflight(
-        source, destination, max_bytes=max_bytes, max_entries=max_entries
-    )
+    source = Path(source)
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("source must be an existing real directory")
     with refuse_live_database(source):
+        source, destination, stage = preflight(
+            source, destination, max_bytes=max_bytes, max_entries=max_entries
+        )
         # Preserve all generations, including hidden files and lock metadata.
         shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
         # The copied tree may have changed after source preflight.
