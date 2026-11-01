@@ -1220,6 +1220,20 @@ pub fn plan_fair_replica_transfers(
     if byte_budget == 0 || max_batch_chunks == 0 {
         return Ok(Vec::new());
     }
+    // Nothing can fit when every full chunk is larger than the budget and
+    // no object's final short chunk can fit either. In that case, avoid
+    // scanning as many as 64 x 65536 checkpoint bits merely to return [].
+    // A short final chunk must still be considered even when full chunks do
+    // not fit, so checking chunk_bytes alone would be incorrect.
+    if sources.iter().all(|source| {
+        if source.chunk_bytes <= byte_budget {
+            return false;
+        }
+        let tail = source.total_bytes % source.chunk_bytes;
+        tail == 0 || tail > byte_budget
+    }) {
+        return Ok(Vec::new());
+    }
     let mut iterators = sources
         .iter()
         .map(|source| source.checkpoint.remaining_indices())
@@ -1332,6 +1346,40 @@ mod fair_replica_transfer_tests {
                     }
                 },
             }],
+        );
+    }
+
+    #[test]
+    fn small_budget_fast_rejects_large_complete_chunks_but_keeps_short_tails() {
+        let keys = (0..64)
+            .map(|index| key(&format!("file{index}.bin")))
+            .collect::<Vec<_>>();
+        let checkpoints = (0..64)
+            .map(|_| ResumeMap::new(65_536).unwrap())
+            .collect::<Vec<_>>();
+        let sources = keys
+            .iter()
+            .zip(&checkpoints)
+            .map(|(key, checkpoint)| FairTransferSource {
+                key,
+                total_bytes: 65_536 * 8,
+                chunk_bytes: 8,
+                checkpoint,
+            })
+            .collect::<Vec<_>>();
+        assert!(plan_fair_replica_transfers(&sources, 1, 64).unwrap().is_empty());
+
+        let short_tail = ResumeMap::new(2).unwrap();
+        let tail_key = key("short.bin");
+        let only_tail = [FairTransferSource {
+            key: &tail_key,
+            total_bytes: 9,
+            chunk_bytes: 8,
+            checkpoint: &short_tail,
+        }];
+        assert_eq!(
+            plan_fair_replica_transfers(&only_tail, 1, 2).unwrap()[0].indexed.index,
+            1
         );
     }
 
