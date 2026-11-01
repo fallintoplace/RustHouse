@@ -50,6 +50,8 @@ def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=Non
             if (Path(directory) / name).is_symlink():
                 raise ValueError("symlinked directory is unsafe")
         for name in files:
+            if count >= max_files:
+                raise ValueError("snapshot exceeds max_files")
             path = Path(directory) / name
             info = path.lstat()
             if not stat.S_ISREG(info.st_mode):
@@ -65,8 +67,6 @@ def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=Non
                 elif item > heap[0]:
                     heapq.heapreplace(heap, item)
             count += 1
-            if count > max_files:
-                raise ValueError("snapshot exceeds max_files")
     if count == 0:
         raise ValueError("snapshot contains no files")
     result = {"workload": "snapshot-stream-bytes", "total_bytes": total_bytes,
