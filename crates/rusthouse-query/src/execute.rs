@@ -155,7 +155,7 @@ impl fmt::Display for Number {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum NumberKey {
     Unsigned(u128),
     Signed(i128),
@@ -178,16 +178,44 @@ const MAX_DISTINCT_ROWS: usize = 200_000;
 const MAX_DISTINCT_KEY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MEDIAN_ROWS: usize = 100_000;
 
+/// Most numeric SELECT DISTINCT projections have at most four columns.
+/// Keep these keys inside the hash entry to avoid one heap allocation per
+/// distinct row, while large projections retain their old dynamic encoding.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum DistinctKey {
+    Inline { len: u8, values: [NumberKey; 4] },
+    Heap(Vec<NumberKey>),
+}
+
+impl DistinctKey {
+    fn from_numbers(numbers: &[Number]) -> Self {
+        if numbers.len() <= 4 {
+            let mut values = [NumberKey::Unsigned(0); 4];
+            for (slot, &number) in values.iter_mut().zip(numbers) {
+                *slot = NumberKey::from(number);
+            }
+            Self::Inline { len: numbers.len() as u8, values }
+        } else {
+            Self::Heap(numbers.iter().copied().map(NumberKey::from).collect())
+        }
+    }
+
+    fn retained_payload_bytes(&self) -> Option<usize> {
+        match self {
+            Self::Inline { .. } => Some(0),
+            Self::Heap(keys) => keys.len().checked_mul(std::mem::size_of::<NumberKey>()),
+        }
+    }
+}
+
 fn remember_distinct(
-    seen: &mut HashSet<Vec<NumberKey>>,
+    seen: &mut HashSet<DistinctKey>,
     retained_bytes: &mut usize,
     values: &[Number],
 ) -> Result<bool, ExecutionError> {
-    let key: Vec<NumberKey> = values.iter().copied().map(NumberKey::from).collect();
-    let added = values
-        .len()
-        .checked_mul(std::mem::size_of::<NumberKey>())
-        .and_then(|size| size.checked_add(std::mem::size_of::<Vec<NumberKey>>() + 32))
+    let key = DistinctKey::from_numbers(values);
+    let added = key.retained_payload_bytes()
+        .and_then(|payload| payload.checked_add(std::mem::size_of::<DistinctKey>() + 32))
         .ok_or_else(|| ExecutionError::Invalid("DISTINCT retained size overflow".into()))?;
     let next = retained_bytes
         .checked_add(added)
@@ -1261,7 +1289,7 @@ fn execute_into<W: Write>(
     }
     let mut reader = NumericQueryReader::open_with_metadata(part, &scan_columns, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    let mut distinct: Option<HashSet<Vec<NumberKey>>> = query.distinct.then(HashSet::new);
+    let mut distinct: Option<HashSet<DistinctKey>> = query.distinct.then(HashSet::new);
     let mut distinct_retained_bytes = 0usize;
 
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
@@ -1335,6 +1363,8 @@ fn execute_into<W: Write>(
         0
     };
     let mut matched = 0u64;
+    // Reuse projected numeric values across DISTINCT probes, including duplicates.
+    let mut distinct_values_buffer = Vec::<Number>::new();
     while let Some(batch) = reader.next_batch()? {
         if is_count {
             matched += count_batch_matches(&batch, &comparisons) as u64;
@@ -1349,14 +1379,12 @@ fn execute_into<W: Write>(
                 matched += 1;
             } else {
                 let distinct_values = if let Some(seen) = distinct.as_mut() {
-                    let values = projected_indices
-                        .iter()
-                        .map(|index| number_at(&batch[*index], row))
-                        .collect::<Vec<_>>();
-                    if !remember_distinct(seen, &mut distinct_retained_bytes, &values)? {
+                    distinct_values_buffer.clear();
+                    distinct_values_buffer.extend(projected_indices.iter().map(|index| number_at(&batch[*index], row)));
+                    if !remember_distinct(seen, &mut distinct_retained_bytes, &distinct_values_buffer)? {
                         continue;
                     }
-                    Some(values)
+                    Some(distinct_values_buffer.as_slice())
                 } else {
                     None
                 };
@@ -2712,7 +2740,7 @@ mod distinct_single_hash_budget_tests {
     #[test]
     fn new_keys_are_rejected_but_duplicates_survive_at_budget_edge() {
         let mut seen = HashSet::new();
-        seen.insert(vec![NumberKey::Unsigned(7)]);
+        seen.insert(DistinctKey::from_numbers(&[Number::Unsigned(7)]));
         let mut charged = MAX_DISTINCT_KEY_BYTES;
         assert!(!remember_distinct(&mut seen, &mut charged, &[Number::Unsigned(7)]).unwrap());
         assert!(remember_distinct(&mut seen, &mut charged, &[Number::Unsigned(8)]).is_err());
@@ -2724,7 +2752,7 @@ mod distinct_single_hash_budget_tests {
     fn the_row_cap_does_not_reject_existing_rows() {
         let mut seen = HashSet::new();
         for value in 0..MAX_DISTINCT_ROWS as u128 {
-            seen.insert(vec![NumberKey::Unsigned(value)]);
+            seen.insert(DistinctKey::from_numbers(&[Number::Unsigned(value)]));
         }
         let mut bytes = 0usize;
         assert!(!remember_distinct(&mut seen, &mut bytes, &[Number::Unsigned(1)]).unwrap());
@@ -2738,5 +2766,41 @@ mod distinct_single_hash_budget_tests {
         );
         assert_eq!(seen.len(), MAX_DISTINCT_ROWS);
         assert_eq!(bytes, 0);
+    }
+}
+
+#[cfg(test)]
+mod inline_distinct_key_equivalence_tests {
+    use super::*;
+
+    #[test]
+    fn inline_and_wide_keys_preserve_complete_tuple_identity() {
+        for width in 0..=8usize {
+            let mut seen = HashSet::new();
+            let mut bytes = 0;
+            let values = (0..width).map(|i| Number::Unsigned(i as u128)).collect::<Vec<_>>();
+            assert!(remember_distinct(&mut seen, &mut bytes, &values).unwrap());
+            assert!(!remember_distinct(&mut seen, &mut bytes, &values).unwrap());
+            if width > 0 {
+                let mut different = values.clone();
+                different[width - 1] = Number::Unsigned(100);
+                assert!(remember_distinct(&mut seen, &mut bytes, &different).unwrap());
+            }
+            if width <= 4 {
+                assert!(matches!(DistinctKey::from_numbers(&values), DistinctKey::Inline { .. }));
+            } else {
+                assert!(matches!(DistinctKey::from_numbers(&values), DistinctKey::Heap(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_zero_sign_and_nan_remain_canonical() {
+        let mut seen = HashSet::new();
+        let mut bytes = 0;
+        assert!(remember_distinct(&mut seen, &mut bytes, &[Number::Float(-0.0)]).unwrap());
+        assert!(!remember_distinct(&mut seen, &mut bytes, &[Number::Float(0.0)]).unwrap());
+        assert!(remember_distinct(&mut seen, &mut bytes, &[Number::Float(f64::NAN)]).unwrap());
+        assert!(!remember_distinct(&mut seen, &mut bytes, &[Number::Float(f64::from_bits(0x7ff8000000000001))]).unwrap());
     }
 }
