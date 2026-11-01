@@ -302,6 +302,29 @@ pub fn newest_consistent_snapshot(
         }
         return Ok(newest);
     }
+    // Persisted generation histories are commonly chronological. Adjacent
+    // duplicate generations are enough to establish fingerprint consistency
+    // when the sequence is sorted, avoiding a large temporary hash table.
+    // Unordered caller histories still take the strict indexed fallback.
+    if versions
+        .windows(2)
+        .all(|pair| pair[0].generation <= pair[1].generation)
+    {
+        let mut previous = None;
+        for &version in versions {
+            if !valid_epoch_member(version, epoch) {
+                return Err("invalid or mismatched snapshot epoch");
+            }
+            if previous.is_some_and(|prior: SnapshotVersion| {
+                prior.generation == version.generation
+                    && prior.fingerprint != version.fingerprint
+            }) {
+                return Err("conflicting snapshot fingerprint");
+            }
+            previous = Some(version);
+        }
+        return Ok(*versions.last().expect("candidate list checked nonempty"));
+    }
     let mut seen = std::collections::HashMap::with_capacity(versions.len());
     let mut newest = versions[0];
     for &version in versions {
@@ -1142,5 +1165,43 @@ mod wide_quorum_lineage_tests {
         duplicate.push(observations[32]);
         assert!(newest_quorum_observed_snapshot(policy, &members, &duplicate).is_err());
         assert!(highest_quorum_observed_snapshot(policy, &members, &duplicate).is_err());
+    }
+}
+
+#[cfg(test)]
+mod chronological_snapshot_lineage_tests {
+    use super::*;
+
+    #[test]
+    fn large_sorted_histories_agree_with_unordered_consistency_validation() {
+        let mut chronological = Vec::new();
+        for generation in 1..=2048u64 {
+            let version = SnapshotVersion {
+                epoch: 7,
+                generation,
+                fingerprint: u128::from(generation) * 17,
+            };
+            chronological.push(version);
+            chronological.push(version);
+        }
+        let expected = *chronological.last().unwrap();
+        assert_eq!(newest_consistent_snapshot(&chronological).unwrap(), expected);
+        chronological.reverse();
+        assert_eq!(newest_consistent_snapshot(&chronological).unwrap(), expected);
+        chronological[100].fingerprint ^= 1;
+        assert!(newest_consistent_snapshot(&chronological).is_err());
+        chronological.reverse();
+        assert!(newest_consistent_snapshot(&chronological).is_err());
+    }
+
+    #[test]
+    fn sorted_history_rejects_invalid_epoch_and_generation() {
+        let good = SnapshotVersion { epoch: 1, generation: 2, fingerprint: 11 };
+        let mut history = vec![good; 32];
+        history[16].epoch = 2;
+        assert!(newest_consistent_snapshot(&history).is_err());
+        history[16] = good;
+        history[16].generation = 0;
+        assert!(newest_consistent_snapshot(&history).is_err());
     }
 }
