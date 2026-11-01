@@ -22,7 +22,9 @@ def classify(path):
 
 
 def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=None,
-              max_dirs=1_000_000):
+              max_dirs=1_000_000, deduplicate_hardlinks=False):
+    if type(deduplicate_hardlinks) is not bool:
+        raise ValueError("deduplicate_hardlinks must be boolean")
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected a real offline snapshot directory")
@@ -39,6 +41,8 @@ def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=Non
     count = 0
     directory_count = 0
     total_bytes = 0
+    unique_bytes = 0
+    seen_inodes = set() if deduplicate_hardlinks else None
     def fail_walk(error):
         raise error
 
@@ -57,6 +61,11 @@ def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=Non
             if not stat.S_ISREG(info.st_mode):
                 raise ValueError(f"unsafe snapshot entry: {path}")
             total_bytes += info.st_size
+            if seen_inodes is not None:
+                identity = (info.st_dev, info.st_ino)
+                if identity not in seen_inodes:
+                    seen_inodes.add(identity)
+                    unique_bytes += info.st_size
             if max_total_bytes is not None and total_bytes > max_total_bytes:
                 raise ValueError("snapshot exceeds max_total_bytes")
             groups[classify(name)] += info.st_size
@@ -72,6 +81,10 @@ def inventory(root, *, max_files=1_000_000, largest_files=0, max_total_bytes=Non
     result = {"workload": "snapshot-stream-bytes", "total_bytes": total_bytes,
               "file_count": count, "byte_groups": groups,
               "scope": "filesystem inventory; verify active parts separately"}
+    if seen_inodes is not None:
+        result["unique_file_bytes"] = unique_bytes
+        result["hardlinked_alias_bytes"] = total_bytes - unique_bytes
+        result["unique_inodes"] = len(seen_inodes)
     if largest_files:
         result["largest_files"] = [
             {"path": path, "bytes": size}
@@ -87,13 +100,16 @@ def main(argv=None):
     parser.add_argument("--max-dirs", type=int, default=1_000_000)
     parser.add_argument("--largest-files", type=int, default=0)
     parser.add_argument("--max-total-bytes", type=int)
+    parser.add_argument("--deduplicate-hardlinks", action="store_true",
+                        help="Report unique inode byte totals alongside logical file bytes")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         result = inventory(args.part, max_files=args.max_files,
                            max_dirs=args.max_dirs,
                            largest_files=args.largest_files,
-                           max_total_bytes=args.max_total_bytes)
+                           max_total_bytes=args.max_total_bytes,
+                           deduplicate_hardlinks=args.deduplicate_hardlinks)
         rendered = json.dumps(result, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
