@@ -389,14 +389,23 @@ pub fn reserve_replica_capacity_plan(
     if nodes.is_empty() || nodes.len() > 64 || requests.len() > MAX_RESERVATION_OBJECTS {
         return Err("invalid multi-replica reservation limits");
     }
-    let mut index = std::collections::HashMap::with_capacity(nodes.len());
+    // Small reservation batches usually touch only a handful of replicas.
+    // Borrow node names directly instead of building a hash table when the
+    // worst-case search work is small. Large batches keep indexed lookups.
+    let mut index = (nodes.len() > 8 || requests.len() > 32)
+        .then(|| std::collections::HashMap::with_capacity(nodes.len()));
     for (position, node) in nodes.iter().enumerate() {
+        let duplicate = if let Some(index) = index.as_mut() {
+            index.insert(node.node.as_str(), position).is_some()
+        } else {
+            nodes[..position].iter().any(|previous| previous.node == node.node)
+        };
         if node.node.is_empty()
             || node.node.len() > 64
             || !node.node.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
             })
-            || index.insert(node.node.as_str(), position).is_some()
+            || duplicate
         {
             return Err("invalid or duplicate reservation node");
         }
@@ -405,7 +414,12 @@ pub fn reserve_replica_capacity_plan(
 
     let mut result = nodes.to_vec();
     for &(node, bytes) in requests {
-        let position = *index.get(node).ok_or("unknown replica reservation node")?;
+        let position = if let Some(index) = index.as_ref() {
+            *index.get(node).ok_or("unknown replica reservation node")?
+        } else {
+            nodes.iter().position(|candidate| candidate.node == node)
+                .ok_or("unknown replica reservation node")?
+        };
         result[position].capacity = result[position].capacity.reserve(bytes)?;
     }
     Ok(result)
@@ -513,5 +527,47 @@ mod release_invalid_state_tests {
             reserved: 3,
         };
         assert_eq!(valid.release(2).unwrap().available().unwrap(), 5);
+    }
+}
+
+#[cfg(test)]
+mod small_reservation_index_tests {
+    use super::*;
+
+    #[test]
+    fn small_and_large_reservations_preserve_atomic_capacity_accounting() {
+        for nodes_count in [1usize, 3, 8, 9, 16] {
+            let nodes = (0..nodes_count).map(|i| ReplicaNodeCapacity {
+                node: format!("node{i}"),
+                capacity: Capacity { total: 1000, used: i as u64, reserved: 0 },
+            }).collect::<Vec<_>>();
+            for requests_count in [0usize, 1, 4, 32, 33, 128] {
+                let requests = (0..requests_count)
+                    .map(|i| (nodes[i % nodes_count].node.as_str(), 1u64))
+                    .collect::<Vec<_>>();
+                let planned = reserve_replica_capacity_plan(&nodes, &requests).unwrap();
+                let mut expected = nodes.clone();
+                for &(node, bytes) in &requests {
+                    let slot = expected.iter_mut().find(|candidate| candidate.node == node).unwrap();
+                    slot.capacity = slot.capacity.reserve(bytes).unwrap();
+                }
+                assert_eq!(planned, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_small_node_sets_are_rejected_even_with_empty_requests() {
+        let valid = Capacity { total: 100, used: 0, reserved: 0 };
+        let nodes = vec![
+            ReplicaNodeCapacity { node: "same".into(), capacity: valid },
+            ReplicaNodeCapacity { node: "same".into(), capacity: valid },
+        ];
+        assert!(reserve_replica_capacity_plan(&nodes, &[]).is_err());
+        let nodes = vec![
+            ReplicaNodeCapacity { node: "one".into(), capacity: valid },
+            ReplicaNodeCapacity { node: "two".into(), capacity: valid },
+        ];
+        assert!(reserve_replica_capacity_plan(&nodes, &[("unknown", 1)]).is_err());
     }
 }
