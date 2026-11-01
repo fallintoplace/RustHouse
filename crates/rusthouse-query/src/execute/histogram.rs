@@ -784,14 +784,7 @@ mod streaming_histogram_bin_tests {
             let query =
                 crate::parse_select("SELECT histogram(7)(number) FROM numbers(10)").unwrap();
             let mut eager = Vec::new();
-            output_bins(
-                &query,
-                &mut eager,
-                "number",
-                7,
-                to_bins(min, max, &counts),
-            )
-            .unwrap();
+            output_bins(&query, &mut eager, "number", 7, to_bins(min, max, &counts)).unwrap();
             let mut streamed = Vec::new();
             output_counts(&query, &mut streamed, "number", 7, min, max, &counts).unwrap();
             assert_eq!(streamed, eager, "min={min} max={max}");
