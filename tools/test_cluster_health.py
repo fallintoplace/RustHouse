@@ -36,9 +36,9 @@ class ClusterTests(unittest.TestCase):
 
     def test_explicit_healthy_peer_threshold(self):
         payload = {"total": 3, "healthy": 2, "peers": [
-            {"address": "a", "healthy": True},
-            {"address": "b", "healthy": True},
-            {"address": "c", "healthy": False},
+            {"address": "127.0.0.1:9001", "healthy": True},
+            {"address": "127.0.0.1:9002", "healthy": True},
+            {"address": "127.0.0.1:9003", "healthy": False},
         ]}
         self.assertFalse(validate(payload))
         self.assertTrue(validate(payload, min_healthy=2))
@@ -47,6 +47,22 @@ class ClusterTests(unittest.TestCase):
             validate(payload, min_healthy=4)
         with self.assertRaisesRegex(ValueError, "min_healthy"):
             validate(payload, min_healthy=True)
+
+    def test_health_response_requires_canonical_allowed_peer_addresses(self):
+        from cluster_health import valid_peer_address
+        for address in ("127.0.0.1:8124", "10.1.2.3:8124", "172.31.1.1:1",
+                        "192.168.1.1:65535", "100.64.0.1:80"):
+            self.assertTrue(valid_peer_address(address), address)
+        for address in ("127.0.0.2:80", "8.8.8.8:53", "172.32.0.1:80",
+                        "100.128.0.1:80", "localhost:80", "[::1]:80",
+                        "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:00080",
+                        "127.0.0.1:80/path", "127.00.0.1:80", "bad",
+                        "127.0.0.1:" + "7" * 100_000):
+            with self.subTest(address=address[:80]):
+                self.assertFalse(valid_peer_address(address))
+                with self.assertRaisesRegex(ValueError, "invalid peer detail"):
+                    validate({"total": 1, "healthy": 1, "peers": [
+                        {"address": address, "healthy": True}]})
 
     def test_inconsistent_count_rejected(self):
         with self.assertRaises(ValueError):
