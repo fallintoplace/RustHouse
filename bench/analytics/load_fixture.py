@@ -9,7 +9,10 @@ import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json
-from fixture import FIELDS
+if __package__:
+    from .fixture import FIELDS
+else:
+    from fixture import FIELDS
 
 
 
