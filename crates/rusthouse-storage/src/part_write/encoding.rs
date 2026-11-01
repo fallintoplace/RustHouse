@@ -58,7 +58,13 @@ pub(super) fn push_cell(
     if is_null && !nullable {
         return Err(invalid(format!("NULL is not permitted for {kind}")));
     }
-    let value = value.unwrap_or(if base == "String" { "" } else { "0" });
+    // Nullable cells still occupy their physical value stream. UUID has
+    // no numeric "0" spelling: use the all-zero UUID as its ignored value.
+    let value = value.unwrap_or(match base {
+        "String" => "",
+        "UUID" => "00000000-0000-0000-0000-000000000000",
+        _ => "0",
+    });
     macro_rules! numeric {
         ($ty:ty) => {{
             let number = value
@@ -622,5 +628,25 @@ mod direct_uuid_decode_tests {
             assert!(push_uuid(bad, &mut output).is_err());
             assert_eq!(output.len(), original_len);
         }
+    }
+}
+
+#[cfg(test)]
+mod nullable_uuid_physical_placeholder_tests {
+    use super::*;
+
+    #[test]
+    fn null_uuid_uses_sixteen_zero_bytes_without_rejecting_nullable_type() {
+        let mut data = vec![0x42];
+        assert!(push_cell("Nullable(UUID)", None, &mut data).unwrap());
+        assert_eq!(&data[1..], &[0u8; 16]);
+        assert!(!push_cell(
+            "Nullable(UUID)",
+            Some("00112233-4455-6677-8899-aabbccddeeff"),
+            &mut data,
+        ).unwrap());
+        assert_eq!(data.len(), 33);
+        assert!(push_cell("UUID", None, &mut Vec::new()).is_err());
+        assert!(push_cell("Nullable(UUID)", Some("not-a-uuid"), &mut Vec::new()).is_err());
     }
 }
