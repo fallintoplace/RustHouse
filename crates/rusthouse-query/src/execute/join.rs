@@ -335,6 +335,7 @@ impl Bucket {
 
 /// Duplicate build keys are not needed when ANY joins select one right row
 /// for each left row. Keep the first row to match existing stream behavior.
+#[cfg(test)]
 fn insert_build_key(
     hash: &mut HashMap<Vec<typed::Key>, Bucket>,
     key: Vec<typed::Key>,
@@ -484,6 +485,7 @@ where
 
 /// Stream the right side of an unordered RIGHT OUTER JOIN, retaining only
 /// a bounded left hash build and the row currently being probed.
+#[allow(clippy::too_many_arguments)]
 fn probe_right_outer<F>(
     right_path: &Path,
     right_names: &[String],

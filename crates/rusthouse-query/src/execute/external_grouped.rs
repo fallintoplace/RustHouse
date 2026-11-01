@@ -3,7 +3,7 @@ use super::ExecutionError;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -383,10 +383,6 @@ impl ExternalGroupCount64 {
         self.keys.clear();
         Ok(())
     }
-    fn decode_key(&self, encoded: u64) -> u64 {
-        let key = if self.descending { !encoded } else { encoded };
-        if self.signed { key ^ (1 << 63) } else { key }
-    }
     fn compact_runs(&mut self) -> Result<(), ExecutionError> {
         while self.runs.len() > FAN_IN {
             let previous = std::mem::take(&mut self.runs);
@@ -457,6 +453,7 @@ impl ExternalGroupCount64 {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn finish(
         self,
         mut emit: impl FnMut(u64, u64) -> Result<(), ExecutionError>,
@@ -834,11 +831,11 @@ mod root_replacement_merge_tests {
         for shard in 0..48usize {
             let path = scratch.0.join(format!("root-merge-{shard}.bin"));
             let mut writer = BufWriter::new(File::create(&path).unwrap());
-            for key in 0..100usize {
+            for (key, count_at_key) in expected.iter_mut().enumerate() {
                 if (shard + key) % 7 == 0 {
                     let count = (shard % 4 + 1) as u64;
                     write_group(&mut writer, key as u64, count).unwrap();
-                    expected[key] += count;
+                    *count_at_key += count;
                 }
             }
             writer.flush().unwrap();

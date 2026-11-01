@@ -718,7 +718,6 @@ mod grouped_text_budget_tests;
 
 #[cfg(test)]
 mod direct_unfiltered_aggregate_scan_tests {
-    use super::*;
     use rusthouse_storage::{Column, write_wide_part};
     use std::fs;
 
