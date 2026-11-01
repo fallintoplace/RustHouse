@@ -1,7 +1,8 @@
 //! Convert bounded TSV query results into newline-delimited JSON objects.
 //! Numeric values remain strings to preserve Int128 and UInt128 precision.
 use super::write_json_string;
-use rusthouse_format::decode_tsv_field;
+use rusthouse_format::{decode_tsv_field, decode_tsv_field_into};
+#[cfg(test)]
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{self, Write};
@@ -53,6 +54,7 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<String>> {
     Ok(headers)
 }
 
+#[cfg(test)]
 fn decoded_row_field(field: &[u8]) -> io::Result<Cow<'_, str>> {
     if field.contains(&b'\\') {
         decode_tsv_value(field).map(Cow::Owned)
@@ -72,6 +74,7 @@ fn write_json_row_into<W: Write>(
     headers: &[Vec<u8>],
     line: &[u8],
     row: &mut Vec<u8>,
+    decoded: &mut Vec<u8>,
 ) -> io::Result<()> {
     let mut fields = line.split(|byte| *byte == b'\t');
     row.clear();
@@ -86,9 +89,15 @@ fn write_json_row_into<W: Write>(
         row.push(b':');
         if field == b"\\N" {
             row.write_all(b"null")?;
+        } else if field.contains(&b'\\') {
+            decode_tsv_field_into(field, decoded)?;
+            let text = std::str::from_utf8(decoded)
+                .map_err(|_| invalid("JSONL field is not UTF-8"))?;
+            write_json_string(&mut *row, text)?;
         } else {
-            let text = decoded_row_field(field)?;
-            write_json_string(&mut *row, &text)?;
+            let text = std::str::from_utf8(field)
+                .map_err(|_| invalid("JSONL field is not UTF-8"))?;
+            write_json_string(&mut *row, text)?;
         }
     }
     if fields.next().is_some() {
@@ -108,7 +117,7 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> 
             Ok(key)
         })
         .collect::<io::Result<Vec<_>>>()?;
-    write_json_row_into(output, &escaped, line, &mut Vec::new())
+    write_json_row_into(output, &escaped, line, &mut Vec::new(), &mut Vec::new())
 }
 
 pub struct JsonlWriter<W: Write> {
@@ -116,7 +125,8 @@ pub struct JsonlWriter<W: Write> {
     headers: Option<Vec<Vec<u8>>>,
     line: Vec<u8>,
     encoded: Vec<u8>,
-}
+    decoded: Vec<u8>,
+
 
 impl<W: Write> JsonlWriter<W> {
     pub fn new(output: W) -> Self {
@@ -125,13 +135,20 @@ impl<W: Write> JsonlWriter<W> {
             headers: None,
             line: Vec::new(),
             encoded: Vec::new(),
+            decoded: Vec::new(),
         }
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
         if let Some(headers) = &self.headers {
             let result =
-                write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded);
+                write_json_row_into(
+                    &mut self.output,
+                    headers,
+                    &self.line,
+                    &mut self.encoded,
+                    &mut self.decoded,
+                );
             self.line.clear();
             return result;
         }
@@ -167,7 +184,13 @@ impl<W: Write> Write for JsonlWriter<W> {
             // Forward them into the reusable JSON encoder without copying.
             if complete && self.line.is_empty() {
                 if let Some(headers) = self.headers.as_ref() {
-                    write_json_row_into(&mut self.output, headers, fragment, &mut self.encoded)?;
+                    write_json_row_into(
+                        &mut self.output,
+                        headers,
+                        fragment,
+                        &mut self.encoded,
+                        &mut self.decoded,
+                    )?;
                     continue;
                 }
             }
@@ -419,5 +442,38 @@ mod bounded_jsonl_header_set_tests {
             .join("\t");
         assert!(parse_headers(oversized.as_bytes()).is_err());
         assert!(parse_headers(b"v0\t\xff").is_err());
+    }
+}
+
+#[cfg(test)]
+mod jsonl_reusable_decode_tests {
+    use super::*;
+
+    #[test]
+    fn escaped_jsonl_values_reuse_decoder_allocation() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"column\nvalue\\tname\n").unwrap();
+        let initial_capacity = writer.decoded.capacity();
+        let initial_pointer = writer.decoded.as_ptr();
+        assert!(initial_capacity >= 10);
+        for _ in 0..100 {
+            writer.write_all(b"other\\tname\n").unwrap();
+        }
+        assert_eq!(writer.decoded.capacity(), initial_capacity);
+        assert_eq!(writer.decoded.as_ptr(), initial_pointer);
+        assert!(writer.output.starts_with(b"{\"column\":\"value\\tname\"}\n"));
+        assert_eq!(writer.output.iter().filter(|&&b| b == b'\n').count(), 101);
+    }
+
+    #[test]
+    fn invalid_late_escape_does_not_publish_partial_jsonl_rows() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"first\tsecond\n").unwrap();
+        writer.write_all(b"a\\tvalue\tb\\nvalue\n").unwrap();
+        let previous = writer.output.clone();
+        assert!(writer.write_all(b"a\\tvalue\tbad\\q\n").is_err());
+        assert_eq!(writer.output, previous);
+        writer.write_all(b"c\\tvalue\td\\nvalue\n").unwrap();
+        assert_eq!(writer.output.iter().filter(|&&b| b == b'\n').count(), 2);
     }
 }
