@@ -20,6 +20,31 @@ pub struct PartVerification {
     pub decompressed_bytes: u64,
 }
 
+/// A verified wide part must describe one immutable generation across both
+/// mark validation and full block decoding. Individual open-time checks do
+/// not detect a valid stream being replaced between those two passes.
+fn same_verification_generation(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if !before.file_type().is_file()
+        || !after.file_type().is_file()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec()
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, PartError> {
     let path = path.as_ref();
     let metadata = inspect_part(path)?;
@@ -38,11 +63,25 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         let marks_path = mark_files
             .remove(&data)
             .ok_or_else(|| invalid(&data, "missing wide mark file during verification"))?;
-        let marks = read_wide_marks(marks_path)?;
+        let data_generation = fs::symlink_metadata(&data)
+            .map_err(|source| io_error(&data, source))?;
+        let marks_generation = fs::symlink_metadata(&marks_path)
+            .map_err(|source| io_error(&marks_path, source))?;
+        let marks = read_wide_marks(&marks_path)?;
         validate_adaptive_stream(&data, &marks, metadata.rows, &mut layout)?;
         validate_wide_marks(&marks, CompressedBlockReader::open(&data)?)?;
 
         let decoded_size = account_decoded_blocks(&data, &mut report)?;
+        let data_after = fs::symlink_metadata(&data)
+            .map_err(|source| io_error(&data, source))?;
+        if !same_verification_generation(&data_generation, &data_after) {
+            return Err(invalid(&data, "wide stream changed during verification"));
+        }
+        let marks_after = fs::symlink_metadata(&marks_path)
+            .map_err(|source| io_error(&marks_path, source))?;
+        if !same_verification_generation(&marks_generation, &marks_after) {
+            return Err(invalid(&marks_path, "wide marks changed during verification"));
+        }
         if let Some(expected) = expected_fixed_stream_bytes(&data, &metadata)? {
             if decoded_size != expected {
                 return Err(invalid(
@@ -461,5 +500,54 @@ mod tests {
             }
         );
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod stable_generation_verification_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_in_place_length_change_and_replaced_inodes() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-wide-part-generation-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::write(&first, b"same").unwrap();
+        fs::write(&second, b"same").unwrap();
+        let original = fs::symlink_metadata(&first).unwrap();
+        assert!(same_verification_generation(&original, &original));
+        fs::write(&first, b"longer").unwrap();
+        assert!(!same_verification_generation(
+            &original, &fs::symlink_metadata(&first).unwrap(),
+        ));
+        #[cfg(unix)]
+        assert!(!same_verification_generation(
+            &original, &fs::symlink_metadata(&second).unwrap(),
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlink_substitution_with_the_same_target_contents() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-wide-part-links-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("target");
+        let link = root.join("link");
+        fs::write(&target, b"data").unwrap();
+        symlink(&target, &link).unwrap();
+        let before = fs::symlink_metadata(&target).unwrap();
+        let after = fs::symlink_metadata(&link).unwrap();
+        assert!(!same_verification_generation(&before, &after));
+        fs::remove_dir_all(root).unwrap();
     }
 }
