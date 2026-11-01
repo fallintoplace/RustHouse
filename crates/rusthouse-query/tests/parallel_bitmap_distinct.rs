@@ -25,7 +25,7 @@ fn exact_distinct_across_20_parts_deduplicates_overlapping_int32_keys() {
                 if index == 0 {
                     vec![None]
                 } else {
-                    vec![Some(((index + part * 200) as i32 - 5_000).to_string())]
+                    vec![Some((index + part * 200 - 5_000).to_string())]
                 }
             })
             .collect::<Vec<_>>();

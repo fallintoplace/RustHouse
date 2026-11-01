@@ -21,11 +21,10 @@ fn supports_rightpad_utf8_constants() {
         );
         assert_eq!(output.stdout, expected.as_bytes(), "{query}");
     }
-    for query in ["SELECT rightPadUTF8('a')"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
-            .args(["sql", query])
-            .output()
-            .unwrap();
-        assert!(!output.status.success(), "{query} unexpectedly succeeded");
-    }
+    let query = "SELECT rightPadUTF8('a')";
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .args(["sql", query])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{query} unexpectedly succeeded");
 }

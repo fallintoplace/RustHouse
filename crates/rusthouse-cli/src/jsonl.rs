@@ -178,7 +178,7 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
     let mut used = 1;
     for ch in input.chars() {
         let mut codepoint_bytes = [0u8; 4];
-        let mut unicode_escape = [0u8; 6];
+        let unicode_escape: [u8; 6];
         let encoded: &[u8] = match ch {
             '"' => br#"\""#,
             '\\' => br"\\",

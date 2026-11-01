@@ -4,7 +4,7 @@ use crate::catalog;
 mod rewrite;
 use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source, Update, UpdateValue};
 use rusthouse_storage::{
-    Column, DatabaseLock, acquire_database_lock, inspect_query_source, query_parts,
+    Column, DatabaseLock, acquire_database_lock,
     query_parts_with_metadata, resolve_active_snapshot, verify_wide_part, write_wide_part,
 };
 use std::fs;
@@ -543,46 +543,6 @@ pub(super) fn insert_stream_locked(
         Ok(Some(values))
     })?;
     println!("Inserted {count} rows into {table}");
-    Ok(())
-}
-
-/// The caller must already own the exclusive database write lock.
-pub(super) fn insert_many_locked(database: &Path, insert: &Insert) -> Result<(), String> {
-    let cols = columns(database, &insert.table)?;
-    let (_, parts) = validated_parts(database, &insert.table, &cols)?;
-    let indices: Vec<usize> = match &insert.columns {
-        Some(names) => names
-            .iter()
-            .map(|name| {
-                cols.iter()
-                    .position(|column| column.name == *name)
-                    .ok_or_else(|| format!("unknown INSERT column: {name}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        None => (0..cols.len()).collect(),
-    };
-    let mut rows = Vec::with_capacity(insert.rows.len());
-    for source in &insert.rows {
-        if source.len() != indices.len() {
-            return Err("INSERT row width does not match table schema".into());
-        }
-        let mut values = vec![None; cols.len()];
-        for (value, &index) in source.iter().zip(&indices) {
-            values[index] = value.clone();
-        }
-        for (column, value) in cols.iter().zip(&values) {
-            if value.is_none() && !column.data_type.starts_with("Nullable(") {
-                return Err(format!("missing or NULL value for {}", column.name));
-            }
-        }
-        rows.push(values);
-    }
-    if rows.is_empty() {
-        println!("Inserted 0 rows into {}", insert.table);
-        return Ok(());
-    }
-    rewrite::append_parts(database, &insert.table, &cols, &parts, &rows)?;
-    println!("Inserted {} rows into {}", rows.len(), insert.table);
     Ok(())
 }
 

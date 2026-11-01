@@ -315,11 +315,9 @@ mod sparse_json_escape_span_tests {
         input.push('\t');
         let mut expected = vec![b'"'];
         expected.extend_from_slice(left.as_bytes());
-        expected.extend_from_slice(&[
-            b'\\', b'n', b'\\', b'u', b'0', b'0', b'0', b'1', b'\\', b'\\', b'\\', b'"',
-        ]);
+        expected.extend_from_slice(br#"\n\u0001\\\""#);
         expected.extend_from_slice(right.as_bytes());
-        expected.extend_from_slice(&[b'\\', b't', b'"']);
+        expected.extend_from_slice(b"\\t\"");
         let mut output = Vec::new();
         write_json_string(&mut output, &input).unwrap();
         assert_eq!(output, expected);
