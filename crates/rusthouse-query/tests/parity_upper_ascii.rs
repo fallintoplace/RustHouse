@@ -14,7 +14,10 @@ fn clickhouse_compatibility_cases() {
         ("SELECT upper('abcäö')", ConstantValue::Text("ABCäö".into())),
         ("SELECT upper('low')", ConstantValue::Text("LOW".into())),
         ("SELECT upper('àbß')", ConstantValue::Text("àBß".into())),
-        ("SELECT upperUTF8('abcäö')", ConstantValue::Text("ABCÄÖ".into())),
+        (
+            "SELECT upperUTF8('abcäö')",
+            ConstantValue::Text("ABCÄÖ".into()),
+        ),
         ("SELECT upper(NULL)", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
