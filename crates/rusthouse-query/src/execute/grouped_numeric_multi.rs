@@ -84,15 +84,16 @@ fn reserve_group(
 // table when observed cardinality makes the sparse lookup more expensive.
 // Most GROUP BY scans with UInt16 keys visit a tiny part of that domain.
 enum GroupSlots {
-    Byte(Box<[usize; 256]>),
-    WideSparse(HashMap<u16, usize>),
+    // Each nullable numeric domain adds exactly one extra NULL key.
+    Byte(Box<[usize; 257]>),
+    WideSparse(HashMap<usize, usize>),
     WideDense(Vec<usize>),
 }
 
 impl GroupSlots {
     fn for_type(kind: &str) -> Option<Self> {
-        match kind {
-            "UInt8" | "Int8" => Some(Self::Byte(Box::new([usize::MAX; 256]))),
+        match typed::base_type(kind) {
+            "UInt8" | "Int8" => Some(Self::Byte(Box::new([usize::MAX; 257]))),
             "UInt16" | "Int16" => Some(Self::WideSparse(HashMap::new())),
             _ => None,
         }
@@ -101,7 +102,7 @@ impl GroupSlots {
     fn get(&self, key: usize) -> Option<usize> {
         match self {
             Self::Byte(slots) => (slots[key] != usize::MAX).then_some(slots[key]),
-            Self::WideSparse(map) => map.get(&(key as u16)).copied(),
+            Self::WideSparse(map) => map.get(&key).copied(),
             Self::WideDense(slots) => (slots[key] != usize::MAX).then_some(slots[key]),
         }
     }
@@ -111,16 +112,39 @@ impl GroupSlots {
             Self::Byte(slots) => slots[key] = index,
             Self::WideDense(slots) => slots[key] = index,
             Self::WideSparse(map) => {
-                map.insert(key as u16, index);
+                map.insert(key, index);
                 if map.len() >= 2048 {
-                    let mut slots = vec![usize::MAX; 65_536];
+                    let mut slots = vec![usize::MAX; 65_537];
                     for (&value, &group) in map.iter() {
-                        slots[usize::from(value)] = group;
+                        slots[value] = group;
                     }
                     *self = Self::WideDense(slots);
                 }
             }
         }
+    }
+}
+
+// Directly distinguish NULL from every valid signed/unsigned bit pattern.
+// Nullable byte and short grouping keys never require a generic hashed Cell.
+fn numeric_group_slot(column: &TypedColumn, row: usize) -> Option<usize> {
+    let (values, is_null) = match column {
+        TypedColumn::Numeric(values) => (values, false),
+        TypedColumn::NullableNumeric { values, nulls } => (values, nulls[row] != 0),
+        _ => return None,
+    };
+    match values {
+        NumericColumn::UInt8(values) => Some(if is_null { 256 } else { usize::from(values[row]) }),
+        NumericColumn::Int8(values) => {
+            Some(if is_null { 256 } else { usize::from(values[row] as u8) })
+        }
+        NumericColumn::UInt16(values) => {
+            Some(if is_null { 65_536 } else { usize::from(values[row]) })
+        }
+        NumericColumn::Int16(values) => {
+            Some(if is_null { 65_536 } else { usize::from(values[row] as u16) })
+        }
+        _ => None,
     }
 }
 
@@ -234,21 +258,9 @@ pub(super) fn execute<W: Write>(
             // Nullable String keys can use the same borrowed-byte lookup as String.
             // Only new groups need to own the decoded bytes.
             let index = if let Some(slots) = dense_slots.as_mut() {
-                let key = match &batch[group_index] {
-                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => usize::from(values[row]),
-                    TypedColumn::Numeric(NumericColumn::Int8(values)) => {
-                        usize::from(values[row] as u8)
-                    }
-                    TypedColumn::Numeric(NumericColumn::UInt16(values)) => usize::from(values[row]),
-                    TypedColumn::Numeric(NumericColumn::Int16(values)) => {
-                        usize::from(values[row] as u16)
-                    }
-                    _ => {
-                        return Err(ExecutionError::Invalid(
-                            "unexpected dense GROUP BY type".into(),
-                        ));
-                    }
-                };
+                let key = numeric_group_slot(&batch[group_index], row).ok_or_else(|| {
+                    ExecutionError::Invalid("unexpected dense GROUP BY type".into())
+                })?;
                 if let Some(index) = slots.get(key) {
                     index
                 } else {
@@ -654,5 +666,40 @@ mod lazy_u16_multi_aggregate_index_tests {
                 assert_eq!(slots.get(key), Some(key + 17));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod nullable_numeric_group_slots_tests {
+    use super::*;
+
+    #[test]
+    fn byte_and_short_nulls_do_not_alias_numeric_extremes() {
+        let bytes = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int8(vec![-1, 0, 127, -1]),
+            nulls: vec![0, 0, 0, 1],
+        };
+        let shorts = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt16(vec![0, 65_535, 0]),
+            nulls: vec![0, 0, 1],
+        };
+        assert_eq!((0..4).map(|i| numeric_group_slot(&bytes, i)).collect::<Vec<_>>(),
+            vec![Some(255), Some(0), Some(127), Some(256)]);
+        assert_eq!((0..3).map(|i| numeric_group_slot(&shorts, i)).collect::<Vec<_>>(),
+            vec![Some(0), Some(65_535), Some(65_536)]);
+    }
+
+    #[test]
+    fn wide_sparse_to_dense_promotion_keeps_the_null_slot() {
+        let mut slots = GroupSlots::for_type("Nullable(Int16)").unwrap();
+        slots.insert(65_536, 7);
+        for key in 0..2048 {
+            slots.insert(key, key + 10);
+        }
+        assert!(matches!(slots, GroupSlots::WideDense(_)));
+        assert_eq!(slots.get(65_536), Some(7));
+        assert_eq!(slots.get(0), Some(10));
+        assert_eq!(slots.get(2047), Some(2057));
+        assert_eq!(slots.get(65_535), None);
     }
 }
