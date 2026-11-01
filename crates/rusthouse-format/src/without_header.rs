@@ -77,7 +77,10 @@ mod short_write_header_filter_tests {
     use super::*;
 
     #[derive(Default)]
-    struct ShortSink { bytes: Vec<u8>, attempts: usize }
+    struct ShortSink {
+        bytes: Vec<u8>,
+        attempts: usize,
+    }
     impl Write for ShortSink {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.attempts += 1;
@@ -85,20 +88,27 @@ mod short_write_header_filter_tests {
             self.bytes.extend_from_slice(&bytes[..len]);
             Ok(len)
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
     fn reports_exact_progress_through_short_underlying_writes() {
         let mut filtered = WithoutHeader::new(ShortSink::default());
-        filtered.write_all(b"name,value\n1,abcdef\n2,xyz\n").unwrap();
+        filtered
+            .write_all(b"name,value\n1,abcdef\n2,xyz\n")
+            .unwrap();
         assert_eq!(filtered.output.bytes, b"1,abcdef\n2,xyz\n");
         assert!(filtered.output.attempts > 2);
     }
 
     #[test]
     fn interrupted_first_body_write_retries_the_full_header_safely() {
-        struct InterruptOnce { first: bool, bytes: Vec<u8> }
+        struct InterruptOnce {
+            first: bool,
+            bytes: Vec<u8>,
+        }
         impl Write for InterruptOnce {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 if self.first {
@@ -108,9 +118,14 @@ mod short_write_header_filter_tests {
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
-        let mut filtered = WithoutHeader::new(InterruptOnce { first: true, bytes: Vec::new() });
+        let mut filtered = WithoutHeader::new(InterruptOnce {
+            first: true,
+            bytes: Vec::new(),
+        });
         filtered.write_all(b"header\nfirst\n").unwrap();
         assert_eq!(filtered.output.bytes, b"first\n");
     }
