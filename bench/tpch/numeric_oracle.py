@@ -44,7 +44,9 @@ def numeric_equal(left, right, tolerance=Decimal("0")):
     if not lhs.is_finite() or not rhs.is_finite():
         return False
     if tolerance == 0:
-        # Subtraction can u    # Directed rounding gives lower and upper bounds on the absolute gap.
+        # Exact decimal comparison avoids context rounding.
+        return lhs == rhs
+    # Directed rounding gives lower and upper bounds on the absolute gap.
     # Escalating precision avoids the default 28-digit context rounding a
     # near-threshold mismatch into a false positive. Extreme exponent gaps
     # do not require allocating enormous decimal coefficients.
@@ -65,7 +67,7 @@ def numeric_equal(left, right, tolerance=Decimal("0")):
         # Never affirm equality while the exact boundary remains ambiguous.
         return False
     except DecimalException:
-        return False decimal context must not crash the oracle.
+        # Extreme decimal contexts must not crash the oracle.
         return False
 
 
