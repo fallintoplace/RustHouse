@@ -308,32 +308,40 @@ pub fn plan_replica_retry_timeline(
         }
     }
 
-    let mut timeline = Vec::with_capacity(node_seeds.len() * attempts_per_node as usize);
-    for &(node, seed) in node_seeds {
-        let mut due_after = Duration::ZERO;
-        for attempt in 0..attempts_per_node {
-            let delay = retry_delay(attempt, base_ms, max_ms, seed)?;
-            let Some(next) = due_after.checked_add(delay) else {
-                // A deadline cannot be later than the largest Duration.
-                break;
-            };
-            if next > deadline {
-                break;
+    // Every node's cumulative retry delays increase strictly. Merge these
+    // already sorted streams with at most one queued event per node instead
+    // of sorting the whole 64 x 33 event timeline.
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let mut next_events = BinaryHeap::with_capacity(node_seeds.len());
+    if attempts_per_node != 0 {
+        for (index, &(node, seed)) in node_seeds.iter().enumerate() {
+            let due_after = retry_delay(0, base_ms, max_ms, seed)?;
+            if due_after <= deadline {
+                next_events.push(Reverse((due_after, node, 0u32, index)));
             }
-            due_after = next;
-            timeline.push(ReplicaRetryEvent {
-                node: node.to_owned(),
-                attempt,
-                due_after,
-            });
         }
     }
-    timeline.sort_unstable_by(|a, b| {
-        a.due_after
-            .cmp(&b.due_after)
-            .then_with(|| a.node.cmp(&b.node))
-            .then_with(|| a.attempt.cmp(&b.attempt))
-    });
+
+    let mut timeline = Vec::with_capacity(node_seeds.len() * attempts_per_node as usize);
+    while let Some(Reverse((due_after, node, attempt, index))) = next_events.pop() {
+        timeline.push(ReplicaRetryEvent {
+            node: node.to_owned(),
+            attempt,
+            due_after,
+        });
+        let next_attempt = attempt + 1;
+        if next_attempt == attempts_per_node {
+            continue;
+        }
+        let delay = retry_delay(next_attempt, base_ms, max_ms, node_seeds[index].1)?;
+        if let Some(next_due) = due_after.checked_add(delay) {
+            if next_due <= deadline {
+                next_events.push(Reverse((next_due, node, next_attempt, index)));
+            }
+        }
+    }
     Ok(timeline)
 }
 
@@ -393,6 +401,65 @@ mod replica_retry_timeline_tests {
         assert!(plan_replica_retry_timeline(&nodes, 0, 0, 1000, first).is_err());
         assert!(plan_replica_retry_timeline(&[("a", 0), ("a", 1)], 0, 100, 1000, first).is_err());
         assert!(plan_replica_retry_timeline(&[("bad/name", 0)], 0, 100, 1000, first).is_err());
+    }
+}
+
+#[cfg(test)]
+mod heap_retry_timeline_equivalence_tests {
+    use super::*;
+
+    #[test]
+    fn heap_merge_matches_global_sort_for_full_and_partial_schedules() {
+        let owned = (0..64u64)
+            .map(|index| (format!("node_{index:02}"), index.wrapping_mul(1_000_003)))
+            .collect::<Vec<_>>();
+        let mut nodes = owned
+            .iter()
+            .map(|(name, seed)| (name.as_str(), *seed))
+            .collect::<Vec<_>>();
+
+        for deadline in [
+            Duration::ZERO,
+            Duration::from_millis(1),
+            Duration::from_millis(300),
+            Duration::from_secs(15),
+            Duration::MAX,
+        ] {
+            for attempts in [0, 1, 12, 33] {
+                let actual =
+                    plan_replica_retry_timeline(&nodes, attempts, 100, 1_000, deadline).unwrap();
+                let mut expected = Vec::new();
+                for &(node, seed) in &nodes {
+                    let mut due_after = Duration::ZERO;
+                    for (attempt, delay) in
+                        plan_retry_delays(attempts, 100, 1_000, seed, deadline)
+                            .unwrap()
+                            .into_iter()
+                            .enumerate()
+                    {
+                        due_after += delay;
+                        expected.push(ReplicaRetryEvent {
+                            node: node.to_owned(),
+                            attempt: attempt as u32,
+                            due_after,
+                        });
+                    }
+                }
+                expected.sort_unstable_by(|a, b| {
+                    a.due_after
+                        .cmp(&b.due_after)
+                        .then_with(|| a.node.cmp(&b.node))
+                        .then_with(|| a.attempt.cmp(&b.attempt))
+                });
+                assert_eq!(actual, expected, "attempts={attempts}, deadline={deadline:?}");
+                nodes.reverse();
+                assert_eq!(
+                    plan_replica_retry_timeline(&nodes, attempts, 100, 1_000, deadline).unwrap(),
+                    expected
+                );
+                nodes.reverse();
+            }
+        }
     }
 }
 
