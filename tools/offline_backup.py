@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cold RustHouse database copy. Stop ALL writers and readers before using."""
 import argparse
+import errno
 from contextlib import contextmanager
 import math
 import os
@@ -39,8 +40,18 @@ def refuse_live_database(source):
     try:
         # Create the shared advisory lock before copying. A missing lock is
         # not evidence that another process cannot start using the database.
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(lock, flags, 0o600)
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDWR | os.O_CREAT | no_follow
+        try:
+            fd = os.open(lock, flags, 0o600)
+        except OSError as error:
+            # A frozen database may live on a read-only mount. An existing
+            # lock inode is sufficient for an exclusive flock even if the
+            # file cannot be opened for writing. Never create an unlocked
+            # replacement file in this fallback.
+            if error.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+                raise
+            fd = os.open(lock, os.O_RDONLY | no_follow)
         _require_stable_lock(lock, fd)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
