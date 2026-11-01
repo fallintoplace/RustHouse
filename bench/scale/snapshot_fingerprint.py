@@ -13,14 +13,14 @@ from pathlib import Path
 
 def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
                 expected_sha256=None, max_total_bytes=None, max_dirs=1_000_000):
+    if type(max_dirs) is not int or max_dirs < 1:
+        raise ValueError("max_dirs must be a positive integer")
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected an offline snapshot directory")
     if (type(max_files) is not int or type(block_size) is not int
             or max_files < 1 or not 4096 <= block_size <= 16 * 1024 * 1024):
         raise ValueError("invalid max_files or block_size")
-    if type(max_dirs) is not int or max_dirs < 1:
-        raise ValueError("max_dirs must be a positive integer")
     if max_total_bytes is not None and (type(max_total_bytes) is not int or max_total_bytes < 1):
         raise ValueError("max_total_bytes must be a positive integer")
     if expected_sha256 is not None and (
