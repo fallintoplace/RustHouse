@@ -33,7 +33,9 @@ fn parse_member(line: &str) -> Result<(&str, &str, u16), &'static str> {
     if line.is_empty() {
         return Err("empty membership record");
     }
-    let mut fields = line.split_whitespace();
+    // Membership is an ASCII wire format. Do not accept Unicode whitespace
+    // as an alternate field separator that another node may not recognize.
+    let mut fields = line.split_ascii_whitespace();
     let (Some(node), Some(zone), Some(weight_text), None) =
         (fields.next(), fields.next(), fields.next(), fields.next())
     else {
@@ -388,5 +390,25 @@ mod canonical_membership_weight_tests {
             let members = parse_membership(&manifest).unwrap();
             assert_eq!(format_membership(&members).unwrap(), manifest);
         }
+    }
+}
+
+#[cfg(test)]
+mod ascii_membership_separator_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unicode_field_separators_instead_of_canonicalizing_them() {
+        for separator in ["\u{00a0}", "\u{2003}", "\u{202f}", "\u{0085}"] {
+            let input = format!("node{separator}zone{separator}1\n");
+            assert!(parse_membership(&input).is_err(), "separator={separator:?}");
+        }
+    }
+
+    #[test]
+    fn retains_ascii_whitespace_compatibility() {
+        let members = parse_membership("node\tzone  1\r\nother zone2\t2\n").unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(format_membership(&members).unwrap(), "node zone 1\nother zone2 2\n");
     }
 }
