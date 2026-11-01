@@ -331,6 +331,26 @@ pub fn plan_missing_runs_from_resume(
     max_batch_chunks: usize,
     max_run_bytes: u64,
 ) -> Result<Vec<ChunkRun>, &'static str> {
+    plan_missing_runs_from_resume_after(
+        total_bytes, chunk_bytes, max_chunks, progress, 0,
+        byte_budget, max_batch_chunks, max_run_bytes,
+    )
+}
+
+/// Schedule coalesced transfer runs after an inclusive checkpoint cursor.
+///
+/// A continuation page never scans completed prefixes or crosses a completed
+/// chunk. Invalid layouts and out-of-bounds cursors fail before selection.
+pub fn plan_missing_runs_from_resume_after(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    progress: &crate::distributed_resume_map::ResumeMap,
+    start_index: usize,
+    byte_budget: u64,
+    max_batch_chunks: usize,
+    max_run_bytes: u64,
+) -> Result<Vec<ChunkRun>, &'static str> {
     if max_run_bytes == 0 || max_batch_chunks > 65_536 {
         return Err("invalid coalesced chunk limits");
     }
@@ -338,10 +358,13 @@ pub fn plan_missing_runs_from_resume(
     if progress.len() != chunk_count {
         return Err("resume checkpoint does not match transfer layout");
     }
+    if start_index > chunk_count {
+        return Err("resume cursor exceeds transfer layout");
+    }
     let mut runs: Vec<ChunkRun> = Vec::new();
     let mut scheduled = 0usize;
     let mut remaining = byte_budget;
-    for index in progress.remaining_indices() {
+    for index in progress.remaining_indices_from(start_index) {
         if scheduled == max_batch_chunks || remaining == 0 {
             break;
         }
@@ -852,5 +875,49 @@ mod paged_resume_planner_tests {
                 bytes, 5, 65_536, &map, chunks + 1, 0, 0
             ).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod resumed_run_pagination_tests {
+    use super::*;
+    use crate::distributed_resume_map::ResumeMap;
+
+    #[test]
+    fn cursored_runs_match_a_checkpoint_with_its_prefix_complete() {
+        let total = 4097u64;
+        let chunk_bytes = 7;
+        let chunks = total.div_ceil(chunk_bytes) as usize;
+        let mut checkpoint = ResumeMap::new(chunks).unwrap();
+        for index in (0..chunks).step_by(5) {
+            checkpoint.mark_complete(index).unwrap();
+        }
+        for start in [0usize, 1, 7, 8, 63, 64, 65, 127, chunks - 1, chunks] {
+            let mut reference = checkpoint.clone();
+            reference.mark_complete_range(0, start).unwrap();
+            for budget in [0u64, 6, 7, 14, 49, 100, total] {
+                for limit in [0usize, 1, 2, 16, 1024] {
+                    for run_bytes in [7u64, 14, 64, 4097] {
+                        let expected = plan_missing_runs_from_resume(
+                            total, chunk_bytes, 65_536, &reference, budget, limit, run_bytes,
+                        ).unwrap();
+                        let actual = plan_missing_runs_from_resume_after(
+                            total, chunk_bytes, 65_536, &checkpoint, start,
+                            budget, limit, run_bytes,
+                        ).unwrap();
+                        assert_eq!(actual, expected,
+                            "start={start} budget={budget} limit={limit} run={run_bytes}");
+                    }
+                }
+            }
+        }
+        assert!(plan_missing_runs_from_resume_after(
+            total, chunk_bytes, 65_536, &checkpoint, chunks + 1,
+            total, 3, 64,
+        ).is_err());
+        assert!(plan_missing_runs_from_resume_after(
+            total, chunk_bytes, 65_536, &checkpoint, 0,
+            total, 3, 0,
+        ).is_err());
     }
 }
