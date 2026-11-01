@@ -185,7 +185,10 @@ fn select_copy_batch(
     max_objects: usize,
 ) -> Vec<ObjectMetadata> {
     let mut remaining = max_bytes;
-    let mut selected = Vec::with_capacity(ordered.len().min(max_objects));
+    // A small byte budget may select only one object from 65,536 eligible
+    // candidates. Grow only as items are accepted, rather than reserving
+    // the maximum-sized request up front.
+    let mut selected = Vec::with_capacity(ordered.len().min(max_objects).min(64));
     for &object in ordered {
         if selected.len() == max_objects {
             break;
@@ -322,7 +325,9 @@ impl<'a> ReplicaCopyPlanner<'a> {
                 .partition_point(|item| item.key.as_str() <= cursor)
         });
         let mut remaining_bytes = max_bytes;
-        let mut copies = Vec::with_capacity((self.missing.len() - start).min(max_objects));
+        // Do not allocate capacity for an entire inventory before checking
+        // how many immutable objects fit the caller's byte budget.
+        let mut copies = Vec::with_capacity((self.missing.len() - start).min(max_objects).min(64));
         for &object in &self.missing[start..] {
             if copies.len() == max_objects {
                 break;
@@ -1735,5 +1740,46 @@ mod lossless_replica_copy_page_tests {
         assert!(plan_replica_copy_page(&source, &[], None, 0, 0).is_err());
         let conflict = [object("a/file", 999)];
         assert!(plan_replica_copy_page(&source, &conflict, None, 100, 10).is_err());
+    }
+}
+
+#[cfg(test)]
+mod bounded_replica_copy_output_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn tiny_byte_pages_do_not_preallocate_the_full_missing_inventory() {
+        let source = (0..8192)
+            .map(|i| ObjectMetadata {
+                key: format!("part/file-{i:05}"),
+                bytes: 1_000_000,
+                crc32c: i,
+            })
+            .collect::<Vec<_>>();
+        let planner = ReplicaCopyPlanner::new(&source, &[]).unwrap();
+        let batch = planner.batch_after(None, 1_000_000, 65_536).unwrap();
+        assert_eq!(batch.len(), 1);
+        assert!(batch.capacity() <= 64);
+        let page = planner.page_after(None, 1_000_000, 65_536).unwrap();
+        assert_eq!(page.copies.len(), 1);
+        assert!(page.copies.capacity() <= 64);
+        assert_eq!(page.next_after.as_deref(), Some("part/file-00000"));
+    }
+
+    #[test]
+    fn large_affordable_batches_still_contain_every_requested_object() {
+        let source = (0..1024)
+            .map(|i| ObjectMetadata {
+                key: format!("shard/item-{i:05}"),
+                bytes: 1,
+                crc32c: i,
+            })
+            .collect::<Vec<_>>();
+        let planner = ReplicaCopyPlanner::new(&source, &[]).unwrap();
+        let page = planner.page_after(None, 1024, 1024).unwrap();
+        assert_eq!(page.copies.len(), 1024);
+        assert_eq!(page.next_after, None);
+        let batch = planner.batch_after(None, 1024, 1024).unwrap();
+        assert_eq!(batch, page.copies);
     }
 }
