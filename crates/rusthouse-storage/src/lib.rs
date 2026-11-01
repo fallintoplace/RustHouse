@@ -98,6 +98,10 @@ pub use part_scan::NumericPartReader;
 pub use part_verify::{PartVerification, verify_wide_part};
 pub use part_write::{PartCompression, write_wide_part, write_wide_part_with_compression};
 pub use primary_index::{
+    candidate_i128_mark_range, candidate_i128_mark_ranges, candidate_u128_mark_range,
+    candidate_u128_mark_ranges,
+};
+pub use primary_index::{
     FixedPrimaryIndex, candidate_i64_mark_range, candidate_i64_mark_ranges,
     candidate_u64_mark_range, candidate_u64_mark_ranges, read_fixed_primary_index,
 };
