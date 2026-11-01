@@ -26,7 +26,7 @@ concurrency:
 jobs:
   main-check:
     name: Linux compile and library regressions
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -41,7 +41,7 @@ jobs:
         run: cargo test -p rusthouse-query -p rusthouse-storage --lib --locked --no-fail-fast
 
   format:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     name: Rust format (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -50,7 +50,7 @@ jobs:
       - run: cargo fmt --all -- --check
 
   lint:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     name: Rust Clippy (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -64,7 +64,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   rustdoc:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     name: Rustdoc warnings (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -80,7 +80,7 @@ jobs:
         run: cargo doc --workspace --no-deps --locked
 
   test:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     name: Rust (${{ matrix.os }}, ${{ matrix.shard }} shard)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -114,7 +114,7 @@ jobs:
               ;;
           esac
   sql-smoke:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     name: SQL smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -168,7 +168,7 @@ jobs:
 
 
   windows-smoke:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     name: Windows compile and CLI unit smoke
     runs-on: windows-latest
     timeout-minutes: 20
@@ -203,7 +203,7 @@ jobs:
           }
 
   analytics-harness:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     name: Analytics harness (${{ matrix.os }}, Python 3.12)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
@@ -220,7 +220,7 @@ jobs:
         run: python -m bench python-tests
 
   msrv:
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     name: Rust MSRV (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -242,13 +242,14 @@ jobs:
 
   integration-gate:
     name: Integration gate
-    if: ${{ always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) }}
-    needs: [format, lint, rustdoc, test, sql-smoke, windows-smoke, analytics-harness, msrv]
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) }}
+    needs: [main-check, format, lint, rustdoc, test, sql-smoke, windows-smoke, analytics-harness, msrv]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every mandatory job to succeed
         env:
+          MAIN_CHECK: ${{ needs.main-check.result }}
           FORMAT: ${{ needs.format.result }}
           LINT: ${{ needs.lint.result }}
           RUSTDOC: ${{ needs.rustdoc.result }}
@@ -259,7 +260,7 @@ jobs:
           MSRV: ${{ needs.msrv.result }}
         shell: bash
         run: |
-          for result in "$FORMAT" "$LINT" "$RUSTDOC" "$TEST" "$SQL_SMOKE" "$WINDOWS" "$ANALYTICS" "$MSRV"; do
+          for result in "$MAIN_CHECK" "$FORMAT" "$LINT" "$RUSTDOC" "$TEST" "$SQL_SMOKE" "$WINDOWS" "$ANALYTICS" "$MSRV"; do
             if [ "$result" != "success" ]; then
               echo "::error::Integration gate blocked: required job concluded $result"
               exit 1
