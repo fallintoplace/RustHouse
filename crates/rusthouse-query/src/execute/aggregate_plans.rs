@@ -272,7 +272,11 @@ fn parallel_integer_grouped_count(
                                                 })?;
                                             }
                                             std::collections::hash_map::Entry::Vacant(entry) => {
-                                                if !super::try_reserve_shared(retained, 1, MAX_PARTIAL_KEYS) {
+                                                if !super::try_reserve_shared(
+                                                    retained,
+                                                    1,
+                                                    MAX_PARTIAL_KEYS,
+                                                ) {
                                                     return Ok(false);
                                                 }
                                                 entry.insert(counts.len());

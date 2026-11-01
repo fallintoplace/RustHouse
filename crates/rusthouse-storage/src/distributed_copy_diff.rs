@@ -744,7 +744,10 @@ mod windows_inventory_keys_tests {
                 bytes: 1,
                 crc32c: 0,
             };
-            assert!(plan_replica_copies(std::slice::from_ref(&value), &[]).is_err(), "{key}");
+            assert!(
+                plan_replica_copies(std::slice::from_ref(&value), &[]).is_err(),
+                "{key}"
+            );
             assert!(
                 plan_replica_copy_batch(&[value], &[], 1, 1).is_err(),
                 "{key}"
@@ -1048,7 +1051,9 @@ mod two_replica_copy_selection_tests {
             crc32c: 8,
             ..object.clone()
         };
-        assert!(plan_replica_copy_batch(std::slice::from_ref(&object), &[conflict], 10, 2).is_err());
+        assert!(
+            plan_replica_copy_batch(std::slice::from_ref(&object), &[conflict], 10, 2).is_err()
+        );
         assert!(plan_replica_copy_batch(&[object.clone(), object], &[], 10, 2).is_err());
     }
 }
