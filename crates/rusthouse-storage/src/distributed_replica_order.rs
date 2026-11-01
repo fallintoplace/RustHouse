@@ -126,6 +126,84 @@ pub fn rank_read_replicas_at_least(
     Ok(ranked)
 }
 
+/// Select a bounded newest-first prefix without sorting every eligible node.
+/// This is a hint for read failover order, not an authorization to read stale data.
+pub fn rank_read_replicas_top_k(
+    replicas: &[ReplicaStatus],
+    max_results: usize,
+) -> Result<Vec<String>, &'static str> {
+    if replicas.is_empty() || replicas.len() > 64 || max_results == 0 || max_results > 64 {
+        return Err("invalid replica read ranking limit");
+    }
+    validate_replica_nodes(replicas)?;
+    let ranked = ranked_node_prefix(replicas.iter().filter(|replica| replica.healthy), max_results);
+    if ranked.is_empty() {
+        return Err("no healthy storage replica");
+    }
+    Ok(ranked)
+}
+
+/// Select up to max_results healthy replicas in exactly one required epoch.
+pub fn rank_read_replicas_at_least_top_k(
+    replicas: &[ReplicaStatus],
+    minimum_epoch: u64,
+    minimum_generation: u64,
+    max_results: usize,
+) -> Result<Vec<String>, &'static str> {
+    if replicas.is_empty() || replicas.len() > 64 || max_results == 0 || max_results > 64 {
+        return Err("invalid replica read ranking limit");
+    }
+    validate_replica_nodes(replicas)?;
+    if minimum_epoch == 0 || minimum_generation == 0 {
+        return Err("invalid replica freshness floor");
+    }
+    let ranked = ranked_node_prefix(replicas.iter().filter(|replica| {
+        replica.healthy && replica.epoch == minimum_epoch
+            && replica.generation >= minimum_generation
+    }), max_results);
+    if ranked.is_empty() {
+        return Err(if replicas.iter().any(|replica| replica.healthy) {
+            "no storage replica meets the freshness floor"
+        } else {
+            "no healthy storage replica"
+        });
+    }
+    Ok(ranked)
+}
+
+fn ranked_node_prefix<'a>(
+    replicas: impl Iterator<Item = &'a ReplicaStatus>,
+    limit: usize,
+) -> Vec<String> {
+    if limit > 8 {
+        let mut ranked = ranked_node_ids(replicas);
+        ranked.truncate(limit);
+        return ranked;
+    }
+    // A failover request usually needs only 1-3 ranked nodes. Keep its
+    // candidates on the stack so a cluster of 64 does not need a sorted Vec.
+    let mut best: [Option<&ReplicaStatus>; 8] = [None; 8];
+    let mut count = 0usize;
+    for candidate in replicas {
+        let position = (0..count)
+            .find(|&index| newest_first(candidate, best[index].expect("ranked entry")).is_lt())
+            .unwrap_or(count);
+        if position >= limit {
+            continue;
+        }
+        if count < limit {
+            count += 1;
+        }
+        for index in (position + 1..count).rev() {
+            best[index] = best[index - 1];
+        }
+        best[position] = Some(candidate);
+    }
+    best[..count].iter().map(|replica| {
+        replica.expect("ranked entry").node.clone()
+    }).collect()
+}
+
 /// Select only the preferred healthy replica in one scan.
 /// This avoids sorting and cloning an entire replica list for point reads.
 pub fn best_read_replica(replicas: &[ReplicaStatus]) -> Result<String, &'static str> {
@@ -524,5 +602,49 @@ mod inline_replica_ranking_tests {
             assert_eq!(ranked_floor.len(), expected_floor.len());
             assert!(ranked_floor.iter().all(|node| expected_floor.contains(node)));
         }
+    }
+}
+
+#[cfg(test)]
+mod bounded_read_replica_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn top_k_matches_full_rankings_for_skewed_healthy_and_stale_nodes() {
+        for count in [1usize, 2, 3, 8, 9, 32, 64] {
+            let replicas = (0..count).rev().map(|i| ReplicaStatus {
+                node: format!("node{i:02}"),
+                epoch: if i % 5 == 0 { 2 } else { 3 },
+                generation: (i % 19 + 1) as u64,
+                healthy: i % 7 != 0,
+            }).collect::<Vec<_>>();
+            for limit in [1usize, 2, 3, 8, 9, 32, 64] {
+                let all = rank_read_replicas(&replicas);
+                let prefix = rank_read_replicas_top_k(&replicas, limit);
+                assert_eq!(prefix.as_ref().ok(), all.as_ref().ok().map(|v| {
+                    &v[..v.len().min(limit)]
+                }).map(|_| prefix.as_ref().unwrap()));
+                if let (Ok(full), Ok(partial)) = (all, prefix) {
+                    assert_eq!(partial, full[..full.len().min(limit)]);
+                }
+                let full = rank_read_replicas_at_least(&replicas, 3, 7);
+                let partial = rank_read_replicas_at_least_top_k(&replicas, 3, 7, limit);
+                assert_eq!(full.is_ok(), partial.is_ok());
+                if let (Ok(full), Ok(partial)) = (full, partial) {
+                    assert_eq!(partial, full[..full.len().min(limit)]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn top_k_rejects_invalid_limits_and_duplicate_nodes() {
+        let node = ReplicaStatus {
+            node: "node".into(), epoch: 2, generation: 10, healthy: true,
+        };
+        assert!(rank_read_replicas_top_k(&[node.clone()], 0).is_err());
+        assert!(rank_read_replicas_top_k(&[node.clone()], 65).is_err());
+        assert!(rank_read_replicas_top_k(&[node.clone(), node.clone()], 1).is_err());
+        assert_eq!(rank_read_replicas_top_k(&[node.clone()], 1).unwrap(), vec!["node"]);
     }
 }
