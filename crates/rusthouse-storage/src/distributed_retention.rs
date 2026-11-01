@@ -1147,7 +1147,7 @@ mod linear_pin_membership_tests {
             retention_candidates_with_pins(&generations, 16_384, 2, &pins).unwrap(),
             expected
         );
-        assert!(expected.iter().all(|item| !pins.contains(item)));
+        assert!(expected.iter().all(|item| pins.binary_search(item).is_err()));
         assert!(!expected.contains(&16_384));
         assert!(!expected.contains(&16_383));
     }
