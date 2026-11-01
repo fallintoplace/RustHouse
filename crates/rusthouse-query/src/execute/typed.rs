@@ -336,6 +336,12 @@ struct LikeLiteral {
     ascii_contains_skip: Option<Box<[usize; 256]>>,
 }
 
+struct PercentSegments {
+    prefix_wildcard: bool,
+    suffix_wildcard: bool,
+    literals: Vec<String>,
+}
+
 enum LikePattern {
     Exact(LikeLiteral),
     Prefix(LikeLiteral),
@@ -345,6 +351,7 @@ enum LikePattern {
         tokens: Vec<LikeToken>,
         folded_percent: Option<Vec<LikeToken>>,
         unicode_tokens: Option<Vec<UnicodeLikeToken>>,
+        percent_segments: Option<PercentSegments>,
     },
 }
 
