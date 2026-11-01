@@ -62,32 +62,39 @@ def generate(directory, rows=10000, seed=42):
     names = [name for name, _, _ in FIELDS]
     tsv = directory / "hits.tsv"
     db = directory / "hits.sqlite"
-    with closing(sqlite3.connect(db)) as connection, connection, tsv.open("w", encoding="utf-8", newline="\n") as stream:
-        connection.execute("DROP TABLE IF EXISTS hits")
-        connection.execute("CREATE TABLE hits (" +
-                           ", ".join(f"{name} {kind}" for name, _, kind in FIELDS) + ")")
-        stream.write("\t".join(names) + "\n")
-        batch = []
-        tsv_batch = []
-        for record in records(rows, seed):
-            tsv_batch.append("\t".join(map(str, record)) + "\n")
-            batch.append(record)
-            if len(batch) == 512:
+    try:
+        with closing(sqlite3.connect(db)) as connection, connection, tsv.open("w", encoding="utf-8", newline="\n") as stream:
+            connection.execute("DROP TABLE IF EXISTS hits")
+            connection.execute("CREATE TABLE hits (" +
+                               ", ".join(f"{name} {kind}" for name, _, kind in FIELDS) + ")")
+            stream.write("\t".join(names) + "\n")
+            batch = []
+            tsv_batch = []
+            for record in records(rows, seed):
+                tsv_batch.append("\t".join(map(str, record)) + "\n")
+                batch.append(record)
+                if len(batch) == 512:
+                    stream.write("".join(tsv_batch))
+                    tsv_batch.clear()
+                    insert_batch(connection, batch)
+                    batch.clear()
+            if batch:
                 stream.write("".join(tsv_batch))
-                tsv_batch.clear()
                 insert_batch(connection, batch)
-                batch.clear()
-        if batch:
-            stream.write("".join(tsv_batch))
-            insert_batch(connection, batch)
-    (directory / "create.sql").write_text(
-        "CREATE TABLE hits (" + ", ".join(f"{name} {kind}" for name, kind, _ in FIELDS) + ");\n",
-        encoding="utf-8",
-    )
-    escaped = tsv.resolve().as_posix().replace("'", "''")
-    (directory / "copy.sql").write_text(
-        f"COPY hits FROM '{escaped}' WITH (FORMAT TSV, HEADER TRUE);\n", encoding="utf-8"
-    )
+        (directory / "create.sql").write_text(
+            "CREATE TABLE hits (" + ", ".join(f"{name} {kind}" for name, kind, _ in FIELDS) + ");\n",
+            encoding="utf-8",
+        )
+        escaped = tsv.resolve().as_posix().replace("'", "''")
+        (directory / "copy.sql").write_text(
+            f"COPY hits FROM '{escaped}' WITH (FORMAT TSV, HEADER TRUE);\n", encoding="utf-8"
+        )
+    except Exception:
+        # A failed generator must not leave partial TSV or SQLite fixtures.
+        # All four targets were checked absent before the first write.
+        for name in ("hits.tsv", "hits.sqlite", "create.sql", "copy.sql"):
+            (directory / name).unlink(missing_ok=True)
+        raise
     return {"rows": rows, "seed": seed, "official_clickbench": False}
 
 
