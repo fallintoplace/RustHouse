@@ -3896,23 +3896,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("LEFT count must be nonnegative".into()));
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    if count >= value.len() {
-                        ConstantValue::Text(value)
-                    } else if value.as_bytes()[..count].is_ascii() {
-                        let mut result = value;
-                        result.truncate(count);
-                        ConstantValue::Text(result)
+                    let end = if count >= value.len() {
+                        value.len()
+                    } else if name == "LEFT" {
+                        // LEFT counts bytes; LEFTUTF8 counts Unicode scalars.
+                        count
                     } else {
-                        // Keep the owned SQL constant and trim at a UTF-8
-                        // boundary. Collecting characters allocates again.
-                        let mut result = value;
-                        let end = result
+                        value
                             .char_indices()
                             .nth(count)
-                            .map_or(result.len(), |(offset, _)| offset);
-                        result.truncate(end);
-                        ConstantValue::Text(result)
+                            .map_or(value.len(), |(offset, _)| offset)
+                    };
+                    if !value.is_char_boundary(end) {
+                        return Err(ParseError("LEFT byte count splits UTF-8 text".into()));
                     }
+                    let mut result = value;
+                    result.truncate(end);
+                    ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
             }
