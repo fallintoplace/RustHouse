@@ -5,6 +5,8 @@ import json
 import os
 import re
 import stat
+
+from bench.common import file_change_time_ns
 from pathlib import Path
 
 MAX_RECORD_BYTES = 8 * 1024 * 1024
@@ -68,11 +70,11 @@ def profile(path, *, columns=1, header=False, min_rows=1,
             bytes_read += len(raw)
             records += 1
         finished = os.fstat(stream.fileno())
-        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
+        if (opened.st_size, opened.st_mtime_ns, file_change_time_ns(opened)) != (finished.st_size, finished.st_mtime_ns, file_change_time_ns(finished)):
             raise ValueError("TSV file changed while profiling")
     after = source.lstat()
-    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+    if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, file_change_time_ns(before))
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, file_change_time_ns(after))):
         raise ValueError("TSV file changed while profiling")
     rows = records - int(header)
     if rows < min_rows:
