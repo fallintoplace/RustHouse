@@ -984,3 +984,123 @@ mod stack_read_replica_order_tests {
         assert!(rank_read_replicas(&invalid).is_err());
     }
 }
+
+/// Rank only replicas agreeing on one healthy quorum-observed snapshot, then
+/// spread early read fallbacks across failure zones.
+///
+/// A newer minority fingerprint is excluded even if its generation is higher.
+/// This is read routing, not consensus or authentication of returned bytes.
+pub fn rank_zone_diverse_quorum_snapshot_replicas(
+    members: &[&str],
+    policy: crate::distributed_quorum::QuorumPolicy,
+    replicas: &[ReplicaSnapshotStatus],
+    zones: &[(&str, &str)],
+) -> Result<(crate::distributed_lineage::SnapshotVersion, Vec<String>), &'static str> {
+    let (snapshot, ranked) = rank_quorum_snapshot_replicas(members, policy, replicas)?;
+    if zones.len() != members.len() {
+        return Err("replica zone membership count mismatch");
+    }
+    // Validate even nodes excluded for being unhealthy or advertising a
+    // different snapshot. Never let missing or duplicate zone data change
+    // which replica is selected for a quorum-consistent read.
+    for (index, &(node, zone)) in zones.iter().enumerate() {
+        if !valid_node(node)
+            || zone.is_empty()
+            || zone.len() > 64
+            || !zone
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            || !members.contains(&node)
+            || zones[..index].iter().any(|&(previous, _)| previous == node)
+        {
+            return Err("invalid or duplicate replica zone metadata");
+        }
+    }
+    let mut distinct_zones = std::collections::HashSet::<&str>::new();
+    let mut preferred = Vec::with_capacity(ranked.len());
+    let mut fallback = Vec::new();
+    for node in ranked {
+        let zone = zones
+            .iter()
+            .find(|&&(candidate, _)| candidate == node.as_str())
+            .map(|&(_, zone)| zone)
+            .expect("validated complete replica zone inventory");
+        if distinct_zones.insert(zone) {
+            preferred.push(node);
+        } else {
+            fallback.push(node);
+        }
+    }
+    preferred.extend(fallback);
+    Ok((snapshot, preferred))
+}
+
+#[cfg(test)]
+mod quorum_snapshot_zone_failover_tests {
+    use super::*;
+    use crate::distributed_lineage::SnapshotVersion;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    #[test]
+    fn minority_newer_snapshot_cannot_enter_zone_diverse_failover() {
+        let members = ["a", "b", "c", "d", "e"];
+        let policy = QuorumPolicy::new(5, 3, 3).unwrap();
+        let verified = SnapshotVersion {
+            epoch: 2, generation: 15, fingerprint: 101,
+        };
+        let newer = SnapshotVersion {
+            epoch: 2, generation: 16, fingerprint: 102,
+        };
+        let status = members.iter().map(|&node| ReplicaSnapshotStatus {
+            node: node.to_owned(),
+            snapshot: if node == "e" { newer } else { verified },
+            healthy: true,
+        }).collect::<Vec<_>>();
+        let zones = [
+            ("a", "east"), ("b", "east"), ("c", "west"),
+            ("d", "north"), ("e", "south"),
+        ];
+        let (snapshot, order) = rank_zone_diverse_quorum_snapshot_replicas(
+            &members, policy, &status, &zones
+        ).unwrap();
+        assert_eq!(snapshot, verified);
+        assert_eq!(order, ["a", "c", "d", "b"]);
+        let mut reverse = status.clone();
+        reverse.reverse();
+        let mut reversed_zones = zones.to_vec();
+        reversed_zones.reverse();
+        assert_eq!(
+            rank_zone_diverse_quorum_snapshot_replicas(
+                &members, policy, &reverse, &reversed_zones
+            ).unwrap(),
+            (snapshot, order)
+        );
+    }
+
+    #[test]
+    fn rejects_missing_foreign_and_duplicate_zone_observations() {
+        let members = ["a", "b", "c"];
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let snapshot = SnapshotVersion {
+            epoch: 1, generation: 5, fingerprint: 42,
+        };
+        let status = members.iter().map(|&node| ReplicaSnapshotStatus {
+            node: node.to_owned(), snapshot, healthy: true,
+        }).collect::<Vec<_>>();
+        for zones in [
+            vec![("a", "one"), ("a", "two"), ("c", "three")],
+            vec![("a", "one"), ("b", "two"), ("foreign", "three")],
+            vec![("a", "one"), ("b", ""), ("c", "three")],
+            vec![("a", "one"), ("b", "two")],
+        ] {
+            assert!(rank_zone_diverse_quorum_snapshot_replicas(
+                &members, policy, &status, &zones
+            ).is_err());
+        }
+        assert!(rank_zone_diverse_quorum_snapshot_replicas(
+            &members, policy, &status, &[
+                ("a", "one"), ("b", "two"), ("c", "three")
+            ]
+        ).is_ok());
+    }
+}
