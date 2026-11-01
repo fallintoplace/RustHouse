@@ -1,4 +1,4 @@
-use crate::tsv_escape::decode_tsv_field;
+use rusthouse_format::decode_tsv_field_into;
 use std::collections::HashSet;
 use std::io::{self, Write};
 
@@ -12,6 +12,7 @@ pub struct JsonlWriter<W: Write> {
     headers: Option<Vec<Vec<u8>>>,
     line: Vec<u8>,
     encoded: Vec<u8>,
+    decoded: Vec<u8>,
 }
 
 impl<W: Write> JsonlWriter<W> {
@@ -21,6 +22,7 @@ impl<W: Write> JsonlWriter<W> {
             headers: None,
             line: Vec::new(),
             encoded: Vec::new(),
+            decoded: Vec::new(),
         }
     }
 
@@ -46,7 +48,13 @@ impl<W: Write> JsonlWriter<W> {
         }
 
         let headers = self.headers.as_ref().unwrap();
-        let result = write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded);
+        let result = write_json_row_into(
+            &mut self.output,
+            headers,
+            &self.line,
+            &mut self.encoded,
+            &mut self.decoded,
+        );
         self.line.clear();
         result
     }
@@ -103,6 +111,7 @@ fn write_json_row_into<W: Write>(
     headers: &[Vec<u8>],
     line: &[u8],
     row: &mut Vec<u8>,
+    decoded: &mut Vec<u8>,
 ) -> io::Result<()> {
     // Visit each TSV field once. Validate the shape in the local row buffer
     // so malformed records never partially write to the output stream.
@@ -117,7 +126,7 @@ fn write_json_row_into<W: Write>(
         }
         row.extend_from_slice(header);
         row.push(b':');
-        write_json_value(&mut *row, value)?;
+        write_json_value_with_buffer(&mut *row, value, decoded)?;
     }
     if fields.next().is_some() {
         return Err(jsonl_row_width_error());
@@ -136,21 +145,30 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) ->
             Ok(escaped)
         })
         .collect::<io::Result<Vec<_>>>()?;
-    write_json_row_into(output, &encoded, line, &mut Vec::new())
+    write_json_row_into(output, &encoded, line, &mut Vec::new(), &mut Vec::new())
 }
 
 // Keep NULL marker handling in one place for every JSONL field.
-pub(super) fn write_json_value<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
+fn write_json_value_with_buffer<W: Write>(
+    output: &mut W,
+    value: &[u8],
+    decoded: &mut Vec<u8>,
+) -> io::Result<()> {
     if value == b"\\N" {
         output.write_all(b"null")
+    } else if value.contains(&b'\\') {
+        // Decode SQL TSV escapes into one retained scratch allocation, not
+        // a temporary Vec for every escaped String field.
+        decode_tsv_field_into(value, decoded)?;
+        write_json_string(output, decoded)
     } else {
-        if value.contains(&b'\\') {
-            let decoded = decode_tsv_field(value)?;
-            write_json_string(output, &decoded)
-        } else {
-            write_json_string(output, value)
-        }
+        write_json_string(output, value)
     }
+}
+
+#[cfg(test)]
+pub(super) fn write_json_value<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
+    write_json_value_with_buffer(output, value, &mut Vec::new())
 }
 
 fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
@@ -232,7 +250,13 @@ impl<W: Write> Write for JsonlWriter<W> {
             if complete && self.line.is_empty() {
                 if let Some(headers) = self.headers.as_ref() {
                     // Complete data rows can be encoded straight from this write.
-                    write_json_row_into(&mut self.output, headers, fragment, &mut self.encoded)?;
+                    write_json_row_into(
+                        &mut self.output,
+                        headers,
+                        fragment,
+                        &mut self.encoded,
+                        &mut self.decoded,
+                    )?;
                     continue;
                 }
             }
@@ -686,5 +710,35 @@ mod small_jsonl_header_parse_tests {
     fn non_ascii_headers_still_compare_by_full_utf8_bytes() {
         assert!(parse_headers("café\tcafé".as_bytes()).is_err());
         assert_eq!(parse_headers("café\t中文".as_bytes()).unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod cli_reusable_escape_buffer_tests {
+    use super::*;
+
+    #[test]
+    fn large_escaped_rows_reuse_one_decode_allocation() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let large = format!(r"{}\t{}", "x".repeat(12_000), "z".repeat(12_000));
+        writer.write_all(format!("{large}\n").as_bytes()).unwrap();
+        let pointer = writer.decoded.as_ptr();
+        let capacity = writer.decoded.capacity();
+        assert!(capacity >= 24_001);
+        writer.write_all(br"one\ttwo").unwrap();
+        writer.write_all(b"\n").unwrap();
+        assert_eq!(writer.decoded.as_ptr(), pointer);
+        assert_eq!(writer.decoded.capacity(), capacity);
+        assert!(writer.output.ends_with(b"{\"value\":\"one\\ttwo\"}\n"));
+    }
+
+    #[test]
+    fn rejected_late_escape_keeps_previous_rows_unchanged() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"left\tright\none\ttwo\n").unwrap();
+        let committed = writer.output.clone();
+        assert!(writer.write_all(b"ok\tinvalid\\xG0\n").is_err());
+        assert_eq!(writer.output, committed);
     }
 }
