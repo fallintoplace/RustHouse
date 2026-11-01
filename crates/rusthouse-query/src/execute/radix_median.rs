@@ -360,33 +360,33 @@ fn median_inner(
                     ));
                 };
                 if let Some(wide) = wide_histograms.as_mut() {
-                count_column_wide(
-                    values,
-                    Some(nulls),
-                    |row| {
-                        typed_filtered
-                            .is_none_or(|(_, conditions)| typed::passes(&batch, row, conditions))
-                    },
-                    bits,
-                    shift,
-                    prefix_mask,
-                    &keys,
-                    wide,
-                )?;
+                    count_column_wide(
+                        values,
+                        Some(nulls),
+                        |row| {
+                            typed_filtered
+                                .is_none_or(|(_, conditions)| typed::passes(&batch, row, conditions))
+                        },
+                        bits,
+                        shift,
+                        prefix_mask,
+                        &keys,
+                        wide,
+                    )?;
                 } else {
-                count_column(
-                    values,
-                    Some(nulls),
-                    |row| {
-                        typed_filtered
-                            .is_none_or(|(_, conditions)| typed::passes(&batch, row, conditions))
-                    },
-                    bits,
-                    shift,
-                    prefix_mask,
-                    &keys,
-                    &mut histogram,
-                )?;
+                    count_column(
+                        values,
+                        Some(nulls),
+                        |row| {
+                            typed_filtered
+                                .is_none_or(|(_, conditions)| typed::passes(&batch, row, conditions))
+                        },
+                        bits,
+                        shift,
+                        prefix_mask,
+                        &keys,
+                        &mut histogram,
+                    )?;
                 }
             }
         } else {
@@ -394,33 +394,33 @@ fn median_inner(
             let mut reader = NumericQueryReader::open_with_metadata(part, scan_columns, metadata)?;
             while let Some(batch) = reader.next_batch()? {
                 if let Some(wide) = wide_histograms.as_mut() {
-                count_column_wide(
-                    &batch[0],
-                    None,
-                    |row| {
-                        filtered
-                            .is_none_or(|(_, conditions)| batch_matches(&batch, row, conditions))
-                    },
-                    bits,
-                    shift,
-                    prefix_mask,
-                    &keys,
-                    wide,
-                )?;
+                    count_column_wide(
+                        &batch[0],
+                        None,
+                        |row| {
+                            filtered
+                                .is_none_or(|(_, conditions)| batch_matches(&batch, row, conditions))
+                        },
+                        bits,
+                        shift,
+                        prefix_mask,
+                        &keys,
+                        wide,
+                    )?;
                 } else {
-                count_column(
-                    &batch[0],
-                    None,
-                    |row| {
-                        filtered
-                            .is_none_or(|(_, conditions)| batch_matches(&batch, row, conditions))
-                    },
-                    bits,
-                    shift,
-                    prefix_mask,
-                    &keys,
-                    &mut histogram,
-                )?;
+                    count_column(
+                        &batch[0],
+                        None,
+                        |row| {
+                            filtered
+                                .is_none_or(|(_, conditions)| batch_matches(&batch, row, conditions))
+                        },
+                        bits,
+                        shift,
+                        prefix_mask,
+                        &keys,
+                        &mut histogram,
+                    )?;
                 }
             }
         }
