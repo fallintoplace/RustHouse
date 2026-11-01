@@ -950,6 +950,47 @@ mod recycled_primary_index_decoder_tests {
     }
 }
 
+#[cfg(test)]
+mod compressed_primary_index_identity_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SERIAL: AtomicUsize = AtomicUsize::new(0);
+
+    fn temporary_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "rusthouse-primary-compressed-{}-{}.cidx",
+            std::process::id(), SERIAL.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compressed_primary_index_refuses_symlinked_source() {
+        use std::os::unix::fs::symlink;
+        let source = temporary_path();
+        let alias = source.with_extension("alias.cidx");
+        fs::write(&source, b"not a compressed index").unwrap();
+        symlink(&source, &alias).unwrap();
+        assert!(matches!(read_fixed_primary_index(&alias, &[8]),
+            Err(PartError::InvalidPrimaryIndex { .. })));
+        fs::remove_file(&alias).unwrap();
+        fs::remove_file(&source).unwrap();
+    }
+
+    #[test]
+    fn metadata_change_detector_rejects_changed_file_length() {
+        let path = temporary_path();
+        fs::write(&path, b"checkpoint_000000").unwrap();
+        let before = fs::metadata(&path).unwrap();
+        // A size change is always a detectable failure, even where a
+        // filesystem has coarse timestamp precision.
+        fs::write(&path, b"checkpoint_000000changed").unwrap();
+        let after = fs::metadata(&path).unwrap();
+        assert!(!raw_index_unchanged(&before, &after));
+        fs::remove_file(path).unwrap();
+    }
+}
+
 #[cfg(all(test, unix))]
 mod compressed_index_identity_tests {
     use super::*;
