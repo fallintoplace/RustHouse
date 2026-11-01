@@ -21,12 +21,33 @@ fn array_suffix(empty: bool, pretty: bool) -> &'static [u8] {
     }
 }
 
+fn write_compact_array_item<const N: usize, W: Write>(
+    output: &mut W,
+    row: &[u8],
+    first: bool,
+) -> io::Result<()> {
+    let mut framed = [0u8; N];
+    framed[0] = if first { b'[' } else { b',' };
+    framed[1..row.len() + 1].copy_from_slice(row);
+    output.write_all(&framed[..row.len() + 1])
+}
+
 fn write_array_item<W: Write>(
     output: &mut W,
     row: &[u8],
     first: bool,
     pretty: bool,
 ) -> io::Result<()> {
+    if !pretty {
+        // Compact output needs only a one-byte delimiter. Frame common rows
+        // without allocating or making a second write to the output sink.
+        if row.len() < 512 {
+            return write_compact_array_item::<512, _>(output, row, first);
+        }
+        if row.len() < 4096 {
+            return write_compact_array_item::<4096, _>(output, row, first);
+        }
+    }
     output.write_all(json_array_row_prefix(first, pretty))?;
     if pretty {
         write_pretty_json_row(output, row)
@@ -268,5 +289,44 @@ mod tests {
         sink.write_all(b"{\"key\":\"value\"}\n").unwrap();
         assert_eq!(sink.row.capacity(), 0);
         assert_eq!(sink.finish().unwrap(), b"[{\"key\":\"value\"}]\n");
+    }
+}
+
+#[cfg(test)]
+mod compact_array_single_write_tests {
+    use super::*;
+
+    struct Counting {
+        calls: usize,
+        data: Vec<u8>,
+    }
+
+    impl Write for Counting {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.data.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn one_write_frames_both_compact_delimiters_and_medium_rows() {
+        for width in [2usize, 511, 512, 4095] {
+            for first in [true, false] {
+                let row = vec![b'x'; width];
+                let mut out = Counting {
+                    calls: 0,
+                    data: Vec::new(),
+                };
+                write_array_item(&mut out, &row, first, false).unwrap();
+                assert_eq!(out.calls, 1, "width={width}");
+                assert_eq!(out.data[0], if first { b'[' } else { b',' });
+                assert_eq!(&out.data[1..], row.as_slice());
+            }
+        }
     }
 }

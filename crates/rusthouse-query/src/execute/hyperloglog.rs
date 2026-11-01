@@ -146,23 +146,24 @@ impl HyperLogLog {
         if bytes.len() != REGISTERS * 2 {
             return Err("invalid HLL register count".into());
         }
-        // Validate the complete input first. A bad final register must not
-        // leave the union partially changed.
-        for pair in bytes.chunks_exact(2) {
+        // Decode the 32 KiB wire state only once. A bounded 16 KiB scratch
+        // map makes validation atomic: malformed late registers never mutate
+        // the live union, and the merge pass touches compact decoded bytes.
+        let mut decoded = [0u8; REGISTERS];
+        for (target, pair) in decoded.iter_mut().zip(bytes.chunks_exact(2)) {
             let high = HEX_NIBBLES[usize::from(pair[0])];
             let low = HEX_NIBBLES[usize::from(pair[1])];
             if high == u8::MAX || low == u8::MAX {
                 return Err("invalid HLL hex state".into());
             }
-            if (high << 4) | low > MAX_REGISTER_RANK {
+            let rank = (high << 4) | low;
+            if rank > MAX_REGISTER_RANK {
                 return Err("invalid HLL register rank".into());
             }
+            *target = rank;
         }
-        // The second pass has no per-digit validation branches or scratch.
-        for (target, pair) in self.registers.iter_mut().zip(bytes.chunks_exact(2)) {
-            let high = HEX_NIBBLES[usize::from(pair[0])];
-            let low = HEX_NIBBLES[usize::from(pair[1])];
-            *target = (*target).max((high << 4) | low);
+        for (target, &rank) in self.registers.iter_mut().zip(decoded.iter()) {
+            *target = (*target).max(rank);
         }
         Ok(())
     }
@@ -466,5 +467,34 @@ mod nibble_decoder_regression_tests {
         let mut merged = HyperLogLog::default();
         merged.merge_hex_state(&encoded).unwrap();
         assert_eq!(*merged.registers, *sketch.registers);
+    }
+}
+
+#[cfg(test)]
+mod decoded_hll_merge_equivalence_tests {
+    use super::*;
+
+    #[test]
+    fn atomic_single_decode_matches_per_register_union_for_many_shards() {
+        let mut actual = HyperLogLog::default();
+        let mut expected = HyperLogLog::default();
+        for shard in 0..48u128 {
+            let mut incoming = HyperLogLog::default();
+            for offset in 0..1000u128 {
+                incoming.observe_number(Number::Unsigned(
+                    (shard * 713 + offset * 137) % 100_000
+                ));
+            }
+            let encoded = incoming.encode_state();
+            actual.merge_hex_state(&encoded).unwrap();
+            expected.merge(&incoming);
+            assert_eq!(actual.encode_state(), expected.encode_state(), "shard={shard}");
+        }
+        let original = actual.encode_state();
+        let mut invalid = original.into_bytes();
+        let last = invalid.len() - 2;
+        invalid[last] = b'g';
+        assert!(actual.merge_hex_state(&String::from_utf8(invalid).unwrap()).is_err());
+        assert_eq!(actual.encode_state(), expected.encode_state());
     }
 }

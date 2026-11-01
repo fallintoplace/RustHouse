@@ -65,15 +65,26 @@ fn valid_schema(path: &Path) -> bool {
     std::str::from_utf8(&bytes).is_ok_and(valid_schema_contents)
 }
 
-fn valid_schema_line<'a>(line: &'a str, names: &mut HashSet<&'a str>) -> bool {
+fn valid_schema_line<'a>(
+    line: &'a str,
+    names: &mut HashSet<&'a str>,
+    ddl: &mut String,
+) -> bool {
     let Some((name, data_type)) = line.split_once('\t') else {
         return false;
     };
     if !identifier(name) || !names.insert(name) {
         return false;
     }
-    let ddl = format!("CREATE TABLE _check ({name} {data_type})");
-    matches!(parse_ddl(&ddl), Ok(Some(Ddl::CreateTable { .. })))
+    // Reuse this scratch String across up to 128 column declarations per
+    // table rather than allocating one new DDL statement per column.
+    ddl.clear();
+    ddl.push_str("CREATE TABLE _check (");
+    ddl.push_str(name);
+    ddl.push(' ');
+    ddl.push_str(data_type);
+    ddl.push(')');
+    matches!(parse_ddl(ddl), Ok(Some(Ddl::CreateTable { .. })))
 }
 
 fn valid_schema_contents(contents: &str) -> bool {
@@ -85,8 +96,9 @@ fn valid_schema_contents(contents: &str) -> bool {
         return false;
     }
     let mut names = HashSet::new();
+    let mut ddl = String::with_capacity(96);
     for (index, line) in lines.enumerate() {
-        if index >= MAX_SCHEMA_COLUMNS || !valid_schema_line(line, &mut names) {
+        if index >= MAX_SCHEMA_COLUMNS || !valid_schema_line(line, &mut names, &mut ddl) {
             return false;
         }
     }
@@ -340,5 +352,29 @@ mod wide_schema_discovery_tests {
         assert!(valid_schema_contents(&schema));
         schema.push_str("extra\tUInt64\n");
         assert!(!valid_schema_contents(&schema));
+    }
+}
+
+#[cfg(test)]
+mod schema_scratch_reuse_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_schema_columns_keep_one_ddl_buffer_allocation() {
+        let mut contents = String::new();
+        for index in 0..MAX_SCHEMA_COLUMNS {
+            contents.push_str(&format!("col_{index}\tUInt64\n"));
+        }
+        let mut names = HashSet::new();
+        let mut ddl = String::with_capacity(128);
+        let pointer = ddl.as_ptr();
+        for (index, line) in contents.lines().enumerate() {
+            assert!(valid_schema_line(line, &mut names, &mut ddl),
+                "column {index} invalid");
+            assert_eq!(ddl.as_ptr(), pointer, "DDL string reallocated at {index}");
+        }
+        assert_eq!(names.len(), MAX_SCHEMA_COLUMNS);
+        assert!(!valid_schema_line("col_0\tUInt64", &mut names, &mut ddl));
+        assert!(!valid_schema_line("bad\tNotAType", &mut names, &mut ddl));
     }
 }

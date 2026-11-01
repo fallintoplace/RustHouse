@@ -53,8 +53,11 @@ impl<W: Write> JsonlWriter<W> {
 }
 
 fn parse_headers(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
-    let mut seen = HashSet::new();
     let mut headers = Vec::new();
+    // Keep the common small projection off the hash-table allocation path.
+    // Names borrow the bounded header line until parsing finishes.
+    let mut small = [&[][..]; 8];
+    let mut seen: Option<HashSet<&[u8]>> = None;
     for header in line.split(|byte| *byte == b'\t') {
         if headers.len() >= MAX_JSONL_COLUMNS {
             return Err(io::Error::new(
@@ -68,7 +71,16 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
                 "JSONL header is empty or not UTF-8",
             ));
         }
-        if !seen.insert(header) {
+        let index = headers.len();
+        let duplicate = if index < small.len() {
+            let duplicate = small[..index].contains(&header);
+            small[index] = header;
+            duplicate
+        } else {
+            let seen = seen.get_or_insert_with(|| small.iter().copied().collect());
+            !seen.insert(header)
+        };
+        if duplicate {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "JSONL requires unique projected column names",
@@ -650,5 +662,30 @@ mod batched_jsonl_escaping_tests {
         write_json_string(&mut output, input.as_bytes()).unwrap();
         assert_eq!(output.output.len(), 20_002);
         assert!(output.writes <= 6);
+    }
+}
+
+#[cfg(test)]
+mod small_jsonl_header_parse_tests {
+    use super::*;
+
+    #[test]
+    fn checks_duplicates_both_before_and_after_hash_transition() {
+        for count in [1usize, 2, 8, 9, 64] {
+            let names = (0..count).map(|index| format!("col_{index}")).collect::<Vec<_>>();
+            let valid = names.join("\t");
+            assert_eq!(parse_headers(valid.as_bytes()).unwrap().len(), count);
+            if count > 1 {
+                let mut duplicate = names;
+                duplicate[count - 1] = "col_0".into();
+                assert!(parse_headers(duplicate.join("\t").as_bytes()).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn non_ascii_headers_still_compare_by_full_utf8_bytes() {
+        assert!(parse_headers("café\tcafé".as_bytes()).is_err());
+        assert_eq!(parse_headers("café\t中文".as_bytes()).unwrap().len(), 2);
     }
 }

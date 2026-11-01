@@ -64,6 +64,30 @@ class Q6OracleTests(unittest.TestCase):
             self.assertEqual(report["results"][0]["status"], "mismatch")
 
 
+class Q6ReferenceBudgetTests(unittest.TestCase):
+    def test_oversized_revenue_reference_row_is_rejected(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "lineitem.tsv"
+            path.write_text("l_shipdate\tl_discount\tl_quantity\tl_extendedprice\n"
+                            "1994-01-01\t500\t2300\t" + "1" * 100 + "\n")
+            with patch("q6_dbgen.MAX_REFERENCE_LINE_CHARS", 60):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    expected_revenue(path)
+
+    def test_rejects_symlinked_revenue_reference(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "lineitem.tsv"
+            path.write_text("l_shipdate\tl_discount\tl_quantity\tl_extendedprice\n")
+            alias = Path(root) / "alias.tsv"
+            try:
+                alias.symlink_to(path)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                expected_revenue(alias)
+
+
 class Q6TimingValidationTests(unittest.TestCase):
     def test_rejects_nonfinite_timeout_and_boolean_runs(self):
         for options in ({"timeout": float("nan")}, {"timeout": float("inf")},

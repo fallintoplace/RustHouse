@@ -9,6 +9,7 @@ import json
 import math
 import os
 import platform
+import re
 import statistics
 import subprocess
 import sys
@@ -40,7 +41,7 @@ def write_fixture(path, rows, *, batch_rows=8192):
         raise ValueError("fixture rows must be in 1..1000000000")
     if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("fixture batch_rows must be in 1..1000000")
-    with path.open("w", encoding="ascii", buffering=1024 * 1024) as output:
+    with path.open("w", encoding="ascii", newline="\n", buffering=1024 * 1024) as output:
         for start in range(0, rows, batch_rows):
             output.write("".join(f"{value}\n" for value in range(start, min(start + batch_rows, rows))))
 
@@ -49,11 +50,27 @@ def invoke(binary, database, sql, *, timeout, no_header=False):
     command = [str(binary), "sql", sql, "--database", str(database)]
     if no_header:
         command.extend(["--format", "tsv-no-header"])
+    extra = {}
+    # RLIMIT_FSIZE applies to all child file writes, including COPY data
+    # files. Only cap read-only query processes, never ingestion or DDL.
+    if os.name == "posix" and sql.lstrip().upper().startswith("SELECT "):
+        import resource
+
+        def cap_spooled_output():
+            soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            limit = 8 * 1024 * 1024 + 1
+            if soft != resource.RLIM_INFINITY:
+                limit = min(limit, soft)
+            if hard != resource.RLIM_INFINITY:
+                limit = min(limit, hard)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+        extra["preexec_fn"] = cap_spooled_output
     start = time.perf_counter()
     with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile() as errors:
         process = subprocess.run(
             command, stdout=output, stderr=errors,
-            check=False, timeout=timeout,
+            check=False, timeout=timeout, **extra,
         )
         elapsed = time.perf_counter() - start
         if process.returncode:
@@ -82,6 +99,11 @@ def scan(binary, database, sql, expected, runs, warmups, timeout):
         "p90_seconds": p90(samples),
         "samples_seconds": samples,
     }
+
+
+def doctor_verified_rows(output, rows):
+    expected = rb"OK events: " + str(rows).encode("ascii") + rb" rows, [1-9][0-9]* parts"
+    return any(re.fullmatch(expected, line) for line in output.splitlines())
 
 
 def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None, fixture_batch_rows=8192):
@@ -116,8 +138,7 @@ def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None, fixture_ba
             observed = summary.read(8193)
             errors.seek(max(0, errors.tell() - 600))
             diagnostic = errors.read(600)
-        expected_summary = f"OK events: {rows} rows, ".encode("utf-8")
-        if inspection.returncode or expected_summary not in observed:
+        if inspection.returncode or not doctor_verified_rows(observed, rows):
             raise ValueError(
                 f"physical snapshot verification failed: {observed[:8192]!r} {diagnostic!r}"
             )

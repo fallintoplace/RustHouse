@@ -11,9 +11,9 @@ from pathlib import Path
 
 WORKLOADS = ("filtered count", "filtered sum", "filtered top-K")
 METADATA = re.compile(
-    r"RustHouse numbers\(\) benchmarks: (\d+) input rows, (\d+) samples, (\d+) warmups"
+    r"RustHouse numbers\(\) benchmarks: (\d+) input rows, (\d+) samples, (\d+) warmups", re.ASCII
 )
-MEASUREMENT = re.compile(r"(filtered (?:count|sum|top-K))\s+(\d+\.\d+)\s+(\d+\.\d+)")
+MEASUREMENT = re.compile(r"(filtered (?:count|sum|top-K))\s+(\d+\.\d+)\s+(\d+\.\d+)", re.ASCII)
 
 
 def parse_benchmark(text):
@@ -66,7 +66,8 @@ def compare_text(baseline, candidate):
         if base_ms <= 0 or head_ms <= 0:
             change = "N/A (below printed precision)"
         else:
-            change = f"{(head_ms / base_ms - 1) * 100:+.1f}%"
+            percent = (head_ms / base_ms - 1) * 100
+            change = f"{percent:+.1f}%" if math.isfinite(percent) else "N/A (ratio overflow)"
         result.append(f"| {name} | {base_ms:.6f} | {head_ms:.6f} | {change} |")
     result.extend([
         "",
@@ -89,7 +90,7 @@ def _read_bounded_report(path):
         contents = source.read(MAX_REPORT_BYTES + 1)
     if len(contents) > MAX_REPORT_BYTES:
         raise ValueError("PR comparison artifact exceeds 16 MiB")
-    return contents.decode("utf-8")
+    return contents.decode("utf-8").replace("\r\n", "\n")
 
 
 def main(argv=None):

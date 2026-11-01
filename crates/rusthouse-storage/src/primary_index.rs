@@ -150,6 +150,27 @@ fn checked_field_offsets(path: &Path, field_widths: &[usize]) -> Result<Vec<usiz
     Ok(field_offsets)
 }
 
+// A frozen primary index must retain the same identity and state across a
+// read. A same-size in-place rewrite can otherwise yield a torn key index.
+fn raw_index_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if !after.file_type().is_file()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
     let original = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !original.file_type().is_file() {
@@ -157,15 +178,8 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
     }
     let file = File::open(path).map_err(|source| io_error(path, source))?;
     let opened = file.metadata().map_err(|source| io_error(path, source))?;
-    if !opened.file_type().is_file() || opened.len() != original.len() {
+    if !raw_index_unchanged(&original, &opened) {
         return Err(invalid(path, "primary index changed before read"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if original.dev() != opened.dev() || original.ino() != opened.ino() {
-            return Err(invalid(path, "primary index replaced during open"));
-        }
     }
     let size = opened.len();
     if size > MAX_INDEX_BYTES as u64 {
@@ -173,13 +187,21 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
     }
     // The checked file size is known. Avoid repeated growth for large raw indexes.
     let mut data = Vec::with_capacity(size as usize);
-    file.take(MAX_INDEX_BYTES as u64 + 1)
+    (&file).take(MAX_INDEX_BYTES as u64 + 1)
         .read_to_end(&mut data)
         .map_err(|source| io_error(path, source))?;
     if data.len() > MAX_INDEX_BYTES {
         return Err(invalid(path, "index exceeds the 256 MiB limit"));
     }
     ensure_exact_primary_index_length(path, size, data.len())?;
+    // Check the open inode and its pathname after the read, not just before.
+    let finished = file.metadata().map_err(|source| io_error(path, source))?;
+    let current = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if !raw_index_unchanged(&opened, &finished)
+        || !raw_index_unchanged(&opened, &current)
+    {
+        return Err(invalid(path, "primary index changed during read"));
+    }
     Ok(data)
 }
 
@@ -667,5 +689,33 @@ mod primary_index_short_read_tests {
         let path = Path::new("synthetic.idx");
         assert!(ensure_exact_primary_index_length(path, 24, 16).is_err());
         assert!(ensure_exact_primary_index_length(path, 24, 24).is_ok());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod raw_index_immutability_tests {
+    use super::*;
+
+    #[test]
+    fn detects_same_sized_path_replacement_and_in_place_rewrite() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-index-immutability-{}-{}", std::process::id(), line!(),
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("primary.idx");
+        let replacement = dir.join("replacement.idx");
+        fs::write(&path, [3u8; 16]).unwrap();
+        fs::write(&replacement, [9u8; 16]).unwrap();
+        let before = fs::symlink_metadata(&path).unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        let after = fs::symlink_metadata(&path).unwrap();
+        assert_eq!(before.len(), after.len());
+        assert!(!raw_index_unchanged(&before, &after));
+        let original = fs::symlink_metadata(&path).unwrap();
+        fs::write(&path, [8u8; 17]).unwrap();
+        let changed = fs::symlink_metadata(&path).unwrap();
+        assert!(!raw_index_unchanged(&original, &changed));
+        fs::remove_dir_all(dir).unwrap();
     }
 }
