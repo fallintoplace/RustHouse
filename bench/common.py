@@ -21,22 +21,44 @@ MAX_SQL_STDOUT_BYTES = 64 * 1024 * 1024
 
 
 def _leading_sql_keyword(statement):
-    """Identify SELECT after leading comments without changing the SQL text."""
-    remainder = statement.lstrip()
-    while remainder:
-        if remainder.startswith(("--", "#")):
-            end = remainder.find("\n")
-            if end < 0:
+    """Read the first SQL word using the lexer's whitespace/comment rules.
+
+    SELECT can follow nested comments or be adjacent to a block comment.
+    Fail closed on malformed comments or nesting beyond the SQL lexer limit.
+    """
+    index = int(statement.startswith("\ufeff"))
+    length = len(statement)
+    while index < length:
+        if statement[index] in " \t\r\n\v\f":
+            index += 1
+        elif statement.startswith(("--", "#"), index):
+            end = index
+            while end < length and statement[end] not in "\r\n":
+                end += 1
+            index = end
+        elif statement.startswith("/*", index):
+            depth = 1
+            index += 2
+            while index < length and depth:
+                if statement.startswith("/*", index):
+                    depth += 1
+                    if depth > 32:
+                        return ""
+                    index += 2
+                elif statement.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            if depth:
                 return ""
-            remainder = remainder[end + 1:].lstrip()
-        elif remainder.startswith("/*"):
-            end = remainder.find("*/", 2)
-            if end < 0:
-                return ""
-            remainder = remainder[end + 2:].lstrip()
         else:
             break
-    return remainder.split(maxsplit=1)[0].upper() if remainder else ""
+    end = index
+    while end < length and (statement[end].isascii() and
+                            (statement[end].isalnum() or statement[end] == "_")):
+        end += 1
+    return statement[index:end].upper()
 
 
 def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-header"):
