@@ -47,8 +47,8 @@ class SmokeTests(unittest.TestCase):
         from urllib.request import ProxyHandler
         proxies = [handler for handler in smoke.urlopen.__self__.handlers
                    if isinstance(handler, ProxyHandler)]
-        self.assertEqual(len(proxies), 1)
-        self.assertEqual(proxies[0].proxies, {})
+        # An empty ProxyHandler is intentionally omitted from installed handlers.
+        self.assertEqual(proxies, [])
 
 
 if __name__ == "__main__":
