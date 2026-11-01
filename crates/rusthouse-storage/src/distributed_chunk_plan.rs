@@ -285,6 +285,108 @@ pub fn plan_missing_chunks_from_resume(
     Ok(selected)
 }
 
+
+/// Schedule coalesced transfer I/O directly from a packed completion map.
+///
+/// Unlike planning individual missing chunks and merging them afterwards,
+/// memory is proportional to the output run count, even for dense transfers.
+pub fn plan_missing_runs_from_resume(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    progress: &crate::distributed_resume_map::ResumeMap,
+    byte_budget: u64,
+    max_batch_chunks: usize,
+    max_run_bytes: u64,
+) -> Result<Vec<ChunkRun>, &'static str> {
+    if max_run_bytes == 0 || max_batch_chunks > 65_536 {
+        return Err("invalid coalesced chunk limits");
+    }
+    let chunk_count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    if progress.len() != chunk_count {
+        return Err("resume checkpoint does not match transfer layout");
+    }
+    let mut runs: Vec<ChunkRun> = Vec::new();
+    let mut scheduled = 0usize;
+    let mut remaining = byte_budget;
+    for index in progress.remaining_indices() {
+        if scheduled == max_batch_chunks || remaining == 0 {
+            break;
+        }
+        let chunk = chunk_at_index(total_bytes, chunk_bytes, index);
+        if chunk.length > remaining {
+            continue;
+        }
+        if chunk.length > max_run_bytes {
+            return Err("invalid or overlapping transfer chunk");
+        }
+        if let Some(last) = runs.last_mut() {
+            if last.first_index + last.chunk_count == index
+                && last.offset + last.length == chunk.offset
+                && chunk.length <= max_run_bytes - last.length
+            {
+                last.chunk_count += 1;
+                last.length += chunk.length;
+                scheduled += 1;
+                remaining -= chunk.length;
+                continue;
+            }
+        }
+        runs.push(ChunkRun {
+            first_index: index,
+            chunk_count: 1,
+            offset: chunk.offset,
+            length: chunk.length,
+        });
+        scheduled += 1;
+        remaining -= chunk.length;
+    }
+    Ok(runs)
+}
+
+#[cfg(test)]
+mod direct_resumable_run_tests {
+    use super::*;
+
+    #[test]
+    fn direct_runs_match_materialize_then_coalesce_over_sparse_checkpoints() {
+        for bytes in [0u64, 1, 7, 8, 9, 63, 65, 4097, 65_536] {
+            let count = bytes.div_ceil(7) as usize;
+            for stride in [1usize, 2, 3, 13, 31] {
+                let mut progress = crate::distributed_resume_map::ResumeMap::new(count).unwrap();
+                for index in (0..count).step_by(stride) {
+                    progress.mark_complete(index).unwrap();
+                }
+                for budget in [0, 1, 6, 7, 13, 21, 1000] {
+                    for limit in [0, 1, 2, 7, 128] {
+                        for max_run in [1, 6, 7, 14, 63, 8192] {
+                            let reference = plan_missing_chunks_from_resume(
+                                bytes, 7, 65_536, &progress, budget, limit
+                            ).and_then(|chunks| coalesce_indexed_chunks(&chunks, max_run));
+                            let planned = plan_missing_runs_from_resume(
+                                bytes, 7, 65_536, &progress, budget, limit, max_run
+                            );
+                            assert_eq!(planned, reference, "{bytes}:{stride}:{budget}:{limit}:{max_run}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_budgets_and_layouts_without_partial_runs() {
+        let map = crate::distributed_resume_map::ResumeMap::new(2).unwrap();
+        assert!(plan_missing_runs_from_resume(10, 4, 3, &map, 8, 2, 8).is_err());
+        assert!(plan_missing_runs_from_resume(8, 4, 3, &map, 8, 2, 0).is_err());
+        assert!(plan_missing_runs_from_resume(8, 4, 3, &map, 8, 65_537, 8).is_err());
+        assert_eq!(
+            plan_missing_runs_from_resume(8, 4, 3, &map, 8, 2, 8).unwrap(),
+            vec![ChunkRun { first_index: 0, chunk_count: 2, offset: 0, length: 8 }]
+        );
+    }
+}
+
 #[cfg(test)]
 mod checkpoint_scheduling_tests {
     use super::*;
