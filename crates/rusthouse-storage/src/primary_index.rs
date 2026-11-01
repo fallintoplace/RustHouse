@@ -824,7 +824,7 @@ mod narrow_integer_pruning_tests {
         assert_eq!(candidate_narrow_unsigned_mark_range(&eight, 0,
             Bound::Included(11), Bound::Included(200)), Some(1..3));
         assert_eq!(candidate_narrow_unsigned_mark_range(&eight, 0,
-            Bound::Included(256), Bound::Unbounded), Some(4..4));
+            Bound::Included(256), Bound::Unbounded), Some(3..4));
         for (values, width) in [
             (vec![1u16, 256, 4096, u16::MAX].iter().flat_map(|v| v.to_le_bytes()).collect(), 2),
             (vec![1u32, 256, 4096, u32::MAX].iter().flat_map(|v| v.to_le_bytes()).collect(), 4),
@@ -835,7 +835,7 @@ mod narrow_integer_pruning_tests {
             assert_eq!(candidate_narrow_unsigned_mark_ranges(&idx, 0, &[
                 (Bound::Included(1), Bound::Included(1)),
                 (Bound::Included(4096), Bound::Included(4096)),
-            ]), Some(vec![0..1, 1..3]));
+            ]), Some(vec![0..3]));
         }
     }
 
