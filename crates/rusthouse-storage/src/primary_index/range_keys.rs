@@ -132,6 +132,18 @@ pub(super) fn i64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize)
     Some(i64::from_le_bytes(key_bytes(index, mark, field)?))
 }
 
+pub(super) fn u64_pair_mark_key(
+    index: &FixedPrimaryIndex, mark: usize, first: usize, second: usize,
+) -> Option<(u64, u64)> {
+    Some((u64_mark_key(index, mark, first)?, u64_mark_key(index, mark, second)?))
+}
+
+pub(super) fn i64_pair_mark_key(
+    index: &FixedPrimaryIndex, mark: usize, first: usize, second: usize,
+) -> Option<(i64, i64)> {
+    Some((i64_mark_key(index, mark, first)?, i64_mark_key(index, mark, second)?))
+}
+
 #[cfg(test)]
 mod ordered_intervals_tests {
     use super::*;
