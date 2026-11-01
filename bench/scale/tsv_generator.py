@@ -36,12 +36,13 @@ def emit_rows(stream, rows, *, start=0, step=1, batch_rows=8192, header=False):
         stop = start + rows
         for index in range(start, stop, batch_rows):
             end = min(index + batch_rows, stop)
-            stream.write("".join(f"{number}\n" for number in range(index, end)))
+            stream.write("\n".join(map(str, range(index, end))) + "\n")
     else:
         for index in range(0, rows, batch_rows):
             end = min(index + batch_rows, rows)
-            stream.write("".join(f"{start + number * step}\n"
-                                 for number in range(index, end)))
+            first_value = start + index * step
+            stop_value = start + end * step
+            stream.write("\n".join(map(str, range(first_value, stop_value, step))) + "\n")
     return rows
 
 

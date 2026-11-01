@@ -320,6 +320,29 @@ fn insert_build_key(
     }
 }
 
+/// Reuse the probe-style key buffer while building a hash table. Skewed
+/// dimensions can have thousands of duplicate keys: only unique keys need
+/// an owned allocation retained in the table.
+fn insert_build_row(
+    hash: &mut HashMap<Vec<typed::Key>, Bucket>,
+    row: &[typed::Cell],
+    indices: &[usize],
+    scratch: &mut Vec<typed::Key>,
+    index: usize,
+    any: bool,
+) {
+    if !row_key_into(row, indices, scratch) {
+        return;
+    }
+    if let Some(bucket) = hash.get_mut(scratch.as_slice()) {
+        if !any {
+            bucket.push(index);
+        }
+    } else {
+        hash.insert(scratch.clone(), Bucket::One(index));
+    }
+}
+
 struct ProbeOptions {
     materialize_rows: bool,
     materialize_after: usize,
@@ -625,12 +648,9 @@ fn execute_streaming_inner<W: Write>(
         Some(&right_meta),
     )?;
     let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_hash_capacity(right_rows.len()));
+    let mut build_key = Vec::with_capacity(right_keys.len());
     for (index, row) in right_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, right_keys) {
-            // ANY keeps the first right match only, so duplicate indexes
-            // never need to be retained in the hash table.
-            insert_build_key(&mut hash, key, index, query.any);
-        }
+        insert_build_row(&mut hash, row, right_keys, &mut build_key, index, query.any);
     }
     if hash.is_empty() {
         let header = selected_header(&selected);
@@ -1474,13 +1494,12 @@ pub fn execute_join<W: Write>(
         MAX_STREAM_BUILD_BYTES,
     )?;
     let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_hash_capacity(right_rows.len()));
+    let mut build_key = Vec::with_capacity(right_keys.len());
     for (index, row) in right_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, &right_keys) {
-            insert_build_key(
-                &mut hash, key, index,
-                query.any && matches!(query.kind, JoinType::Inner | JoinType::Left),
-            );
-        }
+        insert_build_row(
+            &mut hash, row, &right_keys, &mut build_key, index,
+            query.any && matches!(query.kind, JoinType::Inner | JoinType::Left),
+        );
     }
     let keep = |pair: &Pair| {
         null_filter.is_none_or(|(index, not_null)| {
@@ -1813,6 +1832,42 @@ mod selected_join_header_tests {
         assert_eq!(
             selected_header(&[(0, "left.id".into(), None), (1, "right.id".into(), Some(0))]),
             "left.id\tright.id"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reusable_join_build_key_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_text_keys_reuse_scratch_and_preserve_all_join_matches() {
+        let mut hash = HashMap::new();
+        let mut scratch = Vec::new();
+        let rows = [
+            vec![typed::Cell::Text(b"repeat-key".to_vec())],
+            vec![typed::Cell::Text(b"repeat-key".to_vec())],
+            vec![typed::Cell::Null],
+            vec![typed::Cell::Text(b"another".to_vec())],
+            vec![typed::Cell::Text(b"repeat-key".to_vec())],
+        ];
+        for (index, row) in rows.iter().enumerate() {
+            insert_build_row(&mut hash, row, &[0], &mut scratch, index, false);
+        }
+        assert_eq!(hash.len(), 2);
+        let lookup = vec![typed::Key::Text(b"repeat-key".to_vec())];
+        assert_eq!(
+            hash.get(lookup.as_slice()).unwrap().iter().copied().collect::<Vec<_>>(),
+            vec![0, 1, 4],
+        );
+
+        let mut any_hash = HashMap::new();
+        for (index, row) in rows.iter().enumerate() {
+            insert_build_row(&mut any_hash, row, &[0], &mut scratch, index, true);
+        }
+        assert_eq!(
+            any_hash.get(lookup.as_slice()).unwrap().iter().copied().collect::<Vec<_>>(),
+            vec![0],
         );
     }
 }

@@ -6,7 +6,7 @@ import math
 import re
 import sys
 from urllib.parse import quote, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, Request, build_opener, ProxyHandler
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -16,7 +16,12 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-NO_REDIRECT_OPENER = build_opener(NoRedirect())
+NO_REDIRECT_OPENER = build_opener(ProxyHandler({}), NoRedirect())
+
+
+def _reject_nonfinite_json(value):
+    # Python's json.loads accepts NaN and Infinity unless explicitly blocked.
+    raise ValueError(f"nonfinite JSON constant: {value}")
 
 
 def _unique_object_pairs(pairs):
@@ -44,18 +49,24 @@ def read_json(url, timeout):
         payload = reply.read(1_048_577)
     if len(payload) > 1_048_576:
         raise ValueError("response exceeds 1 MiB")
-    return json.loads(payload, object_pairs_hook=_unique_object_pairs)
+    return json.loads(payload, object_pairs_hook=_unique_object_pairs,
+                      parse_constant=_reject_nonfinite_json)
 
 
 def scan_rows(base, table, timeout):
     """Execute a real bounded SELECT to check data-path readiness."""
+    base = verify_origin(base)
+    if not isinstance(table, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
+        raise ValueError("invalid readiness scan table")
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 300:
+        raise ValueError("timeout must be finite and in (0, 300] seconds")
     query = f"SELECT count(*) AS rows_checked FROM {table}".encode("ascii")
     request = Request(base + "/", data=query,
                       headers={"Content-Type": "text/plain; charset=utf-8"},
                       method="POST")
     with NO_REDIRECT_OPENER.open(request, timeout=timeout) as response:
         body = response.read(129)
-    if len(body) > 128 or not re.fullmatch(rb"rows_checked\n[0-9]{1,20}\n", body):
+    if len(body) > 128 or not re.fullmatch(rb"rows_checked\n(?:0|[1-9][0-9]{0,19})\n", body):
         raise ValueError("readiness scan returned invalid SQL count output")
     count = int(body.splitlines()[1])
     if count > (1 << 64) - 1:
@@ -65,6 +76,19 @@ def scan_rows(base, table, timeout):
 
 def probe(base, expected_source, table=None, timeout=5, expected_version=None, verify_scan=False):
     base = verify_origin(base)
+    if expected_source not in ("generated", "part", "database"):
+        raise ValueError("expected_source must be generated, part, or database")
+    if expected_version is not None and (
+            not isinstance(expected_version, str) or not expected_version):
+        raise ValueError("expected_version must be a nonempty string")
+    if table is not None:
+        if expected_source != "database":
+            raise ValueError("--table requires database mode")
+        if not isinstance(table, str) or not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
+            raise ValueError("invalid table")
+    if verify_scan and table is None:
+        raise ValueError("--verify-scan requires --table")
     data = read_json(base + "/capabilities", timeout)
     if not isinstance(data, dict):
         raise ValueError("invalid capabilities response")
@@ -73,16 +97,10 @@ def probe(base, expected_source, table=None, timeout=5, expected_version=None, v
     if data.get("source") != expected_source:
         raise ValueError("expected source " + expected_source + ", got " + str(data.get("source")))
     if expected_version is not None:
-        if not isinstance(expected_version, str) or not expected_version:
-            raise ValueError("expected_version must be a nonempty string")
         if data.get("version") != expected_version:
             raise ValueError("expected RustHouse version " + expected_version +
                              ", got " + str(data.get("version")))
     if table is not None:
-        if expected_source != "database":
-            raise ValueError("--table requires database mode")
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
-            raise ValueError("invalid table")
         schema = read_json(base + "/schema?table=" + quote(table, safe=""), timeout)
         if not isinstance(schema, dict) or not isinstance(schema.get("columns"), list):
             raise ValueError("missing schema columns")
@@ -98,8 +116,6 @@ def probe(base, expected_source, table=None, timeout=5, expected_version=None, v
                 raise ValueError("invalid schema column")
             names.add(column["name"])
     if verify_scan:
-        if table is None:
-            raise ValueError("--verify-scan requires --table")
         scan_rows(base, table, timeout)
     return data
 

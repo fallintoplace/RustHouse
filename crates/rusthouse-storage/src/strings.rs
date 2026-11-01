@@ -46,7 +46,9 @@ impl StringColumn {
         let mut column = Self::new(rows.len());
         column.data.reserve(total_bytes);
         for row in rows {
-            let end = checked_end(column.data.len(), row.len() as u64)?;
+            // The preceding checked sum validated every row and the total.
+            // No need to check the same byte bound again during flattening.
+            let end = column.data.len() + row.len();
             column.data.extend_from_slice(&row);
             column.offsets.push(end);
         }
@@ -184,22 +186,43 @@ pub(crate) fn read_legacy_strings_buffered<R: BufRead>(
 
 fn read_varuint_buffered<R: BufRead>(reader: &mut R) -> Result<u64, StringReadError> {
     let mut result = 0u64;
-    for group in 0..10 {
-        let Some(&byte) = reader.fill_buf()?.first() else {
-            return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
+    let mut group = 0usize;
+    while group < 10 {
+        // Decode every available varint group from this buffer before
+        // calling fill_buf again. Most string lengths fit in one buffer.
+        let (consumed, finished, invalid) = {
+            let bytes = reader.fill_buf()?;
+            if bytes.is_empty() {
+                return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
+            }
+            let mut consumed = 0usize;
+            let mut finished = false;
+            let mut invalid = false;
+            for &byte in bytes.iter().take(10 - group) {
+                let position = group + consumed;
+                consumed += 1;
+                if position == 9 && byte > 1 {
+                    invalid = true;
+                    break;
+                }
+                let value = u64::from(byte & 0x7f);
+                result |= value << (position * 7);
+                if byte & 0x80 == 0 {
+                    invalid = position != 0 && value == 0;
+                    finished = !invalid;
+                    break;
+                }
+            }
+            (consumed, finished, invalid)
         };
-        reader.consume(1);
-        if group == 9 && byte > 1 {
+        reader.consume(consumed);
+        if invalid {
             return Err(StringReadError::InvalidVarUInt);
         }
-        let value = u64::from(byte & 0x7f);
-        result |= value << (group * 7);
-        if byte & 0x80 == 0 {
-            if group != 0 && value == 0 {
-                return Err(StringReadError::InvalidVarUInt);
-            }
+        if finished {
             return Ok(result);
         }
+        group += consumed;
     }
     Err(StringReadError::InvalidVarUInt)
 }
@@ -585,5 +608,67 @@ mod incremental_row_builder_tests {
         assert_eq!(column.get(0), Some(&b"hello"[..]));
         assert_eq!(column.get(1), Some(&b""[..]));
         assert_eq!(column.get(2), Some(&b"world"[..]));
+    }
+}
+
+#[cfg(test)]
+mod buffered_varuint_bulk_tests {
+    use super::*;
+
+    struct OneBuffer<'a> {
+        remaining: &'a [u8],
+        fills: usize,
+    }
+
+    impl Read for OneBuffer<'_> {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            panic!("buffered varint must use BufRead")
+        }
+    }
+
+    impl BufRead for OneBuffer<'_> {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            self.fills += 1;
+            Ok(self.remaining)
+        }
+
+        fn consume(&mut self, count: usize) {
+            self.remaining = &self.remaining[count..];
+        }
+    }
+
+    #[test]
+    fn multi_byte_varuint_reads_one_buffer_and_preserves_following_data() {
+        let input = [0x80, 0x80, 0x80, 0x80, 0x80, 1, 0xfe];
+        let mut reader = OneBuffer { remaining: &input, fills: 0 };
+        assert_eq!(read_varuint_buffered(&mut reader).unwrap(), 1u64 << 35);
+        assert_eq!(reader.fills, 1);
+        assert_eq!(reader.remaining, &[0xfe]);
+    }
+
+    #[test]
+    fn corrupt_tail_is_consumed_and_rejected() {
+        let input = [0x80, 0];
+        let mut reader = OneBuffer { remaining: &input, fills: 0 };
+        assert!(matches!(read_varuint_buffered(&mut reader), Err(StringReadError::InvalidVarUInt)));
+        assert!(reader.remaining.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod preflight_flattening_tests {
+    use super::*;
+
+    #[test]
+    fn prevalidated_rows_keep_exact_offsets_and_payloads() {
+        let rows = (0..8_192).map(|i| vec![b'x'; i % 11]).collect::<Vec<_>>();
+        let expected_bytes = rows.iter().map(Vec::len).sum::<usize>();
+        let column = StringColumn::from_rows(rows).unwrap();
+        assert_eq!(column.len(), 8_192);
+        assert_eq!(column.data.len(), expected_bytes);
+        assert_eq!(column.offsets.last(), Some(&expected_bytes));
+        for row in 0..8_192 {
+            assert_eq!(column.get(row).unwrap(), vec![b'x'; row % 11]);
+        }
     }
 }

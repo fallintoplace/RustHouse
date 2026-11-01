@@ -27,30 +27,31 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
 
 fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
     output.push(b'\'');
-    let bytes = value.as_bytes();
-    let mut start = 0;
-    for (index, &byte) in bytes.iter().enumerate() {
-        if byte == b'\'' || byte == b'\\' {
-            output.extend_from_slice(&bytes[start..index]);
-            if byte == b'\'' {
-                output.extend_from_slice(b"''");
-            } else {
-                output.extend_from_slice(b"\\\\");
-            }
-            start = index + 1;
+    let mut remaining = value.as_bytes();
+    // Most SQL result values contain neither quotes nor backslashes. Copy
+    // those spans directly rather than branching for every ordinary byte.
+    while let Some(index) = remaining.iter().position(|&byte| byte == b'\'' || byte == b'\\') {
+        output.extend_from_slice(&remaining[..index]);
+        if remaining[index] == b'\'' {
+            output.extend_from_slice(b"''");
+        } else {
+            output.extend_from_slice(br"\\");
         }
+        remaining = &remaining[index + 1..];
     }
-    output.extend_from_slice(&bytes[start..]);
+    output.extend_from_slice(remaining);
     output.push(b'\'');
 }
 
-fn encode_values_row_into(line: &[u8], columns: usize, values: &mut Vec<u8>) -> io::Result<()> {
+fn encode_values_row_into(line: &[u8], columns: usize, values: &mut Vec<u8>, prefix: &[u8]) -> io::Result<()> {
     values.clear();
     values.reserve(
         line.len()
             .saturating_add(columns.saturating_mul(3))
+            .saturating_add(prefix.len())
             .saturating_add(2),
     );
+    values.extend_from_slice(prefix);
     let mut encoded_field_count = 0;
     values.push(b'(');
     for field in line.split(|&byte| byte == b'\t') {
@@ -70,7 +71,7 @@ fn encode_values_row_into(line: &[u8], columns: usize, values: &mut Vec<u8>) -> 
 #[cfg(test)]
 fn encode_values_row(line: &[u8], columns: usize) -> io::Result<Vec<u8>> {
     let mut encoded = Vec::new();
-    encode_values_row_into(line, columns, &mut encoded)?;
+    encode_values_row_into(line, columns, &mut encoded, b"")?;
     Ok(encoded)
 }
 
@@ -81,12 +82,8 @@ fn emit_values_row<W: Write>(
     line: &[u8],
     columns: usize,
 ) -> io::Result<()> {
-    encode_values_row_into(line, columns, encoded)?;
-    if *rows == 0 {
-        output.write_all(b"VALUES ")?;
-    } else {
-        output.write_all(b",\n")?;
-    }
+    let prefix: &[u8] = if *rows == 0 { b"VALUES " } else { b",\n" };
+    encode_values_row_into(line, columns, encoded, prefix)?;
     output.write_all(encoded)?;
     *rows += 1;
     Ok(())
@@ -348,5 +345,59 @@ mod crlf_values_regressions {
         }
         writer.finish().unwrap();
         assert_eq!(writer.output, b"VALUES ('value');\n");
+    }
+}
+
+#[cfg(test)]
+mod single_write_cli_values_row_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Counted { calls: usize, bytes: Vec<u8> }
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn rows_include_prefix_in_a_single_sink_call() {
+        let mut output = Counted::default();
+        let mut encoded = Vec::new();
+        let mut rows = 0;
+        emit_values_row(&mut output, &mut encoded, &mut rows, b"one", 1).unwrap();
+        emit_values_row(&mut output, &mut encoded, &mut rows, b"two", 1).unwrap();
+        assert_eq!(rows, 2);
+        assert_eq!(output.calls, 2);
+        assert_eq!(output.bytes, b"VALUES ('one'),\n('two')");
+        assert_eq!(encode_values_row(b"two", 1).unwrap(), b"('two')");
+    }
+}
+
+#[cfg(test)]
+mod bulk_sql_literal_escape_tests {
+    use super::*;
+
+    #[test]
+    fn long_text_spans_match_individual_character_escaping() {
+        for size in [0, 1, 63, 512, 8192] {
+            let text = format!("{}'\\{}'tail", "café".repeat(size), "🦀".repeat(size));
+            let expected = format!("'{}'", text.replace('\\', r"\\").replace('\'', "''"));
+            let mut actual = Vec::new();
+            append_quoted_text(&mut actual, &text);
+            assert_eq!(actual, expected.as_bytes(), "size={size}");
+        }
+    }
+
+    #[test]
+    fn ordinary_utf8_literal_is_copied_without_extra_escaping() {
+        let text = "Ångström東京".repeat(4096);
+        let mut encoded = Vec::new();
+        append_quoted_text(&mut encoded, &text);
+        assert_eq!(encoded.len(), text.len() + 2);
+        assert_eq!(&encoded[1..encoded.len() - 1], text.as_bytes());
     }
 }

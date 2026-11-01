@@ -8,10 +8,10 @@ from pathlib import Path
 
 CASES = ("min", "avg", "max")
 HEADER = re.compile(
-    r"RustHouse grouped scans: (\d+) rows, (\d+) keys, (\d+) samples"
+    r"RustHouse grouped scans: (\d+) rows, (\d+) keys, (\d+) samples", re.ASCII
 )
 MEASURE = re.compile(
-    r"(min|avg|max)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)"
+    r"(min|avg|max)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)", re.ASCII
 )
 
 

@@ -101,10 +101,19 @@ fn decimal_storage_type(precision: u8) -> &'static str {
 }
 
 fn parse_decimal_type_number(value: &str) -> Option<u8> {
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+    if value.is_empty() {
         return None;
     }
-    value.parse::<u8>().ok()
+    // Numeric type parameters are tiny, but schema inspection reads them
+    // repeatedly. Validate and decode at once without a second parse pass.
+    let mut number = 0u8;
+    for byte in value.bytes() {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        number = number.checked_mul(10)?.checked_add(byte - b'0')?;
+    }
+    Some(number)
 }
 
 fn checked_decimal_spec(precision: u8, scale: u8) -> Option<(u8, u8, &'static str)> {
@@ -344,5 +353,22 @@ mod precision_validation_tests {
             read_decimal_column(&mut invalid.to_le_bytes().as_slice(), "Decimal(19,0)", 1),
             Err(DecimalReadError::ValueExceedsPrecision { row: 0, precision: 19 })
         ));
+    }
+}
+
+#[cfg(test)]
+mod ascii_decimal_type_parameters_tests {
+    use super::*;
+
+    #[test]
+    fn checked_parser_preserves_exact_u8_bounds_and_strict_syntax() {
+        for (text, expected) in [("0", 0), ("09", 9), ("38", 38), ("255", 255)] {
+            assert_eq!(parse_decimal_type_number(text), Some(expected));
+        }
+        for invalid in ["", "+1", "-1", "1 ", "1.0", "256", "999999999999"] {
+            assert_eq!(parse_decimal_type_number(invalid), None, "{invalid:?}");
+        }
+        assert_eq!(parse_decimal_type("Decimal(38, 18)"), Some((38, 18, "Int128")));
+        assert!(parse_decimal_type("Decimal(256, 1)").is_none());
     }
 }

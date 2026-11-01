@@ -89,13 +89,42 @@ pub fn read_enum_column<R: Read>(
         _ => unreachable!("Enum storage is Int8 or Int16"),
     };
 
-    for (row, &code) in codes.iter().enumerate() {
-        if !variants.contains_key(&code) {
+    // Wide Enum scans use direct bit probes rather than tree lookups.
+    // Enum8 needs 4 words (32 bytes), not the 1024 words of Enum16.
+    if rows > 32 && variants.len() > 4 {
+        let invalid = if width == 8 {
+            first_unknown_code::<4>(&codes, &variants)
+        } else {
+            first_unknown_code::<1024>(&codes, &variants)
+        };
+        if let Some((row, code)) = invalid {
             return Err(EnumReadError::UnknownValue { row, code });
+        }
+    } else {
+        for (row, &code) in codes.iter().enumerate() {
+            if !variants.contains_key(&code) {
+                return Err(EnumReadError::UnknownValue { row, code });
+            }
         }
     }
 
     Ok(EnumColumn { codes, variants })
+}
+
+fn first_unknown_code<const WORDS: usize>(
+    codes: &[i16],
+    variants: &BTreeMap<i16, String>,
+) -> Option<(usize, i16)> {
+    let mut allowed = [0u64; WORDS];
+    let mask = WORDS * 64 - 1;
+    for &code in variants.keys() {
+        let slot = (code as u16 as usize) & mask;
+        allowed[slot / 64] |= 1u64 << (slot % 64);
+    }
+    codes.iter().copied().enumerate().find(|&(_, code)| {
+        let slot = (code as u16 as usize) & mask;
+        allowed[slot / 64] & (1u64 << (slot % 64)) == 0
+    })
 }
 
 fn skip_enum_type_whitespace(bytes: &[u8], position: &mut usize) {
@@ -251,6 +280,55 @@ mod tests {
         fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
             let count = buffer.len().min(1);
             self.0.read(&mut buffer[..count])
+        }
+    }
+
+    #[test]
+    fn validates_large_signed_enum_batches_with_bitmap() {
+        let typ8 = "Enum8('a' = -128, 'b' = -1, 'c' = 0, 'd' = 1, 'e' = 127)";
+        let data8 = [128u8, 255, 0, 1, 127].repeat(200);
+        let values = read_enum_column(&mut data8.as_slice(), typ8, 1000).unwrap();
+        assert_eq!(values.codes()[0], -128);
+        assert_eq!(values.name(999), Some("e"));
+        let mut corrupted = data8.clone();
+        corrupted[731] = 42;
+        assert!(matches!(
+            read_enum_column(&mut corrupted.as_slice(), typ8, 1000),
+            Err(EnumReadError::UnknownValue { row: 731, code: 42 })
+        ));
+
+        let typ16 = "Enum16('a' = -32768, 'b' = -1, 'c' = 0, 'd' = 1, 'e' = 32767)";
+        let signed = [i16::MIN, -1, 0, 1, i16::MAX].repeat(200);
+        let mut encoded = signed.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
+        assert_eq!(read_enum_column(&mut encoded.as_slice(), typ16, 1000)
+            .unwrap().codes(), signed.as_slice());
+        encoded[2 * 511..2 * 511 + 2].copy_from_slice(&42i16.to_le_bytes());
+        assert!(matches!(
+            read_enum_column(&mut encoded.as_slice(), typ16, 1000),
+            Err(EnumReadError::UnknownValue { row: 511, code: 42 })
+        ));
+    }
+
+    #[test]
+    fn compact_enum8_bitmap_catches_invalid_signed_codes_at_batch_boundary() {
+        let data_type = "Enum8('a' = -128, 'b' = -1, 'c' = 0, 'd' = 1, 'e' = 127)";
+        for rows in [32usize, 33, 4096] {
+            let mut data = [128u8, 255, 0, 1, 127]
+                .into_iter()
+                .cycle()
+                .take(rows)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                read_enum_column(&mut data.as_slice(), data_type, rows)
+                    .unwrap()
+                    .len(),
+                rows
+            );
+            data[rows - 1] = 42;
+            assert!(matches!(
+                read_enum_column(&mut data.as_slice(), data_type, rows),
+                Err(EnumReadError::UnknownValue { row, code: 42 }) if row == rows - 1
+            ));
         }
     }
 

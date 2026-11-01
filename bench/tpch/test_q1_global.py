@@ -24,6 +24,30 @@ class Q1GlobalTests(unittest.TestCase):
             self.assertEqual(oracle(path), b"0\tNULL\tNULL\n")
 
 
+class Q1ReferenceBudgetTests(unittest.TestCase):
+    def test_rejects_oversized_reference_row(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "lineitem.tsv"
+            path.write_text("l_shipdate\tl_quantity\tl_extendedprice\n"
+                            "1994-01-01\t" + "1" * 100 + "\t2\n")
+            with patch("q1_global.MAX_REFERENCE_LINE_CHARS", 45):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    oracle(path)
+
+    def test_rejects_symlinked_reference(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / "lineitem.tsv"
+            target.write_text("l_shipdate\tl_quantity\tl_extendedprice\n")
+            link = Path(root) / "alias.tsv"
+            try:
+                link.symlink_to(target)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                oracle(link)
+
+
 class Q1InputShapeTests(unittest.TestCase):
     def test_rejects_malformed_columns_in_reference_data(self):
         with tempfile.TemporaryDirectory() as root:

@@ -84,6 +84,29 @@ class PhysicalRangeOracleTests(unittest.TestCase):
         self.assertLess(len(str(caught.exception)), 501)
 
 
+    def test_default_window_runner_uses_remaining_total_deadline(self):
+        from unittest.mock import patch
+        with patch("bench.scale.physical_range_oracle.invoke",
+                   return_value=b"2\t1\n") as invoke:
+            with patch("bench.scale.physical_range_oracle.time.monotonic",
+                       side_effect=[100.0, 100.2, 100.3]):
+                report = verify("binary", "db", "events", 0, 2, window_rows=2,
+                                timeout=30, max_total_seconds=1)
+        self.assertEqual(report["windows"], 1)
+        self.assertAlmostEqual(invoke.call_args.args[3], 0.8)
+
+    def test_total_deadline_rejects_expired_windows_and_bad_inputs(self):
+        from unittest.mock import patch
+        for bad in (True, 0, -1, float("nan"), float("inf")):
+            with self.subTest(value=bad), self.assertRaisesRegex(ValueError, "max_total_seconds"):
+                verify("binary", "db", "events", 0, 1,
+                       execute=lambda _: b"", max_total_seconds=bad)
+        with patch("bench.scale.physical_range_oracle.time.monotonic",
+                   side_effect=[0.0, 2.0]):
+            with self.assertRaisesRegex(TimeoutError, "total deadline"):
+                verify("binary", "db", "events", 0, 1,
+                       execute=lambda _: b"1\t0\n", max_total_seconds=1)
+
     def test_tail_latency_is_bounded_by_maximum(self):
         def run(statement):
             import re

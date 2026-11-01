@@ -12,6 +12,25 @@ fn low_bit_mask(bits: usize) -> u8 {
     ((1u16 << bits) - 1) as u8
 }
 
+// Expand one packed checkpoint byte into its eight ASCII flags. A dense
+// checkpoint is common near completion; 8-byte table copies avoid walking
+// every individual set bit during serialization.
+const ASCII_BITMAP_BYTES: [[u8; 8]; 256] = {
+    let mut table = [[b'0'; 8]; 256];
+    let mut byte = 0usize;
+    while byte < 256 {
+        let mut bit = 0usize;
+        while bit < 8 {
+            if byte & (1 << bit) != 0 {
+                table[byte][bit] = b'1';
+            }
+            bit += 1;
+        }
+        byte += 1;
+    }
+    table
+};
+
 // Count completion flags a machine word at a time, rather than emitting
 // one popcount for every byte in large resumable transfer checkpoints.
 fn popcount_full_bytes(bytes: &[u8]) -> usize {
@@ -241,6 +260,33 @@ impl ResumeMap {
         words.chain(tail)
     }
 
+    /// Iterate unfinished chunks at or beyond an inclusive cursor.
+    ///
+    /// Jump directly to the requested packed bitmap byte. This avoids
+    /// rescanning a nearly completed transfer for each continuation page.
+    pub fn remaining_indices_from(&self, start: usize) -> impl Iterator<Item = usize> + '_ {
+        let start = start.min(self.chunks);
+        self.completed
+            .iter()
+            .enumerate()
+            .skip(start / 8)
+            .flat_map(move |(byte_index, &completed)| {
+                let base = byte_index * 8;
+                let mut missing = !completed & low_bit_mask((self.chunks - base).min(8));
+                if base < start {
+                    missing &= u8::MAX << (start - base);
+                }
+                std::iter::from_fn(move || {
+                    if missing == 0 {
+                        return None;
+                    }
+                    let bit = missing.trailing_zeros() as usize;
+                    missing &= missing - 1;
+                    Some(base + bit)
+                })
+            })
+    }
+
     pub fn remaining(&self) -> Vec<usize> {
         let mut missing = Vec::with_capacity(self.remaining_count());
         missing.extend(self.remaining_indices());
@@ -262,6 +308,22 @@ impl ResumeMap {
 
     /// Stable ASCII encoding for persisting transfer progress.
     pub fn encode(&self) -> String {
+        // Dense maps are expanded eight flags at a time without first filling
+        // a separate zeroed output. Sparse maps keep the set-bit walk below.
+        if self.chunks >= 256 && self.completed_count() >= self.chunks / 2 {
+            let mut encoded = Vec::with_capacity(self.chunks);
+            let full_bytes = self.chunks / 8;
+            for &byte in &self.completed[..full_bytes] {
+                encoded.extend_from_slice(&ASCII_BITMAP_BYTES[usize::from(byte)]);
+            }
+            let tail = self.chunks % 8;
+            if tail != 0 {
+                encoded.extend_from_slice(
+                    &ASCII_BITMAP_BYTES[usize::from(self.completed[full_bytes])][..tail],
+                );
+            }
+            return String::from_utf8(encoded).expect("binary map contains only ASCII digits");
+        }
         // Fill the output once. Only set completion positions, instead of
         // appending and masking each of the up to 65,536 input bits.
         let mut encoded = vec![b'0'; self.chunks];
@@ -307,6 +369,21 @@ impl ResumeMap {
         Ok(())
     }
 
+    /// Retain only chunks that both authenticated checkpoints independently
+    /// confirm as complete. No new completion bit can be introduced.
+    ///
+    /// Both maps must describe the same immutable object and chunk layout.
+    /// The caller is responsible for authenticating object identity.
+    pub fn retain_common_verified(&mut self, other: &Self) -> Result<(), &'static str> {
+        if self.chunks != other.chunks {
+            return Err("cannot intersect mismatched transfer layouts");
+        }
+        for (destination, &source) in self.completed.iter_mut().zip(&other.completed) {
+            *destination &= source;
+        }
+        Ok(())
+    }
+
     /// Write an authenticated-by-checksum checkpoint envelope.
     ///
     /// A flipped completion bit must never silently skip an unverified chunk.
@@ -331,8 +408,13 @@ impl ResumeMap {
         let chunks = u32::from_le_bytes(
             count.try_into().map_err(|_| "invalid resume checkpoint header")?,
         ) as usize;
-        let map = Self::new(chunks)?;
-        let body_end = 8 + map.completed.len();
+        // The checksum envelope only needs the encoded bitmap length.
+        // Do not allocate a throwaway ResumeMap before decode_binary builds
+        // the validated result.
+        if chunks > 65_536 {
+            return Err("resume map exceeds chunk limit");
+        }
+        let body_end = 8 + chunks.div_ceil(8);
         if encoded.len() != body_end + 4 {
             return Err("invalid resume checkpoint length");
         }
@@ -929,5 +1011,142 @@ mod bitmap_byte_batch_regressions {
         invalid.push(99);
         assert!(map.mark_complete_indices(&invalid).is_err());
         assert_eq!(map, original);
+    }
+}
+
+#[cfg(test)]
+mod dense_ascii_checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn every_packed_byte_expands_into_exact_bit_order() {
+        for byte in 0u8..=u8::MAX {
+            let ascii = ASCII_BITMAP_BYTES[usize::from(byte)];
+            for (index, &character) in ascii.iter().enumerate() {
+                assert_eq!(character, if byte & (1 << index) != 0 { b'1' } else { b'0' });
+            }
+        }
+    }
+
+    #[test]
+    fn dense_maps_roundtrip_full_words_and_partial_tails() {
+        for count in [256, 257, 263, 511, 512, 513, 8191, 8192, 65_535, 65_536] {
+            let mut map = ResumeMap::new(count).unwrap();
+            for index in 0..count {
+                if index % 11 != 3 {
+                    map.mark_complete(index).unwrap();
+                }
+            }
+            let encoded = map.encode();
+            assert_eq!(encoded.len(), count);
+            for (index, &character) in encoded.as_bytes().iter().enumerate() {
+                assert_eq!(character, if index % 11 != 3 { b'1' } else { b'0' });
+            }
+            assert_eq!(ResumeMap::decode(&encoded).unwrap(), map);
+        }
+    }
+
+    #[test]
+    fn sparse_checkpoints_still_encode_unset_flags() {
+        let mut map = ResumeMap::new(8193).unwrap();
+        for index in [0, 7, 64, 8192] {
+            map.mark_complete(index).unwrap();
+        }
+        let encoded = map.encode();
+        assert_eq!(encoded.bytes().filter(|&byte| byte == b'1').count(), 4);
+        assert_eq!(ResumeMap::decode(&encoded).unwrap(), map);
+    }
+}
+
+#[cfg(test)]
+mod authenticated_checkpoint_intersection_tests {
+    use super::*;
+
+    #[test]
+    fn intersection_never_promotes_a_chunk_without_both_verifications() {
+        for chunks in [0, 1, 7, 8, 9, 63, 64, 65, 511, 512, 65_535, 65_536] {
+            let mut a = ResumeMap::new(chunks).unwrap();
+            let mut b = ResumeMap::new(chunks).unwrap();
+            for index in 0..chunks {
+                if index % 3 != 0 {
+                    a.mark_complete(index).unwrap();
+                }
+                if index % 5 != 0 {
+                    b.mark_complete(index).unwrap();
+                }
+            }
+            let mut intersection = a.clone();
+            intersection.retain_common_verified(&b).unwrap();
+            let expected = (0..chunks).filter(|index| index % 3 != 0 && index % 5 != 0)
+                .collect::<Vec<_>>();
+            assert_eq!(intersection.completed_count(), expected.len());
+            let actual = intersection.encode().bytes().enumerate()
+                .filter_map(|(index, flag)| (flag == b'1').then_some(index))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+            let mut reverse = b.clone();
+            reverse.retain_common_verified(&a).unwrap();
+            assert_eq!(reverse, intersection);
+            intersection.retain_common_verified(&intersection.clone()).unwrap();
+            assert_eq!(reverse, intersection);
+        }
+    }
+
+    #[test]
+    fn mismatched_layout_rejection_does_not_change_destination() {
+        let mut original = ResumeMap::new(9).unwrap();
+        original.mark_complete(8).unwrap();
+        let before = original.clone();
+        assert!(original.retain_common_verified(&ResumeMap::new(8).unwrap()).is_err());
+        assert_eq!(original, before);
+    }
+}
+
+#[cfg(test)]
+mod checked_decode_allocation_regression_tests {
+    use super::*;
+
+    #[test]
+    fn checked_decoder_keeps_all_boundary_layouts_and_tail_checks() {
+        for chunks in [0usize, 1, 7, 8, 9, 63, 64, 65, 65_535, 65_536] {
+            let mut map = ResumeMap::new(chunks).unwrap();
+            for index in (0..chunks).step_by(3) {
+                map.mark_complete(index).unwrap();
+            }
+            let wire = map.encode_binary_checked();
+            assert_eq!(ResumeMap::decode_binary_checked(&wire).unwrap(), map);
+            let mut corrupt = wire;
+            if chunks % 8 != 0 {
+                let last_bitmap = 8 + chunks / 8;
+                corrupt[last_bitmap] |= 0x80;
+                let crc = crate::distributed_crc32c::crc32c(&corrupt[..corrupt.len() - 4]);
+                let end = corrupt.len();
+                corrupt[end - 4..].copy_from_slice(&crc.to_le_bytes());
+                assert!(ResumeMap::decode_binary_checked(&corrupt).is_err());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_cursor_tests {
+    use super::*;
+
+    #[test]
+    fn continuation_iterators_match_full_bitmap_scan_at_every_boundary() {
+        for chunks in [0, 1, 7, 8, 9, 63, 64, 65, 511, 512, 513, 65_535, 65_536] {
+            let mut map = ResumeMap::new(chunks).unwrap();
+            for index in 0..chunks {
+                if index % 3 != 1 && index % 11 != 4 {
+                    map.mark_complete(index).unwrap();
+                }
+            }
+            let full = map.remaining();
+            for start in [0, 1, 7, 8, 63, 64, chunks / 2, chunks, chunks + 1, usize::MAX] {
+                let expected = full.iter().copied().filter(|&index| index >= start)
+                    .collect::<Vec<_>>();
+                assert_eq!(map.remaining_indices_from(start).collect::<Vec<_>>(), expected);
+            }
+        }
     }
 }

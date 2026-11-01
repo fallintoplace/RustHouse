@@ -6,6 +6,28 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+// Validate an unchanged catalog schema, including same-size in-place
+// rewrites that retain the inode but change Unix ctime.
+fn same_schema_state(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if !before.file_type().is_file()
+        || !after.file_type().is_file()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec();
+    }
+    #[cfg(not(unix))]
+    true
+}
+
 /// Resolve only catalog-visible, on-disk tables. Never expose orphaned
 /// data directories or symlinks that the local database would not accept.
 pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, String> {
@@ -27,18 +49,10 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     let opened_schema_metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect opened schema for {table}: {error}"))?;
-    if !opened_schema_metadata.file_type().is_file()
-        || opened_schema_metadata.len() != schema_metadata.len()
-        || opened_schema_metadata.len() > 32 * 1024
+    if opened_schema_metadata.len() > 32 * 1024
+        || !same_schema_state(&schema_metadata, &opened_schema_metadata)
     {
         return Err(format!("database schema changed before read for {table}"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if schema_metadata.dev() != opened_schema_metadata.dev() || schema_metadata.ino() != opened_schema_metadata.ino() {
-            return Err(format!("database schema replaced before read for {table}"));
-        }
     }
     let mut content = Vec::with_capacity(opened_schema_metadata.len() as usize);
     (&mut file)
@@ -48,25 +62,13 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     let finished_schema_metadata = file
         .metadata()
         .map_err(|error| format!("cannot inspect database schema after read for {table}: {error}"))?;
-    if finished_schema_metadata.len() != opened_schema_metadata.len()
-        || finished_schema_metadata.modified().map_err(|error| error.to_string())?
-            != opened_schema_metadata.modified().map_err(|error| error.to_string())?
-    {
+    if !same_schema_state(&schema_metadata, &finished_schema_metadata) {
         return Err(format!("database schema changed during read for {table}"));
     }
     let final_path = fs::symlink_metadata(&schema)
         .map_err(|error| format!("cannot inspect database schema path after read for {table}: {error}"))?;
-    if !final_path.file_type().is_file() || final_path.len() != schema_metadata.len() {
+    if !same_schema_state(&schema_metadata, &final_path) {
         return Err(format!("database schema changed during read for {table}"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if final_path.dev() != schema_metadata.dev()
-            || final_path.ino() != schema_metadata.ino()
-        {
-            return Err(format!("database schema replaced during read for {table}"));
-        }
     }
     if content.len() > 32 * 1024 {
         return Err(format!("database schema exceeds size limit for {table}"));
@@ -181,6 +183,33 @@ mod schema_version_tests {
         let finished = file.metadata().unwrap();
         assert_eq!(initial.len(), finished.len());
         assert_ne!(initial.modified().unwrap(), finished.modified().unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod stable_schema_identity_tests {
+    use super::*;
+
+    #[test]
+    fn detects_same_size_schema_rewrites_and_swaps() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-schema-metadata-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("test.schema");
+        fs::write(&path, b"schema-content").unwrap();
+        let original = fs::symlink_metadata(&path).unwrap();
+        assert!(same_schema_state(&original, &fs::File::open(&path).unwrap().metadata().unwrap()));
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        assert!(!same_schema_state(&original, &file.metadata().unwrap()));
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"schema-content").unwrap();
+        #[cfg(unix)]
+        assert!(!same_schema_state(&original, &fs::symlink_metadata(&path).unwrap()));
         fs::remove_dir_all(root).unwrap();
     }
 }

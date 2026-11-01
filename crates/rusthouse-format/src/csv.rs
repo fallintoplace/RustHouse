@@ -29,21 +29,35 @@ fn write_short_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::R
 }
 
 fn write_long_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
-    // Streaming a quote-heavy value one segment at a time can cause thousands
-    // of tiny writes. Batch escaping on the stack without growing a String.
+    // Copy ordinary spans in bulk. Only actual quotes need byte-wise work.
+    // This also keeps the number of writes bounded for quote-heavy values.
     let mut buffer = [0u8; 4096];
     let mut used = 1;
     buffer[0] = b'"';
-    for &byte in field {
-        if used + 2 > buffer.len() {
-            output.write_all(&buffer[..used])?;
-            used = 0;
+    let mut remaining = field;
+    while !remaining.is_empty() {
+        let plain_len = remaining.iter().position(|&byte| byte == b'"')
+            .unwrap_or(remaining.len());
+        let mut plain = &remaining[..plain_len];
+        while !plain.is_empty() {
+            if used == buffer.len() {
+                output.write_all(&buffer)?;
+                used = 0;
+            }
+            let count = plain.len().min(buffer.len() - used);
+            buffer[used..used + count].copy_from_slice(&plain[..count]);
+            used += count;
+            plain = &plain[count..];
         }
-        buffer[used] = byte;
-        used += 1;
-        if byte == b'"' {
-            buffer[used] = b'"';
-            used += 1;
+        remaining = &remaining[plain_len..];
+        if let Some((_, rest)) = remaining.split_first() {
+            if buffer.len() - used < 2 {
+                output.write_all(&buffer[..used])?;
+                used = 0;
+            }
+            buffer[used..used + 2].copy_from_slice(b"\"\"");
+            used += 2;
+            remaining = rest;
         }
     }
     if used == buffer.len() {
@@ -363,5 +377,48 @@ mod quote_free_threshold_tests {
             assert_eq!(output.last(), Some(&b'"'));
             assert_eq!(&output[1..output.len() - 1], field.as_slice());
         }
+    }
+}
+
+#[cfg(test)]
+mod sparse_quoted_field_tests {
+    use super::*;
+
+    #[test]
+    fn copies_large_plain_spans_and_doubles_quotes_across_chunks() {
+        let input = [
+            vec![b'x'; 32 * 1024 - 1],
+            b"\"".to_vec(),
+            vec![0xff; 32 * 1024],
+            b"\"\"".to_vec(),
+            vec![b'z'; 32 * 1024 + 1],
+        ].concat();
+        let mut output = Vec::new();
+        write_quoted_csv_field(&mut output, &input).unwrap();
+        let mut expected = vec![b'"'];
+        for &byte in &input {
+            expected.push(byte);
+            if byte == b'"' { expected.push(b'"'); }
+        }
+        expected.push(b'"');
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn sparse_quoted_fields_keep_write_calls_bounded() {
+        struct Counted { calls: usize, bytes: Vec<u8> }
+        impl Write for Counted {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let input = [vec![b'a'; 100_000], b"\"".to_vec(), vec![b'b'; 100_000]].concat();
+        let mut output = Counted { calls: 0, bytes: Vec::new() };
+        write_quoted_csv_field(&mut output, &input).unwrap();
+        assert_eq!(output.bytes.len(), input.len() + 3);
+        assert!(output.calls <= 51, "unexpected writes: {}", output.calls);
     }
 }
