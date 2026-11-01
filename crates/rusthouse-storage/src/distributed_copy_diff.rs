@@ -690,7 +690,7 @@ mod canonical_inventory_key_tests {
             crc32c: 0,
         };
         assert_eq!(
-            plan_replica_copies(&[valid.clone()], &[]).unwrap(),
+            plan_replica_copies(std::slice::from_ref(&valid), &[]).unwrap(),
             vec![valid]
         );
     }
@@ -744,7 +744,7 @@ mod windows_inventory_keys_tests {
                 bytes: 1,
                 crc32c: 0,
             };
-            assert!(plan_replica_copies(&[value.clone()], &[]).is_err(), "{key}");
+            assert!(plan_replica_copies(std::slice::from_ref(&value), &[]).is_err(), "{key}");
             assert!(
                 plan_replica_copy_batch(&[value], &[], 1, 1).is_err(),
                 "{key}"
@@ -757,7 +757,7 @@ mod windows_inventory_keys_tests {
                 crc32c: 0,
             };
             assert_eq!(
-                plan_replica_copies(&[value.clone()], &[]).unwrap(),
+                plan_replica_copies(std::slice::from_ref(&value), &[]).unwrap(),
                 vec![value]
             );
         }
@@ -780,7 +780,7 @@ mod inventory_component_budget_tests {
                 bytes: 1,
                 crc32c: 0,
             };
-            assert!(plan_replica_copies(&[meta.clone()], &[]).is_err());
+            assert!(plan_replica_copies(std::slice::from_ref(&meta), &[]).is_err());
             assert!(plan_replica_copy_batch(&[meta], &[], 1, 1).is_err());
         }
         let key = format!("{}/{}", "a".repeat(128), "b".repeat(128));
@@ -790,7 +790,7 @@ mod inventory_component_budget_tests {
             crc32c: 0,
         };
         assert_eq!(
-            plan_replica_copies(&[meta.clone()], &[]).unwrap(),
+            plan_replica_copies(std::slice::from_ref(&meta), &[]).unwrap(),
             vec![meta]
         );
     }
@@ -1048,7 +1048,7 @@ mod two_replica_copy_selection_tests {
             crc32c: 8,
             ..object.clone()
         };
-        assert!(plan_replica_copy_batch(&[object.clone()], &[conflict], 10, 2).is_err());
+        assert!(plan_replica_copy_batch(std::slice::from_ref(&object), &[conflict], 10, 2).is_err());
         assert!(plan_replica_copy_batch(&[object.clone(), object], &[], 10, 2).is_err());
     }
 }
@@ -1157,7 +1157,7 @@ mod small_copy_batch_tests {
             bytes: 2,
             ..a.clone()
         };
-        assert!(plan_replica_copy_batch(&[a.clone()], &[different], 0, 0).is_err());
+        assert!(plan_replica_copy_batch(std::slice::from_ref(&a), &[different], 0, 0).is_err());
         assert!(plan_replica_copy_batch(&[a.clone(), a], &[], 0, 0).is_err());
     }
 }

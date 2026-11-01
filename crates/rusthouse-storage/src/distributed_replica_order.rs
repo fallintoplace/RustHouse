@@ -427,7 +427,7 @@ mod zero_version_replica_tests {
             generation: 1,
             healthy: true,
         };
-        assert!(rank_read_replicas(&[base.clone()]).is_ok());
+        assert!(rank_read_replicas(std::slice::from_ref(&base)).is_ok());
         assert!(
             rank_read_replicas(&[ReplicaStatus {
                 epoch: 0,
@@ -599,7 +599,7 @@ mod quorum_snapshot_read_tests {
             snapshot: v,
             healthy: true,
         };
-        assert!(rank_quorum_snapshot_replicas(&members, policy, &[a.clone()]).is_err());
+        assert!(rank_quorum_snapshot_replicas(&members, policy, std::slice::from_ref(&a)).is_err());
         assert!(rank_quorum_snapshot_replicas(&members, policy, &[a.clone(), a.clone()]).is_err());
         assert!(
             rank_quorum_snapshot_replicas(
@@ -912,11 +912,11 @@ mod bounded_read_replica_prefix_tests {
             generation: 10,
             healthy: true,
         };
-        assert!(rank_read_replicas_top_k(&[node.clone()], 0).is_err());
-        assert!(rank_read_replicas_top_k(&[node.clone()], 65).is_err());
+        assert!(rank_read_replicas_top_k(std::slice::from_ref(&node), 0).is_err());
+        assert!(rank_read_replicas_top_k(std::slice::from_ref(&node), 65).is_err());
         assert!(rank_read_replicas_top_k(&[node.clone(), node.clone()], 1).is_err());
         assert_eq!(
-            rank_read_replicas_top_k(&[node.clone()], 1).unwrap(),
+            rank_read_replicas_top_k(std::slice::from_ref(&node), 1).unwrap(),
             vec!["node"]
         );
     }
