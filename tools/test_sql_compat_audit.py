@@ -173,6 +173,21 @@ class AuditTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "changed during read"):
                     read_queries(corpus)
 
+    def test_nested_block_comments_match_the_rust_lexer(self):
+        sql = "SELECT 1 /* outer ; /* inner ; */ outer ; */"
+        self.assertEqual(parse_lines(sql + ";"), [(1, sql)])
+        sql = "SELECT '/* literal */' /* outer /* deeper */ done */"
+        self.assertEqual(parse_lines(sql), [(1, sql)])
+        for invalid in (
+            "SELECT 1 /* outer /* unfinished */",
+            "SELECT 1 /* outer /* inner */ */; SELECT 2",
+            "SELECT 1 " + "/*" * 33 + "x" + "*/" * 33,
+        ):
+            with self.subTest(sql=invalid), self.assertRaisesRegex(
+                ValueError, "one bounded SELECT"
+            ):
+                parse_lines(invalid)
+
 
 if __name__ == "__main__":
     unittest.main()

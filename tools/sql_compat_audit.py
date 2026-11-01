@@ -29,10 +29,22 @@ def _has_separator(sql):
         elif sql.startswith("--", index) or char == "#":
             break
         elif sql.startswith("/*", index):
-            end = sql.find("*/", index + 2)
-            if end == -1:
+            # Match the Rust SQL lexer: block comments may nest up to 32 deep.
+            depth = 1
+            index += 2
+            while index < len(sql) and depth:
+                if sql.startswith("/*", index):
+                    depth += 1
+                    if depth > 32:
+                        return True
+                    index += 2
+                elif sql.startswith("*/", index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            if depth:
                 return True
-            index = end + 2
             continue
         elif char in ("'", '"'):
             quote = char
