@@ -3,7 +3,9 @@
 import argparse
 from collections import Counter
 import hashlib
+import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -11,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from common import cli_sql, emit_json, latency_summary
+from common import cli_sql, emit_json, latency_summary, file_change_time_ns
 from bench.tpch.canonical_integrity import verify as verify_canonical_sql
 
 QUERY_NAME = re.compile(r"q(\d{1,2})\.sql$", re.IGNORECASE)
@@ -19,16 +21,35 @@ MAX_QUERY_FILE_BYTES = 64 * 1024
 MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
 
-def read_reference(path):
+def _read_stable_file(path, limit, label, size_label):
+    """Read a bounded regular file while pinning its identity across the read."""
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("TPC-H reference must be a regular, non-symlinked file")
-    with path.open("rb") as source:
-        payload = source.read(MAX_REFERENCE_BYTES + 1)
-    if len(payload) > MAX_REFERENCE_BYTES:
-        raise ValueError("TPC-H reference exceeds 16 MiB")
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"{label} must be a regular, non-symlinked file")
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, file_change_time_ns(info))
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened):
+            raise ValueError(f"{label} changed while opening")
+        payload = source.read(limit + 1)
+        if identity(opened) != identity(os.fstat(source.fileno())):
+            raise ValueError(f"{label} changed while reading")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError(f"{label} changed while reading")
+    if len(payload) > limit:
+        raise ValueError(f"{label} exceeds {size_label}")
     return payload
 
+
+def read_reference(path):
+    return _read_stable_file(path, MAX_REFERENCE_BYTES, "TPC-H reference", "16 MiB")
 
 def require_canonical_corpus(directory):
     """Reject any SQL that differs from pinned upstream full TPC-H Q1-Q22."""
@@ -46,10 +67,7 @@ def load_queries(directory):
         number = int(match.group(1))
         if number < 1:
             raise ValueError(f"query IDs must be positive: {path}")
-        with path.open("rb") as source:
-            payload = source.read(MAX_QUERY_FILE_BYTES + 1)
-        if len(payload) > MAX_QUERY_FILE_BYTES:
-            raise ValueError(f"query file exceeds 64 KiB: {path}")
+        payload = _read_stable_file(path, MAX_QUERY_FILE_BYTES, "query file", "64 KiB")
         lines = payload.decode("utf-8").splitlines()
         # Strip provenance comments only before the SQL statement starts.
         # Inside a multiline quoted literal, "-- text" is query data.
