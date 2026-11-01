@@ -11,13 +11,32 @@ from pathlib import Path
 MAX_SQL_STDOUT_BYTES = 64 * 1024 * 1024
 
 
+def _leading_sql_keyword(statement):
+    """Identify SELECT after leading comments without changing the SQL text."""
+    remainder = statement.lstrip()
+    while remainder:
+        if remainder.startswith(("--", "#")):
+            end = remainder.find("\n")
+            if end < 0:
+                return ""
+            remainder = remainder[end + 1:].lstrip()
+        elif remainder.startswith("/*"):
+            end = remainder.find("*/", 2)
+            if end < 0:
+                return ""
+            remainder = remainder[end + 2:].lstrip()
+        else:
+            break
+    return remainder.split(maxsplit=1)[0].upper() if remainder else ""
+
+
 def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-header"):
     """Execute SQL via the CLI and return exact output bytes for verification."""
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     # --format is a SELECT-only option. DDL, COPY, and INSERT reject it.
     command = [str(binary), "sql", statement, "--database", str(database)]
-    keyword = statement.split(maxsplit=1)[0].upper() if statement.strip() else ""
+    keyword = _leading_sql_keyword(statement)
     if keyword == "SELECT":
         if select_format not in ("tsv-no-header", "jsonl"):
             raise ValueError("unsupported verification SELECT format")
