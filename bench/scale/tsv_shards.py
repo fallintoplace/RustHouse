@@ -16,6 +16,62 @@ from bench.common import file_change_time_ns
 MAX_RECORD_BYTES = 8 * 1024 * 1024
 MAX_SHARDS = 16_384
 
+# Keep shard preflight compatible with the bounded RustHouse COPY TSV reader.
+_SIMPLE_ESCAPES = {ord("\\"): ord("\\"), ord("t"): 9, ord("n"): 10,
+                   ord("r"): 13, ord("0"): 0, ord("b"): 8,
+                   ord("f"): 12, ord("v"): 11}
+
+
+def validate_copy_tsv_record(record):
+    """Reject records COPY would fail to decode before publishing any shards."""
+    line = record[:-1].removesuffix(b"\r")
+    if b"\r" in line or b"\x00" in line:
+        raise ValueError("COPY TSV record contains a raw control byte")
+    if line.count(b"\t") >= 128:
+        raise ValueError("COPY TSV record exceeds 128 columns")
+    # COPY requires UTF-8 even before decoding TSV escape sequences.
+    try:
+        line.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("COPY TSV record is not UTF-8") from error
+    if b"\\" not in line:
+        return
+    for field in line.split(b"\t"):
+        if field == b"\\N" or b"\\" not in field:
+            continue
+        decoded = bytearray()
+        cursor = 0
+        while cursor < len(field):
+            if field[cursor] != 92:
+                end = field.find(b"\\", cursor)
+                if end < 0:
+                    end = len(field)
+                decoded.extend(field[cursor:end])
+                cursor = end
+                continue
+            cursor += 1
+            if cursor >= len(field):
+                raise ValueError("incomplete COPY TSV escape")
+            escaped = field[cursor]
+            if escaped == ord("x"):
+                if cursor + 2 >= len(field):
+                    raise ValueError("incomplete COPY TSV hex escape")
+                pair = field[cursor + 1:cursor + 3]
+                if any(digit not in b"0123456789abcdefABCDEF" for digit in pair):
+                    raise ValueError("invalid COPY TSV hex escape")
+                decoded.append(int(pair, 16))
+                cursor += 3
+            else:
+                value = _SIMPLE_ESCAPES.get(escaped)
+                if value is None:
+                    raise ValueError("invalid COPY TSV escape")
+                decoded.append(value)
+                cursor += 1
+        try:
+            decoded.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("COPY TSV escape decodes to invalid UTF-8") from error
+
 
 def split_tsv(source, output_dir, *, rows_per_chunk=65536,
               max_bytes_per_chunk=None, max_total_rows=None):
@@ -75,6 +131,7 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536,
                     raise ValueError("truncated or oversized TSV record")
                 if record in (b"\n", b"\r\n"):
                     raise ValueError("empty TSV record")
+                validate_copy_tsv_record(record)
                 if (max_bytes_per_chunk is not None
                         and len(record) > max_bytes_per_chunk):
                     raise ValueError("TSV record exceeds max_bytes_per_chunk")
