@@ -5,7 +5,8 @@ import json
 import math
 import re
 import sys
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
+from loopback_origin import require_loopback_http_origin
 from urllib.request import HTTPRedirectHandler, build_opener, ProxyHandler
 
 
@@ -34,12 +35,7 @@ def _unique_object_pairs(pairs):
 
 
 def validate_url(origin):
-    url = urlsplit(origin)
-    if (url.scheme != "http" or url.hostname not in ("localhost", "127.0.0.1")
-            or url.path not in ("", "/") or url.query or url.fragment
-            or url.username or url.password):
-        raise ValueError("only loopback HTTP origins supported")
-    return origin.rstrip("/")
+    return require_loopback_http_origin(origin)
 
 
 def columns(payload):
