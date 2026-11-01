@@ -37,7 +37,9 @@ pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
     {
         return Err("invalid peer header".into());
     }
-    Ok((name, value.trim()))
+    // HTTP OWS is only SP or HTAB. str::trim() also removes Unicode
+    // whitespace, silently canonicalizing invalid protocol values.
+    Ok((name, value.trim_matches([' ', '\t'])))
 }
 
 pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
@@ -326,5 +328,26 @@ mod borrowed_peer_head_tests {
     fn uncompleted_header_rejects_duplicate_content_type() {
         let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
         assert!(expected_wire_length(wire).is_err());
+    }
+}
+
+#[cfg(test)]
+mod peer_ows_regression_tests {
+    use super::*;
+
+    #[test]
+    fn only_ascii_spaces_and_tabs_are_trimmed() {
+        assert_eq!(parse_peer_header("Content-Length: \t 3 \t").unwrap(), ("Content-Length", "3"));
+        let (_, value) = parse_peer_header("Content-Length: \u{00a0}3\u{2003}").unwrap();
+        assert_eq!(value, "\u{00a0}3\u{2003}");
+        assert!(parse_content_length(value).is_err());
+    }
+
+    #[test]
+    fn peer_framing_never_accepts_unicode_padded_content_length() {
+        let wire = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: \u{00a0}3\r\n\r\nabc";
+        assert!(expected_wire_length(wire.as_bytes()).is_err());
+        let wire = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 3\u{2003}\r\n\r\nabc";
+        assert!(expected_wire_length(wire.as_bytes()).is_err());
     }
 }
