@@ -1667,7 +1667,7 @@ mod sorted_borrowed_planner_tests {
             crc32c: 2,
             ..a.clone()
         };
-        assert!(ReplicaCopyPlanner::new(&[a.clone()], &[b]).is_err());
+        assert!(ReplicaCopyPlanner::new(std::slice::from_ref(&a), &[b]).is_err());
         assert!(ReplicaCopyPlanner::new(&[a.clone(), a.clone()], &[]).is_err());
         let invalid = ObjectMetadata {
             key: "../oops".into(),
