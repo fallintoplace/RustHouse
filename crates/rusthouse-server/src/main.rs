@@ -414,6 +414,20 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
     read_request_with_deadline(stream, REQUEST_READ_DEADLINE)
 }
 
+/// An interrupted socket write consumes no bytes. The outer loop must
+/// recalculate its absolute deadline before attempting the write again.
+fn write_response_chunk(writer: &mut impl Write, bytes: &[u8]) -> io::Result<Option<usize>> {
+    match writer.write(bytes) {
+        Ok(0) => Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "client closed during response",
+        )),
+        Ok(count) => Ok(Some(count)),
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Enforce one total response-write budget, not a fresh timeout per syscall.
 fn write_with_deadline(
     stream: &mut TcpStream,
@@ -429,13 +443,11 @@ fn write_with_deadline(
             })?;
         stream.set_write_timeout(Some(remaining))?;
         // Limit each syscall to 64 KiB and recalculate the budget after it.
-        let written = stream.write(&bytes[..bytes.len().min(64 * 1024)])?;
-        if written == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "client closed during response",
-            ));
-        }
+        let Some(written) =
+            write_response_chunk(stream, &bytes[..bytes.len().min(64 * 1024)])?
+        else {
+            continue;
+        };
         bytes = &bytes[written..];
     }
     Ok(())
@@ -1251,5 +1263,53 @@ mod interrupted_request_body_tests {
             &mut reader, &mut result, Instant::now(), Duration::ZERO,
         ).is_err());
         assert!(!reader.0);
+    }
+}
+
+#[cfg(test)]
+mod interrupted_response_write_tests {
+    use super::*;
+
+    struct InterruptThenPartial {
+        bytes: Vec<u8>,
+        calls: usize,
+    }
+
+    impl Write for InterruptThenPartial {
+        fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            if self.calls == 1 {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            let count = input.len().min(3);
+            self.bytes.extend_from_slice(&input[..count]);
+            Ok(count)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn interrupted_and_partial_writes_preserve_every_response_byte() {
+        let mut writer = InterruptThenPartial { bytes: Vec::new(), calls: 0 };
+        let mut input = b"HTTP/1.1 200 OK\\r\\n\\r\\nhello".as_slice();
+        assert_eq!(write_response_chunk(&mut writer, input).unwrap(), None);
+        while !input.is_empty() {
+            if let Some(count) = write_response_chunk(&mut writer, input).unwrap() {
+                input = &input[count..];
+            }
+        }
+        assert_eq!(writer.bytes, b"HTTP/1.1 200 OK\\r\\n\\r\\nhello");
+        assert!(writer.calls > 2);
+    }
+
+    #[test]
+    fn zero_length_write_is_not_retried_forever() {
+        assert_eq!(
+            write_response_chunk(&mut io::sink(), b"").unwrap_err().kind(),
+            io::ErrorKind::WriteZero,
+        );
     }
 }
