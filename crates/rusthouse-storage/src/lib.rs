@@ -97,6 +97,10 @@ pub use primary_index::{
     FixedPrimaryIndex, candidate_i64_mark_range, candidate_i64_mark_ranges,
     candidate_u64_mark_range, candidate_u64_mark_ranges, read_fixed_primary_index,
 };
+pub use primary_index::{
+    candidate_i64_pair_mark_range, candidate_i64_pair_mark_ranges, candidate_u64_pair_mark_range,
+    candidate_u64_pair_mark_ranges,
+};
 pub use query_source::{
     NumericQueryReader, inspect_query_source, query_parts, query_parts_with_metadata,
     resolve_active_snapshot,
