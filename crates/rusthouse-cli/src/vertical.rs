@@ -119,6 +119,10 @@ fn write_row<W: Write>(
     line: &[u8],
 ) -> io::Result<()> {
     if !line.contains(&b'\\') {
+        // Do not write arbitrary non-UTF-8 bytes to an interactive terminal.
+        std::str::from_utf8(line).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "vertical row is not valid UTF-8")
+        })?;
         writeln!(output, "Row {row}:")?;
         for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
             write_vertical_field(output, header, field)?;
@@ -126,6 +130,12 @@ fn write_row<W: Write>(
         return output.write_all(b"\n");
     }
     let fields = decode_row_fields(line)?;
+    // Check the full decoded record before printing its heading or cells.
+    for field in &fields {
+        std::str::from_utf8(field.as_ref()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "vertical row is not valid UTF-8")
+        })?;
+    }
     writeln!(output, "Row {row}:")?;
     for (header, field) in headers.iter().zip(&fields) {
         write_vertical_field(output, header, field.as_ref())?;
@@ -145,6 +155,9 @@ impl<W: Write> VerticalWriter<W> {
 
     fn finish_line(&mut self) -> io::Result<()> {
         let Some(headers) = self.headers.as_ref() else {
+            std::str::from_utf8(&self.line).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "vertical header is not valid UTF-8")
+            })?;
             self.headers = Some(
                 self.line
                     .split(|&byte| byte == b'\t')
@@ -373,6 +386,38 @@ mod decoded_vertical_regressions {
         writer.write_all(b"value\n").unwrap();
         assert!(writer.write_all(b"bad\\q\n").is_err());
         assert!(writer.output.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod vertical_utf8_safety_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_utf8_headers_before_printing() {
+        let mut writer = VerticalWriter::new(Vec::new());
+        assert_eq!(writer.write_all(b"bad\xff\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData);
+        assert!(writer.output.is_empty());
+    }
+
+    #[test]
+    fn rejects_raw_and_decoded_invalid_utf8_before_printing_any_row() {
+        for payload in [b"\xff\tgood\n".as_slice(), b"good\t\xff\n",
+            b"\\xFF\tgood\n", b"good\t\\xFF\n"] {
+            let mut writer = VerticalWriter::new(Vec::new());
+            writer.write_all(b"first\tsecond\n").unwrap();
+            let err = writer.write_all(payload).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+            assert!(writer.output.is_empty(), "{payload:?}");
+        }
+    }
+
+    #[test]
+    fn unicode_and_ascii_control_values_keep_existing_output() {
+        let mut writer = VerticalWriter::new(Vec::new());
+        writer.write_all("name\ncafé\\x0A東京\n".as_bytes()).unwrap();
+        assert_eq!(writer.output, "Row 1:\n  name: café\\x0A東京\n\n".as_bytes());
     }
 }
 

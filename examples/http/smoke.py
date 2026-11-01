@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Check read-only RustHouse endpoints without touching stored data."""
 import argparse
+import ipaddress
 import json
 import sys
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -14,7 +15,8 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-urlopen = build_opener(NoRedirect()).open
+# Experimental unauthenticated probes must not use host HTTP proxy settings.
+urlopen = build_opener(ProxyHandler({}), NoRedirect()).open
 
 
 def origin(value, allow_private=False):
@@ -22,8 +24,18 @@ def origin(value, allow_private=False):
     if (url.scheme != "http" or not url.hostname or url.username or
             url.password or url.path not in ("", "/") or url.query or url.fragment):
         raise ValueError("expected an HTTP origin")
-    if url.hostname not in ("localhost", "127.0.0.1") and not allow_private:
-        raise ValueError("non-loopback requires explicit --allow-private")
+    if url.hostname not in ("localhost", "127.0.0.1"):
+        if not allow_private:
+            raise ValueError("non-loopback requires explicit --allow-private")
+        try:
+            address = ipaddress.IPv4Address(url.hostname)
+        except ipaddress.AddressValueError as exc:
+            raise ValueError("--allow-private requires numeric private IPv4") from exc
+        first, second, _, _ = address.packed
+        if not (first == 10 or first == 172 and 16 <= second <= 31
+                or first == 192 and second == 168
+                or first == 100 and 64 <= second <= 127):
+            raise ValueError("--allow-private requires numeric private IPv4")
     return value.rstrip("/")
 
 

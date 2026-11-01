@@ -23,7 +23,11 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     error_message: &'static str,
     decode: impl Fn([u8; WIDTH]) -> T,
 ) -> io::Result<Vec<T>> {
-    if WIDTH == 0 || WIDTH > MAX_ELEMENT_WIDTH || rows > MAX_BATCH_BYTES / WIDTH {
+    if WIDTH == 0
+        || WIDTH > MAX_ELEMENT_WIDTH
+        || rows > MAX_BATCH_BYTES / WIDTH
+        || rows > MAX_BATCH_BYTES / std::mem::size_of::<T>().max(1)
+    {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, error_message));
     }
     // Empty batches are common at mark and part boundaries. Avoid entering
@@ -37,6 +41,14 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     let batch_bytes = rows * WIDTH;
     if batch_bytes <= SMALL_BYTES {
         let mut buffer = [0u8; SMALL_BYTES];
+        reader.read_exact(&mut buffer[..batch_bytes])?;
+        append_decoded::<T, WIDTH>(&mut result, &buffer[..batch_bytes], &decode);
+        return Ok(result);
+    }
+    // Medium marks should not zero the bulk 64 KiB buffer either.
+    const MEDIUM_BYTES: usize = 8 * 1024;
+    if batch_bytes <= MEDIUM_BYTES {
+        let mut buffer = [0u8; MEDIUM_BYTES];
         reader.read_exact(&mut buffer[..batch_bytes])?;
         append_decoded::<T, WIDTH>(&mut result, &buffer[..batch_bytes], &decode);
         return Ok(result);
@@ -117,6 +129,32 @@ mod empty_batch_fast_path_tests {
 mod small_mark_tests {
     use super::*;
 
+
+    #[test]
+    fn decodes_across_small_medium_and_bulk_thresholds_without_read_ahead() {
+        for rows in [64usize, 65, 1024, 1025] {
+            let mut encoded = (0..rows as u64)
+                .flat_map(u64::to_le_bytes)
+                .collect::<Vec<_>>();
+            encoded.extend_from_slice(&u64::MAX.to_le_bytes());
+            let mut source = io::Cursor::new(encoded);
+            let decoded = read_fixed_width::<_, u64, 8>(
+                &mut source,
+                rows,
+                "invalid size",
+                u64::from_le_bytes,
+            )
+            .unwrap();
+            assert_eq!(decoded.len(), rows);
+            assert_eq!(decoded.first(), Some(&0));
+            assert_eq!(decoded.last(), Some(&((rows - 1) as u64)));
+            assert_eq!(source.position(), (rows * 8) as u64);
+            let mut trailing = [0u8; 8];
+            source.read_exact(&mut trailing).unwrap();
+            assert_eq!(trailing, u64::MAX.to_le_bytes());
+        }
+    }
+
     #[test]
     fn decodes_small_marks_and_preserves_the_next_record() {
         let mut data = Vec::new();
@@ -133,5 +171,24 @@ mod small_mark_tests {
         ).unwrap();
         assert_eq!(second, vec![7]);
         assert!(input.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod decoded_memory_budget_tests {
+    use super::*;
+
+    #[test]
+    fn refuses_large_decoded_elements_before_reading() {
+        // A one-byte physical field can decode into a much larger Rust value.
+        // Bound both physical I/O and the Vec allocation.
+        let error = read_fixed_width::<_, [u8; 1024], 1>(
+            &mut io::empty(),
+            MAX_BATCH_BYTES / 1024 + 1,
+            "decoded values exceed 64 MiB",
+            |_| [0; 1024],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }

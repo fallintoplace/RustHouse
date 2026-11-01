@@ -6,6 +6,8 @@ Only compare data with matching engine, workload, scale, and timing scope.
 import argparse
 import json
 import math
+import os
+import stat
 from pathlib import Path
 
 
@@ -34,13 +36,30 @@ def parse_finite_report_float(value):
 
 def load_report(path):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("comparison report must be a regular, non-symlinked file")
-    with path.open("rb") as stream:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(opened.st_mode) or
+                (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("comparison report changed while opening")
         payload = stream.read(MAX_REPORT_BYTES + 1)
+        finished = os.fstat(stream.fileno())
+        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
+                finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
+            raise ValueError("comparison report changed while reading")
+    after = path.lstat()
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+            before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size,
+                                   after.st_mtime_ns, after.st_ctime_ns):
+        raise ValueError("comparison report changed while reading")
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("comparison report exceeds 2 MiB")
-    return json.loads(payload, object_pairs_hook=reject_duplicate_keys,\n                      parse_constant=reject_nonfinite_json_number,
+    return json.loads(payload, object_pairs_hook=reject_duplicate_keys,
+                      parse_constant=reject_nonfinite_json_number,
                       parse_float=parse_finite_report_float)
 
 

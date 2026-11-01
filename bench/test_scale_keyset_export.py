@@ -133,6 +133,35 @@ class SpoolingKeysetQueryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "2 MiB"):
                 query("binary", "db", "SELECT id FROM t", 3)
 
+    def test_posix_keyset_child_has_file_size_cap(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.keyset_export import query
+
+        def run(_command, **kwargs):
+            if os.name == "posix":
+                self.assertTrue(callable(kwargs.get("preexec_fn")))
+            else:
+                self.assertNotIn("preexec_fn", kwargs)
+            return SimpleNamespace(returncode=0)
+
+        with patch("bench.scale.keyset_export.subprocess.run", side_effect=run):
+            self.assertEqual(query("binary", "db", "SELECT id FROM t", 3), b"")
+
+    def test_failed_oversized_keyset_pages_raise_a_size_error(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.keyset_export import query
+
+        def run(_command, **kwargs):
+            kwargs["stdout"].truncate(2 * 1024 * 1024)
+            return SimpleNamespace(returncode=-25)
+
+        with patch("bench.scale.keyset_export.subprocess.run", side_effect=run):
+            with self.assertRaisesRegex(ValueError, "2 MiB"):
+                query("binary", "db", "SELECT id FROM t", 3)
+
     def test_failed_query_keeps_only_stderr_tail(self):
         from types import SimpleNamespace
         from unittest.mock import patch
