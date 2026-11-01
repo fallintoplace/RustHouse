@@ -713,10 +713,9 @@ mod sized_string_mark_buffer_tests {
             assert_eq!(sizes.position(), (rows * 8) as u64);
             assert_eq!(data.position(), bytes as u64);
             for index in 0..rows {
-                assert_eq!(result.get(index), Some(
-                    std::iter::repeat_n((index % 251) as u8, index % 3)
-                        .collect::<Vec<_>>().as_slice()
-                ));
+                let expected = std::iter::repeat_n((index % 251) as u8, index % 3)
+                    .collect::<Vec<_>>();
+                assert_eq!(result.get(index), Some(expected.as_slice()));
             }
             let mut tail = [0u8; 8];
             sizes.read_exact(&mut tail).unwrap();
