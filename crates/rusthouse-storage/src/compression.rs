@@ -62,6 +62,11 @@ fn same_compressed_stream_state(path: &std::fs::Metadata, opened: &std::fs::Meta
 }
 
 impl CompressedBlockReader<File> {
+    /// Inspect the opened file, not just its path, after a multi-block read.
+    pub(crate) fn opened_metadata(&self) -> io::Result<std::fs::Metadata> {
+        self.reader.metadata()
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self, PartError> {
         let path = path.as_ref();
         let entry = std::fs::symlink_metadata(path).map_err(|source| PartError::Io {
