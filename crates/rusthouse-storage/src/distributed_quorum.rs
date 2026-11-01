@@ -886,9 +886,10 @@ pub fn plan_joint_write_acknowledgements(
     // One common unacknowledged member can supply the final vote in both
     // memberships. Prefer the smallest common name for the exact tie break.
     if previous_missing == 1 && next_missing == 1 {
-        if let Some(&shared) = candidates.iter().find(|&&name| {
-            previous_members.contains(&name) && next_members.contains(&name)
-        }) {
+        if let Some(&shared) = candidates
+            .iter()
+            .find(|&&name| previous_members.contains(&name) && next_members.contains(&name))
+        {
             return Ok(vec![shared.to_owned()]);
         }
     }
@@ -920,7 +921,8 @@ pub fn plan_joint_write_acknowledgements(
                         // Candidates are sorted. The set containing the first
                         // differing candidate is the lexicographically first.
                         let difference = updated_mask ^ existing;
-                        difference != 0 && updated_mask & (1u128 << difference.trailing_zeros()) != 0
+                        difference != 0
+                            && updated_mask & (1u128 << difference.trailing_zeros()) != 0
                     }
                     _ => false,
                 };
@@ -1095,7 +1097,10 @@ mod wide_quorum_support_tests {
         let b = new.iter().map(String::as_str).collect::<Vec<_>>();
         let policy = QuorumPolicy::new(64, 33, 33).unwrap();
         assert_eq!(policy.observe(&a, &a).unwrap().distinct_acks, 64);
-        assert_eq!(policy.observe(&a, &[a[63], a[63]]).unwrap().distinct_acks, 1);
+        assert_eq!(
+            policy.observe(&a, &[a[63], a[63]]).unwrap().distinct_acks,
+            1
+        );
         let observations = a.iter().chain(b.iter()).copied().collect::<Vec<_>>();
         let joint = observe_joint_quorum(policy, &a, policy, &b, &observations).unwrap();
         assert_eq!(joint.previous.distinct_acks, 64);
@@ -1114,7 +1119,11 @@ mod wide_quorum_support_tests {
         let selected = plan_joint_write_acknowledgements(policy, &a, policy, &b, &[]).unwrap();
         assert_eq!(selected.len(), 42);
         let references = selected.iter().map(String::as_str).collect::<Vec<_>>();
-        assert!(observe_joint_quorum(policy, &a, policy, &b, &references).unwrap().can_write);
+        assert!(
+            observe_joint_quorum(policy, &a, policy, &b, &references)
+                .unwrap()
+                .can_write
+        );
     }
 }
 
@@ -1136,7 +1145,10 @@ pub fn zone_failure_quorum_curve(
     // borrowed zone names is cheaper than building a hash table.
     let mut zones = Vec::<(&str, usize)>::new();
     for member in members {
-        match zones.iter_mut().find(|(zone, _)| *zone == member.zone.as_str()) {
+        match zones
+            .iter_mut()
+            .find(|(zone, _)| *zone == member.zone.as_str())
+        {
             Some((_, count)) => *count += 1,
             None => zones.push((&member.zone, 1)),
         }
@@ -1169,9 +1181,9 @@ mod batched_zone_failure_quorum_tests {
 
     #[test]
     fn one_pass_failure_curve_matches_independent_worst_case_queries() {
-        let members = parse_membership(
-            "a east 1\nb east 1\nc west 1\nd south 1\ne south 1\nf north 1\n",
-        ).unwrap();
+        let members =
+            parse_membership("a east 1\nb east 1\nc west 1\nd south 1\ne south 1\nf north 1\n")
+                .unwrap();
         let policy = QuorumPolicy::new(6, 3, 4).unwrap();
         let outcomes = zone_failure_quorum_curve(policy, &members).unwrap();
         assert_eq!(outcomes.len(), 5);
