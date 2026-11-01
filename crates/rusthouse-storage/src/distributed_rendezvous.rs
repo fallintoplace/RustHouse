@@ -159,9 +159,10 @@ pub fn weighted_replicas_for(
         return Err("invalid weighted replica placement configuration");
     }
     let mut seen = (nodes.len() > 8).then(|| HashSet::with_capacity(nodes.len()));
-    let mut ranked = Vec::with_capacity(if replicas == 1 { 0 } else { nodes.len() });
+    let mut ranked = Vec::with_capacity(if replicas <= 2 { 0 } else { nodes.len() });
     let seed = shard_seed(shard);
     let mut winner: Option<(f64, &str)> = None;
+    let mut runner_up: Option<(f64, &str)> = None;
     for (index, &(node, weight)) in nodes.iter().enumerate() {
         let duplicate = if let Some(seen) = seen.as_mut() {
             !seen.insert(node)
@@ -182,12 +183,28 @@ pub fn weighted_replicas_for(
             }) {
                 winner = Some((priority, node));
             }
+        } else if replicas == 2 {
+            // Keep only the two best exponential-race priorities. The
+            // weighted tie-break remains identical to the full sort.
+            let candidate = (priority, node);
+            if winner.is_none_or(|best| weighted_rank_order(&candidate, &best).is_lt()) {
+                runner_up = winner;
+                winner = Some(candidate);
+            } else if runner_up.is_none_or(|best| weighted_rank_order(&candidate, &best).is_lt()) {
+                runner_up = Some(candidate);
+            }
         } else {
             ranked.push((priority, node));
         }
     }
     if replicas == 1 {
         return Ok(vec![winner.expect("valid nonempty nodes").1.to_owned()]);
+    }
+    if replicas == 2 {
+        return Ok(vec![
+            winner.expect("at least two validated nodes").1.to_owned(),
+            runner_up.expect("at least two validated nodes").1.to_owned(),
+        ]);
     }
     if replicas < ranked.len() {
         // Partition first; sorting just the selected replica prefix is enough.
@@ -1006,5 +1023,34 @@ mod hash_threshold_rebalance_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod weighted_top_two_linear_tests {
+    use super::*;
+
+    #[test]
+    fn two_weighted_replicas_match_full_order_for_all_sizes() {
+        let names = (0..64).map(|index| format!("weighted_{index:02}")).collect::<Vec<_>>();
+        for size in [2usize, 3, 4, 8, 9, 16, 32, 64] {
+            let nodes = names[..size].iter().enumerate()
+                .map(|(index, name)| (name.as_str(), (1 + (index * 31 % 1024)) as u16))
+                .collect::<Vec<_>>();
+            for shard in 0..64 {
+                let shard = format!("weighted_pair_{shard}");
+                let expected = weighted_replicas_for(&shard, &nodes, size).unwrap();
+                let pair = weighted_replicas_for(&shard, &nodes, 2).unwrap();
+                assert_eq!(pair, expected[..2], "size={size} shard={shard}");
+                let reversed = nodes.iter().rev().copied().collect::<Vec<_>>();
+                assert_eq!(pair, weighted_replicas_for(&shard, &reversed, 2).unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn two_replicas_still_reject_duplicate_and_invalid_weights() {
+        assert!(weighted_replicas_for("shard", &[("a", 1), ("a", 2)], 2).is_err());
+        assert!(weighted_replicas_for("shard", &[("a", 0), ("b", 1)], 2).is_err());
     }
 }
