@@ -103,6 +103,45 @@ pub fn candidate_i64_mark_ranges(
     )
 }
 
+/// Conservatively prune a sorted UInt128 primary key, retaining a
+/// predecessor granule so row-level predicates remain exact.
+pub fn candidate_u128_mark_range(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    lower: Bound<u128>,
+    upper: Bound<u128>,
+) -> Option<Range<usize>> {
+    candidate_mark_range(index.len(), |mark| u128_mark_key(index, mark, field), lower, upper)
+}
+
+/// Conservatively prune a signed Int128 primary key.
+pub fn candidate_i128_mark_range(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    lower: Bound<i128>,
+    upper: Bound<i128>,
+) -> Option<Range<usize>> {
+    candidate_mark_range(index.len(), |mark| i128_mark_key(index, mark, field), lower, upper)
+}
+
+/// Coalesce disjunctive UInt128 primary key intervals into mark ranges.
+pub fn candidate_u128_mark_ranges(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    intervals: &[(Bound<u128>, Bound<u128>)],
+) -> Option<Vec<Range<usize>>> {
+    candidate_mark_ranges(index.len(), |mark| u128_mark_key(index, mark, field), intervals)
+}
+
+/// Coalesce disjunctive Int128 primary key intervals into mark ranges.
+pub fn candidate_i128_mark_ranges(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    intervals: &[(Bound<i128>, Bound<i128>)],
+) -> Option<Vec<Range<usize>>> {
+    candidate_mark_ranges(index.len(), |mark| i128_mark_key(index, mark, field), intervals)
+}
+
 pub fn read_fixed_primary_index(
     path: impl AsRef<Path>,
     field_widths: &[usize],
@@ -764,5 +803,52 @@ mod recycled_primary_index_decoder_tests {
             );
         }
         fs::remove_file(&path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod wide_integer_pruning_tests {
+    use super::*;
+
+    #[test]
+    fn wide_unsigned_pruning_preserves_predecessor_and_extremes() {
+        let keys = [1u128, 1u128 << 64, 1u128 << 100, u128::MAX];
+        let index = FixedPrimaryIndex {
+            data: keys.into_iter().flat_map(u128::to_le_bytes).collect(),
+            field_offsets: vec![0, 16],
+            row_width: 16,
+        };
+        assert_eq!(candidate_u128_mark_range(&index, 0,
+            Bound::Included((1u128 << 64) + 1), Bound::Included(1u128 << 100)), Some(1..3));
+        assert_eq!(candidate_u128_mark_ranges(&index, 0, &[
+            (Bound::Included(1u128 << 100), Bound::Included(1u128 << 100)),
+            (Bound::Included(1), Bound::Included(1)),
+        ]), Some(vec![0..1, 1..3]));
+        assert_eq!(candidate_u128_mark_range(&index, 0,
+            Bound::Included(u128::MAX), Bound::Included(u128::MAX)), Some(2..4));
+        assert_eq!(candidate_u128_mark_range(&index, 1,
+            Bound::Included(0), Bound::Included(1)), None);
+    }
+
+    #[test]
+    fn wide_signed_pruning_compares_numeric_not_little_endian_order() {
+        let keys = [i128::MIN, -1i128, 0, i128::MAX];
+        let index = FixedPrimaryIndex {
+            data: keys.into_iter().flat_map(i128::to_le_bytes).collect(),
+            field_offsets: vec![0, 16],
+            row_width: 16,
+        };
+        assert_eq!(candidate_i128_mark_range(&index, 0,
+            Bound::Included(-1), Bound::Included(0)), Some(0..3));
+        assert_eq!(candidate_i128_mark_ranges(&index, 0, &[
+            (Bound::Included(i128::MIN), Bound::Included(i128::MIN)),
+            (Bound::Included(i128::MAX), Bound::Included(i128::MAX)),
+        ]), Some(vec![0..1, 2..4]));
+        let invalid = FixedPrimaryIndex {
+            data: [1i128, -1].into_iter().flat_map(i128::to_le_bytes).collect(),
+            field_offsets: vec![0, 16], row_width: 16,
+        };
+        assert_eq!(candidate_i128_mark_range(&invalid, 0,
+            Bound::Included(0), Bound::Included(1)), None);
     }
 }
