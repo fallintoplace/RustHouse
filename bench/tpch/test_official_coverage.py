@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -18,6 +19,49 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(report["results"][0]["status"], "unsupported_query")
             self.assertEqual(invoked, [])
 
+
+    def test_query_file_swap_is_reported_before_execution(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            source = directory / "q01.sql"
+            replacement = directory / "alternative.sql"
+            source.write_text("SELECT 1")
+            replacement.write_text("DELETE FROM events")
+            real_open = os.open
+            invoked = []
+            def swap(path, flags, *args, **kwargs):
+                if Path(path) == source:
+                    source.unlink()
+                    replacement.rename(source)
+                return real_open(path, flags, *args, **kwargs)
+            with patch("official_coverage.os.open", side_effect=swap):
+                report = coverage("binary", "db", directory, runs=1, warmups=0,
+                                  execute=lambda sql: invoked.append(sql))
+            self.assertEqual(report["results"][0]["status"], "unsupported_query")
+            self.assertEqual(invoked, [])
+
+    def test_reference_file_swap_is_reported_without_running_query(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            (directory / "q01.sql").write_text("SELECT 1")
+            refs = directory / "refs"
+            refs.mkdir()
+            source = refs / "q01.tsv"
+            replacement = refs / "replacement.tsv"
+            source.write_bytes(b"1\n")
+            replacement.write_bytes(b"2\n")
+            real_open = os.open
+            invoked = []
+            def swap(path, flags, *args, **kwargs):
+                if Path(path) == source:
+                    source.unlink()
+                    replacement.rename(source)
+                return real_open(path, flags, *args, **kwargs)
+            with patch("official_coverage.os.open", side_effect=swap):
+                report = coverage("binary", "db", directory, refs, runs=1,
+                                  warmups=0, execute=lambda sql: invoked.append(sql))
+            self.assertEqual(report["results"][0]["status"], "reference_error")
+            self.assertEqual(invoked, [])
 
     def test_preserves_comment_like_lines_inside_sql_literals(self):
         with tempfile.TemporaryDirectory() as root:
@@ -119,19 +163,19 @@ class CoverageTests(unittest.TestCase):
                 )
                 (refs / f"q{number:02d}.tsv").write_bytes(f"{number}\n".encode())
             opened = []
-            original_open = Path.open
+            original_open = os.open
 
-            def track_open(path, *args, **kwargs):
-                if path.suffix == ".tsv":
-                    opened.append(path.name)
-                return original_open(path, *args, **kwargs)
+            def track_open(path, flags, *args, **kwargs):
+                if Path(path).suffix == ".tsv":
+                    opened.append(Path(path).name)
+                return original_open(path, flags, *args, **kwargs)
 
             def execute(sql):
                 if sql == "SELECT 1":
                     self.assertNotIn("q02.tsv", opened)
                 return sql.split()[-1].encode() + b"\n"
 
-            with patch("pathlib.Path.open", new=track_open):
+            with patch("official_coverage.os.open", side_effect=track_open):
                 report = coverage("fake", "db", queries, refs,
                                   runs=1, warmups=0, jobs=1, execute=execute)
             self.assertEqual(report["results"][0]["status"], "passed")
