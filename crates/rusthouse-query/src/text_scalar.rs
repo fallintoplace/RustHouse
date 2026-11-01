@@ -4454,7 +4454,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             "appendTrailingCharIfAbsent requires exactly one character".into(),
                         ));
                     }
-                    if !input.is_empty() && !input.ends_with(&ending) {
+                    if !input.ends_with(&ending) {
                         if input.len().saturating_add(ending.len()) > MAX_TEXT_BYTES {
                             return Err(ParseError(
                                 "appendTrailingCharIfAbsent result is too large".into(),

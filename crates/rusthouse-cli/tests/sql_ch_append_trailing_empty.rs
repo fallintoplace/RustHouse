@@ -19,6 +19,10 @@ fn trailing_character_is_appended_when_input_is_empty() {
             "SELECT appendTrailingCharIfAbsent('', '✓') AS value",
             "value\n✓\n",
         ),
+        (
+            "SELECT appendTrailingCharIfAbsent('✓', '✓') AS value",
+            "value\n✓\n",
+        ),
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", query])
