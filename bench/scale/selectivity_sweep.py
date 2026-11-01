@@ -6,6 +6,7 @@ Timing includes a new CLI process and potentially warm OS file caches.
 import argparse
 import json
 import math
+import os
 import subprocess
 import tempfile
 import time
@@ -32,9 +33,23 @@ def execute_predicate(command, timeout, runner=None):
         diagnostic = result.stderr[-500:]
         returncode = result.returncode
     else:
+        extra = {}
+        if os.name == "posix":
+            import resource
+
+            def cap_predicate_output():
+                soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                limit = MAX_RESULT_BYTES + 1
+                if soft != resource.RLIM_INFINITY:
+                    limit = min(limit, soft)
+                if hard != resource.RLIM_INFINITY:
+                    limit = min(limit, hard)
+                resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+            extra["preexec_fn"] = cap_predicate_output
         with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
             result = subprocess.run(command, stdout=output, stderr=errors,
-                                    check=False, timeout=timeout)
+                                    check=False, timeout=timeout, **extra)
             output.seek(0)
             raw = output.read(MAX_RESULT_BYTES + 1)
             errors.seek(max(0, errors.tell() - 500))
