@@ -3488,23 +3488,45 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
                     let position = if name == "POSITIONCASEINSENSITIVEUTF8" {
-                        let folded_input: Vec<char> = input
-                            .chars()
-                            .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
-                            .collect();
-                        let folded_needle: Vec<char> = needle
-                            .chars()
-                            .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
-                            .collect();
-                        if offset > folded_input.len() {
+                        // Fold one Unicode scalar at a time to preserve character offsets.
+                        let fold = |ch: char| ch.to_lowercase().next().unwrap_or(ch);
+                        let folded_needle: Vec<char> = needle.chars().map(fold).collect();
+                        let haystack_chars = input.chars().count();
+                        if offset > haystack_chars {
                             0
                         } else if folded_needle.is_empty() {
                             offset + 1
+                        } else if folded_needle.len() > haystack_chars - offset {
+                            0
                         } else {
-                            folded_input[offset..]
-                                .windows(folded_needle.len())
-                                .position(|window| window == folded_needle.as_slice())
-                                .map_or(0, |index| offset + index + 1)
+                            // KMP uses O(needle length) space and linear scan time.
+                            let mut border = vec![0usize; folded_needle.len()];
+                            for index in 1..folded_needle.len() {
+                                let mut candidate = border[index - 1];
+                                while candidate > 0 && folded_needle[index] != folded_needle[candidate] {
+                                    candidate = border[candidate - 1];
+                                }
+                                if folded_needle[index] == folded_needle[candidate] {
+                                    candidate += 1;
+                                }
+                                border[index] = candidate;
+                            }
+                            let mut matched = 0usize;
+                            let mut position = 0usize;
+                            for (index, character) in input.chars().enumerate().skip(offset) {
+                                let character = fold(character);
+                                while matched > 0 && folded_needle[matched] != character {
+                                    matched = border[matched - 1];
+                                }
+                                if folded_needle[matched] == character {
+                                    matched += 1;
+                                }
+                                if matched == folded_needle.len() {
+                                    position = index + 2 - folded_needle.len();
+                                    break;
+                                }
+                            }
+                            position
                         }
                     } else if offset > input.len() {
                         0
@@ -6515,5 +6537,40 @@ mod clickhouse_encode_url_component_parity_tests {
         assert_eq!(value("SELECT encodeURLComponent(NULL)"), ConstantValue::Null);
         assert!(parse_select("SELECT encodeURLComponent()").is_err());
         assert!(parse_select("SELECT encodeURLComponent('a', 'b')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_position_case_insensitive_utf8_parity_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finds_unicode_case_insensitive_positions() {
+        for (sql, expected) in [
+            ("SELECT positionCaseInsensitiveUTF8('Äpfel', 'äP')", 1),
+            ("SELECT positionCaseInsensitiveUTF8('Crème brûlée', 'BRÛ')", 7),
+            ("SELECT positionCaseInsensitiveUTF8('Привет Мир', 'МИР')", 8),
+            ("SELECT positionCaseInsensitiveUTF8('abc abc', 'ABC', 4)", 5),
+            ("SELECT positionCaseInsensitiveUTF8('abc', 'A', 0)", 1),
+            ("SELECT positionCaseInsensitiveUTF8('abc', '', 3)", 3),
+            ("SELECT positionCaseInsensitiveUTF8('', '')", 1),
+            ("SELECT positionCaseInsensitiveUTF8('abc', '', 9)", 0),
+            ("SELECT positionCaseInsensitiveUTF8('abc', 'z')", 0),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT positionCaseInsensitiveUTF8(NULL, 'a')"), ConstantValue::Null);
+        assert_eq!(value("SELECT positionCaseInsensitiveUTF8('abc', NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT positionCaseInsensitiveUTF8('a')").is_err());
+        assert!(parse_select("SELECT positionCaseInsensitiveUTF8('abc', 'a', -1)").is_err());
+        assert!(parse_select("SELECT positionCaseInsensitiveUTF8('a', 'b', 1, 2)").is_err());
     }
 }
