@@ -1,8 +1,6 @@
 //! Quorum policy validation for future replicated storage writes.
 //! This module does not implement consensus or distributed transactions.
 
-use std::collections::HashMap;
-
 fn valid_member(member: &str) -> bool {
     !member.is_empty()
         && member.len() <= 64
@@ -330,37 +328,41 @@ pub fn observe_joint_quorum(
     let mut previous_mask = 0u16;
     let mut next_mask = 0u16;
     if acknowledgements.len() > 32 {
-        // Large retry batches often repeat the same acknowledgement. Resolve
-        // a replica ID to its old/new bit positions only once, while sharing
-        // nodes count as one vote in each membership configuration.
-        let mut positions = HashMap::<&str, (u16, u16)>::with_capacity(
-            previous_members.len() + next_members.len(),
-        );
+        // At most 16 members per epoch and 32 unique names. Keep the
+        // combined old/new membership index on the stack for retry polls.
+        let mut entries = [("", 0u16, 0u16); 32];
+        let mut count = 0;
         for (index, &member) in previous_members.iter().enumerate() {
-            if !valid_member(member) {
+            if !valid_member(member)
+                || entries[..count].iter().any(|entry| entry.0 == member)
+            {
                 return Err("invalid or duplicate quorum member");
             }
-            let entry = positions.entry(member).or_default();
-            if entry.0 != 0 {
-                return Err("invalid or duplicate quorum member");
-            }
-            entry.0 = 1u16 << index;
+            entries[count] = (member, 1u16 << index, 0);
+            count += 1;
         }
         for (index, &member) in next_members.iter().enumerate() {
             if !valid_member(member) {
                 return Err("invalid or duplicate quorum member");
             }
-            let entry = positions.entry(member).or_default();
-            if entry.1 != 0 {
-                return Err("invalid or duplicate quorum member");
+            if let Some(entry) = entries[..count].iter_mut().find(|entry| entry.0 == member) {
+                if entry.2 != 0 {
+                    return Err("invalid or duplicate quorum member");
+                }
+                entry.2 = 1u16 << index;
+            } else {
+                entries[count] = (member, 0, 1u16 << index);
+                count += 1;
             }
-            entry.1 = 1u16 << index;
         }
+        let positions = &mut entries[..count];
+        positions.sort_unstable_by(|left, right| left.0.cmp(right.0));
         for &member in acknowledgements {
-            let &(old, new) = positions.get(member)
-                .ok_or("acknowledgement from unknown replica")?;
-            previous_mask |= old;
-            next_mask |= new;
+            let index = positions
+                .binary_search_by(|entry| entry.0.cmp(member))
+                .map_err(|_| "acknowledgement from unknown replica")?;
+            previous_mask |= positions[index].1;
+            next_mask |= positions[index].2;
         }
     } else {
         // Small batches avoid a temporary map entirely.
@@ -565,5 +567,35 @@ mod stack_quorum_index_tests {
             duplicates[replicas - 1] = duplicates[0];
             assert!(policy.observe(&duplicates, &members).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod stack_joint_quorum_union_tests {
+    use super::*;
+
+    #[test]
+    fn disjoint_sixteen_member_epochs_count_every_acknowledgement() {
+        let names = (0..32).map(|index| format!("node_{index:02}")).collect::<Vec<_>>();
+        let previous = names[..16].iter().map(String::as_str).collect::<Vec<_>>();
+        let next = names[16..].iter().map(String::as_str).collect::<Vec<_>>();
+        let policy = QuorumPolicy::new(16, 8, 9).unwrap();
+        let acks = (0..256).map(|index| names[index % 32].as_str()).collect::<Vec<_>>();
+        let all = observe_joint_quorum(policy, &previous, policy, &next, &acks).unwrap();
+        assert_eq!(all.previous.distinct_acks, 16);
+        assert_eq!(all.next.distinct_acks, 16);
+        assert!(all.can_read && all.can_write);
+        let only_old = acks.iter().copied().filter(|node| previous.contains(node))
+            .collect::<Vec<_>>();
+        let observed = observe_joint_quorum(policy, &previous, policy, &next, &only_old).unwrap();
+        assert_eq!(observed.previous.distinct_acks, 16);
+        assert_eq!(observed.next.distinct_acks, 0);
+        assert!(!observed.can_write);
+        let mut foreign = acks.clone();
+        foreign[255] = "unknown";
+        assert!(observe_joint_quorum(policy, &previous, policy, &next, &foreign).is_err());
+        let mut duplicates = next.clone();
+        duplicates[15] = duplicates[0];
+        assert!(observe_joint_quorum(policy, &previous, policy, &duplicates, &acks).is_err());
     }
 }
