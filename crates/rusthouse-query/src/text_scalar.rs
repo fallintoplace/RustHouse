@@ -3487,23 +3487,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             )?;
             match (input, from, to) {
                 (Some(input), Some(from), Some(to)) => {
-                    if name == "TRANSLATEUTF8" && from.chars().count() != to.chars().count() {
+                    if name == "TRANSLATEUTF8" && from.chars().count() < to.chars().count() {
                         return Err(ParseError(
-                            "translateUTF8 requires matching character counts".into(),
+                            "translateUTF8 replacement has more characters than source".into(),
                         ));
                     }
                     if name == "TRANSLATE"
-                        && (!from.is_ascii() || !to.is_ascii() || from.len() != to.len())
+                        && (!from.is_ascii() || !to.is_ascii() || from.len() < to.len())
                     {
                         return Err(ParseError(
-                            "translate requires equal-length ASCII mappings".into(),
+                            "translate requires ASCII mappings with replacement no longer than source".into(),
                         ));
                     }
                     let mut replacements = std::collections::HashMap::new();
                     let mut to_chars = to.chars();
                     for ch in from.chars() {
                         let replacement = to_chars.next();
-                        replacements.entry(ch).or_insert(replacement);
+                        // ClickHouse gives the last mapping for repeated source
+                        // characters precedence. A missing replacement deletes.
+                        replacements.insert(ch, replacement);
                     }
                     let mut result = String::with_capacity(input.len());
                     for ch in input.chars() {
