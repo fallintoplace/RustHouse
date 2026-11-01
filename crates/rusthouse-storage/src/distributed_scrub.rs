@@ -498,14 +498,18 @@ mod resolved_scrub_preflight_tests {
 /// The caller must sort the paths by file name before this binary search.
 fn scrub_cursor_index(parts: &[std::path::PathBuf], after: &str) -> Result<usize, PartError> {
     if after.is_empty() || after.contains('/') || after.contains('\\') {
-        return Err(PartError::InvalidScan("invalid snapshot scrub cursor".into()));
+        return Err(PartError::InvalidScan(
+            "invalid snapshot scrub cursor".into(),
+        ));
     }
     let name = Some(std::ffi::OsStr::new(after));
     parts
         .binary_search_by(|part| part.file_name().cmp(&name))
         .map(|index| index + 1)
         .map_err(|_| {
-            PartError::InvalidScan("snapshot scrub cursor was not found in active generation".into())
+            PartError::InvalidScan(
+                "snapshot scrub cursor was not found in active generation".into(),
+            )
         })
 }
 
@@ -670,7 +674,13 @@ mod indexed_scrub_cursor_tests {
             let name = format!("part_{index:05}");
             assert_eq!(scrub_cursor_index(&parts, &name).unwrap(), index + 1);
         }
-        for invalid in ["", "../part_00001", "part_00001/", "part_00001\\x", "part_16384"] {
+        for invalid in [
+            "",
+            "../part_00001",
+            "part_00001/",
+            "part_00001\\x",
+            "part_16384",
+        ] {
             assert!(scrub_cursor_index(&parts, invalid).is_err());
         }
     }
