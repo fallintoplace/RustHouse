@@ -403,10 +403,23 @@ pub fn reserve_replica_capacity_plan(
         node.capacity.available()?;
     }
 
-    let mut result = nodes.to_vec();
+    // Aggregate requests by node before cloning the output. Large copy plans
+    // can contain tens of thousands of objects targeting only a few replicas.
+    // Each node needs one checked capacity transition, not one per object.
+    let mut totals = [0u64; 64];
     for &(node, bytes) in requests {
         let position = *index.get(node).ok_or("unknown replica reservation node")?;
-        result[position].capacity = result[position].capacity.reserve(bytes)?;
+        totals[position] = totals[position]
+            .checked_add(bytes)
+            .ok_or("replica reservation batch overflow")?;
+    }
+    let mut result = Vec::with_capacity(nodes.len());
+    for (position, node) in nodes.iter().enumerate() {
+        let capacity = node.capacity.reserve(totals[position])?;
+        result.push(ReplicaNodeCapacity {
+            node: node.node.clone(),
+            capacity,
+        });
     }
     Ok(result)
 }
@@ -513,5 +526,48 @@ mod release_invalid_state_tests {
             reserved: 3,
         };
         assert_eq!(valid.release(2).unwrap().available().unwrap(), 5);
+    }
+}
+
+#[cfg(test)]
+mod aggregated_replica_reservation_tests {
+    use super::*;
+
+    fn node(name: &str, capacity: u64) -> ReplicaNodeCapacity {
+        ReplicaNodeCapacity {
+            node: name.into(),
+            capacity: Capacity { total: capacity, used: 0, reserved: 0 },
+        }
+    }
+
+    #[test]
+    fn large_interleaved_batches_match_individual_reservations() {
+        let nodes = [node("first", 100_000), node("second", 100_000), node("third", 100_000)];
+        let requests = (0..65_536)
+            .map(|index| (["first", "second", "third"][index % 3], 1u64))
+            .collect::<Vec<_>>();
+        let expected = {
+            let mut result = nodes.to_vec();
+            for &(name, amount) in &requests {
+                let replica = result.iter_mut().find(|replica| replica.node == name).unwrap();
+                replica.capacity = replica.capacity.reserve(amount).unwrap();
+            }
+            result
+        };
+        let actual = reserve_replica_capacity_plan(&nodes, &requests).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(nodes[0].capacity.reserved, 0);
+    }
+
+    #[test]
+    fn accepts_zero_byte_requests_and_validates_all_nodes() {
+        let nodes = [node("first", 2), node("second", 1)];
+        assert_eq!(
+            reserve_replica_capacity_plan(&nodes, &[("first", 0), ("second", 0)]).unwrap(),
+            nodes
+        );
+        assert!(reserve_replica_capacity_plan(&nodes, &[("first", 2), ("first", 1)]).is_err());
+        assert!(reserve_replica_capacity_plan(&nodes, &[("first", 0), ("missing", 0)]).is_err());
+        assert!(reserve_replica_capacity_plan(&nodes, &[("first", u64::MAX), ("first", 1)]).is_err());
     }
 }
