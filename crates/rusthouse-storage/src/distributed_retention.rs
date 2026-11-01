@@ -157,8 +157,19 @@ pub fn retention_candidates_with_pins(
     // Merge them with the already sorted candidate list in linear time,
     // with no temporary HashSet even for thousands of generations.
     if pinned.windows(2).all(|pair| pair[0] < pair[1]) {
-        if pinned.iter().any(|&pin| !known_generation(&known, pin)) {
-            return Err("duplicate or unknown pinned generation");
+        // Both inventories are sorted. Confirm every pin is a known
+        // generation with one monotonic merge instead of P binary searches.
+        let mut known_cursor = 0usize;
+        for &pin in pinned {
+            while known
+                .get(known_cursor)
+                .is_some_and(|&generation| generation < pin)
+            {
+                known_cursor += 1;
+            }
+            if known.get(known_cursor) != Some(&pin) {
+                return Err("duplicate or unknown pinned generation");
+            }
         }
         let mut cursor = 0usize;
         return Ok(candidates
@@ -1160,5 +1171,38 @@ mod ordered_replica_pin_merge_tests {
             assert!(retention_candidates_with_pins(&generations, 32, 2, &pins,).is_err());
             assert!(retention_candidates_with_byte_budget(&sizes, 32, 2, &pins, 100,).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod linear_pin_membership_tests {
+    use super::*;
+
+    #[test]
+    fn dense_sorted_pins_keep_identical_candidates_for_reordered_inputs() {
+        let generations = (1..=16_384u64).collect::<Vec<_>>();
+        let mut reversed = generations.clone();
+        reversed.reverse();
+        let pins = generations.iter().copied().step_by(3).collect::<Vec<_>>();
+        let mut unordered_pins = pins.clone();
+        unordered_pins.reverse();
+        let expected = retention_candidates_with_pins(
+            &reversed, 16_384, 2, &unordered_pins,
+        ).unwrap();
+        assert_eq!(
+            retention_candidates_with_pins(&generations, 16_384, 2, &pins).unwrap(),
+            expected
+        );
+        assert!(expected.iter().all(|item| pins.binary_search(item).is_err()));
+        assert!(!expected.contains(&16_384));
+        assert!(!expected.contains(&16_383));
+    }
+
+    #[test]
+    fn unknown_sorted_pin_between_valid_generations_fails_closed() {
+        let known = [2, 4, 6, 8, 10, 12];
+        assert!(retention_candidates_with_pins(&known, 12, 1, &[2, 5, 8, 10, 12]).is_err());
+        assert!(retention_candidates_with_pins(&known, 12, 1, &[2, 4, 6, 8, 14]).is_err());
+        assert!(retention_candidates_with_pins(&known, 12, 1, &[2, 4, 4, 8, 10]).is_err());
     }
 }
