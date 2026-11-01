@@ -45,23 +45,33 @@ pub fn plan_retry_delays(
     seed: u64,
     budget: Duration,
 ) -> Result<Vec<Duration>, &'static str> {
-    if attempts > 33 {
+    plan_retry_delays_from(0, attempts, base_ms, max_ms, seed, budget)
+}
+
+/// Resume a bounded retry schedule at a persisted attempt number.
+///
+/// The budget applies only to scheduled future delays, not to elapsed
+/// retries. A single skipped attempt must never shift the deterministic
+/// jitter seed or bypass exponential backoff. No network action occurs.
+pub fn plan_retry_delays_from(
+    first_attempt: u32,
+    attempts: u32,
+    base_ms: u64,
+    max_ms: u64,
+    seed: u64,
+    budget: Duration,
+) -> Result<Vec<Duration>, &'static str> {
+    if first_attempt > 33 || attempts > 33 - first_attempt {
         return Err("retry count exceeds supported attempt range");
     }
-    // Empty plans still validate their retry configuration.
-    if attempts == 0 {
-        retry_delay(0, base_ms, max_ms, seed)?;
-        return Ok(Vec::new());
-    }
-    // Jitter never falls below ceil(base / 2). A smaller total budget
-    // cannot fit even the first retry, so avoid allocating its schedule.
-    if budget < Duration::from_millis(base_ms.div_ceil(2)) {
-        retry_delay(0, base_ms, max_ms, seed)?;
+    // Validate even an empty plan or a deadline that excludes all retries.
+    retry_delay(0, base_ms, max_ms, seed)?;
+    if attempts == 0 || budget < Duration::from_millis(base_ms.div_ceil(2)) {
         return Ok(Vec::new());
     }
     let mut elapsed = Duration::ZERO;
     let mut delays = Vec::with_capacity(attempts as usize);
-    for attempt in 0..attempts {
+    for attempt in first_attempt..first_attempt + attempts {
         let delay = retry_delay(attempt, base_ms, max_ms, seed)?;
         if delay > budget.saturating_sub(elapsed) {
             break;
@@ -383,5 +393,38 @@ mod replica_retry_timeline_tests {
         assert!(plan_replica_retry_timeline(&nodes, 0, 0, 1000, first).is_err());
         assert!(plan_replica_retry_timeline(&[("a", 0), ("a", 1)], 0, 100, 1000, first).is_err());
         assert!(plan_replica_retry_timeline(&[("bad/name", 0)], 0, 100, 1000, first).is_err());
+    }
+}
+
+#[cfg(test)]
+mod resumed_replica_retry_tests {
+    use super::*;
+
+    #[test]
+    fn resumed_schedule_matches_the_exact_absolute_attempt_jitter() {
+        for seed in [0, 7, 97, u64::MAX] {
+            let all = plan_retry_delays(33, 100, 8_000, seed, Duration::MAX).unwrap();
+            for first in [0, 1, 5, 16, 32, 33] {
+                let resumed = plan_retry_delays_from(
+                    first, 33 - first, 100, 8_000, seed, Duration::MAX,
+                ).unwrap();
+                assert_eq!(resumed, all[first as usize..]);
+                let budget = resumed.iter().take(3).copied().sum::<Duration>();
+                let partial = plan_retry_delays_from(
+                    first, 33 - first, 100, 8_000, seed, budget,
+                ).unwrap();
+                assert_eq!(partial, resumed[..resumed.len().min(3)]);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_attempt_windows_even_for_empty_deadlines() {
+        for (start, count) in [(33, 1), (32, 2), (34, 0), (u32::MAX, 0)] {
+            assert!(plan_retry_delays_from(start, count, 1, 2, 0, Duration::ZERO).is_err());
+        }
+        assert!(plan_retry_delays_from(33, 0, 0, 1, 0, Duration::ZERO).is_err());
+        assert!(plan_retry_delays_from(0, 0, 1, 1, 0, Duration::ZERO).unwrap().is_empty());
+        assert!(plan_retry_delays_from(32, 1, 1, 1, 0, Duration::ZERO).unwrap().is_empty());
     }
 }
