@@ -52,7 +52,12 @@ def digest_file(source, *, max_bytes=None):
     return digest.hexdigest(), length
 
 
-def run_sql(binary, database, statement, timeout):
+def run_sql(binary, database, statement, timeout, max_output_bytes=None):
+    if max_output_bytes is not None and (
+            type(max_output_bytes) is not int or max_output_bytes < 0):
+        raise ValueError("max_output_bytes must be nonnegative")
+    cap_bytes = (MAX_SOAK_OUTPUT_BYTES if max_output_bytes is None
+                 else min(MAX_SOAK_OUTPUT_BYTES, max_output_bytes))
     with tempfile.TemporaryFile() as sink, tempfile.TemporaryFile() as errors:
         started = time.perf_counter()
         extra = {}
@@ -60,8 +65,8 @@ def run_sql(binary, database, statement, timeout):
             import resource
             def cap_spooled_output():
                 _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
-                limit = (MAX_SOAK_OUTPUT_BYTES + 1 if hard == resource.RLIM_INFINITY
-                         else min(MAX_SOAK_OUTPUT_BYTES + 1, hard))
+                limit = (cap_bytes + 1 if hard == resource.RLIM_INFINITY
+                         else min(cap_bytes + 1, hard))
                 resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
             extra["preexec_fn"] = cap_spooled_output
         process = subprocess.run(
@@ -69,10 +74,12 @@ def run_sql(binary, database, statement, timeout):
             stdout=sink, stderr=errors, timeout=timeout, check=False, **extra,
         )
         elapsed = time.perf_counter() - started
+        sink.seek(0, 2)
+        if sink.tell() > cap_bytes:
+            if max_output_bytes is not None:
+                raise ValueError("query output exceeds the reference byte length")
+            raise ValueError("soak output exceeds configured byte limit")
         if process.returncode:
-            sink.seek(0, 2)
-            if sink.tell() > MAX_SOAK_OUTPUT_BYTES:
-                raise ValueError("soak output exceeds configured byte limit")
             errors.seek(0, 2)
             errors.seek(max(0, errors.tell() - 500))
             raise RuntimeError(errors.read(500).decode("utf-8", "replace"))
@@ -120,7 +127,7 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
         raise ValueError("soak requires one read-only SELECT")
     expected_file = Path(expected_file)
     reference, size = read_reference(expected_file)
-    execute = execute or (lambda: run_sql(binary, database, sql, timeout))
+    execute = execute or (lambda: run_sql(binary, database, sql, timeout, max_output_bytes=size))
     samples = []
     for attempt in range(runs + warmups):
         actual, bytes_written, seconds = execute()
