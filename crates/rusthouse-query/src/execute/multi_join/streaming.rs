@@ -242,7 +242,10 @@ pub(super) fn execute<W: Write>(
         });
     }
     write_join_header(output, &selected)?;
-    if stages.iter().any(|stage| stage.rows.is_empty()) {
+    // A build can contain physical rows but no legal JOIN keys (only NULL
+    // or NaN). In an INNER chain that is as empty as a zero-row dimension,
+    // so do not read or decode the potentially enormous fact table.
+    if stages.iter().any(|stage| stage.hash.is_empty()) {
         return Ok(());
     }
     let mut scratch_keys = stages
