@@ -43,6 +43,8 @@ fn validate_pretty_depth(row: &[u8]) -> io::Result<()> {
     let mut inside_string = false;
     let mut escaped = false;
     let mut depth = 0usize;
+    // Match each closing delimiter against its opener before writing any bytes.
+    let mut containers = [0u8; MAX_PRETTY_JSON_DEPTH];
     for &byte in row {
         if inside_string {
             if escaped {
@@ -63,11 +65,20 @@ fn validate_pretty_depth(row: &[u8]) -> io::Result<()> {
                         "pretty JSON nesting exceeds 256 levels",
                     ));
                 }
+                containers[depth] = byte;
                 depth += 1;
             }
-            b'}' | b']' => depth = depth.saturating_sub(1),
+            b'}' | b']' => {
+                if depth == 0 || !is_empty_json_container_pair(containers[depth - 1], byte) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "unbalanced pretty JSON delimiter"));
+                }
+                depth -= 1;
+            },
             _ => {}
         }
+    }
+    if depth != 0 || inside_string {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "unterminated pretty JSON container or string"));
     }
     Ok(())
 }
@@ -581,5 +592,32 @@ mod bulk_scalar_span_tests {
             formatted,
             b"{\n    \"name\": \"a,b:{[]}\",\n    \"data\": [\n      0,\n      -12345,\n      2.75e-4,\n      false,\n      null\n    ]\n  }"
         );
+    }
+}
+
+#[cfg(test)]
+mod atomic_pretty_json_validation_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_mismatched_delimiters_and_truncated_strings_before_output() {
+        for malformed in [
+            br#"{]"#.as_slice(),
+            br#"{"items":[1,2}"#,
+            br#"{"unclosed":"text"#,
+            br#"{"escaped":"text\\"#,
+            br#"]"#,
+            br#"{ {"#,
+        ] {
+            let mut rendered = Vec::new();
+            assert!(write_pretty_json_row(&mut rendered, malformed).is_err());
+            assert!(rendered.is_empty(), "rejected JSON must not emit a prefix");
+        }
+        let mut nested = Vec::new();
+        for _ in 0..256 { nested.push(b'['); }
+        for _ in 0..256 { nested.push(b']'); }
+        let mut rendered = Vec::new();
+        write_pretty_json_row(&mut rendered, &nested).unwrap();
+        assert!(rendered.starts_with(b"["));
     }
 }
