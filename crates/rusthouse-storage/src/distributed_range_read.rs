@@ -1308,6 +1308,7 @@ mod windows_immutable_object_handle_tests {
         read_at_into(&mut reading, 32, &mut bytes).unwrap();
         assert_eq!(bytes, [42u8; 16]);
         verify_object_after_read(&path, &file, &baseline).unwrap();
+        drop(reading);
         drop(file);
         fs::remove_file(&path).unwrap();
         fs::remove_dir(directory).unwrap();
