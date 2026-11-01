@@ -5,6 +5,7 @@ Requires ids 0..rows-1 exactly once, and an offline immutable part snapshot.
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import tempfile
@@ -43,9 +44,23 @@ def probe(binary, part, rows, *, column="id", limit=None, timeout=600,
         command = [str(binary), "sql", sql, "--part", str(part),
                    "--format", "tsv-no-header"]
         if execute is None:
+            extra = {}
+            if os.name == "posix":
+                import resource
+
+                def cap_topk_output():
+                    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                    limit = len(expected) + 1
+                    if soft != resource.RLIM_INFINITY:
+                        limit = min(limit, soft)
+                    if hard != resource.RLIM_INFINITY:
+                        limit = min(limit, hard)
+                    resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+                extra["preexec_fn"] = cap_topk_output
             with tempfile.TemporaryFile(mode="w+b") as sink, tempfile.TemporaryFile(mode="w+b") as errors:
                 completed = run(command, stdout=sink, stderr=errors,
-                                check=False, timeout=timeout)
+                                check=False, timeout=timeout, **extra)
                 sink.seek(0)
                 output = sink.read(len(expected) + 1)
                 errors.seek(0, 2)
