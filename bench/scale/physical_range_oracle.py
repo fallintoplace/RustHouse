@@ -126,7 +126,7 @@ def main(argv=None):
         result = verify(args.binary, args.database, args.table, args.start, args.rows,
                         args.window_rows, args.timeout, column=args.column,
                         max_total_seconds=args.max_total_seconds)
-    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+    except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.TimeoutExpired) as error:
         parser.exit(1, f"physical range oracle failed: {error}\n")
     print(json.dumps(result))
     return 0
