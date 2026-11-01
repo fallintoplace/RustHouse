@@ -23,6 +23,14 @@ def real_directory(path):
     return not path.is_symlink() and path.is_dir()
 
 
+def _metadata_identity(info):
+    # On Windows st_ctime_ns is creation time for path metadata but may
+    # differ between lstat and fstat. Use the stable birth-time field.
+    change_time = (getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+                   if os.name == "nt" else info.st_ctime_ns)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, change_time)
+
+
 def active_label(parts):
     """Read a bounded, stable active-generation pointer without following links."""
     pointer = parts / ".rusthouse-active"
@@ -39,9 +47,9 @@ def active_label(parts):
         raw = source.read(65)
         finished = os.fstat(source.fileno())
     after = pointer.lstat()
-    identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
-                             info.st_mtime_ns, info.st_ctime_ns)
-    if identity(before) != identity(opened) or identity(opened) != identity(finished) or identity(finished) != identity(after):
+    if (_metadata_identity(before) != _metadata_identity(opened)
+            or _metadata_identity(opened) != _metadata_identity(finished)
+            or _metadata_identity(finished) != _metadata_identity(after)):
         raise ValueError(f"active generation pointer changed while reading: {pointer}")
     if not raw.endswith(b"\n") or len(raw) > 64:
         raise ValueError(f"invalid active generation pointer: {pointer}")
