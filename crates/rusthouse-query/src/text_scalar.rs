@@ -216,6 +216,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "EDITDISTANCEUTF8"
                 | "FORMATREADABLESIZE"
                 | "FORMATREADABLEDECIMALSIZE"
+                | "TODECIMALSTRING"
                 | "TOTYPENAME"
                 | "POSITION"
                 | "ENCODEURLFORMCOMPONENT"
@@ -1260,6 +1261,34 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         index += 1;
                     }
                     ConstantValue::Text(format!("{number:.precision$}{}", UNITS[index]))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "TODECIMALSTRING" => {
+            let value = integer_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "toDecimalString requires a scale")?;
+            let scale = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "toDecimalString requires two arguments",
+            )?;
+            match (value, scale) {
+                (Some(value), Some(scale)) => {
+                    // ClickHouse bounds integer/Decimal formatting to 77
+                    // fractional digits, the decimal capacity of UInt256.
+                    if !(0..=77).contains(&scale) {
+                        return Err(ParseError(
+                            "toDecimalString requires a scale between 0 and 77".into(),
+                        ));
+                    }
+                    let mut formatted = value.to_string();
+                    if scale != 0 {
+                        formatted.push('.');
+                        formatted.push_str(&"0".repeat(scale as usize));
+                    }
+                    ConstantValue::Text(formatted)
                 }
                 _ => ConstantValue::Null,
             }
@@ -5933,5 +5962,40 @@ mod utf8_prefix_suffix_inplace_tests {
         }
         let input = format!("{}🙂Z", "a".repeat(10_000));
         assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_to_decimal_string_parity_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn formats_signed_integers_at_requested_scale() {
+        for (sql, expected) in [
+            ("SELECT toDecimalString(5, 3)", "5.000"),
+            ("SELECT toDecimalString(-7, 2)", "-7.00"),
+            ("SELECT toDecimalString(0, 0)", "0"),
+            ("SELECT toDecimalString(-1, 0)", "-1"),
+            ("SELECT toDecimalString(12, 1)", "12.0"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        let high_precision = match value("SELECT toDecimalString(3, 77)") {
+            ConstantValue::Text(value) => value,
+            other => panic!("unexpected value: {other:?}"),
+        };
+        assert_eq!(high_precision, format!("3.{}", "0".repeat(77)));
+        assert_eq!(value("SELECT toDecimalString(NULL, 2)"), ConstantValue::Null);
+        assert_eq!(value("SELECT toDecimalString(4, NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT toDecimalString(4)").is_err());
+        assert!(parse_select("SELECT toDecimalString(4, -1)").is_err());
+        assert!(parse_select("SELECT toDecimalString(4, 78)").is_err());
     }
 }
