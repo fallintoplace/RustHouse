@@ -46,7 +46,7 @@ def parse_lines(content):
     queries = []
     for number, line in enumerate(content.splitlines(), 1):
         value = line.strip()
-        if not value or value.startswith("--"):
+        if not value or value.startswith(("--", "#")):
             continue
         if value.endswith(";"):
             value = value[:-1].rstrip()
