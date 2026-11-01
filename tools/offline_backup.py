@@ -163,6 +163,19 @@ def preflight(source, destination, max_bytes=None, max_entries=1_000_000):
     return source, destination, stage
 
 
+MAX_DOCTOR_OUTPUT_BYTES = 8 * 1024 * 1024
+
+
+def _limit_doctor_output():
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    cap = MAX_DOCTOR_OUTPUT_BYTES if soft == resource.RLIM_INFINITY else min(soft, MAX_DOCTOR_OUTPUT_BYTES)
+    if hard != resource.RLIM_INFINITY:
+        cap = min(cap, hard)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (cap, hard))
+
+
 def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeout=3600,
            max_entries=1_000_000):
     if (type(doctor_timeout) not in (int, float) or
@@ -185,9 +198,14 @@ def backup(source, destination, binary="rusthouse", max_bytes=None, doctor_timeo
                     [str(binary), "doctor", "--database", str(stage), "--full-hashes"],
                     stdout=subprocess.DEVNULL, stderr=errors,
                     timeout=doctor_timeout, check=False,
+                    preexec_fn=_limit_doctor_output if os.name == "posix" else None,
                 )
-                errors.seek(max(0, errors.tell() - 2000))
+                errors.seek(0, os.SEEK_END)
+                written = errors.tell()
+                errors.seek(max(0, written - 2000))
                 diagnostic = errors.read(2000).decode("utf-8", "replace")
+                if written >= MAX_DOCTOR_OUTPUT_BYTES:
+                    diagnostic = "doctor subprocess output exceeded 8 MiB"
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise RuntimeError("backup remains at " + str(stage) + ": " + str(exc)) from exc
         if result.returncode:
