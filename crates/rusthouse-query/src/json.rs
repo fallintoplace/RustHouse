@@ -77,7 +77,7 @@ impl<'a> JsonValue<'a> {
                 (JsonPathSegment::Key(key), JsonKind::Object(fields)) => fields
                     .iter()
                     .rev()
-                    .find(|(name, _)| name == key)
+                    .find(|(name, _)| name.as_str() == *key)
                     .map(|(_, value)| value)?,
                 (JsonPathSegment::Index(index), JsonKind::Array(items)) => items.get(*index)?,
                 _ => return None,
