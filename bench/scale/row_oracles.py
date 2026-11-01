@@ -104,6 +104,27 @@ def progression_modulo_reference(start, rows, step, modulus, residue):
     return {"count": count, "sum": count * (2 * first + (count - 1) * stride) // 2}
 
 
+def progression_modulo_squares_reference(start, rows, step, modulus, residue):
+    """Exact sum of squared matching values without iterating billion-row data."""
+    progression_reference(start, rows, step)
+    validate_modulo_args(modulus, residue)
+    divisor = math.gcd(step, modulus)
+    if (residue - start) % divisor:
+        return 0
+    cycle = modulus // divisor
+    first_index = (((residue - start) // divisor)
+                   * pow(step // divisor, -1, cycle)) % cycle if cycle > 1 else 0
+    if first_index >= rows:
+        return 0
+    count = 1 + (rows - 1 - first_index) // cycle
+    first = start + first_index * step
+    stride = cycle * step
+    indices = count * (count - 1) // 2
+    squared_indices = count * (count - 1) * (2 * count - 1) // 6
+    return (count * first * first + 2 * first * stride * indices
+            + stride * stride * squared_indices)
+
+
 def make_oracles(rows, *, start=0, step=1, modulus=None, residue=0):
     if type(rows) is not int or not 1 <= rows <= MAX_UINT64 + 1:
         raise ValueError("rows must be in 1..2^64")
@@ -117,6 +138,8 @@ def make_oracles(rows, *, start=0, step=1, modulus=None, residue=0):
               "even": even, "odd": odd}
     if modulus is not None:
         result["modulo"] = progression_modulo_reference(start, rows, step, modulus, residue)
+        result["modulo_sum_squares"] = progression_modulo_squares_reference(
+            start, rows, step, modulus, residue)
         result["modulus"] = modulus
         result["residue"] = residue
     elif residue != 0:
