@@ -994,12 +994,23 @@ mod wide_quorum_replica_observation_tests {
 
     #[test]
     fn observes_all_64_nodes_without_bit_shift_overflow_or_aliases() {
-        let owned = (0..64).map(|index| format!("node{index}")).collect::<Vec<_>>();
+        let owned = (0..64)
+            .map(|index| format!("node{index}"))
+            .collect::<Vec<_>>();
         let members = owned.iter().map(String::as_str).collect::<Vec<_>>();
-        let snapshot = SnapshotVersion { epoch: 7, generation: 42, fingerprint: 73 };
-        let replicas = owned.iter().map(|node| ReplicaSnapshotStatus {
-            node: node.clone(), snapshot, healthy: true,
-        }).collect::<Vec<_>>();
+        let snapshot = SnapshotVersion {
+            epoch: 7,
+            generation: 42,
+            fingerprint: 73,
+        };
+        let replicas = owned
+            .iter()
+            .map(|node| ReplicaSnapshotStatus {
+                node: node.clone(),
+                snapshot,
+                healthy: true,
+            })
+            .collect::<Vec<_>>();
         let policy = QuorumPolicy::new(64, 33, 33).unwrap();
         let (selected, nodes) = rank_quorum_snapshot_replicas(&members, policy, &replicas).unwrap();
         assert_eq!(selected, snapshot);
@@ -1008,7 +1019,12 @@ mod wide_quorum_replica_observation_tests {
         expected.sort_unstable();
         assert_eq!(nodes, expected);
 
-        let observed = replicas.iter().skip(16).take(33).cloned().collect::<Vec<_>>();
+        let observed = replicas
+            .iter()
+            .skip(16)
+            .take(33)
+            .cloned()
+            .collect::<Vec<_>>();
         let (selected, nodes) = rank_quorum_snapshot_replicas(&members, policy, &observed).unwrap();
         assert_eq!(selected, snapshot);
         assert_eq!(nodes.len(), 33);
@@ -1080,23 +1096,32 @@ mod quorum_snapshot_zone_failover_tests {
         let members = ["a", "b", "c", "d", "e"];
         let policy = QuorumPolicy::new(5, 3, 3).unwrap();
         let verified = SnapshotVersion {
-            epoch: 2, generation: 15, fingerprint: 101,
+            epoch: 2,
+            generation: 15,
+            fingerprint: 101,
         };
         let newer = SnapshotVersion {
-            epoch: 2, generation: 16, fingerprint: 102,
+            epoch: 2,
+            generation: 16,
+            fingerprint: 102,
         };
-        let status = members.iter().map(|&node| ReplicaSnapshotStatus {
-            node: node.to_owned(),
-            snapshot: if node == "e" { newer } else { verified },
-            healthy: true,
-        }).collect::<Vec<_>>();
+        let status = members
+            .iter()
+            .map(|&node| ReplicaSnapshotStatus {
+                node: node.to_owned(),
+                snapshot: if node == "e" { newer } else { verified },
+                healthy: true,
+            })
+            .collect::<Vec<_>>();
         let zones = [
-            ("a", "east"), ("b", "east"), ("c", "west"),
-            ("d", "north"), ("e", "south"),
+            ("a", "east"),
+            ("b", "east"),
+            ("c", "west"),
+            ("d", "north"),
+            ("e", "south"),
         ];
-        let (snapshot, order) = rank_zone_diverse_quorum_snapshot_replicas(
-            &members, policy, &status, &zones
-        ).unwrap();
+        let (snapshot, order) =
+            rank_zone_diverse_quorum_snapshot_replicas(&members, policy, &status, &zones).unwrap();
         assert_eq!(snapshot, verified);
         assert_eq!(order, ["a", "c", "d", "b"]);
         let mut reverse = status.clone();
@@ -1104,9 +1129,8 @@ mod quorum_snapshot_zone_failover_tests {
         let mut reversed_zones = zones.to_vec();
         reversed_zones.reverse();
         assert_eq!(
-            rank_zone_diverse_quorum_snapshot_replicas(
-                &members, policy, &reverse, &reversed_zones
-            ).unwrap(),
+            rank_zone_diverse_quorum_snapshot_replicas(&members, policy, &reverse, &reversed_zones)
+                .unwrap(),
             (snapshot, order)
         );
     }
@@ -1116,25 +1140,37 @@ mod quorum_snapshot_zone_failover_tests {
         let members = ["a", "b", "c"];
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
         let snapshot = SnapshotVersion {
-            epoch: 1, generation: 5, fingerprint: 42,
+            epoch: 1,
+            generation: 5,
+            fingerprint: 42,
         };
-        let status = members.iter().map(|&node| ReplicaSnapshotStatus {
-            node: node.to_owned(), snapshot, healthy: true,
-        }).collect::<Vec<_>>();
+        let status = members
+            .iter()
+            .map(|&node| ReplicaSnapshotStatus {
+                node: node.to_owned(),
+                snapshot,
+                healthy: true,
+            })
+            .collect::<Vec<_>>();
         for zones in [
             vec![("a", "one"), ("a", "two"), ("c", "three")],
             vec![("a", "one"), ("b", "two"), ("foreign", "three")],
             vec![("a", "one"), ("b", ""), ("c", "three")],
             vec![("a", "one"), ("b", "two")],
         ] {
-            assert!(rank_zone_diverse_quorum_snapshot_replicas(
-                &members, policy, &status, &zones
-            ).is_err());
+            assert!(
+                rank_zone_diverse_quorum_snapshot_replicas(&members, policy, &status, &zones)
+                    .is_err()
+            );
         }
-        assert!(rank_zone_diverse_quorum_snapshot_replicas(
-            &members, policy, &status, &[
-                ("a", "one"), ("b", "two"), ("c", "three")
-            ]
-        ).is_ok());
+        assert!(
+            rank_zone_diverse_quorum_snapshot_replicas(
+                &members,
+                policy,
+                &status,
+                &[("a", "one"), ("b", "two"), ("c", "three")]
+            )
+            .is_ok()
+        );
     }
 }
