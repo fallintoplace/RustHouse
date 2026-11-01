@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import file_change_time_ns
 from run import load_queries, official_22_coverage
 
 MAX_QUERY_BYTES = 64 * 1024
@@ -23,7 +25,7 @@ def read_bounded(path, limit):
 
     def identity(metadata):
         return (metadata.st_dev, metadata.st_ino, metadata.st_size,
-                metadata.st_mtime_ns, metadata.st_ctime_ns)
+                metadata.st_mtime_ns, file_change_time_ns(metadata))
 
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)
                  | getattr(os, "O_NOFOLLOW", 0))
