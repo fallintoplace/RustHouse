@@ -26,7 +26,7 @@ def _has_separator(sql):
                     index += 2
                     continue
                 quote = None
-        elif sql.startswith("--", index):
+        elif sql.startswith("--", index) or char == "#":
             break
         elif sql.startswith("/*", index):
             end = sql.find("*/", index + 2)
