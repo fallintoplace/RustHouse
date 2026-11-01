@@ -258,6 +258,77 @@ impl<'a> ReplicaCopyPlanner<'a> {
     }
 }
 
+/// A copy-only transfer page that cannot silently skip a missing object.
+///
+/// next_after is an exclusive cursor for the next request. A complete page
+/// has no next cursor, so callers can stop without an extra empty poll.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaCopyPage {
+    pub copies: Vec<ObjectMetadata>,
+    pub next_after: Option<String>,
+}
+
+impl<'a> ReplicaCopyPlanner<'a> {
+    /// Bound output memory and bytes without skipping earlier missing keys.
+    ///
+    /// Unlike greedy batch selection, a page stops at the first object that
+    /// does not fit its remaining budget. A first object larger than the
+    /// entire budget is an error, not an endlessly repeating empty page.
+    pub fn page_after(
+        &self,
+        after_key: Option<&str>,
+        max_bytes: u64,
+        max_objects: usize,
+    ) -> Result<ReplicaCopyPage, &'static str> {
+        if after_key.is_some_and(|key| !valid_key(key)) {
+            return Err("invalid replica copy continuation key");
+        }
+        if max_objects == 0 || max_objects > 65_536 {
+            return Err("invalid lossless replica copy page limit");
+        }
+        let start = after_key.map_or(0, |cursor| {
+            self.missing.partition_point(|item| item.key.as_str() <= cursor)
+        });
+        let mut remaining_bytes = max_bytes;
+        let mut copies = Vec::with_capacity((self.missing.len() - start).min(max_objects));
+        for &object in &self.missing[start..] {
+            if copies.len() == max_objects {
+                break;
+            }
+            if object.bytes > remaining_bytes {
+                if copies.is_empty() {
+                    return Err("next immutable object exceeds replica copy byte budget");
+                }
+                break;
+            }
+            remaining_bytes -= object.bytes;
+            copies.push(object.clone());
+        }
+        let next_after = (start + copies.len() < self.missing.len())
+            .then(|| copies.last().expect("nonempty incomplete page").key.clone());
+        Ok(ReplicaCopyPage { copies, next_after })
+    }
+}
+
+/// Build a complete, losslessly pageable replica-copy plan.
+///
+/// Validate every source and destination key before returning any copy work.
+/// Unlike the greedy scheduler, this API guarantees that following each
+/// returned cursor cannot skip a missing object because of a byte budget.
+pub fn plan_replica_copy_page(
+    source: &[ObjectMetadata],
+    destination: &[ObjectMetadata],
+    after_key: Option<&str>,
+    max_bytes: u64,
+    max_objects: usize,
+) -> Result<ReplicaCopyPage, &'static str> {
+    ReplicaCopyPlanner::new(source, destination)?.page_after(
+        after_key,
+        max_bytes,
+        max_objects,
+    )
+}
+
 /// Select a bounded batch from the deterministic copy-only reconciliation plan.
 /// Oversized objects are skipped so smaller copies can still make progress.
 pub fn plan_replica_copy_batch(
@@ -1516,5 +1587,65 @@ mod symmetric_replica_inventory_tests {
         assert!(compare_replica_inventories(&[good.clone(), good.clone()], &[],).is_err());
         assert!(compare_replica_inventories(&[], &[good.clone(), good.clone()],).is_err());
         assert!(compare_replica_inventories(&[item("../escaped", 1, 0)], &[],).is_err());
+    }
+}
+
+#[cfg(test)]
+mod lossless_replica_copy_page_tests {
+    use super::*;
+
+    fn object(name: &str, bytes: u64) -> ObjectMetadata {
+        ObjectMetadata {
+            key: name.into(),
+            bytes,
+            crc32c: bytes as u32,
+        }
+    }
+
+    #[test]
+    fn partial_byte_budgets_never_lose_skipped_keys() {
+        let sources = [
+            object("a/data.bin", 8),
+            object("b/data.bin", 6),
+            object("c/data.bin", 2),
+            object("d/data.bin", 0),
+        ];
+        let mut cursor: Option<String> = None;
+        let mut copied = Vec::new();
+        for _ in 0..sources.len() + 1 {
+            let page = plan_replica_copy_page(&sources, &[], cursor.as_deref(), 10, 2).unwrap();
+            copied.extend(page.copies.iter().map(|item| item.key.clone()));
+            cursor = page.next_after;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            copied,
+            ["a/data.bin", "b/data.bin", "c/data.bin", "d/data.bin"]
+        );
+    }
+
+    #[test]
+    fn blocked_first_object_fails_instead_of_returning_unsafe_cursor() {
+        let source = [object("a/file", 11), object("b/file", 1)];
+        assert!(plan_replica_copy_page(&source, &[], None, 10, 8).is_err());
+        let page = plan_replica_copy_page(&source, &[], Some("a/file"), 10, 8).unwrap();
+        assert_eq!(page.copies, vec![source[1].clone()]);
+        assert!(page.next_after.is_none());
+    }
+
+    #[test]
+    fn pagination_respects_one_item_limits_and_immutable_conflicts() {
+        let source = [object("a/file", 0), object("b/file", 0)];
+        let first = plan_replica_copy_page(&source, &[], None, 0, 1).unwrap();
+        assert_eq!(first.copies, vec![source[0].clone()]);
+        assert_eq!(first.next_after.as_deref(), Some("a/file"));
+        let second = plan_replica_copy_page(&source, &[], first.next_after.as_deref(), 0, 1).unwrap();
+        assert_eq!(second.copies, vec![source[1].clone()]);
+        assert!(second.next_after.is_none());
+        assert!(plan_replica_copy_page(&source, &[], None, 0, 0).is_err());
+        let conflict = [object("a/file", 999)];
+        assert!(plan_replica_copy_page(&source, &conflict, None, 100, 10).is_err());
     }
 }
