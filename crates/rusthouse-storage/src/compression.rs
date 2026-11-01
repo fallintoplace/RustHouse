@@ -61,6 +61,24 @@ fn same_compressed_stream_state(path: &std::fs::Metadata, opened: &std::fs::Meta
     true
 }
 
+// Windows normally allows other handles to rewrite or rename an open file.
+// Immutable compressed streams must remain unchanged for the entire read.
+// Readers can still open the same path concurrently.
+#[cfg(windows)]
+fn open_immutable_stream(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_immutable_stream(path: &Path) -> io::Result<File> {
+    File::open(path)
+}
+
 impl CompressedBlockReader<File> {
     /// Inspect the opened file, not just its path, after a multi-block read.
     pub(crate) fn opened_metadata(&self) -> io::Result<std::fs::Metadata> {
@@ -79,7 +97,7 @@ impl CompressedBlockReader<File> {
                 source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular file"),
             });
         }
-        let file = File::open(path).map_err(|source| PartError::Io {
+        let file = open_immutable_stream(path).map_err(|source| PartError::Io {
             path: path.to_path_buf(),
             source,
         })?;
@@ -1012,5 +1030,36 @@ mod compressed_stream_state_tests {
         ));
 
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_immutable_stream_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn frozen_streams_allow_readers_but_deny_mutation_until_close() {
+        let folder = std::env::temp_dir().join(format!(
+            "rusthouse-windows-stream-{}-{}",
+            std::process::id(),
+            NEXT_FILE.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir(&folder).unwrap();
+        let path = folder.join("frozen.bin");
+        std::fs::write(&path, b"").unwrap();
+
+        let first = CompressedBlockReader::open(&path).unwrap();
+        let second = CompressedBlockReader::open(&path).unwrap();
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
+        assert!(std::fs::rename(&path, folder.join("replaced.bin")).is_err());
+
+        drop(first);
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
+        drop(second);
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }
