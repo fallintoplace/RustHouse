@@ -153,7 +153,7 @@ def main(argv=None):
                         a.rows, a.page_rows, a.timeout, a.column,
                         max_total_seconds=a.max_total_seconds,
                         expected_sha256=a.expected_sha256)
-    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+    except (OSError, RuntimeError, ValueError, TimeoutError, subprocess.TimeoutExpired) as error:
         p.exit(1, f"keyset export failed: {error}\n")
     print(json.dumps(report))
     return 0
