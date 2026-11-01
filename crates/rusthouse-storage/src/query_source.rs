@@ -302,6 +302,16 @@ fn inspect_parts_metadata_with_workers(
     paths: &[PathBuf],
     workers: usize,
 ) -> Result<PartMetadata, PartError> {
+    inspect_parts_metadata_with_worker_failure(path, paths, workers, None)
+}
+
+fn inspect_parts_metadata_with_worker_failure(
+    path: &Path,
+    paths: &[PathBuf],
+    workers: usize,
+    // Only tests provide an index to simulate an OS thread-spawn failure.
+    fail_spawning_at: Option<usize>,
+) -> Result<PartMetadata, PartError> {
     let first_path = paths
         .first()
         .ok_or_else(|| PartError::InvalidScan("snapshot contains no readable parts".into()))?;
@@ -335,11 +345,13 @@ fn inspect_parts_metadata_with_workers(
         std::thread::scope(|scope| -> Result<(), PartError> {
             let (sender, receiver) = std::sync::mpsc::sync_channel(workers * 2);
             let mut handles = Vec::with_capacity(workers);
-            for _ in 0..workers {
+            for worker_index in 0..workers {
                 let sender = sender.clone();
                 let cursor = &cursor;
-                let handle = std::thread::Builder::new()
-                    .spawn_scoped(scope, move || {
+                let spawn = if fail_spawning_at == Some(worker_index) {
+                    Err(io::Error::other("injected metadata worker spawn failure"))
+                } else {
+                    std::thread::Builder::new().spawn_scoped(scope, move || {
                         loop {
                             let index = cursor.fetch_add(1, Ordering::Relaxed);
                             if index >= paths.len() {
@@ -350,12 +362,19 @@ fn inspect_parts_metadata_with_workers(
                             }
                         }
                     })
-                    .map_err(|error| {
-                        PartError::InvalidScan(format!(
+                };
+                match spawn {
+                    Ok(handle) => handles.push(handle),
+                    Err(error) => {
+                        // A prior worker may be blocked on this bounded channel.
+                        // Close its receiver before leaving the thread scope;
+                        // otherwise the scope joins a sender blocked forever.
+                        drop(receiver);
+                        return Err(PartError::InvalidScan(format!(
                             "cannot start snapshot metadata worker: {error}"
-                        ))
-                    })?;
-                handles.push(handle);
+                        )));
+                    }
+                }
             }
             drop(sender);
             // Drain the channel even if a worker exits early. The scoped
@@ -1110,6 +1129,32 @@ mod disguised_active_part_tests {
         let root = test_root("symlink");
         symlink("all_0_0_0", root.join("all_1_1_0")).unwrap();
         assert!(query_parts(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod metadata_worker_spawn_error_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn dropping_bounded_receiver_unblocks_workers_after_spawn_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-meta-spawn-failure-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let part = root.join("all_1_1_0");
+        write_wide_part(
+            &part,
+            &[Column { name: "id".into(), data_type: "UInt8".into() }],
+            &[],
+        ).unwrap();
+        let paths = vec![part; 128];
+        let result = inspect_parts_metadata_with_worker_failure(&root, &paths, 2, Some(1));
+        assert!(matches!(result, Err(PartError::InvalidScan(message)) if message.contains("cannot start snapshot metadata worker")));
         fs::remove_dir_all(root).unwrap();
     }
 }
