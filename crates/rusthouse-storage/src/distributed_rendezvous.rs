@@ -347,7 +347,7 @@ pub fn capacity_aware_replicas_for(
         }
         for member in members {
             let capacity = capacities.iter()
-                .find(|&&(node, _)| node == member.node)
+                .find(|&&(node, _)| node == member.node.as_str())
                 .map(|&(_, capacity)| capacity)
                 .ok_or("missing replica capacity")?;
             if capacity.available()? >= object_bytes {
