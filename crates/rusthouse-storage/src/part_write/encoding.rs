@@ -1,5 +1,14 @@
 use super::*;
 
+fn varuint_width(mut value: u64) -> usize {
+    let mut bytes = 1usize;
+    while value >= 128 {
+        value >>= 7;
+        bytes += 1;
+    }
+    bytes
+}
+
 pub(super) fn push_varuint(mut value: u64, output: &mut Vec<u8>) {
     while value >= 128 {
         output.push((value as u8 & 0x7f) | 0x80);
@@ -75,7 +84,17 @@ pub(super) fn push_cell(
     }
     match base {
         "String" => {
-            push_varuint(value.len() as u64, output);
+            // An oversized value must fail before cloning its bytes into the
+            // mutable column buffer, even when it is the first row in a mark.
+            let length = u64::try_from(value.len())
+                .map_err(|_| invalid("part column exceeds 8 MiB"))?;
+            value
+                .len()
+                .checked_add(varuint_width(length))
+                .and_then(|size| size.checked_add(output.len()))
+                .filter(|&size| size <= MAX_STREAM_BYTES)
+                .ok_or_else(|| invalid("part column exceeds 8 MiB"))?;
+            push_varuint(length, output);
             output.extend_from_slice(value.as_bytes());
         }
         "UUID" => push_uuid(value, output)?,
@@ -664,5 +683,28 @@ mod nullable_uuid_physical_placeholder_tests {
         assert_eq!(data.len(), 33);
         assert!(push_cell("UUID", None, &mut Vec::new()).is_err());
         assert!(push_cell("Nullable(UUID)", Some("not-a-uuid"), &mut Vec::new()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod string_preflight_memory_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_oversized_text_before_changing_the_column_buffer() {
+        let mut encoded = vec![0u8; MAX_STREAM_BYTES - 3];
+        push_cell("String", Some("ab"), &mut encoded).unwrap();
+        assert_eq!(encoded.len(), MAX_STREAM_BYTES);
+        assert!(push_cell("String", Some("x"), &mut encoded).is_err());
+        assert_eq!(encoded.len(), MAX_STREAM_BYTES);
+    }
+
+    #[test]
+    fn header_growth_is_charged_at_varuint_size_boundaries() {
+        for len in [0usize, 127, 128, 16383, 16384] {
+            let mut bytes = Vec::new();
+            push_cell("String", Some(&"x".repeat(len)), &mut bytes).unwrap();
+            assert_eq!(bytes.len(), len + varuint_width(len as u64));
+        }
     }
 }
