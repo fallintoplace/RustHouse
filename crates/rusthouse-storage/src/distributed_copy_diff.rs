@@ -216,9 +216,8 @@ impl<'a> ReplicaCopyPlanner<'a> {
         if source.len() > 65_536 || destination.len() > 65_536 {
             return Err("replica inventory too large");
         }
-        let sorted = |objects: &[ObjectMetadata]| {
-            objects.windows(2).all(|pair| pair[0].key < pair[1].key)
-        };
+        let sorted =
+            |objects: &[ObjectMetadata]| objects.windows(2).all(|pair| pair[0].key < pair[1].key);
         if sorted(source) && sorted(destination) {
             if source
                 .iter()
@@ -230,8 +229,7 @@ impl<'a> ReplicaCopyPlanner<'a> {
             let mut missing = Vec::new();
             let mut dst = 0usize;
             for object in source {
-                while dst < destination.len()
-                    && destination[dst].key.as_str() < object.key.as_str()
+                while dst < destination.len() && destination[dst].key.as_str() < object.key.as_str()
                 {
                     dst += 1;
                 }
@@ -320,7 +318,8 @@ impl<'a> ReplicaCopyPlanner<'a> {
             return Err("invalid lossless replica copy page limit");
         }
         let start = after_key.map_or(0, |cursor| {
-            self.missing.partition_point(|item| item.key.as_str() <= cursor)
+            self.missing
+                .partition_point(|item| item.key.as_str() <= cursor)
         });
         let mut remaining_bytes = max_bytes;
         let mut copies = Vec::with_capacity((self.missing.len() - start).min(max_objects));
@@ -355,11 +354,7 @@ pub fn plan_replica_copy_page(
     max_bytes: u64,
     max_objects: usize,
 ) -> Result<ReplicaCopyPage, &'static str> {
-    ReplicaCopyPlanner::new(source, destination)?.page_after(
-        after_key,
-        max_bytes,
-        max_objects,
-    )
+    ReplicaCopyPlanner::new(source, destination)?.page_after(after_key, max_bytes, max_objects)
 }
 
 /// Select a bounded batch from the deterministic copy-only reconciliation plan.
@@ -1431,11 +1426,14 @@ pub fn compare_replica_inventories(
     // Inventory snapshots arrive in sorted key order. A borrowed merge
     // emits exactly the same canonical diagnostics without building two hash
     // maps, cloning equal objects, or sorting three result vectors.
-    let sorted = |entries: &[ObjectMetadata]| {
-        entries.windows(2).all(|pair| pair[0].key < pair[1].key)
-    };
+    let sorted =
+        |entries: &[ObjectMetadata]| entries.windows(2).all(|pair| pair[0].key < pair[1].key);
     if sorted(left) && sorted(right) {
-        if left.iter().chain(right).any(|object| !valid_key(&object.key)) {
+        if left
+            .iter()
+            .chain(right)
+            .any(|object| !valid_key(&object.key))
+        {
             return Err("unsafe or duplicate replica object key");
         }
         let mut result = ReplicaInventoryDifference::default();
@@ -1644,7 +1642,11 @@ mod sorted_borrowed_planner_tests {
         reversed_destination.reverse();
         let unordered = ReplicaCopyPlanner::new(&reversed_source, &reversed_destination).unwrap();
         assert_eq!(sorted.len(), unordered.len());
-        for cursor in [None, Some("part_00400/data.bin"), Some("part_02047/data.bin")] {
+        for cursor in [
+            None,
+            Some("part_00400/data.bin"),
+            Some("part_02047/data.bin"),
+        ] {
             for limit in [0, 1, 2, 9, 5000] {
                 assert_eq!(
                     sorted.batch_after(cursor, 500, limit).unwrap(),
@@ -1661,10 +1663,16 @@ mod sorted_borrowed_planner_tests {
             bytes: 1,
             crc32c: 1,
         };
-        let b = ObjectMetadata { crc32c: 2, ..a.clone() };
+        let b = ObjectMetadata {
+            crc32c: 2,
+            ..a.clone()
+        };
         assert!(ReplicaCopyPlanner::new(&[a.clone()], &[b]).is_err());
         assert!(ReplicaCopyPlanner::new(&[a.clone(), a.clone()], &[]).is_err());
-        let invalid = ObjectMetadata { key: "../oops".into(), ..a };
+        let invalid = ObjectMetadata {
+            key: "../oops".into(),
+            ..a
+        };
         assert!(ReplicaCopyPlanner::new(&[invalid], &[]).is_err());
     }
 }
@@ -1720,7 +1728,8 @@ mod lossless_replica_copy_page_tests {
         let first = plan_replica_copy_page(&source, &[], None, 0, 1).unwrap();
         assert_eq!(first.copies, vec![source[0].clone()]);
         assert_eq!(first.next_after.as_deref(), Some("a/file"));
-        let second = plan_replica_copy_page(&source, &[], first.next_after.as_deref(), 0, 1).unwrap();
+        let second =
+            plan_replica_copy_page(&source, &[], first.next_after.as_deref(), 0, 1).unwrap();
         assert_eq!(second.copies, vec![source[1].clone()]);
         assert!(second.next_after.is_none());
         assert!(plan_replica_copy_page(&source, &[], None, 0, 0).is_err());
