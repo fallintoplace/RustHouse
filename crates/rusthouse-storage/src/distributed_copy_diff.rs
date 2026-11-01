@@ -103,12 +103,35 @@ fn validate_tiny_inventory(objects: &[ObjectMetadata]) -> Result<(), &'static st
     Ok(())
 }
 
+// Idempotent reconciliation polls often compare two already sorted,
+// byte-identical inventories. Verify both uniqueness and object contents
+// in one borrowed pass, without allocating two 65K-entry hash tables.
+fn identical_ordered_inventories(source: &[ObjectMetadata], destination: &[ObjectMetadata]) -> bool {
+    if source.len() != destination.len() || source.len() > 65_536 {
+        return false;
+    }
+    let mut previous: Option<&str> = None;
+    for (left, right) in source.iter().zip(destination) {
+        if !valid_key(&left.key)
+            || previous.is_some_and(|key| key >= left.key.as_str())
+            || left != right
+        {
+            return false;
+        }
+        previous = Some(&left.key);
+    }
+    true
+}
+
 /// Return missing or differing source objects in lexicographic key order.
 /// Deletions require a separate retention decision and are never planned here.
 pub fn plan_replica_copies(
     source: &[ObjectMetadata],
     destination: &[ObjectMetadata],
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
+    if identical_ordered_inventories(source, destination) {
+        return Ok(Vec::new());
+    }
     if source.len() <= 8 && destination.len() <= 8 {
         validate_tiny_inventory(source)?;
         validate_tiny_inventory(destination)?;
@@ -187,6 +210,9 @@ pub fn plan_replica_copy_batch_after(
     }
     if max_objects > 65_536 {
         return Err("replica copy batch exceeds object limit");
+    }
+    if identical_ordered_inventories(source, destination) {
+        return Ok(Vec::new());
     }
     if source.len() <= 8 && destination.len() <= 8 {
         // Apply the same strict inventory and immutable conflict validation,
@@ -846,5 +872,51 @@ mod small_copy_batch_tests {
         let different = ObjectMetadata { bytes: 2, ..a.clone() };
         assert!(plan_replica_copy_batch(&[a.clone()], &[different], 0, 0).is_err());
         assert!(plan_replica_copy_batch(&[a.clone(), a], &[], 0, 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod identical_inventory_fast_path_tests {
+    use super::*;
+
+    fn inventory(size: usize) -> Vec<ObjectMetadata> {
+        (0..size).map(|index| ObjectMetadata {
+            key: format!("generation/part_{index:05}.bin"),
+            bytes: (index % 127) as u64,
+            crc32c: (index as u32).wrapping_mul(0x9e37_79b9),
+        }).collect()
+    }
+
+    #[test]
+    fn sorted_identical_large_inventories_need_no_copies() {
+        let objects = inventory(32_768);
+        assert!(identical_ordered_inventories(&objects, &objects));
+        assert!(plan_replica_copies(&objects, &objects).unwrap().is_empty());
+        for cursor in [None, Some("generation/part_10000.bin"), Some("generation/zz")] {
+            assert!(plan_replica_copy_batch_after(&objects, &objects, cursor, 1, 1)
+                .unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn unsorted_missing_conflicting_and_duplicate_objects_use_strict_fallback() {
+        let mut objects = inventory(48);
+        objects.swap(0, 47);
+        assert!(!identical_ordered_inventories(&objects, &objects));
+        assert!(plan_replica_copies(&objects, &objects).unwrap().is_empty());
+        let mut missing = objects.clone();
+        missing.pop();
+        assert_eq!(plan_replica_copies(&objects, &missing).unwrap().len(), 1);
+        let mut conflicted = objects.clone();
+        conflicted[14].crc32c ^= 1;
+        assert!(plan_replica_copies(&objects, &conflicted).is_err());
+        let mut duplicate = objects.clone();
+        duplicate[1].key = duplicate[0].key.clone();
+        assert!(!identical_ordered_inventories(&duplicate, &duplicate));
+        assert!(plan_replica_copies(&duplicate, &duplicate).is_err());
+        assert!(plan_replica_copy_batch_after(&duplicate, &duplicate, None, 100, 1).is_err());
+        let mut unsafe_key = objects.clone();
+        unsafe_key[0].key = "../escape".into();
+        assert!(plan_replica_copies(&unsafe_key, &unsafe_key).is_err());
     }
 }
