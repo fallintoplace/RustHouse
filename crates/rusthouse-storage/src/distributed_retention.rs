@@ -733,30 +733,49 @@ pub fn retention_candidates_with_replica_floors_and_budget(
         return Err("duplicate, missing, or invalid generation");
     }
     // Validate pins even when byte_budget is zero. A stale pin must not be
-    // silently ignored when deleting older generations on another attempt.
-    // Avoid a hash table for the common case of a few pinned readers.
-    let mut pins =
-        (pinned.len() > 4).then(|| std::collections::HashSet::with_capacity(pinned.len()));
-    for (index, &id) in pinned.iter().enumerate() {
-        let duplicate = if let Some(seen) = pins.as_mut() {
-            !seen.insert(id)
-        } else {
-            pinned[..index].contains(&id)
-        };
-        if duplicate || ordered.binary_search_by_key(&id, |&(key, _)| key).is_err() {
-            return Err("duplicate or unknown pinned generation");
+    // silently ignored on a later deletion attempt. Chronologically ordered
+    // reader pins are common; merge them with the ordered inventory in O(G+P)
+    // time without allocating a large hash table or performing P binary searches.
+    let sorted_pins = pinned.len() > 4 && pinned.windows(2).all(|pair| pair[0] < pair[1]);
+    let mut pins = (pinned.len() > 4 && !sorted_pins)
+        .then(|| std::collections::HashSet::with_capacity(pinned.len()));
+    if sorted_pins {
+        let mut known_cursor = 0usize;
+        for &id in pinned {
+            while ordered.get(known_cursor).is_some_and(|&(known, _)| known < id) {
+                known_cursor += 1;
+            }
+            if ordered.get(known_cursor).is_none_or(|&(known, _)| known != id) {
+                return Err("duplicate or unknown pinned generation");
+            }
+        }
+    } else {
+        for (index, &id) in pinned.iter().enumerate() {
+            let duplicate = if let Some(seen) = pins.as_mut() {
+                !seen.insert(id)
+            } else {
+                pinned[..index].contains(&id)
+            };
+            if duplicate || ordered.binary_search_by_key(&id, |&(key, _)| key).is_err() {
+                return Err("duplicate or unknown pinned generation");
+            }
         }
     }
     let eligible = ordered.len().saturating_sub(keep_latest);
     let mut selected = Vec::new();
     let mut consumed = 0u64;
+    let mut pin_cursor = 0usize;
     for &(id, size) in ordered.iter().take(eligible) {
-        if id == active
-            || id >= floor
-            || pins
-                .as_ref()
+        let is_pinned = if sorted_pins {
+            while pinned.get(pin_cursor).is_some_and(|&pin| pin < id) {
+                pin_cursor += 1;
+            }
+            pinned.get(pin_cursor) == Some(&id)
+        } else {
+            pins.as_ref()
                 .map_or_else(|| pinned.contains(&id), |seen| seen.contains(&id))
-        {
+        };
+        if id == active || id >= floor || is_pinned {
             continue;
         }
         // Subtraction cannot underflow because consumed never exceeds budget.
@@ -1257,5 +1276,50 @@ mod linear_pin_membership_tests {
         assert!(retention_candidates_with_pins(&known, 12, 1, &[2, 5, 8, 10, 12]).is_err());
         assert!(retention_candidates_with_pins(&known, 12, 1, &[2, 4, 6, 8, 14]).is_err());
         assert!(retention_candidates_with_pins(&known, 12, 1, &[2, 4, 4, 8, 10]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod linear_sorted_pin_retention_tests {
+    use super::*;
+
+    #[test]
+    fn chronological_and_unordered_large_pin_sets_produce_identical_budgets() {
+        let entries = (1..=16_384u64)
+            .map(|generation| (generation, generation.wrapping_mul(17) % 997 + 1))
+            .collect::<Vec<_>>();
+        let ordered_pins = (1..=16_384u64).step_by(9).collect::<Vec<_>>();
+        let mut reversed_pins = ordered_pins.clone();
+        reversed_pins.reverse();
+        for floor in [1u64, 7_777, 16_385] {
+            for budget in [0u64, 6_000, u64::MAX] {
+                let a = retention_candidates_with_replica_floors_and_budget(
+                    &entries, 16_384, 128, &ordered_pins, &[16_385, floor], budget,
+                ).unwrap();
+                let b = retention_candidates_with_replica_floors_and_budget(
+                    &entries, 16_384, 128, &reversed_pins, &[floor, 16_385], budget,
+                ).unwrap();
+                assert_eq!(a, b, "floor={floor}, budget={budget}");
+                assert!(a.0.iter().all(|&generation| {
+                    generation < floor
+                        && generation < 16_384 - 128 + 1
+                        && !ordered_pins.contains(&generation)
+                }));
+                assert!(a.1 <= budget);
+                let actual_bytes = a.0.iter().map(|&id| entries[(id - 1) as usize].1).sum::<u64>();
+                assert_eq!(a.1, actual_bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn sorted_pin_validation_fails_closed_when_budget_is_zero() {
+        let entries = (1..=128u64).map(|id| (id, 1)).collect::<Vec<_>>();
+        assert!(retention_candidates_with_replica_floors_and_budget(
+            &entries, 128, 1, &[1, 3, 5, 999, 1000], &[50], 0
+        ).is_err());
+        assert!(retention_candidates_with_replica_floors_and_budget(
+            &entries, 128, 1, &[1, 3, 5, 5, 7], &[50], 0
+        ).is_err());
     }
 }
