@@ -159,6 +159,25 @@ class BackupTests(unittest.TestCase):
             with lock.open("r+b") as later:
                 fcntl.flock(later, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+    @unittest.skipUnless(__import__("os").name == "posix", "flock is POSIX-only")
+    def test_rejects_replaced_backup_lock_while_acquiring(self):
+        import os
+        import fcntl
+        from offline_backup import refuse_live_database
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "db"
+            source.mkdir()
+            lock = source / ".rusthouse-write.lock"
+            original_flock = fcntl.flock
+            def replace(fd, operation):
+                original_flock(fd, operation)
+                lock.unlink()
+                lock.write_bytes(b"replacement")
+            with patch("offline_backup.fcntl.flock", side_effect=replace):
+                with self.assertRaisesRegex(ValueError, "lock path changed"):
+                    with refuse_live_database(source):
+                        self.fail("must not copy after lock replacement")
+
     def test_rechecks_backup_size_after_copy(self):
         import shutil
         with tempfile.TemporaryDirectory() as root:
