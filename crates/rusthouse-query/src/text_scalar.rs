@@ -65,6 +65,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "EMPTY"
                 | "REVERSE"
                 | "REVERSEUTF8"
+                | "REVERSEBYSEPARATOR"
                 | "INITCAP"
                 | "INITCAPUTF8"
                 | "TOSTARTOFTENMINUTES"
@@ -2001,6 +2002,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 }
                 Some(value) => ConstantValue::Text(value.chars().rev().collect()),
                 None => ConstantValue::Null,
+            }
+        }
+        "REVERSEBYSEPARATOR" => {
+            let input = text_arg(parser, depth + 1)?;
+            let separator = if parser.take(Token::Comma) {
+                text_arg(parser, depth + 1)?
+            } else {
+                Some(".".to_owned())
+            };
+            require(
+                parser,
+                Token::RParen,
+                "reverseBySeparator requires one or two arguments",
+            )?;
+            match (input, separator) {
+                (Some(input), Some(separator)) if separator.is_empty() => {
+                    // The scalar subset stores valid UTF-8 Strings; reverse
+                    // Unicode scalars rather than constructing invalid bytes.
+                    ConstantValue::Text(input.chars().rev().collect())
+                }
+                (Some(input), Some(separator)) => {
+                    let mut segments: Vec<&str> = input.split(separator.as_str()).collect();
+                    segments.reverse();
+                    ConstantValue::Text(segments.join(&separator))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "SUBTRACTMINUTES" => {
@@ -6035,6 +6062,37 @@ mod utf8_prefix_suffix_inplace_tests {
         }
         let input = format!("{}🙂Z", "a".repeat(10_000));
         assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_reverse_by_separator_parity_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reverses_dot_slash_and_multibyte_separator_tokens() {
+        for (sql, expected) in [
+            ("SELECT reverseBySeparator('www.google.com')", "com.google.www"),
+            ("SELECT reverseBySeparator('a/b/c', '/')", "c/b/a"),
+            ("SELECT reverseBySeparator('x::y::z', '::')", "z::y::x"),
+            ("SELECT reverseBySeparator('.a.b.')", ".b.a."),
+            ("SELECT reverseBySeparator('single')", "single"),
+            ("SELECT reverseBySeparator('abcde', '')", "edcba"),
+            ("SELECT reverseBySeparator('a💡b💡c', '💡')", "c💡b💡a"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT reverseBySeparator(NULL)"), ConstantValue::Null);
+        assert_eq!(value("SELECT reverseBySeparator('x', NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT reverseBySeparator()").is_err());
+        assert!(parse_select("SELECT reverseBySeparator('a', '.', 'b')").is_err());
     }
 }
 
