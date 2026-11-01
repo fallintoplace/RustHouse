@@ -1121,7 +1121,7 @@ mod composite_mark_pruning_tests {
         assert_eq!(candidate_u64_pair_mark_range(&invalid,0,1,
             Bound::Included((1,5)), Bound::Included((1,10))), None);
         assert_eq!(candidate_u64_pair_mark_ranges(&invalid,0,1,
-            &[(Bound::Included((1,5)), Bound::Included((1,10))]), None);
+            &[(Bound::Included((1,5)), Bound::Included((1,10)))], None);
     }
 }
 
