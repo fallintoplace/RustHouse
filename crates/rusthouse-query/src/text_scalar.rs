@@ -3792,7 +3792,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                                 bits &= (1_u16 << available) - 1;
                             }
                             if decoded.len() > MAX_TEXT_BYTES {
-                                return Err(ParseError("Base32 decoded result is too large".into()));
+                                return Err(ParseError(
+                                    "Base32 decoded result is too large".into(),
+                                ));
                             }
                         }
                         if bits != 0 {
