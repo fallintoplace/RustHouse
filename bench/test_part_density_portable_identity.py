@@ -22,20 +22,19 @@ class PortablePartDensityTests(unittest.TestCase):
             part = Path(root) / "part"
             part.mkdir()
             (part / "count.txt").write_bytes(b"12\n")
-            from os import fstat
-            calls = 0
-            def skew(fd):
-                nonlocal calls
-                calls += 1
-                info = fstat(fd)
-                if calls != 1:
+            original_lstat = Path.lstat
+
+            def skew(self, *args, **kwargs):
+                info = original_lstat(self, *args, **kwargs)
+                if self.name != "count.txt":
                     return info
                 return SimpleNamespace(
                     st_mode=info.st_mode, st_dev=info.st_dev, st_ino=info.st_ino,
                     st_size=info.st_size, st_mtime_ns=info.st_mtime_ns,
                     st_ctime_ns=info.st_ctime_ns + 5,
                 )
-            with patch.object(module.os, "fstat", side_effect=skew):
+
+            with patch.object(Path, "lstat", side_effect=skew, autospec=True):
                 self.assertEqual(module.part_density(root)["rows"], 12)
 
 
