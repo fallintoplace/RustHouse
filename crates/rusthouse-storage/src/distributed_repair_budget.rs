@@ -500,20 +500,36 @@ pub fn plan_targeted_repairs(
             return Err("invalid or duplicate repair destination");
         }
     }
-    let mut pairs = HashSet::with_capacity(jobs.len());
-    let mut shard_state = HashMap::new();
-    for job in jobs {
+    // Common small repair polls need neither a shard map nor a pair set.
+    // All input validation still completes before scheduling any repair.
+    let mut pairs = (jobs.len() > 8).then(|| HashSet::with_capacity(jobs.len()));
+    let mut shard_state = (jobs.len() > 8).then(HashMap::new);
+    for (index, job) in jobs.iter().enumerate() {
+        let duplicate_pair = if let Some(seen) = pairs.as_mut() {
+            !seen.insert((job.shard.as_str(), job.target.as_str()))
+        } else {
+            jobs[..index].iter().any(|previous| {
+                previous.shard == job.shard && previous.target == job.target
+            })
+        };
         if !valid_shard(&job.shard) || !valid_node(&job.target)
             || !(1..=16).contains(&job.missing_replicas)
             || !capacity.contains_key(job.target.as_str())
-            || !pairs.insert((job.shard.as_str(), job.target.as_str()))
+            || duplicate_pair
         {
             return Err("invalid or duplicate targeted repair job");
         }
         let state = (job.bytes, job.missing_replicas);
-        if shard_state.insert(job.shard.as_str(), state)
-            .is_some_and(|previous| previous != state)
-        {
+        let inconsistent = if let Some(seen) = shard_state.as_mut() {
+            seen.insert(job.shard.as_str(), state)
+                .is_some_and(|previous| previous != state)
+        } else {
+            jobs[..index].iter().any(|previous| {
+                previous.shard == job.shard
+                    && (previous.bytes, previous.missing_replicas) != state
+            })
+        };
+        if inconsistent {
             return Err("inconsistent repair shard size or deficit");
         }
     }
@@ -818,5 +834,43 @@ mod canonical_repair_shard_tests {
             let jobs = [RepairJob { shard: shard.into(), bytes: 1, missing_replicas: 1 }];
             assert_eq!(plan_repairs(&jobs, 5, 1).unwrap(), jobs);
         }
+    }
+}
+
+#[cfg(test)]
+mod small_targeted_repair_validation_tests {
+    use super::*;
+
+    fn job(shard: &str, target: &str, bytes: u64, missing: u8) -> TargetedRepairJob {
+        TargetedRepairJob {
+            shard: shard.into(), target: target.into(), bytes, missing_replicas: missing,
+        }
+    }
+
+    #[test]
+    fn selects_small_batches_and_skips_unaffordable_targets() {
+        let jobs = [job("a", "n1", 5, 2), job("a", "n2", 5, 2), job("b", "n1", 1, 1)];
+        let chosen = plan_targeted_repairs(&jobs, &[("n1", 5), ("n2", 5)], 10, 3).unwrap();
+        assert_eq!(chosen, vec![jobs[0].clone(), jobs[1].clone()]);
+    }
+
+    #[test]
+    fn detects_duplicate_pairs_and_inconsistent_shards_before_zero_budget() {
+        let first = job("a", "n1", 3, 2);
+        let same_pair = job("a", "n1", 3, 2);
+        let wrong_size = job("a", "n2", 4, 2);
+        let targets = [("n1", 10), ("n2", 10)];
+        assert!(plan_targeted_repairs(&[first.clone(), same_pair], &targets, 0, 0).is_err());
+        assert!(plan_targeted_repairs(&[first, wrong_size], &targets, 0, 0).is_err());
+    }
+
+    #[test]
+    fn threshold_transition_keeps_strict_validation() {
+        let mut jobs = (0..8).map(|i| job(&format!("s{i}"), "n1", 1, 1))
+            .collect::<Vec<_>>();
+        let targets = [("n1", 16)];
+        assert_eq!(plan_targeted_repairs(&jobs, &targets, 16, 8).unwrap().len(), 8);
+        jobs.push(job("s0", "n1", 1, 1));
+        assert!(plan_targeted_repairs(&jobs, &targets, 16, 8).is_err());
     }
 }
