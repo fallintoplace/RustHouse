@@ -66,7 +66,7 @@ pub use dates::{
     format_date, format_date32, format_datetime, parse_date, parse_date32, parse_datetime,
 };
 pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};
-pub use enums::{EnumColumn, EnumReadError, read_enum_column};
+pub use enums::{EnumColumn, EnumReadError, read_enum_column, write_enum_values};
 pub use file_sizes::{
     FileSizeVerification, verify_part_file_hashes, verify_part_file_hashes_full,
     verify_part_file_sizes,
