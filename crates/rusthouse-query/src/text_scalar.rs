@@ -2544,14 +2544,15 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         Some(None) => return Ok(ConstantValue::Null),
                     };
-                    if name == "SUBSTRING" {
+                    if name == "SUBSTRING" && value.is_ascii() {
+                        // Keep the byte-slice fast path for ordinary ASCII text.
+                        // UTF-8 text uses character offsets to avoid slicing a
+                        // codepoint in half and incorrectly rejecting the query.
                         let end = start.saturating_add(count).min(value.len());
                         let result = if start >= value.len() {
                             ""
                         } else {
-                            value.get(start..end).ok_or_else(|| {
-                                ParseError("SUBSTRING byte boundaries must be UTF-8".into())
-                            })?
+                            &value[start..end]
                         };
                         ConstantValue::Text(result.to_owned())
                     } else {
