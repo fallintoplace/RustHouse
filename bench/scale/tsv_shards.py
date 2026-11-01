@@ -3,6 +3,7 @@
 Does not parse SQL or modify a database. Output directory is atomically published.
 """
 import argparse
+import codecs
 import hashlib
 import json
 import os
@@ -39,36 +40,40 @@ def validate_copy_tsv_record(record):
     for field in line.split(b"\t"):
         if field == b"\\N" or b"\\" not in field:
             continue
-        decoded = bytearray()
+        # Check the decoded UTF-8 incrementally. Materializing a second
+        # 8 MiB bytearray for every escaped field inflated peak memory.
+        decoder = codecs.getincrementaldecoder("utf-8")("strict")
         cursor = 0
-        while cursor < len(field):
-            if field[cursor] != 92:
-                end = field.find(b"\\", cursor)
-                if end < 0:
-                    end = len(field)
-                decoded.extend(field[cursor:end])
-                cursor = end
-                continue
-            cursor += 1
-            if cursor >= len(field):
-                raise ValueError("incomplete COPY TSV escape")
-            escaped = field[cursor]
-            if escaped == ord("x"):
-                if cursor + 2 >= len(field):
-                    raise ValueError("incomplete COPY TSV hex escape")
-                pair = field[cursor + 1:cursor + 3]
-                if any(digit not in b"0123456789abcdefABCDEF" for digit in pair):
-                    raise ValueError("invalid COPY TSV hex escape")
-                decoded.append(int(pair, 16))
-                cursor += 3
-            else:
-                value = _SIMPLE_ESCAPES.get(escaped)
-                if value is None:
-                    raise ValueError("invalid COPY TSV escape")
-                decoded.append(value)
-                cursor += 1
         try:
-            decoded.decode("utf-8")
+            while cursor < len(field):
+                if field[cursor] != 92:
+                    end = field.find(b"\\", cursor)
+                    if end < 0:
+                        end = len(field)
+                    # Avoid a giant decoded str for a long unescaped span.
+                    for begin in range(cursor, end, 64 * 1024):
+                        decoder.decode(field[begin:min(begin + 64 * 1024, end)])
+                    cursor = end
+                    continue
+                cursor += 1
+                if cursor >= len(field):
+                    raise ValueError("incomplete COPY TSV escape")
+                escaped = field[cursor]
+                if escaped == ord("x"):
+                    if cursor + 2 >= len(field):
+                        raise ValueError("incomplete COPY TSV hex escape")
+                    pair = field[cursor + 1:cursor + 3]
+                    if any(digit not in b"0123456789abcdefABCDEF" for digit in pair):
+                        raise ValueError("invalid COPY TSV hex escape")
+                    value = int(pair, 16)
+                    cursor += 3
+                else:
+                    value = _SIMPLE_ESCAPES.get(escaped)
+                    if value is None:
+                        raise ValueError("invalid COPY TSV escape")
+                    cursor += 1
+                decoder.decode(bytes((value,)))
+            decoder.decode(b"", final=True)
         except UnicodeDecodeError as error:
             raise ValueError("COPY TSV escape decodes to invalid UTF-8") from error
 
