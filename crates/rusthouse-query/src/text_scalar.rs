@@ -78,6 +78,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "CONCAT_WS"
                 | "CONCATWITHSEPARATOR"
                 | "CUTFRAGMENT"
+                | "ENCODEURLCOMPONENT"
                 | "URL_ENCODE"
                 | "FRAGMENT"
                 | "DATETRUNC"
@@ -2062,7 +2063,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "URL_ENCODE" => {
+        "URL_ENCODE" | "ENCODEURLCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL_ENCODE requires one argument")?;
             match input {
@@ -5933,5 +5934,36 @@ mod utf8_prefix_suffix_inplace_tests {
         }
         let input = format!("{}🙂Z", "a".repeat(10_000));
         assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_encode_url_component_parity_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encodes_reserved_bytes_and_preserves_nulls() {
+        assert_eq!(
+            value("SELECT encodeURLComponent('a b/c?d=e')"),
+            ConstantValue::Text("a%20b%2Fc%3Fd%3De".into()),
+        );
+        assert_eq!(
+            value("SELECT encodeURLComponent('café')"),
+            ConstantValue::Text("caf%C3%A9".into()),
+        );
+        assert_eq!(
+            value("SELECT encodeURLComponent('')"),
+            ConstantValue::Text(String::new()),
+        );
+        assert_eq!(value("SELECT encodeURLComponent(NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT encodeURLComponent()").is_err());
+        assert!(parse_select("SELECT encodeURLComponent('a', 'b')").is_err());
     }
 }
