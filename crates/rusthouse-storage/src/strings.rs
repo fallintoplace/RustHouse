@@ -38,6 +38,24 @@ impl StringColumn {
         &self.offsets
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_rows(rows: Vec<Vec<u8>>) -> Result<Self, StringReadError> {
+        checked_rows(rows.len())?;
+        let total_bytes = rows
+            .iter()
+            .try_fold(0usize, |size, row| checked_end(size, row.len() as u64))?;
+        let mut column = Self::new(rows.len());
+        column.data.reserve(total_bytes);
+        for row in rows {
+            // The preceding checked sum validated every row and the total.
+            // No need to check the same byte bound again during flattening.
+            let end = column.data.len() + row.len();
+            column.data.extend_from_slice(&row);
+            column.offsets.push(end);
+        }
+        Ok(column)
+    }
+
     /// Construct a bounded column for incremental row appends.
     pub(crate) fn builder(rows: usize) -> Result<Self, StringReadError> {
         checked_rows(rows)?;
