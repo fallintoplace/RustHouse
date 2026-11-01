@@ -68,21 +68,29 @@ fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
 }
 
 fn render_health_response(cluster: &Cluster, healthy: &[bool]) -> Response {
-    let healthy_peer_count = healthy.iter().filter(|&&alive| alive).count();
-    // A coordinator with no configured peers cannot serve distributed data.
-    let status = if !healthy.is_empty() && healthy_peer_count == healthy.len() {
+    // A missing probe result must never count as a healthy peer. This also
+    // keeps the reported total aligned with the configured membership.
+    let peers = cluster.peers();
+    let complete = healthy.len() == peers.len();
+    let healthy_peer_count = peers
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| healthy.get(*index) == Some(&true))
+        .count();
+    let status = if complete && !peers.is_empty() && healthy_peer_count == peers.len() {
         "200 OK"
     } else {
         "503 Service Unavailable"
     };
-    let mut body = String::with_capacity(48 + healthy.len() * 64);
+    let mut body = String::with_capacity(48 + peers.len() * 64);
     write!(
         &mut body,
         "{{\"total\":{},\"healthy\":{healthy_peer_count},\"peers\":[",
-        healthy.len()
+        peers.len()
     )
     .expect("writing to String cannot fail");
-    for (index, (peer, &alive)) in cluster.peers().iter().zip(healthy).enumerate() {
+    for (index, peer) in peers.iter().enumerate() {
+        let alive = healthy.get(index).copied().unwrap_or(false);
         if index != 0 {
             body.push(',');
         }
@@ -290,5 +298,25 @@ mod inline_health_probe_tests {
             probe_peers_with(&peers, |_| panic!("probe failed")),
             vec![false]
         );
+    }
+}
+
+#[cfg(test)]
+mod incomplete_health_results_tests {
+    use super::*;
+
+    #[test]
+    fn missing_or_extra_results_never_mark_a_cluster_healthy() {
+        let cluster = Cluster::new(vec![
+            Peer::parse("127.0.0.1:59001").unwrap(),
+            Peer::parse("127.0.0.1:59002").unwrap(),
+        ]).unwrap();
+        let missing = render_health_response(&cluster, &[true]);
+        assert_eq!(missing.status, "503 Service Unavailable");
+        assert_eq!(missing.body, b"{\"total\":2,\"healthy\":1,\"peers\":[{\"address\":\"127.0.0.1:59001\",\"healthy\":true},{\"address\":\"127.0.0.1:59002\",\"healthy\":false}]}\n");
+        let extra = render_health_response(&cluster, &[true, true, true]);
+        assert_eq!(extra.status, "503 Service Unavailable");
+        assert_eq!(extra.body, b"{\"total\":2,\"healthy\":2,\"peers\":[{\"address\":\"127.0.0.1:59001\",\"healthy\":true},{\"address\":\"127.0.0.1:59002\",\"healthy\":true}]}\n");
+        assert_eq!(render_health_response(&cluster, &[true, true]).status, "200 OK");
     }
 }
