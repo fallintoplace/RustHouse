@@ -5,7 +5,7 @@ import json
 import ipaddress
 import math
 import sys
-from urllib.parse import urlsplit
+from loopback_origin import require_loopback_http_origin
 from urllib.request import HTTPRedirectHandler, build_opener, ProxyHandler
 from urllib.error import HTTPError
 
@@ -95,14 +95,10 @@ def validate(payload, *, min_healthy=None, expected_peers=None):
 def inspect(origin, timeout=5, min_healthy=None, expected_peers=None):
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 300:
         raise ValueError("timeout must be finite and in (0, 300] seconds")
-    url = urlsplit(origin)
-    if (url.scheme != "http" or url.hostname not in ("localhost", "127.0.0.1")
-            or url.path not in ("", "/") or url.query or url.fragment
-            or url.username or url.password):
-        raise ValueError("only loopback HTTP origins are accepted")
+    origin = require_loopback_http_origin(origin)
     unavailable = False
     try:
-        with NO_REDIRECT_OPENER.open(origin.rstrip("/") + "/cluster/health", timeout=timeout) as response:
+        with NO_REDIRECT_OPENER.open(origin + "/cluster/health", timeout=timeout) as response:
             raw = response.read(1_048_577)
     except HTTPError as exc:
         try:
