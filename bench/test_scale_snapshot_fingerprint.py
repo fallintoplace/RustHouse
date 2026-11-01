@@ -44,6 +44,22 @@ class SnapshotFingerprintTests(unittest.TestCase):
             (base / "empty").rmdir()
             self.assertEqual(original, fingerprint(base))
 
+    def test_directory_budget_stops_empty_directory_explosion(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            (directory / "data.bin").write_bytes(b"data")
+            for index in range(3):
+                (directory / f"empty-{index}").mkdir()
+            with self.assertRaisesRegex(ValueError, "max_dirs"):
+                fingerprint(root, max_dirs=3)
+            exact = fingerprint(root, max_dirs=4)
+            self.assertEqual(exact["files"], 1)
+            self.assertEqual(exact["sha256"], fingerprint(root)["sha256"])
+            for invalid in (0, True, 1.5):
+                with self.subTest(value=invalid), self.assertRaisesRegex(
+                        ValueError, "max_dirs"):
+                    fingerprint(root, max_dirs=invalid)
+
     def test_rejects_empty_directory(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(ValueError, "no files"):
