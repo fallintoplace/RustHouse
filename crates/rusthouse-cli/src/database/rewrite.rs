@@ -100,7 +100,10 @@ fn sync_directory(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
     if !metadata.file_type().is_dir() {
-        return Err(format!("snapshot path {} is not a real directory", path.display()));
+        return Err(format!(
+            "snapshot path {} is not a real directory",
+            path.display()
+        ));
     }
     Ok(())
 }
@@ -749,12 +752,14 @@ mod platform_snapshot_sync_tests {
     fn validates_snapshot_directory_presence_on_every_platform() {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-snapshot-sync-{}-{:?}",
-            std::process::id(), std::thread::current().id()
+            std::process::id(),
+            std::thread::current().id()
         ));
         fs::create_dir_all(&root).unwrap();
         sync_directory(&root).unwrap();
         assert!(sync_directory(&root.join("missing")).is_err());
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             let file = root.join("not-a-directory");
             fs::write(&file, b"immutable metadata").unwrap();
             assert!(sync_directory(&file).is_err());
