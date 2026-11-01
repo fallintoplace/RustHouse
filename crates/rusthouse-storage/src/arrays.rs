@@ -175,6 +175,21 @@ fn decode_array_offsets<const ABSOLUTE: bool, O: Read>(
         return Ok(ArrayOffsets { offsets, last_absolute_offset: absolute });
     }
 
+    // Typical medium marks fit within 8 KiB. Decode them with one exact
+    // read instead of initializing the 64 KiB bulk buffer.
+    const MEDIUM_ROWS: usize = 1024;
+    if rows <= MEDIUM_ROWS {
+        let mut scratch = [0u8; MEDIUM_ROWS * OFFSET_ENTRY_BYTES];
+        let bytes = rows * OFFSET_ENTRY_BYTES;
+        offset_stream.read_exact(&mut scratch[..bytes])
+            .map_err(ArrayReadError::Offsets)?;
+        for (row, record) in scratch[..bytes].chunks_exact(OFFSET_ENTRY_BYTES).enumerate() {
+            let encoded = u64::from_le_bytes(record.try_into().unwrap());
+            append_array_offset::<ABSOLUTE>(base, &mut absolute, encoded, row, &mut offsets)?;
+        }
+        return Ok(ArrayOffsets { offsets, last_absolute_offset: absolute });
+    }
+
     let mut buffer = [0u8; 64 * 1024];
     let mut row = 0;
     while row < rows {
@@ -753,6 +768,58 @@ mod small_array_mark_regression_tests {
         let oversized = encoded(&[MAX_BATCH_ELEMENTS + 1]);
         assert!(matches!(
             read_array_offsets(&mut oversized.as_slice(), 1, ArrayOffsetsEncoding::Sizes),
+            Err(ArrayReadError::TooManyElements(_))
+        ));
+    }
+}
+
+#[cfg(test)]
+mod medium_array_mark_tests {
+    use super::*;
+    use std::io::{Cursor, Read};
+
+    #[test]
+    fn absolute_and_size_offsets_keep_same_values_across_scratch_thresholds() {
+        for rows in [64usize, 65, 512, 1024, 1025, 8192, 8193] {
+            for absolute in [false, true] {
+                let base = 5_000u64;
+                let mut raw = Vec::with_capacity((rows + 1) * 8);
+                for i in 0..rows {
+                    let value = if absolute { base + i as u64 + 1 } else { 1 };
+                    raw.extend_from_slice(&value.to_le_bytes());
+                }
+                raw.extend_from_slice(&123456789u64.to_le_bytes());
+                let mut source = Cursor::new(raw);
+                let mode = if absolute {
+                    ArrayOffsetsEncoding::Absolute { previous_offset: base }
+                } else {
+                    ArrayOffsetsEncoding::Sizes
+                };
+                let decoded = read_array_offsets(&mut source, rows, mode).unwrap();
+                assert_eq!(decoded.element_count(), rows, "rows={rows} absolute={absolute}");
+                assert_eq!(decoded.last_absolute_offset(), rows as u64 + if absolute { base } else { 0 });
+                assert!(decoded.offsets().iter().copied().eq(0..=rows));
+                assert_eq!(source.position(), (rows * 8) as u64);
+                let mut sentinel = [0u8; 8];
+                source.read_exact(&mut sentinel).unwrap();
+                assert_eq!(sentinel, 123456789u64.to_le_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn medium_marks_reject_truncation_and_overflow_before_reading_values() {
+        for rows in [65usize, 1024] {
+            let mut short = vec![0u8; rows * 8 - 1].as_slice();
+            assert!(matches!(
+                read_array_offsets(&mut short, rows, ArrayOffsetsEncoding::Sizes),
+                Err(ArrayReadError::Offsets(error)) if error.kind() == io::ErrorKind::UnexpectedEof
+            ));
+        }
+        let mut overflowing = vec![0u8; 65 * 8];
+        overflowing[..8].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(matches!(
+            read_array_offsets(&mut overflowing.as_slice(), 65, ArrayOffsetsEncoding::Sizes),
             Err(ArrayReadError::TooManyElements(_))
         ));
     }
