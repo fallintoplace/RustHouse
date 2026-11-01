@@ -75,6 +75,45 @@ impl Group {
     }
 }
 
+// Most UInt16/Int16 grouped scans contain far fewer than 65,536 groups.
+// Start with a small sparse index, then upgrade to direct slots when the
+// actual cardinality justifies allocating the full 512 KiB table.
+enum GroupIndex16 {
+    Sparse(HashMap<u16, usize>),
+    Dense(Vec<usize>),
+}
+
+impl GroupIndex16 {
+    fn new() -> Self {
+        Self::Sparse(HashMap::new())
+    }
+
+    fn get(&self, key: u16) -> Option<usize> {
+        match self {
+            Self::Sparse(lookup) => lookup.get(&key).copied(),
+            Self::Dense(slots) => (slots[usize::from(key)] != usize::MAX)
+                .then_some(slots[usize::from(key)]),
+        }
+    }
+
+    fn insert(&mut self, key: u16, index: usize) {
+        const DENSE_PROMOTION_GROUPS: usize = 2048;
+        match self {
+            Self::Sparse(lookup) => {
+                lookup.insert(key, index);
+                if lookup.len() >= DENSE_PROMOTION_GROUPS {
+                    let mut slots = vec![usize::MAX; 65_536];
+                    for (&key, &index) in lookup.iter() {
+                        slots[usize::from(key)] = index;
+                    }
+                    *self = Self::Dense(slots);
+                }
+            }
+            Self::Dense(slots) => slots[usize::from(key)] = index,
+        }
+    }
+}
+
 fn mark_distinct_byte(group: &mut Group, value: u8) {
     let slot = usize::from(value) / 64;
     let bit = 1u64 << (usize::from(value) % 64);
@@ -152,10 +191,10 @@ pub(super) fn execute<W: Write>(
         Some("UInt8" | "Int8")
     )
     .then(|| [usize::MAX; 256]);
-    // Byte-sized grouped DISTINCT is optimized separately. This path
-    // specializes the larger 16-bit key domain.
-    let mut dense_groups =
-        matches!(types[column].as_str(), "UInt16" | "Int16").then(|| vec![usize::MAX; 65_536]);
+    // Allocate a dense 16-bit lookup only after sufficiently many distinct
+    // groups materialize. Queries with few groups avoid the 512 KiB table.
+    let mut dense_groups = matches!(types[column].as_str(), "UInt16" | "Int16")
+        .then(GroupIndex16::new);
     let byte_distinct = matches!(
         typed::base_type(types[value_column].as_str()),
         "UInt8" | "Int8"
@@ -219,12 +258,11 @@ pub(super) fn execute<W: Write>(
                         ));
                     }
                 };
-                let slot = &mut slots[key];
-                if *slot != usize::MAX {
-                    *slot
+                let key = key as u16;
+                if let Some(id) = slots.get(key) {
+                    id
                 } else {
                     let id = groups.len();
-                    *slot = id;
                     charge_group_fixed(&mut retained_group_bytes)?;
                     groups.push(Group {
                         key: typed::cell(&batch[group_index], row),
@@ -234,6 +272,7 @@ pub(super) fn execute<W: Write>(
                         byte_values: [0; 4],
                         distinct_count: 0,
                     });
+                    slots.insert(key, id);
                     id
                 }
             } else if let Some(key) = group_uuid {
@@ -545,5 +584,41 @@ mod fixed_group_memory_budget_tests {
         bytes = MAX_GROUP_STATE_BYTES - 1;
         assert!(charge_group_fixed(&mut bytes).is_err());
         assert_eq!(bytes, MAX_GROUP_STATE_BYTES - 1);
+    }
+}
+
+#[cfg(test)]
+mod lazy_grouped_u16_index_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_lookup_promotes_only_after_many_groups() {
+        let mut slots = GroupIndex16::new();
+        assert!(matches!(slots, GroupIndex16::Sparse(_)));
+        assert_eq!(slots.get(u16::MAX), None);
+        for key in 0..2047u16 {
+            slots.insert(key, usize::from(key));
+        }
+        assert!(matches!(slots, GroupIndex16::Sparse(_)));
+        slots.insert(2047, 2047);
+        assert!(matches!(slots, GroupIndex16::Dense(_)));
+        for key in 0..2048u16 {
+            assert_eq!(slots.get(key), Some(usize::from(key)));
+        }
+        assert_eq!(slots.get(u16::MAX), None);
+    }
+
+    #[test]
+    fn direct_index_covers_all_unsigned_and_signed_16_bit_patterns() {
+        let mut slots = GroupIndex16::new();
+        for key in u16::MIN..=u16::MAX {
+            assert_eq!(slots.get(key), None);
+            slots.insert(key, usize::from(key));
+            assert_eq!(slots.get(key), Some(usize::from(key)));
+        }
+        assert!(matches!(slots, GroupIndex16::Dense(_)));
+        for key in u16::MIN..=u16::MAX {
+            assert_eq!(slots.get(key), Some(usize::from(key)));
+        }
     }
 }
