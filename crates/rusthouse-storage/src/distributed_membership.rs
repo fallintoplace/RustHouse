@@ -686,7 +686,10 @@ mod canonical_membership_snapshot_tests {
         assert_eq!(a, "alpha east 1\ngamma east 2\nzeta west 3\n");
         assert_eq!(parse_membership(&a).unwrap().len(), 3);
         assert_ne!(format_membership(&ordered).unwrap(), a);
-        assert_eq!(format_membership(&reversed).unwrap(), "gamma east 2\nalpha east 1\nzeta west 3\n");
+        assert_eq!(
+            format_membership(&reversed).unwrap(),
+            "gamma east 2\nalpha east 1\nzeta west 3\n"
+        );
     }
 
     #[test]
