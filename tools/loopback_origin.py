@@ -4,7 +4,7 @@ import re
 # Match the raw authority rather than only urlsplit().hostname. urlsplit
 # normalizes control characters, and accepts ports that urllib cannot use.
 _ORIGIN = re.compile(
-    r"http://(?:localhost|127\\.0\\.0\\.1)(?::([1-9][0-9]{0,4}))?/?\\Z",
+    r"http://(?:localhost|127\.0\.0\.1)(?::([1-9][0-9]{0,4}))?/?\Z",
     re.IGNORECASE,
 )
 
