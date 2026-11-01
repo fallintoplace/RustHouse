@@ -3895,28 +3895,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let count = integer_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "expected ')' after LEFT arguments")?;
             match (input, count) {
-                (Some(value), Some(count)) => {
-                    if count < 0 {
-                        return Err(ParseError("LEFT count must be nonnegative".into()));
-                    }
-                    let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    let end = if count >= value.len() {
+                (Some(mut value), Some(count)) => {
+                    let length = if name == "LEFT" {
                         value.len()
-                    } else if name == "LEFT" {
-                        // LEFT counts bytes; LEFTUTF8 counts Unicode scalars.
+                    } else {
+                        value.chars().count()
+                    };
+                    let count = if count < 0 {
+                        length.saturating_sub(
+                            usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX),
+                        )
+                    } else {
+                        usize::try_from(count).unwrap_or(usize::MAX).min(length)
+                    };
+                    let end = if name == "LEFT" {
                         count
                     } else {
-                        value
-                            .char_indices()
-                            .nth(count)
-                            .map_or(value.len(), |(offset, _)| offset)
+                        value.char_indices().nth(count).map_or(value.len(), |(offset, _)| offset)
                     };
                     if !value.is_char_boundary(end) {
                         return Err(ParseError("LEFT byte count splits UTF-8 text".into()));
                     }
-                    let mut result = value;
-                    result.truncate(end);
-                    ConstantValue::Text(result)
+                    value.truncate(end);
+                    ConstantValue::Text(value)
                 }
                 _ => ConstantValue::Null,
             }
