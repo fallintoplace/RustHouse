@@ -275,8 +275,20 @@ pub fn read_object_ranges_checked(
         &inline[..ranges.len()]
     };
     let chunks = read_object_ranges(path, spans, max_total_bytes)?;
-    for (chunk, &(_, _, expected_crc32c)) in chunks.iter().zip(ranges) {
-        if crate::distributed_crc32c::crc32c(chunk) != expected_crc32c {
+    // Coalesced reads already avoid duplicate I/O, but independently hashing
+    // the returned copies can redo megabytes of CRC work for repeated spans.
+    // Keep the small-request path allocation-free.
+    let mut cached = (ranges.len() >= 32)
+        .then(|| std::collections::HashMap::<(u64, usize), u32>::with_capacity(ranges.len()));
+    for (chunk, &(offset, length, expected_crc32c)) in chunks.iter().zip(ranges) {
+        let actual = if let Some(cache) = &mut cached {
+            *cache
+                .entry((offset, length))
+                .or_insert_with(|| crate::distributed_crc32c::crc32c(chunk))
+        } else {
+            crate::distributed_crc32c::crc32c(chunk)
+        };
+        if actual != expected_crc32c {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "replica object range checksum mismatch",
@@ -1126,5 +1138,46 @@ mod duplicate_crc_scrub_tests {
             io::ErrorKind::InvalidData
         );
         fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod checked_duplicate_crc_cache_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_ranges_preserve_output_and_detect_conflicting_checksums() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-checked-duplicate-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let bytes = (0..131_072usize)
+            .map(|index| ((index * 37 + 11) % 251) as u8)
+            .collect::<Vec<_>>();
+        std::fs::write(&path, &bytes).unwrap();
+
+        let spans = [(0u64, 4096usize), (21, 8000), (65_536, 32_768)];
+        let requests = (0..64)
+            .map(|index| {
+                let (offset, length) = spans[index % spans.len()];
+                let checksum = crate::distributed_crc32c::crc32c(
+                    &bytes[offset as usize..offset as usize + length],
+                );
+                (offset, length, checksum)
+            })
+            .collect::<Vec<_>>();
+        let output = read_object_ranges_checked(&path, &requests, 2 * 1024 * 1024).unwrap();
+        for (actual, &(offset, length, _)) in output.iter().zip(&requests) {
+            assert_eq!(actual, &bytes[offset as usize..offset as usize + length]);
+        }
+
+        let mut corrupted = requests.clone();
+        corrupted[47].2 ^= 1;
+        assert!(matches!(
+            read_object_ranges_checked(&path, &corrupted, 2 * 1024 * 1024),
+            Err(ref error) if error.kind() == io::ErrorKind::InvalidData
+        ));
+        std::fs::remove_file(path).unwrap();
     }
 }
