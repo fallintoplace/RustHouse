@@ -22,10 +22,7 @@ fn clickhouse_compatibility_cases() {
 
 #[test]
 fn rejects_invalid_arguments() {
-    for sql in [
-        "SELECT notEmpty()",
-        "SELECT notEmpty('x', 'y')",
-    ] {
+    for sql in ["SELECT notEmpty()", "SELECT notEmpty('x', 'y')"] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }

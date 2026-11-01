@@ -381,14 +381,19 @@ mod framed_markdown_cell_tests {
     use super::*;
 
     #[derive(Default)]
-    struct Counted { writes: usize, bytes: Vec<u8> }
+    struct Counted {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
     impl Write for Counted {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.writes += 1;
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -408,14 +413,19 @@ mod bounded_separator_write_tests {
     use super::*;
 
     #[derive(Default)]
-    struct Counted { writes: usize, bytes: Vec<u8> }
+    struct Counted {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
     impl Write for Counted {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.writes += 1;
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -424,7 +434,10 @@ mod bounded_separator_write_tests {
             let mut writer = Counted::default();
             write_header_separator(&mut writer, width).unwrap();
             assert_eq!(writer.writes, 1);
-            assert_eq!(writer.bytes, format!("|{}\n", " --- |".repeat(width)).as_bytes());
+            assert_eq!(
+                writer.bytes,
+                format!("|{}\n", " --- |".repeat(width)).as_bytes()
+            );
         }
     }
 

@@ -102,7 +102,7 @@ def scan(binary, database, sql, expected, runs, warmups, timeout):
 
 
 def doctor_verified_rows(output, rows):
-    expected = rb"OK events: " + str(rows).encode("ascii") + rb" rows, [1-9][0-9]* parts"
+    expected = rb"OK events: " + str(rows).encode("ascii") + rb" rows, [1-9][0-9]* (?:active )?parts(?:, [1-9][0-9]* columns)?"
     return any(re.fullmatch(expected, line) for line in output.splitlines())
 
 

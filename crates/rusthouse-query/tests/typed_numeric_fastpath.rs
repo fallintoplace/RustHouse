@@ -12,8 +12,14 @@ fn typed_numeric_aggregate_skips_nulls_and_filters_strings() {
         NEXT.fetch_add(1, Ordering::Relaxed),
     ));
     let columns = [
-        Column { name: "metric".into(), data_type: "Nullable(UInt64)".into() },
-        Column { name: "category".into(), data_type: "String".into() },
+        Column {
+            name: "metric".into(),
+            data_type: "Nullable(UInt64)".into(),
+        },
+        Column {
+            name: "category".into(),
+            data_type: "String".into(),
+        },
     ];
     let rows = [
         vec![Some("3".into()), Some("keep".into())],
@@ -27,7 +33,8 @@ fn typed_numeric_aggregate_skips_nulls_and_filters_strings() {
         &parse_select("SELECT sum(metric) FROM part WHERE category = 'keep'").unwrap(),
         Some(&root),
         &mut output,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(output, b"sum(metric)\n7\n");
     std::fs::remove_dir_all(root).unwrap();
 }

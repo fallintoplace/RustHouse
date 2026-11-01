@@ -220,9 +220,14 @@ mod tests {
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
-        let mut writer = Count { writes: 0, bytes: Vec::new() };
+        let mut writer = Count {
+            writes: 0,
+            bytes: Vec::new(),
+        };
         write_framed_cell(&mut writer, "München".as_bytes()).unwrap();
         write_framed_cell(&mut writer, b"42").unwrap();
         assert_eq!(writer.writes, 2);
@@ -436,14 +441,19 @@ mod framed_header_separator_tests {
     use super::*;
 
     #[derive(Default)]
-    struct Counted { calls: usize, bytes: Vec<u8> }
+    struct Counted {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
     impl Write for Counted {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.calls += 1;
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]

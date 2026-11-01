@@ -118,7 +118,9 @@ pub(super) fn add_date_months(date: &str, months: i64) -> Result<String, ParseEr
     let day = day.min(last_day);
     let result = format!("{year:04}-{month:02}-{day:02}");
     if rusthouse_storage::parse_date(&result).is_none() {
-        return Err(ParseError("DATE interval is outside supported Date range".into()));
+        return Err(ParseError(
+            "DATE interval is outside supported Date range".into(),
+        ));
     }
     Ok(result)
 }

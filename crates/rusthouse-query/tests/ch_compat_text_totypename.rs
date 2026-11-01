@@ -8,9 +8,18 @@ fn value(sql: &str) -> ConstantValue {
 }
 #[test]
 fn clickhouse_constant_compatibility() {
-    assert_eq!(value("SELECT toTypeName(12)"), ConstantValue::Text("Int64".into()));
-    assert_eq!(value("SELECT toTypeName('abc')"), ConstantValue::Text("String".into()));
-    assert_eq!(value("SELECT toTypeName(NULL)"), ConstantValue::Text("Nullable(Nothing)".into()));
+    assert_eq!(
+        value("SELECT toTypeName(12)"),
+        ConstantValue::Text("Int64".into())
+    );
+    assert_eq!(
+        value("SELECT toTypeName('abc')"),
+        ConstantValue::Text("String".into())
+    );
+    assert_eq!(
+        value("SELECT toTypeName(NULL)"),
+        ConstantValue::Text("Nullable(Nothing)".into())
+    );
 }
 #[test]
 fn rejects_wrong_arguments() {

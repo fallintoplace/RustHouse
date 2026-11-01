@@ -21,8 +21,11 @@ fn lists_set_bits_as_ascending_powers_of_two() {
 }
 #[test]
 fn validates_arity() {
-    for sql in ["SELECT bitmaskToList()", "SELECT bitmaskToList('a')",
-                "SELECT bitmaskToList(2,3)"] {
+    for sql in [
+        "SELECT bitmaskToList()",
+        "SELECT bitmaskToList('a')",
+        "SELECT bitmaskToList(2,3)",
+    ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }

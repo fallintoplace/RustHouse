@@ -16,17 +16,22 @@ fn table(database: &Path, name: &str, columns: &[Column], rows: &[Vec<Option<Str
 
 #[test]
 fn sql_http_executes_bounded_three_table_joins_and_explain() {
-    let database = std::env::temp_dir().join(format!(
-        "rusthouse-http-joins-{}", std::process::id()
-    ));
+    let database =
+        std::env::temp_dir().join(format!("rusthouse-http-joins-{}", std::process::id()));
     let _ = fs::remove_dir_all(&database);
     fs::create_dir_all(&database).unwrap();
     table(
         &database,
         "orders",
         &[
-            Column { name: "id".into(), data_type: "UInt64".into() },
-            Column { name: "customer_id".into(), data_type: "UInt64".into() },
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "customer_id".into(),
+                data_type: "UInt64".into(),
+            },
         ],
         &[
             vec![Some("1".into()), Some("10".into())],
@@ -37,8 +42,14 @@ fn sql_http_executes_bounded_three_table_joins_and_explain() {
         &database,
         "customers",
         &[
-            Column { name: "id".into(), data_type: "UInt64".into() },
-            Column { name: "region_id".into(), data_type: "UInt64".into() },
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "region_id".into(),
+                data_type: "UInt64".into(),
+            },
         ],
         &[
             vec![Some("10".into()), Some("100".into())],
@@ -49,8 +60,14 @@ fn sql_http_executes_bounded_three_table_joins_and_explain() {
         &database,
         "regions",
         &[
-            Column { name: "id".into(), data_type: "UInt64".into() },
-            Column { name: "label".into(), data_type: "String".into() },
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "label".into(),
+                data_type: "String".into(),
+            },
         ],
         &[
             vec![Some("100".into()), Some("east".into())],
@@ -69,7 +86,11 @@ fn sql_http_executes_bounded_three_table_joins_and_explain() {
 
     let plan = handle_request("POST", "/explain", sql.as_bytes(), &config);
     assert_eq!(plan.status, "200 OK");
-    assert!(String::from_utf8(plan.body).unwrap().contains("regions AS r"));
+    assert!(
+        String::from_utf8(plan.body)
+            .unwrap()
+            .contains("regions AS r")
+    );
 
     let no_header = handle_request("POST", "/?format=tsv-no-header", sql.as_bytes(), &config);
     assert_eq!(no_header.status, "200 OK");
@@ -79,7 +100,11 @@ fn sql_http_executes_bounded_three_table_joins_and_explain() {
         "POST",
         "/",
         sql.as_bytes(),
-        &Config { database: None, part: None, max_rows: 1 },
+        &Config {
+            database: None,
+            part: None,
+            max_rows: 1,
+        },
     );
     assert_eq!(unavailable.status, "400 Bad Request");
     fs::remove_dir_all(database).unwrap();

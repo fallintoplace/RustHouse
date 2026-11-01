@@ -16,7 +16,9 @@ impl ObjectMetadata {
 
 fn windows_device_segment(segment: &str) -> bool {
     let stem = segment.split('.').next().unwrap_or(segment);
-    ["CON", "PRN", "AUX", "NUL"].iter().any(|name| stem.eq_ignore_ascii_case(name))
+    ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .any(|name| stem.eq_ignore_ascii_case(name))
         || (stem.len() == 4
             && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
             && matches!(stem.as_bytes()[3], b'1'..=b'9'))
@@ -33,7 +35,8 @@ fn valid_key(key: &str) -> bool {
     let mut previous_dot = false;
     for (index, &byte) in bytes.iter().enumerate() {
         if byte == b'/' {
-            if segment_start || previous_dot || windows_device_segment(&key[segment_offset..index]) {
+            if segment_start || previous_dot || windows_device_segment(&key[segment_offset..index])
+            {
                 return false;
             }
             segment_start = true;
@@ -76,7 +79,8 @@ fn reject_immutable_conflicts(
     destination: &HashMap<&str, &ObjectMetadata>,
 ) -> Result<(), &'static str> {
     if source.iter().any(|(key, object)| {
-        destination.get(*key)
+        destination
+            .get(*key)
             .is_some_and(|existing| !object.same_contents(existing))
     }) {
         return Err("replica copy conflicts with an existing immutable object");
@@ -94,9 +98,7 @@ fn needs_copy(meta: &ObjectMetadata, destination: &HashMap<&str, &ObjectMetadata
 // Validate borrowed keys directly instead of building two hash maps.
 fn validate_tiny_inventory(objects: &[ObjectMetadata]) -> Result<(), &'static str> {
     for (index, object) in objects.iter().enumerate() {
-        if !valid_key(&object.key)
-            || objects[..index].iter().any(|prior| prior.key == object.key)
-        {
+        if !valid_key(&object.key) || objects[..index].iter().any(|prior| prior.key == object.key) {
             return Err("unsafe or duplicate replica object key");
         }
     }
@@ -114,7 +116,10 @@ pub fn plan_replica_copies(
         validate_tiny_inventory(destination)?;
         let mut missing = Vec::new();
         for object in source {
-            match destination.iter().find(|candidate| candidate.key == object.key) {
+            match destination
+                .iter()
+                .find(|candidate| candidate.key == object.key)
+            {
                 Some(existing) if !object.same_contents(existing) => {
                     return Err("replica copy conflicts with an existing immutable object");
                 }
@@ -132,11 +137,13 @@ pub fn plan_replica_copies(
     if source.len() > 65_536 || destination.len() > 65_536 {
         return Err("replica inventory too large");
     }
-    let sorted = |items: &[ObjectMetadata]| {
-        items.windows(2).all(|pair| pair[0].key < pair[1].key)
-    };
+    let sorted = |items: &[ObjectMetadata]| items.windows(2).all(|pair| pair[0].key < pair[1].key);
     if sorted(source) && sorted(destination) {
-        if source.iter().chain(destination).any(|item| !valid_key(&item.key)) {
+        if source
+            .iter()
+            .chain(destination)
+            .any(|item| !valid_key(&item.key))
+        {
             return Err("unsafe or duplicate replica object key");
         }
         let mut missing = Vec::new();
@@ -145,9 +152,7 @@ pub fn plan_replica_copies(
             while dst < destination.len() && destination[dst].key < object.key {
                 dst += 1;
             }
-            if let Some(existing) = destination.get(dst)
-                .filter(|item| item.key == object.key)
-            {
+            if let Some(existing) = destination.get(dst).filter(|item| item.key == object.key) {
                 if !object.same_contents(existing) {
                     return Err("replica copy conflicts with an existing immutable object");
                 }
@@ -211,7 +216,8 @@ impl<'a> ReplicaCopyPlanner<'a> {
         let source_index = index(source)?;
         let destination_index = index(destination)?;
         reject_immutable_conflicts(&source_index, &destination_index)?;
-        let mut missing = source_index.into_values()
+        let mut missing = source_index
+            .into_values()
             .filter(|object| needs_copy(object, &destination_index))
             .collect::<Vec<_>>();
         missing.sort_unstable_by(|left, right| left.key.cmp(&right.key));
@@ -241,9 +247,14 @@ impl<'a> ReplicaCopyPlanner<'a> {
             return Err("replica copy batch exceeds object limit");
         }
         let first = after_key.map_or(0, |cursor| {
-            self.missing.partition_point(|object| object.key.as_str() <= cursor)
+            self.missing
+                .partition_point(|object| object.key.as_str() <= cursor)
         });
-        Ok(select_copy_batch(&self.missing[first..], max_bytes, max_objects))
+        Ok(select_copy_batch(
+            &self.missing[first..],
+            max_bytes,
+            max_objects,
+        ))
     }
 }
 
@@ -286,7 +297,8 @@ pub fn plan_replica_copy_batch_after(
                 }
             }
         }
-        let mut needed = source.iter()
+        let mut needed = source
+            .iter()
             .filter(|item| after_key.is_none_or(|cursor| item.key.as_str() > cursor))
             .filter(|item| !destination.iter().any(|existing| existing.key == item.key))
             .collect::<Vec<_>>();
@@ -319,7 +331,9 @@ pub fn plan_replica_copy_batch_after(
         // Two sequential minima reproduce the sorted greedy copy plan.
         // Scan borrowed inventory values twice rather than allocating and
         // sorting every missing object on a small transfer poll.
-        let first = source_index.values().copied()
+        let first = source_index
+            .values()
+            .copied()
             .filter(|meta| {
                 meta.bytes <= max_bytes
                     && after_key.is_none_or(|cursor| meta.key.as_str() > cursor)
@@ -330,7 +344,9 @@ pub fn plan_replica_copy_batch_after(
             return Ok(Vec::new());
         };
         let remaining = max_bytes - first.bytes;
-        let second = source_index.values().copied()
+        let second = source_index
+            .values()
+            .copied()
             .filter(|meta| {
                 meta.key != first.key
                     && after_key.is_none_or(|cursor| meta.key.as_str() > cursor)
@@ -377,9 +393,10 @@ pub fn plan_replica_copy_batch_after(
     // in linear time and sort that prefix, not the entire inventory.
     // Constrained budgets retain the original greedy scan semantics.
     if needed.len() > max_objects
-        && needed.iter().try_fold(0u64, |total, object| {
-            total.checked_add(object.bytes)
-        }).is_some_and(|total| total <= max_bytes)
+        && needed
+            .iter()
+            .try_fold(0u64, |total, object| total.checked_add(object.bytes))
+            .is_some_and(|total| total <= max_bytes)
     {
         needed.select_nth_unstable_by(max_objects, |left, right| left.key.cmp(&right.key));
         needed.truncate(max_objects);
@@ -398,7 +415,11 @@ mod expanding_copy_prefix_tests {
             .rev()
             .map(|index| ObjectMetadata {
                 key: format!("part/object_{index:05}"),
-                bytes: if index % 17 == 0 { 0 } else { (index % 257) as u64 },
+                bytes: if index % 17 == 0 {
+                    0
+                } else {
+                    (index % 257) as u64
+                },
                 crc32c: index as u32,
             })
             .collect::<Vec<_>>();
@@ -407,17 +428,23 @@ mod expanding_copy_prefix_tests {
         for budget in [0, 1, 23, 100, 1024, u64::MAX] {
             for limit in [2, 3, 8, 31, 127] {
                 let mut remaining = budget;
-                let expected = full.iter().filter(|object| {
-                    if object.bytes <= remaining {
-                        remaining -= object.bytes;
-                        true
-                    } else {
-                        false
-                    }
-                }).take(limit).cloned().collect::<Vec<_>>();
+                let expected = full
+                    .iter()
+                    .filter(|object| {
+                        if object.bytes <= remaining {
+                            remaining -= object.bytes;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 assert_eq!(
                     plan_replica_copy_batch(&source, &destination, budget, limit).unwrap(),
-                    expected, "budget={budget}, limit={limit}",
+                    expected,
+                    "budget={budget}, limit={limit}",
                 );
             }
         }
@@ -555,24 +582,35 @@ mod copy_batch_tests {
         let selected = expected
             .into_iter()
             .filter(|object| {
-                if object.bytes > remaining { return false; }
+                if object.bytes > remaining {
+                    return false;
+                }
                 remaining -= object.bytes;
                 true
             })
             .take(12)
             .collect::<Vec<_>>();
-        assert_eq!(plan_replica_copy_batch(&source, &[], 12, 12).unwrap(), selected);
+        assert_eq!(
+            plan_replica_copy_batch(&source, &[], 12, 12).unwrap(),
+            selected
+        );
     }
 
     #[test]
     fn one_copy_batch_matches_the_sorted_plan_without_a_full_sort() {
-        let source = (0..512).rev().map(|index| ObjectMetadata {
-            key: format!("part/{index:04}.bin"),
-            bytes: 1 + (index % 9) as u64,
-            crc32c: index,
-        }).collect::<Vec<_>>();
-        let destination = source.iter().filter(|object| object.key.ends_with('0'))
-            .cloned().collect::<Vec<_>>();
+        let source = (0..512)
+            .rev()
+            .map(|index| ObjectMetadata {
+                key: format!("part/{index:04}.bin"),
+                bytes: 1 + (index % 9) as u64,
+                crc32c: index,
+            })
+            .collect::<Vec<_>>();
+        let destination = source
+            .iter()
+            .filter(|object| object.key.ends_with('0'))
+            .cloned()
+            .collect::<Vec<_>>();
         let all = plan_replica_copies(&source, &destination).unwrap();
         for budget in [0u64, 1, 3, 5, 12] {
             let expected = all.iter().find(|object| object.bytes <= budget).cloned();
@@ -584,25 +622,50 @@ mod copy_batch_tests {
                 expected,
             );
         }
-        assert!(plan_replica_copy_batch(&source, &destination, u64::MAX, 0)
-            .unwrap().is_empty());
-        let invalid = [ObjectMetadata { key: "../bad".into(), bytes: 0, crc32c: 0 }];
+        assert!(
+            plan_replica_copy_batch(&source, &destination, u64::MAX, 0)
+                .unwrap()
+                .is_empty()
+        );
+        let invalid = [ObjectMetadata {
+            key: "../bad".into(),
+            bytes: 0,
+            crc32c: 0,
+        }];
         assert!(plan_replica_copy_batch(&invalid, &[], 0, 0).is_err());
     }
 
     #[test]
     fn selects_bounded_copies_without_deleting_destination_only_objects() {
         let objects = [
-            ObjectMetadata { key: "a/large".into(), bytes: 9, crc32c: 1 },
-            ObjectMetadata { key: "b/small".into(), bytes: 2, crc32c: 2 },
-            ObjectMetadata { key: "c/small".into(), bytes: 4, crc32c: 3 },
+            ObjectMetadata {
+                key: "a/large".into(),
+                bytes: 9,
+                crc32c: 1,
+            },
+            ObjectMetadata {
+                key: "b/small".into(),
+                bytes: 2,
+                crc32c: 2,
+            },
+            ObjectMetadata {
+                key: "c/small".into(),
+                bytes: 4,
+                crc32c: 3,
+            },
         ];
         let batch = plan_replica_copy_batch(&objects, &[], 6, 3).unwrap();
         assert_eq!(
-            batch.iter().map(|item| item.key.as_str()).collect::<Vec<_>>(),
+            batch
+                .iter()
+                .map(|item| item.key.as_str())
+                .collect::<Vec<_>>(),
             vec!["b/small", "c/small"]
         );
-        assert_eq!(plan_replica_copy_batch(&objects, &[], 6, 1).unwrap().len(), 1);
+        assert_eq!(
+            plan_replica_copy_batch(&objects, &[], 6, 1).unwrap().len(),
+            1
+        );
         assert!(plan_replica_copy_batch(&objects, &[], 6, 65_537).is_err());
     }
 }
@@ -626,7 +689,10 @@ mod canonical_inventory_key_tests {
             bytes: 1,
             crc32c: 0,
         };
-        assert_eq!(plan_replica_copies(&[valid.clone()], &[]).unwrap(), vec![valid]);
+        assert_eq!(
+            plan_replica_copies(std::slice::from_ref(&valid), &[]).unwrap(),
+            vec![valid]
+        );
     }
 }
 
@@ -636,11 +702,26 @@ mod immutable_collision_tests {
 
     #[test]
     fn batch_refuses_same_key_with_different_contents() {
-        let source = [ObjectMetadata { key: "p/g1/id.bin".into(), bytes: 10, crc32c: 1 }];
-        let conflicting = [ObjectMetadata { key: "p/g1/id.bin".into(), bytes: 10, crc32c: 2 }];
+        let source = [ObjectMetadata {
+            key: "p/g1/id.bin".into(),
+            bytes: 10,
+            crc32c: 1,
+        }];
+        let conflicting = [ObjectMetadata {
+            key: "p/g1/id.bin".into(),
+            bytes: 10,
+            crc32c: 2,
+        }];
         assert!(plan_replica_copy_batch(&source, &conflicting, 100, 10).is_err());
-        assert!(plan_replica_copy_batch(&source, &source, 100, 10).unwrap().is_empty());
-        assert_eq!(plan_replica_copy_batch(&source, &[], 100, 10).unwrap(), vec![source[0].clone()]);
+        assert!(
+            plan_replica_copy_batch(&source, &source, 100, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            plan_replica_copy_batch(&source, &[], 100, 10).unwrap(),
+            vec![source[0].clone()]
+        );
     }
 }
 
@@ -650,14 +731,38 @@ mod windows_inventory_keys_tests {
 
     #[test]
     fn rejects_reserved_device_names_in_any_inventory_path_segment() {
-        for key in ["NUL", "p/CON.txt", "a/com1.bin", "a/b/LPT9.log", "prn.csv/part", "AUX"] {
-            let value = ObjectMetadata { key: key.to_owned(), bytes: 1, crc32c: 0 };
-            assert!(plan_replica_copies(&[value.clone()], &[]).is_err(), "{key}");
-            assert!(plan_replica_copy_batch(&[value], &[], 1, 1).is_err(), "{key}");
+        for key in [
+            "NUL",
+            "p/CON.txt",
+            "a/com1.bin",
+            "a/b/LPT9.log",
+            "prn.csv/part",
+            "AUX",
+        ] {
+            let value = ObjectMetadata {
+                key: key.to_owned(),
+                bytes: 1,
+                crc32c: 0,
+            };
+            assert!(
+                plan_replica_copies(std::slice::from_ref(&value), &[]).is_err(),
+                "{key}"
+            );
+            assert!(
+                plan_replica_copy_batch(&[value], &[], 1, 1).is_err(),
+                "{key}"
+            );
         }
         for key in ["a/CONTEXT.txt", "x/com10.bin", "z/LPT0.log"] {
-            let value = ObjectMetadata { key: key.to_owned(), bytes: 1, crc32c: 0 };
-            assert_eq!(plan_replica_copies(&[value.clone()], &[]).unwrap(), vec![value]);
+            let value = ObjectMetadata {
+                key: key.to_owned(),
+                bytes: 1,
+                crc32c: 0,
+            };
+            assert_eq!(
+                plan_replica_copies(std::slice::from_ref(&value), &[]).unwrap(),
+                vec![value]
+            );
         }
     }
 }
@@ -673,16 +778,26 @@ mod inventory_component_budget_tests {
             format!("prefix/{}", "a".repeat(129)),
             format!("{}/suffix", "z".repeat(129)),
         ] {
-            let meta = ObjectMetadata { key, bytes: 1, crc32c: 0 };
-            assert!(plan_replica_copies(&[meta.clone()], &[]).is_err());
+            let meta = ObjectMetadata {
+                key,
+                bytes: 1,
+                crc32c: 0,
+            };
+            assert!(plan_replica_copies(std::slice::from_ref(&meta), &[]).is_err());
             assert!(plan_replica_copy_batch(&[meta], &[], 1, 1).is_err());
         }
         let key = format!("{}/{}", "a".repeat(128), "b".repeat(128));
-        let meta = ObjectMetadata { key, bytes: 1, crc32c: 0 };
-        assert_eq!(plan_replica_copies(&[meta.clone()], &[]).unwrap(), vec![meta]);
+        let meta = ObjectMetadata {
+            key,
+            bytes: 1,
+            crc32c: 0,
+        };
+        assert_eq!(
+            plan_replica_copies(std::slice::from_ref(&meta), &[]).unwrap(),
+            vec![meta]
+        );
     }
 }
-
 
 #[cfg(test)]
 mod unconstrained_prefix_selection_tests {
@@ -690,48 +805,98 @@ mod unconstrained_prefix_selection_tests {
 
     #[test]
     fn bounded_prefix_matches_full_copy_plan_at_inventory_scale() {
-        let source = (0..2048usize).rev().map(|index| ObjectMetadata {
-            key: format!("part/{index:05}.bin"),
-            bytes: (index % 17) as u64,
-            crc32c: index as u32,
-        }).collect::<Vec<_>>();
-        let destination = source.iter().filter(|meta| meta.crc32c % 5 == 0)
-            .cloned().collect::<Vec<_>>();
+        let source = (0..2048usize)
+            .rev()
+            .map(|index| ObjectMetadata {
+                key: format!("part/{index:05}.bin"),
+                bytes: (index % 17) as u64,
+                crc32c: index as u32,
+            })
+            .collect::<Vec<_>>();
+        let destination = source
+            .iter()
+            .filter(|meta| meta.crc32c % 5 == 0)
+            .cloned()
+            .collect::<Vec<_>>();
         let all = plan_replica_copies(&source, &destination).unwrap();
         for count in [2, 3, 8, 32, 256, 2048, 4096] {
             let selected = plan_replica_copy_batch(&source, &destination, u64::MAX, count).unwrap();
-            assert_eq!(selected, all.iter().take(count).cloned().collect::<Vec<_>>());
+            assert_eq!(
+                selected,
+                all.iter().take(count).cloned().collect::<Vec<_>>()
+            );
         }
     }
 
     #[test]
     fn tight_budgets_keep_greedy_skips_and_zero_byte_objects() {
         let source = [
-            ObjectMetadata { key: "a/x".into(), bytes: 9, crc32c: 0 },
-            ObjectMetadata { key: "b/x".into(), bytes: 0, crc32c: 0 },
-            ObjectMetadata { key: "c/x".into(), bytes: 2, crc32c: 0 },
-            ObjectMetadata { key: "d/x".into(), bytes: 1, crc32c: 0 },
-            ObjectMetadata { key: "e/x".into(), bytes: 1, crc32c: 0 },
+            ObjectMetadata {
+                key: "a/x".into(),
+                bytes: 9,
+                crc32c: 0,
+            },
+            ObjectMetadata {
+                key: "b/x".into(),
+                bytes: 0,
+                crc32c: 0,
+            },
+            ObjectMetadata {
+                key: "c/x".into(),
+                bytes: 2,
+                crc32c: 0,
+            },
+            ObjectMetadata {
+                key: "d/x".into(),
+                bytes: 1,
+                crc32c: 0,
+            },
+            ObjectMetadata {
+                key: "e/x".into(),
+                bytes: 1,
+                crc32c: 0,
+            },
         ];
         assert_eq!(
-            plan_replica_copy_batch(&source, &[], 3, 2).unwrap()
-                .iter().map(|meta| meta.key.as_str()).collect::<Vec<_>>(),
+            plan_replica_copy_batch(&source, &[], 3, 2)
+                .unwrap()
+                .iter()
+                .map(|meta| meta.key.as_str())
+                .collect::<Vec<_>>(),
             vec!["b/x", "c/x"]
         );
         assert_eq!(
-            plan_replica_copy_batch(&source, &[], 0, 3).unwrap()
-                .iter().map(|meta| meta.key.as_str()).collect::<Vec<_>>(),
+            plan_replica_copy_batch(&source, &[], 0, 3)
+                .unwrap()
+                .iter()
+                .map(|meta| meta.key.as_str())
+                .collect::<Vec<_>>(),
             vec!["b/x"]
         );
         // An enormous missing object must not overflow the prefix sum.
         let huge = [
-            ObjectMetadata { key: "a/x".into(), bytes: u64::MAX, crc32c: 1 },
-            ObjectMetadata { key: "b/x".into(), bytes: 5, crc32c: 2 },
-            ObjectMetadata { key: "c/x".into(), bytes: 0, crc32c: 3 },
+            ObjectMetadata {
+                key: "a/x".into(),
+                bytes: u64::MAX,
+                crc32c: 1,
+            },
+            ObjectMetadata {
+                key: "b/x".into(),
+                bytes: 5,
+                crc32c: 2,
+            },
+            ObjectMetadata {
+                key: "c/x".into(),
+                bytes: 0,
+                crc32c: 3,
+            },
         ];
         assert_eq!(
-            plan_replica_copy_batch(&huge, &[], 5, 2).unwrap()
-                .iter().map(|meta| meta.key.as_str()).collect::<Vec<_>>(),
+            plan_replica_copy_batch(&huge, &[], 5, 2)
+                .unwrap()
+                .iter()
+                .map(|meta| meta.key.as_str())
+                .collect::<Vec<_>>(),
             vec!["b/x", "c/x"]
         );
     }
@@ -747,7 +912,13 @@ mod unaffordable_copy_candidates_tests {
             .rev()
             .map(|index| ObjectMetadata {
                 key: format!("part/file_{index:05}"),
-                bytes: if index % 101 == 0 { 0 } else if index % 17 == 0 { 1 } else { 1_000_000 },
+                bytes: if index % 101 == 0 {
+                    0
+                } else if index % 17 == 0 {
+                    1
+                } else {
+                    1_000_000
+                },
                 crc32c: index,
             })
             .collect::<Vec<_>>();
@@ -755,16 +926,22 @@ mod unaffordable_copy_candidates_tests {
         for budget in [0, 1, 2, 8, 64] {
             for limit in [2, 3, 5, 16, 64, 257] {
                 let mut remaining = budget;
-                let expected = full.iter()
+                let expected = full
+                    .iter()
                     .filter(|object| {
-                        if object.bytes > remaining { return false; }
+                        if object.bytes > remaining {
+                            return false;
+                        }
                         remaining -= object.bytes;
                         true
                     })
-                    .take(limit).cloned().collect::<Vec<_>>();
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 assert_eq!(
                     plan_replica_copy_batch(&source, &[], budget, limit).unwrap(),
-                    expected, "budget={budget} limit={limit}",
+                    expected,
+                    "budget={budget} limit={limit}",
                 );
             }
         }
@@ -776,7 +953,11 @@ mod tiny_inventory_diff_tests {
     use super::*;
 
     fn item(key: &str, bytes: u64) -> ObjectMetadata {
-        ObjectMetadata { key: key.into(), bytes, crc32c: bytes as u32 }
+        ObjectMetadata {
+            key: key.into(),
+            bytes,
+            crc32c: bytes as u32,
+        }
     }
 
     #[test]
@@ -794,7 +975,9 @@ mod tiny_inventory_diff_tests {
         assert!(plan_replica_copies(&source, &[item("a/part", 7)]).is_err());
         assert!(plan_replica_copies(&source, &[item("a/part", 1), item("a/part", 1)]).is_err());
         assert!(plan_replica_copies(&[item("../unsafe", 2)], &[]).is_err());
-        let many = (0..1024).map(|index| item(&format!("k{index:04}"), index)).collect::<Vec<_>>();
+        let many = (0..1024)
+            .map(|index| item(&format!("k{index:04}"), index))
+            .collect::<Vec<_>>();
         let result = plan_replica_copies(&many, &many[..512]).unwrap();
         assert_eq!(result.len(), 512);
         assert!(result.windows(2).all(|pair| pair[0].key < pair[1].key));
@@ -805,7 +988,11 @@ mod tiny_inventory_diff_tests {
 mod two_replica_copy_selection_tests {
     use super::*;
 
-    fn full_sort_greedy(source: &[ObjectMetadata], destination: &[ObjectMetadata], budget: u64) -> Vec<ObjectMetadata> {
+    fn full_sort_greedy(
+        source: &[ObjectMetadata],
+        destination: &[ObjectMetadata],
+        budget: u64,
+    ) -> Vec<ObjectMetadata> {
         let pending = plan_replica_copies(source, destination).unwrap();
         let mut remaining = budget;
         let mut selected = Vec::new();
@@ -823,12 +1010,20 @@ mod two_replica_copy_selection_tests {
 
     #[test]
     fn two_copy_batch_matches_full_sorted_plan_across_budget_boundaries() {
-        let source = (0..1024).map(|index| ObjectMetadata {
-            key: format!("region/shard_1/g1/part/file_{index:04}.bin"),
-            bytes: if index % 17 == 0 { 0 } else { (index * 97 % 8191) as u64 },
-            crc32c: (index * 7777) as u32,
-        }).collect::<Vec<_>>();
-        let destination = source.iter().enumerate()
+        let source = (0..1024)
+            .map(|index| ObjectMetadata {
+                key: format!("region/shard_1/g1/part/file_{index:04}.bin"),
+                bytes: if index % 17 == 0 {
+                    0
+                } else {
+                    (index * 97 % 8191) as u64
+                },
+                crc32c: (index * 7777) as u32,
+            })
+            .collect::<Vec<_>>();
+        let destination = source
+            .iter()
+            .enumerate()
             .filter(|(index, _)| index % 7 == 0)
             .map(|(_, object)| object.clone())
             .collect::<Vec<_>>();
@@ -838,14 +1033,27 @@ mod two_replica_copy_selection_tests {
                 full_sort_greedy(&source, &destination, budget),
             );
         }
-        assert!(plan_replica_copy_batch(&source, &destination, 1, 0).unwrap().is_empty());
+        assert!(
+            plan_replica_copy_batch(&source, &destination, 1, 0)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
     fn tiny_batch_still_rejects_existing_immutable_conflicts() {
-        let object = ObjectMetadata { key: "region/g1/item".into(), bytes: 4, crc32c: 7 };
-        let conflict = ObjectMetadata { crc32c: 8, ..object.clone() };
-        assert!(plan_replica_copy_batch(&[object.clone()], &[conflict], 10, 2).is_err());
+        let object = ObjectMetadata {
+            key: "region/g1/item".into(),
+            bytes: 4,
+            crc32c: 7,
+        };
+        let conflict = ObjectMetadata {
+            crc32c: 8,
+            ..object.clone()
+        };
+        assert!(
+            plan_replica_copy_batch(std::slice::from_ref(&object), &[conflict], 10, 2).is_err()
+        );
         assert!(plan_replica_copy_batch(&[object.clone(), object], &[], 10, 2).is_err());
     }
 }
@@ -856,19 +1064,32 @@ mod copy_diff_cursor_tests {
 
     #[test]
     fn paged_batches_follow_the_full_sorted_plan_for_tiny_and_large_inventories() {
-        let source = (0..4096usize).rev().map(|index| ObjectMetadata {
-            key: format!("part/object_{index:05}"),
-            bytes: if index % 19 == 0 { 0 } else { (index % 127) as u64 },
-            crc32c: index as u32,
-        }).collect::<Vec<_>>();
+        let source = (0..4096usize)
+            .rev()
+            .map(|index| ObjectMetadata {
+                key: format!("part/object_{index:05}"),
+                bytes: if index % 19 == 0 {
+                    0
+                } else {
+                    (index % 127) as u64
+                },
+                crc32c: index as u32,
+            })
+            .collect::<Vec<_>>();
         let destination = source.iter().step_by(7).cloned().collect::<Vec<_>>();
         let full = plan_replica_copies(&source, &destination).unwrap();
-        for cursor in [None, Some("part/object_00000"), Some("part/object_01234"),
-            Some("part/object_04095"), Some("part/object_99999")] {
+        for cursor in [
+            None,
+            Some("part/object_00000"),
+            Some("part/object_01234"),
+            Some("part/object_04095"),
+            Some("part/object_99999"),
+        ] {
             for budget in [0, 1, 100, 1000, u64::MAX] {
                 for limit in [0, 1, 2, 7, 100] {
                     let mut remaining = budget;
-                    let expected = full.iter()
+                    let expected = full
+                        .iter()
                         .filter(|object| cursor.is_none_or(|key| object.key.as_str() > key))
                         .filter(|object| {
                             if object.bytes <= remaining {
@@ -877,11 +1098,14 @@ mod copy_diff_cursor_tests {
                             } else {
                                 false
                             }
-                        }).take(limit).cloned().collect::<Vec<_>>();
+                        })
+                        .take(limit)
+                        .cloned()
+                        .collect::<Vec<_>>();
                     assert_eq!(
-                        plan_replica_copy_batch_after(
-                            &source, &destination, cursor, budget, limit
-                        ).unwrap(), expected
+                        plan_replica_copy_batch_after(&source, &destination, cursor, budget, limit)
+                            .unwrap(),
+                        expected
                     );
                 }
             }
@@ -891,8 +1115,10 @@ mod copy_diff_cursor_tests {
     #[test]
     fn cursor_is_validated_even_for_empty_pages() {
         assert!(plan_replica_copy_batch_after(&[], &[], Some("../bad"), 0, 0).is_err());
-        assert_eq!(plan_replica_copy_batch_after(&[], &[], None, 0, 0).unwrap(),
-            Vec::<ObjectMetadata>::new());
+        assert_eq!(
+            plan_replica_copy_batch_after(&[], &[], None, 0, 0).unwrap(),
+            Vec::<ObjectMetadata>::new()
+        );
     }
 }
 
@@ -902,11 +1128,14 @@ mod small_copy_batch_tests {
 
     #[test]
     fn tiny_batches_match_full_sorted_greedy_selection() {
-        let source = (0..8u64).rev().map(|index| ObjectMetadata {
-            key: format!("part/file_{index:02}"),
-            bytes: index % 4,
-            crc32c: index as u32,
-        }).collect::<Vec<_>>();
+        let source = (0..8u64)
+            .rev()
+            .map(|index| ObjectMetadata {
+                key: format!("part/file_{index:02}"),
+                bytes: index % 4,
+                crc32c: index as u32,
+            })
+            .collect::<Vec<_>>();
         for existing in 0..=8 {
             let destination = source.iter().take(existing).cloned().collect::<Vec<_>>();
             let missing = plan_replica_copies(&source, &destination).unwrap();
@@ -929,8 +1158,11 @@ mod small_copy_batch_tests {
             bytes: 1,
             crc32c: 3,
         };
-        let different = ObjectMetadata { bytes: 2, ..a.clone() };
-        assert!(plan_replica_copy_batch(&[a.clone()], &[different], 0, 0).is_err());
+        let different = ObjectMetadata {
+            bytes: 2,
+            ..a.clone()
+        };
+        assert!(plan_replica_copy_batch(std::slice::from_ref(&a), &[different], 0, 0).is_err());
         assert!(plan_replica_copy_batch(&[a.clone(), a], &[], 0, 0).is_err());
     }
 }
@@ -941,25 +1173,35 @@ mod reusable_reconciliation_plan_tests {
 
     #[test]
     fn repeated_pages_match_one_shot_copy_planner_for_skewed_inventories() {
-        let source = (0..8_192usize).rev().map(|index| ObjectMetadata {
-            key: format!("part/object_{index:05}"),
-            bytes: if index % 9 == 0 { 0 } else { (index % 101) as u64 },
-            crc32c: index as u32,
-        }).collect::<Vec<_>>();
+        let source = (0..8_192usize)
+            .rev()
+            .map(|index| ObjectMetadata {
+                key: format!("part/object_{index:05}"),
+                bytes: if index % 9 == 0 {
+                    0
+                } else {
+                    (index % 101) as u64
+                },
+                crc32c: index as u32,
+            })
+            .collect::<Vec<_>>();
         let destination = source.iter().step_by(5).cloned().collect::<Vec<_>>();
         let planner = ReplicaCopyPlanner::new(&source, &destination).unwrap();
         assert_eq!(planner.len(), source.len() - destination.len());
         assert!(!planner.is_empty());
 
-        for cursor in [None, Some("part/object_00000"), Some("part/object_04096"),
-                       Some("part/object_08191")] {
+        for cursor in [
+            None,
+            Some("part/object_00000"),
+            Some("part/object_04096"),
+            Some("part/object_08191"),
+        ] {
             for budget in [0u64, 1, 49, 255, 4096, u64::MAX] {
                 for limit in [0usize, 1, 2, 17, 127] {
                     assert_eq!(
                         planner.batch_after(cursor, budget, limit).unwrap(),
-                        plan_replica_copy_batch_after(
-                            &source, &destination, cursor, budget, limit
-                        ).unwrap(),
+                        plan_replica_copy_batch_after(&source, &destination, cursor, budget, limit)
+                            .unwrap(),
                         "cursor={cursor:?} budget={budget} limit={limit}"
                     );
                 }
@@ -969,12 +1211,23 @@ mod reusable_reconciliation_plan_tests {
 
     #[test]
     fn invalid_inventories_and_cursor_rejected_without_mutations() {
-        let object = ObjectMetadata { key: "safe/one".into(), bytes: 3, crc32c: 10 };
+        let object = ObjectMetadata {
+            key: "safe/one".into(),
+            bytes: 3,
+            crc32c: 10,
+        };
         let source = [object.clone()];
         assert!(ReplicaCopyPlanner::new(&[object.clone(), object.clone()], &[]).is_err());
-        assert!(ReplicaCopyPlanner::new(&source, &[
-            ObjectMetadata { crc32c: 11, ..object.clone() }
-        ]).is_err());
+        assert!(
+            ReplicaCopyPlanner::new(
+                &source,
+                &[ObjectMetadata {
+                    crc32c: 11,
+                    ..object.clone()
+                }]
+            )
+            .is_err()
+        );
         let planner = ReplicaCopyPlanner::new(&source, &[]).unwrap();
         assert_eq!(planner.batch_after(None, 3, 1).unwrap(), source);
         assert!(planner.batch_after(Some("../invalid"), 3, 1).is_err());
@@ -999,15 +1252,22 @@ mod sorted_replica_reconciliation_tests {
     fn sorted_merge_and_unordered_hash_plans_choose_the_same_objects() {
         let source = (0..1024).map(entry).collect::<Vec<_>>();
         for step in [1usize, 2, 3, 7, 17, 127, 1024] {
-            let destination = source.iter().enumerate()
+            let destination = source
+                .iter()
+                .enumerate()
                 .filter(|(i, _)| i % step != 0)
                 .map(|(_, object)| object.clone())
                 .collect::<Vec<_>>();
-            let expected = source.iter().enumerate()
+            let expected = source
+                .iter()
+                .enumerate()
                 .filter(|(i, _)| i % step == 0)
                 .map(|(_, object)| object.clone())
                 .collect::<Vec<_>>();
-            assert_eq!(plan_replica_copies(&source, &destination).unwrap(), expected);
+            assert_eq!(
+                plan_replica_copies(&source, &destination).unwrap(),
+                expected
+            );
             let mut reversed_source = source.clone();
             reversed_source.reverse();
             let mut reversed_destination = destination.clone();
@@ -1034,7 +1294,6 @@ mod sorted_replica_reconciliation_tests {
         assert!(plan_replica_copies(&unsafe_key, &[]).is_err());
     }
 }
-
 
 /// An immutable key that appears on both replicas with incompatible metadata.
 /// A conflict must be reconciled manually; it never authorizes an overwrite.
@@ -1087,7 +1346,9 @@ pub fn compare_replica_inventories(
     }
     result.only_left.sort_unstable_by(|a, b| a.key.cmp(&b.key));
     result.only_right.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-    result.conflicting.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    result
+        .conflicting
+        .sort_unstable_by(|a, b| a.key.cmp(&b.key));
     Ok(result)
 }
 
@@ -1096,7 +1357,11 @@ mod symmetric_replica_inventory_tests {
     use super::*;
 
     fn item(key: &str, bytes: u64, crc32c: u32) -> ObjectMetadata {
-        ObjectMetadata { key: key.into(), bytes, crc32c }
+        ObjectMetadata {
+            key: key.into(),
+            bytes,
+            crc32c,
+        }
     }
 
     #[test]
@@ -1114,11 +1379,16 @@ mod symmetric_replica_inventory_tests {
         let difference = compare_replica_inventories(&left, &right).unwrap();
         assert_eq!(difference.only_left, [left[0].clone()]);
         assert_eq!(difference.only_right, [right[0].clone()]);
-        assert_eq!(difference.conflicting, [ReplicaObjectConflict {
-            key: left[1].key.clone(),
-            left_bytes: 20, left_crc32c: 2,
-            right_bytes: 20, right_crc32c: 9,
-        }]);
+        assert_eq!(
+            difference.conflicting,
+            [ReplicaObjectConflict {
+                key: left[1].key.clone(),
+                left_bytes: 20,
+                left_crc32c: 2,
+                right_bytes: 20,
+                right_crc32c: 9,
+            }]
+        );
         assert!(plan_replica_copies(&left, &right).is_err());
 
         let reversed = compare_replica_inventories(&right, &left).unwrap();
@@ -1130,33 +1400,44 @@ mod symmetric_replica_inventory_tests {
 
     #[test]
     fn sorted_diagnostics_match_across_large_reversed_inventories() {
-        let left = (0..128).rev().map(|n| item(
-            &format!("cluster/shard/g1/part/left_{n:03}.bin"), n, n as u32,
-        )).collect::<Vec<_>>();
-        let right = (0..128).map(|n| item(
-            &format!("cluster/shard/g1/part/right_{n:03}.bin"), n, n as u32,
-        )).collect::<Vec<_>>();
+        let left = (0..128)
+            .rev()
+            .map(|n| {
+                item(
+                    &format!("cluster/shard/g1/part/left_{n:03}.bin"),
+                    n,
+                    n as u32,
+                )
+            })
+            .collect::<Vec<_>>();
+        let right = (0..128)
+            .map(|n| {
+                item(
+                    &format!("cluster/shard/g1/part/right_{n:03}.bin"),
+                    n,
+                    n as u32,
+                )
+            })
+            .collect::<Vec<_>>();
         let result = compare_replica_inventories(&left, &right).unwrap();
         assert_eq!(result.only_left.len(), 128);
         assert_eq!(result.only_right.len(), 128);
-        assert_eq!(result.only_left[0].key,
-            "cluster/shard/g1/part/left_000.bin");
-        assert_eq!(result.only_left[127].key,
-            "cluster/shard/g1/part/left_127.bin");
+        assert_eq!(
+            result.only_left[0].key,
+            "cluster/shard/g1/part/left_000.bin"
+        );
+        assert_eq!(
+            result.only_left[127].key,
+            "cluster/shard/g1/part/left_127.bin"
+        );
         assert!(result.conflicting.is_empty());
     }
 
     #[test]
     fn refuses_ambiguous_key_or_duplicate_on_either_side() {
         let good = item("cluster/shard/g1/part/data.bin", 1, 2);
-        assert!(compare_replica_inventories(
-            &[good.clone(), good.clone()], &[],
-        ).is_err());
-        assert!(compare_replica_inventories(
-            &[], &[good.clone(), good.clone()],
-        ).is_err());
-        assert!(compare_replica_inventories(
-            &[item("../escaped", 1, 0)], &[],
-        ).is_err());
+        assert!(compare_replica_inventories(&[good.clone(), good.clone()], &[],).is_err());
+        assert!(compare_replica_inventories(&[], &[good.clone(), good.clone()],).is_err());
+        assert!(compare_replica_inventories(&[item("../escaped", 1, 0)], &[],).is_err());
     }
 }

@@ -143,8 +143,14 @@ fn dense_byte_grouped_distinct_keeps_first_seen_signed_keys() {
         NEXT.fetch_add(1, Ordering::Relaxed),
     ));
     let columns = [
-        Column { name: "segment".into(), data_type: "Int8".into() },
-        Column { name: "tag".into(), data_type: "Nullable(UInt64)".into() },
+        Column {
+            name: "segment".into(),
+            data_type: "Int8".into(),
+        },
+        Column {
+            name: "tag".into(),
+            data_type: "Nullable(UInt64)".into(),
+        },
     ];
     let rows = [
         vec![Some("-1".into()), Some("7".into())],
@@ -159,7 +165,8 @@ fn dense_byte_grouped_distinct_keeps_first_seen_signed_keys() {
         &parse_select("SELECT segment, COUNT(DISTINCT tag) FROM part GROUP BY segment").unwrap(),
         Some(&root),
         &mut output,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(output, b"segment\tcountDistinct(tag)\n-1\t2\n3\t1\n");
     fs::remove_dir_all(root).unwrap();
 }

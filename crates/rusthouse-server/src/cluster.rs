@@ -78,7 +78,10 @@ impl Cluster {
         }
         if peers.len() <= 8 {
             for (index, peer) in peers.iter().enumerate() {
-                if peers[..index].iter().any(|other| other.address() == peer.address()) {
+                if peers[..index]
+                    .iter()
+                    .any(|other| other.address() == peer.address())
+                {
                     return Err("duplicate peer");
                 }
             }
@@ -117,8 +120,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
         if index != 0 {
             body.push(',');
         }
-        write!(&mut body, "\"{}\"", peer.address())
-            .expect("writing to String cannot fail");
+        write!(&mut body, "\"{}\"", peer.address()).expect("writing to String cannot fail");
     }
     body.push_str("]}\n");
     Response {
@@ -147,13 +149,13 @@ mod tests {
         }
     }
 
-
     #[test]
     fn renders_membership_json_in_peer_order() {
         let cluster = Cluster::new(vec![
             Peer::parse("127.0.0.1:42210").unwrap(),
             Peer::parse("127.0.0.1:42211").unwrap(),
-        ]).unwrap();
+        ])
+        .unwrap();
         let response = handle("GET", &[], &cluster);
         assert_eq!(response.status, "200 OK");
         assert_eq!(

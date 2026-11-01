@@ -175,14 +175,15 @@ fn checksum_work_order(entries: &[InventoryEntry], workers: usize) -> Option<Vec
         total_bytes += u128::from(entry.bytes);
         largest = largest.max(entry.bytes);
     }
-    if total_bytes == 0
-        || u128::from(largest) * entries.len() as u128 <= total_bytes * 3
-    {
+    if total_bytes == 0 || u128::from(largest) * entries.len() as u128 <= total_bytes * 3 {
         return None;
     }
     let mut order = (0..entries.len()).collect::<Vec<_>>();
     order.sort_unstable_by(|&a, &b| {
-        entries[b].bytes.cmp(&entries[a].bytes).then_with(|| a.cmp(&b))
+        entries[b]
+            .bytes
+            .cmp(&entries[a].bytes)
+            .then_with(|| a.cmp(&b))
     });
     Some(order)
 }
@@ -194,9 +195,9 @@ fn collect_ordered_checksum_results(
     entries: &[InventoryEntry],
     slots: Vec<std::sync::OnceLock<Result<CheckedInventoryEntry, PartError>>>,
 ) -> Result<Vec<CheckedInventoryEntry>, PartError> {
-    let first_failure = slots.iter().position(|slot| {
-        slot.get().is_some_and(Result::is_err)
-    });
+    let first_failure = slots
+        .iter()
+        .position(|slot| slot.get().is_some_and(Result::is_err));
     let mut checked = Vec::with_capacity(entries.len());
     for (index, slot) in slots.into_iter().enumerate() {
         if first_failure.is_some_and(|failure| index > failure) {
@@ -206,13 +207,21 @@ fn collect_ordered_checksum_results(
             Some(result) => result?,
             // Revisit only unclaimed entries earlier than an observed
             // failure. No extra I/O occurs on successful inventory polls.
-            None if first_failure.is_some() => checksum_inventory_entry(active, &entries[index], false)?,
-            None => return Err(PartError::InvalidScan("missing snapshot checksum result".into())),
+            None if first_failure.is_some() => {
+                checksum_inventory_entry(active, &entries[index], false)?
+            }
+            None => {
+                return Err(PartError::InvalidScan(
+                    "missing snapshot checksum result".into(),
+                ));
+            }
         };
         checked.push(entry);
     }
     if checked.len() != entries.len() {
-        return Err(PartError::InvalidScan("missing snapshot checksum result".into()));
+        return Err(PartError::InvalidScan(
+            "missing snapshot checksum result".into(),
+        ));
     }
     Ok(checked)
 }
@@ -293,9 +302,9 @@ pub fn inventory_snapshot_crc32c(
             handles.push(handle);
         }
         for handle in handles {
-            handle.join().map_err(|_| {
-                PartError::InvalidScan("snapshot checksum worker panicked".into())
-            })?;
+            handle
+                .join()
+                .map_err(|_| PartError::InvalidScan("snapshot checksum worker panicked".into()))?;
         }
         Ok(())
     })?;
@@ -314,20 +323,18 @@ fn same_file_state(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return same_file_identity(before, after)
+        same_file_identity(before, after)
             && before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec();
+            && before.ctime_nsec() == after.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
 }
 
-
 #[cfg(unix)]
 fn same_file_identity(path_metadata: &fs::Metadata, opened_metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
-    path_metadata.dev() == opened_metadata.dev()
-        && path_metadata.ino() == opened_metadata.ino()
+    path_metadata.dev() == opened_metadata.dev() && path_metadata.ino() == opened_metadata.ino()
 }
 
 #[cfg(all(test, unix))]
@@ -350,7 +357,10 @@ mod immutable_identity_tests {
         let opened = fs::File::open(&second).unwrap().metadata().unwrap();
         assert_eq!(before.len(), opened.len());
         assert!(!same_file_identity(&before, &opened));
-        assert!(same_file_identity(&before, &fs::File::open(&first).unwrap().metadata().unwrap()));
+        assert!(same_file_identity(
+            &before,
+            &fs::File::open(&first).unwrap().metadata().unwrap()
+        ));
         assert!(same_file_state(&before, &before));
         assert!(!same_file_state(&before, &opened));
         fs::write(&first, b"longer").unwrap();
@@ -364,16 +374,23 @@ mod checksum_scheduling_tests {
     use super::*;
 
     fn entries(sizes: &[u64]) -> Vec<InventoryEntry> {
-        sizes.iter().enumerate().map(|(index, &bytes)| InventoryEntry {
-            relative_path: PathBuf::from(format!("part/file_{index}")),
-            bytes,
-        }).collect()
+        sizes
+            .iter()
+            .enumerate()
+            .map(|(index, &bytes)| InventoryEntry {
+                relative_path: PathBuf::from(format!("part/file_{index}")),
+                bytes,
+            })
+            .collect()
     }
 
     #[test]
     fn large_replica_objects_start_before_small_manifest_files() {
         let queue = entries(&[1, 2, 1, 50_000, 3, 50_000, 1, 4]);
-        assert_eq!(checksum_work_order(&queue, 2), Some(vec![3, 5, 7, 4, 1, 0, 2, 6]));
+        assert_eq!(
+            checksum_work_order(&queue, 2),
+            Some(vec![3, 5, 7, 4, 1, 0, 2, 6])
+        );
     }
 
     #[test]
@@ -472,24 +489,29 @@ mod checksummed_inventory_tests {
 
     #[test]
     fn parallel_checksums_keep_sorted_paths_and_exact_file_bytes() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-parallel-crc32c-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-parallel-crc32c-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
         for part_number in 0..40 {
             let part = root.join(format!("all_{part_number}_{part_number}_0"));
             write_wide_part(
                 &part,
-                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[Column {
+                    name: "id".into(),
+                    data_type: "UInt64".into(),
+                }],
                 &[vec![Some(part_number.to_string())]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let inventory = inventory_snapshot_crc32c(&root, 512, 64 * 1024 * 1024).unwrap();
         assert!(inventory.len() >= 64);
-        assert!(inventory.windows(2).all(|pair| {
-            pair[0].relative_path < pair[1].relative_path
-        }));
+        assert!(
+            inventory
+                .windows(2)
+                .all(|pair| { pair[0].relative_path < pair[1].relative_path })
+        );
         for entry in &inventory {
             let bytes = fs::read(root.join(&entry.relative_path)).unwrap();
             assert_eq!(entry.bytes, bytes.len() as u64);
@@ -500,17 +522,20 @@ mod checksummed_inventory_tests {
 
     #[test]
     fn checksums_actual_wide_part_files() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-hashed-inventory-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-hashed-inventory-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
         let part = root.join("all_0_0_0");
         write_wide_part(
             &part,
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("9".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         let inventory = inventory_snapshot_crc32c(&root, 32, 1_000_000).unwrap();
         let count = inventory
             .iter()
@@ -532,34 +557,43 @@ mod pinned_inventory_tests {
     #[test]
     fn resolved_generation_inventory_matches_the_public_root_inventory() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-inventory-single-resolve-{}", std::process::id()
+            "rusthouse-inventory-single-resolve-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         let active = root.join(".rusthouse-versions").join("g1");
         fs::create_dir_all(&active).unwrap();
         write_wide_part(
             &active.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("42".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(root.join(".rusthouse-active"), b"g1\n").unwrap();
         let direct = inventory_active_snapshot(&active, 128, 1_000_000).unwrap();
         let via_root = inventory_snapshot(&root, 128, 1_000_000).unwrap();
         assert_eq!(via_root, direct);
         let checksummed = inventory_snapshot_crc32c(&root, 128, 1_000_000).unwrap();
         assert_eq!(
-            checksummed.iter().map(|entry| (&entry.relative_path, entry.bytes)).collect::<Vec<_>>(),
-            direct.iter().map(|entry| (&entry.relative_path, entry.bytes)).collect::<Vec<_>>(),
+            checksummed
+                .iter()
+                .map(|entry| (&entry.relative_path, entry.bytes))
+                .collect::<Vec<_>>(),
+            direct
+                .iter()
+                .map(|entry| (&entry.relative_path, entry.bytes))
+                .collect::<Vec<_>>(),
         );
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn checksums_follow_one_selected_immutable_generation() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-pinned-inventory-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-pinned-inventory-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let versions = root.join(".rusthouse-versions");
         for (generation, value) in [(1, "10"), (2, "20")] {
@@ -567,9 +601,13 @@ mod pinned_inventory_tests {
             fs::create_dir_all(&dir).unwrap();
             write_wide_part(
                 &dir.join("all_0_0_0"),
-                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[Column {
+                    name: "id".into(),
+                    data_type: "UInt64".into(),
+                }],
                 &[vec![Some(value.to_owned())]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         fs::write(root.join(".rusthouse-active"), "g1\n").unwrap();
         let first = inventory_snapshot_crc32c(&root, 128, 1_000_000).unwrap();
@@ -588,13 +626,26 @@ mod small_checksum_inventory_dispatch_tests {
 
     #[test]
     fn small_inventories_return_correct_checksums_in_path_order() {
-        let root = std::env::temp_dir().join(format!("rusthouse-small-inventory-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-small-inventory-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        write_wide_part(&root.join("all_0_0_0"), &[Column { name: "id".into(), data_type: "UInt64".into() }], &[vec![Some("7".into())]]).unwrap();
+        write_wide_part(
+            &root.join("all_0_0_0"),
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[vec![Some("7".into())]],
+        )
+        .unwrap();
         let actual = inventory_snapshot_crc32c(&root, 63, 1_000_000).unwrap();
         assert!(!actual.is_empty() && actual.len() < 64);
-        assert!(actual.windows(2).all(|window| window[0].relative_path < window[1].relative_path));
+        assert!(
+            actual
+                .windows(2)
+                .all(|window| window[0].relative_path < window[1].relative_path)
+        );
         for entry in &actual {
             let data = fs::read(root.join(&entry.relative_path)).unwrap();
             assert_eq!(entry.bytes, data.len() as u64);
@@ -638,7 +689,9 @@ mod inventory_generation_stability_tests {
     #[test]
     fn notices_active_pointer_switches_during_inventory() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-inventory-generation-{}-{}", std::process::id(), line!()
+            "rusthouse-inventory-generation-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&root);
         let versions = root.join(".rusthouse-versions");
@@ -663,24 +716,37 @@ mod cancellable_inventory_regression_tests {
     #[test]
     fn large_inventory_still_checksums_every_file_in_lexical_order() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-cancellable-inventory-{}-{}", std::process::id(), line!()
+            "rusthouse-cancellable-inventory-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         for index in 0..35 {
             write_wide_part(
                 &root.join(format!("all_{index}_{index}_0")),
-                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[Column {
+                    name: "id".into(),
+                    data_type: "UInt64".into(),
+                }],
                 &[vec![Some((index as u64 * 7).to_string())]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let inventory = inventory_snapshot_crc32c(&root, 1024, 64 * 1024 * 1024).unwrap();
         assert!(inventory.len() >= 64);
-        assert!(inventory.windows(2).all(|pair| pair[0].relative_path < pair[1].relative_path));
+        assert!(
+            inventory
+                .windows(2)
+                .all(|pair| pair[0].relative_path < pair[1].relative_path)
+        );
         for entry in &inventory {
-            assert_eq!(entry.crc32c, crate::distributed_crc32c::crc32c(
-                &fs::read(root.join(&entry.relative_path)).unwrap(),
-            ));
+            assert_eq!(
+                entry.crc32c,
+                crate::distributed_crc32c::crc32c(
+                    &fs::read(root.join(&entry.relative_path)).unwrap(),
+                )
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -695,14 +761,17 @@ mod inventory_open_consistency_tests {
     fn same_size_content_rewrites_change_the_inventory_file_state() {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-inventory-open-consistency-{}-{:?}",
-            std::process::id(), std::thread::current().id()
+            std::process::id(),
+            std::thread::current().id()
         ));
         fs::write(&root, b"unchanged").unwrap();
         let original = fs::symlink_metadata(&root).unwrap();
         let file = fs::OpenOptions::new().write(true).open(&root).unwrap();
-        file.set_times(std::fs::FileTimes::new().set_modified(
-            SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
-        )).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new()
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)),
+        )
+        .unwrap();
         let opened = file.metadata().unwrap();
         assert_eq!(original.len(), opened.len());
         assert!(!same_file_state(&original, &opened));
@@ -718,34 +787,50 @@ mod deterministic_checksum_failure_tests {
     #[test]
     fn unclaimed_earlier_path_precedes_later_worker_failure() {
         let entries = vec![
-            InventoryEntry { relative_path: "missing-first".into(), bytes: 1 },
-            InventoryEntry { relative_path: "later".into(), bytes: 1 },
+            InventoryEntry {
+                relative_path: "missing-first".into(),
+                bytes: 1,
+            },
+            InventoryEntry {
+                relative_path: "later".into(),
+                bytes: 1,
+            },
         ];
         let slots: Vec<OnceLock<Result<CheckedInventoryEntry, PartError>>> =
             (0..2).map(|_| OnceLock::new()).collect();
-        slots[1].set(Err(PartError::InvalidScan("later worker error".into()))).unwrap();
+        slots[1]
+            .set(Err(PartError::InvalidScan("later worker error".into())))
+            .unwrap();
         let error = collect_ordered_checksum_results(
             Path::new("/rusthouse-inventory-nonexistent-root"),
-            &entries, slots,
-        ).unwrap_err();
+            &entries,
+            slots,
+        )
+        .unwrap_err();
         assert!(!format!("{error:?}").contains("later worker error"));
     }
 
     #[test]
     fn successful_parallel_slots_keep_original_path_order() {
         let entries = ["one", "two", "three"].map(|name| InventoryEntry {
-            relative_path: name.into(), bytes: 1,
+            relative_path: name.into(),
+            bytes: 1,
         });
         let slots: Vec<OnceLock<Result<CheckedInventoryEntry, PartError>>> =
             (0..3).map(|_| OnceLock::new()).collect();
         for index in [2usize, 0, 1] {
-            slots[index].set(Ok(CheckedInventoryEntry {
-                relative_path: entries[index].relative_path.clone(),
-                bytes: 1,
-                crc32c: index as u32,
-            })).unwrap();
+            slots[index]
+                .set(Ok(CheckedInventoryEntry {
+                    relative_path: entries[index].relative_path.clone(),
+                    bytes: 1,
+                    crc32c: index as u32,
+                }))
+                .unwrap();
         }
         let found = collect_ordered_checksum_results(Path::new("."), &entries, slots).unwrap();
-        assert_eq!(found.iter().map(|entry| entry.crc32c).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(
+            found.iter().map(|entry| entry.crc32c).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
     }
 }

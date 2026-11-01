@@ -132,7 +132,10 @@ pub(super) fn execute<W: Write>(
     let mut seen_lengths = HashSet::<Option<usize>>::new();
     // Reuse typed mark skipping: LENGTH only needs rows after OFFSET when
     // neither filtering, sorting nor deduplication changes row positions.
-    if is_unfiltered && query.order_by.is_none() && query.order_by_extra.is_empty() && !query.distinct
+    if is_unfiltered
+        && query.order_by.is_none()
+        && query.order_by_extra.is_empty()
+        && !query.distinct
     {
         skipped = reader.skip_prefix_rows(offset)?;
     }
@@ -150,15 +153,19 @@ pub(super) fn execute<W: Write>(
             TypedColumn::NullableText { values, nulls } => {
                 (values.offsets(), Some(nulls.as_slice()))
             }
-            _ => return Err(ExecutionError::Invalid(
-                "LENGTH read unexpected column type".into(),
-            )),
+            _ => {
+                return Err(ExecutionError::Invalid(
+                    "LENGTH read unexpected column type".into(),
+                ));
+            }
         };
         if offsets.len() != rows + 1
             || nulls.is_some_and(|map| map.len() != rows)
             || offsets.windows(2).any(|pair| pair[1] < pair[0])
         {
-            return Err(ExecutionError::Invalid("invalid LENGTH batch boundaries".into()));
+            return Err(ExecutionError::Invalid(
+                "invalid LENGTH batch boundaries".into(),
+            ));
         }
         for row in 0..rows {
             if !is_unfiltered && !typed::passes(&batch, row, &conditions) {
@@ -207,14 +214,16 @@ mod tests {
     #[test]
     fn length_decimal_renderer_matches_standard_formatting() {
         let mut output = Vec::new();
-        let values = [0usize, 1, 9, 10, 99, 100, 999, 1000,
-            1_000_000, usize::MAX];
+        let values = [0usize, 1, 9, 10, 99, 100, 999, 1000, 1_000_000, usize::MAX];
         for &value in &values {
             append_length_line(&mut output, Some(value)).unwrap();
         }
         append_length_line(&mut output, None).unwrap();
-        let wanted = values.iter().map(|value| format!("{value}\n"))
-            .collect::<String>() + "\\N\n";
+        let wanted = values
+            .iter()
+            .map(|value| format!("{value}\n"))
+            .collect::<String>()
+            + "\\N\n";
         assert_eq!(output, wanted.as_bytes());
 
         let mut many = Vec::new();
@@ -234,9 +243,8 @@ mod tests {
 
     #[test]
     fn length_predicates_keep_requested_column_first() {
-        let query = crate::parse_select(
-            "SELECT LENGTH(name) FROM part WHERE category = 'ok'",
-        ).unwrap();
+        let query =
+            crate::parse_select("SELECT LENGTH(name) FROM part WHERE category = 'ok'").unwrap();
         assert_eq!(projection_columns(&query, "name"), vec!["name", "category"]);
     }
 
@@ -246,8 +254,10 @@ mod tests {
         for value in [Some(0), None, Some(17), Some(usize::MAX)] {
             append_length_line(&mut bytes, value).unwrap();
         }
-        assert_eq!(String::from_utf8(bytes).unwrap(),
-            format!("0\n\\N\n17\n{}\n", usize::MAX));
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            format!("0\n\\N\n17\n{}\n", usize::MAX)
+        );
     }
 
     #[test]
@@ -305,9 +315,8 @@ mod distinct_length_integration_tests {
         ];
         write_wide_part(&root, &columns, &rows).unwrap();
 
-        let query = crate::parse_select(
-            "SELECT DISTINCT LENGTH(name) FROM part LIMIT 3 OFFSET 1",
-        ).unwrap();
+        let query =
+            crate::parse_select("SELECT DISTINCT LENGTH(name) FROM part LIMIT 3 OFFSET 1").unwrap();
         let mut output = Vec::new();
         execute(&query, &root, "name", &mut output).unwrap();
         assert_eq!(output, b"length(name)\n\\N\n5\n2\n");

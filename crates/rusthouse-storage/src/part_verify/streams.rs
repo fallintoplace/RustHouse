@@ -155,7 +155,10 @@ mod reused_verification_decode_tests {
         }
         std::fs::write(&path, bytes).unwrap();
         let mut report = PartVerification {
-            streams: 0, marks: 0, blocks: 0, decompressed_bytes: 0,
+            streams: 0,
+            marks: 0,
+            blocks: 0,
+            decompressed_bytes: 0,
         };
         let result = account_decoded_blocks(&path, &mut report);
         std::fs::remove_file(&path).unwrap();
@@ -174,11 +177,15 @@ mod adaptive_stream_single_pass_tests {
         WideMarks {
             path: "values.mrk2".into(),
             format: WideMarkFormat::Adaptive,
-            marks: rows.iter().enumerate().map(|(index, &rows)| WideMark {
-                compressed_offset: index as u64 * 16,
-                decompressed_offset: 0,
-                rows: Some(rows),
-            }).collect(),
+            marks: rows
+                .iter()
+                .enumerate()
+                .map(|(index, &rows)| WideMark {
+                    compressed_offset: index as u64 * 16,
+                    decompressed_offset: 0,
+                    rows: Some(rows),
+                })
+                .collect(),
         }
     }
 
@@ -186,14 +193,30 @@ mod adaptive_stream_single_pass_tests {
     fn detects_total_row_mismatches_and_overflow() {
         let mut layout = ScanLayout::default();
         validate_adaptive_stream(Path::new("a.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
-        let mismatch = validate_adaptive_stream(
-            Path::new("b.bin"), &marks(&[2, 4]), 5, &mut layout
-        ).unwrap_err();
-        assert!(matches!(mismatch, PartError::InvalidPart { reason: "mark row counts do not match count.txt", .. }));
+        let mismatch =
+            validate_adaptive_stream(Path::new("b.bin"), &marks(&[2, 4]), 5, &mut layout)
+                .unwrap_err();
+        assert!(matches!(
+            mismatch,
+            PartError::InvalidPart {
+                reason: "mark row counts do not match count.txt",
+                ..
+            }
+        ));
         let overflow = validate_adaptive_stream(
-            Path::new("c.bin"), &marks(&[u64::MAX, 1]), u64::MAX, &mut ScanLayout::default()
-        ).unwrap_err();
-        assert!(matches!(overflow, PartError::InvalidPart { reason: "mark row counts do not match count.txt", .. }));
+            Path::new("c.bin"),
+            &marks(&[u64::MAX, 1]),
+            u64::MAX,
+            &mut ScanLayout::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            overflow,
+            PartError::InvalidPart {
+                reason: "mark row counts do not match count.txt",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -201,8 +224,8 @@ mod adaptive_stream_single_pass_tests {
         let mut layout = ScanLayout::default();
         validate_adaptive_stream(Path::new("a.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
         validate_adaptive_stream(Path::new("b.bin"), &marks(&[2, 3]), 5, &mut layout).unwrap();
-        assert!(validate_adaptive_stream(
-            Path::new("c.bin"), &marks(&[3, 2]), 5, &mut layout
-        ).is_err());
+        assert!(
+            validate_adaptive_stream(Path::new("c.bin"), &marks(&[3, 2]), 5, &mut layout).is_err()
+        );
     }
 }

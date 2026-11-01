@@ -18,23 +18,13 @@ fn physical_nullable_predicates() {
     ));
     fs::create_dir(&root).unwrap();
 
-    let schema = [
-        Column {
-            name: "amount".into(),
-            data_type: "Nullable(UInt64)".into(),
-        },
-    ];
+    let schema = [Column {
+        name: "amount".into(),
+        data_type: "Nullable(UInt64)".into(),
+    }];
     let parts: Vec<Vec<Vec<Option<String>>>> = vec![
-        vec![
-            vec![None],
-            vec![Some("10".into())],
-            vec![None],
-        ],
-        vec![
-            vec![Some("5".into())],
-            vec![None],
-            vec![Some("12".into())],
-        ],
+        vec![vec![None], vec![Some("10".into())], vec![None]],
+        vec![vec![Some("5".into())], vec![None], vec![Some("12".into())]],
     ];
     for (index, rows) in parts.iter().enumerate() {
         let part = root.join(format!("all_{index}_{index}_0"));

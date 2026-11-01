@@ -1,9 +1,11 @@
 //! Bounded-memory exact median of physical integer columns.
 //! One byte of the key is selected per immutable scan. Each pass uses only
 //! 2 * 256 counters regardless of input cardinality.
-use super::{ExecutionError, batch_matches, count_batch_matches, typed};
 use super::predicates::CompiledPredicate;
-use rusthouse_storage::{NumericColumn, NumericQueryReader, PartMetadata, TypedColumn, TypedQueryReader};
+use super::{ExecutionError, batch_matches, count_batch_matches, typed};
+use rusthouse_storage::{
+    NumericColumn, NumericQueryReader, PartMetadata, TypedColumn, TypedQueryReader,
+};
 use std::path::Path;
 
 #[cfg(test)]
@@ -31,11 +33,15 @@ mod masked_prefix_tests {
 
 fn width_and_sign(kind: &str) -> Option<(usize, bool)> {
     Some(match kind {
-        "UInt8" => (1, false), "UInt16" => (2, false),
-        "UInt32" => (4, false), "UInt64" => (8, false),
+        "UInt8" => (1, false),
+        "UInt16" => (2, false),
+        "UInt32" => (4, false),
+        "UInt64" => (8, false),
         "UInt128" => (16, false),
-        "Int8" => (1, true), "Int16" => (2, true),
-        "Int32" => (4, true), "Int64" => (8, true),
+        "Int8" => (1, true),
+        "Int16" => (2, true),
+        "Int32" => (4, true),
+        "Int64" => (8, true),
         "Int128" => (16, true),
         _ => return None,
     })
@@ -46,10 +52,16 @@ pub(super) fn supports_type(kind: &str) -> bool {
 }
 
 fn low_mask(bits: usize) -> u128 {
-    if bits == 128 { u128::MAX } else { (1_u128 << bits) - 1 }
+    if bits == 128 {
+        u128::MAX
+    } else {
+        (1_u128 << bits) - 1
+    }
 }
 
-fn sorted_key_unsigned(value: u128) -> u128 { value }
+fn sorted_key_unsigned(value: u128) -> u128 {
+    value
+}
 
 fn sorted_key_signed(value: i128, bits: usize) -> u128 {
     ((value as u128) & low_mask(bits)) ^ (1_u128 << (bits - 1))
@@ -66,7 +78,11 @@ fn render_key(key: u128, bits: usize, signed: bool) -> String {
 fn signed_key_value(key: u128, bits: usize) -> i128 {
     let sign = 1_u128 << (bits - 1);
     let raw = key ^ sign;
-    let extended = if raw & sign != 0 { raw | !low_mask(bits) } else { raw };
+    let extended = if raw & sign != 0 {
+        raw | !low_mask(bits)
+    } else {
+        raw
+    };
     extended as i128
 }
 
@@ -88,7 +104,11 @@ fn render_middle_pair(low_key: u128, high_key: u128, bits: usize, signed: bool) 
     } else {
         let remainder = (low_key & 1) + (high_key & 1);
         let floor = (low_key >> 1) + (high_key >> 1) + remainder / 2;
-        if remainder % 2 == 0 { floor.to_string() } else { format!("{floor}.5") }
+        if remainder % 2 == 0 {
+            floor.to_string()
+        } else {
+            format!("{floor}.5")
+        }
     }
 }
 
@@ -153,9 +173,11 @@ fn count_column(
         NumericColumn::Int32(values) => signed!(values),
         NumericColumn::Int64(values) => signed!(values),
         NumericColumn::Int128(values) => signed!(values),
-        _ => return Err(ExecutionError::Invalid(
-            "radix median requires a native integer column".into()
-        )),
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "radix median requires a native integer column".into(),
+            ));
+        }
     }
     if shared_prefix {
         histogram[1] = histogram[0];
@@ -181,7 +203,17 @@ mod shared_histogram_tests {
     fn divergent_prefixes_keep_independent_counts() {
         let values = NumericColumn::UInt16(vec![1, 2, 257, 258]);
         let mut result = [[0u64; 256]; 2];
-        count_column(&values, None, |_| true, 16, 0, u128::MAX << 8, &[0, 256], &mut result).unwrap();
+        count_column(
+            &values,
+            None,
+            |_| true,
+            16,
+            0,
+            u128::MAX << 8,
+            &[0, 256],
+            &mut result,
+        )
+        .unwrap();
         assert_eq!(result[0][1], 1);
         assert_eq!(result[0][2], 1);
         assert_eq!(result[1][1], 1);
@@ -200,10 +232,14 @@ fn median_inner(
     filtered: Option<(&[String], &[Vec<CompiledPredicate>])>,
     typed_filtered: Option<(&[String], &[Vec<typed::Condition>])>,
 ) -> Result<Option<String>, ExecutionError> {
-    let kind = metadata.columns.iter().find(|item| item.name == column)
+    let kind = metadata
+        .columns
+        .iter()
+        .find(|item| item.name == column)
         .ok_or_else(|| ExecutionError::Invalid(format!("unknown column: {column}")))?;
     let base = if nullable {
-        kind.data_type.strip_prefix("Nullable(")
+        kind.data_type
+            .strip_prefix("Nullable(")
             .and_then(|kind| kind.strip_suffix(')'))
             .ok_or_else(|| ExecutionError::Invalid("expected Nullable column".into()))?
     } else {
@@ -211,7 +247,9 @@ fn median_inner(
     };
     let (bytes, signed) = width_and_sign(base)
         .ok_or_else(|| ExecutionError::Invalid("radix median requires integer values".into()))?;
-    if n == 0 { return Ok(None); }
+    if n == 0 {
+        return Ok(None);
+    }
     let bits = bytes * 8;
     let mut keys = [0_u128; 2];
     let mut ranks = [(n - 1) / 2, n / 2];
@@ -230,24 +268,40 @@ fn median_inner(
             while let Some(batch) = reader.next_batch()? {
                 let TypedColumn::NullableNumeric { values, nulls } = &batch[0] else {
                     return Err(ExecutionError::Invalid(
-                        "nullable radix input changed type".into()
+                        "nullable radix input changed type".into(),
                     ));
                 };
-                count_column(values, Some(nulls), |row| {
-                    typed_filtered.is_none_or(|(_, conditions)| {
-                        typed::passes(&batch, row, conditions)
-                    })
-                }, bits, shift, prefix_mask, &keys, &mut histogram)?;
+                count_column(
+                    values,
+                    Some(nulls),
+                    |row| {
+                        typed_filtered
+                            .is_none_or(|(_, conditions)| typed::passes(&batch, row, conditions))
+                    },
+                    bits,
+                    shift,
+                    prefix_mask,
+                    &keys,
+                    &mut histogram,
+                )?;
             }
         } else {
             let scan_columns = filtered.map_or(names.as_slice(), |(columns, _)| columns);
             let mut reader = NumericQueryReader::open_with_metadata(part, scan_columns, metadata)?;
             while let Some(batch) = reader.next_batch()? {
-                count_column(&batch[0], None, |row| {
-                    filtered.is_none_or(|(_, conditions)| {
-                        batch_matches(&batch, row, conditions)
-                    })
-                }, bits, shift, prefix_mask, &keys, &mut histogram)?;
+                count_column(
+                    &batch[0],
+                    None,
+                    |row| {
+                        filtered
+                            .is_none_or(|(_, conditions)| batch_matches(&batch, row, conditions))
+                    },
+                    bits,
+                    shift,
+                    prefix_mask,
+                    &keys,
+                    &mut histogram,
+                )?;
             }
         }
         for side in 0..2 {
@@ -264,7 +318,7 @@ fn median_inner(
             }
             if !selected {
                 return Err(ExecutionError::Invalid(
-                    "radix median row count differs from verified snapshot metadata".into()
+                    "radix median row count differs from verified snapshot metadata".into(),
                 ));
             }
         }
@@ -296,7 +350,8 @@ pub(super) fn median_nullable(
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, metadata)?;
     let mut count = 0u64;
     while let Some(nulls) = reader.next_null_batch()? {
-        count = count.checked_add(nulls.iter().filter(|&&v| v == 0).count() as u64)
+        count = count
+            .checked_add(nulls.iter().filter(|&&v| v == 0).count() as u64)
             .ok_or_else(|| ExecutionError::Invalid("median row count overflow".into()))?;
     }
     drop(reader);
@@ -317,14 +372,22 @@ pub(super) fn median_nullable_filtered(
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !typed::is_null_at(&batch[0], row) && typed::passes(&batch, row, conditions) {
-                selected_rows = selected_rows.checked_add(1)
+                selected_rows = selected_rows
+                    .checked_add(1)
                     .ok_or_else(|| ExecutionError::Invalid("median row count overflow".into()))?;
             }
         }
     }
     drop(reader);
-    median_inner(part, column, metadata, selected_rows, true, None,
-        Some((scan_columns, conditions)))
+    median_inner(
+        part,
+        column,
+        metadata,
+        selected_rows,
+        true,
+        None,
+        Some((scan_columns, conditions)),
+    )
 }
 
 /// Exact filtered order statistics without storing rows or hash-set keys.
@@ -344,8 +407,13 @@ pub(super) fn median_filtered(
     }
     drop(reader);
     median_inner(
-        part, column, metadata, selected_rows, false,
-        Some((scan_columns, conditions)), None,
+        part,
+        column,
+        metadata,
+        selected_rows,
+        false,
+        Some((scan_columns, conditions)),
+        None,
     )
 }
 
@@ -356,16 +424,29 @@ mod tests {
     #[test]
     fn exact_middle_pair_handles_half_values_without_float_rounding() {
         let max = u128::MAX;
-        assert_eq!(render_middle_pair(max - 1, max, 128, false), format!("{}.5", max - 1));
+        assert_eq!(
+            render_middle_pair(max - 1, max, 128, false),
+            format!("{}.5", max - 1)
+        );
         assert_eq!(render_middle_pair(max, max, 128, false), max.to_string());
         assert_eq!(render_middle_pair(1, 2, 64, false), "1.5");
 
         let key = |value| sorted_key_signed(value, 128);
-        assert_eq!(render_middle_pair(key(i128::MIN), key(i128::MAX), 128, true), "-0.5");
+        assert_eq!(
+            render_middle_pair(key(i128::MIN), key(i128::MAX), 128, true),
+            "-0.5"
+        );
         assert_eq!(render_middle_pair(key(-3), key(-2), 128, true), "-2.5");
         assert_eq!(render_middle_pair(key(-1), key(0), 128, true), "-0.5");
-        assert_eq!(render_middle_pair(key(9_007_199_254_740_993),
-            key(9_007_199_254_740_994), 128, true), "9007199254740993.5");
+        assert_eq!(
+            render_middle_pair(
+                key(9_007_199_254_740_993),
+                key(9_007_199_254_740_994),
+                128,
+                true
+            ),
+            "9007199254740993.5"
+        );
     }
 
     #[test]
@@ -388,10 +469,20 @@ mod lazy_radix_filter_tests {
         let nulls = [0, 0, 1, 0, 0];
         let calls = Cell::new(0);
         let mut histogram = [[0u64; 256]; 2];
-        count_column(&column, Some(&nulls), |row| {
-            calls.set(calls.get() + 1);
-            row != 4
-        }, 16, 0, u128::MAX << 8, &[0, 256], &mut histogram).unwrap();
+        count_column(
+            &column,
+            Some(&nulls),
+            |row| {
+                calls.set(calls.get() + 1);
+                row != 4
+            },
+            16,
+            0,
+            u128::MAX << 8,
+            &[0, 256],
+            &mut histogram,
+        )
+        .unwrap();
         assert_eq!(calls.get(), 3);
         assert_eq!(histogram[0][2], 1);
         assert_eq!(histogram[1][1], 1);
@@ -404,10 +495,20 @@ mod lazy_radix_filter_tests {
         let values = NumericColumn::UInt16(vec![1, 256, 2, 513]);
         let calls = Cell::new(0);
         let mut histogram = [[0u64; 256]; 2];
-        count_column(&values, None, |row| {
-            calls.set(calls.get() + 1);
-            row != 2
-        }, 16, 0, u128::MAX << 8, &[0, 0], &mut histogram).unwrap();
+        count_column(
+            &values,
+            None,
+            |row| {
+                calls.set(calls.get() + 1);
+                row != 2
+            },
+            16,
+            0,
+            u128::MAX << 8,
+            &[0, 0],
+            &mut histogram,
+        )
+        .unwrap();
         assert_eq!(calls.get(), 2);
         assert_eq!(histogram[0], histogram[1]);
         assert_eq!(histogram[0][1], 1);

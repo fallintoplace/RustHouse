@@ -78,9 +78,7 @@ fn write_json_row_into<W: Write>(
     row.reserve(line.len() + headers.len() * 8 + 3);
     row.push(b'{');
     for (index, header) in headers.iter().enumerate() {
-        let field = fields
-            .next()
-            .ok_or_else(row_width_error)?;
+        let field = fields.next().ok_or_else(row_width_error)?;
         if index != 0 {
             row.push(b',');
         }
@@ -169,12 +167,7 @@ impl<W: Write> Write for JsonlWriter<W> {
             // Forward them into the reusable JSON encoder without copying.
             if complete && self.line.is_empty() {
                 if let Some(headers) = self.headers.as_ref() {
-                    write_json_row_into(
-                        &mut self.output,
-                        headers,
-                        fragment,
-                        &mut self.encoded,
-                    )?;
+                    write_json_row_into(&mut self.output, headers, fragment, &mut self.encoded)?;
                     continue;
                 }
             }
@@ -395,7 +388,6 @@ mod tests {
             b"{\"name\\\"x\":\"alpha\",\"value\":\"1\"}\n{\"name\\\"x\":\"beta\",\"value\":\"2\"}\n"
         );
     }
-
 }
 
 #[cfg(test)]
@@ -421,7 +413,10 @@ mod bounded_jsonl_header_set_tests {
         let names = (0..8).map(|i| format!("v{i}")).collect::<Vec<_>>();
         let repeated = format!("{}\tv0", names.join("\t"));
         assert!(parse_headers(repeated.as_bytes()).is_err());
-        let oversized = (0..65).map(|i| format!("x{i}")).collect::<Vec<_>>().join("\t");
+        let oversized = (0..65)
+            .map(|i| format!("x{i}"))
+            .collect::<Vec<_>>()
+            .join("\t");
         assert!(parse_headers(oversized.as_bytes()).is_err());
         assert!(parse_headers(b"v0\t\xff").is_err());
     }

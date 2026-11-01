@@ -11,9 +11,8 @@ const LOCK_NB: std::os::raw::c_int = 4;
 
 #[test]
 fn catalog_ddl_fails_closed_while_another_writer_owns_the_lock() {
-    let catalog = std::env::temp_dir().join(format!(
-        "rusthouse-catalog-lock-{}", std::process::id()
-    ));
+    let catalog =
+        std::env::temp_dir().join(format!("rusthouse-catalog-lock-{}", std::process::id()));
     let _ = fs::remove_dir_all(&catalog);
     fs::create_dir_all(&catalog).unwrap();
     let file = fs::OpenOptions::new()

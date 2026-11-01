@@ -76,18 +76,14 @@ fn has_trailing_byte(reader: &mut impl Read) -> io::Result<bool> {
 
 // A same-length in-place rewrite can preserve mtime while changing ctime.
 // Check both timestamps on Unix before trusting a checksum of an immutable file.
-fn stored_file_state_unchanged(
-    before: &fs::Metadata,
-    after: &fs::Metadata,
-) -> io::Result<bool> {
+fn stored_file_state_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> io::Result<bool> {
     if before.len() != after.len() || before.modified()? != after.modified()? {
         return Ok(false);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        Ok(before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec())
+        Ok(before.ctime() == after.ctime() && before.ctime_nsec() == after.ctime_nsec())
     }
     #[cfg(not(unix))]
     {
@@ -118,9 +114,7 @@ fn hash_stored_file(path: &Path, expected_size: u64) -> Result<u128, PartError> 
     #[cfg(unix)]
     ensure_opened_file_identity(path, &file)?;
     let finished = file.metadata().map_err(|source| io_error(path, source))?;
-    if !stored_file_state_unchanged(&opened, &finished)
-        .map_err(|source| io_error(path, source))?
-    {
+    if !stored_file_state_unchanged(&opened, &finished).map_err(|source| io_error(path, source))? {
         return Err(invalid(path, "file changed during hash verification"));
     }
     Ok(u128::from(hash))
@@ -669,7 +663,7 @@ mod interrupted_hash_probe_tests {
     }
 
     #[test]
-    fn EOF_probe_retries_interrupted_reads_and_detects_extensions() {
+    fn eof_probe_retries_interrupted_reads_and_detects_extensions() {
         let mut clean = InterruptOnce {
             inner: Cursor::new(&b""[..]),
             interrupted: false,
@@ -692,7 +686,8 @@ mod stored_hash_change_time_tests {
     fn rejects_ctime_changes_even_when_size_and_mtime_remain_equal() {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-stored-hash-ctime-{}-{:?}",
-            std::process::id(), std::thread::current().id(),
+            std::process::id(),
+            std::thread::current().id(),
         ));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("data.bin");

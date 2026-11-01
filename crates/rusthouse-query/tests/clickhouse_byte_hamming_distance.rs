@@ -17,12 +17,18 @@ fn counts_mismatched_bytes() {
     ] {
         assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
     }
-    assert_eq!(value("SELECT byteHammingDistance(NULL, 'abc')"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT byteHammingDistance(NULL, 'abc')"),
+        ConstantValue::Null
+    );
 }
 #[test]
 fn validates_length_and_types() {
-    for sql in ["SELECT byteHammingDistance('a','ab')",
-                "SELECT byteHammingDistance(1,'a')", "SELECT byteHammingDistance('a')"] {
+    for sql in [
+        "SELECT byteHammingDistance('a','ab')",
+        "SELECT byteHammingDistance(1,'a')",
+        "SELECT byteHammingDistance('a')",
+    ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }

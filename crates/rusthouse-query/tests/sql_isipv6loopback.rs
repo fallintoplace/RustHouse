@@ -1,4 +1,4 @@
-use rusthouse_query::{parse_select, ConstantValue, Projection};
+use rusthouse_query::{ConstantValue, Projection, parse_select};
 
 fn scalar(sql: &str) -> ConstantValue {
     match parse_select(sql).unwrap().projection {
@@ -9,12 +9,7 @@ fn scalar(sql: &str) -> ConstantValue {
 
 #[test]
 fn isipv6loopback_recognizes_network_boundaries() {
-    for (address, expected) in [
-        ("::1", 1),
-        ("::", 0),
-        ("2001:db8::1", 0),
-        ("fd00::1", 0),
-    ] {
+    for (address, expected) in [("::1", 1), ("::", 0), ("2001:db8::1", 0), ("fd00::1", 0)] {
         let sql = format!("SELECT isIPv6Loopback('{address}')");
         assert_eq!(scalar(&sql), ConstantValue::Integer(expected), "{sql}");
     }

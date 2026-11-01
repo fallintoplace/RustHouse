@@ -1,4 +1,5 @@
 """Prevent README JOIN limit claims from drifting behind Rust executor constants."""
+import math
 import re
 import unittest
 from pathlib import Path
@@ -9,10 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 def source_limit(name):
     path = ROOT / "crates" / "rusthouse-query" / "src" / "join.rs"
     source = path.read_text(encoding="utf-8")
-    match = re.search(rf"pub\(crate\) const {re.escape(name)}:\s*\w+\s*=\s*([\d_]+);", source)
+    match = re.search(
+        rf"pub\(crate\) const {re.escape(name)}:\s*\w+\s*=\s*([\d_]+(?:\s*\*\s*[\d_]+)*);",
+        source,
+    )
     if not match:
         raise AssertionError(f"missing JOIN limit constant: {name}")
-    return int(match.group(1).replace("_", ""))
+    return math.prod(int(part.strip().replace("_", "")) for part in match.group(1).split("*"))
 
 
 class JoinDocumentedLimitsTests(unittest.TestCase):

@@ -12,15 +12,26 @@ fn json_type_exposes_nested_types_and_null() {
         (r#"SELECT JSONType('{"a":{}}', 'a') AS value"#, "Object"),
         (r#"SELECT JSONType('{"a":null}', 'a') AS value"#, "Null"),
         (r#"SELECT JSONType('{"a":1}', 'missing') AS value"#, "Null"),
-        (r#"SELECT JSONType('{"a":{"b":[1]}}', 'a.b') AS value"#, "Array"),
+        (
+            r#"SELECT JSONType('{"a":{"b":[1]}}', 'a.b') AS value"#,
+            "Array",
+        ),
         (r#"SELECT JSONType('[1,2]') AS value"#, "Array"),
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", sql])
             .output()
             .unwrap();
-        assert!(result.status.success(), "{sql}: {}", String::from_utf8_lossy(&result.stderr));
-        assert_eq!(result.stdout, format!("value\n{expected}\n").as_bytes(), "{sql}");
+        assert!(
+            result.status.success(),
+            "{sql}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            result.stdout,
+            format!("value\n{expected}\n").as_bytes(),
+            "{sql}"
+        );
     }
 }
 
@@ -32,7 +43,11 @@ fn json_type_validates_arity_and_preserves_sql_null() {
         .unwrap();
     assert!(result.status.success());
     assert_eq!(result.stdout, b"value\n\\N\n");
-    for sql in ["SELECT JSONType()", "SELECT JSONType('{}', 'a', 'b')", "SELECT JSONType('{broken')"] {
+    for sql in [
+        "SELECT JSONType()",
+        "SELECT JSONType('{}', 'a', 'b')",
+        "SELECT JSONType('{broken')",
+    ] {
         let result = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", sql])
             .output()

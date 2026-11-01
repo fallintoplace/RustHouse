@@ -37,9 +37,7 @@ fn create_private_staging_directory(path: &Path) -> io::Result<()> {
 
 // Crashed copies may leave a stage directory behind. A reused PID must
 // not prevent a later, independent snapshot from being copied.
-fn create_snapshot_staging_with(
-    mut candidate: impl FnMut() -> PathBuf,
-) -> io::Result<PathBuf> {
+fn create_snapshot_staging_with(mut candidate: impl FnMut() -> PathBuf) -> io::Result<PathBuf> {
     for _ in 0..32 {
         let path = candidate();
         match create_private_staging_directory(&path) {
@@ -68,7 +66,6 @@ fn ensure_destination_absent(destination: &Path) -> Result<(), PartError> {
     }
 }
 
-
 /// Linux can atomically publish a directory without replacing another
 /// writer's destination, even if it appears after the absence check.
 #[cfg(target_os = "linux")]
@@ -95,7 +92,13 @@ fn publish_snapshot_no_replace(staging: &Path, destination: &Path) -> io::Result
     let old = path(staging)?;
     let new = path(destination)?;
     let code = unsafe {
-        renameat2(AT_FDCWD, old.as_ptr(), AT_FDCWD, new.as_ptr(), RENAME_NOREPLACE)
+        renameat2(
+            AT_FDCWD,
+            old.as_ptr(),
+            AT_FDCWD,
+            new.as_ptr(),
+            RENAME_NOREPLACE,
+        )
     };
     if code == -1 {
         Err(io::Error::last_os_error())
@@ -108,7 +111,10 @@ fn publish_snapshot_no_replace(staging: &Path, destination: &Path) -> io::Result
 #[cfg(not(target_os = "linux"))]
 fn publish_snapshot_no_replace(staging: &Path, destination: &Path) -> io::Result<()> {
     match fs::symlink_metadata(destination) {
-        Ok(_) => Err(io::Error::new(io::ErrorKind::AlreadyExists, "destination exists")),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "destination exists",
+        )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => fs::rename(staging, destination),
         Err(error) => Err(error),
     }
@@ -128,26 +134,48 @@ fn copy_snapshot_part(
         .ok_or_else(|| PartError::InvalidScan("part has no name".into()))?;
     let copy = staging.join(name);
     fs::create_dir(&copy).map_err(|error| io_error(&copy, error))?;
-    let mut report = SnapshotCopy { parts: 1, files: 0, bytes: 0 };
+    let mut report = SnapshotCopy {
+        parts: 1,
+        files: 0,
+        bytes: 0,
+    };
     for entry in fs::read_dir(part).map_err(|error| io_error(part, error))? {
         let entry = entry.map_err(|error| io_error(part, error))?;
         let source_file = entry.path();
-        if !entry.file_type().map_err(|error| io_error(&source_file, error))?.is_file() {
-            return Err(PartError::InvalidScan("part contains non-file entries".into()));
+        if !entry
+            .file_type()
+            .map_err(|error| io_error(&source_file, error))?
+            .is_file()
+        {
+            return Err(PartError::InvalidScan(
+                "part contains non-file entries".into(),
+            ));
         }
         let destination_file = copy.join(entry.file_name());
-        let bytes = entry.metadata().map_err(|error| io_error(&source_file, error))?.len();
-        report.bytes = report.bytes.checked_add(bytes)
+        let bytes = entry
+            .metadata()
+            .map_err(|error| io_error(&source_file, error))?
+            .len();
+        report.bytes = report
+            .bytes
+            .checked_add(bytes)
             .filter(|&total| total <= max_bytes)
             .ok_or_else(|| PartError::InvalidScan("copy exceeds byte cap".into()))?;
         if report.files >= max_files {
-            return Err(PartError::InvalidScan("snapshot copy exceeds file limit".into()));
+            return Err(PartError::InvalidScan(
+                "snapshot copy exceeds file limit".into(),
+            ));
         }
         let copied_bytes = crate::distributed_atomic_copy::copy_immutable_file(
-            &source_file, &destination_file, bytes,
-        ).map_err(|error| io_error(&destination_file, error))?;
+            &source_file,
+            &destination_file,
+            bytes,
+        )
+        .map_err(|error| io_error(&destination_file, error))?;
         if copied_bytes != bytes {
-            return Err(PartError::InvalidScan("source size changed during snapshot copy".into()));
+            return Err(PartError::InvalidScan(
+                "source size changed during snapshot copy".into(),
+            ));
         }
         report.files += 1;
     }
@@ -164,10 +192,14 @@ fn combine_copy_report(
     max_bytes: u64,
 ) -> Result<(), PartError> {
     total.parts += part.parts;
-    total.files = total.files.checked_add(part.files)
+    total.files = total
+        .files
+        .checked_add(part.files)
         .filter(|&files| files <= max_files)
         .ok_or_else(|| PartError::InvalidScan("snapshot copy exceeds file limit".into()))?;
-    total.bytes = total.bytes.checked_add(part.bytes)
+    total.bytes = total
+        .bytes
+        .checked_add(part.bytes)
         .filter(|&bytes| bytes <= max_bytes)
         .ok_or_else(|| PartError::InvalidScan("copy exceeds byte cap".into()))?;
     Ok(())
@@ -186,12 +218,18 @@ fn copy_snapshot_parts(
     let workers = std::thread::available_parallelism()
         .map_or(1, |available| available.get())
         .min(MAX_COPY_WORKERS);
-    let mut report = SnapshotCopy { parts: 0, files: 0, bytes: 0 };
+    let mut report = SnapshotCopy {
+        parts: 0,
+        files: 0,
+        bytes: 0,
+    };
     if parts.len() < PARALLEL_THRESHOLD || workers == 1 {
         for part in parts {
             combine_copy_report(
-                &mut report, copy_snapshot_part(part, staging, max_files, max_bytes)?,
-                max_files, max_bytes,
+                &mut report,
+                copy_snapshot_part(part, staging, max_files, max_bytes)?,
+                max_files,
+                max_bytes,
             )?;
         }
         return Ok(report);
@@ -211,16 +249,22 @@ fn copy_snapshot_parts(
             let slots = &slots;
             let first_failure = &first_failure;
             let handle = std::thread::Builder::new()
-                .spawn_scoped(scope, move || loop {
-                    let index = cursor.fetch_add(1, Ordering::Relaxed);
-                    if index >= parts.len() || index > first_failure.load(Ordering::Acquire) {
-                        break;
+                .spawn_scoped(scope, move || {
+                    loop {
+                        let index = cursor.fetch_add(1, Ordering::Relaxed);
+                        if index >= parts.len() || index > first_failure.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let result =
+                            copy_snapshot_part(&parts[index], staging, max_files, max_bytes);
+                        if result.is_err() {
+                            first_failure.fetch_min(index, Ordering::AcqRel);
+                        }
+                        assert!(
+                            slots[index].set(result).is_ok(),
+                            "part copied more than once"
+                        );
                     }
-                    let result = copy_snapshot_part(&parts[index], staging, max_files, max_bytes);
-                    if result.is_err() {
-                        first_failure.fetch_min(index, Ordering::AcqRel);
-                    }
-                    assert!(slots[index].set(result).is_ok(), "part copied more than once");
                 })
                 .map_err(|error| {
                     PartError::InvalidScan(format!("cannot start snapshot worker: {error}"))
@@ -228,9 +272,9 @@ fn copy_snapshot_parts(
             handles.push(handle);
         }
         for handle in handles {
-            handle.join().map_err(|_| {
-                PartError::InvalidScan("snapshot copy worker panicked".into())
-            })?;
+            handle
+                .join()
+                .map_err(|_| PartError::InvalidScan("snapshot copy worker panicked".into()))?;
         }
         Ok(())
     })?;
@@ -241,7 +285,8 @@ fn copy_snapshot_parts(
         if index > first_failure {
             break;
         }
-        let part = slot.into_inner()
+        let part = slot
+            .into_inner()
             .ok_or_else(|| PartError::InvalidScan("missing snapshot copy result".into()))??;
         combine_copy_report(&mut report, part, max_files, max_bytes)?;
     }
@@ -296,8 +341,7 @@ pub fn copy_frozen_snapshot_with_file_limit(
     // Keep replica copies outside the source tree. Otherwise a successful
     // copy would silently mutate its supposedly frozen source snapshot.
     let source_root = fs::canonicalize(source).map_err(|error| io_error(source, error))?;
-    let destination_parent = fs::canonicalize(parent)
-        .map_err(|error| io_error(parent, error))?;
+    let destination_parent = fs::canonicalize(parent).map_err(|error| io_error(parent, error))?;
     if destination_parent.starts_with(&source_root) {
         return Err(PartError::InvalidScan(
             "snapshot copy destination must be outside the source tree".into(),
@@ -311,12 +355,11 @@ pub fn copy_frozen_snapshot_with_file_limit(
         ))
     })
     .map_err(|error| io_error(parent, error))?;
-    let copied = copy_snapshot_parts(&parts, &staging, max_files, max_bytes)
-        .and_then(|report| {
-            inspect_query_source(&staging)?;
-            sync_directory(&staging)?;
-            Ok(report)
-        });
+    let copied = copy_snapshot_parts(&parts, &staging, max_files, max_bytes).and_then(|report| {
+        inspect_query_source(&staging)?;
+        sync_directory(&staging)?;
+        Ok(report)
+    });
     let report = match copied {
         Ok(report) => report,
         Err(error) => {
@@ -326,7 +369,9 @@ pub fn copy_frozen_snapshot_with_file_limit(
     };
     if !source_generation_unchanged(source, &active) {
         let _ = fs::remove_dir_all(&staging);
-        return Err(PartError::InvalidScan("source snapshot changed during copy".into()));
+        return Err(PartError::InvalidScan(
+            "source snapshot changed during copy".into(),
+        ));
     }
     if let Err(error) = ensure_destination_absent(destination) {
         let _ = fs::remove_dir_all(&staging);
@@ -352,16 +397,18 @@ pub fn preview_frozen_snapshot(
     let active = resolve_active_snapshot(source)?;
     let parts = query_parts(&active)?;
     if parts.len() > max_parts || max_parts > 16_384 {
-        return Err(PartError::InvalidScan("snapshot preview exceeds part limit".into()));
+        return Err(PartError::InvalidScan(
+            "snapshot preview exceeds part limit".into(),
+        ));
     }
     // Reuse the same immutable generation and part list for preview.
     // The final source-generation check still rejects concurrent switches.
     crate::query_source::inspect_parts_metadata(&active, &parts)?;
-    let files = crate::distributed_inventory::inventory_active_snapshot(
-        &active, max_files, max_bytes,
-    )?;
+    let files =
+        crate::distributed_inventory::inventory_active_snapshot(&active, max_files, max_bytes)?;
     let bytes = files.iter().try_fold(0u64, |total, file| {
-        total.checked_add(file.bytes)
+        total
+            .checked_add(file.bytes)
             .ok_or_else(|| PartError::InvalidScan("snapshot preview byte overflow".into()))
     })?;
     for part in &parts {
@@ -387,7 +434,8 @@ mod snapshot_staging_collision_tests {
     #[test]
     fn retries_abandoned_directory_without_touching_its_contents() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-snapshot-staging-collision-{}", std::process::id()
+            "rusthouse-snapshot-staging-collision-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -398,8 +446,13 @@ mod snapshot_staging_collision_tests {
         let mut attempts = 0;
         let created = create_snapshot_staging_with(|| {
             attempts += 1;
-            if attempts == 1 { orphan.clone() } else { new.clone() }
-        }).unwrap();
+            if attempts == 1 {
+                orphan.clone()
+            } else {
+                new.clone()
+            }
+        })
+        .unwrap();
         assert_eq!(attempts, 2);
         assert_eq!(created, new);
         assert_eq!(fs::read(orphan.join("keep")).unwrap(), b"old copy");
@@ -415,9 +468,8 @@ mod parallel_snapshot_copy_tests {
 
     #[test]
     fn many_immutable_parts_copy_as_one_atomic_snapshot() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-parallel-copy-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-parallel-copy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let source = root.join("source");
         let destination = root.join("destination");
@@ -425,14 +477,18 @@ mod parallel_snapshot_copy_tests {
         for index in 0..20 {
             write_wide_part(
                 &source.join(format!("all_{index}_{index}_0")),
-                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[Column {
+                    name: "id".into(),
+                    data_type: "UInt64".into(),
+                }],
                 &[vec![Some(index.to_string())]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let preview = preview_frozen_snapshot(&source, 20, 256, 4_000_000).unwrap();
-        let copied = copy_frozen_snapshot_with_file_limit(
-            &source, &destination, 20, 256, 4_000_000,
-        ).unwrap();
+        let copied =
+            copy_frozen_snapshot_with_file_limit(&source, &destination, 20, 256, 4_000_000)
+                .unwrap();
         assert_eq!(copied, preview);
         assert_eq!(copied.parts, 20);
         assert_eq!(query_parts(&destination).unwrap().len(), 20);
@@ -472,15 +528,20 @@ mod tests {
     #[test]
     fn rejects_copying_into_its_own_snapshot_root() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-snapshot-self-copy-{}", std::process::id()
+            "rusthouse-snapshot-self-copy-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         write_wide_part(
             &root.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("1".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         let nested = root.join("replica");
         assert!(copy_frozen_snapshot(&root, &nested, 1, 1_000_000).is_err());
         assert!(!nested.exists());
@@ -519,18 +580,21 @@ mod snapshot_preflight_tests {
 
     #[test]
     fn predicts_copy_requirements_without_publishing_destination() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-snapshot-preview-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-snapshot-preview-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let source = root.join("source");
         let destination = root.join("destination");
         fs::create_dir_all(&source).unwrap();
         write_wide_part(
             &source.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("7".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         let preview = preview_frozen_snapshot(&source, 1, 32, 1_000_000).unwrap();
         assert_eq!(preview.parts, 1);
         assert!(preview.files > 0);
@@ -552,7 +616,8 @@ mod immutable_snapshot_copy_tests {
     #[test]
     fn copy_does_not_leave_replica_staging_files() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-copy-staging-clean-{}", std::process::id()
+            "rusthouse-copy-staging-clean-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         let source = root.join("source");
@@ -614,22 +679,27 @@ mod copy_file_budget_tests {
 
     #[test]
     fn refuses_to_publish_a_copy_beyond_its_file_budget() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-copy-file-budget-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-copy-file-budget-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let source = root.join("source");
         let destination = root.join("destination");
         fs::create_dir_all(&source).unwrap();
         write_wide_part(
             &source.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("1".into())]],
-        ).unwrap();
-        assert!(copy_frozen_snapshot_with_file_limit(&source, &destination, 1, 1, 1_000_000).is_err());
+        )
+        .unwrap();
+        assert!(
+            copy_frozen_snapshot_with_file_limit(&source, &destination, 1, 1, 1_000_000).is_err()
+        );
         assert!(!destination.exists());
-        let copied = copy_frozen_snapshot_with_file_limit(&source, &destination, 1, 32, 1_000_000).unwrap();
+        let copied =
+            copy_frozen_snapshot_with_file_limit(&source, &destination, 1, 32, 1_000_000).unwrap();
         assert!(copied.files > 1);
         fs::remove_dir_all(root).unwrap();
     }
@@ -653,12 +723,14 @@ mod preflight_copy_budget_tests {
         fs::create_dir_all(&source).unwrap();
         write_wide_part(
             &source.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("3".into())]],
         )
         .unwrap();
-        let error = copy_frozen_snapshot_with_file_limit(&source, &target, 1, 32, 1)
-            .unwrap_err();
+        let error = copy_frozen_snapshot_with_file_limit(&source, &target, 1, 32, 1).unwrap_err();
         assert!(error.to_string().contains("inventory"));
         assert!(!target.exists());
         assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
@@ -673,14 +745,33 @@ mod pinned_preview_generation_tests {
 
     #[test]
     fn previews_selected_generation_instead_of_relisting_the_active_pointer() {
-        let root = std::env::temp_dir().join(format!("rusthouse-preview-generations-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-preview-generations-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&root);
         let first = root.join(".rusthouse-versions/g1");
         let second = root.join(".rusthouse-versions/g2");
         fs::create_dir_all(&first).unwrap();
         fs::create_dir_all(&second).unwrap();
-        write_wide_part(&first.join("all_0_0_0"), &[Column { name: "id".into(), data_type: "UInt64".into() }], &[vec![Some("1".into())]]).unwrap();
-        write_wide_part(&second.join("all_0_0_0"), &[Column { name: "id".into(), data_type: "String".into() }], &[vec![Some("data".repeat(256))]]).unwrap();
+        write_wide_part(
+            &first.join("all_0_0_0"),
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[vec![Some("1".into())]],
+        )
+        .unwrap();
+        write_wide_part(
+            &second.join("all_0_0_0"),
+            &[Column {
+                name: "id".into(),
+                data_type: "String".into(),
+            }],
+            &[vec![Some("data".repeat(256))]],
+        )
+        .unwrap();
         fs::write(root.join(".rusthouse-active"), "g1\n").unwrap();
         let first_preview = preview_frozen_snapshot(&root, 1, 100, u64::MAX).unwrap();
         fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
@@ -699,9 +790,8 @@ mod private_snapshot_copy_tests {
 
     #[test]
     fn staging_directory_blocks_other_local_users() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-private-copy-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-private-copy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let staging = root.join("staging");
@@ -743,7 +833,8 @@ mod atomic_publish_tests {
     #[test]
     fn does_not_replace_destination_created_after_preflight() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-snapshot-no-replace-{}", std::process::id()
+            "rusthouse-snapshot-no-replace-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
@@ -772,7 +863,9 @@ mod parallel_copy_failfast_tests {
     #[test]
     fn failed_source_part_does_not_publish_a_partial_snapshot() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-copy-cancellation-{}-{}", std::process::id(), line!()
+            "rusthouse-copy-cancellation-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -782,9 +875,13 @@ mod parallel_copy_failfast_tests {
             let part = source.join(format!("all_{index}_{index}_0"));
             write_wide_part(
                 &part,
-                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[Column {
+                    name: "id".into(),
+                    data_type: "UInt64".into(),
+                }],
                 &[vec![Some(index.to_string())]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let parts = query_parts(&source).unwrap();
         let staging = root.join("staging");
@@ -805,37 +902,40 @@ mod reused_part_listing_regression_tests {
     fn many_part_preview_and_atomic_copy_share_exact_report_and_rows() {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-reused-part-list-{}-{:?}",
-            std::process::id(), std::thread::current().id(),
+            std::process::id(),
+            std::thread::current().id(),
         ));
         let _ = fs::remove_dir_all(&root);
         let source = root.join("source");
         let replica = root.join("replica");
         fs::create_dir_all(&source).unwrap();
         let columns = [Column {
-            name: "amount".to_owned(), data_type: "UInt64".to_owned(),
+            name: "amount".to_owned(),
+            data_type: "UInt64".to_owned(),
         }];
         let mut expected_rows = 0u64;
         for index in (0..36usize).rev() {
             let row_count = index % 5 + 1;
-            let rows = (0..row_count).map(|row| {
-                vec![Some((index * 100 + row).to_string())]
-            }).collect::<Vec<_>>();
+            let rows = (0..row_count)
+                .map(|row| vec![Some((index * 100 + row).to_string())])
+                .collect::<Vec<_>>();
             write_wide_part(
                 &source.join(format!("all_{index}_{index}_0")),
-                &columns, &rows,
-            ).unwrap();
+                &columns,
+                &rows,
+            )
+            .unwrap();
             expected_rows += row_count as u64;
         }
-        let direct = crate::query_source::inspect_parts_metadata(
-            &source, &query_parts(&source).unwrap(),
-        ).unwrap();
+        let direct =
+            crate::query_source::inspect_parts_metadata(&source, &query_parts(&source).unwrap())
+                .unwrap();
         assert_eq!(direct.rows, expected_rows);
         let preview = preview_frozen_snapshot(&source, 36, 512, 10_000_000).unwrap();
         assert_eq!(preview.parts, 36);
         assert!(!replica.exists());
-        let actual = copy_frozen_snapshot_with_file_limit(
-            &source, &replica, 36, 512, 10_000_000,
-        ).unwrap();
+        let actual =
+            copy_frozen_snapshot_with_file_limit(&source, &replica, 36, 512, 10_000_000).unwrap();
         assert_eq!(actual, preview);
         assert_eq!(inspect_query_source(&replica).unwrap().rows, expected_rows);
         fs::remove_dir_all(root).unwrap();

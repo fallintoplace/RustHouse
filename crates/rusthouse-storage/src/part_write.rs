@@ -163,7 +163,11 @@ fn write_tracked_file(
     Ok(())
 }
 
-fn append_block(result: &mut Vec<u8>, data: &[u8], compression: PartCompression) -> Result<(), PartError> {
+fn append_block(
+    result: &mut Vec<u8>,
+    data: &[u8],
+    compression: PartCompression,
+) -> Result<(), PartError> {
     let length = u32::try_from(data.len()).map_err(|_| invalid("part column is too large"))?;
     // Keep tiny and incompressible blocks in the ClickHouse NONE format.
     let compressed = if data.len() >= 128 {
@@ -377,9 +381,10 @@ pub fn write_wide_part_with_compression(
                 for (name, granules) in streams {
                     // The encoded granules are already in memory. Count bytes
                     // once so the checksum stream does not repeatedly reallocate.
-                    let uncompressed_size = granules.iter().try_fold(0usize, |used, chunk| {
-                        used.checked_add(chunk.len().max(1))
-                    }).filter(|&size| size <= MAX_STREAM_BYTES)
+                    let uncompressed_size = granules
+                        .iter()
+                        .try_fold(0usize, |used, chunk| used.checked_add(chunk.len().max(1)))
+                        .filter(|&size| size <= MAX_STREAM_BYTES)
                         .ok_or_else(|| invalid("part column exceeds 8 MiB"))?;
                     let mut encoded = Vec::new();
                     // Hash the decoded stream across granules without retaining a
@@ -477,7 +482,10 @@ mod tests {
             .map(|index| Some(if index == 4 { "invalid" } else { "1" }.to_owned()))
             .collect::<Vec<_>>();
         assert!(write_wide_part(&part, &columns, &[row]).is_err());
-        assert!(!part.exists(), "failed writes must not publish partial parts");
+        assert!(
+            !part.exists(),
+            "failed writes must not publish partial parts"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -797,7 +805,10 @@ mod tests {
             marks.marks.iter().map(|mark| mark.rows).collect::<Vec<_>>(),
             vec![Some(1024), Some(1024), Some(52)]
         );
-        assert_eq!(marks.marks[0].compressed_offset, marks.marks[1].compressed_offset);
+        assert_eq!(
+            marks.marks[0].compressed_offset,
+            marks.marks[1].compressed_offset
+        );
         assert!(marks.marks[1].decompressed_offset > marks.marks[0].decompressed_offset);
         let note_marks = read_wide_marks(part.join("note.null.mrk2")).unwrap();
         assert_eq!(
@@ -1090,15 +1101,16 @@ mod writer_schema_bounds_tests {
     #[test]
     fn rejects_zero_and_oversized_column_schemas() {
         assert!(validate_part_columns(&[]).is_err());
-        let columns = (0..129).map(|index| Column {
-            name: format!("field_{index}"),
-            data_type: "UInt64".into(),
-        }).collect::<Vec<_>>();
+        let columns = (0..129)
+            .map(|index| Column {
+                name: format!("field_{index}"),
+                data_type: "UInt64".into(),
+            })
+            .collect::<Vec<_>>();
         assert!(validate_part_columns(&columns).is_err());
         assert!(validate_part_columns(&columns[..128]).is_ok());
     }
 }
-
 
 #[cfg(test)]
 mod append_compressed_block_tests {
@@ -1107,7 +1119,9 @@ mod append_compressed_block_tests {
     #[test]
     fn appended_blocks_preserve_standalone_wire_format() {
         let repeated = vec![0x41; 64 * 1024];
-        let irregular = (0..(16 * 1024)).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+        let irregular = (0..(16 * 1024))
+            .map(|n| (n % 251) as u8)
+            .collect::<Vec<_>>();
         for codec in [PartCompression::Lz4, PartCompression::Zstd] {
             let mut output = vec![7u8, 8u8, 9u8];
             for input in [&repeated[..], &irregular[..], &[1u8, 2, 3][..]] {

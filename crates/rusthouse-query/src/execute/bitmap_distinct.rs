@@ -2,8 +2,8 @@
 //! Sparse prefixes store exact keys; dense prefixes use 8 KiB bitmaps.
 
 use super::ExecutionError;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 const WORDS_PER_BLOCK: usize = 1024;
 const MAX_BLOCKS: usize = 65_536; // All UInt16 prefixes, still bounded by sparse and dense memory caps.
@@ -37,11 +37,17 @@ impl SparseKeys {
     fn new(value: u16) -> Self {
         let mut inline = [0; INLINE_SUFFIXES];
         inline[0] = value;
-        Self { inline, inline_len: 1, hashed: None }
+        Self {
+            inline,
+            inline_len: 1,
+            hashed: None,
+        }
     }
 
     fn len(&self) -> usize {
-        self.hashed.as_ref().map_or(self.inline_len, |keys| keys.len())
+        self.hashed
+            .as_ref()
+            .map_or(self.inline_len, |keys| keys.len())
     }
 
     fn contains(&self, value: &u16) -> bool {
@@ -73,7 +79,8 @@ impl SparseKeys {
     }
 
     fn iter(&self) -> impl Iterator<Item = &u16> {
-        self.inline[..self.inline_len].iter()
+        self.inline[..self.inline_len]
+            .iter()
             .chain(self.hashed.iter().flat_map(|keys| keys.iter()))
     }
 
@@ -109,16 +116,18 @@ mod inline_sparse_tests {
     fn merge_promotes_sparse_prefixes_without_double_counting() {
         let mut left = BitmapDistinct32::new();
         let mut right = BitmapDistinct32::new();
-        for suffix in 0..8u32 { left.insert(suffix).unwrap(); }
-        for suffix in 4..12u32 { right.insert(suffix).unwrap(); }
+        for suffix in 0..8u32 {
+            left.insert(suffix).unwrap();
+        }
+        for suffix in 4..12u32 {
+            right.insert(suffix).unwrap();
+        }
         left.merge_from(&right).unwrap();
         assert_eq!(left.len(), 12);
         left.merge_from(&right).unwrap();
         assert_eq!(left.len(), 12);
     }
 }
-
-
 
 fn set_bitmap_bit_if_unset(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
     let index = usize::from(suffix);
@@ -226,7 +235,9 @@ impl BitmapDistinct32 {
         };
 
         if inserted {
-            self.count = self.count.checked_add(1)
+            self.count = self
+                .count
+                .checked_add(1)
                 .ok_or_else(|| ExecutionError::Invalid("distinct count overflow".into()))?;
         }
         Ok(())
@@ -239,10 +250,15 @@ impl BitmapDistinct32 {
     /// Merge exact partial DISTINCT states without enumerating dense 32-bit keys.
     /// Prefix-budget violations are rejected before changing the destination.
     pub(super) fn merge_from(&mut self, other: &Self) -> Result<(), ExecutionError> {
-        let new_prefixes = other.blocks.keys()
+        let new_prefixes = other
+            .blocks
+            .keys()
             .filter(|prefix| !self.blocks.contains_key(prefix))
             .count();
-        if self.blocks.len().checked_add(new_prefixes)
+        if self
+            .blocks
+            .len()
+            .checked_add(new_prefixes)
             .is_none_or(|n| n > MAX_BLOCKS)
         {
             return Err(ExecutionError::Invalid(
@@ -288,7 +304,10 @@ impl BitmapDistinct32 {
                     }
                 }
                 (Some(Block::Sparse(current)), Block::Sparse(values)) => {
-                    let added = values.iter().filter(|value| !current.contains(value)).count();
+                    let added = values
+                        .iter()
+                        .filter(|value| !current.contains(value))
+                        .count();
                     if current.len() + added >= DENSE_THRESHOLD {
                         sparse_keys -= current.len();
                         dense_blocks += 1;
@@ -319,7 +338,9 @@ impl BitmapDistinct32 {
                 self.blocks.insert(prefix, incoming.clone());
                 cardinality
             };
-            self.count = self.count.checked_add(additions)
+            self.count = self
+                .count
+                .checked_add(additions)
                 .ok_or_else(|| ExecutionError::Invalid("distinct count overflow".into()))?;
         }
         self.sparse_keys = sparse_keys;
@@ -362,12 +383,10 @@ impl BitmapDistinct32 {
                 }
                 added
             }
-            (Block::Dense(left), Block::Sparse(right)) => {
-                right
-                    .iter()
-                    .filter(|&&suffix| set_bitmap_bit_if_unset(left.as_mut(), suffix))
-                    .count() as u64
-            }
+            (Block::Dense(left), Block::Sparse(right)) => right
+                .iter()
+                .filter(|&&suffix| set_bitmap_bit_if_unset(left.as_mut(), suffix))
+                .count() as u64,
             (Block::Dense(left), Block::Single(right)) => {
                 u64::from(set_bitmap_bit_if_unset(left.as_mut(), *right))
             }
@@ -587,7 +606,6 @@ mod adaptive_large_keyspace_tests {
     }
 }
 
-
 #[cfg(test)]
 mod merge_tests {
     use super::*;
@@ -616,8 +634,12 @@ mod merge_tests {
     fn new_prefix_and_signed_key_masks_remain_exact() {
         let mut left = BitmapDistinct32::new();
         let mut right = BitmapDistinct32::new();
-        for key in [i32::MIN, -1, 5] { left.insert(key as u32).unwrap(); }
-        for key in [-1i32, 5, 6, i32::MAX] { right.insert(key as u32).unwrap(); }
+        for key in [i32::MIN, -1, 5] {
+            left.insert(key as u32).unwrap();
+        }
+        for key in [-1i32, 5, 6, i32::MAX] {
+            right.insert(key as u32).unwrap();
+        }
         left.merge_from(&right).unwrap();
         assert_eq!(left.len(), 5);
     }
@@ -634,7 +656,9 @@ mod merge_tests {
         assert_eq!(full.len(), MAX_BLOCKS as u64);
         let mut incoming = BitmapDistinct32::new();
         incoming.insert(1).unwrap();
-        incoming.insert(((MAX_BLOCKS - 1) as u32) << 16 | 1).unwrap();
+        incoming
+            .insert(((MAX_BLOCKS - 1) as u32) << 16 | 1)
+            .unwrap();
         full.merge_from(&incoming).unwrap();
         assert_eq!(full.len(), MAX_BLOCKS as u64 + 2);
     }
@@ -691,7 +715,12 @@ mod inline_singleton_distinct_tests {
         }
         assert_eq!(state.len(), 4096);
         assert_eq!(state.sparse_keys, 4096);
-        assert!(state.blocks.values().all(|block| matches!(block, Block::Single(_))));
+        assert!(
+            state
+                .blocks
+                .values()
+                .all(|block| matches!(block, Block::Single(_)))
+        );
         state.insert(0).unwrap();
         state.insert(1).unwrap();
         assert_eq!(state.len(), 4097);
@@ -732,14 +761,29 @@ mod singleton_dense_union_tests {
     #[test]
     fn threshold_union_builds_the_exact_dense_bitmap() {
         let mut current = Block::Single(4_095);
-        let incoming = Block::Sparse((0..4_095).collect());
-        assert_eq!(BitmapDistinct32::merge_block(&mut current, &incoming), 4_095);
-        let Block::Dense(bits) = current else { panic!("expected dense union"); };
-        assert_eq!(bits.iter().map(|word| word.count_ones() as usize).sum::<usize>(), 4_096);
+        let mut keys = SparseKeys::new(0);
+        keys.extend(1..4_095);
+        let incoming = Block::Sparse(keys);
+        assert_eq!(
+            BitmapDistinct32::merge_block(&mut current, &incoming),
+            4_095
+        );
+        let Block::Dense(bits) = current else {
+            panic!("expected dense union");
+        };
+        assert_eq!(
+            bits.iter()
+                .map(|word| word.count_ones() as usize)
+                .sum::<usize>(),
+            4_096
+        );
         assert_eq!(bits[63] & (1 << 63), 1 << 63);
 
         let mut duplicate = Block::Single(4_094);
-        assert_eq!(BitmapDistinct32::merge_block(&mut duplicate, &incoming), 4_094);
+        assert_eq!(
+            BitmapDistinct32::merge_block(&mut duplicate, &incoming),
+            4_094
+        );
         assert!(matches!(duplicate, Block::Sparse(_)));
     }
 }

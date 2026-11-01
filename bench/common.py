@@ -8,6 +8,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+def file_change_time_ns(metadata):
+    """Compare path and handle metadata consistently on Windows and POSIX."""
+    # Windows Python 3.12 may report different st_ctime_ns on the same open file.
+    # Birth time remains stable across path lstat and descriptor fstat.
+    if os.name == "nt":
+        return getattr(metadata, "st_birthtime_ns", metadata.st_ctime_ns)
+    return metadata.st_ctime_ns
+
+
 MAX_SQL_STDOUT_BYTES = 64 * 1024 * 1024
 
 

@@ -14,10 +14,13 @@ fn short_contains_pruning_keeps_unicode_case_fold_matches() {
 #[test]
 fn unicode_multi_percent_patterns_reuse_compiled_folded_tokens() {
     let pattern = compile_like("x%É%Y").unwrap();
-    assert!(matches!(&pattern, LikePattern::Wildcard {
-        folded_percent: Some(_),
-        ..
-    }));
+    assert!(matches!(
+        &pattern,
+        LikePattern::Wildcard {
+            folded_percent: Some(_),
+            ..
+        }
+    ));
     for text in ["xabcdeféghiY", "xÉY", "xémiddleY"] {
         assert!(like_matches(text.as_bytes(), &pattern, true), "{text}");
     }
@@ -41,8 +44,11 @@ fn unicode_ilike_wildcards_fold_accents_and_keep_codepoint_counts() {
         ("_É_", "aé", false),
     ] {
         let pattern = compile_like(pattern).unwrap();
-        assert_eq!(like_matches(input.as_bytes(), &pattern, true), expected,
-            "{input}: {expected}");
+        assert_eq!(
+            like_matches(input.as_bytes(), &pattern, true),
+            expected,
+            "{input}: {expected}"
+        );
     }
     let pattern = compile_like("_É_").unwrap();
     assert!(!like_matches("aéx".as_bytes(), &pattern, false));
@@ -92,7 +98,11 @@ fn ascii_prefix_suffix_accept_case_changes_without_losing_unicode_expansions() {
     assert!(!like_matches(long_prefix.as_bytes(), &prefix, false));
     assert!(!like_matches(long_suffix.as_bytes(), &suffix, false));
     // A Unicode lowercase mapping can expand to two codepoints.
-    assert!(like_matches("İstanbul".as_bytes(), &compile_like("i%").unwrap(), true));
+    assert!(like_matches(
+        "İstanbul".as_bytes(),
+        &compile_like("i%").unwrap(),
+        true
+    ));
 }
 
 #[test]

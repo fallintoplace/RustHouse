@@ -1,9 +1,9 @@
 mod aggregate_plans;
-mod radix_median;
-mod external_grouped;
 mod bitmap_distinct;
+mod external_grouped;
 mod histogram;
 mod hyperloglog;
+mod radix_median;
 
 pub fn merge_uniq_states(states: &[&str]) -> Result<u64, String> {
     hyperloglog::merge_state_hex_values(states)
@@ -40,8 +40,8 @@ mod dynamic_part_tests {
 }
 
 use self::aggregate_plans::*;
-use external_grouped::ExternalGroupCount64;
 use bitmap_distinct::BitmapDistinct32;
+use external_grouped::ExternalGroupCount64;
 
 use crate::{AggregateFunction, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericQueryReader, PartError, inspect_query_source};
@@ -79,6 +79,25 @@ use predicates::{
     monotonic_range_indices, number_matches, number_matches_all, parse_numeric,
     sparse_generated_positions,
 };
+
+// Charge each shared memory reservation atomically on all supported Rust versions.
+fn try_reserve_shared(budget: &AtomicUsize, amount: usize, limit: usize) -> bool {
+    let mut current = budget.load(AtomicOrdering::Acquire);
+    loop {
+        let Some(next) = current.checked_add(amount).filter(|&total| total <= limit) else {
+            return false;
+        };
+        match budget.compare_exchange_weak(
+            current,
+            next,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum ExecutionError {
@@ -165,11 +184,13 @@ fn remember_distinct(
     values: &[Number],
 ) -> Result<bool, ExecutionError> {
     let key: Vec<NumberKey> = values.iter().copied().map(NumberKey::from).collect();
-    let added = values.len()
+    let added = values
+        .len()
         .checked_mul(std::mem::size_of::<NumberKey>())
         .and_then(|size| size.checked_add(std::mem::size_of::<Vec<NumberKey>>() + 32))
         .ok_or_else(|| ExecutionError::Invalid("DISTINCT retained size overflow".into()))?;
-    let next = retained_bytes.checked_add(added)
+    let next = retained_bytes
+        .checked_add(added)
         .filter(|&bytes| bytes <= MAX_DISTINCT_KEY_BYTES);
     // Common case: insertion has room. Hash only once, using insert() to
     // determine novelty, rather than contains() followed by insert().
@@ -343,23 +364,27 @@ fn parallel_numeric_filtered_count(
                 let columns = &columns;
                 let branches = &branches;
                 let next = &next;
-                std::thread::Builder::new().spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
-                    let mut partial = 0u64;
-                    while let Some(index) = next_part_index(next, parts.len()) {
-                        let mut reader =
-                            rusthouse_storage::NumericPartReader::open(&parts[index], columns)?;
-                        while let Some(batch) = reader.next_batch()? {
-                            partial = partial
-                                .checked_add(count_batch_matches(&batch, branches) as u64)
-                                .ok_or_else(|| {
-                                    ExecutionError::Invalid("parallel COUNT overflow".into())
-                                })?;
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
+                        let mut partial = 0u64;
+                        while let Some(index) = next_part_index(next, parts.len()) {
+                            let mut reader =
+                                rusthouse_storage::NumericPartReader::open(&parts[index], columns)?;
+                            while let Some(batch) = reader.next_batch()? {
+                                partial = partial
+                                    .checked_add(count_batch_matches(&batch, branches) as u64)
+                                    .ok_or_else(|| {
+                                        ExecutionError::Invalid("parallel COUNT overflow".into())
+                                    })?;
+                            }
                         }
-                    }
-                    Ok(partial)
-                }).map_err(|error| ExecutionError::Invalid(format!(
-                    "cannot start parallel COUNT worker: {error}"
-                )))
+                        Ok(partial)
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start parallel COUNT worker: {error}"
+                        ))
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut total = 0u64;
@@ -444,23 +469,27 @@ fn parallel_single_part_filtered_count(
                 let end = (begin + chunk).min(marks);
                 let columns = &columns;
                 let branches = &branches;
-                std::thread::Builder::new().spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
-                    let mut reader = rusthouse_storage::NumericPartReader::open(part, columns)?;
-                    reader.seek_to_mark(begin)?;
-                    let mut subtotal = 0u64;
-                    for _ in begin..end {
-                        if let Some(batch) = reader.next_batch()? {
-                            subtotal = subtotal
-                                .checked_add(count_batch_matches(&batch, branches) as u64)
-                                .ok_or_else(|| {
-                                    ExecutionError::Invalid("parallel COUNT overflow".into())
-                                })?;
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
+                        let mut reader = rusthouse_storage::NumericPartReader::open(part, columns)?;
+                        reader.seek_to_mark(begin)?;
+                        let mut subtotal = 0u64;
+                        for _ in begin..end {
+                            if let Some(batch) = reader.next_batch()? {
+                                subtotal = subtotal
+                                    .checked_add(count_batch_matches(&batch, branches) as u64)
+                                    .ok_or_else(|| {
+                                        ExecutionError::Invalid("parallel COUNT overflow".into())
+                                    })?;
+                            }
                         }
-                    }
-                    Ok(subtotal)
-                }).map_err(|error| ExecutionError::Invalid(format!(
-                    "cannot start parallel COUNT worker: {error}"
-                )))
+                        Ok(subtotal)
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start parallel COUNT worker: {error}"
+                        ))
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut total = 0u64;
@@ -523,43 +552,48 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
             .map(|_| {
                 let next = &next;
                 let parts = &parts;
-                std::thread::Builder::new().spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
-                    let mut sum = 0u64;
-                    let mut buffer = Vec::new();
-                    while let Some(index) = next_part_index(next, parts.len()) {
-                        buffer.clear();
-                        // A single-part source avoids re-entering this parallel path.
-                        execute(query, Some(&parts[index]), &mut buffer)?;
-                        let header_end =
-                            buffer
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
+                        let mut sum = 0u64;
+                        let mut buffer = Vec::new();
+                        while let Some(index) = next_part_index(next, parts.len()) {
+                            buffer.clear();
+                            // A single-part source avoids re-entering this parallel path.
+                            execute(query, Some(&parts[index]), &mut buffer)?;
+                            let header_end = buffer
                                 .iter()
                                 .position(|&byte| byte == b'\n')
                                 .ok_or_else(|| {
                                     ExecutionError::Invalid("malformed part COUNT header".into())
                                 })?;
-                        let value = buffer
-                            .get(header_end + 1..)
-                            .and_then(|tail| tail.strip_suffix(b"\n"))
-                            .filter(|digits| {
-                                !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
-                            })
-                            .ok_or_else(|| {
-                                ExecutionError::Invalid("malformed part COUNT value".into())
+                            let value = buffer
+                                .get(header_end + 1..)
+                                .and_then(|tail| tail.strip_suffix(b"\n"))
+                                .filter(|digits| {
+                                    !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
+                                })
+                                .ok_or_else(|| {
+                                    ExecutionError::Invalid("malformed part COUNT value".into())
+                                })?;
+                            let count = std::str::from_utf8(value)
+                                .map_err(|_| {
+                                    ExecutionError::Invalid("invalid part COUNT encoding".into())
+                                })?
+                                .parse::<u64>()
+                                .map_err(|_| {
+                                    ExecutionError::Invalid("part COUNT overflow".into())
+                                })?;
+                            sum = sum.checked_add(count).ok_or_else(|| {
+                                ExecutionError::Invalid("parallel COUNT overflow".into())
                             })?;
-                        let count = std::str::from_utf8(value)
-                            .map_err(|_| {
-                                ExecutionError::Invalid("invalid part COUNT encoding".into())
-                            })?
-                            .parse::<u64>()
-                            .map_err(|_| ExecutionError::Invalid("part COUNT overflow".into()))?;
-                        sum = sum.checked_add(count).ok_or_else(|| {
-                            ExecutionError::Invalid("parallel COUNT overflow".into())
-                        })?;
-                    }
-                    Ok(sum)
-                }).map_err(|error| ExecutionError::Invalid(format!(
-                    "cannot start parallel COUNT worker: {error}"
-                )))
+                        }
+                        Ok(sum)
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start parallel COUNT worker: {error}"
+                        ))
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut total = 0u64;
@@ -698,23 +732,27 @@ fn parallel_integer_minmax(
                 let names = &names;
                 let branches = &branches;
                 let parts = &parts;
-                std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Option<Number>, ExecutionError> {
-                    let mut state = AggregateState::new(*function);
-                    while let Some(index) = next_part_index(next, parts.len()) {
-                        let mut reader =
-                            rusthouse_storage::NumericPartReader::open(&parts[index], names)?;
-                        while let Some(batch) = reader.next_batch()? {
-                            for row in 0..batch[0].len() {
-                                if no_filters || batch_matches(&batch, row, branches) {
-                                    state.update(number_at(&batch[0], row))?;
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || -> Result<Option<Number>, ExecutionError> {
+                        let mut state = AggregateState::new(*function);
+                        while let Some(index) = next_part_index(next, parts.len()) {
+                            let mut reader =
+                                rusthouse_storage::NumericPartReader::open(&parts[index], names)?;
+                            while let Some(batch) = reader.next_batch()? {
+                                for row in 0..batch[0].len() {
+                                    if no_filters || batch_matches(&batch, row, branches) {
+                                        state.update(number_at(&batch[0], row))?;
+                                    }
                                 }
                             }
                         }
-                    }
-                    Ok(state.value)
-                }).map_err(|error| ExecutionError::Invalid(format!(
-                    "cannot start parallel extremum worker: {error}"
-                )))
+                        Ok(state.value)
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start parallel extremum worker: {error}"
+                        ))
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut extremum = None;
@@ -855,24 +893,30 @@ fn parallel_integer_sum(
                     let end = (begin + chunk).min(marks);
                     let scan_columns = &scan_columns;
                     let comparisons = &comparisons;
-                    std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Option<Number>, ExecutionError> {
-                        let mut reader =
-                            rusthouse_storage::NumericPartReader::open(single_part, scan_columns)?;
-                        reader.seek_to_mark(begin)?;
-                        let mut state = AggregateState::new(AggregateFunction::Sum);
-                        for _ in begin..end {
-                            if let Some(batch) = reader.next_batch()? {
-                                for row in 0..batch[0].len() {
-                                    if no_filters || batch_matches(&batch, row, comparisons) {
-                                        state.update(number_at(&batch[0], row))?;
+                    std::thread::Builder::new()
+                        .spawn_scoped(scope, move || -> Result<Option<Number>, ExecutionError> {
+                            let mut reader = rusthouse_storage::NumericPartReader::open(
+                                single_part,
+                                scan_columns,
+                            )?;
+                            reader.seek_to_mark(begin)?;
+                            let mut state = AggregateState::new(AggregateFunction::Sum);
+                            for _ in begin..end {
+                                if let Some(batch) = reader.next_batch()? {
+                                    for row in 0..batch[0].len() {
+                                        if no_filters || batch_matches(&batch, row, comparisons) {
+                                            state.update(number_at(&batch[0], row))?;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        Ok(state.value)
-                    }).map_err(|error| ExecutionError::Invalid(format!(
-                        "cannot start parallel SUM worker: {error}"
-                    )))
+                            Ok(state.value)
+                        })
+                        .map_err(|error| {
+                            ExecutionError::Invalid(format!(
+                                "cannot start parallel SUM worker: {error}"
+                            ))
+                        })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let mut total = None;
@@ -894,29 +938,33 @@ fn parallel_integer_sum(
                 let comparisons = &comparisons;
                 let next = &next;
                 let parts = &parts;
-                std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Option<Number>, ExecutionError> {
-                    let mut result = None;
-                    while let Some(index) = next_part_index(next, parts.len()) {
-                        // Scan compressed numeric columns directly, without
-                        // recursive SQL execution or TSV serialization.
-                        let mut reader = rusthouse_storage::NumericPartReader::open(
-                            &parts[index],
-                            scan_columns,
-                        )?;
-                        let mut state = AggregateState::new(AggregateFunction::Sum);
-                        while let Some(batch) = reader.next_batch()? {
-                            for row in 0..batch[0].len() {
-                                if no_filters || batch_matches(&batch, row, comparisons) {
-                                    state.update(number_at(&batch[0], row))?;
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || -> Result<Option<Number>, ExecutionError> {
+                        let mut result = None;
+                        while let Some(index) = next_part_index(next, parts.len()) {
+                            // Scan compressed numeric columns directly, without
+                            // recursive SQL execution or TSV serialization.
+                            let mut reader = rusthouse_storage::NumericPartReader::open(
+                                &parts[index],
+                                scan_columns,
+                            )?;
+                            let mut state = AggregateState::new(AggregateFunction::Sum);
+                            while let Some(batch) = reader.next_batch()? {
+                                for row in 0..batch[0].len() {
+                                    if no_filters || batch_matches(&batch, row, comparisons) {
+                                        state.update(number_at(&batch[0], row))?;
+                                    }
                                 }
                             }
+                            result = add_integer_partial(result, state.value)?;
                         }
-                        result = add_integer_partial(result, state.value)?;
-                    }
-                    Ok(result)
-                }).map_err(|error| ExecutionError::Invalid(format!(
-                    "cannot start parallel SUM worker: {error}"
-                )))
+                        Ok(result)
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start parallel SUM worker: {error}"
+                        ))
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut total = None;
@@ -997,7 +1045,10 @@ fn execute_into<W: Write>(
         return histogram::execute_part(query, part, output);
     }
     // A single typed scan serves numeric and String columns with fixed 16 KiB state.
-    if matches!(query.projection, Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. }) {
+    if matches!(
+        query.projection,
+        Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. }
+    ) {
         return typed::execute_typed(query, part, output);
     }
     if let Some(count) = parallel_filtered_count(query, part)? {
@@ -1039,7 +1090,11 @@ fn execute_into<W: Write>(
     {
         return grouped_distinct::execute(query, part, column, value_column, output);
     }
-    if let Projection::GroupedMultiDistinctCount { columns, value_column } = &query.projection {
+    if let Projection::GroupedMultiDistinctCount {
+        columns,
+        value_column,
+    } = &query.projection
+    {
         return grouped_multi_distinct::execute(query, part, columns, value_column, output);
     }
     if let Projection::StringLength { column } = &query.projection {
@@ -1051,11 +1106,27 @@ fn execute_into<W: Write>(
     if matches!(query.projection, Projection::GroupedAggregate { .. }) {
         return typed_aggregate::execute_grouped_aggregate(query, part, output);
     }
-    if let Projection::GroupedAggregates { column, items, aliases, filters } = &query.projection {
-        return grouped_numeric_multi::execute(query, part, column, items, aliases, filters, output);
+    if let Projection::GroupedAggregates {
+        column,
+        items,
+        aliases,
+        filters,
+    } = &query.projection
+    {
+        return grouped_numeric_multi::execute(
+            query, part, column, items, aliases, filters, output,
+        );
     }
-    if let Projection::GroupedMultiAggregates { columns, items, aliases, filters } = &query.projection {
-        return grouped_numeric_keys::execute(query, part, columns, items, aliases, filters, output);
+    if let Projection::GroupedMultiAggregates {
+        columns,
+        items,
+        aliases,
+        filters,
+    } = &query.projection
+    {
+        return grouped_numeric_keys::execute(
+            query, part, columns, items, aliases, filters, output,
+        );
     }
     if typed::requires_typed_scan(query, part)? {
         if matches!(query.projection, Projection::Aggregate { .. }) {
@@ -1493,7 +1564,9 @@ fn execute_numbers<W: Write>(
     if rows > 10_000_000 {
         let scalar_count = matches!(
             query.projection,
-            Projection::Count | Projection::CountColumn { .. } | Projection::CountDistinct { .. }
+            Projection::Count
+                | Projection::CountColumn { .. }
+                | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
                 | Projection::Histogram { .. }
         );
@@ -1535,8 +1608,12 @@ fn execute_numbers<W: Write>(
                     && filters.iter().all(Option::is_none)
         )) && query.limit.is_some_and(|limit| limit <= MAX_SORTED_ROWS)
             && ((query.order_by.is_none() && simple_result)
-                || (query.order_by.as_ref().is_some_and(|order| order.column == "number")
-                    && query.having.is_none() && !query.distinct
+                || (query
+                    .order_by
+                    .as_ref()
+                    .is_some_and(|order| order.column == "number")
+                    && query.having.is_none()
+                    && !query.distinct
                     && query.order_by_extra.is_empty()
                     && (matches!(&query.projection,
                         Projection::GroupedCount { column } if column == "number"
@@ -1579,8 +1656,12 @@ fn execute_numbers<W: Write>(
         ) && simple_result
             && ((query.predicates.is_empty() && query.or_predicates.is_empty())
                 || sparse_generated_positions(
-                    &compile_numbers_predicates(query)?, start, rows, step,
-                ).is_some());
+                    &compile_numbers_predicates(query)?,
+                    start,
+                    rows,
+                    step,
+                )
+                .is_some());
         if !(scalar_count && simple_result && arithmetic_count)
             && !bounded_page
             && !grouped_page
@@ -1595,7 +1676,13 @@ fn execute_numbers<W: Write>(
     if let Projection::MultipleAggregates(items) = &query.projection {
         return multi_aggregate::execute_numbers(query, start, rows, step, items, output);
     }
-    if let Projection::GroupedAggregates { column, items, aliases, filters } = &query.projection {
+    if let Projection::GroupedAggregates {
+        column,
+        items,
+        aliases,
+        filters,
+    } = &query.projection
+    {
         // Generated metrics do not yet implement per-metric FILTER. Never
         // silently ignore a parsed predicate and return incorrect results.
         if filters.iter().any(Option::is_some) {
@@ -1603,14 +1690,16 @@ fn execute_numbers<W: Write>(
                 "generated grouped FILTER metrics require a stored table".into(),
             ));
         }
-        return grouped_generated::execute(query, start, rows, step, column, items, aliases, output);
+        return grouped_generated::execute(
+            query, start, rows, step, column, items, aliases, output,
+        );
     }
     if matches!(
         query.projection,
         Projection::GroupedAggregates { .. }
             | Projection::GroupedMultiAggregates { .. }
             | Projection::GroupedDistinctCount { .. }
-        | Projection::GroupedMultiDistinctCount { .. }
+            | Projection::GroupedMultiDistinctCount { .. }
     ) {
         return Err(ExecutionError::Invalid(
             "multiple aggregates require a stored table".into(),
@@ -1648,7 +1737,9 @@ fn execute_numbers<W: Write>(
             "uniqState requires a physical table snapshot".into(),
         ));
     }
-    if let Projection::CountDistinct { column } | Projection::ApproxDistinct { column } = &query.projection {
+    if let Projection::CountDistinct { column } | Projection::ApproxDistinct { column } =
+        &query.projection
+    {
         if column != "number" {
             return Err(ExecutionError::Invalid(
                 "numbers(N) exposes only the number column".into(),
@@ -2210,13 +2301,15 @@ impl AggregateState {
         // Select middle order statistics in expected linear time.
         let mut values = self.median_values.clone();
         let middle = values.len() / 2;
-        let (lower, selected, _) = values.select_nth_unstable_by(middle, |a, b| {
-            compare_numbers(*a, *b)
-        });
+        let (lower, selected, _) =
+            values.select_nth_unstable_by(middle, |a, b| compare_numbers(*a, *b));
         let previous = if self.median_values.len() % 2 == 0 {
-            Some(*lower.iter().max_by(|a, b| {
-                compare_numbers(**a, **b)
-            }).expect("even median has a lower element"))
+            Some(
+                *lower
+                    .iter()
+                    .max_by(|a, b| compare_numbers(**a, **b))
+                    .expect("even median has a lower element"),
+            )
         } else {
             None
         };
@@ -2225,13 +2318,17 @@ impl AggregateState {
 
     fn median_number(&self) -> Option<Number> {
         let (selected, previous) = self.median_middle_pair()?;
-        let Some(previous) = previous else { return Some(selected); };
+        let Some(previous) = previous else {
+            return Some(selected);
+        };
         let to_float = |value: Number| match value {
             Number::Unsigned(n) => n as f64,
             Number::Signed(n) => n as f64,
             Number::Float(n) => n,
         };
-        Some(Number::Float(to_float(previous) / 2.0 + to_float(selected) / 2.0))
+        Some(Number::Float(
+            to_float(previous) / 2.0 + to_float(selected) / 2.0,
+        ))
     }
 
     fn median_text(&self) -> Option<String> {
@@ -2266,24 +2363,32 @@ impl AggregateState {
             | AggregateFunction::GroupBitAnd
             | AggregateFunction::GroupBitOr
             | AggregateFunction::GroupBitXor => self.value,
-            AggregateFunction::Avg | AggregateFunction::Rms if nonempty =>
-                Some(Number::Float(self.mean)),
-            AggregateFunction::VarPop if nonempty =>
-                Some(Number::Float(self.squared_deviations / self.count as f64)),
-            AggregateFunction::StddevPop if nonempty =>
-                Some(Number::Float((self.squared_deviations / self.count as f64).sqrt())),
-            AggregateFunction::VarSamp if sample =>
-                Some(Number::Float(self.squared_deviations / (self.count - 1) as f64)),
-            AggregateFunction::StddevSamp if sample =>
-                Some(Number::Float((self.squared_deviations / (self.count - 1) as f64).sqrt())),
+            AggregateFunction::Avg | AggregateFunction::Rms if nonempty => {
+                Some(Number::Float(self.mean))
+            }
+            AggregateFunction::VarPop if nonempty => {
+                Some(Number::Float(self.squared_deviations / self.count as f64))
+            }
+            AggregateFunction::StddevPop if nonempty => Some(Number::Float(
+                (self.squared_deviations / self.count as f64).sqrt(),
+            )),
+            AggregateFunction::VarSamp if sample => Some(Number::Float(
+                self.squared_deviations / (self.count - 1) as f64,
+            )),
+            AggregateFunction::StddevSamp if sample => Some(Number::Float(
+                (self.squared_deviations / (self.count - 1) as f64).sqrt(),
+            )),
             AggregateFunction::Median => self.median_number(),
             AggregateFunction::Range => match (self.value, self.max_value) {
-                (Some(Number::Unsigned(low)), Some(Number::Unsigned(high))) =>
-                    Some(Number::Unsigned(high - low)),
-                (Some(Number::Signed(low)), Some(Number::Signed(high))) =>
-                    Some(Number::Unsigned(high.abs_diff(low))),
-                (Some(Number::Float(low)), Some(Number::Float(high))) =>
-                    Some(Number::Float(high - low)),
+                (Some(Number::Unsigned(low)), Some(Number::Unsigned(high))) => {
+                    Some(Number::Unsigned(high - low))
+                }
+                (Some(Number::Signed(low)), Some(Number::Signed(high))) => {
+                    Some(Number::Unsigned(high.abs_diff(low)))
+                }
+                (Some(Number::Float(low)), Some(Number::Float(high))) => {
+                    Some(Number::Float(high - low))
+                }
                 _ => None,
             },
             _ => None,
@@ -2414,11 +2519,25 @@ mod numeric_distinct_capacity_tests {
         let mut seen = HashSet::new();
         let mut retained_bytes = 0usize;
         for value in 0..MAX_DISTINCT_ROWS {
-            assert!(remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(value as u128)]).unwrap());
+            assert!(
+                remember_distinct(
+                    &mut seen,
+                    &mut retained_bytes,
+                    &[Number::Unsigned(value as u128)]
+                )
+                .unwrap()
+            );
         }
-        assert!(!remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(0)]).unwrap());
         assert!(
-            remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]).is_err()
+            !remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(0)]).unwrap()
+        );
+        assert!(
+            remember_distinct(
+                &mut seen,
+                &mut retained_bytes,
+                &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]
+            )
+            .is_err()
         );
     }
 }
@@ -2459,14 +2578,17 @@ mod median_selection_tests {
     #[test]
     fn median_selection_matches_full_sort_for_large_skewed_distributions() {
         for size in [1, 2, 3, 7, 1023, 10_000, 99_999, 100_000] {
-            let values = (0..size).map(|i| {
-                Number::Signed(((i * 17_351 + 11) % 1013) as i128 - 506)
-            }).collect::<Vec<_>>();
+            let values = (0..size)
+                .map(|i| Number::Signed(((i * 17_351 + 11) % 1013) as i128 - 506))
+                .collect::<Vec<_>>();
             let mut state = AggregateState::new(AggregateFunction::Median);
             for &value in &values {
                 state.update(value).unwrap();
             }
-            assert_eq!(state.median_number().unwrap().to_string(), reference(values.clone()).to_string());
+            assert_eq!(
+                state.median_number().unwrap().to_string(),
+                reference(values.clone()).to_string()
+            );
             assert_eq!(state.render(), reference(values.clone()).to_string());
         }
     }
@@ -2474,15 +2596,31 @@ mod median_selection_tests {
     #[test]
     fn median_selection_keeps_128_bit_values_and_float_ordering() {
         for values in [
-            vec![Number::Unsigned(u128::MAX), Number::Unsigned(u128::MAX - 1), Number::Unsigned(0)],
-            vec![Number::Signed(i128::MIN), Number::Signed(0), Number::Signed(i128::MAX)],
-            vec![Number::Float(-0.0), Number::Float(0.0), Number::Float(5.0), Number::Float(-8.0)],
+            vec![
+                Number::Unsigned(u128::MAX),
+                Number::Unsigned(u128::MAX - 1),
+                Number::Unsigned(0),
+            ],
+            vec![
+                Number::Signed(i128::MIN),
+                Number::Signed(0),
+                Number::Signed(i128::MAX),
+            ],
+            vec![
+                Number::Float(-0.0),
+                Number::Float(0.0),
+                Number::Float(5.0),
+                Number::Float(-8.0),
+            ],
         ] {
             let mut state = AggregateState::new(AggregateFunction::Median);
             for &value in &values {
                 state.update(value).unwrap();
             }
-            assert_eq!(state.median_number().unwrap().to_string(), reference(values).to_string());
+            assert_eq!(
+                state.median_number().unwrap().to_string(),
+                reference(values).to_string()
+            );
         }
     }
 }
@@ -2519,14 +2657,23 @@ mod exact_grouped_median_text_tests {
     #[test]
     fn renders_even_integral_medians_without_float_rounding() {
         for (lower, higher, expected) in [
-            (Number::Unsigned(u128::MAX - 1), Number::Unsigned(u128::MAX),
-             format!("{}.5", u128::MAX - 1)),
-            (Number::Signed(i128::MIN), Number::Signed(i128::MIN),
-             i128::MIN.to_string()),
+            (
+                Number::Unsigned(u128::MAX - 1),
+                Number::Unsigned(u128::MAX),
+                format!("{}.5", u128::MAX - 1),
+            ),
+            (
+                Number::Signed(i128::MIN),
+                Number::Signed(i128::MIN),
+                i128::MIN.to_string(),
+            ),
             (Number::Signed(-3), Number::Signed(-2), "-2.5".into()),
             (Number::Signed(-1), Number::Signed(0), "-0.5".into()),
-            (Number::Signed(i128::MAX), Number::Signed(i128::MAX),
-             i128::MAX.to_string()),
+            (
+                Number::Signed(i128::MAX),
+                Number::Signed(i128::MAX),
+                i128::MAX.to_string(),
+            ),
         ] {
             assert_eq!(exact_median_pair(lower, higher).unwrap(), expected);
             let mut state = AggregateState::new(AggregateFunction::Median);
@@ -2537,7 +2684,6 @@ mod exact_grouped_median_text_tests {
     }
 }
 
-
 #[cfg(test)]
 mod distinct_single_hash_budget_tests {
     use super::*;
@@ -2547,15 +2693,17 @@ mod distinct_single_hash_budget_tests {
         let mut seen = HashSet::new();
         let mut retained_bytes = 0usize;
         for value in 0..10_000u128 {
-            assert!(remember_distinct(
-                &mut seen, &mut retained_bytes, &[Number::Unsigned(value)]
-            ).unwrap());
+            assert!(
+                remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(value)])
+                    .unwrap()
+            );
         }
         let original = retained_bytes;
         for value in (0..10_000u128).rev() {
-            assert!(!remember_distinct(
-                &mut seen, &mut retained_bytes, &[Number::Unsigned(value)]
-            ).unwrap());
+            assert!(
+                !remember_distinct(&mut seen, &mut retained_bytes, &[Number::Unsigned(value)])
+                    .unwrap()
+            );
         }
         assert_eq!(retained_bytes, original);
         assert_eq!(seen.len(), 10_000);
@@ -2566,10 +2714,8 @@ mod distinct_single_hash_budget_tests {
         let mut seen = HashSet::new();
         seen.insert(vec![NumberKey::Unsigned(7)]);
         let mut charged = MAX_DISTINCT_KEY_BYTES;
-        assert!(!remember_distinct(&mut seen, &mut charged,
-            &[Number::Unsigned(7)]).unwrap());
-        assert!(remember_distinct(&mut seen, &mut charged,
-            &[Number::Unsigned(8)]).is_err());
+        assert!(!remember_distinct(&mut seen, &mut charged, &[Number::Unsigned(7)]).unwrap());
+        assert!(remember_distinct(&mut seen, &mut charged, &[Number::Unsigned(8)]).is_err());
         assert_eq!(seen.len(), 1);
         assert_eq!(charged, MAX_DISTINCT_KEY_BYTES);
     }
@@ -2581,10 +2727,15 @@ mod distinct_single_hash_budget_tests {
             seen.insert(vec![NumberKey::Unsigned(value)]);
         }
         let mut bytes = 0usize;
-        assert!(!remember_distinct(&mut seen, &mut bytes,
-            &[Number::Unsigned(1)]).unwrap());
-        assert!(remember_distinct(&mut seen, &mut bytes,
-            &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]).is_err());
+        assert!(!remember_distinct(&mut seen, &mut bytes, &[Number::Unsigned(1)]).unwrap());
+        assert!(
+            remember_distinct(
+                &mut seen,
+                &mut bytes,
+                &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]
+            )
+            .is_err()
+        );
         assert_eq!(seen.len(), MAX_DISTINCT_ROWS);
         assert_eq!(bytes, 0);
     }

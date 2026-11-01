@@ -12,9 +12,18 @@ fn multikey_sum_and_count_preserve_nullable_numeric_values() {
         NEXT.fetch_add(1, Ordering::Relaxed),
     ));
     let columns = [
-        Column { name: "region".into(), data_type: "String".into() },
-        Column { name: "category".into(), data_type: "String".into() },
-        Column { name: "amount".into(), data_type: "Nullable(UInt64)".into() },
+        Column {
+            name: "region".into(),
+            data_type: "String".into(),
+        },
+        Column {
+            name: "category".into(),
+            data_type: "String".into(),
+        },
+        Column {
+            name: "amount".into(),
+            data_type: "Nullable(UInt64)".into(),
+        },
     ];
     let rows = [
         vec![Some("EU".into()), Some("books".into()), Some("10".into())],

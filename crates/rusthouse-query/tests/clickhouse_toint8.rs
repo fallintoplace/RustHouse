@@ -1,8 +1,8 @@
-use rusthouse_query::{parse_select, ConstantValue, Projection};
+use rusthouse_query::{ConstantValue, Projection, parse_select};
 fn value(sql: &str) -> i64 {
     match parse_select(sql).unwrap().projection {
         Projection::Literal(v) => v,
-        Projection::Constants(items) if items.len()==1 => match items[0].value {
+        Projection::Constants(items) if items.len() == 1 => match items[0].value {
             ConstantValue::Integer(v) => v,
             ref other => panic!("expected integer, got {other:?}"),
         },
@@ -24,5 +24,7 @@ fn clickhouse_toint8_rejects_invalid_arguments() {
         "SELECT toInt8(1, 2)",
         "SELECT toInt8('123')",
         "SELECT toInt8(1) FROM numbers(1)",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

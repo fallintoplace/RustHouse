@@ -8,9 +8,21 @@ fn value(sql: &str) -> ConstantValue {
 }
 #[test]
 fn clickhouse_parity_examples() {
-    assert_eq!(value("SELECT upperUTF8('München')"), ConstantValue::Text("MÜNCHEN".into()), "SELECT upperUTF8('München')");
-    assert_eq!(value("SELECT upperUTF8('привет')"), ConstantValue::Text("ПРИВЕТ".into()), "SELECT upperUTF8('привет')");
-    assert_eq!(value("SELECT upperUTF8('mix')"), ConstantValue::Text("MIX".into()), "SELECT upperUTF8('mix')");
+    assert_eq!(
+        value("SELECT upperUTF8('München')"),
+        ConstantValue::Text("MÜNCHEN".into()),
+        "SELECT upperUTF8('München')"
+    );
+    assert_eq!(
+        value("SELECT upperUTF8('привет')"),
+        ConstantValue::Text("ПРИВЕТ".into()),
+        "SELECT upperUTF8('привет')"
+    );
+    assert_eq!(
+        value("SELECT upperUTF8('mix')"),
+        ConstantValue::Text("MIX".into()),
+        "SELECT upperUTF8('mix')"
+    );
     assert_eq!(value("SELECT upperutf8(NULL)"), ConstantValue::Null);
 }
 #[test]

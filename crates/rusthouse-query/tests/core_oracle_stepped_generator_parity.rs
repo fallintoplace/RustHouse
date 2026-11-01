@@ -20,7 +20,8 @@ fn stepped_numbers_match_inclusive_series_at_partial_final_steps() {
                     "SELECT number FROM generate_series({start}, {end}, {step}) ORDER BY number"
                 );
                 assert_eq!(
-                    run(&numbers), run(&series),
+                    run(&numbers),
+                    run(&series),
                     "start={start} length={length} step={step}"
                 );
             }

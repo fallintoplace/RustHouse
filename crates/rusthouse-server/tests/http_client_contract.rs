@@ -69,7 +69,12 @@ fn clickhouse_http_post_can_split_sql_across_url_and_body() {
     assert_eq!(body_only.status, "200 OK");
     assert_eq!(body_only.body, b"8\n8\n");
 
-    let split = handle_request("POST", "/?query=SELECT", b"number FROM numbers(3)", &config());
+    let split = handle_request(
+        "POST",
+        "/?query=SELECT",
+        b"number FROM numbers(3)",
+        &config(),
+    );
     assert_eq!(split.status, "200 OK");
     assert_eq!(split.body, b"number\n0\n1\n2\n");
 

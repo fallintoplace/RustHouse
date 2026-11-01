@@ -4,7 +4,8 @@ use std::process::Command;
 #[test]
 fn ordered_inner_join_pages_full_large_fact_scan() {
     let database = std::env::temp_dir().join(format!(
-        "rusthouse-ordered-stream-join-{}", std::process::id()
+        "rusthouse-ordered-stream-join-{}",
+        std::process::id()
     ));
     let sql = |text: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))

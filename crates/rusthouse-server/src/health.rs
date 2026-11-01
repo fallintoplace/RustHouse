@@ -22,12 +22,14 @@ fn probe_peers_with(peers: &[Peer], ping: impl Fn(Peer) -> bool + Sync) -> Vec<b
     // Most deployments have just one peer. Avoid a scoped-thread spawn
     // while preserving panic isolation for that peer.
     if let [peer] = peers {
-        let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ping(*peer)))
-            .unwrap_or(false);
+        let healthy =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ping(*peer))).unwrap_or(false);
         return vec![healthy];
     }
     let cursor = AtomicUsize::new(0);
-    let results = (0..peers.len()).map(|_| AtomicBool::new(false)).collect::<Vec<_>>();
+    let results = (0..peers.len())
+        .map(|_| AtomicBool::new(false))
+        .collect::<Vec<_>>();
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(peers.len().min(MAX_INFLIGHT_HEALTH_PROBES));
         for _ in 0..peers.len().min(MAX_INFLIGHT_HEALTH_PROBES) {
@@ -55,7 +57,10 @@ fn probe_peers_with(peers: &[Peer], ping: impl Fn(Peer) -> bool + Sync) -> Vec<b
             let _ = handle.join();
         }
     });
-    results.iter().map(|healthy| healthy.load(Ordering::Relaxed)).collect()
+    results
+        .iter()
+        .map(|healthy| healthy.load(Ordering::Relaxed))
+        .collect()
 }
 
 fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
@@ -119,7 +124,8 @@ mod tests {
         let cluster = Cluster::new(vec![
             Peer::parse("127.0.0.1:45231").unwrap(),
             Peer::parse("127.0.0.1:45232").unwrap(),
-        ]).unwrap();
+        ])
+        .unwrap();
         let response = render_health_response(&cluster, &[true, false]);
         assert_eq!(response.status, "503 Service Unavailable");
         assert_eq!(response.body, b"{\"total\":2,\"healthy\":1,\"peers\":[{\"address\":\"127.0.0.1:45231\",\"healthy\":true},{\"address\":\"127.0.0.1:45232\",\"healthy\":false}]}\n");
@@ -204,7 +210,6 @@ mod health_probe_budget_tests {
     }
 }
 
-
 #[cfg(test)]
 mod dynamic_health_workers_tests {
     use super::*;
@@ -228,8 +233,13 @@ mod dynamic_health_workers_tests {
         });
         assert_eq!(calls.load(Ordering::SeqCst), peers.len());
         assert!(peak.load(Ordering::SeqCst) <= MAX_INFLIGHT_HEALTH_PROBES);
-        assert_eq!(health, peers.iter().map(|peer| peer.address().port() % 2 == 0)
-            .collect::<Vec<_>>());
+        assert_eq!(
+            health,
+            peers
+                .iter()
+                .map(|peer| peer.address().port() % 2 == 0)
+                .collect::<Vec<_>>()
+        );
         assert!(probe_peers_with(&[], |_| true).is_empty());
     }
 }
@@ -244,11 +254,15 @@ mod panicking_health_probe_tests {
         let peers = (0..crate::cluster::MAX_PEERS)
             .map(|index| Peer::parse(&format!("127.0.0.1:{}", 49000 + index)).unwrap())
             .collect::<Vec<_>>();
-        let visits = (0..peers.len()).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>();
+        let visits = (0..peers.len())
+            .map(|_| AtomicUsize::new(0))
+            .collect::<Vec<_>>();
         let result = probe_peers_with(&peers, |peer| {
             let index = usize::from(peer.port() - 49000);
             visits[index].fetch_add(1, Ordering::SeqCst);
-            if index == 0 { panic!("one peer probe failed"); }
+            if index == 0 {
+                panic!("one peer probe failed");
+            }
             index % 2 == 0
         });
         assert_eq!(result.len(), peers.len());
@@ -267,10 +281,16 @@ mod inline_health_probe_tests {
     fn one_peer_is_checked_inline_and_panics_stay_unhealthy() {
         let owner = std::thread::current().id();
         let peers = [Peer::parse("127.0.0.1:50123").unwrap()];
-        assert_eq!(probe_peers_with(&peers, |_| {
-            assert_eq!(std::thread::current().id(), owner);
-            true
-        }), vec![true]);
-        assert_eq!(probe_peers_with(&peers, |_| panic!("probe failed")), vec![false]);
+        assert_eq!(
+            probe_peers_with(&peers, |_| {
+                assert_eq!(std::thread::current().id(), owner);
+                true
+            }),
+            vec![true]
+        );
+        assert_eq!(
+            probe_peers_with(&peers, |_| panic!("probe failed")),
+            vec![false]
+        );
     }
 }

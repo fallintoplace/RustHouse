@@ -1,5 +1,5 @@
 //! Globally correct, bounded k-way merge of sorted integer shard prefixes.
-use super::{MergeError, MAX_RESPONSE_BYTES};
+use super::{MAX_RESPONSE_BYTES, MergeError};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -17,26 +17,43 @@ enum IntegerType {
 
 impl IntegerType {
     fn from_schema(kind: &str) -> Result<Self, MergeError> {
-        let kind = kind.strip_prefix("Nullable(")
+        let kind = kind
+            .strip_prefix("Nullable(")
             .and_then(|inner| inner.strip_suffix(')'))
             .unwrap_or(kind);
         let (unsigned, bits) = match kind {
-            "UInt8" => (true, 8), "UInt16" => (true, 16),
-            "UInt32" => (true, 32), "UInt64" => (true, 64),
+            "UInt8" => (true, 8),
+            "UInt16" => (true, 16),
+            "UInt32" => (true, 32),
+            "UInt64" => (true, 64),
             "UInt128" => (true, 128),
-            "Int8" => (false, 8), "Int16" => (false, 16),
-            "Int32" => (false, 32), "Int64" => (false, 64),
+            "Int8" => (false, 8),
+            "Int16" => (false, 16),
+            "Int32" => (false, 32),
+            "Int64" => (false, 64),
             "Int128" => (false, 128),
             _ => return Err(MergeError::InvalidSortedScan),
         };
         Ok(if unsigned {
             Self::Unsigned {
-                max: if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 },
+                max: if bits == 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << bits) - 1
+                },
             }
         } else {
             Self::Signed {
-                min: if bits == 128 { i128::MIN } else { -(1i128 << (bits - 1)) },
-                max: if bits == 128 { i128::MAX } else { (1i128 << (bits - 1)) - 1 },
+                min: if bits == 128 {
+                    i128::MIN
+                } else {
+                    -(1i128 << (bits - 1))
+                },
+                max: if bits == 128 {
+                    i128::MAX
+                } else {
+                    (1i128 << (bits - 1)) - 1
+                },
             }
         })
     }
@@ -53,7 +70,9 @@ fn parse_unsigned_ascii(bytes: &[u8]) -> Option<u128> {
         if !byte.is_ascii_digit() {
             return None;
         }
-        value = value.checked_mul(10)?.checked_add(u128::from(byte - b'0'))?;
+        value = value
+            .checked_mul(10)?
+            .checked_add(u128::from(byte - b'0'))?;
     }
     Some(value)
 }
@@ -81,21 +100,21 @@ fn parse_signed_ascii(bytes: &[u8]) -> Option<i128> {
 }
 
 fn parse_integer_sort_key(bytes: &[u8], kind: IntegerType) -> Result<IntegerKey, MergeError> {
-    if bytes.starts_with(b"+")
-        || (bytes.len() > 1 && bytes[0] == b'0')
-        || bytes.starts_with(b"-0")
+    if bytes.starts_with(b"+") || (bytes.len() > 1 && bytes[0] == b'0') || bytes.starts_with(b"-0")
     {
         return Err(MergeError::InvalidSortedScan);
     }
     match kind {
         IntegerType::Unsigned { max } => {
             let number = parse_unsigned_ascii(bytes).ok_or(MergeError::InvalidSortedScan)?;
-            (number <= max).then_some(IntegerKey::Unsigned(number))
+            (number <= max)
+                .then_some(IntegerKey::Unsigned(number))
                 .ok_or(MergeError::InvalidSortedScan)
         }
         IntegerType::Signed { min, max } => {
             let number = parse_signed_ascii(bytes).ok_or(MergeError::InvalidSortedScan)?;
-            (min <= number && number <= max).then_some(IntegerKey::Signed(number))
+            (min <= number && number <= max)
+                .then_some(IntegerKey::Signed(number))
                 .ok_or(MergeError::InvalidSortedScan)
         }
     }
@@ -129,7 +148,9 @@ impl Ord for Cursor {
     }
 }
 impl PartialOrd for Cursor {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Locate and parse only the next wire row. Positions are byte offsets in
@@ -143,7 +164,8 @@ fn next_row(
     if start == data.len() {
         return Ok(None);
     }
-    let newline = data[start..].iter()
+    let newline = data[start..]
+        .iter()
         .position(|&byte| byte == b'\n')
         .ok_or(MergeError::InvalidSortedScan)?;
     let end = start + newline + 1;
@@ -189,11 +211,15 @@ fn next_validated_row(
     if start == data.len() {
         return Ok(None);
     }
-    let newline = data[start..].iter()
+    let newline = data[start..]
+        .iter()
         .position(|&byte| byte == b'\n')
         .ok_or(MergeError::InvalidSortedScan)?;
     let row = &data[start..start + newline];
-    let key_len = row.iter().position(|&byte| byte == b'\t').unwrap_or(row.len());
+    let key_len = row
+        .iter()
+        .position(|&byte| byte == b'\t')
+        .unwrap_or(row.len());
     let key = parse_integer_sort_key(&row[..key_len], kind)?;
     Ok(Some((key, start + newline + 1)))
 }
@@ -211,9 +237,7 @@ pub(super) fn merge_sorted_integer_page(
     limit: usize,
     max_rows: usize,
 ) -> Result<Vec<u8>, MergeError> {
-    merge_sorted_integer_rows_page(
-        shards, &[column], kind, descending, offset, limit, max_rows,
-    )
+    merge_sorted_integer_rows_page(shards, &[column], kind, descending, offset, limit, max_rows)
 }
 
 /// Merge sorted shard prefixes while preserving complete projected rows.
@@ -233,7 +257,9 @@ pub(super) fn merge_sorted_integer_rows_page(
     let header = format!("{}\n", columns.join("\t"));
     let header_len = header.len();
     let kind = IntegerType::from_schema(kind)?;
-    let prefix = offset.checked_add(limit).ok_or(MergeError::CoordinatorLimit)?;
+    let prefix = offset
+        .checked_add(limit)
+        .ok_or(MergeError::CoordinatorLimit)?;
     if shards.is_empty() {
         return Err(MergeError::InvalidSortedScan);
     }
@@ -267,7 +293,11 @@ pub(super) fn merge_sorted_integer_rows_page(
     for (shard, first) in first_keys.into_iter().enumerate() {
         if let Some((key, next_position)) = first {
             heap.push(Cursor {
-                key, shard, position: 0, next_position, descending,
+                key,
+                shard,
+                position: 0,
+                next_position,
+                descending,
             });
         }
     }
@@ -284,8 +314,11 @@ pub(super) fn merge_sorted_integer_rows_page(
             let end = cursor.next_position;
             if seen >= offset && returned < limit {
                 let row = &body[cursor.position..end];
-                if returned >= max_rows || output.len().checked_add(row.len())
-                    .is_none_or(|size| size > MAX_RESPONSE_BYTES)
+                if returned >= max_rows
+                    || output
+                        .len()
+                        .checked_add(row.len())
+                        .is_none_or(|size| size > MAX_RESPONSE_BYTES)
                 {
                     return Err(MergeError::CoordinatorLimit);
                 }
@@ -310,36 +343,67 @@ pub(super) fn merge_sorted_integer_rows_page(
     Ok(output)
 }
 
-
 #[cfg(test)]
 mod ascii_integer_merge_tests {
     use super::*;
 
     #[test]
     fn exact_ascii_parser_handles_bounds_and_canonical_wire_encoding() {
-        for number in [b"0".as_slice(), b"1", b"18446744073709551615",
-            b"340282366920938463463374607431768211455"] {
-            assert_eq!(parse_unsigned_ascii(number), std::str::from_utf8(number).unwrap().parse::<u128>().ok());
+        for number in [
+            b"0".as_slice(),
+            b"1",
+            b"18446744073709551615",
+            b"340282366920938463463374607431768211455",
+        ] {
+            assert_eq!(
+                parse_unsigned_ascii(number),
+                std::str::from_utf8(number).unwrap().parse::<u128>().ok()
+            );
         }
-        for number in [b"0".as_slice(), b"-1", b"170141183460469231731687303715884105727",
-            b"-170141183460469231731687303715884105728"] {
-            assert_eq!(parse_signed_ascii(number), std::str::from_utf8(number).unwrap().parse::<i128>().ok());
+        for number in [
+            b"0".as_slice(),
+            b"-1",
+            b"170141183460469231731687303715884105727",
+            b"-170141183460469231731687303715884105728",
+        ] {
+            assert_eq!(
+                parse_signed_ascii(number),
+                std::str::from_utf8(number).unwrap().parse::<i128>().ok()
+            );
         }
-        for invalid in [b"".as_slice(), b"-", b"1x", b" 1", b"1 ", b"\xff",
-            b"340282366920938463463374607431768211456"] {
+        for invalid in [
+            b"".as_slice(),
+            b"-",
+            b"1x",
+            b" 1",
+            b"1 ",
+            b"\xff",
+            b"340282366920938463463374607431768211456",
+        ] {
             assert!(parse_unsigned_ascii(invalid).is_none());
         }
-        for invalid in [b"".as_slice(), b"-", b"1x", b"1 ", b"\xff",
+        for invalid in [
+            b"".as_slice(),
+            b"-",
+            b"1x",
+            b"1 ",
+            b"\xff",
             b"170141183460469231731687303715884105728",
-            b"-170141183460469231731687303715884105729"] {
+            b"-170141183460469231731687303715884105729",
+        ] {
             assert!(parse_signed_ascii(invalid).is_none());
         }
-        let signed = IntegerType::Signed { min: i128::MIN, max: i128::MAX };
+        let signed = IntegerType::Signed {
+            min: i128::MIN,
+            max: i128::MAX,
+        };
         for invalid in [b"+1".as_slice(), b"00", b"01", b"-0", b"-01"] {
             assert!(parse_integer_sort_key(invalid, signed).is_err());
         }
-        assert_eq!(parse_integer_sort_key(b"-170141183460469231731687303715884105728", signed),
-            Ok(IntegerKey::Signed(i128::MIN)));
+        assert_eq!(
+            parse_integer_sort_key(b"-170141183460469231731687303715884105728", signed),
+            Ok(IntegerKey::Signed(i128::MIN))
+        );
     }
 }
 
@@ -362,17 +426,23 @@ mod schema_width_regression_tests {
     #[test]
     fn rejects_peer_values_outside_declared_integer_width() {
         for (kind, value) in [
-            ("UInt8", "256"), ("UInt16", "65536"),
-            ("UInt32", "4294967296"), ("UInt64", "18446744073709551616"),
-            ("Int8", "-129"), ("Int8", "128"), ("Int16", "32768"),
-            ("Int32", "-2147483649"), ("Int64", "9223372036854775808"),
+            ("UInt8", "256"),
+            ("UInt16", "65536"),
+            ("UInt32", "4294967296"),
+            ("UInt64", "18446744073709551616"),
+            ("Int8", "-129"),
+            ("Int8", "128"),
+            ("Int16", "32768"),
+            ("Int32", "-2147483649"),
+            ("Int64", "9223372036854775808"),
             ("Nullable(UInt64)", "18446744073709551616"),
             ("UInt128", "-1"),
         ] {
             let wire = format!("id\n{value}\n").into_bytes();
             assert_eq!(
                 merge_sorted_integer_page(&[(4, wire)], "id", kind, false, 0, 1, 1),
-                Err(MergeError::InvalidSortedScan), "{kind}: {value}"
+                Err(MergeError::InvalidSortedScan),
+                "{kind}: {value}"
             );
         }
     }
@@ -380,17 +450,25 @@ mod schema_width_regression_tests {
     #[test]
     fn accepts_bounds_and_unsigned_nullable_types() {
         for (kind, value) in [
-            ("Int8", "-128"), ("Int8", "127"), ("UInt8", "255"),
-            ("Int16", "-32768"), ("UInt16", "65535"),
+            ("Int8", "-128"),
+            ("Int8", "127"),
+            ("UInt8", "255"),
+            ("Int16", "-32768"),
+            ("UInt16", "65535"),
             ("Int64", "-9223372036854775808"),
             ("UInt64", "18446744073709551615"),
             ("Int128", "-170141183460469231731687303715884105728"),
             ("UInt128", "340282366920938463463374607431768211455"),
-            ("Nullable(UInt128)", "340282366920938463463374607431768211455"),
+            (
+                "Nullable(UInt128)",
+                "340282366920938463463374607431768211455",
+            ),
         ] {
             let wire = format!("id\n{value}\n").into_bytes();
-            assert!(merge_sorted_integer_page(&[(4, wire)], "id", kind, false, 0, 1, 1).is_ok(),
-                "{kind}: {value}");
+            assert!(
+                merge_sorted_integer_page(&[(4, wire)], "id", kind, false, 0, 1, 1).is_ok(),
+                "{kind}: {value}"
+            );
         }
         assert_eq!(
             merge_sorted_integer_page(&[(4, b"id\n1\n".to_vec())], "id", "Unknown", false, 0, 1, 1),
@@ -409,9 +487,9 @@ mod multicolumn_sorted_merge_tests {
             (16, b"id\tname\n1\tb\n4\tz\n7\tlast\n".to_vec()),
             (16, b"id\tname\n1\ta\n2\tc\\td\n8\tn\n".to_vec()),
         ];
-        let page = merge_sorted_integer_rows_page(
-            &shards, &["id", "name"], "UInt64", false, 1, 3, 3,
-        ).unwrap();
+        let page =
+            merge_sorted_integer_rows_page(&shards, &["id", "name"], "UInt64", false, 1, 3, 3)
+                .unwrap();
         assert_eq!(page, b"id\tname\n1\ta\n2\tc\\td\n4\tz\n");
     }
 
@@ -424,14 +502,26 @@ mod multicolumn_sorted_merge_tests {
         ] {
             assert_eq!(
                 merge_sorted_integer_rows_page(
-                    &[(16, invalid.to_vec())], &["id", "name"], "UInt64", false, 0, 1, 1,
+                    &[(16, invalid.to_vec())],
+                    &["id", "name"],
+                    "UInt64",
+                    false,
+                    0,
+                    1,
+                    1,
                 ),
                 Err(MergeError::InvalidSortedScan),
             );
         }
         assert_eq!(
             merge_sorted_integer_rows_page(
-                &[(16, b"id\tname\n".to_vec())], &[], "UInt64", false, 0, 1, 1,
+                &[(16, b"id\tname\n".to_vec())],
+                &[],
+                "UInt64",
+                false,
+                0,
+                1,
+                1,
             ),
             Err(MergeError::InvalidSortedScan),
         );
@@ -444,9 +534,8 @@ mod multicolumn_sorted_merge_tests {
             (10, b"id\tlabel\n8\tother\n-4\tnegative\n".to_vec()),
         ];
         assert_eq!(
-            merge_sorted_integer_rows_page(
-                &shards, &["id", "label"], "Int64", true, 1, 2, 2,
-            ).unwrap(),
+            merge_sorted_integer_rows_page(&shards, &["id", "label"], "Int64", true, 1, 2, 2,)
+                .unwrap(),
             b"id\tlabel\n8\tother\n2\tsecond\n",
         );
     }
@@ -466,17 +555,24 @@ mod sorted_shard_escaped_fields_tests {
         ] {
             assert_eq!(
                 merge_sorted_integer_rows_page(
-                    &[(16, corrupt.to_vec())], &["id", "name"],
-                    "UInt64", false, 0, 1, 1,
+                    &[(16, corrupt.to_vec())],
+                    &["id", "name"],
+                    "UInt64",
+                    false,
+                    0,
+                    1,
+                    1,
                 ),
                 Err(MergeError::InvalidSortedScan),
             );
         }
-        let valid = [(16, b"id\tname\n1\tvalid\\tvalue\n2\t\\N\n3\t\\x41\n".to_vec())];
+        let valid = [(
+            16,
+            b"id\tname\n1\tvalid\\tvalue\n2\t\\N\n3\t\\x41\n".to_vec(),
+        )];
         assert_eq!(
-            merge_sorted_integer_rows_page(
-                &valid, &["id", "name"], "UInt64", false, 1, 2, 2,
-            ).unwrap(),
+            merge_sorted_integer_rows_page(&valid, &["id", "name"], "UInt64", false, 1, 2, 2,)
+                .unwrap(),
             b"id\tname\n2\t\\N\n3\t\\x41\n",
         );
     }
@@ -495,14 +591,25 @@ mod dominant_shard_run_tests {
             vec![4, 4, 4, 7, 29, 49, 55, 60, 80, 99],
         ];
         for descending in [false, true] {
-            let ordered = original.iter().map(|values| {
-                let mut values = values.clone();
-                if descending { values.reverse(); }
-                values
-            }).collect::<Vec<_>>();
-            let mut expected_all = ordered.iter().enumerate()
-                .flat_map(|(shard, values)| values.iter().enumerate()
-                    .map(move |(row, &value)| (value, shard, row)))
+            let ordered = original
+                .iter()
+                .map(|values| {
+                    let mut values = values.clone();
+                    if descending {
+                        values.reverse();
+                    }
+                    values
+                })
+                .collect::<Vec<_>>();
+            let mut expected_all = ordered
+                .iter()
+                .enumerate()
+                .flat_map(|(shard, values)| {
+                    values
+                        .iter()
+                        .enumerate()
+                        .map(move |(row, &value)| (value, shard, row))
+                })
                 .collect::<Vec<_>>();
             expected_all.sort_by(|a, b| {
                 let cmp = a.0.cmp(&b.0);
@@ -513,22 +620,34 @@ mod dominant_shard_run_tests {
             for offset in [0usize, 1, 7, 33, 50] {
                 for limit in [1usize, 2, 5, 17, 31] {
                     let prefix = offset + limit;
-                    let shards = ordered.iter().map(|values| {
-                        let mut body = b"id\tlabel\n".to_vec();
-                        for &value in values.iter().take(prefix) {
-                            body.extend_from_slice(format!("{value}\tshard_row\n").as_bytes());
-                        }
-                        (prefix + 1, body)
-                    }).collect::<Vec<_>>();
+                    let shards = ordered
+                        .iter()
+                        .map(|values| {
+                            let mut body = b"id\tlabel\n".to_vec();
+                            for &value in values.iter().take(prefix) {
+                                body.extend_from_slice(format!("{value}\tshard_row\n").as_bytes());
+                            }
+                            (prefix + 1, body)
+                        })
+                        .collect::<Vec<_>>();
                     let actual = merge_sorted_integer_rows_page(
-                        &shards, &["id", "label"], "Int64", descending, offset, limit, limit,
-                    ).unwrap();
+                        &shards,
+                        &["id", "label"],
+                        "Int64",
+                        descending,
+                        offset,
+                        limit,
+                        limit,
+                    )
+                    .unwrap();
                     let mut expected = b"id\tlabel\n".to_vec();
                     for &(value, _, _) in expected_all.iter().skip(offset).take(limit) {
                         expected.extend_from_slice(format!("{value}\tshard_row\n").as_bytes());
                     }
-                    assert_eq!(actual, expected,
-                        "descending={descending} offset={offset} limit={limit}");
+                    assert_eq!(
+                        actual, expected,
+                        "descending={descending} offset={offset} limit={limit}"
+                    );
                 }
             }
         }
@@ -537,9 +656,10 @@ mod dominant_shard_run_tests {
     #[test]
     fn early_page_limit_never_reads_past_validated_rows() {
         let shards = [(3, b"id\n1\n2\n".to_vec()), (3, b"id\n20\n21\n".to_vec())];
-        assert_eq!(merge_sorted_integer_rows_page(
-            &shards, &["id"], "Int64", false, 0, 1, 1,
-        ).unwrap(), b"id\n1\n");
+        assert_eq!(
+            merge_sorted_integer_rows_page(&shards, &["id"], "Int64", false, 0, 1, 1,).unwrap(),
+            b"id\n1\n"
+        );
     }
 }
 #[cfg(test)]
@@ -566,7 +686,11 @@ mod one_pass_tsv_field_tests {
         let shard = [(3usize, body.clone())];
         assert_eq!(
             merge_sorted_integer_rows_page(&shard, &names, "UInt32", false, 1, 1, 1).unwrap(),
-            [format!("{}\n", columns.join("\t")).as_bytes(), second.as_bytes()].concat()
+            [
+                format!("{}\n", columns.join("\t")).as_bytes(),
+                second.as_bytes()
+            ]
+            .concat()
         );
 
         let mut short = body.clone();
@@ -590,12 +714,17 @@ mod validated_sorted_merge_fast_path_tests {
             format!("0\t{}\\t{}\n", "x".repeat(30_000), "y".repeat(400)),
             "12\t\\n\\\\\\t\n".to_string(),
             "9223372036854775807\t\\N\n".to_string(),
-        ].concat().into_bytes();
+        ]
+        .concat()
+        .into_bytes();
         let kind = IntegerType::from_schema("Int64").unwrap();
         let mut offset = 0;
         while offset < body.len() {
             let checked = next_row(&body, offset, kind, 2).unwrap().unwrap();
-            assert_eq!(next_validated_row(&body, offset, kind).unwrap(), Some(checked));
+            assert_eq!(
+                next_validated_row(&body, offset, kind).unwrap(),
+                Some(checked)
+            );
             offset = checked.1;
         }
         assert_eq!(next_validated_row(&body, body.len(), kind).unwrap(), None);
@@ -609,24 +738,24 @@ mod validated_sorted_merge_fast_path_tests {
         for shard in 0..4usize {
             let mut body = header.to_vec();
             for id in 0..80usize {
-                body.extend_from_slice(format!(
-                    "{id}\tshard_{shard}_{}\\t\n", "z".repeat(180)
-                ).as_bytes());
+                body.extend_from_slice(
+                    format!("{id}\tshard_{shard}_{}\\t\n", "z".repeat(180)).as_bytes(),
+                );
             }
             shards.push((1000usize, body));
         }
-        let merged = merge_sorted_integer_rows_page(
-            &shards, &columns, "UInt64", false, 21, 31, 1000
-        ).unwrap();
+        let merged =
+            merge_sorted_integer_rows_page(&shards, &columns, "UInt64", false, 21, 31, 1000)
+                .unwrap();
         let mut expected = header.to_vec();
         let mut all = (0..80usize)
             .flat_map(|id| (0..4usize).map(move |shard| (id, shard)))
             .collect::<Vec<_>>();
         all.sort();
         for (id, shard) in all.into_iter().skip(21).take(31) {
-            expected.extend_from_slice(format!(
-                "{id}\tshard_{shard}_{}\\t\n", "z".repeat(180)
-            ).as_bytes());
+            expected.extend_from_slice(
+                format!("{id}\tshard_{shard}_{}\\t\n", "z".repeat(180)).as_bytes(),
+            );
         }
         assert_eq!(merged, expected);
     }

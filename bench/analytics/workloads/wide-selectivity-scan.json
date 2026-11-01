@@ -20,7 +20,8 @@
     },
     {
       "name": "broad-paid-sum",
-      "sql": "SELECT SUM(amount) FROM events WHERE event_id >= 100 AND status = 'paid'"
+      "sql": "SELECT SUM(amount) FROM events WHERE event_id >= 100 AND status = 'paid'",
+      "oracle": "typed"
     }
   ]
 }

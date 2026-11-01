@@ -579,12 +579,21 @@ mod atomic_nested_cell_encoding_tests {
             r#"{"first":1,"second":2} trailing"#,
             r#"{"first":1,"second":2,}"#,
         ] {
-            assert!(push_string_key_map("UInt64", Some(invalid),
-                &mut keys, &mut values, &mut sizes).is_err(), "{invalid}");
+            assert!(
+                push_string_key_map("UInt64", Some(invalid), &mut keys, &mut values, &mut sizes)
+                    .is_err(),
+                "{invalid}"
+            );
             assert_eq!((&keys, &values, &sizes), (&before.0, &before.1, &before.2));
         }
-        push_string_key_map("UInt64", Some(r#"{"valid":3}"#),
-            &mut keys, &mut values, &mut sizes).unwrap();
+        push_string_key_map(
+            "UInt64",
+            Some(r#"{"valid":3}"#),
+            &mut keys,
+            &mut values,
+            &mut sizes,
+        )
+        .unwrap();
         assert!(keys.len() > before.0.len());
         assert_eq!(values.len(), before.1.len() + 8);
         assert_eq!(&sizes[before.2.len()..], &1u64.to_le_bytes());
@@ -596,12 +605,13 @@ mod atomic_nested_cell_encoding_tests {
         let mut sizes = vec![0xb1, 0xb2];
         let before = (elements.clone(), sizes.clone());
         for invalid in ["[1,not_number]", "[1,]", "[1,2] trailing", "[1,,2]"] {
-            assert!(push_numeric_array("UInt32", Some(invalid),
-                &mut elements, &mut sizes).is_err(), "{invalid}");
+            assert!(
+                push_numeric_array("UInt32", Some(invalid), &mut elements, &mut sizes).is_err(),
+                "{invalid}"
+            );
             assert_eq!((&elements, &sizes), (&before.0, &before.1));
         }
-        push_numeric_array("UInt32", Some("[1,2]"),
-            &mut elements, &mut sizes).unwrap();
+        push_numeric_array("UInt32", Some("[1,2]"), &mut elements, &mut sizes).unwrap();
         assert_eq!(elements.len(), before.0.len() + 8);
         assert_eq!(&sizes[before.1.len()..], &2u64.to_le_bytes());
     }
@@ -615,10 +625,13 @@ mod direct_uuid_decode_tests {
     fn pairwise_hex_decode_preserves_clickhouse_uuid_halves() {
         let mut output = Vec::new();
         push_uuid("00112233-4455-6677-8899-AaBbCcDdEeFf", &mut output).unwrap();
-        assert_eq!(output, [
-            0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00,
-            0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88,
-        ]);
+        assert_eq!(
+            output,
+            [
+                0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa,
+                0x99, 0x88,
+            ]
+        );
         let original_len = output.len();
         for bad in [
             "00112233-4455-6677-8899-AaBbCcDdEeFg",
@@ -640,11 +653,14 @@ mod nullable_uuid_physical_placeholder_tests {
         let mut data = vec![0x42];
         assert!(push_cell("Nullable(UUID)", None, &mut data).unwrap());
         assert_eq!(&data[1..], &[0u8; 16]);
-        assert!(!push_cell(
-            "Nullable(UUID)",
-            Some("00112233-4455-6677-8899-aabbccddeeff"),
-            &mut data,
-        ).unwrap());
+        assert!(
+            !push_cell(
+                "Nullable(UUID)",
+                Some("00112233-4455-6677-8899-aabbccddeeff"),
+                &mut data,
+            )
+            .unwrap()
+        );
         assert_eq!(data.len(), 33);
         assert!(push_cell("UUID", None, &mut Vec::new()).is_err());
         assert!(push_cell("Nullable(UUID)", Some("not-a-uuid"), &mut Vec::new()).is_err());

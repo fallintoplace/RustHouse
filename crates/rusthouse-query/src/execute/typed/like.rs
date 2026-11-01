@@ -13,7 +13,11 @@ pub(super) fn literal_bytes(tokens: &[LikeToken]) -> Option<Vec<u8>> {
 fn compiled_literal(bytes: Vec<u8>) -> LikeLiteral {
     // SQL literals do not change between rows. Do the Unicode fold once.
     let folded = std::str::from_utf8(&bytes).ok().map(str::to_lowercase);
-    LikeLiteral { bytes, folded, ascii_contains_skip: None }
+    LikeLiteral {
+        bytes,
+        folded,
+        ascii_contains_skip: None,
+    }
 }
 
 // A compiled case-insensitive ASCII contains query reuses one Horspool table
@@ -46,8 +50,7 @@ fn contains_ascii_folded(haystack: &[u8], needle: &[u8], shifts: &[usize; 256]) 
         // final byte should be rejected in O(1) comparisons per position.
         let mut remaining = needle.len();
         while remaining > 0
-            && haystack[start + remaining - 1]
-                .eq_ignore_ascii_case(&needle[remaining - 1])
+            && haystack[start + remaining - 1].eq_ignore_ascii_case(&needle[remaining - 1])
         {
             remaining -= 1;
         }
@@ -72,9 +75,7 @@ fn contains_bytes_horspool(haystack: &[u8], needle: &[u8], shifts: &[usize; 256]
         // aaaa...), a forward slice comparison rereads nearly the entire
         // needle at every position. Right-to-left rejects in one byte.
         let mut remaining = needle.len();
-        while remaining > 0
-            && haystack[start + remaining - 1] == needle[remaining - 1]
-        {
+        while remaining > 0 && haystack[start + remaining - 1] == needle[remaining - 1] {
             remaining -= 1;
         }
         if remaining == 0 {
@@ -122,7 +123,9 @@ fn match_percent_segments(value: &str, pattern: &PercentSegments) -> bool {
     let mut first = 0usize;
     let mut end = pattern.literals.len();
     if !pattern.prefix_wildcard {
-        let Some(prefix) = pattern.literals.first() else { return true; };
+        let Some(prefix) = pattern.literals.first() else {
+            return true;
+        };
         if !value.starts_with(prefix) {
             return false;
         }
@@ -133,21 +136,31 @@ fn match_percent_segments(value: &str, pattern: &PercentSegments) -> bool {
         end = end.saturating_sub(1);
     }
     for segment in &pattern.literals[first..end] {
-        let Some(found) = value[offset..].find(segment) else { return false; };
+        let Some(found) = value[offset..].find(segment) else {
+            return false;
+        };
         offset += found + segment.len();
     }
     if !pattern.suffix_wildcard {
         // The final literal must appear *after* every previously consumed
         // segment. Anchoring cannot reuse bytes from a prior segment.
-        pattern.literals.last().is_some_and(|last| value[offset..].ends_with(last))
+        pattern
+            .literals
+            .last()
+            .is_some_and(|last| value[offset..].ends_with(last))
     } else {
         true
     }
 }
 
 pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError> {
-    if !pattern.bytes().any(|byte| matches!(byte, b'%' | b'_' | b'\\')) {
-        return Ok(LikePattern::Exact(compiled_literal(pattern.as_bytes().to_vec())));
+    if !pattern
+        .bytes()
+        .any(|byte| matches!(byte, b'%' | b'_' | b'\\'))
+    {
+        return Ok(LikePattern::Exact(compiled_literal(
+            pattern.as_bytes().to_vec(),
+        )));
     }
     // Pure prefix/suffix/contains patterns need no wildcard token vector.
     // Escapes and '_' still use the full SQL LIKE compiler below.
@@ -157,17 +170,23 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
             .and_then(|remaining| remaining.strip_suffix('%'))
         {
             if !literal.contains('%') {
-                return Ok(LikePattern::Contains(compiled_contains_literal(literal.as_bytes().to_vec())));
+                return Ok(LikePattern::Contains(compiled_contains_literal(
+                    literal.as_bytes().to_vec(),
+                )));
             }
         }
         if let Some(literal) = pattern.strip_suffix('%') {
             if !literal.contains('%') {
-                return Ok(LikePattern::Prefix(compiled_literal(literal.as_bytes().to_vec())));
+                return Ok(LikePattern::Prefix(compiled_literal(
+                    literal.as_bytes().to_vec(),
+                )));
             }
         }
         if let Some(literal) = pattern.strip_prefix('%') {
             if !literal.contains('%') {
-                return Ok(LikePattern::Suffix(compiled_literal(literal.as_bytes().to_vec())));
+                return Ok(LikePattern::Suffix(compiled_literal(
+                    literal.as_bytes().to_vec(),
+                )));
             }
         }
     }
@@ -226,7 +245,12 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
         None
     };
     let percent_segments = compile_percent_segments(&tokens);
-    Ok(LikePattern::Wildcard { tokens, folded_percent, unicode_tokens, percent_segments })
+    Ok(LikePattern::Wildcard {
+        tokens,
+        folded_percent,
+        unicode_tokens,
+        percent_segments,
+    })
 }
 
 pub(super) fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
@@ -414,7 +438,9 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             if case_insensitive
                 && bytes.len() == 1
                 && bytes[0].is_ascii()
-                && value.iter().any(|byte| byte.eq_ignore_ascii_case(&bytes[0]))
+                && value
+                    .iter()
+                    .any(|byte| byte.eq_ignore_ascii_case(&bytes[0]))
             {
                 return true;
             }
@@ -450,7 +476,12 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                     .any(|part| equal_like_bytes(part, bytes, true))
             }
         }
-        LikePattern::Wildcard { tokens, folded_percent, unicode_tokens, percent_segments } => {
+        LikePattern::Wildcard {
+            tokens,
+            folded_percent,
+            unicode_tokens,
+            percent_segments,
+        } => {
             if !case_insensitive {
                 if let (Some(segments), Ok(text)) =
                     (percent_segments.as_ref(), std::str::from_utf8(value))
@@ -461,26 +492,23 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             // Multi-segment ILIKE patterns must fold Unicode as a whole.
             // ASCII and '_' patterns keep the allocation-free scan.
             if case_insensitive
-                && (!value.is_ascii() || tokens.iter().any(|token| {
-                    matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())
-                }))
+                && (!value.is_ascii()
+                    || tokens
+                        .iter()
+                        .any(|token| matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())))
                 && !tokens.iter().any(|token| matches!(token, LikeToken::One))
             {
-                if let (Ok(text), Some(pattern)) = (
-                    std::str::from_utf8(value),
-                    folded_percent.as_ref(),
-                ) {
-                    return like_matches_wildcards(
-                        text.to_lowercase().as_bytes(),
-                        &pattern,
-                        false,
-                    );
+                if let (Ok(text), Some(pattern)) =
+                    (std::str::from_utf8(value), folded_percent.as_ref())
+                {
+                    return like_matches_wildcards(text.to_lowercase().as_bytes(), pattern, false);
                 }
             }
             if case_insensitive
-                && (!value.is_ascii() || tokens.iter().any(|token| {
-                    matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())
-                }))
+                && (!value.is_ascii()
+                    || tokens
+                        .iter()
+                        .any(|token| matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())))
             {
                 if let (Ok(text), Some(cached)) =
                     (std::str::from_utf8(value), unicode_tokens.as_deref())
@@ -489,7 +517,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 }
             }
             like_matches_wildcards(value, tokens, case_insensitive)
-        },
+        }
     }
 }
 
@@ -563,7 +591,11 @@ fn unicode_like_wildcards(value: &str, pattern: &[UnicodeLikeToken]) -> bool {
                 }
             }
             Some(UnicodeLikeToken::One) => {
-                row += value[row..].chars().next().expect("valid character boundary").len_utf8();
+                row += value[row..]
+                    .chars()
+                    .next()
+                    .expect("valid character boundary")
+                    .len_utf8();
                 pat += 1;
                 continue;
             }
@@ -575,13 +607,19 @@ fn unicode_like_wildcards(value: &str, pattern: &[UnicodeLikeToken]) -> bool {
             }
             None => {}
         }
-        let Some(any) = last_any else { return false; };
-        let Some(character) = value[restart..].chars().next() else { return false; };
+        let Some(any) = last_any else {
+            return false;
+        };
+        let Some(character) = value[restart..].chars().next() else {
+            return false;
+        };
         restart += character.len_utf8();
         row = restart;
         pat = any + 1;
     }
-    while matches!(pattern.get(pat), Some(UnicodeLikeToken::Any)) { pat += 1; }
+    while matches!(pattern.get(pat), Some(UnicodeLikeToken::Any)) {
+        pat += 1;
+    }
     pat == pattern.len()
 }
 
@@ -590,8 +628,11 @@ pub(super) fn like_matches_wildcards(
     pattern: &[LikeToken],
     case_insensitive: bool,
 ) -> bool {
-    if case_insensitive && (!value.is_ascii()
-        || pattern.iter().any(|token| matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())))
+    if case_insensitive
+        && (!value.is_ascii()
+            || pattern
+                .iter()
+                .any(|token| matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())))
     {
         if let Ok(text) = std::str::from_utf8(value) {
             if let Some(tokens) = unicode_like_tokens(pattern) {
@@ -627,10 +668,11 @@ pub(super) fn like_matches_wildcards(
                 let Some(any) = last_any else {
                     return false;
                 };
-                let Some(next) = next_utf8_boundary(value, restart) else {
+                if restart == value.len() {
                     return false;
-                };
-                restart = next;
+                }
+                // '%' also consumes non-UTF-8 bytes in binary String rows.
+                restart = next_utf8_boundary(value, restart).unwrap_or(restart + 1);
                 row = restart;
                 pat = any + 1;
             }
@@ -650,9 +692,21 @@ mod mixed_case_unicode_equality_tests {
     fn ascii_case_changes_near_accents_do_not_require_unicode_folding() {
         assert!(equal_like_bytes("Café".as_bytes(), "café".as_bytes(), true));
         assert!(equal_like_bytes("CAFÉ".as_bytes(), "cafÉ".as_bytes(), true));
-        assert!(!equal_like_bytes("Café".as_bytes(), "café".as_bytes(), false));
-        assert!(equal_like_bytes("MÜNCHEN".as_bytes(), "münchen".as_bytes(), true));
-        assert!(!equal_like_bytes("Café".as_bytes(), "cafè".as_bytes(), true));
+        assert!(!equal_like_bytes(
+            "Café".as_bytes(),
+            "café".as_bytes(),
+            false
+        ));
+        assert!(equal_like_bytes(
+            "MÜNCHEN".as_bytes(),
+            "münchen".as_bytes(),
+            true
+        ));
+        assert!(!equal_like_bytes(
+            "Café".as_bytes(),
+            "cafè".as_bytes(),
+            true
+        ));
     }
 }
 
@@ -686,11 +740,25 @@ mod simple_like_compile_tests {
             LikePattern::Contains(literal) if literal.bytes == b"middle"));
         assert!(matches!(compile_like("%").unwrap(),
             LikePattern::Prefix(literal) if literal.bytes.is_empty()));
-        assert!(matches!(compile_like("h_llo%").unwrap(),
-            LikePattern::Wildcard { .. }));
-        assert!(like_matches(b"hello WORLD", &compile_like("%world").unwrap(), true));
-        assert!(!like_matches(b"hello WORLD", &compile_like("%world").unwrap(), false));
-        assert!(like_matches(b"hello WORLD", &compile_like("hello%").unwrap(), true));
+        assert!(matches!(
+            compile_like("h_llo%").unwrap(),
+            LikePattern::Wildcard { .. }
+        ));
+        assert!(like_matches(
+            b"hello WORLD",
+            &compile_like("%world").unwrap(),
+            true
+        ));
+        assert!(!like_matches(
+            b"hello WORLD",
+            &compile_like("%world").unwrap(),
+            false
+        ));
+        assert!(like_matches(
+            b"hello WORLD",
+            &compile_like("hello%").unwrap(),
+            true
+        ));
     }
 }
 
@@ -797,10 +865,14 @@ mod compiled_ascii_contains_tests {
                     if offset <= haystack.len() {
                         haystack.splice(offset..offset, needle.iter().copied());
                     }
-                    let reference = haystack.windows(needle.len())
+                    let reference = haystack
+                        .windows(needle.len())
                         .any(|candidate| candidate.eq_ignore_ascii_case(needle));
-                    assert_eq!(like_matches(&haystack, &compiled, true), reference,
-                        "needle={needle:?} length={length} offset={offset}");
+                    assert_eq!(
+                        like_matches(&haystack, &compiled, true),
+                        reference,
+                        "needle={needle:?} length={length} offset={offset}"
+                    );
                 }
             }
         }
@@ -811,11 +883,22 @@ mod compiled_ascii_contains_tests {
         let needle = b"ABCDEFGHIJKLMNOP";
         let literal = compiled_contains_literal(needle.to_vec());
         let shifts = literal.ascii_contains_skip.as_deref().unwrap();
-        assert!(contains_ascii_folded(b"zzabcdefghijklmnopzz", needle, shifts));
-        assert!(!contains_ascii_folded(b"zzabcdefghijklmnoqzz", needle, shifts));
+        assert!(contains_ascii_folded(
+            b"zzabcdefghijklmnopzz",
+            needle,
+            shifts
+        ));
+        assert!(!contains_ascii_folded(
+            b"zzabcdefghijklmnoqzz",
+            needle,
+            shifts
+        ));
         assert!(!contains_ascii_folded(b"short", needle, shifts));
-        assert!(compiled_contains_literal(b"short".to_vec())
-            .ascii_contains_skip.is_none());
+        assert!(
+            compiled_contains_literal(b"short".to_vec())
+                .ascii_contains_skip
+                .is_none()
+        );
     }
 }
 
@@ -840,8 +923,11 @@ mod binary_horspool_like_tests {
                     let at = start.min(input.len());
                     input.splice(at..at, needle.iter().copied());
                     let oracle = input.windows(needle.len()).any(|part| part == needle);
-                    assert_eq!(like_matches(&input, &pattern, false), oracle,
-                        "length={length}, at={at}");
+                    assert_eq!(
+                        like_matches(&input, &pattern, false),
+                        oracle,
+                        "length={length}, at={at}"
+                    );
                 }
                 let oracle = haystack.windows(needle.len()).any(|part| part == needle);
                 assert_eq!(like_matches(&haystack, &pattern, false), oracle);
@@ -853,7 +939,11 @@ mod binary_horspool_like_tests {
     fn folded_skip_table_preserves_exact_case_sensitive_matches() {
         let needle = "AaBbCcDdEeFfGgHh";
         let pattern = compile_like(&format!("%{needle}%")).unwrap();
-        assert!(like_matches(format!("xx{needle}yy").as_bytes(), &pattern, false));
+        assert!(like_matches(
+            format!("xx{needle}yy").as_bytes(),
+            &pattern,
+            false
+        ));
         assert!(!like_matches(b"xxaabbccddeeffgghhyy", &pattern, false));
         assert!(like_matches(b"xxaabbccddeeffgghhyy", &pattern, true));
     }
@@ -872,7 +962,6 @@ mod binary_horspool_like_tests {
     }
 }
 
-
 #[cfg(test)]
 mod multi_percent_linear_search_tests {
     use super::*;
@@ -880,16 +969,37 @@ mod multi_percent_linear_search_tests {
     #[test]
     fn pure_percent_search_matches_reference_backtracker() {
         let patterns = [
-            "a%b%c", "%a%b", "a%b%", "%aa%aa%ab%", "é%界%🌍",
-            "%aa%ab%ba%", "a%%b%c", "%abc%abc", "a%b%c%d",
+            "a%b%c",
+            "%a%b",
+            "a%b%",
+            "%aa%aa%ab%",
+            "é%界%🌍",
+            "%aa%ab%ba%",
+            "a%%b%c",
+            "%abc%abc",
+            "a%b%c%d",
         ];
         let rows = [
-            "", "abc", "axbyc", "abbc", "aabc", "aabaaba", "aabaaab",
-            "éxx界yy🌍", "é🌍界", "aaaaaaab", "aaabbaa",
+            "",
+            "abc",
+            "axbyc",
+            "abbc",
+            "aabc",
+            "aabaaba",
+            "aabaaab",
+            "éxx界yy🌍",
+            "é🌍界",
+            "aaaaaaab",
+            "aaabbaa",
         ];
         for pattern in patterns {
             let compiled = compile_like(pattern).unwrap();
-            let LikePattern::Wildcard { tokens, percent_segments, .. } = &compiled else {
+            let LikePattern::Wildcard {
+                tokens,
+                percent_segments,
+                ..
+            } = &compiled
+            else {
                 panic!("expected multi-wildcard compilation: {pattern}");
             };
             assert!(percent_segments.is_some());

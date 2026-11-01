@@ -1,10 +1,14 @@
+#[cfg(test)]
+use crate::read_numeric_column;
 use crate::{
     ArrayOffsets, ArrayOffsetsEncoding, ArrayReadError, NullableColumn, NullableReadError,
-    NumericColumn, read_array_offsets, read_nullable_numeric_column, read_numeric_column,
+    NumericColumn, read_array_offsets, read_nullable_numeric_column,
 };
 use std::error::Error;
 use std::fmt;
-use std::io::{self, Read};
+#[cfg(test)]
+use std::io;
+use std::io::Read;
 use std::ops::Range;
 
 /// A batch of Array(Nullable(T)) values, where T is a supported numeric type.
@@ -296,13 +300,25 @@ mod direct_nullable_array_type_tests {
 
     #[test]
     fn type_lookup_matches_the_scalar_decoder_without_reading_input() {
-        for leaf in ["UInt8", "UInt128", "Int64", "Float32", "Date",
-                     "DateTime", "DateTime64(6)", "DateTime('UTC')",
-                     "DateTime64(10)", "String", "Bool", "Array(UInt64)"] {
+        for leaf in [
+            "UInt8",
+            "UInt128",
+            "Int64",
+            "Float32",
+            "Date",
+            "DateTime",
+            "DateTime64(6)",
+            "DateTime('UTC')",
+            "DateTime64(10)",
+            "String",
+            "Bool",
+            "Array(UInt64)",
+        ] {
             let expected = read_numeric_column(&mut io::empty(), leaf, 0).is_ok();
             assert_eq!(
                 validated_nullable_array_type(&format!("Array(Nullable({leaf}))")).is_ok(),
-                expected, "leaf type: {leaf}"
+                expected,
+                "leaf type: {leaf}"
             );
         }
     }

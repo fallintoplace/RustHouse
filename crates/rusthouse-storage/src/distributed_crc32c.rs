@@ -255,17 +255,24 @@ mod reusable_crc_shift_tests {
             for left_len in [0usize, 1, 13, 31, 512, 4096, 16384] {
                 let left = &payload[..left_len];
                 let expected = crc32c(&[left, right].concat());
-                assert_eq!(shift.combine(crc32c(left), crc32c(right)), expected,
-                    "left={left_len} right={right_len}");
-                assert_eq!(shift.combine(crc32c(left), crc32c(right)),
-                    crc32c_combine(crc32c(left), crc32c(right), right_len as u64));
+                assert_eq!(
+                    shift.combine(crc32c(left), crc32c(right)),
+                    expected,
+                    "left={left_len} right={right_len}"
+                );
+                assert_eq!(
+                    shift.combine(crc32c(left), crc32c(right)),
+                    crc32c_combine(crc32c(left), crc32c(right), right_len as u64)
+                );
             }
         }
     }
 
     #[test]
     fn fixed_size_chunks_reduce_to_one_exact_stream_crc() {
-        let payload = (0..128_000usize).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        let payload = (0..128_000usize)
+            .map(|i| (i % 251) as u8)
+            .collect::<Vec<_>>();
         for chunk_size in [1usize, 7, 64, 1000, 4096] {
             let shift = Crc32cShift::new(chunk_size as u64);
             let mut cumulative = crc32c(b"");
@@ -283,8 +290,11 @@ mod reusable_crc_shift_tests {
         for length in [0u64, 1, 512, 65_536, 1 << 32, u64::MAX] {
             let shift = Crc32cShift::new(length);
             for crc in [0, 1, 0xdead_beef, u32::MAX] {
-                assert_eq!(shift.combine(crc, 0),
-                    crc32c_combine(crc, 0, length), "len={length}");
+                assert_eq!(
+                    shift.combine(crc, 0),
+                    crc32c_combine(crc, 0, length),
+                    "len={length}"
+                );
             }
         }
     }
@@ -355,10 +365,7 @@ mod cached_crc_byte_shift_tests {
                 // The checksum of an empty right range is zero. A nonzero
                 // right checksum is not meaningful when its length is zero.
                 let right = if len == 0 { 0 } else { 0x1234_abcd };
-                assert_eq!(
-                    crc32c_combine(left, right, len),
-                    shift.combine(left, right)
-                );
+                assert_eq!(crc32c_combine(left, right, len), shift.combine(left, right));
             }
         }
     }
@@ -387,13 +394,17 @@ mod parallel_crc_combine_tests {
 
     #[test]
     fn combines_independent_parallel_chunks_associatively() {
-        let data = (0..131_075).map(|i| (i * 97 % 253) as u8).collect::<Vec<_>>();
+        let data = (0..131_075)
+            .map(|i| (i * 97 % 253) as u8)
+            .collect::<Vec<_>>();
         let partitions = [0, 1, 17, 4096, 8192, 131_074, 131_075];
         let mut reduced = crc32c(b"");
         let mut previous = 0;
         for &end in partitions.iter().skip(1) {
             reduced = crc32c_combine(
-                reduced, crc32c(&data[previous..end]), (end - previous) as u64
+                reduced,
+                crc32c(&data[previous..end]),
+                (end - previous) as u64,
             );
             previous = end;
         }
@@ -404,7 +415,8 @@ mod parallel_crc_combine_tests {
         let right = crc32c(&data[4096..]);
         let lhs = crc32c_combine(
             crc32c_combine(left, middle, 4096 - 17),
-            right, (data.len() - 4096) as u64,
+            right,
+            (data.len() - 4096) as u64,
         );
         let rhs = crc32c_combine(
             left,
@@ -482,7 +494,10 @@ fn crc32c_positioned_range(
 #[cfg(unix)]
 pub fn crc32c_file_parallel(file: &std::fs::File, expected_bytes: u64) -> io::Result<(u64, u32)> {
     if file.metadata()?.len() != expected_bytes {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "checksum file length changed"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "checksum file length changed",
+        ));
     }
     let workers = std::thread::available_parallelism()
         .map_or(1, |available| available.get())
@@ -490,7 +505,10 @@ pub fn crc32c_file_parallel(file: &std::fs::File, expected_bytes: u64) -> io::Re
     if workers < 2 || expected_bytes < 16 * 1024 * 1024 {
         let result = crc32c_positioned_range(file, 0, expected_bytes)?;
         if file.metadata()?.len() != expected_bytes {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "checksum file length changed"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "checksum file length changed",
+            ));
         }
         return Ok(result);
     }
@@ -510,16 +528,21 @@ pub fn crc32c_file_parallel(file: &std::fs::File, expected_bytes: u64) -> io::Re
         let mut total = 0u64;
         let mut combined = 0u32;
         for handle in handles {
-            let (length, checksum) = handle.join()
+            let (length, checksum) = handle
+                .join()
                 .map_err(|_| io::Error::other("checksum worker panicked"))??;
             combined = crc32c_combine(combined, checksum, length);
-            total = total.checked_add(length)
+            total = total
+                .checked_add(length)
                 .ok_or_else(|| io::Error::other("checksum file length overflow"))?;
         }
         Ok((total, combined))
     })?;
     if result.0 != expected_bytes || file.metadata()?.len() != expected_bytes {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "checksum file length changed"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "checksum file length changed",
+        ));
     }
     Ok(result)
 }
@@ -533,7 +556,9 @@ pub struct Crc32cState {
 
 impl Crc32cState {
     pub fn new() -> Self {
-        Self { state: INITIAL_CRC32C }
+        Self {
+            state: INITIAL_CRC32C,
+        }
     }
 
     pub fn append(&mut self, bytes: &[u8]) {
@@ -563,7 +588,9 @@ mod tests {
         if !std::is_x86_feature_detected!("sse4.2") {
             return;
         }
-        let input = (0..16_389).map(|n| (n * 17 % 251) as u8).collect::<Vec<_>>();
+        let input = (0..16_389)
+            .map(|n| (n * 17 % 251) as u8)
+            .collect::<Vec<_>>();
         for split in [0, 1, 7, 8, 127, 128, 4096, input.len()] {
             // SAFETY: SSE4.2 is supported by the running CPU.
             let first = unsafe { update_sse42(!0, &input[..split]) };
@@ -756,17 +783,33 @@ mod sparse_gf2_matrix_tests {
     #[test]
     fn set_bit_iteration_matches_full_32_bit_reference() {
         let matrix = std::array::from_fn(|index| {
-            (index as u32).wrapping_mul(0x9e37_79b9).rotate_left(index as u32)
+            (index as u32)
+                .wrapping_mul(0x9e37_79b9)
+                .rotate_left(index as u32)
         });
-        for vector in [0, 1, u32::MAX, 0x8000_0000, 0x8000_0001, 0xaaaa_aaaa, 0x5555_5555] {
-            assert_eq!(gf2_matrix_times(&matrix, vector), reference(&matrix, vector));
+        for vector in [
+            0,
+            1,
+            u32::MAX,
+            0x8000_0000,
+            0x8000_0001,
+            0xaaaa_aaaa,
+            0x5555_5555,
+        ] {
+            assert_eq!(
+                gf2_matrix_times(&matrix, vector),
+                reference(&matrix, vector)
+            );
         }
         for bit in 0..32 {
             assert_eq!(gf2_matrix_times(&matrix, 1u32 << bit), matrix[bit]);
         }
         for seed in 0u32..4096 {
             let vector = seed.wrapping_mul(0x85eb_ca6b).rotate_left(seed & 31);
-            assert_eq!(gf2_matrix_times(&matrix, vector), reference(&matrix, vector));
+            assert_eq!(
+                gf2_matrix_times(&matrix, vector),
+                reference(&matrix, vector)
+            );
         }
     }
 
@@ -798,7 +841,9 @@ mod positioned_parallel_crc32c_tests {
             .map(|index| ((index * 17 + index / 7) % 251) as u8)
             .collect::<Vec<_>>();
         let path = std::env::temp_dir().join(format!(
-            "rusthouse-parallel-crc-{}-{:?}", std::process::id(), std::thread::current().id()
+            "rusthouse-parallel-crc-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
         ));
         fs::write(&path, &input).unwrap();
         let mut file = fs::File::open(&path).unwrap();
@@ -819,10 +864,23 @@ mod parallel_immutable_buffer_checksum_tests {
 
     #[test]
     fn small_and_large_borrowed_buffers_match_sequential_crc32c() {
-        for len in [0, 1, 7, 8, 31, 127, 128, 4096, 65_535, 65_536,
-                    16 * 1024 * 1024 - 1, 16 * 1024 * 1024,
-                    16 * 1024 * 1024 + 7] {
-            let bytes = (0..len).map(|i| (i.wrapping_mul(199) % 251) as u8)
+        for len in [
+            0,
+            1,
+            7,
+            8,
+            31,
+            127,
+            128,
+            4096,
+            65_535,
+            65_536,
+            16 * 1024 * 1024 - 1,
+            16 * 1024 * 1024,
+            16 * 1024 * 1024 + 7,
+        ] {
+            let bytes = (0usize..len)
+                .map(|i| (i.wrapping_mul(199) % 251) as u8)
                 .collect::<Vec<_>>();
             assert_eq!(crc32c_parallel(&bytes), crc32c(&bytes), "len={len}");
         }
@@ -830,7 +888,8 @@ mod parallel_immutable_buffer_checksum_tests {
 
     #[test]
     fn parallel_combine_is_stable_for_unbalanced_split_lengths() {
-        let bytes = (0..1_000_019usize).map(|i| (i * 41 % 251) as u8)
+        let bytes = (0..1_000_019usize)
+            .map(|i| (i * 41 % 251) as u8)
             .collect::<Vec<_>>();
         let expected = crc32c(&bytes);
         for workers in [2, 3, 4, 7] {

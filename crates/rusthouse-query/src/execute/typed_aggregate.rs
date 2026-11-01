@@ -80,7 +80,9 @@ pub(super) fn execute_typed_aggregate<W: Write>(
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     if *function == AggregateFunction::Median {
-        if let Some(inner) = selected.data_type.strip_prefix("Nullable(")
+        if let Some(inner) = selected
+            .data_type
+            .strip_prefix("Nullable(")
             .and_then(|name| name.strip_suffix(')'))
         {
             if super::radix_median::supports_type(inner) {
@@ -88,7 +90,11 @@ pub(super) fn execute_typed_aggregate<W: Write>(
                     super::radix_median::median_nullable(part, column, &metadata)?
                 } else {
                     super::radix_median::median_nullable_filtered(
-                        part, column, &metadata, &names, &conditions,
+                        part,
+                        column,
+                        &metadata,
+                        &names,
+                        &conditions,
                     )?
                 };
                 if query.offset.unwrap_or(0) == 0 {
@@ -254,23 +260,27 @@ const MAX_GROUPED_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
 /// A new String GROUP BY key is owned by the lookup map and output Cell.
 fn charge_grouped_text(used: &mut usize, text_len: usize) -> Result<(), ExecutionError> {
-    let added = text_len.checked_mul(2)
-        .and_then(|bytes| bytes.checked_add(
-            std::mem::size_of::<(Vec<u8>, usize)>()
-                + std::mem::size_of::<(Cell, AggregateState)>()
-        ))
+    let added = text_len
+        .checked_mul(2)
+        .and_then(|bytes| {
+            bytes.checked_add(
+                std::mem::size_of::<(Vec<u8>, usize)>()
+                    + std::mem::size_of::<(Cell, AggregateState)>(),
+            )
+        })
         .ok_or_else(|| ExecutionError::Invalid("GROUP BY String key bytes overflow".into()))?;
-    let next = used.checked_add(added)
+    let next = used
+        .checked_add(added)
         .ok_or_else(|| ExecutionError::Invalid("GROUP BY String key bytes overflow".into()))?;
     if next > MAX_GROUPED_TEXT_BYTES {
         return Err(ExecutionError::Invalid(
-            "GROUP BY String keys exceed 64 MiB retained memory".into()
+            "GROUP BY String keys exceed 64 MiB retained memory".into(),
         ));
     }
     *used = next;
     Ok(())
 }
- 
+
 /// Encode a narrow integer dimension directly into its dense bucket.
 /// Nullable dimensions reserve the final bucket for NULL rather than
 /// hashing a new typed key on every qualifying analytical fact row.
@@ -287,19 +297,25 @@ fn narrow_group_bucket(
             }
             values
         }
-        _ => return Err(ExecutionError::Invalid("unexpected dense GROUP BY column".into())),
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "unexpected dense GROUP BY column".into(),
+            ));
+        }
     };
     let bucket = match values {
         NumericColumn::UInt8(values) => usize::from(values[row]),
         NumericColumn::Int8(values) => usize::from(values[row] as u8),
         NumericColumn::UInt16(values) => usize::from(values[row]),
         NumericColumn::Int16(values) => usize::from(values[row] as u16),
-        _ => return Err(ExecutionError::Invalid("unexpected dense GROUP BY column".into())),
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "unexpected dense GROUP BY column".into(),
+            ));
+        }
     };
     Ok(bucket)
 }
-
-
 
 /// Exact integer SUM over parallel physical parts. Keep both the group key
 /// and an empty aggregate state for keys whose measures are entirely NULL.
@@ -320,47 +336,65 @@ fn parallel_grouped_integer_sum(
     }
     let chunk_size = parts.len().div_ceil(workers);
     let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
-        let handles = parts.chunks(chunk_size).map(|paths| {
-            std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Vec<(Cell, AggregateState)>, ExecutionError> {
-                let mut groups: Vec<(Cell, AggregateState)> = Vec::new();
-                let mut by_key = HashMap::<typed::Key, usize>::new();
-                for path in paths {
-                    let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
-                    while let Some(batch) = reader.next_batch()? {
-                        for row in 0..batch[0].len() {
-                            if !no_filters && !typed::passes(&batch, row, conditions) {
-                                continue;
-                            }
-                            let key = typed::key_at(&batch[group_index], row);
-                            let group = match by_key.entry(key) {
-                                Entry::Occupied(entry) => *entry.get(),
-                                Entry::Vacant(entry) => {
-                                    if groups.len() >= MAX_GROUPS {
-                                        return Err(group_limit_error());
+        let handles = parts
+            .chunks(chunk_size)
+            .map(|paths| {
+                std::thread::Builder::new()
+                    .spawn_scoped(
+                        scope,
+                        move || -> Result<Vec<(Cell, AggregateState)>, ExecutionError> {
+                            let mut groups: Vec<(Cell, AggregateState)> = Vec::new();
+                            let mut by_key = HashMap::<typed::Key, usize>::new();
+                            for path in paths {
+                                let mut reader =
+                                    rusthouse_storage::TypedPartReader::open(path, names)?;
+                                while let Some(batch) = reader.next_batch()? {
+                                    for row in 0..batch[0].len() {
+                                        if !no_filters && !typed::passes(&batch, row, conditions) {
+                                            continue;
+                                        }
+                                        let key = typed::key_at(&batch[group_index], row);
+                                        let group = match by_key.entry(key) {
+                                            Entry::Occupied(entry) => *entry.get(),
+                                            Entry::Vacant(entry) => {
+                                                if groups.len() >= MAX_GROUPS {
+                                                    return Err(group_limit_error());
+                                                }
+                                                let id = groups.len();
+                                                entry.insert(id);
+                                                groups.push((
+                                                    typed::cell(&batch[group_index], row),
+                                                    AggregateState::new(AggregateFunction::Sum),
+                                                ));
+                                                id
+                                            }
+                                        };
+                                        update_group_numeric(
+                                            &mut groups[group].1,
+                                            &batch[value_index],
+                                            row,
+                                        )?;
                                     }
-                                    let id = groups.len();
-                                    entry.insert(id);
-                                    groups.push((
-                                        typed::cell(&batch[group_index], row),
-                                        AggregateState::new(AggregateFunction::Sum),
-                                    ));
-                                    id
                                 }
-                            };
-                            update_group_numeric(
-                                &mut groups[group].1, &batch[value_index], row,
-                            )?;
-                        }
-                    }
-                }
-                Ok(groups)
-            }).map_err(|error| ExecutionError::Invalid(format!(
-                "cannot start grouped SUM worker: {error}"
-            )))
-        }).collect::<Result<Vec<_>, _>>()?;
-        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
-            Err(ExecutionError::Invalid("parallel grouped SUM worker panicked".into()))
-        })).collect::<Vec<_>>())
+                            }
+                            Ok(groups)
+                        },
+                    )
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!("cannot start grouped SUM worker: {error}"))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(ExecutionError::Invalid(
+                        "parallel grouped SUM worker panicked".into(),
+                    ))
+                })
+            })
+            .collect::<Vec<_>>())
     })?;
     let mut groups: Vec<(Cell, AggregateState)> = Vec::new();
     let mut by_key = HashMap::<typed::Key, usize>::new();
@@ -456,13 +490,26 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     let value_kind = types[value_column].as_str();
     let exact_integer = matches!(
         typed::base_type(value_kind),
-        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+        "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
     );
     let group_is_narrow = matches!(group_type, "UInt8" | "Int8" | "UInt16" | "Int16");
     let partial = if *function == AggregateFunction::Sum && exact_integer && group_is_narrow {
         parallel_grouped_integer_sum(
-            part, &names, group_index, value_index, &conditions, no_filters,
+            part,
+            &names,
+            group_index,
+            value_index,
+            &conditions,
+            no_filters,
         )?
     } else {
         None
@@ -470,7 +517,9 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     let mut reader = if partial.is_some() {
         None
     } else {
-        Some(TypedQueryReader::open_with_metadata(part, &names, &metadata)?)
+        Some(TypedQueryReader::open_with_metadata(
+            part, &names, &metadata,
+        )?)
     };
 
     let mut by_key = HashMap::<typed::Key, usize>::new();
@@ -489,17 +538,16 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
         "Nullable(UInt16)" | "Nullable(Int16)" => Some(vec![usize::MAX; 65_537]),
         _ => None,
     };
-    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
+    while let Some(batch) = reader
+        .as_mut()
+        .map_or(Ok(None), TypedQueryReader::next_batch)?
+    {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             let group = if let Some(slots) = dense_slots.as_mut() {
-                let key = narrow_group_bucket(
-                    &batch[group_index],
-                    row,
-                    slots.len() - 1,
-                )?;
+                let key = narrow_group_bucket(&batch[group_index], row, slots.len() - 1)?;
                 let group = &mut slots[key];
                 if *group != usize::MAX {
                     *group
@@ -588,7 +636,11 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
         let order_terms = query
             .order_terms()
             .map(|term| {
-                (term.column == "#aggregate", term.descending, term.nulls_first)
+                (
+                    term.column == "#aggregate",
+                    term.descending,
+                    term.nulls_first,
+                )
             })
             .collect::<Vec<_>>();
         let compare = |(left_key, left_state): &(Cell, AggregateState),
@@ -602,12 +654,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                         nulls_first,
                     )
                 } else {
-                    typed::compare_order_cells(
-                        left_key,
-                        right_key,
-                        descending,
-                        nulls_first,
-                    )
+                    typed::compare_order_cells(left_key, right_key, descending, nulls_first)
                 };
                 if comparison != std::cmp::Ordering::Equal {
                     return comparison;
@@ -678,12 +725,23 @@ mod direct_unfiltered_aggregate_scan_tests {
     #[test]
     fn sums_large_nullable_batches_without_counting_nulls() {
         let dir = std::env::temp_dir().join(format!(
-            "rusthouse-aggregate-direct-scan-{}-{}", std::process::id(), line!(),
+            "rusthouse-aggregate-direct-scan-{}-{}",
+            std::process::id(),
+            line!(),
         ));
         let _ = fs::remove_dir_all(&dir);
-        let columns = [Column { name: "amount".into(), data_type: "Nullable(UInt64)".into() }];
+        let columns = [Column {
+            name: "amount".into(),
+            data_type: "Nullable(UInt64)".into(),
+        }];
         let rows = (0..8192)
-            .map(|index| vec![if index % 4 == 0 { None } else { Some("3".to_string()) }])
+            .map(|index| {
+                vec![if index % 4 == 0 {
+                    None
+                } else {
+                    Some("3".to_string())
+                }]
+            })
             .collect::<Vec<_>>();
         write_wide_part(&dir, &columns, &rows).unwrap();
         let query = crate::parse_select("SELECT sum(amount) FROM part").unwrap();

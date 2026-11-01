@@ -71,7 +71,10 @@ fn write_vertical_field<W: Write>(output: &mut W, header: &[u8], field: &[u8]) -
         .checked_add(field.len())
         .and_then(|len| len.checked_add(5))
         .is_some_and(|len| len <= 512)
-        && !header.iter().chain(field).any(|byte| byte.is_ascii_control())
+        && !header
+            .iter()
+            .chain(field)
+            .any(|byte| byte.is_ascii_control())
     {
         let mut framed = [0u8; 512];
         framed[..2].copy_from_slice(b"  ");
@@ -121,7 +124,10 @@ fn write_row<W: Write>(
     if !line.contains(&b'\\') {
         // Do not write arbitrary non-UTF-8 bytes to an interactive terminal.
         std::str::from_utf8(line).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "vertical row is not valid UTF-8")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "vertical row is not valid UTF-8",
+            )
         })?;
         writeln!(output, "Row {row}:")?;
         for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
@@ -133,7 +139,10 @@ fn write_row<W: Write>(
     // Check the full decoded record before printing its heading or cells.
     for field in &fields {
         std::str::from_utf8(field.as_ref()).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "vertical row is not valid UTF-8")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "vertical row is not valid UTF-8",
+            )
         })?;
     }
     writeln!(output, "Row {row}:")?;
@@ -156,7 +165,10 @@ impl<W: Write> VerticalWriter<W> {
     fn finish_line(&mut self) -> io::Result<()> {
         let Some(headers) = self.headers.as_ref() else {
             std::str::from_utf8(&self.line).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "vertical header is not valid UTF-8")
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "vertical header is not valid UTF-8",
+                )
             })?;
             self.headers = Some(
                 self.line
@@ -238,9 +250,14 @@ mod tests {
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
-        let mut output = Count { writes: 0, bytes: Vec::new() };
+        let mut output = Count {
+            writes: 0,
+            bytes: Vec::new(),
+        };
         write_vertical_field(&mut output, b"city", "München".as_bytes()).unwrap();
         assert_eq!(output.writes, 1);
         assert_eq!(output.bytes, "  city: München\n".as_bytes());
@@ -259,7 +276,11 @@ mod tests {
         writer.write_all(format!("{value}\n").as_bytes()).unwrap();
         assert_eq!(writer.line.capacity(), before);
         assert_eq!(writer.rows, 1);
-        assert!(writer.output.ends_with(format!("  value: {value}\n\n").as_bytes()));
+        assert!(
+            writer
+                .output
+                .ends_with(format!("  value: {value}\n\n").as_bytes())
+        );
     }
 
     #[test]
@@ -396,15 +417,21 @@ mod vertical_utf8_safety_tests {
     #[test]
     fn rejects_invalid_utf8_headers_before_printing() {
         let mut writer = VerticalWriter::new(Vec::new());
-        assert_eq!(writer.write_all(b"bad\xff\n").unwrap_err().kind(),
-            io::ErrorKind::InvalidData);
+        assert_eq!(
+            writer.write_all(b"bad\xff\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
         assert!(writer.output.is_empty());
     }
 
     #[test]
     fn rejects_raw_and_decoded_invalid_utf8_before_printing_any_row() {
-        for payload in [b"\xff\tgood\n".as_slice(), b"good\t\xff\n",
-            b"\\xFF\tgood\n", b"good\t\\xFF\n"] {
+        for payload in [
+            b"\xff\tgood\n".as_slice(),
+            b"good\t\xff\n",
+            b"\\xFF\tgood\n",
+            b"good\t\\xFF\n",
+        ] {
             let mut writer = VerticalWriter::new(Vec::new());
             writer.write_all(b"first\tsecond\n").unwrap();
             let err = writer.write_all(payload).unwrap_err();
@@ -416,8 +443,13 @@ mod vertical_utf8_safety_tests {
     #[test]
     fn unicode_and_ascii_control_values_keep_existing_output() {
         let mut writer = VerticalWriter::new(Vec::new());
-        writer.write_all("name\ncafé\\x0A東京\n".as_bytes()).unwrap();
-        assert_eq!(writer.output, "Row 1:\n  name: café\\x0A東京\n\n".as_bytes());
+        writer
+            .write_all("name\ncafé\\x0A東京\n".as_bytes())
+            .unwrap();
+        assert_eq!(
+            writer.output,
+            "Row 1:\n  name: café\\x0A東京\n\n".as_bytes()
+        );
     }
 }
 
@@ -444,7 +476,12 @@ mod batched_terminal_escape_tests {
 
     #[test]
     fn control_heavy_values_use_bounded_writes_and_preserve_all_bytes() {
-        let input = [vec![b'a'; 8_192], vec![0x1b; 8_192], "café".as_bytes().to_vec()].concat();
+        let input = [
+            vec![b'a'; 8_192],
+            vec![0x1b; 8_192],
+            "café".as_bytes().to_vec(),
+        ]
+        .concat();
         let mut expected = vec![b'a'; 8_192];
         for _ in 0..8_192 {
             expected.extend_from_slice(br"\x1B");

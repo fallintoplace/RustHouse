@@ -10,13 +10,25 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn converts_modified_julian_days_in_bounded_calendar() {
     for (sql, expected) in [
-        ("SELECT toModifiedJulianDay('1970-01-01')", ConstantValue::Integer(40587)),
-        ("SELECT toModifiedJulianDay('2020-01-01')", ConstantValue::Integer(58849)),
-        ("SELECT toModifiedJulianDay('2000-02-29')", ConstantValue::Integer(51603)),
+        (
+            "SELECT toModifiedJulianDay('1970-01-01')",
+            ConstantValue::Integer(40587),
+        ),
+        (
+            "SELECT toModifiedJulianDay('2020-01-01')",
+            ConstantValue::Integer(58849),
+        ),
+        (
+            "SELECT toModifiedJulianDay('2000-02-29')",
+            ConstantValue::Integer(51603),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
-    assert_eq!(value("SELECT toModifiedJulianDay(NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT toModifiedJulianDay(NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]

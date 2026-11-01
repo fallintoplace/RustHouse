@@ -11,8 +11,10 @@ fn clickhouse_quoted_identifiers_keep_reserved_names_as_columns() {
         panic!("expected CREATE TABLE");
     };
     assert_eq!(name, "order");
-    assert_eq!(columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
-               ["select", "amount"]);
+    assert_eq!(
+        columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["select", "amount"]
+    );
 
     let inserted = parse_insert("INSERT INTO `order` (`select`, \"amount\") VALUES (7, NULL)")
         .unwrap()
@@ -20,9 +22,10 @@ fn clickhouse_quoted_identifiers_keep_reserved_names_as_columns() {
     assert_eq!(inserted.table, "order");
     assert_eq!(inserted.columns.as_deref().unwrap(), ["select", "amount"]);
 
-    let select = parse_select("SELECT `select` FROM `order` WHERE \"amount\" IS NULL")
-        .unwrap();
-    assert!(matches!(select.projection, Projection::Columns(ref columns) if columns == &["select"]));
+    let select = parse_select("SELECT `select` FROM `order` WHERE \"amount\" IS NULL").unwrap();
+    assert!(
+        matches!(select.projection, Projection::Columns(ref columns) if columns == &["select"])
+    );
     assert!(matches!(select.source, Some(Source::Table(ref name)) if name == "order"));
 }
 

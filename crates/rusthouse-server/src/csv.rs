@@ -77,7 +77,8 @@ fn write_csv_field_from_tsv<W: Write>(output: &mut W, field: &[u8]) -> io::Resul
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field"))?,
         )
     };
-    let needs_quotes = value.is_empty() || value.as_ref() == "\\N"
+    let needs_quotes = value.is_empty()
+        || value.as_ref() == "\\N"
         || value
             .bytes()
             .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\n' | b'\r'));
@@ -103,12 +104,7 @@ impl<W: Write> Write for CsvWriter<W> {
                 ));
             }
             if complete && self.line.is_empty() {
-                encode_complete_row(
-                    &mut self.output,
-                    &mut self.encoded,
-                    &mut self.columns,
-                    data,
-                )?;
+                encode_complete_row(&mut self.output, &mut self.encoded, &mut self.columns, data)?;
                 continue;
             }
             self.line.extend_from_slice(data);
@@ -330,7 +326,9 @@ mod empty_csv_roundtrip_tests {
     #[test]
     fn empty_strings_are_quoted_but_nulls_are_not() {
         let mut writer = CsvWriter::new(Vec::new());
-        writer.write_all(b"name\tmissing\n\t\\N\nabc\t\\N\n").unwrap();
+        writer
+            .write_all(b"name\tmissing\n\t\\N\nabc\t\\N\n")
+            .unwrap();
         assert_eq!(writer.output, b"name,missing\r\n\"\",\\N\r\nabc,\\N\r\n");
     }
 

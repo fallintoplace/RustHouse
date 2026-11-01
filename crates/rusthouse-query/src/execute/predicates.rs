@@ -208,13 +208,16 @@ pub(super) fn count_batch_matches(
                                     }
                                 }
                             }
-                            return values.iter().filter(|&&value| {
-                                let index = usize::from(value);
-                                ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
-                            }).count();
+                            return values
+                                .iter()
+                                .filter(|&&value| {
+                                    let index = usize::from(value);
+                                    ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
+                                })
+                                .count();
                         }
                         count_hashed_in!(values, Unsigned, u128)
-                    },
+                    }
                     NumericColumn::UInt32(v) => count_hashed_in!(v, Unsigned, u128),
                     NumericColumn::UInt64(v) => count_hashed_in!(v, Unsigned, u128),
                     NumericColumn::UInt128(v) => count_hashed_in!(v, Unsigned, u128),
@@ -230,13 +233,16 @@ pub(super) fn count_batch_matches(
                                     }
                                 }
                             }
-                            return values.iter().filter(|&&value| {
-                                let index = usize::from(value as u16);
-                                ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
-                            }).count();
+                            return values
+                                .iter()
+                                .filter(|&&value| {
+                                    let index = usize::from(value as u16);
+                                    ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
+                                })
+                                .count();
                         }
                         count_hashed_in!(values, Signed, i128)
-                    },
+                    }
                     NumericColumn::Int32(v) => count_hashed_in!(v, Signed, i128),
                     NumericColumn::Int64(v) => count_hashed_in!(v, Signed, i128),
                     NumericColumn::Int128(v) => count_hashed_in!(v, Signed, i128),
@@ -244,21 +250,33 @@ pub(super) fn count_batch_matches(
                         // Avoid rebuilding the generic numeric predicate tree
                         // for every Float32 row. Match the NumberKey conversion
                         // exactly, including -0 and unordered NaN.
-                        return values.iter().filter(|&&value| {
-                            let value = f64::from(value);
-                            let matched = !value.is_nan() && targets.contains(&NumberKey::Float(
-                                if value == 0.0 { 0 } else { value.to_bits() }
-                            ));
-                            matched != *negated
-                        }).count();
+                        return values
+                            .iter()
+                            .filter(|&&value| {
+                                let value = f64::from(value);
+                                let matched = !value.is_nan()
+                                    && targets.contains(&NumberKey::Float(if value == 0.0 {
+                                        0
+                                    } else {
+                                        value.to_bits()
+                                    }));
+                                matched != *negated
+                            })
+                            .count();
                     }
                     NumericColumn::Float64(values) => {
-                        return values.iter().filter(|&&value| {
-                            let matched = !value.is_nan() && targets.contains(&NumberKey::Float(
-                                if value == 0.0 { 0 } else { value.to_bits() }
-                            ));
-                            matched != *negated
-                        }).count();
+                        return values
+                            .iter()
+                            .filter(|&&value| {
+                                let matched = !value.is_nan()
+                                    && targets.contains(&NumberKey::Float(if value == 0.0 {
+                                        0
+                                    } else {
+                                        value.to_bits()
+                                    }));
+                                matched != *negated
+                            })
+                            .count();
                     }
                 }
             }
@@ -1202,15 +1220,18 @@ mod tests {
     #[test]
     fn signed_int16_bitmap_in_preserves_negative_values_and_negation() {
         let values = (-2048..2048).map(|value| value as i16).collect::<Vec<_>>();
-        let targets = (-150..150).map(|value| Number::Signed(i128::from(value))).collect::<Vec<_>>();
+        let targets = (-150..150)
+            .map(|value| Number::Signed(i128::from(value)))
+            .collect::<Vec<_>>();
         for negated in [false, true] {
             let predicate = CompiledPredicate {
                 index: 0,
                 test: compile_in_test(targets.clone(), negated),
             };
-            let expected = values.iter().filter(|&&value| {
-                (-150..150).contains(&i32::from(value)) != negated
-            }).count();
+            let expected = values
+                .iter()
+                .filter(|&&value| (-150..150).contains(&i32::from(value)) != negated)
+                .count();
             assert_eq!(
                 count_batch_matches(&[NumericColumn::Int16(values.clone())], &[vec![predicate]]),
                 expected
@@ -1221,15 +1242,18 @@ mod tests {
     #[test]
     fn large_unsigned_sixteen_in_matches_hash_membership() {
         let values = (0..4096).map(|value| value as u16).collect::<Vec<_>>();
-        let targets = (0..100).map(|value| Number::Unsigned(value * 2)).collect::<Vec<_>>();
+        let targets = (0..100)
+            .map(|value| Number::Unsigned(value * 2))
+            .collect::<Vec<_>>();
         for negated in [false, true] {
             let predicate = CompiledPredicate {
                 index: 0,
                 test: compile_in_test(targets.clone(), negated),
             };
-            let expected = values.iter().filter(|&&value| {
-                (value < 200 && value % 2 == 0) != negated
-            }).count();
+            let expected = values
+                .iter()
+                .filter(|&&value| (value < 200 && value % 2 == 0) != negated)
+                .count();
             assert_eq!(
                 count_batch_matches(&[NumericColumn::UInt16(values.clone())], &[vec![predicate]]),
                 expected
@@ -1704,10 +1728,15 @@ mod byte_in_dense_lookup_tests {
                 let test = CompiledTest::InSet { targets, negated };
                 let batch = if signed {
                     vec![NumericColumn::Int8(
-                        (-128i16..=127).map(|i| i as i8).collect::<Vec<_>>().repeat(4)
+                        (-128i16..=127)
+                            .map(|i| i as i8)
+                            .collect::<Vec<_>>()
+                            .repeat(4),
                     )]
                 } else {
-                    vec![NumericColumn::UInt8((0..=255).collect::<Vec<u8>>().repeat(4))]
+                    vec![NumericColumn::UInt8(
+                        (0..=255).collect::<Vec<u8>>().repeat(4),
+                    )]
                 };
                 let expected = (0..batch[0].len())
                     .filter(|&row| test.matches(super::super::number_at(&batch[0], row)))
@@ -1726,13 +1755,15 @@ mod nan_not_between_semantics_tests {
     #[test]
     fn nan_is_unordered_not_outside_an_interval() {
         let range = CompiledTest::NotBetween {
-            lower: Number::Float(-1.0), upper: Number::Float(1.0),
+            lower: Number::Float(-1.0),
+            upper: Number::Float(1.0),
         };
         assert!(!range.matches(Number::Float(f64::NAN)));
         assert!(!range.matches(Number::Float(0.0)));
         assert!(range.matches(Number::Float(3.0)));
         let invalid = CompiledTest::NotBetween {
-            lower: Number::Float(f64::NAN), upper: Number::Float(3.0),
+            lower: Number::Float(f64::NAN),
+            upper: Number::Float(3.0),
         };
         assert!(!invalid.matches(Number::Float(7.0)));
     }
@@ -1741,14 +1772,22 @@ mod nan_not_between_semantics_tests {
     fn vectorized_not_between_agrees_with_unordered_rowwise_semantics() {
         let column = NumericColumn::Float64(vec![f64::NAN, -2.0, 0.0, 2.0]);
         let branches = vec![vec![CompiledPredicate {
-            index: 0, test: CompiledTest::NotBetween {
-                lower: Number::Float(-1.0), upper: Number::Float(1.0)
-            }
+            index: 0,
+            test: CompiledTest::NotBetween {
+                lower: Number::Float(-1.0),
+                upper: Number::Float(1.0),
+            },
         }]];
-        assert_eq!(count_batch_matches(std::slice::from_ref(&column), &branches), 2);
-        assert_eq!((0..column.len()).filter(|&i| {
-            batch_matches(std::slice::from_ref(&column), i, &branches)
-        }).count(), 2);
+        assert_eq!(
+            count_batch_matches(std::slice::from_ref(&column), &branches),
+            2
+        );
+        assert_eq!(
+            (0..column.len())
+                .filter(|&i| { batch_matches(std::slice::from_ref(&column), i, &branches) })
+                .count(),
+            2
+        );
     }
 }
 
@@ -1759,28 +1798,46 @@ mod direct_hashed_float_count_regressions {
     #[test]
     fn float32_and_float64_match_generic_predicate_semantics() {
         let cases = vec![
-            -0.0f64, 0.0, -1.0, 1.0, 0.5, -0.5,
-            f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 12.25,
-            1.0 / 3.0, 12345.0,
+            -0.0f64,
+            0.0,
+            -1.0,
+            1.0,
+            0.5,
+            -0.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            12.25,
+            1.0 / 3.0,
+            12345.0,
         ];
         for negated in [false, true] {
             let mut targets = cases.iter().copied().map(Number::Float).collect::<Vec<_>>();
             targets.extend((0..30).map(|value| Number::Float(value as f64 * 0.25)));
             let test = compile_in_test(targets, negated);
-            let input32 = cases.iter().copied().map(|value| value as f32)
+            let input32 = cases
+                .iter()
+                .copied()
+                .map(|value| value as f32)
                 .collect::<Vec<_>>();
             let input64 = cases.clone();
-            let reference32 = input32.iter().filter(|&&value| {
-                test.matches(Number::Float(f64::from(value)))
-            }).count();
-            let reference64 = input64.iter().filter(|&&value| {
-                test.matches(Number::Float(value))
-            }).count();
+            let reference32 = input32
+                .iter()
+                .filter(|&&value| test.matches(Number::Float(f64::from(value))))
+                .count();
+            let reference64 = input64
+                .iter()
+                .filter(|&&value| test.matches(Number::Float(value)))
+                .count();
             let branch = [vec![CompiledPredicate { index: 0, test }]];
-            assert_eq!(count_batch_matches(&[NumericColumn::Float32(input32)], &branch),
-                reference32);
-            assert_eq!(count_batch_matches(&[NumericColumn::Float64(input64)], &branch),
-                reference64);
+            assert_eq!(
+                count_batch_matches(&[NumericColumn::Float32(input32)], &branch),
+                reference32
+            );
+            assert_eq!(
+                count_batch_matches(&[NumericColumn::Float64(input64)], &branch),
+                reference64
+            );
         }
     }
 }
@@ -1807,11 +1864,14 @@ mod arbitrary_stride_modulo_regression_tests {
                                         target: Number::Unsigned(target),
                                     },
                                 };
-                                let expected = (0..rows).filter(|index| {
-                                    let value = u128::from(start) + u128::from(*index) * u128::from(step);
-                                    let matched = value % u128::from(modulus) == target;
-                                    matched != negated
-                                }).count() as u64;
+                                let expected = (0..rows)
+                                    .filter(|index| {
+                                        let value = u128::from(start)
+                                            + u128::from(*index) * u128::from(step);
+                                        let matched = value % u128::from(modulus) == target;
+                                        matched != negated
+                                    })
+                                    .count() as u64;
                                 assert_eq!(
                                     count_monotonic_numbers(&[vec![predicate]], start, rows, step),
                                     Some(expected),
@@ -1834,7 +1894,9 @@ mod arbitrary_stride_modulo_regression_tests {
                 target: Number::Unsigned(5),
             },
         };
-        assert_eq!(count_monotonic_numbers(&[vec![predicate]], 1, 1_000_000_000, 4),
-            Some(333_333_333));
+        assert_eq!(
+            count_monotonic_numbers(&[vec![predicate]], 1, 1_000_000_000, 4),
+            Some(333_333_333)
+        );
     }
 }

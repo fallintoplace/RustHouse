@@ -44,9 +44,8 @@ fn render_complete_row<W: Write>(
     columns: &mut Option<usize>,
     line: &[u8],
 ) -> io::Result<()> {
-    let text = std::str::from_utf8(line).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
-    })?;
+    let text = std::str::from_utf8(line)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8"))?;
     let field_count = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
     let header = columns.is_none();
     if let Some(expected) = *columns {
@@ -137,13 +136,12 @@ fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::
             false
         } else if field.is_ascii() {
             field.bytes().all(|byte| {
-                !byte.is_ascii_control()
-                    && !matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
+                !byte.is_ascii_control() && !matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
             })
         } else {
-            field.chars().all(|ch| {
-                !ch.is_control() && !matches!(ch, '&' | '<' | '>' | '"' | '\'')
-            })
+            field
+                .chars()
+                .all(|ch| !ch.is_control() && !matches!(ch, '&' | '<' | '>' | '"' | '\''))
         };
         if unescaped && field.len() <= 256 {
             write_framed_plain_cell::<265, _>(output, open, field, close)?;
@@ -212,7 +210,10 @@ fn write_cell<W: Write>(output: &mut W, field: &str) -> io::Result<()> {
         };
         if let Some(entity) = entity {
             append_html_escape_span(
-                output, &mut buffer, &mut used, &field.as_bytes()[start..index],
+                output,
+                &mut buffer,
+                &mut used,
+                &field.as_bytes()[start..index],
             )?;
             append_html_escape_span(output, &mut buffer, &mut used, entity)?;
             start = index + ch.len_utf8();
@@ -289,14 +290,22 @@ mod tests {
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
-        let mut output = Counting { writes: 0, bytes: Vec::new() };
+        let mut output = Counting {
+            writes: 0,
+            bytes: Vec::new(),
+        };
         write_plain_cells(&mut output, "first name\t42\t", false).unwrap();
         assert_eq!(output.writes, 3);
         assert_eq!(output.bytes, b"<td>first name</td><td>42</td><td></td>");
 
-        let mut header = Counting { writes: 0, bytes: Vec::new() };
+        let mut header = Counting {
+            writes: 0,
+            bytes: Vec::new(),
+        };
         write_plain_cells(&mut header, &"x".repeat(256), true).unwrap();
         assert_eq!(header.writes, 1);
         assert!(header.bytes.starts_with(b"<th>"));
@@ -315,9 +324,14 @@ mod tests {
                 self.bytes.extend_from_slice(input);
                 Ok(input.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
-        let mut counter = Counter { writes: 0, bytes: Vec::new() };
+        let mut counter = Counter {
+            writes: 0,
+            bytes: Vec::new(),
+        };
         write_plain_cells(&mut counter, "café\t東京", false).unwrap();
         assert_eq!(counter.writes, 2);
         assert_eq!(counter.bytes, "<td>café</td><td>東京</td>".as_bytes());
@@ -333,7 +347,8 @@ mod tests {
         write_plain_cells(&mut output, "Tom & Sue\t<svg>\tcafé\tline\rbreak", false).unwrap();
         assert_eq!(
             output,
-            "<td>Tom &amp; Sue</td><td>&lt;svg&gt;</td><td>café</td><td>line&#13;break</td>".as_bytes()
+            "<td>Tom &amp; Sue</td><td>&lt;svg&gt;</td><td>café</td><td>line&#13;break</td>"
+                .as_bytes()
         );
     }
 
@@ -515,7 +530,9 @@ mod medium_html_framing_tests {
             Ok(bytes.len())
         }
 
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -532,7 +549,7 @@ mod medium_html_framing_tests {
         let unicode = "é".repeat(2048);
         write_plain_cells(&mut output, &unicode, true).unwrap();
         assert_eq!(output.calls, 1);
-        assert_eq!(&output.bytes[4..output.bytes.len()-5], unicode.as_bytes());
+        assert_eq!(&output.bytes[4..output.bytes.len() - 5], unicode.as_bytes());
     }
 
     #[test]
@@ -540,7 +557,10 @@ mod medium_html_framing_tests {
         let mut output = Vec::new();
         let input = format!("{}<&", "x".repeat(4096));
         write_plain_cells(&mut output, &input, false).unwrap();
-        assert_eq!(output, format!("<td>{}&lt;&amp;</td>", "x".repeat(4096)).as_bytes());
+        assert_eq!(
+            output,
+            format!("<td>{}&lt;&amp;</td>", "x".repeat(4096)).as_bytes()
+        );
         let mut output = Vec::new();
         write_plain_cells(&mut output, &"z".repeat(4097), false).unwrap();
         assert_eq!(output.len(), 4097 + 9);
@@ -562,7 +582,9 @@ mod html_escape_batching_tests {
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -572,7 +594,11 @@ mod html_escape_batching_tests {
         write_cell(&mut sink, &input).unwrap();
         let expected = "&lt;&gt;&amp;&quot;&#39;&#10;&#13;".repeat(2048);
         assert_eq!(sink.bytes, expected.as_bytes());
-        assert!(sink.writes <= 32, "unexpected fragmented writes: {}", sink.writes);
+        assert!(
+            sink.writes <= 32,
+            "unexpected fragmented writes: {}",
+            sink.writes
+        );
     }
 
     #[test]

@@ -4,7 +4,10 @@ use std::process::Command;
 fn verifies_base32_encode_values_and_errors() {
     for (query, expected) in [
         ("SELECT base32Encode('foo') AS value", "value\nMZXW6===\n"),
-        ("SELECT base32Encode('foobar') AS value", "value\nMZXW6YTBOI======\n"),
+        (
+            "SELECT base32Encode('foobar') AS value",
+            "value\nMZXW6YTBOI======\n",
+        ),
         ("SELECT to_base32('f') AS value", "value\nMY======\n"),
         ("SELECT base32Encode('') AS value", "value\n\n"),
     ] {

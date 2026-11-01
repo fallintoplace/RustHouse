@@ -18,7 +18,9 @@ fn prewhere_filters_generated_rows() {
 #[test]
 fn prewhere_and_where_preserve_boolean_precedence() {
     assert_eq!(
-        run("SELECT number FROM numbers(10) PREWHERE (number = 1 OR number = 2 OR number = 3) WHERE (number = 2 OR number = 4) ORDER BY number"),
+        run(
+            "SELECT number FROM numbers(10) PREWHERE (number = 1 OR number = 2 OR number = 3) WHERE (number = 2 OR number = 4) ORDER BY number"
+        ),
         "number\n2\n"
     );
     assert_eq!(
@@ -45,8 +47,14 @@ fn prewhere_rejects_misplaced_and_unbounded_filters() {
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
-    let p = (0..9).map(|i| format!("number = {i}")).collect::<Vec<_>>().join(" OR ");
-    let w = (0..8).map(|i| format!("number = {i}")).collect::<Vec<_>>().join(" OR ");
+    let p = (0..9)
+        .map(|i| format!("number = {i}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let w = (0..8)
+        .map(|i| format!("number = {i}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
     let too_many = format!("SELECT number FROM numbers(10) PREWHERE ({p}) WHERE ({w})");
     assert!(parse_select(&too_many).is_err());
 }

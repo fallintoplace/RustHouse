@@ -10,12 +10,21 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn rounds_utc_datetime_constants_to_interval_start() {
     for (sql, expected) in [
-        ("SELECT toStartOfFifteenMinutes('2024-02-29 23:59:58')", "2024-02-29 23:45:00"),
-        ("SELECT toStartOfFifteenMinutes('2024-03-01T00:02:30+01:00')", "2024-02-29 23:00:00"),
+        (
+            "SELECT toStartOfFifteenMinutes('2024-02-29 23:59:58')",
+            "2024-02-29 23:45:00",
+        ),
+        (
+            "SELECT toStartOfFifteenMinutes('2024-03-01T00:02:30+01:00')",
+            "2024-02-29 23:00:00",
+        ),
     ] {
         assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
     }
-    assert_eq!(value("SELECT toStartOfFifteenMinutes(NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT toStartOfFifteenMinutes(NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]

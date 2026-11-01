@@ -25,10 +25,7 @@ fn handles_bounded_calendar_and_null_values() {
         value("SELECT dateTrunc('day', '2024-02-29 23:59:59')"),
         ConstantValue::Text("2024-02-29 00:00:00".into())
     );
-    assert_eq!(
-        value("SELECT dateTrunc(NULL, NULL)"),
-        ConstantValue::Null
-    );
+    assert_eq!(value("SELECT dateTrunc(NULL, NULL)"), ConstantValue::Null);
 }
 
 #[test]

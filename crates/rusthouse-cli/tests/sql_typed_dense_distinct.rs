@@ -25,14 +25,30 @@ fn typed_distinct_uses_dense_integer_keys_with_string_filters() {
         assert!(result.status.success(), "{statement}: {result:?}");
     }
     for (query, expected) in [
-        ("SELECT DISTINCT byte_key FROM events WHERE tag = 'good' ORDER BY byte_key", "byte_key\n0\n1\n255\n"),
-        ("SELECT DISTINCT signed_byte FROM events WHERE tag = 'good' ORDER BY signed_byte", "signed_byte\n-128\n-1\n127\n"),
-        ("SELECT DISTINCT wide_key FROM events WHERE tag = 'good' ORDER BY wide_key", "wide_key\n0\n42\n65535\n"),
-        ("SELECT DISTINCT signed_wide FROM events WHERE tag = 'good' ORDER BY signed_wide", "signed_wide\n-32768\n-1\n32767\n"),
+        (
+            "SELECT DISTINCT byte_key FROM events WHERE tag = 'good' ORDER BY byte_key",
+            "byte_key\n0\n1\n255\n",
+        ),
+        (
+            "SELECT DISTINCT signed_byte FROM events WHERE tag = 'good' ORDER BY signed_byte",
+            "signed_byte\n-128\n-1\n127\n",
+        ),
+        (
+            "SELECT DISTINCT wide_key FROM events WHERE tag = 'good' ORDER BY wide_key",
+            "wide_key\n0\n42\n65535\n",
+        ),
+        (
+            "SELECT DISTINCT signed_wide FROM events WHERE tag = 'good' ORDER BY signed_wide",
+            "signed_wide\n-32768\n-1\n32767\n",
+        ),
     ] {
         let result = sql(query, &db);
         assert!(result.status.success(), "{query}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

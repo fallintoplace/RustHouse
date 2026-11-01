@@ -33,7 +33,8 @@ pub(super) fn execute<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
+    let mut hash =
+        HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
     for (row_index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
             if query.any {
@@ -61,7 +62,11 @@ pub(super) fn execute<W: Write>(
                 null_filter,
             },
             |left, right| {
-                let cell = if index < width { &left[index] } else { &right[index - width] };
+                let cell = if index < width {
+                    &left[index]
+                } else {
+                    &right[index - width]
+                };
                 if !matches!(cell, typed::Cell::Null) {
                     count = count
                         .checked_add(1)

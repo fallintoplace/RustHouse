@@ -11,10 +11,13 @@ fn changing_text_probe_key_keeps_backing_allocation() {
         };
         assert!(row_key_into(&row, &[0], &mut key));
         if let Some(ptr) = previous {
-            assert_eq!(match &key[0] {
-                typed::Key::Text(value) => value.as_ptr(),
-                _ => panic!("expected text key"),
-            }, ptr);
+            assert_eq!(
+                match &key[0] {
+                    typed::Key::Text(value) => value.as_ptr(),
+                    _ => panic!("expected text key"),
+                },
+                ptr
+            );
         }
         assert_eq!(key, row_key(&row, &[0]).unwrap());
     }

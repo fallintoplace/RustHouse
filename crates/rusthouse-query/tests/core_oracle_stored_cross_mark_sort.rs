@@ -4,10 +4,8 @@ use std::fs;
 
 #[test]
 fn filtered_sorted_page_crosses_granule_and_part_boundaries() {
-    let root = std::env::temp_dir().join(format!(
-        "rusthouse-core-mark-sort-{}",
-        std::process::id()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("rusthouse-core-mark-sort-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     let columns = [Column {
         name: "id".into(),
@@ -17,8 +15,12 @@ fn filtered_sorted_page_crosses_granule_and_part_boundaries() {
         let rows = (start..stop)
             .map(|value| vec![Some(value.to_string())])
             .collect::<Vec<_>>();
-        write_wide_part(&root.join(format!("all_{index}_{index}_0")), &columns, &rows)
-            .unwrap();
+        write_wide_part(
+            &root.join(format!("all_{index}_{index}_0")),
+            &columns,
+            &rows,
+        )
+        .unwrap();
     }
     let sql = "SELECT id FROM part WHERE id >= 1020 ORDER BY id DESC LIMIT 8 OFFSET 4";
     let mut output = Vec::new();

@@ -101,9 +101,9 @@ pub(super) fn execute<W: Write>(
                 match groups.entry(key) {
                     Entry::Occupied(mut occupied) => {
                         let count = &mut occupied.get_mut().1;
-                        *count = count.checked_add(1).ok_or_else(|| {
-                            invalid("JOIN grouped count overflow")
-                        })?;
+                        *count = count
+                            .checked_add(1)
+                            .ok_or_else(|| invalid("JOIN grouped count overflow"))?;
                     }
                     Entry::Vacant(vacant) => {
                         if group_count >= MAX_JOIN_GROUPS {
@@ -133,9 +133,7 @@ pub(super) fn execute<W: Write>(
         .first()
         .map(|(_, desc, nulls)| (*desc, *nulls))
         .unwrap_or((false, Some(false)));
-    rows.sort_by(|(left, _), (right, _)| {
-        typed::compare_order_cells(left, right, desc, nulls)
-    });
+    rows.sort_by(|(left, _), (right, _)| typed::compare_order_cells(left, right, desc, nulls));
     writeln!(output, "{group_name}\tcount")?;
     for (group, count) in rows
         .iter()
@@ -164,12 +162,20 @@ mod grouped_join_hash_build_tests {
         let all = build_grouped_join_hash(&rows, &[0], false);
         assert_eq!(all.len(), 2);
         assert_eq!(
-            all.get(key.as_slice()).unwrap().iter().copied().collect::<Vec<_>>(),
+            all.get(key.as_slice())
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
             vec![0, 2],
         );
         let any = build_grouped_join_hash(&rows, &[0], true);
         assert_eq!(
-            any.get(key.as_slice()).unwrap().iter().copied().collect::<Vec<_>>(),
+            any.get(key.as_slice())
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
             vec![0],
         );
     }

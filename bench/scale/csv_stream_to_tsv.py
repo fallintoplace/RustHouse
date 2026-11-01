@@ -35,9 +35,6 @@ def convert(source, destination, *, header=False, empty_as_null=False,
             max_field_bytes=8 * 1024 * 1024, skip_header=False,
             expected_columns=None):
     source = Path(source)
-    before = source.lstat()
-    if not stat.S_ISREG(before.st_mode):
-        raise ValueError("CSV source must be a regular non-symlinked file")
     if Path(source).resolve() == Path(destination).resolve():
         raise ValueError("input and output must be different files")
     if skip_header and not header:
@@ -49,6 +46,9 @@ def convert(source, destination, *, header=False, empty_as_null=False,
     if expected_columns is not None and (
             type(expected_columns) is not int or not 1 <= expected_columns <= 128):
         raise ValueError("expected_columns must be in 1..128")
+    before = source.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("CSV source must be a regular non-symlinked file")
     old_limit = csv.field_size_limit()
     csv.field_size_limit(max_field_bytes)
     count = 0

@@ -65,11 +65,7 @@ fn valid_schema(path: &Path) -> bool {
     std::str::from_utf8(&bytes).is_ok_and(valid_schema_contents)
 }
 
-fn valid_schema_line<'a>(
-    line: &'a str,
-    names: &mut HashSet<&'a str>,
-    ddl: &mut String,
-) -> bool {
+fn valid_schema_line<'a>(line: &'a str, names: &mut HashSet<&'a str>, ddl: &mut String) -> bool {
     let Some((name, data_type)) = line.split_once('\t') else {
         return false;
     };
@@ -194,7 +190,9 @@ mod tests {
 
     #[test]
     fn invalid_and_duplicate_schema_names_are_rejected_before_parsing_ddl() {
-        assert!(!valid_schema_contents("rusthouse-schema-v1\n!invalid\tUInt64\n"));
+        assert!(!valid_schema_contents(
+            "rusthouse-schema-v1\n!invalid\tUInt64\n"
+        ));
         assert!(!valid_schema_contents(
             "rusthouse-schema-v1\nid\tUInt64\nid\tUInt128\n"
         ));
@@ -322,7 +320,9 @@ mod mutable_schema_version_tests {
     #[test]
     fn schema_metadata_distinguishes_equal_length_rewrites() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-server-schema-version-{}-{}", std::process::id(), line!()
+            "rusthouse-server-schema-version-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
@@ -331,7 +331,9 @@ mod mutable_schema_version_tests {
         assert!(read_schema_bytes(&path).is_some());
         let opened = fs::File::open(&path).unwrap();
         let before = opened.metadata().unwrap();
-        opened.set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH)).unwrap();
+        opened
+            .set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
         let after = opened.metadata().unwrap();
         assert_eq!(before.len(), after.len());
         assert_ne!(before.modified().unwrap(), after.modified().unwrap());
@@ -369,8 +371,10 @@ mod schema_scratch_reuse_tests {
         let mut ddl = String::with_capacity(128);
         let pointer = ddl.as_ptr();
         for (index, line) in contents.lines().enumerate() {
-            assert!(valid_schema_line(line, &mut names, &mut ddl),
-                "column {index} invalid");
+            assert!(
+                valid_schema_line(line, &mut names, &mut ddl),
+                "column {index} invalid"
+            );
             assert_eq!(ddl.as_ptr(), pointer, "DDL string reallocated at {index}");
         }
         assert_eq!(names.len(), MAX_SCHEMA_COLUMNS);

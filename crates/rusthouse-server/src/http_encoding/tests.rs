@@ -56,17 +56,25 @@ fn medium_json_string_uses_single_write() {
 
 #[test]
 fn four_kibibyte_plain_json_field_uses_one_write_and_preserves_utf8() {
-    struct Sink { calls: usize, bytes: Vec<u8> }
+    struct Sink {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
     impl Write for Sink {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.calls += 1;
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
     let input = "é".repeat(2047);
-    let mut sink = Sink { calls: 0, bytes: Vec::new() };
+    let mut sink = Sink {
+        calls: 0,
+        bytes: Vec::new(),
+    };
     write_json_string(&mut sink, &input).unwrap();
     assert_eq!(sink.calls, 1);
     let expected = [vec![b'"'], input.as_bytes().to_vec(), vec![b'"']].concat();

@@ -3,9 +3,7 @@ use std::process::Command;
 
 #[test]
 fn numeric_aggregates_stream_over_duplicate_and_nullable_join_rows() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-join-aggregates-{}", std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-join-aggregates-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])

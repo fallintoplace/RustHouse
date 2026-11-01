@@ -49,9 +49,18 @@ fn physical_fact_histogram_has_bounded_two_pass_state() {
 #[test]
 fn nullable_filtered_histogram_skips_null_values() {
     let db = database();
-    ok(&db, "CREATE TABLE events (region String, latency Nullable(UInt64))");
-    ok(&db, "INSERT INTO events VALUES ('west', 10), ('west', NULL), ('west', 20), ('east', 80)");
-    let result = ok(&db, "SELECT histogram(2)(latency) FROM events WHERE region = 'west'");
+    ok(
+        &db,
+        "CREATE TABLE events (region String, latency Nullable(UInt64))",
+    );
+    ok(
+        &db,
+        "INSERT INTO events VALUES ('west', 10), ('west', NULL), ('west', 20), ('east', 80)",
+    );
+    let result = ok(
+        &db,
+        "SELECT histogram(2)(latency) FROM events WHERE region = 'west'",
+    );
     assert!(result.contains("(10,15,1)"), "{result}");
     assert!(result.contains("(15,20,1)"), "{result}");
     fs::remove_dir_all(db).unwrap();

@@ -53,10 +53,13 @@ fn clause_offset(sql: &str, keyword: &[u8]) -> Option<usize> {
             }
             _ => {
                 let boundary = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
-                if bytes.get(index..index + keyword.len())
+                if bytes
+                    .get(index..index + keyword.len())
                     .is_some_and(|word| word.eq_ignore_ascii_case(keyword))
                     && (index == 0 || !boundary(bytes[index - 1]))
-                    && bytes.get(index + keyword.len()).is_none_or(|&byte| !boundary(byte))
+                    && bytes
+                        .get(index + keyword.len())
+                        .is_none_or(|&byte| !boundary(byte))
                 {
                     return Some(index);
                 }
@@ -110,7 +113,10 @@ pub(super) fn is_safe_distinct_scan(select: &Select) -> bool {
 
 pub(super) fn is_safe_count(select: &Select) -> bool {
     is_safe_unpaged_projection(select, |projection| {
-        matches!(projection, Projection::Count | Projection::CountColumn { .. })
+        matches!(
+            projection,
+            Projection::Count | Projection::CountColumn { .. }
+        )
     })
 }
 
@@ -133,7 +139,9 @@ pub(super) fn uniq_state_shard_sql(sql: &str, select: &Select) -> Option<String>
     let start = clause_offset(sql, b"FROM")?;
     let rewritten = format!("SELECT uniqState({column}) {}", &sql[start..]);
     let mut expected = select.clone();
-    expected.projection = Projection::ApproxDistinctState { column: column.clone() };
+    expected.projection = Projection::ApproxDistinctState {
+        column: column.clone(),
+    };
     expected.alias = None;
     verify_rewritten_select(rewritten, &expected)
 }
@@ -292,7 +300,6 @@ pub(super) fn unpaged_scan_sql(sql: &str, select: &Select) -> Option<String> {
     None
 }
 
- 
 /// Ordinary un-ordered scans need at most OFFSET + LIMIT rows from any
 /// one shard. Keep the global OFFSET at the coordinator, and reparse the
 /// rewritten query before it can be dispatched.
@@ -359,7 +366,9 @@ pub(super) fn grouped_count_shard_sql(sql: &str, select: &Select) -> Option<Stri
 pub(super) fn is_safe_sorted_scan(select: &Select) -> bool {
     let (Projection::Columns(columns), Some(order), Some(limit)) =
         (&select.projection, &select.order_by, select.limit)
-    else { return false; };
+    else {
+        return false;
+    };
     matches!(select.source, Some(Source::Table(_)))
         && !select.distinct
         && select.rename.is_none()
@@ -369,13 +378,17 @@ pub(super) fn is_safe_sorted_scan(select: &Select) -> bool {
         && order.nulls_first.is_none()
         && (1..=16).contains(&columns.len())
         && columns[0] == order.column
-        && select.offset.unwrap_or(0)
+        && select
+            .offset
+            .unwrap_or(0)
             .checked_add(limit)
             .is_some_and(|prefix| prefix <= 10_000)
 }
 
 pub(super) fn sorted_scan_sql(sql: &str, select: &Select) -> Option<String> {
-    if !is_safe_sorted_scan(select) { return None; }
+    if !is_safe_sorted_scan(select) {
+        return None;
+    }
     let prefix = select.offset.unwrap_or(0).checked_add(select.limit?)?;
     let bare = unpaged_scan_sql(sql, select)?;
     let rewritten = format!("{bare} LIMIT {prefix}");
@@ -389,7 +402,6 @@ pub(super) fn sorted_scan_sql(sql: &str, select: &Select) -> Option<String> {
 #[path = "query_policy/sorted_scan_policy_tests.rs"]
 mod sorted_scan_policy_tests;
 
-
 #[cfg(test)]
 mod reverse_clause_boundary_tests {
     use super::*;
@@ -400,7 +412,10 @@ mod reverse_clause_boundary_tests {
         let bare = format!("SELECT name FROM events WHERE name = '{payload}'");
         let sql = format!("{bare} LIMIT 2 OFFSET 3");
         let parsed = parse_select(&sql).unwrap();
-        assert_eq!(unpaged_scan_sql(&sql, &parsed).as_deref(), Some(bare.as_str()));
+        assert_eq!(
+            unpaged_scan_sql(&sql, &parsed).as_deref(),
+            Some(bare.as_str())
+        );
         assert_eq!(
             bounded_scan_sql(&sql, &parsed).as_deref(),
             Some(format!("{bare} LIMIT 5").as_str()),
@@ -410,15 +425,16 @@ mod reverse_clause_boundary_tests {
     #[test]
     fn grouped_rewrite_ignores_clause_words_in_where_literals() {
         let payload = " HAVING ORDER LIMIT ".repeat(150);
-        let bare = format!(
-            "SELECT name, COUNT(*) FROM events WHERE name = '{payload}' GROUP BY name"
-        );
+        let bare =
+            format!("SELECT name, COUNT(*) FROM events WHERE name = '{payload}' GROUP BY name");
         let sql = format!("{bare} LIMIT 3");
         let parsed = parse_select(&sql).unwrap();
-        assert_eq!(grouped_count_shard_sql(&sql, &parsed).as_deref(), Some(bare.as_str()));
+        assert_eq!(
+            grouped_count_shard_sql(&sql, &parsed).as_deref(),
+            Some(bare.as_str())
+        );
     }
 }
-
 
 #[cfg(test)]
 mod rewrite_sql_clause_scanner_tests {
@@ -426,14 +442,16 @@ mod rewrite_sql_clause_scanner_tests {
 
     #[test]
     fn skips_decoy_clauses_in_comments_and_string_literals() {
-        let statement = "/* FROM wrong WHERE wrong */ SELECT uniq(number) FROM events WHERE number = 1";
+        let statement =
+            "/* FROM wrong WHERE wrong */ SELECT uniq(number) FROM events WHERE number = 1";
         let parsed = parse_select(statement).unwrap();
         assert_eq!(
             uniq_state_shard_sql(statement, &parsed).as_deref(),
             Some("SELECT uniqState(number) FROM events WHERE number = 1"),
         );
 
-        let distinct = "/* WHERE impossible */ SELECT COUNT(DISTINCT number) FROM events WHERE number = 5";
+        let distinct =
+            "/* WHERE impossible */ SELECT COUNT(DISTINCT number) FROM events WHERE number = 5";
         let parsed = parse_select(distinct).unwrap();
         assert_eq!(
             distinct_shard_sql(distinct, &parsed).as_deref(),

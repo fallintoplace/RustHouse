@@ -6,12 +6,22 @@ use std::fs;
 #[test]
 fn fused_nullable_counts_match_full_semantics_with_repeated_columns() {
     let part = std::env::temp_dir().join(format!(
-        "rusthouse-nullmap-multicount-{}", std::process::id()
+        "rusthouse-nullmap-multicount-{}",
+        std::process::id()
     ));
     let schema = [
-        Column { name: "id".into(), data_type: "UInt64".into() },
-        Column { name: "a".into(), data_type: "Nullable(UInt64)".into() },
-        Column { name: "b".into(), data_type: "Nullable(String)".into() },
+        Column {
+            name: "id".into(),
+            data_type: "UInt64".into(),
+        },
+        Column {
+            name: "a".into(),
+            data_type: "Nullable(UInt64)".into(),
+        },
+        Column {
+            name: "b".into(),
+            data_type: "Nullable(String)".into(),
+        },
     ];
     let rows = [
         vec![Some("1".into()), Some("10".into()), None],

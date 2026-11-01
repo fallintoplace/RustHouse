@@ -3,8 +3,10 @@ use std::process::Command;
 
 #[test]
 fn compact_sixty_four_bit_group_counts_preserve_key_boundaries() {
-    let db =
-        std::env::temp_dir().join(format!("rusthouse-compact-u64-count-{}", std::process::id()));
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-compact-u64-count-{}",
+        std::process::id()
+    ));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])

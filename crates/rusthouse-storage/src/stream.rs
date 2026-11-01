@@ -229,7 +229,8 @@ mod recycled_column_block_tests {
         let expected = (0..1024u64)
             .map(|index| index.wrapping_mul(0x9e37_79b9_7f4a_7c15))
             .collect::<Vec<_>>();
-        let raw = expected.iter()
+        let raw = expected
+            .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect::<Vec<_>>();
         let mut frames = Vec::new();

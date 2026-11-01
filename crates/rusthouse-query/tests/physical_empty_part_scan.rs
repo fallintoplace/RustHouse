@@ -4,9 +4,8 @@ use std::fs;
 
 #[test]
 fn empty_and_nonempty_parts_preserve_exact_count_and_sum() {
-    let root = std::env::temp_dir().join(format!(
-        "rusthouse-empty-part-count-{}", std::process::id()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("rusthouse-empty-part-count-{}", std::process::id()));
     fs::create_dir(&root).unwrap();
     let schema = [Column {
         name: "amount".into(),

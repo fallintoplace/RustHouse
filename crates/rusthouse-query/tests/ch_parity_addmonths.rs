@@ -25,10 +25,7 @@ fn handles_bounded_calendar_and_null_values() {
         value("SELECT addMonths('2024-03-31', -1)"),
         ConstantValue::Text("2024-02-29".into())
     );
-    assert_eq!(
-        value("SELECT addMonths(NULL, 1)"),
-        ConstantValue::Null
-    );
+    assert_eq!(value("SELECT addMonths(NULL, 1)"), ConstantValue::Null);
     assert_eq!(
         value("SELECT addMonths('2024-01-01', NULL)"),
         ConstantValue::Null

@@ -2,8 +2,8 @@
 //! Run with writers stopped. No lock file or other database metadata is created.
 use crate::catalog;
 use rusthouse_storage::{
-    Column, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_hashes_full,
-    verify_part_file_sizes, verify_wide_part,
+    Column, inspect_query_source, query_parts, resolve_active_snapshot,
+    verify_part_file_hashes_full, verify_part_file_sizes, verify_wide_part,
 };
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -436,7 +436,9 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
         report.checked_tables, report.warnings, report.errors
     );
     if full_hashes {
-        println!("Validation includes stored and uncompressed hashes, block checksums, and manifest sizes.");
+        println!(
+            "Validation includes stored and uncompressed hashes, block checksums, and manifest sizes."
+        );
         println!("Power-loss durability is not verified.");
     } else {
         println!(

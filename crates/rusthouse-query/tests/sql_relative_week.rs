@@ -1,4 +1,4 @@
-use rusthouse_query::{parse_select, ConstantValue, Projection};
+use rusthouse_query::{ConstantValue, Projection, parse_select};
 
 fn scalar(sql: &str) -> ConstantValue {
     match parse_select(sql).unwrap().projection {
@@ -18,7 +18,10 @@ fn week_buckets_handle_utc_boundaries_and_null() {
         let sql = format!("SELECT toRelativeWeekNum('{value}')");
         assert_eq!(scalar(&sql), ConstantValue::Integer(expected), "{sql}");
     }
-    assert_eq!(scalar("SELECT toRelativeWeekNum(NULL)"), ConstantValue::Null);
+    assert_eq!(
+        scalar("SELECT toRelativeWeekNum(NULL)"),
+        ConstantValue::Null
+    );
     assert!(parse_select("SELECT toRelativeWeekNum('2024-02-30')").is_err());
     assert!(parse_select("SELECT toRelativeWeekNum('2024-01-01', 2)").is_err());
 }

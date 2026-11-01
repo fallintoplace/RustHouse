@@ -15,11 +15,17 @@ fn clickhouse_format_clause_selects_existing_output_encodings() {
     assert!(tsv.status.success(), "{tsv:?}");
     assert_eq!(tsv.stdout, b"0\n1\n2\n");
 
-    let with_names = sql("SELECT number FROM numbers(2) FORMAT TabSeparatedWithNames", &[]);
+    let with_names = sql(
+        "SELECT number FROM numbers(2) FORMAT TabSeparatedWithNames",
+        &[],
+    );
     assert!(with_names.status.success(), "{with_names:?}");
     assert_eq!(with_names.stdout, b"number\n0\n1\n");
 
-    let strings = sql("SELECT number FROM numbers(2) FORMAT JSONStringsEachRow", &[]);
+    let strings = sql(
+        "SELECT number FROM numbers(2) FORMAT JSONStringsEachRow",
+        &[],
+    );
     assert!(strings.status.success(), "{strings:?}");
     assert_eq!(strings.stdout, b"{\"number\":\"0\"}\n{\"number\":\"1\"}\n");
 }

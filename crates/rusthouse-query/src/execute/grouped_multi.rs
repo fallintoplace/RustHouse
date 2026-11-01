@@ -10,30 +10,39 @@ use std::path::Path;
 const MAX_GROUPS: usize = 200_000;
 const MAX_PARALLEL_KEY_BYTES: usize = 64 * 1024 * 1024;
 
+fn reserve_parallel_group_bytes(
+    budget: &std::sync::atomic::AtomicUsize,
+    bytes: usize,
+) -> Result<(), ExecutionError> {
+    if super::try_reserve_shared(budget, bytes, MAX_PARALLEL_KEY_BYTES) {
+        Ok(())
+    } else {
+        Err(ExecutionError::Invalid(
+            "parallel GROUP BY exceeds 64 MiB worker key budget".into(),
+        ))
+    }
+}
+
 fn reserve_parallel_group(
     budget: &std::sync::atomic::AtomicUsize,
     keys: &[Key],
 ) -> Result<(), ExecutionError> {
-    use std::sync::atomic::Ordering;
-    let fixed = keys.len().checked_mul(
-        std::mem::size_of::<Key>() + std::mem::size_of::<Cell>()
-    ).ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))?;
+    let fixed = keys
+        .len()
+        .checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
+        .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))?;
     let bytes = keys.iter().try_fold(fixed, |sum, key| {
         let extra = match key {
             Key::Text(text) => text.len().checked_mul(2),
             Key::Uuid(value) => value.len().checked_mul(2),
             _ => Some(0),
-        }.ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))?;
+        }
+        .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))?;
         sum.checked_add(extra)
             .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))
     })?;
-    budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-        current.checked_add(bytes).filter(|&total| total <= MAX_PARALLEL_KEY_BYTES)
-    }).map(|_| ()).map_err(|_| ExecutionError::Invalid(
-        "parallel GROUP BY exceeds 64 MiB worker key budget".into()
-    ))
+    reserve_parallel_group_bytes(budget, bytes)
 }
-
 
 /// Encoded probes reuse one buffer on hits. Charge only the owned text
 /// payload on misses, using the same estimate as the previous Key-based
@@ -44,7 +53,6 @@ fn reserve_parallel_encoded_group(
     group_indices: &[usize],
     row: usize,
 ) -> Result<(), ExecutionError> {
-    use std::sync::atomic::Ordering;
     let fixed = group_indices
         .len()
         .checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
@@ -62,16 +70,7 @@ fn reserve_parallel_encoded_group(
             .and_then(|bytes| total.checked_add(bytes))
             .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))
     })?;
-    budget
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            current
-                .checked_add(bytes)
-                .filter(|&total| total <= MAX_PARALLEL_KEY_BYTES)
-        })
-        .map(|_| ())
-        .map_err(|_| {
-            ExecutionError::Invalid("parallel GROUP BY exceeds 64 MiB worker key budget".into())
-        })
+    reserve_parallel_group_bytes(budget, bytes)
 }
 
 const MAX_GROUP_KEY_BYTES: usize = 64 * 1024 * 1024;
@@ -81,19 +80,23 @@ fn charge_group_memory(
     dimensions: usize,
     encoded_bytes: usize,
 ) -> Result<(), ExecutionError> {
-    let bytes = dimensions.checked_mul(
-        std::mem::size_of::<Key>() + std::mem::size_of::<Cell>()
-    ).and_then(|fixed| encoded_bytes.checked_mul(2)
-        .and_then(|variable| fixed.checked_add(variable)))
+    let bytes = dimensions
+        .checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
+        .and_then(|fixed| {
+            encoded_bytes
+                .checked_mul(2)
+                .and_then(|variable| fixed.checked_add(variable))
+        })
         .and_then(|total| used.checked_add(total))
         .ok_or_else(|| ExecutionError::Invalid("group key memory overflow".into()))?;
     if bytes > MAX_GROUP_KEY_BYTES {
-        return Err(ExecutionError::Invalid("GROUP BY exceeds 64 MiB retained key budget".into()));
+        return Err(ExecutionError::Invalid(
+            "GROUP BY exceeds 64 MiB retained key budget".into(),
+        ));
     }
     *used = bytes;
     Ok(())
 }
-
 
 // Reinterpret signed 8-bit keys as indices, retaining the original signed
 // values in result cells. A two-byte tuple needs at most 65,536 slots.
@@ -106,7 +109,6 @@ fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
         _ => None,
     }
 }
-
 
 fn parallel_grouped_parts(
     part: &Path,
@@ -127,96 +129,133 @@ fn parallel_grouped_parts(
     let retained = std::sync::atomic::AtomicUsize::new(0);
     let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let retained = &retained;
-        let handles = parts.chunks(chunk_size).map(|paths| {
-            std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Vec<(Vec<Cell>, u64)>, ExecutionError> {
-                let mut rows: Vec<(Vec<Cell>, u64)> = Vec::new();
-                let mut index: HashMap<Vec<Key>, usize> = HashMap::new();
-                let mut encoded_index = HashMap::<Vec<u8>, usize>::new();
-                let mut encoded_probe = Vec::<u8>::new();
-                // Frequent dimension keys should reuse their probe allocation
-                // instead of allocating a Vec for every fact row.
-                let mut probe = Vec::<Key>::with_capacity(group_indices.len());
-                for path in paths {
-                    let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
-                    while let Some(batch) = reader.next_batch()? {
-                        for row in 0..batch[0].len() {
-                            if !no_filters && !typed::passes(&batch, row, conditions) {
-                                continue;
-                            }
-                            if has_text_key {
-                                encoded_probe.clear();
-                                for &column in group_indices {
-                                    super::grouped_numeric_keys::append_group_component(
-                                        &batch[column],
-                                        row,
-                                        &mut encoded_probe,
-                                    );
-                                }
-                                if let Some(&found) = encoded_index.get(encoded_probe.as_slice()) {
-                                    rows[found].1 = rows[found]
-                                        .1
-                                        .checked_add(1)
-                                        .ok_or_else(|| {
-                                            ExecutionError::Invalid("group count overflow".into())
-                                        })?;
-                                } else {
-                                    if rows.len() >= MAX_GROUPS {
-                                        return Err(ExecutionError::Invalid(
-                                            "GROUP BY supports at most 200000 groups".into(),
-                                        ));
+        let handles = parts
+            .chunks(chunk_size)
+            .map(|paths| {
+                std::thread::Builder::new()
+                    .spawn_scoped(
+                        scope,
+                        move || -> Result<Vec<(Vec<Cell>, u64)>, ExecutionError> {
+                            let mut rows: Vec<(Vec<Cell>, u64)> = Vec::new();
+                            let mut index: HashMap<Vec<Key>, usize> = HashMap::new();
+                            let mut encoded_index = HashMap::<Vec<u8>, usize>::new();
+                            let mut encoded_probe = Vec::<u8>::new();
+                            // Frequent dimension keys should reuse their probe allocation
+                            // instead of allocating a Vec for every fact row.
+                            let mut probe = Vec::<Key>::with_capacity(group_indices.len());
+                            for path in paths {
+                                let mut reader =
+                                    rusthouse_storage::TypedPartReader::open(path, names)?;
+                                while let Some(batch) = reader.next_batch()? {
+                                    for row in 0..batch[0].len() {
+                                        if !no_filters && !typed::passes(&batch, row, conditions) {
+                                            continue;
+                                        }
+                                        if has_text_key {
+                                            encoded_probe.clear();
+                                            for &column in group_indices {
+                                                super::grouped_numeric_keys::append_group_component(
+                                                    &batch[column],
+                                                    row,
+                                                    &mut encoded_probe,
+                                                );
+                                            }
+                                            if let Some(&found) =
+                                                encoded_index.get(encoded_probe.as_slice())
+                                            {
+                                                rows[found].1 = rows[found]
+                                                    .1
+                                                    .checked_add(1)
+                                                    .ok_or_else(|| {
+                                                        ExecutionError::Invalid(
+                                                            "group count overflow".into(),
+                                                        )
+                                                    })?;
+                                            } else {
+                                                if rows.len() >= MAX_GROUPS {
+                                                    return Err(ExecutionError::Invalid(
+                                                        "GROUP BY supports at most 200000 groups"
+                                                            .into(),
+                                                    ));
+                                                }
+                                                reserve_parallel_encoded_group(
+                                                    retained,
+                                                    &batch,
+                                                    group_indices,
+                                                    row,
+                                                )?;
+                                                encoded_index.insert(
+                                                    std::mem::take(&mut encoded_probe),
+                                                    rows.len(),
+                                                );
+                                                encoded_probe =
+                                                    Vec::with_capacity(group_indices.len() * 24);
+                                                rows.push((
+                                                    group_indices
+                                                        .iter()
+                                                        .map(|&column| {
+                                                            typed::cell(&batch[column], row)
+                                                        })
+                                                        .collect(),
+                                                    1,
+                                                ));
+                                            }
+                                            continue;
+                                        }
+                                        probe.clear();
+                                        probe.extend(
+                                            group_indices
+                                                .iter()
+                                                .map(|&column| typed::key_at(&batch[column], row)),
+                                        );
+                                        if let Some(&found) = index.get(probe.as_slice()) {
+                                            rows[found].1 =
+                                                rows[found].1.checked_add(1).ok_or_else(|| {
+                                                    ExecutionError::Invalid(
+                                                        "group count overflow".into(),
+                                                    )
+                                                })?;
+                                        } else {
+                                            if rows.len() >= MAX_GROUPS {
+                                                return Err(ExecutionError::Invalid(
+                                                    "GROUP BY supports at most 200000 groups"
+                                                        .into(),
+                                                ));
+                                            }
+                                            reserve_parallel_group(retained, &probe)?;
+                                            index.insert(std::mem::take(&mut probe), rows.len());
+                                            probe = Vec::with_capacity(group_indices.len());
+                                            rows.push((
+                                                group_indices
+                                                    .iter()
+                                                    .map(|&column| typed::cell(&batch[column], row))
+                                                    .collect(),
+                                                1,
+                                            ));
+                                        }
                                     }
-                                    reserve_parallel_encoded_group(
-                                        retained,
-                                        &batch,
-                                        group_indices,
-                                        row,
-                                    )?;
-                                    encoded_index.insert(
-                                        std::mem::take(&mut encoded_probe),
-                                        rows.len(),
-                                    );
-                                    encoded_probe = Vec::with_capacity(group_indices.len() * 24);
-                                    rows.push((
-                                        group_indices
-                                            .iter()
-                                            .map(|&column| typed::cell(&batch[column], row))
-                                            .collect(),
-                                        1,
-                                    ));
                                 }
-                                continue;
                             }
-                            probe.clear();
-                            probe.extend(group_indices.iter()
-                                .map(|&column| typed::key_at(&batch[column], row)));
-                            if let Some(&found) = index.get(probe.as_slice()) {
-                                rows[found].1 = rows[found].1.checked_add(1)
-                                    .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
-                            } else {
-                                if rows.len() >= MAX_GROUPS {
-                                    return Err(ExecutionError::Invalid(
-                                        "GROUP BY supports at most 200000 groups".into(),
-                                    ));
-                                }
-                                reserve_parallel_group(retained, &probe)?;
-                                index.insert(std::mem::take(&mut probe), rows.len());
-                                probe = Vec::with_capacity(group_indices.len());
-                                rows.push((
-                                    group_indices.iter()
-                                        .map(|&column| typed::cell(&batch[column], row))
-                                        .collect(),
-                                    1,
-                                ));
-                            }
-                        }
-                    }
-                }
-                Ok(rows)
-            }).map_err(|error| ExecutionError::Invalid(format!("cannot start multi-key GROUP BY worker: {error}")))
-        }).collect::<Result<Vec<_>, _>>()?;
-        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
-            Err(ExecutionError::Invalid("parallel grouped worker panicked".into()))
-        })).collect::<Vec<_>>())
+                            Ok(rows)
+                        },
+                    )
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start multi-key GROUP BY worker: {error}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(ExecutionError::Invalid(
+                        "parallel grouped worker panicked".into(),
+                    ))
+                })
+            })
+            .collect::<Vec<_>>())
     })?;
     let mut rows = Vec::<(Vec<Cell>, u64)>::new();
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
@@ -224,7 +263,9 @@ fn parallel_grouped_parts(
         for (key_values, count) in chunk? {
             let key = key_values.iter().map(Cell::key).collect::<Vec<_>>();
             if let Some(&found) = by_key.get(&key) {
-                rows[found].1 = rows[found].1.checked_add(count)
+                rows[found].1 = rows[found]
+                    .1
+                    .checked_add(count)
                     .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
             } else {
                 if rows.len() >= MAX_GROUPS {
@@ -305,7 +346,9 @@ pub(super) fn execute<W: Write>(
     // Some(empty) is a completed parallel scan with zero matching rows.
     // It is not a request to decode and rescan the full snapshot serially.
     let mut reader = if partial.is_none() {
-        Some(TypedQueryReader::open_with_metadata(part, &names, &metadata)?)
+        Some(TypedQueryReader::open_with_metadata(
+            part, &names, &metadata,
+        )?)
     } else {
         None
     };
@@ -319,7 +362,8 @@ pub(super) fn execute<W: Write>(
                 Cell::Uuid(text) => text.len(),
                 _ => 0,
             };
-            total.checked_add(variable)
+            total
+                .checked_add(variable)
                 .ok_or_else(|| ExecutionError::Invalid("group key memory overflow".into()))
         })?;
         charge_group_memory(&mut retained_group_bytes, keys.len(), payload)?;
@@ -334,7 +378,10 @@ pub(super) fn execute<W: Write>(
             .all(|name| matches!(types.get(name).map(String::as_str), Some("UInt8" | "Int8"))))
     .then(|| vec![usize::MAX; 1 << 16]);
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
+    while let Some(batch) = reader
+        .as_mut()
+        .map_or(Ok(None), TypedQueryReader::next_batch)?
+    {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
@@ -370,7 +417,9 @@ pub(super) fn execute<W: Write>(
                 encoded_probe.clear();
                 for &index in &group_indices {
                     super::grouped_numeric_keys::append_group_component(
-                        &batch[index], row, &mut encoded_probe
+                        &batch[index],
+                        row,
+                        &mut encoded_probe,
                     );
                 }
                 if let Some(&index) = encoded_groups.get(encoded_probe.as_slice()) {
@@ -389,7 +438,9 @@ pub(super) fn execute<W: Write>(
                         .map(|&index| typed::cell(&batch[index], row))
                         .collect();
                     charge_group_memory(
-                        &mut retained_group_bytes, group_indices.len(), encoded_probe.len(),
+                        &mut retained_group_bytes,
+                        group_indices.len(),
+                        encoded_probe.len(),
                     )?;
                     encoded_groups.insert(std::mem::take(&mut encoded_probe), groups.len());
                     encoded_probe = Vec::with_capacity(group_indices.len() * 24);
@@ -544,9 +595,14 @@ mod parallel_key_budget_tests {
         let huge_key = Key::Text(vec![0; 1024 * 1024]);
         let group = [huge_key];
         let count = std::thread::scope(|scope| {
-            let handles = (0..64).map(|_| scope.spawn(|| reserve_parallel_group(&used, &group).is_ok()))
+            let handles = (0..64)
+                .map(|_| scope.spawn(|| reserve_parallel_group(&used, &group).is_ok()))
                 .collect::<Vec<_>>();
-            handles.into_iter().map(|task| task.join().unwrap()).filter(|joined| *joined).count()
+            handles
+                .into_iter()
+                .map(|task| task.join().unwrap())
+                .filter(|joined| *joined)
+                .count()
         });
         assert!(count > 0 && count < 64);
         assert!(used.load(Ordering::Relaxed) <= MAX_PARALLEL_KEY_BYTES);

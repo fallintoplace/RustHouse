@@ -11,8 +11,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn matches_clickhouse_constant_semantics() {
     for (sql, expected) in [
-        ("SELECT leftPadUTF8('猫', 3, '~')", ConstantValue::Text("~~猫".into())),
-        ("SELECT leftPadUTF8('abc', 2)", ConstantValue::Text("ab".into())),
+        (
+            "SELECT leftPadUTF8('猫', 3, '~')",
+            ConstantValue::Text("~~猫".into()),
+        ),
+        (
+            "SELECT leftPadUTF8('abc', 2)",
+            ConstantValue::Text("ab".into()),
+        ),
         ("SELECT leftPadUTF8(NULL, 2)", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");

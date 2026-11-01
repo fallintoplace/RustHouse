@@ -23,14 +23,30 @@ fn byte_distinct_handles_signed_unsigned_nulls_and_filters() {
         assert!(result.status.success(), "{statement}: {result:?}");
     }
     for (query, expected) in [
-        ("SELECT count(DISTINCT signed_key) FROM events", "countDistinct(signed_key)\n3\n"),
-        ("SELECT count(DISTINCT positive_key) FROM events", "countDistinct(positive_key)\n3\n"),
-        ("SELECT count(DISTINCT signed_key) FROM events WHERE flag = 1", "countDistinct(signed_key)\n3\n"),
-        ("SELECT count(DISTINCT positive_key) FROM events WHERE flag = 0", "countDistinct(positive_key)\n1\n"),
+        (
+            "SELECT count(DISTINCT signed_key) FROM events",
+            "countDistinct(signed_key)\n3\n",
+        ),
+        (
+            "SELECT count(DISTINCT positive_key) FROM events",
+            "countDistinct(positive_key)\n3\n",
+        ),
+        (
+            "SELECT count(DISTINCT signed_key) FROM events WHERE flag = 1",
+            "countDistinct(signed_key)\n3\n",
+        ),
+        (
+            "SELECT count(DISTINCT positive_key) FROM events WHERE flag = 0",
+            "countDistinct(positive_key)\n1\n",
+        ),
     ] {
         let result = sql(query);
         assert!(result.status.success(), "{query}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

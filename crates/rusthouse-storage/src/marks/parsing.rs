@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 pub(super) fn parse_wide_marks(
     content: &[u8],
     format: WideMarkFormat,

@@ -3,14 +3,14 @@
 //! directions vector for every retained row.
 use super::{ExecutionError, Number, compare_numbers};
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::io::{BufReader, BufWriter, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::io::Write;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 pub(super) const MAX_SORTED_ROWS: usize = 200_000;
 const MAX_SORT_BUFFER_BYTES: usize = 64 * 1024 * 1024;
@@ -31,10 +31,13 @@ impl SortScratch {
     fn new() -> Result<Self, ExecutionError> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|err| invalid(err.to_string()))?.as_nanos();
+            .map_err(|err| invalid(err.to_string()))?
+            .as_nanos();
         let path = std::env::temp_dir().join(format!(
             "rusthouse-external-sort-{}-{nanos}-{}",
-            std::process::id(), NEXT_SORT.fetch_add(1, AtomicOrdering::Relaxed)));
+            std::process::id(),
+            NEXT_SORT.fetch_add(1, AtomicOrdering::Relaxed)
+        ));
         let mut dir = fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -46,7 +49,9 @@ impl SortScratch {
     }
 }
 impl Drop for SortScratch {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 #[cfg(test)]
@@ -72,7 +77,7 @@ fn decode_number_record(encoded: &[u8]) -> Result<Number, ExecutionError> {
             let bits = u64::try_from(u128::from_le_bytes(payload))
                 .map_err(|_| invalid("noncanonical external sort Float64 payload"))?;
             Ok(Number::Float(f64::from_bits(bits)))
-        },
+        }
         _ => Err(invalid("invalid external sort numeric tag")),
     }
 }
@@ -92,10 +97,9 @@ fn write_sorted_row_reusing(
     scratch: &mut Vec<u8>,
 ) -> Result<(), ExecutionError> {
     let index = u64::try_from(row.sequence).map_err(|_| invalid("sort sequence overflow"))?;
-    let secondary = u32::try_from(row.extra_keys.len())
-        .map_err(|_| invalid("too many ORDER BY keys"))?;
-    let width = u32::try_from(row.values.len())
-        .map_err(|_| invalid("too many sorted columns"))?;
+    let secondary =
+        u32::try_from(row.extra_keys.len()).map_err(|_| invalid("too many ORDER BY keys"))?;
+    let width = u32::try_from(row.values.len()).map_err(|_| invalid("too many sorted columns"))?;
     scratch.clear();
     scratch.extend_from_slice(&index.to_le_bytes());
     scratch.extend_from_slice(&secondary.to_le_bytes());
@@ -122,8 +126,7 @@ fn append_number_record(scratch: &mut Vec<u8>, number: Number) {
 }
 
 #[cfg(test)]
-fn write_sorted_row(writer: &mut impl Write, row: &SortedRow)
-    -> Result<(), ExecutionError> {
+fn write_sorted_row(writer: &mut impl Write, row: &SortedRow) -> Result<(), ExecutionError> {
     write_sorted_row_reusing(writer, row, &mut Vec::new())
 }
 
@@ -150,7 +153,9 @@ fn read_sorted_row_reusing(
     if extra != directions.len() || width > 128 {
         return Err(invalid("malformed external sort run width"));
     }
-    let bytes = extra.checked_add(width).and_then(|n| n.checked_add(1))
+    let bytes = extra
+        .checked_add(width)
+        .and_then(|n| n.checked_add(1))
         .and_then(|n| n.checked_mul(17))
         .ok_or_else(|| invalid("external sort run size overflow"))?;
     scratch.resize(bytes, 0);
@@ -167,8 +172,12 @@ fn read_sorted_row_reusing(
         values.push(decode_number_record(record)?);
     }
     Ok(Some(SortedRow {
-        key, extra_keys, values, sequence,
-        descending, extra_descending: directions.clone(),
+        key,
+        extra_keys,
+        values,
+        sequence,
+        descending,
+        extra_descending: directions.clone(),
     }))
 }
 
@@ -191,26 +200,36 @@ fn merge_runs(
     if let [path] = inputs {
         let mut source = BufReader::with_capacity(64 * 1024, File::open(path)?);
         let mut scratch = Vec::new();
-        let mut current = read_sorted_row_reusing(&mut source, descending, directions, &mut scratch)?;
+        let mut current =
+            read_sorted_row_reusing(&mut source, descending, directions, &mut scratch)?;
         while let Some(row) = current {
             // Do not decode the next row when LIMIT has already stopped
             // output. Otherwise check the complete sort tuple before reuse.
-            if !output(&row)? { break; }
+            if !output(&row)? {
+                break;
+            }
             current = read_sorted_row_reusing(&mut source, descending, directions, &mut scratch)?;
-            if current.as_ref().is_some_and(|next| row.cmp(next) == Ordering::Greater) {
+            if current
+                .as_ref()
+                .is_some_and(|next| row.cmp(next) == Ordering::Greater)
+            {
                 return Err(invalid("external sort run is not sorted"));
             }
         }
         return Ok(());
     }
-    let mut streams = inputs.iter().map(File::open)
+    let mut streams = inputs
+        .iter()
+        .map(File::open)
         .map(|source| source.map(|file| BufReader::with_capacity(64 * 1024, file)))
         .collect::<Result<Vec<_>, _>>()?;
     let mut heap = BinaryHeap::<Reverse<(SortedRow, usize)>>::new();
     // Each stream keeps its own wire buffer across k-way merge probes.
     let mut scratch = vec![Vec::new(); streams.len()];
     for (index, stream) in streams.iter_mut().enumerate() {
-        if let Some(row) = read_sorted_row_reusing(stream, descending, directions, &mut scratch[index])? {
+        if let Some(row) =
+            read_sorted_row_reusing(stream, descending, directions, &mut scratch[index])?
+        {
             heap.push(Reverse((row, index)));
         }
     }
@@ -218,9 +237,14 @@ fn merge_runs(
     // sifts the heap twice for every row in an external ORDER BY merge.
     while let Some(mut top) = heap.peek_mut() {
         let Reverse((row, index)) = &mut *top;
-        if !output(row)? { break; }
+        if !output(row)? {
+            break;
+        }
         if let Some(next) = read_sorted_row_reusing(
-            &mut streams[*index], descending, directions, &mut scratch[*index]
+            &mut streams[*index],
+            descending,
+            directions,
+            &mut scratch[*index],
         )? {
             if (*row).cmp(&next) == Ordering::Greater {
                 return Err(invalid("external sort run is not sorted"));
@@ -232,7 +256,6 @@ fn merge_runs(
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod merge_root_replacement_tests {
@@ -250,8 +273,13 @@ mod merge_root_replacement_tests {
                 vec![0, 2, 4, 7],
                 vec![1, 2, 4, 8],
                 vec![],
-            ].into_iter().enumerate() {
-                if descending { keys.reverse(); }
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if descending {
+                    keys.reverse();
+                }
                 let path = scratch.0.join(format!("merge-{shard}.bin"));
                 let mut writer = BufWriter::new(File::create(&path).unwrap());
                 for (position, key) in keys.into_iter().enumerate() {
@@ -260,7 +288,8 @@ mod merge_root_replacement_tests {
                         key: Number::Unsigned(key),
                         extra_keys: Vec::new(),
                         values: vec![Number::Unsigned(key)],
-                        sequence, descending,
+                        sequence,
+                        descending,
                         extra_descending: directions.clone(),
                     };
                     write_sorted_row(&mut writer, &row).unwrap();
@@ -270,15 +299,22 @@ mod merge_root_replacement_tests {
                 paths.push(path);
             }
             expected.sort_by(|left, right| {
-                (if descending { right.0.cmp(&left.0) } else { left.0.cmp(&right.0) })
-                    .then_with(|| left.1.cmp(&right.1))
+                (if descending {
+                    right.0.cmp(&left.0)
+                } else {
+                    left.0.cmp(&right.0)
+                })
+                .then_with(|| left.1.cmp(&right.1))
             });
             let mut actual = Vec::new();
             merge_runs(&paths, descending, &directions, |row| {
-                let Number::Unsigned(key) = row.key else { panic!("unexpected key") };
+                let Number::Unsigned(key) = row.key else {
+                    panic!("unexpected key")
+                };
                 actual.push((key, row.sequence));
                 Ok(true)
-            }).unwrap();
+            })
+            .unwrap();
             assert_eq!(actual, expected);
         }
     }
@@ -293,7 +329,8 @@ mod merge_root_replacement_tests {
             key: Number::Unsigned(7),
             extra_keys: Vec::new(),
             values: vec![Number::Unsigned(7)],
-            sequence: 0, descending: false,
+            sequence: 0,
+            descending: false,
             extra_descending: directions.clone(),
         };
         write_sorted_row(&mut writer, &row).unwrap();
@@ -303,7 +340,8 @@ mod merge_root_replacement_tests {
         merge_runs(&[path], false, &directions, |_| {
             seen += 1;
             Ok(false)
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(seen, 1);
     }
 }
@@ -363,15 +401,24 @@ impl Ord for SortedRow {
 
 /// Include the row itself and retained numeric vectors, not just row counts.
 fn retained_row_size(row: &SortedRow) -> Result<usize, ExecutionError> {
-    let numbers = row.extra_keys.capacity().checked_add(row.values.capacity())
+    let numbers = row
+        .extra_keys
+        .capacity()
+        .checked_add(row.values.capacity())
         .and_then(|count| count.checked_mul(std::mem::size_of::<Number>()))
         .ok_or_else(|| invalid("SORT memory estimate overflow"))?;
-    std::mem::size_of::<SortedRow>().checked_add(numbers)
+    std::mem::size_of::<SortedRow>()
+        .checked_add(numbers)
         .ok_or_else(|| invalid("SORT memory estimate overflow"))
 }
 
-fn updated_sort_bytes(current: usize, release: usize, added: usize) -> Result<usize, ExecutionError> {
-    let next = current.checked_sub(release)
+fn updated_sort_bytes(
+    current: usize,
+    release: usize,
+    added: usize,
+) -> Result<usize, ExecutionError> {
+    let next = current
+        .checked_sub(release)
         .and_then(|previous| previous.checked_add(added))
         .ok_or_else(|| invalid("SORT retained memory accounting overflow"))?;
     if next > MAX_SORT_BUFFER_BYTES {
@@ -451,18 +498,31 @@ impl SortedRows {
     }
 
     fn next_path(&mut self) -> Result<PathBuf, ExecutionError> {
-        if self.scratch.is_none() { self.scratch = Some(SortScratch::new()?); }
+        if self.scratch.is_none() {
+            self.scratch = Some(SortScratch::new()?);
+        }
         let index = self.next_run;
-        self.next_run = self.next_run.checked_add(1)
+        self.next_run = self
+            .next_run
+            .checked_add(1)
             .ok_or_else(|| invalid("external sort run count overflow"))?;
-        Ok(self.scratch.as_ref().unwrap().0.join(format!("run-{index:08}.bin")))
+        Ok(self
+            .scratch
+            .as_ref()
+            .unwrap()
+            .0
+            .join(format!("run-{index:08}.bin")))
     }
 
     fn charge_temp(&mut self, path: &Path) -> Result<(), ExecutionError> {
-        self.temp_bytes = self.temp_bytes.checked_add(fs::metadata(path)?.len())
+        self.temp_bytes = self
+            .temp_bytes
+            .checked_add(fs::metadata(path)?.len())
             .ok_or_else(|| invalid("external sort temporary byte overflow"))?;
         if self.temp_bytes > MAX_TEMP_SORT_BYTES {
-            return Err(invalid("external sort exceeded 32 GiB temporary disk budget"));
+            return Err(invalid(
+                "external sort exceeded 32 GiB temporary disk budget",
+            ));
         }
         Ok(())
     }
@@ -470,7 +530,9 @@ impl SortedRows {
     fn delete_run(&mut self, path: &Path) -> Result<(), ExecutionError> {
         let bytes = fs::metadata(path)?.len();
         fs::remove_file(path)?;
-        self.temp_bytes = self.temp_bytes.checked_sub(bytes)
+        self.temp_bytes = self
+            .temp_bytes
+            .checked_sub(bytes)
             .ok_or_else(|| invalid("external sort temporary accounting underflow"))?;
         Ok(())
     }
@@ -479,12 +541,18 @@ impl SortedRows {
     /// bytes remain identical, so input lengths predict output disk usage.
     fn preflight_merge_run(&self, inputs: &[PathBuf]) -> Result<(), ExecutionError> {
         let bytes = inputs.iter().try_fold(0u64, |total, input| {
-            total.checked_add(fs::metadata(input)?.len())
+            total
+                .checked_add(fs::metadata(input)?.len())
                 .ok_or_else(|| invalid("external sort temporary byte overflow"))
         })?;
-        if self.temp_bytes.checked_add(bytes)
-            .is_none_or(|total| total > MAX_TEMP_SORT_BYTES) {
-            return Err(invalid("external sort exceeded 32 GiB temporary disk budget"));
+        if self
+            .temp_bytes
+            .checked_add(bytes)
+            .is_none_or(|total| total > MAX_TEMP_SORT_BYTES)
+        {
+            return Err(invalid(
+                "external sort exceeded 32 GiB temporary disk budget",
+            ));
         }
         Ok(())
     }
@@ -493,30 +561,46 @@ impl SortedRows {
         // Every row has a fixed 16-byte header and a 17-byte record for
         // each key and projected numeric value. Bound disk before writing.
         let required = self.rows.iter().try_fold(0u64, |total, row| {
-            let fields = row.extra_keys.len().checked_add(row.values.len())
+            let fields = row
+                .extra_keys
+                .len()
+                .checked_add(row.values.len())
                 .and_then(|count| count.checked_add(1))
                 .ok_or_else(|| invalid("external sort run size overflow"))?;
             let bytes = u64::try_from(fields)
-                .ok().and_then(|count| count.checked_mul(17))
+                .ok()
+                .and_then(|count| count.checked_mul(17))
                 .and_then(|count| count.checked_add(16))
                 .ok_or_else(|| invalid("external sort run size overflow"))?;
-            total.checked_add(bytes)
+            total
+                .checked_add(bytes)
                 .ok_or_else(|| invalid("external sort run size overflow"))
         })?;
-        if self.temp_bytes.checked_add(required)
+        if self
+            .temp_bytes
+            .checked_add(required)
             .is_none_or(|total| total > MAX_TEMP_SORT_BYTES)
         {
-            return Err(invalid("external sort exceeded 32 GiB temporary disk budget"));
+            return Err(invalid(
+                "external sort exceeded 32 GiB temporary disk budget",
+            ));
         }
         Ok(())
     }
 
     fn flush_run(&mut self) -> Result<(), ExecutionError> {
-        if self.rows.is_empty() { return Ok(()); }
+        if self.rows.is_empty() {
+            return Ok(());
+        }
         self.preflight_flush_run()?;
         let path = self.next_path()?;
-        let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
-            .create_new(true).write(true).open(&path)?);
+        let mut writer = BufWriter::with_capacity(
+            64 * 1024,
+            OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)?,
+        );
         let mut row_scratch = Vec::new();
         for row in std::mem::take(&mut self.rows).into_sorted_vec() {
             write_sorted_row_reusing(&mut writer, &row, &mut row_scratch)?;
@@ -600,9 +684,13 @@ impl SortedRows {
             extra_descending: self.extra_descending.clone(),
         };
         let bytes = retained_row_size(&row)?;
-        if self.requested > MAX_SORTED_ROWS && !self.rows.is_empty()
-            && self.retained_bytes.checked_add(bytes)
-                .is_none_or(|total| total > MAX_SORT_BUFFER_BYTES) {
+        if self.requested > MAX_SORTED_ROWS
+            && !self.rows.is_empty()
+            && self
+                .retained_bytes
+                .checked_add(bytes)
+                .is_none_or(|total| total > MAX_SORT_BUFFER_BYTES)
+        {
             self.flush_run()?;
         }
         if self.rows.len() < retained {
@@ -628,8 +716,13 @@ impl SortedRows {
                 for group in previous.chunks(MERGE_FAN_IN) {
                     self.preflight_merge_run(group)?;
                     let path = self.next_path()?;
-                    let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
-                        .create_new(true).write(true).open(&path)?);
+                    let mut writer = BufWriter::with_capacity(
+                        64 * 1024,
+                        OpenOptions::new()
+                            .create_new(true)
+                            .write(true)
+                            .open(&path)?,
+                    );
                     let mut row_scratch = Vec::new();
                     merge_runs(group, self.descending, &self.extra_descending, |row| {
                         write_sorted_row_reusing(&mut writer, row, &mut row_scratch)?;
@@ -647,20 +740,30 @@ impl SortedRows {
             let mut scanned = 0usize;
             let mut returned = 0usize;
             let limit = self.requested.saturating_sub(self.offset);
-            merge_runs(&self.run_paths, self.descending, &self.extra_descending, |row| {
-                if scanned >= self.requested { return Ok(false); }
-                if scanned >= self.offset && returned < limit {
-                    for (index, value) in row.values.iter().enumerate() {
-                        if index != 0 { write!(output, "\t")?; }
-                        write!(output, "{value}")?;
+            merge_runs(
+                &self.run_paths,
+                self.descending,
+                &self.extra_descending,
+                |row| {
+                    if scanned >= self.requested {
+                        return Ok(false);
                     }
-                    writeln!(output)?;
-                    returned += 1;
-                }
-                scanned = scanned.checked_add(1)
-                    .ok_or_else(|| invalid("external sort page count overflow"))?;
-                Ok(scanned < self.requested)
-            })?;
+                    if scanned >= self.offset && returned < limit {
+                        for (index, value) in row.values.iter().enumerate() {
+                            if index != 0 {
+                                write!(output, "\t")?;
+                            }
+                            write!(output, "{value}")?;
+                        }
+                        writeln!(output)?;
+                        returned += 1;
+                    }
+                    scanned = scanned
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("external sort page count overflow"))?;
+                    Ok(scanned < self.requested)
+                },
+            )?;
             return Ok(());
         }
         for row in self.rows.into_sorted_vec().into_iter().skip(self.offset) {
@@ -725,14 +828,19 @@ mod external_sort_run_header_eof_tests {
 
     #[test]
     fn empty_run_is_eof_but_partial_header_is_corruption() {
-        let root = std::env::temp_dir().join(format!("rusthouse-sort-header-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-sort-header-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let path = root.join("run.bin");
         let directions: Arc<[bool]> = Arc::from([]);
         fs::write(&path, []).unwrap();
         let mut reader = BufReader::new(File::open(&path).unwrap());
-        assert!(read_sorted_row(&mut reader, false, &directions).unwrap().is_none());
+        assert!(
+            read_sorted_row(&mut reader, false, &directions)
+                .unwrap()
+                .is_none()
+        );
         fs::write(&path, [42u8]).unwrap();
         let mut reader = BufReader::new(File::open(&path).unwrap());
         assert!(read_sorted_row(&mut reader, false, &directions).is_err());
@@ -752,7 +860,8 @@ mod numeric_spill_preflight_tests {
             Number::Unsigned(1),
             vec![Number::Unsigned(2), Number::Signed(-3)],
             vec![Number::Unsigned(4)],
-        ).unwrap();
+        )
+        .unwrap();
         rows.temp_bytes = MAX_TEMP_SORT_BYTES - 83;
         assert!(rows.flush_run().is_err());
         assert!(rows.scratch.is_none());
@@ -784,7 +893,8 @@ mod batched_sort_read_tests {
     fn buffered_multi_key_rows_match_existing_wire_writer() {
         let path = std::env::temp_dir().join(format!(
             "rusthouse-batched-sort-read-{}-{}.bin",
-            std::process::id(), NEXT.fetch_add(1, AtomicOrdering::Relaxed)
+            std::process::id(),
+            NEXT.fetch_add(1, AtomicOrdering::Relaxed)
         ));
         let directions: Arc<[bool]> = Arc::from([true, false]);
         let rows = [
@@ -792,13 +902,17 @@ mod batched_sort_read_tests {
                 key: Number::Unsigned(u128::MAX),
                 extra_keys: vec![Number::Signed(i128::MIN), Number::Float(-0.0)],
                 values: vec![Number::Unsigned(42), Number::Signed(-17)],
-                sequence: 7, descending: true, extra_descending: directions.clone(),
+                sequence: 7,
+                descending: true,
+                extra_descending: directions.clone(),
             },
             SortedRow {
                 key: Number::Float(f64::INFINITY),
                 extra_keys: vec![Number::Signed(1024), Number::Float(2.5)],
                 values: vec![Number::Float(0.125), Number::Unsigned(0)],
-                sequence: 8, descending: true, extra_descending: directions.clone(),
+                sequence: 8,
+                descending: true,
+                extra_descending: directions.clone(),
             },
         ];
         let mut encoded = Vec::new();
@@ -810,17 +924,41 @@ mod batched_sort_read_tests {
         let mut scratch = Vec::new();
         for expected in &rows {
             let actual = read_sorted_row_reusing(&mut source, true, &directions, &mut scratch)
-                .unwrap().unwrap();
+                .unwrap()
+                .unwrap();
             assert_eq!(actual.sequence, expected.sequence);
             assert_eq!(actual.key.to_string(), expected.key.to_string());
-            assert_eq!(actual.extra_keys.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                       expected.extra_keys.iter().map(ToString::to_string).collect::<Vec<_>>());
-            assert_eq!(actual.values.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                       expected.values.iter().map(ToString::to_string).collect::<Vec<_>>());
+            assert_eq!(
+                actual
+                    .extra_keys
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+                expected
+                    .extra_keys
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                actual
+                    .values
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+                expected
+                    .values
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            );
             assert_eq!(scratch.len(), (1 + 2 + 2) * 17);
         }
-        assert!(read_sorted_row_reusing(&mut source, true, &directions, &mut scratch)
-            .unwrap().is_none());
+        assert!(
+            read_sorted_row_reusing(&mut source, true, &directions, &mut scratch)
+                .unwrap()
+                .is_none()
+        );
         std::fs::remove_file(path).unwrap();
     }
 }
@@ -833,50 +971,66 @@ mod buffered_sort_record_tests {
     fn reusable_row_buffer_matches_legacy_field_encoding() {
         let directions: Arc<[bool]> = Arc::from([true, false]);
         let rows = [
-            (Number::Signed(-9), vec![Number::Unsigned(42), Number::Float(-0.0)],
-                vec![Number::Unsigned(u128::MAX), Number::Float(f64::NAN)]),
-            (Number::Float(3.5), vec![Number::Signed(i128::MIN), Number::Float(f64::INFINITY)],
-                vec![]),
+            (
+                Number::Signed(-9),
+                vec![Number::Unsigned(42), Number::Float(-0.0)],
+                vec![Number::Unsigned(u128::MAX), Number::Float(f64::NAN)],
+            ),
+            (
+                Number::Float(3.5),
+                vec![Number::Signed(i128::MIN), Number::Float(f64::INFINITY)],
+                vec![],
+            ),
         ];
         let mut scratch = Vec::new();
         let mut complete = Vec::new();
         let mut reference = Vec::new();
         for (position, (key, extra_keys, values)) in rows.into_iter().enumerate() {
             let row = SortedRow {
-                key, extra_keys, values, sequence: position,
-                descending: false, extra_descending: directions.clone(),
+                key,
+                extra_keys,
+                values,
+                sequence: position,
+                descending: false,
+                extra_descending: directions.clone(),
             };
             write_sorted_row_reusing(&mut complete, &row, &mut scratch).unwrap();
             reference.extend_from_slice(&(position as u64).to_le_bytes());
             reference.extend_from_slice(&(row.extra_keys.len() as u32).to_le_bytes());
             reference.extend_from_slice(&(row.values.len() as u32).to_le_bytes());
             write_number(&mut reference, row.key).unwrap();
-            for &number in &row.extra_keys { write_number(&mut reference, number).unwrap(); }
-            for &number in &row.values { write_number(&mut reference, number).unwrap(); }
+            for &number in &row.extra_keys {
+                write_number(&mut reference, number).unwrap();
+            }
+            for &number in &row.values {
+                write_number(&mut reference, number).unwrap();
+            }
         }
         assert_eq!(complete, reference);
     }
 }
 
-
 #[cfg(test)]
 mod external_run_order_validation_tests {
     use super::*;
 
-    fn run(scratch: &SortScratch, name: &str, keys: &[u128], descending: bool)
-        -> PathBuf {
+    fn run(scratch: &SortScratch, name: &str, keys: &[u128], descending: bool) -> PathBuf {
         let path = scratch.0.join(name);
         let mut writer = BufWriter::new(File::create(&path).unwrap());
         let directions: Arc<[bool]> = Arc::from([]);
         for (sequence, &key) in keys.iter().enumerate() {
-            write_sorted_row(&mut writer, &SortedRow {
-                key: Number::Unsigned(key),
-                extra_keys: Vec::new(),
-                values: vec![Number::Unsigned(key)],
-                sequence,
-                descending,
-                extra_descending: directions.clone(),
-            }).unwrap();
+            write_sorted_row(
+                &mut writer,
+                &SortedRow {
+                    key: Number::Unsigned(key),
+                    extra_keys: Vec::new(),
+                    values: vec![Number::Unsigned(key)],
+                    sequence,
+                    descending,
+                    extra_descending: directions.clone(),
+                },
+            )
+            .unwrap();
         }
         writer.flush().unwrap();
         path
@@ -905,7 +1059,8 @@ mod external_run_order_validation_tests {
         merge_runs(&[invalid], true, &directions, |_| {
             seen += 1;
             Ok(false)
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(seen, 1);
     }
 }

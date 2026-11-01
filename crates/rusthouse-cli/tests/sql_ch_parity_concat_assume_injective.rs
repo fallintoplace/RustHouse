@@ -3,8 +3,14 @@ use std::process::Command;
 #[test]
 fn clickhouse_concat_assume_injective_constants() {
     for (query, expected) in [
-        ("SELECT concatAssumeInjective('Rust', 'House') AS value", "value\nRustHouse\n"),
-        ("SELECT concatAssumeInjective('a', NULL) AS value", "value\n\\N\n"),
+        (
+            "SELECT concatAssumeInjective('Rust', 'House') AS value",
+            "value\nRustHouse\n",
+        ),
+        (
+            "SELECT concatAssumeInjective('a', NULL) AS value",
+            "value\n\\N\n",
+        ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", query])

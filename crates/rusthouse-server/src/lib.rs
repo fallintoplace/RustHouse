@@ -10,10 +10,10 @@ mod csv;
 mod csv_no_header;
 pub mod distributed;
 pub mod health;
+mod join_query;
 mod json_array;
 mod json_compact_each_row;
 mod jsonl;
-mod join_query;
 mod markdown;
 pub mod remote;
 mod sql_values;
@@ -25,7 +25,9 @@ use json_array::JsonArraySink;
 use json_compact_each_row::JsonCompactEachRowWriter;
 use jsonl::JsonlWriter;
 use markdown::MarkdownWriter;
-use rusthouse_query::{Source, execute, explain_select, parse_join, parse_select, split_clickhouse_format};
+use rusthouse_query::{
+    Source, execute, explain_select, parse_join, parse_select, split_clickhouse_format,
+};
 use rusthouse_storage::{inspect_query_source, resolve_database_table};
 use sql_values::SqlValuesWriter;
 use std::io::{self, Write};
@@ -192,7 +194,9 @@ impl QueryFormat {
     }
 }
 
-fn query_parameters(target: &str) -> Result<(String, Option<String>, Option<QueryFormat>), &'static str> {
+fn query_parameters(
+    target: &str,
+) -> Result<(String, Option<String>, Option<QueryFormat>), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" && path != "/explain" {
         return Err("unknown SQL endpoint");
@@ -222,11 +226,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, Option<Quer
     if path == "/explain" && format.is_some() {
         return Err("format is unsupported for EXPLAIN");
     }
-    Ok((
-        path.to_owned(),
-        statement,
-        format,
-    ))
+    Ok((path.to_owned(), statement, format))
 }
 
 /// Discover the server's read-only mode and resource limits without opening files.
@@ -365,14 +365,17 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                         .checked_add(tail.len())
                         .and_then(|size| size.checked_add(1));
                     if combined_bytes.is_none_or(|size| size > MAX_QUERY_BYTES) {
-                        return Response::text("413 Payload Too Large", "SQL statement too large\n");
+                        return Response::text(
+                            "413 Payload Too Large",
+                            "SQL statement too large\n",
+                        );
                     }
                     format!("{head}\n{tail}")
                 }
                 Some(head) if !head.is_empty() => head,
                 _ => tail.to_owned(),
             }
-        },
+        }
         _ => unreachable!(),
     };
     if sql.is_empty() || sql.len() > MAX_QUERY_BYTES {
@@ -1191,20 +1194,44 @@ mod inline_clickhouse_format_tests {
 
     #[test]
     fn supports_inline_format_over_get_and_post() {
-        let config = Config { part: None, database: None, max_rows: 100 };
-        let get = handle_request("GET", "/?query=SELECT+number+FROM+numbers%282%29+FORMAT+TabSeparated", b"", &config);
+        let config = Config {
+            part: None,
+            database: None,
+            max_rows: 100,
+        };
+        let get = handle_request(
+            "GET",
+            "/?query=SELECT+number+FROM+numbers%282%29+FORMAT+TabSeparated",
+            b"",
+            &config,
+        );
         assert_eq!(get.status, "200 OK");
         assert_eq!(get.body, b"0\n1\n");
-        let post = handle_request("POST", "/", b"SELECT number FROM numbers(2) FORMAT JSONStringsEachRow", &config);
+        let post = handle_request(
+            "POST",
+            "/",
+            b"SELECT number FROM numbers(2) FORMAT JSONStringsEachRow",
+            &config,
+        );
         assert_eq!(post.status, "200 OK");
         assert_eq!(post.body, b"{\"number\":\"0\"}\n{\"number\":\"1\"}\n");
     }
 
     #[test]
     fn rejects_double_format_and_unimplemented_typed_json() {
-        let config = Config { part: None, database: None, max_rows: 100 };
-        assert_eq!(handle_request("POST", "/?format=csv", b"SELECT 1 FORMAT CSV", &config).status, "400 Bad Request");
-        assert_eq!(handle_request("POST", "/", b"SELECT 1 FORMAT JSONEachRow", &config).status, "400 Bad Request");
+        let config = Config {
+            part: None,
+            database: None,
+            max_rows: 100,
+        };
+        assert_eq!(
+            handle_request("POST", "/?format=csv", b"SELECT 1 FORMAT CSV", &config).status,
+            "400 Bad Request"
+        );
+        assert_eq!(
+            handle_request("POST", "/", b"SELECT 1 FORMAT JSONEachRow", &config).status,
+            "400 Bad Request"
+        );
     }
 }
 
@@ -1245,12 +1272,24 @@ mod readiness_endpoint_tests {
             part: None,
             max_rows: 10,
         };
-        assert_eq!(handle_request("GET", "/ready", b"", &config).status, "200 OK");
-        assert_eq!(handle_request("POST", "/ready", b"", &config).status, "405 Method Not Allowed");
-        assert_eq!(handle_request("GET", "/ready", b"x", &config).status, "400 Bad Request");
+        assert_eq!(
+            handle_request("GET", "/ready", b"", &config).status,
+            "200 OK"
+        );
+        assert_eq!(
+            handle_request("POST", "/ready", b"", &config).status,
+            "405 Method Not Allowed"
+        );
+        assert_eq!(
+            handle_request("GET", "/ready", b"x", &config).status,
+            "400 Bad Request"
+        );
 
         std::fs::remove_dir(&root).unwrap();
-        assert_eq!(handle_request("GET", "/ready", b"", &config).status, "503 Service Unavailable");
+        assert_eq!(
+            handle_request("GET", "/ready", b"", &config).status,
+            "503 Service Unavailable"
+        );
         assert_eq!(
             handle_request("GET", "/ready", b"", &Config::default()).status,
             "200 OK",

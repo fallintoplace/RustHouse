@@ -52,10 +52,10 @@ fn same_compressed_stream_state(path: &std::fs::Metadata, opened: &std::fs::Meta
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return path.dev() == opened.dev()
+        path.dev() == opened.dev()
             && path.ino() == opened.ino()
             && path.ctime() == opened.ctime()
-            && path.ctime_nsec() == opened.ctime_nsec();
+            && path.ctime_nsec() == opened.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
@@ -389,9 +389,13 @@ mod tests {
         data.extend(checked_block(0x02, b"second", 6));
         let seeks = Rc::new(Cell::new(0));
         let mut reader = CompressedBlockReader::new(
-            CountingSeek { data: Cursor::new(data), seeks: Rc::clone(&seeks) },
+            CountingSeek {
+                data: Cursor::new(data),
+                seeks: Rc::clone(&seeks),
+            },
             "test.bin",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"first");
         let before = seeks.get();
         reader.seek_to_block(second_offset).unwrap();
@@ -957,10 +961,8 @@ mod compressed_stream_identity_tests {
 
     #[test]
     fn inode_identity_detects_same_size_replacement_files() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-block-inode-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-block-inode-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let first = root.join("one.bin");
@@ -976,7 +978,7 @@ mod compressed_stream_identity_tests {
 }
 
 #[cfg(test)]
-mod compressed_stream_identity_tests {
+mod compressed_stream_state_tests {
     use super::*;
 
     #[test]
@@ -997,8 +999,12 @@ mod compressed_stream_identity_tests {
 
         std::fs::write(&path, b"original").unwrap();
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        file.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
-        assert!(!same_compressed_stream_state(&before, &file.metadata().unwrap()));
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        assert!(!same_compressed_stream_state(
+            &before,
+            &file.metadata().unwrap()
+        ));
 
         std::fs::remove_file(path).unwrap();
     }

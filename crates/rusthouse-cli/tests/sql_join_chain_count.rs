@@ -3,9 +3,7 @@ use std::process::Command;
 
 #[test]
 fn count_over_join_chains_handles_duplicates_outer_rows_and_pagination() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-chain-count-{}", std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-chain-count-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])

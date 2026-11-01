@@ -137,7 +137,10 @@ pub(super) fn run(
     let query_started_at = std::time::Instant::now();
     let result = execute_formatted_join(query, &paths, format, output.as_mut());
     if time {
-        eprintln!("Elapsed: {:.3} ms", query_started_at.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "Elapsed: {:.3} ms",
+            query_started_at.elapsed().as_secs_f64() * 1000.0
+        );
     }
     if result.is_err() {
         drop(output);

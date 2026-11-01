@@ -1,4 +1,4 @@
-use rusthouse_query::{parse_select, Projection};
+use rusthouse_query::{Projection, parse_select};
 
 #[test]
 fn clickhouse_bit_hamming_distance_constants() {
@@ -8,7 +8,11 @@ fn clickhouse_bit_hamming_distance_constants() {
         ("SELECT bitHammingDistance(5, 3)", 2),
         ("SELECT bitHammingDistance(-1, 0)", 64),
     ] {
-        assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        assert_eq!(
+            parse_select(sql).unwrap().projection,
+            Projection::Literal(expected),
+            "{sql}"
+        );
     }
 }
 

@@ -92,7 +92,10 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
 }
 
 fn jsonl_row_width_error() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "JSONL row does not match header column count")
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "JSONL row does not match header column count",
+    )
 }
 
 fn write_json_row_into<W: Write>(
@@ -229,12 +232,7 @@ impl<W: Write> Write for JsonlWriter<W> {
             if complete && self.line.is_empty() {
                 if let Some(headers) = self.headers.as_ref() {
                     // Complete data rows can be encoded straight from this write.
-                    write_json_row_into(
-                        &mut self.output,
-                        headers,
-                        fragment,
-                        &mut self.encoded,
-                    )?;
+                    write_json_row_into(&mut self.output, headers, fragment, &mut self.encoded)?;
                     continue;
                 }
             }
@@ -624,7 +622,6 @@ mod single_pass_row_tests {
             b"{\"key\\\"name\":\"first\"}\n{\"key\\\"name\":\"second\"}\n"
         );
     }
-
 }
 
 #[cfg(test)]
@@ -672,7 +669,9 @@ mod small_jsonl_header_parse_tests {
     #[test]
     fn checks_duplicates_both_before_and_after_hash_transition() {
         for count in [1usize, 2, 8, 9, 64] {
-            let names = (0..count).map(|index| format!("col_{index}")).collect::<Vec<_>>();
+            let names = (0..count)
+                .map(|index| format!("col_{index}"))
+                .collect::<Vec<_>>();
             let valid = names.join("\t");
             assert_eq!(parse_headers(valid.as_bytes()).unwrap().len(), count);
             if count > 1 {

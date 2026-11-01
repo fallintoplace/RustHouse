@@ -13,9 +13,7 @@ fn distinct_matches_count_of_unique_generated_members() {
         let distinct = format!(
             "SELECT count(DISTINCT number) FROM numbers({rows}) WHERE number IN (0, 3, 7, 7, 10) OR number = 3"
         );
-        let regular = format!(
-            "SELECT count(*) FROM numbers({rows}) WHERE number IN (0, 3, 7, 10)"
-        );
+        let regular = format!("SELECT count(*) FROM numbers({rows}) WHERE number IN (0, 3, 7, 10)");
         let left = run(&distinct);
         let right = run(&regular);
         assert_eq!(left.lines().nth(1), right.lines().nth(1), "rows={rows}");

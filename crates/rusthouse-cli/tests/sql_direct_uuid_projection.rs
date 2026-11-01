@@ -39,7 +39,11 @@ fn uuid_only_scan_streams_canonical_values_with_filters_and_pagination() {
     ] {
         let result = sql(query, &db);
         assert!(result.status.success(), "{query}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

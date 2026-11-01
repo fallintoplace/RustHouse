@@ -11,7 +11,10 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn clickhouse_constant_function() {
     for (sql, expected) in [
-        ("SELECT base64Encode('Hi')", ConstantValue::Text("SGk=".into())),
+        (
+            "SELECT base64Encode('Hi')",
+            ConstantValue::Text("SGk=".into()),
+        ),
         ("SELECT base64Encode('')", ConstantValue::Text("".into())),
         ("SELECT base64Encode(NULL)", ConstantValue::Null),
     ] {

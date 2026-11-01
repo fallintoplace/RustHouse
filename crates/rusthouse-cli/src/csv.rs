@@ -290,8 +290,7 @@ mod decoded_csv_regressions {
     #[test]
     fn quoted_empty_csv_field_is_not_confused_with_null_on_import() {
         let mut csv = CsvWriter::new(Vec::new());
-        csv.write_all(b"value\n\n\\N\n\\\\N\n")
-            .unwrap();
+        csv.write_all(b"value\n\n\\N\n\\\\N\n").unwrap();
         assert_eq!(csv.output, b"value\r\n\"\"\r\n\\N\r\n\"\\N\"\r\n");
     }
 

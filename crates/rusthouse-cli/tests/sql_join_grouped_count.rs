@@ -3,9 +3,7 @@ use std::process::Command;
 
 #[test]
 fn stream_grouped_count_on_large_fact_and_nullable_dimension() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-grouped-join-{}", std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-grouped-join-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])

@@ -3,9 +3,7 @@ use std::process::Command;
 
 #[test]
 fn streamed_count_column_skips_nulls_after_duplicate_join_matches() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-join-count-col-{}", std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-join-count-col-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])

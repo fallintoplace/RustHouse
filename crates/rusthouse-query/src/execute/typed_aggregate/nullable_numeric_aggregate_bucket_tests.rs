@@ -7,7 +7,9 @@ fn null_is_separate_from_zero_and_all_signed_boundary_keys() {
         nulls: vec![1, 0, 0, 0, 0],
     };
     assert_eq!(
-        (0..5).map(|index| narrow_group_bucket(&nullable, index, 256).unwrap()).collect::<Vec<_>>(),
+        (0..5)
+            .map(|index| narrow_group_bucket(&nullable, index, 256).unwrap())
+            .collect::<Vec<_>>(),
         [256, 255, 128, 127, 0],
     );
     let nullable_16 = TypedColumn::NullableNumeric {
@@ -15,7 +17,9 @@ fn null_is_separate_from_zero_and_all_signed_boundary_keys() {
         nulls: vec![0, 1, 0, 0],
     };
     assert_eq!(
-        (0..4).map(|index| narrow_group_bucket(&nullable_16, index, 65_536).unwrap()).collect::<Vec<_>>(),
+        (0..4)
+            .map(|index| narrow_group_bucket(&nullable_16, index, 65_536).unwrap())
+            .collect::<Vec<_>>(),
         [0, 65_536, 65_535, 42],
     );
 }
@@ -33,7 +37,10 @@ fn same_dense_bucket_reuses_group_state_for_nullable_sum() {
         let bucket = narrow_group_bucket(&dimension, row, 256).unwrap();
         if slots[bucket] == usize::MAX {
             slots[bucket] = groups.len();
-            groups.push((typed::cell(&dimension, row), AggregateState::new(AggregateFunction::Sum)));
+            groups.push((
+                typed::cell(&dimension, row),
+                AggregateState::new(AggregateFunction::Sum),
+            ));
         }
         update_group_numeric(&mut groups[slots[bucket]].1, &amounts, row).unwrap();
     }

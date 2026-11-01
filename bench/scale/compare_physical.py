@@ -6,6 +6,8 @@ import os
 import stat
 from pathlib import Path
 
+from bench.common import file_change_time_ns
+
 from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
 
 CASES = ("count_even", "sum_even")
@@ -136,7 +138,7 @@ def _read_bounded_report(path):
 
     def identity(info):
         return (info.st_dev, info.st_ino, info.st_size,
-                info.st_mtime_ns, info.st_ctime_ns)
+                info.st_mtime_ns, file_change_time_ns(info))
 
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)

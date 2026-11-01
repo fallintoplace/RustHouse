@@ -8,8 +8,7 @@ use crate::{
 };
 use rusthouse_query::{
     Source, execute, explain_join, explain_select, parse_ddl, parse_delete, parse_insert,
-    split_clickhouse_format,
-    parse_join, parse_select, parse_update,
+    parse_join, parse_select, parse_update, split_clickhouse_format,
 };
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -361,7 +360,10 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             let _catalog_lock = if read_only && !catalog_path.is_dir() {
                 None
             } else {
-                Some(rusthouse_storage::acquire_database_lock(&catalog_path, !read_only)?)
+                Some(rusthouse_storage::acquire_database_lock(
+                    &catalog_path,
+                    !read_only,
+                )?)
             };
             return crate::catalog::apply(&catalog_path, &ddl);
         }
@@ -702,9 +704,33 @@ mod clickhouse_query_flag_parity_tests {
     }
     #[test]
     fn rejects_conflicting_and_missing_query_values() {
-        assert_eq!(run_sql_args(["--query"].into_iter().map(OsString::from)).unwrap_err(), "missing --query SQL text");
-        assert!(run_sql_args(["--query", "SELECT 1", "-q", "SELECT 2"].into_iter().map(OsString::from)).is_err());
-        assert!(run_sql_args(["SELECT 1", "--query", "SELECT 2"].into_iter().map(OsString::from)).is_err());
-        assert!(run_sql_args(["--query", "SELECT 1", "--file", "query.sql"].into_iter().map(OsString::from)).is_err());
+        assert_eq!(
+            run_sql_args(["--query"].into_iter().map(OsString::from)).unwrap_err(),
+            "missing --query SQL text"
+        );
+        assert!(
+            run_sql_args(
+                ["--query", "SELECT 1", "-q", "SELECT 2"]
+                    .into_iter()
+                    .map(OsString::from)
+            )
+            .is_err()
+        );
+        assert!(
+            run_sql_args(
+                ["SELECT 1", "--query", "SELECT 2"]
+                    .into_iter()
+                    .map(OsString::from)
+            )
+            .is_err()
+        );
+        assert!(
+            run_sql_args(
+                ["--query", "SELECT 1", "--file", "query.sql"]
+                    .into_iter()
+                    .map(OsString::from)
+            )
+            .is_err()
+        );
     }
 }

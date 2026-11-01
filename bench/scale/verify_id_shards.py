@@ -10,6 +10,8 @@ import re
 import stat
 from pathlib import Path
 
+from bench.common import file_change_time_ns
+
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
@@ -36,9 +38,9 @@ def verify_file(path, start, rows, step=1):
         opened = os.fstat(source.fileno())
         if (not stat.S_ISREG(opened.st_mode)
                 or (before.st_dev, before.st_ino, before.st_size,
-                    before.st_mtime_ns, before.st_ctime_ns) !=
+                    before.st_mtime_ns, file_change_time_ns(before)) !=
                     (opened.st_dev, opened.st_ino, opened.st_size,
-                     opened.st_mtime_ns, opened.st_ctime_ns)):
+                     opened.st_mtime_ns, file_change_time_ns(opened))):
             raise ValueError("shard changed before verification")
         # Read exact bounded blocks rather than one readline and digest update
         # per UInt64 ID. An oversized/malformed line also fails without an
@@ -58,22 +60,22 @@ def verify_file(path, start, rows, step=1):
             raise ValueError(f"{path}: contains additional rows")
         finished = os.fstat(source.fileno())
         if (opened.st_dev, opened.st_ino, opened.st_size,
-                opened.st_mtime_ns, opened.st_ctime_ns) != (
+                opened.st_mtime_ns, file_change_time_ns(opened)) != (
                 finished.st_dev, finished.st_ino, finished.st_size,
-                finished.st_mtime_ns, finished.st_ctime_ns):
+                finished.st_mtime_ns, file_change_time_ns(finished)):
             raise ValueError(f"{path}: shard changed during verification")
     after = path.lstat()
     if (before.st_dev, before.st_ino, before.st_size,
-            before.st_mtime_ns, before.st_ctime_ns) != (
+            before.st_mtime_ns, file_change_time_ns(before)) != (
             after.st_dev, after.st_ino, after.st_size,
-            after.st_mtime_ns, after.st_ctime_ns):
+            after.st_mtime_ns, file_change_time_ns(after)):
         raise ValueError(f"{path}: shard changed during verification")
     return digest.hexdigest()
 
 
 def _manifest_identity(metadata):
     return (metadata.st_dev, metadata.st_ino, metadata.st_size,
-            metadata.st_mtime_ns, metadata.st_ctime_ns)
+            metadata.st_mtime_ns, file_change_time_ns(metadata))
 
 
 def verify(manifest_path):

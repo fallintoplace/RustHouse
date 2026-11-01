@@ -1,4 +1,4 @@
-use rusthouse_query::{parse_select, ConstantValue, Projection};
+use rusthouse_query::{ConstantValue, Projection, parse_select};
 
 fn scalar(sql: &str) -> ConstantValue {
     match parse_select(sql).unwrap().projection {
@@ -19,7 +19,10 @@ fn isipv6uniquelocal_recognizes_network_boundaries() {
         let sql = format!("SELECT isIPv6UniqueLocal('{address}')");
         assert_eq!(scalar(&sql), ConstantValue::Integer(expected), "{sql}");
     }
-    assert_eq!(scalar("SELECT isIPv6UniqueLocal(NULL)"), ConstantValue::Null);
+    assert_eq!(
+        scalar("SELECT isIPv6UniqueLocal(NULL)"),
+        ConstantValue::Null
+    );
     assert!(parse_select("SELECT isIPv6UniqueLocal('invalid')").is_err());
     assert!(parse_select("SELECT isIPv6UniqueLocal('::1', '::2')").is_err());
 }

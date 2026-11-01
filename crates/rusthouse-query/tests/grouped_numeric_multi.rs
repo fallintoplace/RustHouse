@@ -82,8 +82,14 @@ fn grouped_mixed_count_and_sum_keep_nullable_numeric_semantics() {
         NEXT.fetch_add(1, Ordering::Relaxed),
     ));
     let columns = [
-        Column { name: "station".into(), data_type: "String".into() },
-        Column { name: "temperature".into(), data_type: "Nullable(UInt64)".into() },
+        Column {
+            name: "station".into(),
+            data_type: "String".into(),
+        },
+        Column {
+            name: "temperature".into(),
+            data_type: "Nullable(UInt64)".into(),
+        },
     ];
     let rows = [
         vec![Some("west".into()), Some("3".into())],
@@ -93,7 +99,10 @@ fn grouped_mixed_count_and_sum_keep_nullable_numeric_semantics() {
     ];
     write_wide_part(&root, &columns, &rows).unwrap();
     assert_eq!(
-        run("SELECT station, sum(temperature), count(temperature) FROM part GROUP BY station ORDER BY station", &root),
+        run(
+            "SELECT station, sum(temperature), count(temperature) FROM part GROUP BY station ORDER BY station",
+            &root
+        ),
         "station\tsum(temperature)\tcount(temperature)\neast\t7\t1\nwest\t8\t2\n"
     );
     fs::remove_dir_all(root).unwrap();

@@ -3,9 +3,7 @@ use std::process::Command;
 
 #[test]
 fn case_when_supports_conditional_numeric_aggregates() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-case-aggregate-{}", std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-case-aggregate-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])
@@ -33,10 +31,7 @@ fn case_when_supports_conditional_numeric_aggregates() {
             "SELECT SUM(CASE WHEN amount > 0 THEN amount WHEN amount < 0 THEN 0 ELSE 2 END) FROM events",
             "32",
         ),
-        (
-            "SELECT SUM(CASE WHEN flag > 0 THEN 1 END) FROM events",
-            "3",
-        ),
+        ("SELECT SUM(CASE WHEN flag > 0 THEN 1 END) FROM events", "3"),
     ] {
         let actual = sql(query);
         assert!(actual.status.success(), "{query}: {actual:?}");

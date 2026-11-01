@@ -8,8 +8,14 @@ fn value(sql: &str) -> ConstantValue {
 }
 #[test]
 fn supports_utc_values_and_null() {
-    assert_eq!(value("SELECT toHour('2024-02-29 23:59:58')"), ConstantValue::Integer(23));
-    assert_eq!(value("SELECT toHour('2024-02-29')"), ConstantValue::Integer(0));
+    assert_eq!(
+        value("SELECT toHour('2024-02-29 23:59:58')"),
+        ConstantValue::Integer(23)
+    );
+    assert_eq!(
+        value("SELECT toHour('2024-02-29')"),
+        ConstantValue::Integer(0)
+    );
     assert_eq!(value("SELECT toHour(NULL)"), ConstantValue::Null);
 }
 #[test]

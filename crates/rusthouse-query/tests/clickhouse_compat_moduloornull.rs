@@ -14,7 +14,10 @@ fn moduloornull_handles_zero_overflow_and_nulls() {
         ("SELECT moduloOrNull(7, 3)", ConstantValue::Integer(1)),
         ("SELECT moduloOrNull(-7, 3)", ConstantValue::Integer(-1)),
         ("SELECT moduloOrNull(7, 0)", ConstantValue::Null),
-        ("SELECT moduloOrNull(-9223372036854775807 - 1, -1)", ConstantValue::Null),
+        (
+            "SELECT moduloOrNull(-9223372036854775807 - 1, -1)",
+            ConstantValue::Null,
+        ),
         ("SELECT moduloOrNull(NULL, 2)", ConstantValue::Null),
         ("SELECT moduloOrNull(1, NULL)", ConstantValue::Null),
     ] {

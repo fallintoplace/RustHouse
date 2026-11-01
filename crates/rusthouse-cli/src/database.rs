@@ -60,8 +60,7 @@ fn validated_parts(
         return Err(format!("table data is not a real directory: {name}"));
     }
     let active = active_source(database, name)?;
-    let (parts, source) =
-        query_parts_with_metadata(&active).map_err(|error| error.to_string())?;
+    let (parts, source) = query_parts_with_metadata(&active).map_err(|error| error.to_string())?;
     if source.columns != cols {
         return Err(format!("table {name} schema differs from its stored data"));
     }
@@ -312,7 +311,8 @@ fn checked_update_offset(
     signed: bool,
 ) -> Result<String, String> {
     if signed {
-        let current = current.parse::<i128>()
+        let current = current
+            .parse::<i128>()
             .map_err(|_| "invalid signed UPDATE column value")?;
         // A full UInt128 offset can still produce a valid signed result
         // when applied to a negative value. Do not narrow before arithmetic.
@@ -321,24 +321,35 @@ fn checked_update_offset(
         } else {
             current.checked_add_unsigned(delta)
         };
-        result.map(|value| value.to_string())
+        result
+            .map(|value| value.to_string())
             .ok_or_else(|| "signed UPDATE arithmetic overflow".into())
     } else {
-        let current = current.parse::<u128>()
+        let current = current
+            .parse::<u128>()
             .map_err(|_| "invalid unsigned UPDATE column value")?;
         let result = if subtract {
             current.checked_sub(delta)
         } else {
             current.checked_add(delta)
         };
-        result.map(|value| value.to_string())
+        result
+            .map(|value| value.to_string())
             .ok_or_else(|| "unsigned UPDATE arithmetic overflow".into())
     }
 }
 
 enum PreparedUpdate {
-    Literal { index: usize, value: Option<String> },
-    Offset { index: usize, delta: u128, subtract: bool, signed: bool },
+    Literal {
+        index: usize,
+        value: Option<String>,
+    },
+    Offset {
+        index: usize,
+        delta: u128,
+        subtract: bool,
+        signed: bool,
+    },
 }
 
 pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
@@ -358,26 +369,30 @@ pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
                     if value.is_none() && !cols[index].data_type.starts_with("Nullable(") {
                         return Err(format!("NULL is not allowed for UPDATE column: {name}"));
                     }
-                    Ok(PreparedUpdate::Literal { index, value: value.clone() })
+                    Ok(PreparedUpdate::Literal {
+                        index,
+                        value: value.clone(),
+                    })
                 }
                 UpdateValue::Offset { delta, subtract } => {
                     let data_type = &cols[index].data_type;
-                    let kind = data_type.strip_prefix("Nullable(")
+                    let kind = data_type
+                        .strip_prefix("Nullable(")
                         .and_then(|value| value.strip_suffix(')'))
                         .unwrap_or(data_type);
-                    let signed = matches!(
-                        kind, "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-                    );
-                    let unsigned = matches!(
-                        kind, "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-                    );
+                    let signed = matches!(kind, "Int8" | "Int16" | "Int32" | "Int64" | "Int128");
+                    let unsigned =
+                        matches!(kind, "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128");
                     if !signed && !unsigned {
                         return Err(format!(
                             "UPDATE integer offset requires an integer column: {name}"
                         ));
                     }
                     Ok(PreparedUpdate::Offset {
-                        index, delta: *delta, subtract: *subtract, signed,
+                        index,
+                        delta: *delta,
+                        subtract: *subtract,
+                        signed,
                     })
                 }
             }
@@ -389,13 +404,17 @@ pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
             for assignment in &assignments {
                 match assignment {
                     PreparedUpdate::Literal { index, value } => values[*index] = value.clone(),
-                    PreparedUpdate::Offset { index, delta, subtract, signed } => {
+                    PreparedUpdate::Offset {
+                        index,
+                        delta,
+                        subtract,
+                        signed,
+                    } => {
                         // SQL NULL arithmetic stays NULL; copying a row uses the
                         // original column value, never an updated sibling.
                         if let Some(current) = values[*index].as_deref() {
-                            values[*index] = Some(checked_update_offset(
-                                current, *delta, *subtract, *signed,
-                            )?);
+                            values[*index] =
+                                Some(checked_update_offset(current, *delta, *subtract, *signed)?);
                         }
                     }
                 }
@@ -503,8 +522,7 @@ pub(super) fn insert_stream_locked(
         println!("Inserted 0 rows into {table}");
         return Ok(());
     }
-    let identical_layout = indices.len() == cols.len()
-        && indices.iter().copied().eq(0..cols.len());
+    let identical_layout = indices.len() == cols.len() && indices.iter().copied().eq(0..cols.len());
     let count = rewrite::append_parts_stream(database, table, &cols, &parts, || {
         let next = match first.take() {
             Some(row) => Some(row),
@@ -729,9 +747,10 @@ mod large_copy_row_layout_tests {
     fn mapped_and_partial_streamed_records_still_fill_missing_columns() {
         let source = vec![Some("west".into()), Some("77".into())];
         let result = order_stream_row(source, &[2, 0], 4, false);
-        assert_eq!(result, [
-            Some("77".into()), None, Some("west".into()), None,
-        ]);
+        assert_eq!(
+            result,
+            [Some("77".into()), None, Some("west".into()), None,]
+        );
         let source = vec![Some("replaced".into()), Some("final".into())];
         let result = order_stream_row(source, &[1, 1], 3, false);
         assert_eq!(result, [None, Some("final".into()), None]);
@@ -750,8 +769,9 @@ mod mutation_lock_order_tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let held = lock(&dir).unwrap();
-        let update_statement =
-            rusthouse_query::parse_update("UPDATE missing SET id = 1").unwrap().unwrap();
+        let update_statement = rusthouse_query::parse_update("UPDATE missing SET id = 1")
+            .unwrap()
+            .unwrap();
         let error = update(&dir, &update_statement).unwrap_err();
         assert!(error.contains("acquire database write lock"), "{error}");
         drop(held);

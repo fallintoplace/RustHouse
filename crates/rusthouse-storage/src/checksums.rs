@@ -94,9 +94,9 @@ fn manifest_source_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> boo
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return same_checksums_inode(before, after)
+        same_checksums_inode(before, after)
             && before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec();
+            && before.ctime_nsec() == after.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
@@ -115,7 +115,9 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
         });
     }
     let mut file = File::open(path).map_err(|source| checksums_io_error(path, source))?;
-    let opened = file.metadata().map_err(|source| checksums_io_error(path, source))?;
+    let opened = file
+        .metadata()
+        .map_err(|source| checksums_io_error(path, source))?;
     // Also reject same-size in-place edits between stat and open.
     if !manifest_source_unchanged(&metadata, &opened) {
         return Err(invalid(path, "checksums file changed before open"));
@@ -126,7 +128,8 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     }
     // A checked metadata size is available, so reserve once for the input.
     let mut content = Vec::with_capacity(size as usize);
-    (&mut file).take(MAX_CHECKSUMS_BYTES + 1)
+    (&mut file)
+        .take(MAX_CHECKSUMS_BYTES + 1)
         .read_to_end(&mut content)
         .map_err(|source| checksums_io_error(path, source))?;
     if content.len() as u64 > MAX_CHECKSUMS_BYTES {
@@ -137,9 +140,10 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     }
     // Check both the opened file and current path. Same-size replacements
     // and in-place mutations must not yield a stale verified manifest.
-    let finished = file.metadata().map_err(|source| checksums_io_error(path, source))?;
-    let current = fs::symlink_metadata(path)
+    let finished = file
+        .metadata()
         .map_err(|source| checksums_io_error(path, source))?;
+    let current = fs::symlink_metadata(path).map_err(|source| checksums_io_error(path, source))?;
     if !manifest_source_unchanged(&opened, &finished)
         || !manifest_source_unchanged(&opened, &current)
     {
@@ -152,9 +156,10 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
 // an additional String for every immutable object in a large manifest.
 fn has_duplicate_file_names(files: &[FileChecksum]) -> bool {
     if files.len() <= 8 {
-        return files.iter().enumerate().any(|(index, file)| {
-            files[..index].iter().any(|prior| prior.name == file.name)
-        });
+        return files
+            .iter()
+            .enumerate()
+            .any(|(index, file)| files[..index].iter().any(|prior| prior.name == file.name));
     }
     let mut names = HashSet::with_capacity(files.len().min(128));
     files.iter().any(|file| !names.insert(file.name.as_str()))
@@ -602,15 +607,22 @@ mod opened_checksums_identity_tests {
 
     #[test]
     fn rejects_equal_size_replacements_before_parsing() {
-        let root = std::env::temp_dir().join(format!("rusthouse-checksum-id-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-checksum-id-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
         let first = root.join("a");
         let second = root.join("b");
         fs::write(&first, b"abcd").unwrap();
         fs::write(&second, b"wxyz").unwrap();
-        assert!(same_checksums_inode(&fs::metadata(&first).unwrap(), &fs::metadata(&first).unwrap()));
-        assert!(!same_checksums_inode(&fs::metadata(&first).unwrap(), &fs::metadata(&second).unwrap()));
+        assert!(same_checksums_inode(
+            &fs::metadata(&first).unwrap(),
+            &fs::metadata(&first).unwrap()
+        ));
+        assert!(!same_checksums_inode(
+            &fs::metadata(&first).unwrap(),
+            &fs::metadata(&second).unwrap()
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -622,7 +634,8 @@ mod manifest_postread_identity_tests {
     #[test]
     fn equal_length_replacements_do_not_pass_manifest_identity_check() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-checksums-postread-{}", std::process::id()
+            "rusthouse-checksums-postread-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
@@ -634,11 +647,13 @@ mod manifest_postread_identity_tests {
         let unchanged = fs::symlink_metadata(&original).unwrap();
         assert!(manifest_source_unchanged(&before, &unchanged));
         assert!(!manifest_source_unchanged(
-            &before, &fs::symlink_metadata(&replacement).unwrap(),
+            &before,
+            &fs::symlink_metadata(&replacement).unwrap(),
         ));
         fs::rename(&replacement, &original).unwrap();
         assert!(!manifest_source_unchanged(
-            &before, &fs::symlink_metadata(&original).unwrap(),
+            &before,
+            &fs::symlink_metadata(&original).unwrap(),
         ));
         fs::remove_dir_all(root).unwrap();
     }
@@ -691,9 +706,16 @@ mod checksums_initial_open_stability_tests {
         fs::write(&path, b"checksums-data").unwrap();
         let before = fs::symlink_metadata(&path).unwrap();
         let file = File::open(&path).unwrap();
-        assert!(manifest_source_unchanged(&before, &file.metadata().unwrap()));
-        file.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
-        assert!(!manifest_source_unchanged(&before, &file.metadata().unwrap()));
+        assert!(manifest_source_unchanged(
+            &before,
+            &file.metadata().unwrap()
+        ));
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        assert!(!manifest_source_unchanged(
+            &before,
+            &file.metadata().unwrap()
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 }

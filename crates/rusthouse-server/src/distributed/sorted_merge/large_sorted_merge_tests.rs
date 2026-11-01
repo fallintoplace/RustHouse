@@ -2,13 +2,15 @@ use super::*;
 
 #[test]
 fn merges_large_high_fanout_prefixes_without_row_materialization() {
-    let shards = (0..24).map(|shard| {
-        let mut output = b"id\n".to_vec();
-        for row in 0..2026 {
-            output.extend_from_slice(format!("{}\n", row * 24 + shard).as_bytes());
-        }
-        (4096, output)
-    }).collect::<Vec<_>>();
+    let shards = (0..24)
+        .map(|shard| {
+            let mut output = b"id\n".to_vec();
+            for row in 0..2026 {
+                output.extend_from_slice(format!("{}\n", row * 24 + shard).as_bytes());
+            }
+            (4096, output)
+        })
+        .collect::<Vec<_>>();
     let actual = merge_sorted_integer_page(&shards, "id", "UInt64", false, 1999, 27, 27).unwrap();
     let mut expected = b"id\n".to_vec();
     for value in 1999..2026 {

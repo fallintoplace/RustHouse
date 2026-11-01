@@ -481,8 +481,14 @@ mod line_comment_scanning_tests {
     #[test]
     fn line_comments_stop_before_both_newline_forms() {
         let plain = tokenize("SELECT 1 FROM numbers(2)").unwrap();
-        assert_eq!(tokenize("SELECT 1 -- ignored\nFROM numbers(2)").unwrap(), plain);
-        assert_eq!(tokenize("SELECT 1 # ignored\r\nFROM numbers(2)").unwrap(), plain);
+        assert_eq!(
+            tokenize("SELECT 1 -- ignored\nFROM numbers(2)").unwrap(),
+            plain
+        );
+        assert_eq!(
+            tokenize("SELECT 1 # ignored\r\nFROM numbers(2)").unwrap(),
+            plain
+        );
     }
 }
 

@@ -164,7 +164,8 @@ fn term(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             value = if divisor == -1 {
                 0
             } else {
-                value.checked_rem(divisor)
+                value
+                    .checked_rem(divisor)
                     .ok_or(ParseError("scalar modulo by zero or overflow".into()))?
             };
         } else {
@@ -265,7 +266,11 @@ fn parse_multiply_function(parser: &mut Parser, depth: usize) -> Result<i64, Par
     let left = expression(parser, depth + 1)?;
     require_token(parser, Token::Comma, "multiply requires two arguments")?;
     let right = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "expected ')' after multiply arguments")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after multiply arguments",
+    )?;
     left.checked_mul(right).ok_or_else(overflow)
 }
 
@@ -537,7 +542,11 @@ fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseErro
             "BIT_EXTRACT field must fit within 64 bits".into(),
         ));
     }
-    let mask = if width == 64 { u64::MAX } else { (1_u64 << width) - 1 };
+    let mask = if width == 64 {
+        u64::MAX
+    } else {
+        (1_u64 << width) - 1
+    };
     Ok((((value as u64) >> offset) & mask) as i64)
 }
 
@@ -758,13 +767,11 @@ fn pow_mod(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
     let mut result = 1u64;
     while exponent > 0 {
         if exponent & 1 != 0 {
-            result = ((u128::from(result) * u128::from(base))
-                % u128::from(modulus)) as u64;
+            result = ((u128::from(result) * u128::from(base)) % u128::from(modulus)) as u64;
         }
         exponent >>= 1;
         if exponent != 0 {
-            base = ((u128::from(base) * u128::from(base))
-                % u128::from(modulus)) as u64;
+            base = ((u128::from(base) * u128::from(base)) % u128::from(modulus)) as u64;
         }
     }
     result
@@ -798,8 +805,7 @@ fn prime_u64(value: u64) -> bool {
         }
         let mut witnessed_nontrivial_root = false;
         for _ in 1..shifts {
-            power = ((u128::from(power) * u128::from(power))
-                % u128::from(value)) as u64;
+            power = ((u128::from(power) * u128::from(power)) % u128::from(value)) as u64;
             if power == value - 1 {
                 witnessed_nontrivial_root = true;
                 break;
@@ -1324,7 +1330,11 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             let second = expression(parser, depth + 1)?;
             i64::from(first > second)
         } else if name.eq_ignore_ascii_case("GREATEROREQUALS") {
-            require_token(parser, Token::Comma, "greaterOrEquals requires two arguments")?;
+            require_token(
+                parser,
+                Token::Comma,
+                "greaterOrEquals requires two arguments",
+            )?;
             let second = expression(parser, depth + 1)?;
             i64::from(first >= second)
         } else if name.eq_ignore_ascii_case("AND") {
@@ -1365,7 +1375,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                     return Err(ParseError("xor accepts at most 16 values".into()));
                 }
                 let next = expression(parser, depth + 1)?;
-                result = result ^ (next != 0);
+                result ^= next != 0;
                 arguments += 1;
             }
             if arguments < 2 {
@@ -1459,7 +1469,7 @@ fn overflow() -> ParseError {
 
 #[cfg(test)]
 mod clickhouse_tobool_int64_tests {
-    use crate::{parse_select, Projection};
+    use crate::{Projection, parse_select};
     #[test]
     fn boolean_cast_is_zero_or_one_for_int64() {
         for (sql, expected) in [
@@ -1469,7 +1479,11 @@ mod clickhouse_tobool_int64_tests {
             ("SELECT toBool(400)", 1),
             ("SELECT toBool(1 - 1)", 0),
         ] {
-            assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+            assert_eq!(
+                parse_select(sql).unwrap().projection,
+                Projection::Literal(expected),
+                "{sql}"
+            );
         }
         for sql in ["SELECT toBool()", "SELECT toBool(1, 2)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
@@ -1480,14 +1494,15 @@ mod clickhouse_tobool_int64_tests {
 #[cfg(test)]
 mod deterministic_primality_tests {
     use super::*;
-    use crate::{parse_select, Projection};
+    use crate::{Projection, parse_select};
 
     #[test]
     fn agrees_with_trial_division_on_small_integer_domain() {
         for value in 0..=20_000u64 {
-            let reference = value >= 2 && !(2..=value / 2)
-                .take_while(|&divisor| divisor <= value / divisor)
-                .any(|divisor| value % divisor == 0);
+            let reference = value >= 2
+                && !(2..=value / 2)
+                    .take_while(|&divisor| divisor <= value / divisor)
+                    .any(|divisor| value % divisor == 0);
             assert_eq!(prime_u64(value), reference, "{value}");
         }
     }
@@ -1495,7 +1510,12 @@ mod deterministic_primality_tests {
     #[test]
     fn distinguishes_large_primes_and_strong_pseudoprimes() {
         for (value, expected) in [
-            (-1i64, 0), (0, 0), (1, 0), (2, 1), (3, 1), (4, 0),
+            (-1i64, 0),
+            (0, 0),
+            (1, 0),
+            (2, 1),
+            (3, 1),
+            (4, 0),
             (1_000_000_000_039, 1),
             (341_550_071_728_321, 0),
             (2_305_843_009_213_693_951, 1),
@@ -1503,7 +1523,11 @@ mod deterministic_primality_tests {
             (i64::MAX, 0),
         ] {
             let sql = format!("SELECT is_prime({value})");
-            assert_eq!(parse_select(&sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+            assert_eq!(
+                parse_select(&sql).unwrap().projection,
+                Projection::Literal(expected),
+                "{sql}"
+            );
         }
     }
 }
@@ -1513,10 +1537,14 @@ mod miller_rabin_primality_tests {
     use super::*;
 
     fn trial_prime(value: u64) -> bool {
-        if value < 2 { return false; }
+        if value < 2 {
+            return false;
+        }
         let mut candidate = 2;
         while candidate <= value / candidate {
-            if value % candidate == 0 { return false; }
+            if value % candidate == 0 {
+                return false;
+            }
             candidate += 1;
         }
         true
@@ -1532,7 +1560,10 @@ mod miller_rabin_primality_tests {
     #[test]
     fn rejects_strong_pseudoprimes_and_large_semiprimes() {
         for composite in [
-            561u64, 1105, 1729, 3215031751,
+            561u64,
+            1105,
+            1729,
+            3215031751,
             1_000_003u64 * 999_983u64,
             1_000_000_000_000,
         ] {
@@ -1563,13 +1594,23 @@ mod small_modulus_primality_perf_tests {
 
     #[test]
     fn exact_modular_power_across_32_bit_threshold() {
-        for modulus in [2, 3, 97, 65_537, u32::MAX as u64 - 4,
-            u32::MAX as u64, u32::MAX as u64 + 1, i64::MAX as u64] {
+        for modulus in [
+            2,
+            3,
+            97,
+            65_537,
+            u32::MAX as u64 - 4,
+            u32::MAX as u64,
+            u32::MAX as u64 + 1,
+            i64::MAX as u64,
+        ] {
             for base in [0, 1, 2, 100_000_007, u64::MAX] {
                 for exponent in [0, 1, 2, 7, 31, 63, 127] {
-                    assert_eq!(pow_mod(base, exponent, modulus),
+                    assert_eq!(
+                        pow_mod(base, exponent, modulus),
                         reference_pow_mod(base, exponent, modulus),
-                        "base={base} exponent={exponent} modulus={modulus}");
+                        "base={base} exponent={exponent} modulus={modulus}"
+                    );
                 }
             }
         }
@@ -1578,9 +1619,14 @@ mod small_modulus_primality_perf_tests {
     #[test]
     fn small_and_large_primes_keep_exact_classification() {
         for (value, prime) in [
-            (2_u64, true), (3, true), (4, false), (97, true),
-            (1_000_000_007, true), (4_294_967_295, false),
-            (4_294_967_291, true), (4_294_967_297, false),
+            (2_u64, true),
+            (3, true),
+            (4, false),
+            (97, true),
+            (1_000_000_007, true),
+            (4_294_967_295, false),
+            (4_294_967_291, true),
+            (4_294_967_297, false),
             (2_305_843_009_213_693_951, true),
         ] {
             assert_eq!(prime_u64(value), prime, "{value}");

@@ -17,7 +17,10 @@ fn rounds_utc_time_down_and_preserves_null() {
         value("SELECT toStartOfFiveMinutes('1970-01-01 00:00:00')"),
         ConstantValue::Text("1970-01-01 00:00:00".into())
     );
-    assert_eq!(value("SELECT toStartOfFiveMinutes(NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT toStartOfFiveMinutes(NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]

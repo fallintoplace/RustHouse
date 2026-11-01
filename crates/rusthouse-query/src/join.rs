@@ -421,12 +421,18 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             (Some((column, not_null)), None)
         } else {
             let operator = parser.operator()?;
-            if !matches!(operator,
-                crate::Operator::Eq | crate::Operator::Ne
-                | crate::Operator::Lt | crate::Operator::Le
-                | crate::Operator::Gt | crate::Operator::Ge)
-            {
-                return Err(ParseError("JOIN WHERE requires a comparison operator".into()));
+            if !matches!(
+                operator,
+                crate::Operator::Eq
+                    | crate::Operator::Ne
+                    | crate::Operator::Lt
+                    | crate::Operator::Le
+                    | crate::Operator::Gt
+                    | crate::Operator::Ge
+            ) {
+                return Err(ParseError(
+                    "JOIN WHERE requires a comparison operator".into(),
+                ));
             }
             (None, Some((column, operator, parser.literal()?)))
         }
@@ -484,10 +490,13 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             || relation == right_alias
             || steps.iter().any(|step| step.alias == relation)
     };
-    if let Some(JoinAggregate::CountColumn(column) | JoinAggregate::Numeric { column, .. }) = &aggregate {
+    if let Some(JoinAggregate::CountColumn(column) | JoinAggregate::Numeric { column, .. }) =
+        &aggregate
+    {
         if !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
-                "unknown JOIN qualifier: {}", column.relation
+                "unknown JOIN qualifier: {}",
+                column.relation
             )));
         }
     }
@@ -503,7 +512,10 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     }
     if let Some((column, _, _)) = &where_comparison {
         if !known_qualifier(&column.relation) {
-            return Err(ParseError(format!("unknown JOIN qualifier: {}", column.relation)));
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
         }
     }
     if let Some((column, _)) = &where_null {
@@ -516,7 +528,10 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     }
     if let Some(column) = &group_by {
         if !known_qualifier(&column.relation) {
-            return Err(ParseError(format!("unknown JOIN qualifier: {}", column.relation)));
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
         }
     }
     for (column, _, _) in &order_by {
@@ -551,12 +566,16 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         ));
     }
     if where_comparison.is_some()
-        && (kind != JoinType::Inner || !steps.is_empty()
-            || !order_by.is_empty() || aggregate.is_some()
-            || grouped_count_projection || group_by.is_some())
+        && (kind != JoinType::Inner
+            || !steps.is_empty()
+            || !order_by.is_empty()
+            || aggregate.is_some()
+            || grouped_count_projection
+            || group_by.is_some())
     {
         return Err(ParseError(
-            "JOIN comparison WHERE supports unordered two-table INNER joins without aggregation".into(),
+            "JOIN comparison WHERE supports unordered two-table INNER joins without aggregation"
+                .into(),
         ));
     }
     let grouped_count = if grouped_count_projection {
@@ -565,18 +584,29 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             .and_then(|columns| (columns.len() == 1).then_some(&columns[0]))
             .ok_or_else(|| ParseError("grouped JOIN projects one key and COUNT(*)".into()))?;
         if group_by.as_ref() != Some(projected_key) {
-            return Err(ParseError("GROUP BY must match the selected JOIN key".into()));
+            return Err(ParseError(
+                "GROUP BY must match the selected JOIN key".into(),
+            ));
         }
         if kind != JoinType::Inner || !steps.is_empty() {
-            return Err(ParseError("grouped JOIN COUNT requires two-table INNER JOIN".into()));
+            return Err(ParseError(
+                "grouped JOIN COUNT requires two-table INNER JOIN".into(),
+            ));
         }
-        if order_by.iter().any(|(column, _, _)| column != projected_key) {
-            return Err(ParseError("grouped JOIN ORDER BY must use the group key".into()));
+        if order_by
+            .iter()
+            .any(|(column, _, _)| column != projected_key)
+        {
+            return Err(ParseError(
+                "grouped JOIN ORDER BY must use the group key".into(),
+            ));
         }
         group_by
     } else {
         if group_by.is_some() {
-            return Err(ParseError("JOIN GROUP BY requires projected COUNT(*)".into()));
+            return Err(ParseError(
+                "JOIN GROUP BY requires projected COUNT(*)".into(),
+            ));
         }
         None
     };
@@ -584,11 +614,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     if matches!(aggregate.as_ref(), Some(JoinAggregate::CountColumn(_)))
         && (kind != JoinType::Inner || !steps.is_empty())
     {
-        return Err(ParseError("JOIN COUNT(column) requires a two-table INNER JOIN".into()));
+        return Err(ParseError(
+            "JOIN COUNT(column) requires a two-table INNER JOIN".into(),
+        ));
     }
     // Chained numeric/column aggregates and OUTER or filtered chained COUNT
     // lack a matching streaming semantics implementation. Reject them.
-    if !steps.is_empty() && aggregate.is_some()
+    if !steps.is_empty()
+        && aggregate.is_some()
         && (!matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))
             || kind != JoinType::Inner
             || steps.iter().any(|step| step.kind != JoinType::Inner)
@@ -600,11 +633,13 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     }
     if aggregate.is_some()
         && (!order_by.is_empty()
-            || (steps.is_empty() && kind != JoinType::Inner
+            || (steps.is_empty()
+                && kind != JoinType::Inner
                 && !matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))))
     {
         return Err(ParseError(
-            "JOIN aggregates require no ORDER BY; two-table OUTER JOIN supports COUNT(*) only".into(),
+            "JOIN aggregates require no ORDER BY; two-table OUTER JOIN supports COUNT(*) only"
+                .into(),
         ));
     }
     Ok(Some(JoinSelect {
@@ -703,13 +738,15 @@ pub fn explain_join(query: &JoinSelect) -> String {
                     format!("{}({}.{})", function.name(), column.relation, column.name)
                 }
             }
-        } else { query.columns.as_ref().map_or("*".to_owned(), |columns| {
-            columns
-                .iter()
-                .map(|col| format!("{}.{}", col.relation, col.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        }) },
+        } else {
+            query.columns.as_ref().map_or("*".to_owned(), |columns| {
+                columns
+                    .iter()
+                    .map(|col| format!("{}.{}", col.relation, col.name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+        },
         query
             .limit
             .map_or("unbounded".to_owned(), |n| n.to_string())
@@ -1311,11 +1348,10 @@ mod tests {
         .unwrap();
         assert!(query.where_null.unwrap().1);
         let comparison = parse_join("SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id = 1")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert!(comparison.where_comparison.is_some());
-        for sql in [
-            "SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id IS UNKNOWN",
-        ] {
+        for sql in ["SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id IS UNKNOWN"] {
             assert!(parse_join(sql).is_err(), "{sql}");
         }
     }

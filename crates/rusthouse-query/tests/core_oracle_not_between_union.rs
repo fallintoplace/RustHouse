@@ -10,12 +10,9 @@ fn run(sql: &str) -> String {
 #[test]
 fn not_between_matches_disjoint_ranges_at_boundary_rows() {
     for rows in [1, 7, 8, 31, 32, 1025, 4097] {
-        let between = format!(
-            "SELECT count(*) FROM numbers({rows}) WHERE number NOT BETWEEN 7 AND 31"
-        );
-        let union = format!(
-            "SELECT count(*) FROM numbers({rows}) WHERE number < 7 OR number > 31"
-        );
+        let between =
+            format!("SELECT count(*) FROM numbers({rows}) WHERE number NOT BETWEEN 7 AND 31");
+        let union = format!("SELECT count(*) FROM numbers({rows}) WHERE number < 7 OR number > 31");
         assert_eq!(run(&between), run(&union), "rows={rows}");
     }
 }

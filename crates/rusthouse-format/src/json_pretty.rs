@@ -20,7 +20,7 @@ fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
         bytes
     };
     let spaces = (depth + 1) * 2;
-    if spaces + 1 <= CACHED_INDENT.len() {
+    if spaces < CACHED_INDENT.len() {
         output.write_all(&CACHED_INDENT[..spaces + 1])
     } else {
         output.write_all(b"\n")?;
@@ -161,9 +161,10 @@ fn write_pretty_json_row_into<W: Write>(output: &mut W, row: &[u8]) -> io::Resul
         // Large numeric, boolean and null values contain no formatting
         // punctuation. Skip their whole span instead of matching every byte
         // through the JSON indentation state machine.
-        let Some(distance) = row[index..].iter().position(|&byte| {
-            matches!(byte, b'"' | b'{' | b'[' | b'}' | b']' | b',' | b':')
-        }) else {
+        let Some(distance) = row[index..]
+            .iter()
+            .position(|&byte| matches!(byte, b'"' | b'{' | b'[' | b'}' | b']' | b',' | b':'))
+        else {
             break;
         };
         index += distance;
@@ -172,8 +173,10 @@ fn write_pretty_json_row_into<W: Write>(output: &mut W, row: &[u8]) -> io::Resul
             b'"' => inside_json_string = true,
             b'{' | b'[' => {
                 if depth >= MAX_PRETTY_JSON_DEPTH {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData,
-                                              "pretty JSON nesting exceeds 256 levels"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "pretty JSON nesting exceeds 256 levels",
+                    ));
                 }
                 output.write_all(&row[start..=index])?;
                 depth += 1;
@@ -289,7 +292,9 @@ mod tests {
                 self.0.push(bytes.to_vec());
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         for length in [64, 128, 250] {
             let key = "k".repeat(length);
@@ -298,7 +303,10 @@ mod tests {
             write_pretty_json_row_into(&mut output, row.as_bytes()).unwrap();
             let wanted = format!("\"{key}\": ");
             assert!(
-                output.0.iter().any(|chunk| chunk.as_slice() == wanted.as_bytes()),
+                output
+                    .0
+                    .iter()
+                    .any(|chunk| chunk.as_slice() == wanted.as_bytes()),
                 "medium key was not emitted in one write"
             );
         }
@@ -312,7 +320,9 @@ mod tests {
                 self.0.push(bytes.to_vec());
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         for length in [254, 255, 256, 512, 1020] {
             let key = "a".repeat(length);
@@ -369,17 +379,25 @@ mod deep_json_indent_fast_path_tests {
 
     #[test]
     fn deep_valid_indent_levels_need_a_single_writer_call() {
-        struct Writer { writes: usize, bytes: Vec<u8> }
+        struct Writer {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
         impl Write for Writer {
             fn write(&mut self, data: &[u8]) -> io::Result<usize> {
                 self.writes += 1;
                 self.bytes.extend_from_slice(data);
                 Ok(data.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         for depth in [0, 1, 31, 32, 33, 40, 128, 255, 256] {
-            let mut writer = Writer { writes: 0, bytes: Vec::new() };
+            let mut writer = Writer {
+                writes: 0,
+                bytes: Vec::new(),
+            };
             write_indent(&mut writer, depth).unwrap();
             assert_eq!(writer.writes, 1, "{depth}");
             assert_eq!(writer.bytes.len(), 1 + (depth + 1) * 2);
@@ -413,7 +431,10 @@ mod long_pretty_json_key_batch_tests {
             let mut writer = Calls(Vec::new());
             write_pretty_json_row_into(&mut writer, source.as_bytes()).unwrap();
             let colon = format!("\"{key}\": ");
-            assert!(writer.0.iter().any(|call| call == colon.as_bytes()), "{length}");
+            assert!(
+                writer.0.iter().any(|call| call == colon.as_bytes()),
+                "{length}"
+            );
             assert_eq!(
                 writer.0.concat(),
                 format!("{{\n    \"{key}\": 42\n  }}").as_bytes(),
@@ -427,10 +448,7 @@ mod long_pretty_json_key_batch_tests {
         let source = format!("{{\"{key}\":1}}");
         let mut rendered = Vec::new();
         write_pretty_json_row(&mut rendered, source.as_bytes()).unwrap();
-        assert_eq!(
-            rendered,
-            format!("{{\n    \"{key}\": 1\n  }}").as_bytes()
-        );
+        assert_eq!(rendered, format!("{{\n    \"{key}\": 1\n  }}").as_bytes());
     }
 }
 
@@ -481,11 +499,17 @@ mod row_write_batch_tests {
     fn punctuation_heavy_json_uses_bounded_output_writes() {
         let row = format!(
             "{{\"values\":[{}]}}",
-            (0..200).map(|index| format!("{{\"key\":{index}}}")).collect::<Vec<_>>().join(",")
+            (0..200)
+                .map(|index| format!("{{\"key\":{index}}}"))
+                .collect::<Vec<_>>()
+                .join(",")
         );
         let mut expected = Vec::new();
         write_pretty_json_row_into(&mut expected, row.as_bytes()).unwrap();
-        let mut counted = Counted { calls: 0, bytes: Vec::new() };
+        let mut counted = Counted {
+            calls: 0,
+            bytes: Vec::new(),
+        };
         write_pretty_json_row(&mut counted, row.as_bytes()).unwrap();
         assert_eq!(counted.bytes, expected);
         assert!(counted.calls <= 2, "writes: {}", counted.calls);
@@ -493,7 +517,10 @@ mod row_write_batch_tests {
 
     #[test]
     fn batch_writer_preserves_long_literals_and_escaped_strings() {
-        let row = format!("{{\"text\":\"{}\",\"escape\":\"a\\\\b\\\"c\"}}", "x".repeat(20_000));
+        let row = format!(
+            "{{\"text\":\"{}\",\"escape\":\"a\\\\b\\\"c\"}}",
+            "x".repeat(20_000)
+        );
         let mut expected = Vec::new();
         write_pretty_json_row_into(&mut expected, row.as_bytes()).unwrap();
         let mut actual = Vec::new();
@@ -540,7 +567,8 @@ mod bulk_scalar_span_tests {
         write_pretty_json_row(&mut formatted, row.as_bytes()).unwrap();
         assert_eq!(
             formatted,
-            format!("{{\n    \"n\": {large_number},\n    \"ok\": true,\n    \"empty\": null\n  }}").as_bytes()
+            format!("{{\n    \"n\": {large_number},\n    \"ok\": true,\n    \"empty\": null\n  }}")
+                .as_bytes()
         );
     }
 

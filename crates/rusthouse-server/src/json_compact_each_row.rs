@@ -9,18 +9,18 @@ fn write_compact_field(output: &mut Vec<u8>, value: &[u8]) -> io::Result<()> {
         output.write_all(b"null")?;
     } else if value.contains(&b'\\') {
         write_json_string(output, &decode_tsv_value(value)?)?;
-    } else if value.iter().all(|&byte| {
-        (0x20..0x7f).contains(&byte) && byte != b'"'
-    }) {
+    } else if value
+        .iter()
+        .all(|&byte| (0x20..0x7f).contains(&byte) && byte != b'"')
+    {
         // A common TSV field is already printable ASCII without a JSON
         // escape. Append quotes and payload directly to the row buffer.
         output.push(b'"');
         output.extend_from_slice(value);
         output.push(b'"');
     } else {
-        let text = std::str::from_utf8(value).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field")
-        })?;
+        let text = std::str::from_utf8(value)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field"))?;
         write_json_string(output, text)?;
     }
     Ok(())
@@ -137,12 +137,7 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
             }
             if complete && self.line.is_empty() {
                 if let Some(columns) = self.columns {
-                    write_compact_row_into(
-                        &mut self.output,
-                        fragment,
-                        columns,
-                        &mut self.encoded,
-                    )?;
+                    write_compact_row_into(&mut self.output, fragment, columns, &mut self.encoded)?;
                     continue;
                 }
             }
@@ -309,8 +304,13 @@ mod safe_ascii_compact_field_tests {
 
     #[test]
     fn unsafe_ascii_unicode_null_and_invalid_utf8_keep_existing_rules() {
-        for source in [b"\"quote\"".as_slice(), b"back\\slash".as_slice(), b"".as_slice(),
-                       b"caf\xc3\xa9".as_slice(), b"line\x01break".as_slice()] {
+        for source in [
+            b"\"quote\"".as_slice(),
+            b"back\\slash".as_slice(),
+            b"".as_slice(),
+            b"caf\xc3\xa9".as_slice(),
+            b"line\x01break".as_slice(),
+        ] {
             let mut actual = Vec::new();
             write_compact_field(&mut actual, source).unwrap();
             let mut expected = Vec::new();

@@ -6,7 +6,8 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
         None => (false, value),
     };
     let (mantissa, exponent) = if let Some(pos) = digits.find(['e', 'E']) {
-        let exponent = digits[pos + 1..].parse::<i32>()
+        let exponent = digits[pos + 1..]
+            .parse::<i32>()
             .map_err(|_| ParseError("invalid decimal exponent".into()))?;
         (&digits[..pos], exponent)
     } else {
@@ -30,10 +31,14 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     let mut signed = 0i128;
     for digit in whole.bytes().chain(fraction.bytes()) {
         let value = i128::from(digit - b'0');
-        signed = signed.checked_mul(10)
+        signed = signed
+            .checked_mul(10)
             .and_then(|current| {
-                if negative { current.checked_sub(value) }
-                else { current.checked_add(value) }
+                if negative {
+                    current.checked_sub(value)
+                } else {
+                    current.checked_add(value)
+                }
             })
             .ok_or_else(|| ParseError("decimal constant exceeds Int128".into()))?;
     }
@@ -135,7 +140,17 @@ mod allocation_free_decimal_mantissa_tests {
 
     #[test]
     fn parses_int128_extremes_and_exponents_without_mantissa_buffer() {
-        for value in [i128::MIN, i128::MIN + 1, -100, -1, 0, 1, 100, i128::MAX - 1, i128::MAX] {
+        for value in [
+            i128::MIN,
+            i128::MIN + 1,
+            -100,
+            -1,
+            0,
+            1,
+            100,
+            i128::MAX - 1,
+            i128::MAX,
+        ] {
             let repr = value.to_string();
             assert_eq!(fixed_decimal(&repr).unwrap(), (value, 0));
             assert_eq!(fixed_decimal(&format!("{repr}.0000")).unwrap(), (value, 0));
@@ -185,18 +200,19 @@ mod leading_zero_decimal_tests {
     #[test]
     fn large_zero_prefix_does_not_overflow_a_valid_mantissa() {
         let zeros = "0".repeat(10_000);
-        for (value, expected) in [
-            ("0", (0, 0)),
-            ("123", (123, 0)),
-            ("1.25", (125, 2)),
-        ] {
+        for (value, expected) in [("0", (0, 0)), ("123", (123, 0)), ("1.25", (125, 2))] {
             let prefixed = format!("{zeros}{value}");
             assert_eq!(fixed_decimal(&prefixed).unwrap(), expected);
-            assert_eq!(fixed_decimal(&format!("-{prefixed}")).unwrap(),
-                (-expected.0, expected.1));
+            assert_eq!(
+                fixed_decimal(&format!("-{prefixed}")).unwrap(),
+                (-expected.0, expected.1)
+            );
         }
         assert_eq!(fixed_decimal(&format!(".{zeros}")).unwrap(), (0, 0));
-        assert_eq!(fixed_decimal(&format!("{zeros}.00000e100")).unwrap(), (0, 0));
+        assert_eq!(
+            fixed_decimal(&format!("{zeros}.00000e100")).unwrap(),
+            (0, 0)
+        );
         assert!(fixed_decimal(&format!("{zeros}x")).is_err());
         assert!(fixed_decimal(".").is_err());
         assert!(fixed_decimal("-.").is_err());

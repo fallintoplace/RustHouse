@@ -8,6 +8,8 @@ import stat
 import sys
 from pathlib import Path
 
+from bench.common import file_change_time_ns
+
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 
 
@@ -32,7 +34,7 @@ def load_manifest(path):
 
     def identity(metadata):
         return (metadata.st_dev, metadata.st_ino, metadata.st_size,
-                metadata.st_mtime_ns, metadata.st_ctime_ns)
+                metadata.st_mtime_ns, file_change_time_ns(metadata))
 
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags)

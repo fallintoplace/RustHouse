@@ -1,8 +1,8 @@
 //! Parse AND/OR predicate groups with SQL precedence, preserving a bounded DNF.
 //! The executor consumes one conjunctive branch plus optional OR branches.
 
-use crate::{Operator, ParseError, Parser, Predicate};
 use crate::lexer::Token;
+use crate::{Operator, ParseError, Parser, Predicate};
 
 type Branches = Vec<Vec<Predicate>>;
 const MAX_CONDITIONS: usize = 16;
@@ -18,8 +18,7 @@ fn bad_expansion() -> ParseError {
 /// Normalize structurally identical predicates before execution. SQL filters
 /// have no side effects, so exact duplicate AND/OR terms never change rows.
 fn branch_contains_all(superset: &[Predicate], subset: &[Predicate]) -> bool {
-    subset.len() <= superset.len()
-        && subset.iter().all(|predicate| superset.contains(predicate))
+    subset.len() <= superset.len() && subset.iter().all(|predicate| superset.contains(predicate))
 }
 
 // Boolean absorption: A OR (A AND B) is A. All supported predicates are
@@ -35,7 +34,10 @@ fn unique_branches(mut branches: Branches) -> Branches {
             }
         }
         // An existing less-restrictive branch already covers this one.
-        if distinct.iter().any(|existing| branch_contains_all(&unique, existing)) {
+        if distinct
+            .iter()
+            .any(|existing| branch_contains_all(&unique, existing))
+        {
             continue;
         }
         // This branch may subsume earlier stronger branches.
@@ -59,7 +61,9 @@ pub(super) fn combine_and(left: Branches, right: Branches) -> Result<Branches, P
     // A temporary cross-product can be larger than the final DNF when
     // absorption removes duplicate and stronger branches. Keep the work
     // bounded, but enforce the public branch cap only after normalization.
-    let combinations = left.len().checked_mul(right.len())
+    let combinations = left
+        .len()
+        .checked_mul(right.len())
         .filter(|&count| count <= MAX_BRANCHES * MAX_BRANCHES)
         .ok_or_else(bad_expansion)?;
     let mut result: Branches = Vec::with_capacity(combinations.min(MAX_BRANCHES));
@@ -68,9 +72,11 @@ pub(super) fn combine_and(left: Branches, right: Branches) -> Result<Branches, P
             // Test absorption against borrowed terms before cloning literal
             // lists (IN may hold up to 4096 strings). Repeated OR factors
             // otherwise allocate the entire Cartesian product unnecessarily.
-            if result.iter().any(|existing| existing.iter().all(|predicate| {
-                lhs.contains(predicate) || rhs.contains(predicate)
-            })) {
+            if result.iter().any(|existing| {
+                existing
+                    .iter()
+                    .all(|predicate| lhs.contains(predicate) || rhs.contains(predicate))
+            }) {
                 continue;
             }
             let mut conjuncts = Vec::with_capacity(lhs.len() + rhs.len());
@@ -105,35 +111,65 @@ fn inverse_comparison_operator(operator: &Operator) -> Operator {
 
 fn inverse(predicate: &Predicate) -> Branches {
     let opposite = match predicate {
-        Predicate::Comparison { column, operator, value } => {
+        Predicate::Comparison {
+            column,
+            operator,
+            value,
+        } => {
             let operator = inverse_comparison_operator(operator);
             Predicate::Comparison {
-                column: column.clone(), operator, value: value.clone(),
+                column: column.clone(),
+                operator,
+                value: value.clone(),
             }
         }
         Predicate::In { column, values } => Predicate::NotIn {
-            column: column.clone(), values: values.clone(),
+            column: column.clone(),
+            values: values.clone(),
         },
         Predicate::NotIn { column, values } => Predicate::In {
-            column: column.clone(), values: values.clone(),
+            column: column.clone(),
+            values: values.clone(),
         },
         Predicate::IsNull { column, negated } => Predicate::IsNull {
-            column: column.clone(), negated: !*negated,
+            column: column.clone(),
+            negated: !*negated,
         },
-        Predicate::DistinctFrom { column, value, negated } => Predicate::DistinctFrom {
-            column: column.clone(), value: value.clone(), negated: !*negated,
+        Predicate::DistinctFrom {
+            column,
+            value,
+            negated,
+        } => Predicate::DistinctFrom {
+            column: column.clone(),
+            value: value.clone(),
+            negated: !*negated,
         },
-        Predicate::Like { column, pattern, case_insensitive, negated } => Predicate::Like {
-            column: column.clone(), pattern: pattern.clone(),
-            case_insensitive: *case_insensitive, negated: !*negated,
+        Predicate::Like {
+            column,
+            pattern,
+            case_insensitive,
+            negated,
+        } => Predicate::Like {
+            column: column.clone(),
+            pattern: pattern.clone(),
+            case_insensitive: *case_insensitive,
+            negated: !*negated,
         },
-        Predicate::NotBetween { column, lower, upper } => {
+        Predicate::NotBetween {
+            column,
+            lower,
+            upper,
+        } => {
             return vec![vec![
                 Predicate::Comparison {
-                    column: column.clone(), operator: Operator::Ge, value: lower.clone(),
+                    column: column.clone(),
+                    operator: Operator::Ge,
+                    value: lower.clone(),
                 },
                 Predicate::Comparison {
-                    column: column.clone(), operator: Operator::Le, value: upper.clone(),
+                    column: column.clone(),
+                    operator: Operator::Le,
+                    value: upper.clone(),
                 },
             ]];
         }
@@ -167,7 +203,11 @@ fn check_parenthesis_depth(depth: usize) -> Result<(), ParseError> {
     Ok(())
 }
 
-fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Result<Branches, ParseError> {
+fn parse_atom(
+    parser: &mut Parser,
+    conditions: &mut usize,
+    depth: usize,
+) -> Result<Branches, ParseError> {
     // Parenthesized negations are different from NOT applied to one predicate:
     // invert every AND/OR branch using De Morgan's laws before execution.
     if parser.keyword("NOT") {
@@ -205,10 +245,15 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
                 return Err(ParseError("IS DISTINCT requires FROM".into()));
             }
             if parser.keyword("NULL") {
-                Predicate::IsNull { column, negated: !negated }
+                Predicate::IsNull {
+                    column,
+                    negated: !negated,
+                }
             } else {
                 Predicate::DistinctFrom {
-                    column, value: parser.literal()?, negated,
+                    column,
+                    value: parser.literal()?,
+                    negated,
                 }
             }
         } else if parser.keyword("NULL") || parser.keyword("UNKNOWN") {
@@ -242,12 +287,18 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
                 }
                 return Ok(vec![
                     vec![compare],
-                    vec![Predicate::IsNull { column, negated: false }],
+                    vec![Predicate::IsNull {
+                        column,
+                        negated: false,
+                    }],
                 ]);
             }
             // IS TRUE/FALSE are two-valued. Retaining the non-NULL guard
             // makes NOT (column IS TRUE/FALSE) include NULL after De Morgan.
-            predicates.push(Predicate::IsNull { column, negated: true });
+            predicates.push(Predicate::IsNull {
+                column,
+                negated: true,
+            });
             compare
         };
         predicates.push(predicate);
@@ -256,14 +307,21 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
             Some(Token::String(value)) => value.clone(),
             _ => return Err(ParseError("LIKE requires a string literal".into())),
         };
-        let trailing_escapes = pattern.as_bytes().iter().rev()
-            .take_while(|&&byte| byte == b'\\').count();
+        let trailing_escapes = pattern
+            .as_bytes()
+            .iter()
+            .rev()
+            .take_while(|&&byte| byte == b'\\')
+            .count();
         if trailing_escapes % 2 != 0 {
             return Err(ParseError("LIKE pattern has a trailing escape".into()));
         }
         parser.index += 1;
         predicates.push(Predicate::Like {
-            column, pattern, case_insensitive, negated: negate_in,
+            column,
+            pattern,
+            case_insensitive,
+            negated: negate_in,
         });
     } else if parser.keyword("BETWEEN") {
         let lower = parser.literal()?;
@@ -272,13 +330,21 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
         }
         let upper = parser.literal()?;
         if negate_in {
-            predicates.push(Predicate::NotBetween { column, lower, upper });
+            predicates.push(Predicate::NotBetween {
+                column,
+                lower,
+                upper,
+            });
         } else {
             predicates.push(Predicate::Comparison {
-                column: column.clone(), operator: Operator::Ge, value: lower,
+                column: column.clone(),
+                operator: Operator::Ge,
+                value: lower,
             });
             predicates.push(Predicate::Comparison {
-                column, operator: Operator::Le, value: upper,
+                column,
+                operator: Operator::Le,
+                value: upper,
             });
         }
     } else if parser.keyword("IN") {
@@ -305,11 +371,14 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
         });
     } else {
         if postfix_not {
-            return Err(ParseError("NOT after a column requires IN or BETWEEN".into()));
+            return Err(ParseError(
+                "NOT after a column requires IN or BETWEEN".into(),
+            ));
         }
         let mut operator = if parser.take(Token::Percent) {
             let modulus = parser.number()?;
-            let modulus = modulus.parse::<u64>()
+            let modulus = modulus
+                .parse::<u64>()
                 .map_err(|_| ParseError("modulus must be a positive UInt64".into()))?;
             if modulus == 0 {
                 return Err(ParseError("modulus must be positive".into()));
@@ -329,17 +398,25 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
             operator = inverse_comparison_operator(&operator);
         }
         predicates.push(Predicate::Comparison {
-            column, operator, value: parser.literal()?,
+            column,
+            operator,
+            value: parser.literal()?,
         });
     }
-    *conditions = conditions.checked_add(predicates.len()).ok_or_else(bad_expansion)?;
+    *conditions = conditions
+        .checked_add(predicates.len())
+        .ok_or_else(bad_expansion)?;
     if *conditions > MAX_CONDITIONS {
         return Err(ParseError("WHERE supports at most 16 conditions".into()));
     }
     Ok(vec![predicates])
 }
 
-fn parse_and(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Result<Branches, ParseError> {
+fn parse_and(
+    parser: &mut Parser,
+    conditions: &mut usize,
+    depth: usize,
+) -> Result<Branches, ParseError> {
     let mut branches = parse_atom(parser, conditions, depth)?;
     while parser.keyword("AND") {
         branches = combine_and(branches, parse_atom(parser, conditions, depth)?)?;
@@ -347,7 +424,11 @@ fn parse_and(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resul
     Ok(branches)
 }
 
-fn parse_or(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Result<Branches, ParseError> {
+fn parse_or(
+    parser: &mut Parser,
+    conditions: &mut usize,
+    depth: usize,
+) -> Result<Branches, ParseError> {
     let mut branches = parse_and(parser, conditions, depth)?;
     while parser.keyword("OR") {
         let next = parse_and(parser, conditions, depth)?;
@@ -388,11 +469,15 @@ mod tests {
     #[test]
     fn nested_boolean_groups_respect_and_precedence() {
         assert_eq!(
-            run("SELECT number FROM numbers(8) WHERE (number = 1 OR number = 2) AND number >= 2 ORDER BY number"),
+            run(
+                "SELECT number FROM numbers(8) WHERE (number = 1 OR number = 2) AND number >= 2 ORDER BY number"
+            ),
             "number\n2\n"
         );
         assert_eq!(
-            run("SELECT number FROM numbers(8) WHERE number = 1 OR number = 2 AND number > 2 ORDER BY number"),
+            run(
+                "SELECT number FROM numbers(8) WHERE number = 1 OR number = 2 AND number > 2 ORDER BY number"
+            ),
             "number\n1\n"
         );
     }
@@ -400,7 +485,9 @@ mod tests {
     #[test]
     fn distributes_and_over_or_without_changing_between() {
         assert_eq!(
-            run("SELECT number FROM numbers(8) WHERE number BETWEEN 1 AND 5 AND (number = 2 OR number = 4) ORDER BY number"),
+            run(
+                "SELECT number FROM numbers(8) WHERE number BETWEEN 1 AND 5 AND (number = 2 OR number = 4) ORDER BY number"
+            ),
             "number\n2\n4\n"
         );
     }
@@ -408,11 +495,15 @@ mod tests {
     #[test]
     fn not_group_distributes_over_or_and_between_predicates() {
         assert_eq!(
-            run("SELECT number FROM numbers(7) WHERE NOT (number = 1 OR number BETWEEN 3 AND 5) ORDER BY number"),
+            run(
+                "SELECT number FROM numbers(7) WHERE NOT (number = 1 OR number BETWEEN 3 AND 5) ORDER BY number"
+            ),
             "number\n0\n2\n6\n",
         );
         assert_eq!(
-            run("SELECT number FROM numbers(7) WHERE NOT (number = 1 AND number < 2) ORDER BY number"),
+            run(
+                "SELECT number FROM numbers(7) WHERE NOT (number = 1 AND number < 2) ORDER BY number"
+            ),
             "number\n0\n2\n3\n4\n5\n6\n",
         );
     }
@@ -420,12 +511,12 @@ mod tests {
     #[test]
     fn not_group_handles_nested_groups_and_modulo() {
         assert_eq!(
-            run("SELECT number FROM numbers(8) WHERE NOT (number % 2 = 0 OR (number > 5 AND number < 7)) ORDER BY number"),
+            run(
+                "SELECT number FROM numbers(8) WHERE NOT (number % 2 = 0 OR (number > 5 AND number < 7)) ORDER BY number"
+            ),
             "number\n1\n3\n5\n7\n",
         );
-        assert!(parse_select(
-            "SELECT number FROM numbers(8) WHERE NOT (number = 1"
-        ).is_err());
+        assert!(parse_select("SELECT number FROM numbers(8) WHERE NOT (number = 1").is_err());
     }
 
     #[test]
@@ -434,9 +525,7 @@ mod tests {
         // from just eight source predicates. Repeating the group uses the
         // 16-condition parser budget but creates 256 temporary pairs.
         let clause = "(number > 0 OR number = 0) AND (number < 5 OR number > 8) AND (number % 2 = 0 OR number = 3) AND (number < 4 OR number > 1)";
-        let base = format!(
-            "SELECT number FROM numbers(11) WHERE {clause} ORDER BY number"
-        );
+        let base = format!("SELECT number FROM numbers(11) WHERE {clause} ORDER BY number");
         let repeated = format!(
             "SELECT number FROM numbers(11) WHERE ({clause}) AND ({clause}) ORDER BY number"
         );
@@ -455,9 +544,10 @@ mod tests {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
         // Independent branches still trigger the bounded DNF guard.
-        let groups = (0..7).map(|index| {
-            format!("(number > {index} OR number < {index})")
-        }).collect::<Vec<_>>().join(" AND ");
+        let groups = (0..7)
+            .map(|index| format!("(number > {index} OR number < {index})"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
         let sql = format!("SELECT number FROM numbers(8) WHERE {groups}");
         assert!(parse_select(&sql).is_err());
     }
@@ -543,9 +633,7 @@ mod boolean_absorption_tests {
     use crate::{execute, parse_select};
 
     fn rows(where_clause: &str) -> Vec<u8> {
-        let sql = format!(
-            "SELECT number FROM numbers(20) WHERE {where_clause} ORDER BY number"
-        );
+        let sql = format!("SELECT number FROM numbers(20) WHERE {where_clause} ORDER BY number");
         let query = parse_select(&sql).unwrap();
         let mut output = Vec::new();
         execute(&query, None, &mut output).unwrap();
@@ -572,8 +660,10 @@ mod boolean_absorption_tests {
 
     #[test]
     fn repeated_factors_no_longer_explode_the_dnf_limit() {
-        let groups = (0..7).map(|_| "(number = 1 OR number = 2)")
-            .collect::<Vec<_>>().join(" AND ");
+        let groups = (0..7)
+            .map(|_| "(number = 1 OR number = 2)")
+            .collect::<Vec<_>>()
+            .join(" AND ");
         let sql = format!("SELECT number FROM numbers(8) WHERE {groups} ORDER BY number");
         let select = parse_select(&sql).unwrap();
         assert!(select.or_predicates.len() <= 1);
@@ -585,17 +675,26 @@ mod boolean_absorption_tests {
     #[test]
     fn empty_and_distinct_branches_preserve_boolean_identities() {
         let eq_one = Predicate::Comparison {
-            column: "number".into(), operator: Operator::Eq, value: "1".into(),
+            column: "number".into(),
+            operator: Operator::Eq,
+            value: "1".into(),
         };
         let eq_two = Predicate::Comparison {
-            column: "number".into(), operator: Operator::Eq, value: "2".into(),
+            column: "number".into(),
+            operator: Operator::Eq,
+            value: "2".into(),
         };
-        assert_eq!(unique_branches(vec![
-            vec![eq_one.clone(), eq_two.clone()], vec![eq_one.clone()],
-        ]), vec![vec![eq_one]]);
-        assert_eq!(unique_branches(vec![
-            vec![eq_two], vec![],
-        ]), vec![Vec::<Predicate>::new()]);
+        assert_eq!(
+            unique_branches(vec![
+                vec![eq_one.clone(), eq_two.clone()],
+                vec![eq_one.clone()],
+            ]),
+            vec![vec![eq_one]]
+        );
+        assert_eq!(
+            unique_branches(vec![vec![eq_two], vec![],]),
+            vec![Vec::<Predicate>::new()]
+        );
     }
 }
 
@@ -614,7 +713,10 @@ mod streaming_dnf_absorption_tests {
     #[test]
     fn identical_large_in_lists_do_not_need_cartesian_literal_clones() {
         let values = (0..4096).map(|n| n.to_string()).collect::<Vec<_>>();
-        let heavy = Predicate::In { column: "number".into(), values };
+        let heavy = Predicate::In {
+            column: "number".into(),
+            values,
+        };
         let lhs = vec![vec![heavy.clone()]; 64];
         let rhs = vec![vec![heavy]; 64];
         let product = combine_and(lhs, rhs).unwrap();
@@ -631,7 +733,8 @@ mod streaming_dnf_absorption_tests {
         let product = combine_and(
             vec![vec![a.clone(), b], vec![a.clone()]],
             vec![vec![c.clone()], vec![c.clone(), d]],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(product, vec![vec![a, c]]);
     }
 

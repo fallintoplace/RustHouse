@@ -65,7 +65,10 @@ fn describe_projection(projection: &Projection) -> String {
             column,
             value_column,
         } => format!("Aggregate: GROUP BY {column}, count(DISTINCT {value_column})"),
-        Projection::GroupedMultiDistinctCount { columns, value_column } => format!(
+        Projection::GroupedMultiDistinctCount {
+            columns,
+            value_column,
+        } => format!(
             "Aggregate: GROUP BY {}, count(DISTINCT {value_column})",
             columns.join(", ")
         ),
@@ -80,30 +83,40 @@ fn describe_projection(projection: &Projection) -> String {
             "Aggregate: GROUP BY {column}, {}({value_column})",
             function.name()
         ),
-        Projection::GroupedAggregates { column, items, filters, .. } => format!(
+        Projection::GroupedAggregates {
+            column,
+            items,
+            filters,
+            ..
+        } => format!(
             "Aggregate: GROUP BY {column}, {}",
-            format_comma_separated_labels(
-                items.iter().enumerate().map(|(index, (function, value))| {
+            format_comma_separated_labels(items.iter().enumerate().map(
+                |(index, (function, value))| {
                     if let Some(filter) = filters[index].as_deref() {
                         format!("{}If({value}, {filter})", function.name())
                     } else {
                         format!("{}({value})", function.name())
                     }
-                }),
-            )
+                }
+            ),)
         ),
-        Projection::GroupedMultiAggregates { columns, items, filters, .. } => format!(
+        Projection::GroupedMultiAggregates {
+            columns,
+            items,
+            filters,
+            ..
+        } => format!(
             "Aggregate: GROUP BY {}, {}",
             columns.join(", "),
-            format_comma_separated_labels(
-                items.iter().enumerate().map(|(index, (function, value))| {
+            format_comma_separated_labels(items.iter().enumerate().map(
+                |(index, (function, value))| {
                     if let Some(filter) = filters[index].as_deref() {
                         format!("{}If({value}, {filter})", function.name())
                     } else {
                         format!("{}({value})", function.name())
                     }
-                }),
-            )
+                }
+            ),)
         ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
@@ -192,7 +205,8 @@ pub fn explain_select(query: &Select) -> String {
                 ..
             } => format!("{}({value_column})", function.name()),
             Projection::GroupedAggregates { items, .. }
-            | Projection::GroupedMultiAggregates { items, .. } => having.aggregate_index
+            | Projection::GroupedMultiAggregates { items, .. } => having
+                .aggregate_index
                 .and_then(|index| items.get(index))
                 .map(|(function, column)| format!("{}({column})", function.name()))
                 .unwrap_or_else(|| "count(*)".into()),
@@ -287,10 +301,18 @@ mod label_join_tests {
 
     #[test]
     fn formats_empty_single_and_multiple_labels() {
-        assert_eq!(format_comma_separated_labels(std::iter::empty::<String>()), "");
-        assert_eq!(format_comma_separated_labels(["one".to_owned()].into_iter()), "one");
         assert_eq!(
-            format_comma_separated_labels(["one".to_owned(), "".to_owned(), "three".to_owned()].into_iter()),
+            format_comma_separated_labels(std::iter::empty::<String>()),
+            ""
+        );
+        assert_eq!(
+            format_comma_separated_labels(["one".to_owned()].into_iter()),
+            "one"
+        );
+        assert_eq!(
+            format_comma_separated_labels(
+                ["one".to_owned(), "".to_owned(), "three".to_owned()].into_iter()
+            ),
             "one, , three"
         );
     }
@@ -305,9 +327,8 @@ mod streamed_sort_label_tests {
     fn retains_empty_and_explicit_null_sort_labels() {
         let plain = parse_select("SELECT number FROM numbers(3)").unwrap();
         assert_eq!(describe_sort(&plain), "");
-        let sorted = parse_select(
-            "SELECT number FROM numbers(3) ORDER BY number DESC NULLS LAST"
-        ).unwrap();
+        let sorted =
+            parse_select("SELECT number FROM numbers(3) ORDER BY number DESC NULLS LAST").unwrap();
         assert_eq!(describe_sort(&sorted), "number DESC NULLS LAST");
     }
 }
@@ -319,10 +340,8 @@ mod borrowed_explain_sort_label_tests {
 
     #[test]
     fn order_labels_and_explicit_null_placement_are_unchanged() {
-        let query = parse_select(
-            "SELECT number FROM numbers(5) ORDER BY number DESC NULLS FIRST"
-        )
-        .unwrap();
+        let query =
+            parse_select("SELECT number FROM numbers(5) ORDER BY number DESC NULLS FIRST").unwrap();
         assert_eq!(describe_sort(&query), "number DESC NULLS FIRST");
         assert!(explain_select(&query).contains("Sort: number DESC NULLS FIRST"));
     }

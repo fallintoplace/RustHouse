@@ -10,7 +10,9 @@ use super::hyperloglog::HyperLogLog;
 
 use super::{BitmapDistinct32, ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
-use rusthouse_storage::{NumericColumn, TypedColumn, TypedPartReader, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{
+    NumericColumn, TypedColumn, TypedPartReader, TypedQueryReader, inspect_query_source,
+};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
@@ -23,12 +25,16 @@ const MAX_GROUPED_TEXT_BYTES: usize = 64 * 1024 * 1024;
 /// A String GROUP BY key is owned twice: by the hash lookup and the output
 /// row. Charge it before cloning large or adversarial group keys.
 fn charge_grouped_text(used: &mut usize, key_bytes: usize) -> Result<(), ExecutionError> {
-    let increment = key_bytes.checked_mul(2)
-        .and_then(|bytes| bytes.checked_add(
-            std::mem::size_of::<(Vec<u8>, usize)>() + std::mem::size_of::<(Cell, u64)>()
-        ))
+    let increment = key_bytes
+        .checked_mul(2)
+        .and_then(|bytes| {
+            bytes.checked_add(
+                std::mem::size_of::<(Vec<u8>, usize)>() + std::mem::size_of::<(Cell, u64)>(),
+            )
+        })
         .ok_or_else(|| ExecutionError::Invalid("grouped String key memory overflow".into()))?;
-    let next = used.checked_add(increment)
+    let next = used
+        .checked_add(increment)
         .ok_or_else(|| ExecutionError::Invalid("grouped String key memory overflow".into()))?;
     if next > MAX_GROUPED_TEXT_BYTES {
         return Err(ExecutionError::Invalid(
@@ -38,7 +44,6 @@ fn charge_grouped_text(used: &mut usize, key_bytes: usize) -> Result<(), Executi
     *used = next;
     Ok(())
 }
-
 
 const MAX_SELECT_DISTINCT_KEY_BYTES: usize = 64 * 1024 * 1024;
 
@@ -50,7 +55,8 @@ fn charge_select_distinct_key(
     // memory budget. Variable-width String/UUID bytes are charged separately.
     let base = std::mem::size_of::<Vec<Key>>() + 32;
     let bytes = key.iter().try_fold(
-        key.len().checked_mul(std::mem::size_of::<Key>())
+        key.len()
+            .checked_mul(std::mem::size_of::<Key>())
             .and_then(|slots| base.checked_add(slots))
             .ok_or_else(|| ExecutionError::Invalid("DISTINCT memory overflow".into()))?,
         |sum, value| {
@@ -61,16 +67,16 @@ fn charge_select_distinct_key(
             };
             sum.checked_add(payload)
                 .ok_or_else(|| ExecutionError::Invalid("DISTINCT memory overflow".into()))
-        }
+        },
     )?;
-    *retained_bytes = retained_bytes.checked_add(bytes)
+    *retained_bytes = retained_bytes
+        .checked_add(bytes)
         .filter(|&total| total <= MAX_SELECT_DISTINCT_KEY_BYTES)
-        .ok_or_else(|| ExecutionError::Invalid(
-            "SELECT DISTINCT exceeds 64 MiB retained key budget".into()
-        ))?;
+        .ok_or_else(|| {
+            ExecutionError::Invalid("SELECT DISTINCT exceeds 64 MiB retained key budget".into())
+        })?;
     Ok(())
 }
-
 
 const MAX_TEXT_DISTINCT_BYTES: usize = 64 * 1024 * 1024;
 
@@ -87,13 +93,16 @@ fn remember_distinct_text(
     if seen.len() >= MAX_BUFFERED_ROWS {
         return Err(ExecutionError::Invalid("too many distinct rows".into()));
     }
-    let bytes = value.len()
+    let bytes = value
+        .len()
         .checked_add(std::mem::size_of::<Vec<u8>>() + 32)
         .and_then(|size| retained_bytes.checked_add(size))
         .filter(|&size| size <= MAX_TEXT_DISTINCT_BYTES)
-        .ok_or_else(|| ExecutionError::Invalid(
-            "COUNT DISTINCT String exceeds 64 MiB retained memory budget".into()
-        ))?;
+        .ok_or_else(|| {
+            ExecutionError::Invalid(
+                "COUNT DISTINCT String exceeds 64 MiB retained memory budget".into(),
+            )
+        })?;
     seen.insert(value.to_vec());
     *retained_bytes = bytes;
     Ok(())
@@ -184,8 +193,10 @@ pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
 }
 
 fn is_typed(data_type: &str) -> bool {
-    matches!(data_type, "String" | "UUID" | "Date" | "Date32" | "DateTime")
-        || data_type.starts_with("Nullable(")
+    matches!(
+        data_type,
+        "String" | "UUID" | "Date" | "Date32" | "DateTime"
+    ) || data_type.starts_with("Nullable(")
         || data_type.starts_with("Array(")
         || data_type.starts_with("Map(")
 }
@@ -446,9 +457,9 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
                 ("UInt8", Cell::Numeric(Number::Unsigned(value))) => {
                     u8::try_from(*value).ok().map(usize::from)
                 }
-                ("Int8", Cell::Numeric(Number::Signed(value))) => {
-                    i8::try_from(*value).ok().map(|number| usize::from(number as u8))
-                }
+                ("Int8", Cell::Numeric(Number::Signed(value))) => i8::try_from(*value)
+                    .ok()
+                    .map(|number| usize::from(number as u8)),
                 _ => None,
             };
             if let Some(index) = index {
@@ -464,9 +475,9 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
                 ("UInt16", Cell::Numeric(Number::Unsigned(value))) => {
                     u16::try_from(*value).ok().map(usize::from)
                 }
-                ("Int16", Cell::Numeric(Number::Signed(value))) => {
-                    i16::try_from(*value).ok().map(|number| usize::from(number as u16))
-                }
+                ("Int16", Cell::Numeric(Number::Signed(value))) => i16::try_from(*value)
+                    .ok()
+                    .map(|number| usize::from(number as u16)),
                 _ => None,
             };
             if let Some(index) = index {
@@ -506,13 +517,18 @@ fn order_compiled_conditions(conditions: &mut [Condition]) {
     // an earlier cheap condition can already reject.
     conditions.sort_by_key(|condition| match &condition.test {
         Test::IsNull(_) => 0,
-        Test::UuidCompare(..) | Test::UuidDistinctFrom(..)
-        | Test::ByteInSet(..) | Test::ShortInSet(..) => 1,
+        Test::UuidCompare(..)
+        | Test::UuidDistinctFrom(..)
+        | Test::ByteInSet(..)
+        | Test::ShortInSet(..) => 1,
         Test::Compare(Operator::Modulo(_) | Operator::ModuloNe(_), _) => 4,
         Test::Compare(..) | Test::NotBetween(..) | Test::UuidNotBetween(..) => 2,
         Test::In(values, _) if values.len() <= 4 => 2,
-        Test::In(..) | Test::TextInSet(..) | Test::NumericInSet(..)
-        | Test::UuidInSet(..) | Test::DistinctFrom(..) => 3,
+        Test::In(..)
+        | Test::TextInSet(..)
+        | Test::NumericInSet(..)
+        | Test::UuidInSet(..)
+        | Test::DistinctFrom(..) => 3,
         Test::Like { .. } => 5,
     });
 }
@@ -660,16 +676,16 @@ fn matches_comparison_at(
     match column {
         TypedColumn::Numeric(values) => {
             return matches!(target, Cell::Numeric(expected)
-                if super::predicates::number_matches(
-                    number_at(values, row), *expected, operator
-                ));
+            if super::predicates::number_matches(
+                number_at(values, row), *expected, operator
+            ));
         }
         TypedColumn::NullableNumeric { values, nulls } => {
             return nulls[row] == 0
                 && matches!(target, Cell::Numeric(expected)
-                    if super::predicates::number_matches(
-                        number_at(values, row), *expected, operator
-                    ));
+                if super::predicates::number_matches(
+                    number_at(values, row), *expected, operator
+                ));
         }
         _ => {}
     }
@@ -861,10 +877,7 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
     })
 }
 
-fn write_text_bytes<W: Write>(
-    output: &mut W,
-    bytes: &[u8],
-) -> Result<(), ExecutionError> {
+fn write_text_bytes<W: Write>(output: &mut W, bytes: &[u8]) -> Result<(), ExecutionError> {
     let mut start = 0;
     for (index, &byte) in bytes.iter().enumerate() {
         let escape: Option<&[u8]> = match byte {
@@ -1063,51 +1076,74 @@ fn parallel_exact_u32_distinct(part: &Path, column: &str) -> Result<Option<u64>,
     let names = [column.to_owned()];
     let chunk_size = parts.len().div_ceil(workers);
     let partials = std::thread::scope(|scope| -> Result<_, ExecutionError> {
-        let handles = parts.chunks(chunk_size).map(|chunk| {
-            let names = &names;
-            std::thread::Builder::new().spawn_scoped(scope, move || -> Result<BitmapDistinct32, ExecutionError> {
-                let mut bitmap = BitmapDistinct32::new();
-                for path in chunk {
-                    let mut scan = TypedPartReader::open(path, names)?;
-                    while let Some(batch) = scan.next_batch()? {
-                        let values = &batch[0];
-                        let (numeric, nulls) = match values {
-                            TypedColumn::Numeric(values) => (values, None),
-                            TypedColumn::NullableNumeric { values, nulls } =>
-                                (values, Some(nulls.as_slice())),
-                            _ => return Err(ExecutionError::Invalid(
-                                "parallel DISTINCT expected a numeric column".into()
-                            )),
-                        };
-                        match numeric {
-                            NumericColumn::UInt32(values) => {
-                                for (index, &value) in values.iter().enumerate() {
-                                    if nulls.is_none_or(|bits| bits[index] == 0) {
-                                        bitmap.insert(value)?;
+        let handles = parts
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let names = &names;
+                std::thread::Builder::new()
+                    .spawn_scoped(
+                        scope,
+                        move || -> Result<BitmapDistinct32, ExecutionError> {
+                            let mut bitmap = BitmapDistinct32::new();
+                            for path in chunk {
+                                let mut scan = TypedPartReader::open(path, names)?;
+                                while let Some(batch) = scan.next_batch()? {
+                                    let values = &batch[0];
+                                    let (numeric, nulls) = match values {
+                                        TypedColumn::Numeric(values) => (values, None),
+                                        TypedColumn::NullableNumeric { values, nulls } => {
+                                            (values, Some(nulls.as_slice()))
+                                        }
+                                        _ => {
+                                            return Err(ExecutionError::Invalid(
+                                                "parallel DISTINCT expected a numeric column"
+                                                    .into(),
+                                            ));
+                                        }
+                                    };
+                                    match numeric {
+                                        NumericColumn::UInt32(values) => {
+                                            for (index, &value) in values.iter().enumerate() {
+                                                if nulls.is_none_or(|bits| bits[index] == 0) {
+                                                    bitmap.insert(value)?;
+                                                }
+                                            }
+                                        }
+                                        NumericColumn::Int32(values) => {
+                                            for (index, &value) in values.iter().enumerate() {
+                                                if nulls.is_none_or(|bits| bits[index] == 0) {
+                                                    bitmap.insert(value as u32)?;
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            return Err(ExecutionError::Invalid(
+                                                "parallel DISTINCT expected Int32/UInt32".into(),
+                                            ));
+                                        }
                                     }
                                 }
                             }
-                            NumericColumn::Int32(values) => {
-                                for (index, &value) in values.iter().enumerate() {
-                                    if nulls.is_none_or(|bits| bits[index] == 0) {
-                                        bitmap.insert(value as u32)?;
-                                    }
-                                }
-                            }
-                            _ => return Err(ExecutionError::Invalid(
-                                "parallel DISTINCT expected Int32/UInt32".into()
-                            )),
-                        }
-                    }
-                }
-                Ok(bitmap)
-            }).map_err(|error| ExecutionError::Invalid(format!(
-                "cannot start typed DISTINCT worker: {error}"
-            )))
-        }).collect::<Result<Vec<_>, _>>()?;
-        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
-            Err(ExecutionError::Invalid("parallel DISTINCT worker panicked".into()))
-        })).collect::<Vec<_>>())
+                            Ok(bitmap)
+                        },
+                    )
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start typed DISTINCT worker: {error}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(ExecutionError::Invalid(
+                        "parallel DISTINCT worker panicked".into(),
+                    ))
+                })
+            })
+            .collect::<Vec<_>>())
     })?;
     let mut merged = BitmapDistinct32::new();
     for partial in partials {
@@ -1146,37 +1182,55 @@ fn parallel_filtered_count_parts(
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     let cursor = AtomicUsize::new(0);
     let partials = std::thread::scope(|scope| -> Result<_, ExecutionError> {
-        let handles = (0..workers).map(|_| {
-            let cursor = &cursor;
-            std::thread::Builder::new().spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
-                let mut subtotal = 0u64;
-                while let Some(path) = parts.get(cursor.fetch_add(1, AtomicOrdering::Relaxed)) {
-                    let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
-                    while let Some(batch) = reader.next_batch()? {
-                        for row in 0..batch[0].len() {
-                            if !passes(&batch, row, conditions) {
-                                continue;
+        let handles = (0..workers)
+            .map(|_| {
+                let cursor = &cursor;
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
+                        let mut subtotal = 0u64;
+                        while let Some(path) =
+                            parts.get(cursor.fetch_add(1, AtomicOrdering::Relaxed))
+                        {
+                            let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
+                            while let Some(batch) = reader.next_batch()? {
+                                for row in 0..batch[0].len() {
+                                    if !passes(&batch, row, conditions) {
+                                        continue;
+                                    }
+                                    if count_column_index
+                                        .is_some_and(|index| is_null_at(&batch[index], row))
+                                    {
+                                        continue;
+                                    }
+                                    subtotal = subtotal.checked_add(1).ok_or_else(|| {
+                                        ExecutionError::Invalid("filtered COUNT overflow".into())
+                                    })?;
+                                }
                             }
-                            if count_column_index.is_some_and(|index| is_null_at(&batch[index], row)) {
-                                continue;
-                            }
-                            subtotal = subtotal.checked_add(1).ok_or_else(|| {
-                                ExecutionError::Invalid("filtered COUNT overflow".into())
-                            })?;
                         }
-                    }
-                }
-                Ok(subtotal)
-            }).map_err(|error| ExecutionError::Invalid(format!(
-                "cannot start typed filtered COUNT worker: {error}"
-            )))
-        }).collect::<Result<Vec<_>, _>>()?;
-        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
-            Err(ExecutionError::Invalid("filtered COUNT worker panicked".into()))
-        })).collect::<Vec<_>>())
+                        Ok(subtotal)
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start typed filtered COUNT worker: {error}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(ExecutionError::Invalid(
+                        "filtered COUNT worker panicked".into(),
+                    ))
+                })
+            })
+            .collect::<Vec<_>>())
     })?;
     partials.into_iter().try_fold(0u64, |total, partial| {
-        total.checked_add(partial?)
+        total
+            .checked_add(partial?)
             .ok_or_else(|| ExecutionError::Invalid("filtered COUNT overflow".into()))
     })
 }
@@ -1188,7 +1242,8 @@ fn parallel_filtered_count(
     count_column_index: Option<usize>,
 ) -> Result<Option<u64>, ExecutionError> {
     let workers = std::thread::available_parallelism()
-        .map_or(1, |count| count.get()).min(4);
+        .map_or(1, |count| count.get())
+        .min(4);
     if workers < 2 {
         return Ok(None);
     }
@@ -1197,7 +1252,11 @@ fn parallel_filtered_count(
         return Ok(None);
     }
     Ok(Some(parallel_filtered_count_parts(
-        &parts, workers, names, conditions, count_column_index,
+        &parts,
+        workers,
+        names,
+        conditions,
+        count_column_index,
     )?))
 }
 
@@ -1335,7 +1394,9 @@ pub(super) fn execute_typed<W: Write>(
                 .is_some_and(|kind| kind.starts_with("Nullable("))
         {
             let mut reader = TypedQueryReader::open_with_metadata(
-                part, std::slice::from_ref(column), &metadata,
+                part,
+                std::slice::from_ref(column),
+                &metadata,
             )?;
             let mut count = 0u64;
             while let Some(nulls) = reader.next_null_batch()? {
@@ -1372,8 +1433,10 @@ pub(super) fn execute_typed<W: Write>(
     if let Projection::CountDistinct { column } = &query.projection {
         if query.predicates.is_empty()
             && query.or_predicates.is_empty()
-            && matches!(types.get(column).map(|kind| base_type(kind)),
-                Some("UInt32" | "Int32"))
+            && matches!(
+                types.get(column).map(|kind| base_type(kind)),
+                Some("UInt32" | "Int32")
+            )
         {
             if let Some(count) = parallel_exact_u32_distinct(part, column)? {
                 if query.offset.unwrap_or(0) == 0 {
@@ -1390,7 +1453,10 @@ pub(super) fn execute_typed<W: Write>(
         && query.order_by_extra.is_empty()
         && query.having.is_none()
         && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
-        && matches!(query.projection, Projection::Count | Projection::CountColumn { .. })
+        && matches!(
+            query.projection,
+            Projection::Count | Projection::CountColumn { .. }
+        )
     {
         let column = match &query.projection {
             Projection::CountColumn { .. } => Some(projection_indices[0]),
@@ -1407,7 +1473,10 @@ pub(super) fn execute_typed<W: Write>(
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
-    let is_approx_distinct = matches!(query.projection, Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. });
+    let is_approx_distinct = matches!(
+        query.projection,
+        Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. }
+    );
     let is_approx_state = matches!(query.projection, Projection::ApproxDistinctState { .. });
     let mut sketch = is_approx_distinct.then(HyperLogLog::default);
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
@@ -1434,13 +1503,28 @@ pub(super) fn execute_typed<W: Write>(
     let mut count_distinct_sixteen = if is_count_distinct
         && matches!(
             projection_types.first().copied(),
-            Some("UInt8" | "Int8" | "UInt16" | "Int16" | "Nullable(UInt8)" | "Nullable(Int8)" | "Nullable(UInt16)" | "Nullable(Int16)")
-        )
-    {
-        Some(vec![0u64; if matches!(
-            projection_types.first().copied(),
-            Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)")
-        ) { 4 } else { 1024 }])
+            Some(
+                "UInt8"
+                    | "Int8"
+                    | "UInt16"
+                    | "Int16"
+                    | "Nullable(UInt8)"
+                    | "Nullable(Int8)"
+                    | "Nullable(UInt16)"
+                    | "Nullable(Int16)"
+            )
+        ) {
+        Some(vec![
+            0u64;
+            if matches!(
+                projection_types.first().copied(),
+                Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)")
+            ) {
+                4
+            } else {
+                1024
+            }
+        ])
     } else {
         None
     };
@@ -1449,8 +1533,7 @@ pub(super) fn execute_typed<W: Write>(
         && matches!(
             projection_types.first().copied(),
             Some("UInt32" | "Int32" | "Nullable(UInt32)" | "Nullable(Int32)")
-        )
-    {
+        ) {
         Some(BitmapDistinct32::new())
     } else {
         None
@@ -1466,10 +1549,12 @@ pub(super) fn execute_typed<W: Write>(
     // lookup per matching fact row. Nullable keys still use the sparse path.
     let mut dense_group_indices = if is_grouped {
         match projection_types.first().copied() {
-            Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)") =>
-                Some(vec![usize::MAX; 256]),
-            Some("UInt16" | "Int16" | "Nullable(UInt16)" | "Nullable(Int16)") =>
-                Some(vec![usize::MAX; 65_536]),
+            Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)") => {
+                Some(vec![usize::MAX; 256])
+            }
+            Some("UInt16" | "Int16" | "Nullable(UInt16)" | "Nullable(Int16)") => {
+                Some(vec![usize::MAX; 65_536])
+            }
             _ => None,
         }
     } else {
@@ -1502,9 +1587,8 @@ pub(super) fn execute_typed<W: Write>(
             None => {}
         }
     }
-    let mut external_sort = TypedExternalSort::new(
-        descending_mask, nulls_first_mask, nulls_last_mask,
-    );
+    let mut external_sort =
+        TypedExternalSort::new(descending_mask, nulls_first_mask, nulls_last_mask);
     let top_capacity = if sort_indices.is_empty() {
         None
     } else {
@@ -1561,7 +1645,10 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_approx_distinct {
-                sketch.as_mut().expect("approximate DISTINCT sketch").observe(&batch[projection_indices[0]], index)?;
+                sketch
+                    .as_mut()
+                    .expect("approximate DISTINCT sketch")
+                    .observe(&batch[projection_indices[0]], index)?;
                 continue;
             }
             if is_grouped {
@@ -1691,12 +1778,20 @@ pub(super) fn execute_typed<W: Write>(
                     }
                     let value = match column {
                         TypedColumn::Numeric(NumericColumn::UInt32(values))
-                        | TypedColumn::NullableNumeric { values: NumericColumn::UInt32(values), .. } => values[index],
+                        | TypedColumn::NullableNumeric {
+                            values: NumericColumn::UInt32(values),
+                            ..
+                        } => values[index],
                         TypedColumn::Numeric(NumericColumn::Int32(values))
-                        | TypedColumn::NullableNumeric { values: NumericColumn::Int32(values), .. } => values[index] as u32,
-                        _ => return Err(ExecutionError::Invalid(
-                            "unexpected 32-bit COUNT(DISTINCT) column type".into()
-                        )),
+                        | TypedColumn::NullableNumeric {
+                            values: NumericColumn::Int32(values),
+                            ..
+                        } => values[index] as u32,
+                        _ => {
+                            return Err(ExecutionError::Invalid(
+                                "unexpected 32-bit COUNT(DISTINCT) column type".into(),
+                            ));
+                        }
                     };
                     bitmap.insert(value)?;
                     continue;
@@ -1742,21 +1837,31 @@ pub(super) fn execute_typed<W: Write>(
                         let value = strings.get(index).ok_or_else(|| {
                             ExecutionError::Invalid("invalid String row index".into())
                         })?;
-                        remember_distinct_text(&mut count_distinct_text, &mut count_distinct_text_bytes, value)?;
+                        remember_distinct_text(
+                            &mut count_distinct_text,
+                            &mut count_distinct_text_bytes,
+                            value,
+                        )?;
                     }
                     TypedColumn::NullableText { values, nulls } => {
                         if nulls[index] == 0 {
                             let value = values.get(index).ok_or_else(|| {
                                 ExecutionError::Invalid("invalid String row index".into())
                             })?;
-                            remember_distinct_text(&mut count_distinct_text, &mut count_distinct_text_bytes, value)?;
+                            remember_distinct_text(
+                                &mut count_distinct_text,
+                                &mut count_distinct_text_bytes,
+                                value,
+                            )?;
                         }
                     }
                     TypedColumn::Uuid(values) => {
                         let key = *values[index].as_bytes();
                         if count_distinct_uuids.len() >= MAX_BUFFERED_ROWS {
                             if !count_distinct_uuids.contains(&key) {
-                                return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                                return Err(ExecutionError::Invalid(
+                                    "too many distinct rows".into(),
+                                ));
                             }
                         } else {
                             count_distinct_uuids.insert(key);
@@ -1813,7 +1918,8 @@ pub(super) fn execute_typed<W: Write>(
                             return Err(ExecutionError::Invalid("too many distinct rows".into()));
                         }
                         charge_select_distinct_key(
-                            &mut select_distinct_key_bytes, std::slice::from_ref(&key),
+                            &mut select_distinct_key_bytes,
+                            std::slice::from_ref(&key),
                         )?;
                         single_distinct.insert(key);
                     }
@@ -1941,9 +2047,7 @@ pub(super) fn execute_typed<W: Write>(
             // Comparators may execute many times for a high-cardinality GROUP BY.
             let sort_terms = query
                 .order_terms()
-                .map(|term| {
-                    (term.column == "count", term.descending, term.nulls_first)
-                })
+                .map(|term| (term.column == "count", term.descending, term.nulls_first))
                 .collect::<Vec<_>>();
             let compare = |(left_key, left_count): &(Cell, u64),
                            (right_key, right_count): &(Cell, u64)| {
@@ -1956,12 +2060,7 @@ pub(super) fn execute_typed<W: Write>(
                             comparison
                         }
                     } else {
-                        compare_order_cells(
-                            left_key,
-                            right_key,
-                            descending,
-                            nulls_first,
-                        )
+                        compare_order_cells(left_key, right_key, descending, nulls_first)
                     };
                     if comparison != Ordering::Equal {
                         return comparison;
@@ -2003,20 +2102,32 @@ pub(super) fn execute_typed<W: Write>(
     if is_count || is_count_column || is_count_distinct || is_approx_distinct {
         if offset == 0 {
             if is_approx_state {
-                writeln!(output, "{}", sketch.as_ref().expect("HLL state sketch").encode_state())?;
+                writeln!(
+                    output,
+                    "{}",
+                    sketch.as_ref().expect("HLL state sketch").encode_state()
+                )?;
                 return Ok(());
             }
             let result = if is_approx_distinct {
-                sketch.as_ref().expect("approximate DISTINCT sketch").estimate()
+                sketch
+                    .as_ref()
+                    .expect("approximate DISTINCT sketch")
+                    .estimate()
             } else if is_count || is_count_column {
                 count
             } else {
                 (count_distinct_keys.len()
                     + count_distinct_text.len()
                     + count_distinct_uuids.len()
-                    + count_distinct_thirty_two.as_ref().map_or(0, |bitmap| bitmap.len() as usize)
+                    + count_distinct_thirty_two
+                        .as_ref()
+                        .map_or(0, |bitmap| bitmap.len() as usize)
                     + count_distinct_sixteen.as_ref().map_or(0, |bitmap| {
-                        bitmap.iter().map(|bits| bits.count_ones() as usize).sum::<usize>()
+                        bitmap
+                            .iter()
+                            .map(|bits| bits.count_ones() as usize)
+                            .sum::<usize>()
                     })) as u64
             };
             writeln!(output, "{result}")?;
@@ -2591,7 +2702,9 @@ mod short_in_predicate_perf_tests {
             index: 0,
             test: compile_in("UInt16", &unsigned, true).unwrap(),
         }]];
-        let batch = [TypedColumn::Numeric(NumericColumn::UInt16(vec![0, 99, 65535]))];
+        let batch = [TypedColumn::Numeric(NumericColumn::UInt16(vec![
+            0, 99, 65535,
+        ]))];
         assert!(!passes(&batch, 0, &excludes));
         assert!(!passes(&batch, 1, &excludes));
         assert!(passes(&batch, 2, &excludes));
@@ -2613,10 +2726,12 @@ mod direct_numeric_set_probe_tests {
             nulls: vec![0, 1, 0],
         }];
         let includes = [vec![Condition {
-            index: 0, test: Test::NumericInSet(HashSet::from([NumberKey::from(Number::Signed(-3))]), false),
+            index: 0,
+            test: Test::NumericInSet(HashSet::from([NumberKey::from(Number::Signed(-3))]), false),
         }]];
         let excludes = [vec![Condition {
-            index: 0, test: Test::NumericInSet(targets, true),
+            index: 0,
+            test: Test::NumericInSet(targets, true),
         }]];
         assert!(passes(&batch, 0, &includes));
         assert!(!passes(&batch, 1, &includes));
@@ -2650,7 +2765,9 @@ mod uuid_literal_byte_parse_tests {
     #[test]
     fn rejects_invalid_uuid_literals_before_decoding() {
         for invalid in [
-            "", "1", "61f0c4045cb311e7907ba6006ad3dba0",
+            "",
+            "1",
+            "61f0c4045cb311e7907ba6006ad3dba0",
             "61f0c404-5cb3-11e7-907b-a6006ad3dbzz",
             "61f0c404-5cb3-11e7-907b-a6006ad3dbax",
         ] {
@@ -2661,7 +2778,7 @@ mod uuid_literal_byte_parse_tests {
 
 #[cfg(test)]
 mod direct_numeric_comparison_tests {
-    use super::{matches_comparison_at, Cell};
+    use super::{Cell, matches_comparison_at};
     use crate::Operator;
     use rusthouse_storage::{NumericColumn, TypedColumn};
 
@@ -2669,10 +2786,16 @@ mod direct_numeric_comparison_tests {
     fn borrowed_numeric_comparisons_match_signed_unsigned_and_nulls() {
         let signed = TypedColumn::Numeric(NumericColumn::Int64(vec![-3, 0, 7]));
         assert!(matches_comparison_at(
-            &signed, 0, &Cell::Numeric(super::Number::Signed(-2)), Operator::Lt
+            &signed,
+            0,
+            &Cell::Numeric(super::Number::Signed(-2)),
+            Operator::Lt
         ));
         assert!(!matches_comparison_at(
-            &signed, 0, &Cell::Numeric(super::Number::Signed(-2)), Operator::Ge
+            &signed,
+            0,
+            &Cell::Numeric(super::Number::Signed(-2)),
+            Operator::Ge
         ));
         let nullable = TypedColumn::NullableNumeric {
             values: NumericColumn::UInt64(vec![4, 99, 7]),
@@ -2692,11 +2815,19 @@ mod narrow_group_bucket_tests {
     #[test]
     fn dense_numeric_buckets_preserve_exact_signed_values() {
         let signed8 = TypedColumn::Numeric(NumericColumn::Int8(vec![i8::MIN, -1, 0, i8::MAX]));
-        assert_eq!((0..4).map(|row| dense_group_bucket(&signed8, row)).collect::<Vec<_>>(),
-            [Some(128), Some(255), Some(0), Some(127)]);
+        assert_eq!(
+            (0..4)
+                .map(|row| dense_group_bucket(&signed8, row))
+                .collect::<Vec<_>>(),
+            [Some(128), Some(255), Some(0), Some(127)]
+        );
         let signed16 = TypedColumn::Numeric(NumericColumn::Int16(vec![i16::MIN, -1, 0, i16::MAX]));
-        assert_eq!((0..4).map(|row| dense_group_bucket(&signed16, row)).collect::<Vec<_>>(),
-            [Some(32768), Some(65535), Some(0), Some(32767)]);
+        assert_eq!(
+            (0..4)
+                .map(|row| dense_group_bucket(&signed16, row))
+                .collect::<Vec<_>>(),
+            [Some(32768), Some(65535), Some(0), Some(32767)]
+        );
     }
 
     #[test]
@@ -2705,8 +2836,12 @@ mod narrow_group_bucket_tests {
             values: NumericColumn::UInt16(vec![0, 0, u16::MAX, 1]),
             nulls: vec![0, 1, 0, 0],
         };
-        assert_eq!((0..4).map(|row| dense_group_bucket(&nullable, row)).collect::<Vec<_>>(),
-            [Some(0), None, Some(65535), Some(1)]);
+        assert_eq!(
+            (0..4)
+                .map(|row| dense_group_bucket(&nullable, row))
+                .collect::<Vec<_>>(),
+            [Some(0), None, Some(65535), Some(1)]
+        );
         let wide = TypedColumn::Numeric(NumericColumn::UInt32(vec![1]));
         assert_eq!(dense_group_bucket(&wide, 0), None);
     }
@@ -2819,44 +2954,61 @@ mod parallel_filtered_count_tests {
     #[test]
     fn filters_and_nullable_counts_match_sequential_across_skewed_parts() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-parallel-filtered-count-{}", std::process::id()
+            "rusthouse-parallel-filtered-count-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let columns = [
-            Column { name: "category".into(), data_type: "String".into() },
-            Column { name: "value".into(), data_type: "Nullable(UInt64)".into() },
+            Column {
+                name: "category".into(),
+                data_type: "String".into(),
+            },
+            Column {
+                name: "value".into(),
+                data_type: "Nullable(UInt64)".into(),
+            },
         ];
         for index in 0..20 {
-            let rows = (0..(index + 1)).map(|row| {
-                let is_keep = row % 2 == 0;
-                vec![
-                    Some(if is_keep { "keep" } else { "other" }.into()),
-                    if is_keep && index % 3 == 0 { None } else { Some(row.to_string()) },
-                ]
-            }).collect::<Vec<_>>();
+            let rows = (0..(index + 1))
+                .map(|row| {
+                    let is_keep = row % 2 == 0;
+                    vec![
+                        Some(if is_keep { "keep" } else { "other" }.into()),
+                        if is_keep && index % 3 == 0 {
+                            None
+                        } else {
+                            Some(row.to_string())
+                        },
+                    ]
+                })
+                .collect::<Vec<_>>();
             write_wide_part(
                 &root.join(format!("all_{index}_{index}_0")),
                 &columns,
                 &rows,
-            ).unwrap();
+            )
+            .unwrap();
         }
         let names = vec!["value".to_owned(), "category".to_owned()];
-        let query = crate::parse_select(
-            "SELECT count(*) FROM part WHERE category = 'keep'"
-        ).unwrap();
-        let indices = names.iter().enumerate()
-            .map(|(i, name)| (name.clone(), i)).collect::<HashMap<_, _>>();
-        let types = columns.iter()
+        let query =
+            crate::parse_select("SELECT count(*) FROM part WHERE category = 'keep'").unwrap();
+        let indices = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.clone(), i))
+            .collect::<HashMap<_, _>>();
+        let types = columns
+            .iter()
             .map(|column| (column.name.clone(), column.data_type.clone()))
             .collect::<HashMap<_, _>>();
         let conditions = vec![compile(&query.predicates, &indices, &types).unwrap()];
         let parts = rusthouse_storage::query_parts(&root).unwrap();
         let all = parallel_filtered_count_parts(&parts, 3, &names, &conditions, None).unwrap();
-        let nonnull = parallel_filtered_count_parts(&parts, 3, &names, &conditions, Some(0)).unwrap();
+        let nonnull =
+            parallel_filtered_count_parts(&parts, 3, &names, &conditions, Some(0)).unwrap();
         let expected_all: u64 = (0..20).map(|i| (i + 2) / 2).sum();
-        let expected_nonnull: u64 = (0..20).filter(|i| i % 3 != 0)
-            .map(|i| (i + 2) / 2).sum();
+        let expected_nonnull: u64 = (0..20).filter(|i| i % 3 != 0).map(|i| (i + 2) / 2).sum();
         assert_eq!(all, expected_all);
         assert_eq!(nonnull, expected_nonnull);
         assert!(nonnull < all);
@@ -2881,15 +3033,22 @@ mod typed_condition_cost_order_tests {
             },
         ];
         let mut conditions = vec![
-            Condition { index: 0, test: Test::Like {
-                pattern: compile_like("a%").unwrap(),
-                case_insensitive: false,
-                negated: false,
-            } },
-            Condition { index: 1, test: Test::Compare(
-                Operator::Eq, Cell::Numeric(Number::Unsigned(1)),
-            ) },
-            Condition { index: 1, test: Test::IsNull(true) },
+            Condition {
+                index: 0,
+                test: Test::Like {
+                    pattern: compile_like("a%").unwrap(),
+                    case_insensitive: false,
+                    negated: false,
+                },
+            },
+            Condition {
+                index: 1,
+                test: Test::Compare(Operator::Eq, Cell::Numeric(Number::Unsigned(1))),
+            },
+            Condition {
+                index: 1,
+                test: Test::IsNull(true),
+            },
         ];
         let expected = (0..3)
             .map(|row| passes(&batch, row, std::slice::from_ref(&conditions)))
@@ -2908,21 +3067,34 @@ mod typed_condition_cost_order_tests {
     #[test]
     fn modulos_and_wildcards_follow_cheap_bitmap_checks() {
         let mut conditions = vec![
-            Condition { index: 0, test: Test::Like {
-                pattern: compile_like("%needle%").unwrap(),
-                case_insensitive: true,
-                negated: false,
-            } },
-            Condition { index: 1, test: Test::Compare(
-                Operator::Modulo(3), Cell::Numeric(Number::Unsigned(2)),
-            ) },
-            Condition { index: 2, test: Test::IsNull(false) },
-            Condition { index: 3, test: Test::ByteInSet([0; 4], false) },
+            Condition {
+                index: 0,
+                test: Test::Like {
+                    pattern: compile_like("%needle%").unwrap(),
+                    case_insensitive: true,
+                    negated: false,
+                },
+            },
+            Condition {
+                index: 1,
+                test: Test::Compare(Operator::Modulo(3), Cell::Numeric(Number::Unsigned(2))),
+            },
+            Condition {
+                index: 2,
+                test: Test::IsNull(false),
+            },
+            Condition {
+                index: 3,
+                test: Test::ByteInSet([0; 4], false),
+            },
         ];
         order_compiled_conditions(&mut conditions);
         assert!(matches!(conditions[0].test, Test::IsNull(false)));
         assert!(matches!(conditions[1].test, Test::ByteInSet(..)));
-        assert!(matches!(conditions[2].test, Test::Compare(Operator::Modulo(_), _)));
+        assert!(matches!(
+            conditions[2].test,
+            Test::Compare(Operator::Modulo(_), _)
+        ));
         assert!(matches!(conditions[3].test, Test::Like { .. }));
     }
 }

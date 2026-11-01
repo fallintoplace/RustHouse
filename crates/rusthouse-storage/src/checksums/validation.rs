@@ -58,17 +58,20 @@ fn windows_ambiguous_segment(segment: &str) -> bool {
     }
     let stem = segment.split('.').next().unwrap_or(segment);
     if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
-        .iter().any(|name| stem.eq_ignore_ascii_case(name))
+        .iter()
+        .any(|name| stem.eq_ignore_ascii_case(name))
     {
         return true;
     }
     let prefix = stem.get(..3);
     let suffix = stem.get(3..);
-    prefix.is_some_and(|value| value.eq_ignore_ascii_case("COM")
-        || value.eq_ignore_ascii_case("LPT"))
+    prefix
+        .is_some_and(|value| value.eq_ignore_ascii_case("COM") || value.eq_ignore_ascii_case("LPT"))
         && suffix.is_some_and(|digit| {
-            matches!(digit, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
-                | "¹" | "²" | "³")
+            matches!(
+                digit,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
         })
 }
 
@@ -88,9 +91,7 @@ pub(super) fn valid_name(name: &str) -> bool {
         && !name.contains('\\')
         && !name.contains(':')
         && !name.bytes().any(|byte| byte.is_ascii_control())
-        && name
-            .split('/')
-            .all(valid_path_segment)
+        && name.split('/').all(valid_path_segment)
 }
 
 pub(super) fn invalid(path: &Path, reason: &'static str) -> PartError {
@@ -107,14 +108,36 @@ mod portable_manifest_path_tests {
     #[test]
     fn identifies_windows_device_names_without_unicode_slice_panics() {
         for name in [
-            "CON", "con.txt", "PRN", "AUX.bin", "NUL", "com1.dat",
-            "COM9", "LPT1", "lpt9.log", "COM¹", "LPT².txt",
-            "CONIN$", "conout$", "file.", "file ", "folder. ",
+            "CON",
+            "con.txt",
+            "PRN",
+            "AUX.bin",
+            "NUL",
+            "com1.dat",
+            "COM9",
+            "LPT1",
+            "lpt9.log",
+            "COM¹",
+            "LPT².txt",
+            "CONIN$",
+            "conout$",
+            "file.",
+            "file ",
+            "folder. ",
         ] {
             assert!(windows_ambiguous_segment(name), "{name}");
         }
-        for name in ["common", "CONTEXT", "COM0", "COM10", "LPT0",
-                     "a.com1", "résumé", "💾", "file.name"] {
+        for name in [
+            "common",
+            "CONTEXT",
+            "COM0",
+            "COM10",
+            "LPT0",
+            "a.com1",
+            "résumé",
+            "💾",
+            "file.name",
+        ] {
             assert!(!windows_ambiguous_segment(name), "{name}");
         }
     }

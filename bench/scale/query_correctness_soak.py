@@ -17,6 +17,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from bench.common import file_change_time_ns
+
 from .query_digest import _has_sql_separator
 
 
@@ -90,7 +92,7 @@ def run_sql(binary, database, statement, timeout, max_output_bytes=None):
 
 def _file_state(meta):
     return (meta.st_dev, meta.st_ino, meta.st_size, meta.st_mtime_ns,
-            meta.st_ctime_ns)
+            file_change_time_ns(meta))
 
 
 def read_reference(path):

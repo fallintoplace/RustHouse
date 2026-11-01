@@ -14,7 +14,10 @@ fn intdivornull_handles_zero_overflow_and_nulls() {
         ("SELECT intDivOrNull(7, 2)", ConstantValue::Integer(3)),
         ("SELECT intDivOrNull(-7, 2)", ConstantValue::Integer(-3)),
         ("SELECT intDivOrNull(7, 0)", ConstantValue::Null),
-        ("SELECT intDivOrNull(-9223372036854775807 - 1, -1)", ConstantValue::Null),
+        (
+            "SELECT intDivOrNull(-9223372036854775807 - 1, -1)",
+            ConstantValue::Null,
+        ),
         ("SELECT intDivOrNull(NULL, 2)", ConstantValue::Null),
         ("SELECT intDivOrNull(1, NULL)", ConstantValue::Null),
     ] {

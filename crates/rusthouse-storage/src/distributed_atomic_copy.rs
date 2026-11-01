@@ -23,14 +23,13 @@ fn source_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return same_source_identity(before, after)
+        same_source_identity(before, after)
             && before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec();
+            && before.ctime_nsec() == after.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
 }
-
 
 fn staging_path(parent: &Path, purpose: &str) -> PathBuf {
     parent.join(format!(
@@ -50,7 +49,6 @@ fn create_private_replica_file(path: &Path) -> io::Result<File> {
     }
     options.open(path)
 }
-
 
 // A crashed copy may leave its private staging file behind. A later process
 // can reuse the same PID, so never let one orphan block every future copy.
@@ -80,8 +78,10 @@ fn create_replica_staging_file(parent: &Path) -> io::Result<(PathBuf, File)> {
 // an existing destination when it attempts the final hard link.
 fn require_new_destination(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(_) => Err(io::Error::new(io::ErrorKind::AlreadyExists,
-            "immutable replica destination already exists")),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "immutable replica destination already exists",
+        )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
@@ -179,13 +179,20 @@ fn copy_immutable_file_impl(
     let (staging, mut output) = create_replica_staging_file(parent)?;
     let mut checksum = expected_crc32c.map(|_| crate::distributed_crc32c::Crc32cState::new());
     let copied = stream_bounded_copy(
-        &mut input, &mut output, source_meta.len(), max_bytes, checksum.as_mut(),
+        &mut input,
+        &mut output,
+        source_meta.len(),
+        max_bytes,
+        checksum.as_mut(),
     );
     drop(output);
     // hard_link fails if the destination already exists, unlike an overwriting rename.
     let published = copied.and_then(|total| {
         if let Some(expected) = expected_crc32c {
-            if checksum.as_ref().is_none_or(|state| state.checksum() != expected) {
+            if checksum
+                .as_ref()
+                .is_none_or(|state| state.checksum() != expected)
+            {
                 return Err(io::Error::other("replica object checksum mismatch"));
             }
         }
@@ -226,9 +233,8 @@ mod copy_identity_tests {
 
     #[test]
     fn identical_sizes_do_not_make_different_inodes_equivalent() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-copy-source-id-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-copy-source-id-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let first = root.join("first");
@@ -237,11 +243,20 @@ mod copy_identity_tests {
         fs::write(&first, b"one").unwrap();
         fs::write(&second, b"two").unwrap();
         fs::hard_link(&first, &link).unwrap();
-        assert!(same_source_identity(&fs::metadata(&first).unwrap(), &fs::metadata(&link).unwrap()));
-        assert!(!same_source_identity(&fs::metadata(&first).unwrap(), &fs::metadata(&second).unwrap()));
+        assert!(same_source_identity(
+            &fs::metadata(&first).unwrap(),
+            &fs::metadata(&link).unwrap()
+        ));
+        assert!(!same_source_identity(
+            &fs::metadata(&first).unwrap(),
+            &fs::metadata(&second).unwrap()
+        ));
         let baseline = fs::metadata(&first).unwrap();
         assert!(source_unchanged(&baseline, &baseline));
-        assert!(!source_unchanged(&baseline, &fs::metadata(&second).unwrap()));
+        assert!(!source_unchanged(
+            &baseline,
+            &fs::metadata(&second).unwrap()
+        ));
         fs::write(&first, b"longer").unwrap();
         assert!(!source_unchanged(&baseline, &fs::metadata(&first).unwrap()));
         fs::remove_dir_all(root).unwrap();
@@ -293,7 +308,8 @@ mod checked_copy_tests {
     #[test]
     fn checked_copy_streams_large_inputs_and_rejects_corruption() {
         let dir = std::env::temp_dir().join(format!(
-            "rusthouse-checked-copy-stream-{}", std::process::id()
+            "rusthouse-checked-copy-stream-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).unwrap();
@@ -302,9 +318,10 @@ mod checked_copy_tests {
         let payload = (0..300_000).map(|i| (i % 251) as u8).collect::<Vec<_>>();
         fs::write(&source, &payload).unwrap();
         let expected = crate::distributed_crc32c::crc32c(&payload);
-        assert!(copy_immutable_file_checked(
-            &source, &target, payload.len() as u64, expected ^ 1,
-        ).is_err());
+        assert!(
+            copy_immutable_file_checked(&source, &target, payload.len() as u64, expected ^ 1,)
+                .is_err()
+        );
         assert!(!target.exists());
         assert_eq!(
             copy_immutable_file_checked(&source, &target, payload.len() as u64, expected).unwrap(),
@@ -316,9 +333,8 @@ mod checked_copy_tests {
 
     #[test]
     fn checks_staged_bytes_before_publishing() {
-        let dir = std::env::temp_dir().join(format!(
-            "rusthouse-checked-copy-{}", std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("rusthouse-checked-copy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).unwrap();
         let source = dir.join("source");
@@ -327,7 +343,10 @@ mod checked_copy_tests {
         assert!(copy_immutable_file_checked(&source, &target, 100, 0).is_err());
         assert!(!target.exists());
         let checksum = crate::distributed_crc32c::crc32c(b"verified");
-        assert_eq!(copy_immutable_file_checked(&source, &target, 100, checksum).unwrap(), 8);
+        assert_eq!(
+            copy_immutable_file_checked(&source, &target, 100, checksum).unwrap(),
+            8
+        );
         assert_eq!(fs::read(&target).unwrap(), b"verified");
         assert!(copy_immutable_file_checked(&source, &target, 100, checksum).is_err());
         fs::remove_dir_all(dir).unwrap();
@@ -357,7 +376,8 @@ mod interrupted_replica_copy_tests {
     #[test]
     fn retries_interrupted_source_reads_without_publishing_partial_data() {
         let path = std::env::temp_dir().join(format!(
-            "rusthouse-interrupted-replica-copy-{}", std::process::id()
+            "rusthouse-interrupted-replica-copy-{}",
+            std::process::id()
         ));
         let mut output = File::create(&path).unwrap();
         let mut input = InterruptOnce {
@@ -381,9 +401,8 @@ mod private_replica_object_tests {
 
     #[test]
     fn new_replica_files_are_private_before_publication() {
-        let file = std::env::temp_dir().join(format!(
-            "rusthouse-private-replica-{}", std::process::id()
-        ));
+        let file =
+            std::env::temp_dir().join(format!("rusthouse-private-replica-{}", std::process::id()));
         let _ = fs::remove_file(&file);
         let output = create_private_replica_file(&file).unwrap();
         assert_eq!(output.metadata().unwrap().permissions().mode() & 0o077, 0);
@@ -399,7 +418,10 @@ mod existing_destination_preflight_tests {
     #[test]
     fn retries_do_not_create_staging_files_for_occupied_destinations() {
         let dir = std::env::temp_dir().join(format!(
-            "rusthouse-copy-existing-{}-{}", std::process::id(), line!()));
+            "rusthouse-copy-existing-{}-{}",
+            std::process::id(),
+            line!()
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).unwrap();
         let source = dir.join("source");
@@ -408,13 +430,16 @@ mod existing_destination_preflight_tests {
         fs::write(&destination, b"old immutable data").unwrap();
         let before = fs::read_dir(&dir).unwrap().count();
         assert_eq!(
-            copy_immutable_file(&source, &destination, u64::MAX).unwrap_err().kind(),
+            copy_immutable_file(&source, &destination, u64::MAX)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::AlreadyExists
         );
         let checksum = crate::distributed_crc32c::crc32c(&fs::read(&source).unwrap());
         assert_eq!(
             copy_immutable_file_checked(&source, &destination, u64::MAX, checksum)
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::AlreadyExists
         );
         assert_eq!(fs::read_dir(&dir).unwrap().count(), before);
@@ -427,7 +452,10 @@ mod existing_destination_preflight_tests {
     fn dangling_symlink_targets_are_not_treated_as_free_destinations() {
         use std::os::unix::fs::symlink;
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-copy-symlink-destination-{}-{}", std::process::id(), line!()));
+            "rusthouse-copy-symlink-destination-{}-{}",
+            std::process::id(),
+            line!()
+        ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
         let source = root.join("source");
@@ -435,7 +463,9 @@ mod existing_destination_preflight_tests {
         let link = root.join("destination");
         symlink("missing", &link).unwrap();
         assert_eq!(
-            copy_immutable_file(&source, &link, 1024).unwrap_err().kind(),
+            copy_immutable_file(&source, &link, 1024)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::AlreadyExists
         );
         fs::remove_dir_all(root).unwrap();
@@ -449,7 +479,9 @@ mod orphaned_replica_staging_tests {
     #[test]
     fn collision_retry_never_overwrites_abandoned_private_bytes() {
         let dir = std::env::temp_dir().join(format!(
-            "rusthouse-stage-retry-{}-{}", std::process::id(), line!()
+            "rusthouse-stage-retry-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).unwrap();
@@ -470,7 +502,9 @@ mod orphaned_replica_staging_tests {
     #[test]
     fn cannot_overwrite_even_when_all_staging_names_collide() {
         let dir = std::env::temp_dir().join(format!(
-            "rusthouse-stage-exhaustion-{}-{}", std::process::id(), line!()
+            "rusthouse-stage-exhaustion-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).unwrap();
@@ -492,14 +526,17 @@ mod source_open_metadata_tests {
     fn same_length_source_mutations_break_snapshot_identity() {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-copy-open-check-{}-{:?}",
-            std::process::id(), std::thread::current().id()
+            std::process::id(),
+            std::thread::current().id()
         ));
         fs::write(&root, b"original").unwrap();
         let before = fs::symlink_metadata(&root).unwrap();
         let file = OpenOptions::new().write(true).open(&root).unwrap();
-        file.set_times(std::fs::FileTimes::new().set_modified(
-            SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
-        )).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new()
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)),
+        )
+        .unwrap();
         let after = file.metadata().unwrap();
         assert_eq!(before.len(), after.len());
         assert!(!source_unchanged(&before, &after));
@@ -516,26 +553,36 @@ mod small_replica_copy_stack_buffer_tests {
     fn stack_and_heap_copy_boundaries_preserve_bytes_and_streamed_crc() {
         let directory = std::env::temp_dir().join(format!(
             "rusthouse-small-copy-{}-{:?}",
-            std::process::id(), std::thread::current().id()
+            std::process::id(),
+            std::thread::current().id()
         ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         for size in [0usize, 1, 127, 4095, 4096, 4097, 262_144, 262_145] {
-            let payload = (0..size).map(|index| (index % 251) as u8).collect::<Vec<_>>();
+            let payload = (0..size)
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>();
             let mut input = Cursor::new(payload.as_slice());
             let target = directory.join(format!("target-{size}"));
             let mut output = File::create(&target).unwrap();
             let mut state = crate::distributed_crc32c::Crc32cState::new();
             assert_eq!(
                 stream_bounded_copy(
-                    &mut input, &mut output, size as u64, size as u64,
+                    &mut input,
+                    &mut output,
+                    size as u64,
+                    size as u64,
                     Some(&mut state),
-                ).unwrap(),
+                )
+                .unwrap(),
                 size as u64,
             );
             drop(output);
             assert_eq!(fs::read(&target).unwrap(), payload);
-            assert_eq!(state.checksum(), crate::distributed_crc32c::crc32c(&payload));
+            assert_eq!(
+                state.checksum(),
+                crate::distributed_crc32c::crc32c(&payload)
+            );
         }
         fs::remove_dir_all(directory).unwrap();
     }
@@ -544,7 +591,8 @@ mod small_replica_copy_stack_buffer_tests {
     fn small_copy_still_rejects_unexpected_extra_bytes() {
         let path = std::env::temp_dir().join(format!(
             "rusthouse-small-copy-extra-{}-{:?}",
-            std::process::id(), std::thread::current().id()
+            std::process::id(),
+            std::thread::current().id()
         ));
         let mut input = Cursor::new(b"12345".as_slice());
         let mut output = File::create(&path).unwrap();

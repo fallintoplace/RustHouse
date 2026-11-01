@@ -20,7 +20,7 @@ fn uuid_grouped_multi_metrics_use_exact_uuid_keys_across_parts() {
         assert!(result.status.success(), "{statement}: {result:?}");
     }
     let result = sql(
-        "SELECT user_id, sum(amount), min(amount), max(amount) FROM events GROUP BY user_id ORDER BY user_id"
+        "SELECT user_id, sum(amount), min(amount), max(amount) FROM events GROUP BY user_id ORDER BY user_id",
     );
     assert!(result.status.success(), "{result:?}");
     assert_eq!(

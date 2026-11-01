@@ -28,7 +28,8 @@ fn charge_group_fixed(used: &mut usize) -> Result<(), ExecutionError> {
     let extra = std::mem::size_of::<Group>()
         .checked_add(std::mem::size_of::<(Key, usize)>())
         .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT state size overflow".into()))?;
-    let next = used.checked_add(extra)
+    let next = used
+        .checked_add(extra)
         .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT state size overflow".into()))?;
     if next > MAX_GROUP_STATE_BYTES {
         return Err(ExecutionError::Invalid(
@@ -40,9 +41,11 @@ fn charge_group_fixed(used: &mut usize) -> Result<(), ExecutionError> {
 }
 
 fn charge_text(used: &mut usize, length: usize, copies: usize) -> Result<(), ExecutionError> {
-    let added = length.checked_mul(copies)
+    let added = length
+        .checked_mul(copies)
         .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT String memory overflow".into()))?;
-    let next = used.checked_add(added)
+    let next = used
+        .checked_add(added)
         .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT String memory overflow".into()))?;
     if next > MAX_TEXT_BYTES {
         return Err(ExecutionError::Invalid(
@@ -52,7 +55,6 @@ fn charge_text(used: &mut usize, length: usize, copies: usize) -> Result<(), Exe
     *used = next;
     Ok(())
 }
-
 
 struct Group {
     key: Cell,
@@ -152,9 +154,12 @@ pub(super) fn execute<W: Write>(
     .then(|| [usize::MAX; 256]);
     // Byte-sized grouped DISTINCT is optimized separately. This path
     // specializes the larger 16-bit key domain.
-    let mut dense_groups = matches!(types[column].as_str(), "UInt16" | "Int16")
-        .then(|| vec![usize::MAX; 65_536]);
-    let byte_distinct = matches!(typed::base_type(types[value_column].as_str()), "UInt8" | "Int8");
+    let mut dense_groups =
+        matches!(types[column].as_str(), "UInt16" | "Int16").then(|| vec![usize::MAX; 65_536]);
+    let byte_distinct = matches!(
+        typed::base_type(types[value_column].as_str()),
+        "UInt8" | "Int8"
+    );
     let mut total_pairs = 0usize;
     let mut retained_text_bytes = 0usize;
     let mut retained_group_bytes = 0usize;
@@ -288,8 +293,8 @@ pub(super) fn execute<W: Write>(
                             distinct: HashSet::new(),
                             distinct_text: HashSet::new(),
                             distinct_uuids: HashSet::new(),
-                        byte_values: [0; 4],
-                        distinct_count: 0,
+                            byte_values: [0; 4],
+                            distinct_count: 0,
                         });
                         id
                     }
@@ -482,7 +487,14 @@ mod grouped_byte_distinct_tests {
             mark_distinct_byte(&mut group, value);
         }
         assert_eq!(group.distinct_len(), 4);
-        assert_eq!(group.byte_values.iter().map(|bits| bits.count_ones()).sum::<u32>(), 4);
+        assert_eq!(
+            group
+                .byte_values
+                .iter()
+                .map(|bits| bits.count_ones())
+                .sum::<u32>(),
+            4
+        );
     }
 
     #[test]

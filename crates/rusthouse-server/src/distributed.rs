@@ -1,9 +1,9 @@
 //! Experimental read-only scatter/gather SELECT against distinct local shards.
 //! Unordered row projections and global pagination preserve configured peer order.
 
+mod dispatch;
 mod query_policy;
 mod sorted_merge;
-mod dispatch;
 
 use self::query_policy::*;
 use self::sorted_merge::*;
@@ -11,7 +11,9 @@ use self::sorted_merge::*;
 use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use crate::{MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, Response};
-use rusthouse_query::{AggregateFunction, Having, Operator, Projection, Select, Source, parse_select};
+use rusthouse_query::{
+    AggregateFunction, Having, Operator, Projection, Select, Source, parse_select,
+};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -95,7 +97,9 @@ fn validated_schema_kind<'a>(schema: &'a [u8], column: &str) -> Option<&'a str> 
 
 /// Exact global 32-bit DISTINCT union, bounded to 256 MiB of bitmap payload.
 fn merge_distinct_bitmap32(
-    shards: &[(usize, Vec<u8>)], column: &str, signed: bool,
+    shards: &[(usize, Vec<u8>)],
+    column: &str,
+    signed: bool,
 ) -> Result<Vec<u8>, MergeError> {
     const MAX_BLOCKS: usize = 32_768;
     let expected_header = format!("{column}\n");
@@ -115,44 +119,54 @@ fn merge_distinct_bitmap32(
             return Err(MergeError::InvalidDistinctCount);
         }
         let rows = &body[expected_header.len()..];
-        if rows.is_empty() { continue; }
+        if rows.is_empty() {
+            continue;
+        }
         let mut shard_rows = 0usize;
-        for row in rows[..rows.len()-1].split(|&b| b == b'\n') {
-            shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
+        for row in rows[..rows.len() - 1].split(|&b| b == b'\n') {
+            shard_rows = shard_rows
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
             if *cap == 0 || shard_rows >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
-            if row == b"\\N" { continue; }
+            if row == b"\\N" {
+                continue;
+            }
             let value = std::str::from_utf8(row).map_err(|_| MergeError::InvalidDistinctCount)?;
             let key = if signed {
-                value.parse::<i32>().map_err(|_| MergeError::InvalidDistinctCount)? as u32
+                value
+                    .parse::<i32>()
+                    .map_err(|_| MergeError::InvalidDistinctCount)? as u32
             } else {
-                value.parse::<u32>().map_err(|_| MergeError::InvalidDistinctCount)?
+                value
+                    .parse::<u32>()
+                    .map_err(|_| MergeError::InvalidDistinctCount)?
             };
             let prefix = (key >> 16) as u16;
             if blocks.len() >= MAX_BLOCKS && !blocks.contains_key(&prefix) {
                 return Err(MergeError::CoordinatorLimit);
             }
             let suffix = (key & 0xffff) as u16;
-            let block = blocks.entry(prefix).or_insert_with(|| Block::Sparse(Vec::new()));
+            let block = blocks
+                .entry(prefix)
+                .or_insert_with(|| Block::Sparse(Vec::new()));
             let fresh = match block {
-                Block::Sparse(values) => {
-                    match values.binary_search(&suffix) {
-                        Ok(_) => false,
-                        Err(at) => {
-                            values.insert(at, suffix);
-                            if values.len() == DENSE_THRESHOLD {
-                                let mut dense = Box::new([0u64; 1024]);
-                                for &value in values.iter() {
-                                    let index = usize::from(value);
-                                    dense[index / 64] |= 1u64 << (index % 64);
-                                }
-                                *block = Block::Dense(dense);
+                Block::Sparse(values) => match values.binary_search(&suffix) {
+                    Ok(_) => false,
+                    Err(at) => {
+                        values.insert(at, suffix);
+                        if values.len() == DENSE_THRESHOLD {
+                            let mut dense = Box::new([0u64; 1024]);
+                            for &value in values.iter() {
+                                let index = usize::from(value);
+                                dense[index / 64] |= 1u64 << (index % 64);
                             }
-                            true
+                            *block = Block::Dense(dense);
                         }
+                        true
                     }
-                }
+                },
                 Block::Dense(bits) => {
                     let index = usize::from(suffix);
                     let mask = 1u64 << (index % 64);
@@ -170,7 +184,6 @@ fn merge_distinct_bitmap32(
     Ok(format!("count(DISTINCT {column})\n{distinct}\n").into_bytes())
 }
 
-
 #[cfg(test)]
 mod sparse_distinct_bitmap_regression_tests {
     use super::*;
@@ -184,14 +197,33 @@ mod sparse_distinct_bitmap_regression_tests {
             .collect::<Vec<_>>();
         keys.extend((0..1_500u32).map(|n| (7 << 16) | n));
         let expected = keys.iter().copied().collect::<HashSet<_>>().len();
-        let first = format!("key\n{}\n", keys.iter().map(u32::to_string).collect::<Vec<_>>().join("\n")).into_bytes();
+        let first = format!(
+            "key\n{}\n",
+            keys.iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+        .into_bytes();
         keys.reverse();
-        let second = format!("key\n{}\n", keys.iter().map(u32::to_string).collect::<Vec<_>>().join("\n")).into_bytes();
+        let second = format!(
+            "key\n{}\n",
+            keys.iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+        .into_bytes();
         let merged = merge_distinct_bitmap32(
             &[(keys.len() + 1, first), (keys.len() + 1, second)],
-            "key", false,
-        ).unwrap();
-        assert_eq!(merged, format!("count(DISTINCT key)\n{expected}\n").into_bytes());
+            "key",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            merged,
+            format!("count(DISTINCT key)\n{expected}\n").into_bytes()
+        );
     }
 }
 
@@ -244,8 +276,8 @@ fn merge_uniq_shard_states(
         let state = std::str::from_utf8(state).map_err(|_| MergeError::InvalidUniqState)?;
         states.push(state);
     }
-    let count = rusthouse_query::merge_uniq_states(&states)
-        .map_err(|_| MergeError::InvalidUniqState)?;
+    let count =
+        rusthouse_query::merge_uniq_states(&states).map_err(|_| MergeError::InvalidUniqState)?;
     let name = alias.map_or_else(|| format!("uniq({column})"), str::to_owned);
     Ok(format!("{name}\n{count}\n").into_bytes())
 }
@@ -274,7 +306,8 @@ fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("invalid peer row limit".into());
     }
-    let cap = number.parse::<usize>()
+    let cap = number
+        .parse::<usize>()
         .map_err(|_| "invalid peer row limit")?;
     if cap == 0 || cap > 250_000 {
         return Err("unsupported peer row limit".into());
@@ -298,9 +331,11 @@ impl SchemaCursor<'_> {
     fn whitespace(&mut self) {
         // RFC 8259 JSON whitespace is only SP, HTAB, LF, and CR.
         // is_ascii_whitespace also accepts VT and FF, which are not valid JSON.
-        while self.bytes.get(self.index).is_some_and(|byte| {
-            matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
-        }) {
+        while self
+            .bytes
+            .get(self.index)
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r'))
+        {
             self.index += 1;
         }
     }
@@ -354,11 +389,15 @@ impl SchemaCursor<'_> {
 fn parse_peer_schema(bytes: &[u8]) -> Result<PeerSchema, String> {
     let mut cursor = SchemaCursor { bytes, index: 0 };
     cursor.byte(b'{')?;
-    if cursor.string()? != "rows" { return Err("peer schema has no rows".into()); }
+    if cursor.string()? != "rows" {
+        return Err("peer schema has no rows".into());
+    }
     cursor.byte(b':')?;
     cursor.unsigned_count()?;
     cursor.byte(b',')?;
-    if cursor.string()? != "columns" { return Err("peer schema has no columns".into()); }
+    if cursor.string()? != "columns" {
+        return Err("peer schema has no columns".into());
+    }
     cursor.byte(b':')?;
     cursor.byte(b'[')?;
     let mut columns = Vec::new();
@@ -370,11 +409,15 @@ fn parse_peer_schema(bytes: &[u8]) -> Result<PeerSchema, String> {
                 return Err("peer schema has too many columns".into());
             }
             cursor.byte(b'{')?;
-            if cursor.string()? != "name" { return Err("invalid peer column name key".into()); }
+            if cursor.string()? != "name" {
+                return Err("invalid peer column name key".into());
+            }
             cursor.byte(b':')?;
             let name = cursor.string()?;
             cursor.byte(b',')?;
-            if cursor.string()? != "type" { return Err("invalid peer column type key".into()); }
+            if cursor.string()? != "type" {
+                return Err("invalid peer column type key".into());
+            }
             cursor.byte(b':')?;
             let kind = cursor.string()?;
             cursor.byte(b'}')?;
@@ -408,12 +451,18 @@ mod peer_schema_json_whitespace_tests {
         for space in [b' ', b'\t', b'\r', b'\n'] {
             let mut encoded = canonical.to_vec();
             encoded.insert(1, space);
-            assert!(parse_peer_schema(&encoded).is_ok(), "valid JSON whitespace: {space}");
+            assert!(
+                parse_peer_schema(&encoded).is_ok(),
+                "valid JSON whitespace: {space}"
+            );
         }
         for invalid in [b'\x0b', b'\x0c'] {
             let mut encoded = canonical.to_vec();
             encoded.insert(1, invalid);
-            assert!(parse_peer_schema(&encoded).is_err(), "invalid JSON whitespace: {invalid}");
+            assert!(
+                parse_peer_schema(&encoded).is_err(),
+                "invalid JSON whitespace: {invalid}"
+            );
         }
     }
 }
@@ -432,7 +481,9 @@ fn shard_column_kind(response: &remote::PeerResponse, column: &str) -> Result<St
         return Err("peer schema lookup failed".into());
     }
     let schema = parse_peer_schema(&response.body)?;
-    schema.columns.into_iter()
+    schema
+        .columns
+        .into_iter()
         .find_map(|(name, kind)| (name == column).then_some(kind))
         .ok_or_else(|| "aggregate column missing from peer schema".into())
 }
@@ -453,7 +504,9 @@ fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> 
     let schema = parse_peer_schema(&response.body)?;
     let mut signature = String::from("[");
     for (index, (name, kind)) in schema.columns.iter().enumerate() {
-        if index > 0 { signature.push(','); }
+        if index > 0 {
+            signature.push(',');
+        }
         signature.push_str("{\"name\":\"");
         signature.push_str(name);
         signature.push_str("\",\"type\":\"");
@@ -467,15 +520,11 @@ fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> 
 /// Fetch independent control-plane metadata concurrently per shard, rather
 /// than paying two sequential network round trips for every distributed scan.
 /// Both scoped workers always join before a query can start.
-fn preflight_shard(
-    peer: Peer,
-    table: &str,
-) -> Result<(usize, remote::PeerResponse), String> {
+fn preflight_shard(peer: Peer, table: &str) -> Result<(usize, remote::PeerResponse), String> {
     let (cap, schema) = std::thread::scope(|scope| {
         // One scoped worker is enough to overlap both metadata requests.
         // If the OS refuses to create it, perform the same checks serially.
-        let cap_worker = std::thread::Builder::new()
-            .spawn_scoped(scope, || shard_row_cap(peer));
+        let cap_worker = std::thread::Builder::new().spawn_scoped(scope, || shard_row_cap(peer));
         let schema = remote::schema(peer, table);
         let cap = match cap_worker {
             Ok(worker) => worker
@@ -502,8 +551,12 @@ const MAX_SHARD_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
 fn reserve_shard_bytes(used: &AtomicUsize, amount: usize) -> Result<(), String> {
     used.fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
-        current.checked_add(amount).filter(|&total| total <= MAX_SHARD_INPUT_BYTES)
-    }).map(|_| ()).map_err(|_| "distributed shard input exceeds 64 MiB".into())
+        current
+            .checked_add(amount)
+            .filter(|&total| total <= MAX_SHARD_INPUT_BYTES)
+    })
+    .map(|_| ())
+    .map_err(|_| "distributed shard input exceeds 64 MiB".into())
 }
 
 fn read_shard(
@@ -524,7 +577,9 @@ fn read_shard(
         .map(|(_, column)| shard_integer_kind(&schema_response, column))
         .transpose()?;
     if sorted_prefix_cap.is_some()
-        && kind.as_deref().is_some_and(|kind| kind.starts_with("Nullable("))
+        && kind
+            .as_deref()
+            .is_some_and(|kind| kind.starts_with("Nullable("))
     {
         return Err("distributed top-K requires non-nullable integer keys".into());
     }
@@ -658,7 +713,9 @@ fn merge_distinct_tsv(
         if !body.ends_with(b"\n") {
             return Err(MergeError::InvalidResponse);
         }
-        let header_end = body.iter().position(|&b| b == b'\n')
+        let header_end = body
+            .iter()
+            .position(|&b| b == b'\n')
             .ok_or(MergeError::InvalidResponse)?;
         let shard_header = &body[..=header_end];
         if shard_header.len() <= 1 {
@@ -682,19 +739,25 @@ fn merge_distinct_tsv(
                 }
                 let normalized = row
                     .split(|&byte| byte == b'\t')
-                    .map(|field| normalized_group_key(field)
-                        .map_err(|_| MergeError::InvalidResponse))
+                    .map(|field| {
+                        normalized_group_key(field).map_err(|_| MergeError::InvalidResponse)
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
-                shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
+                shard_rows = shard_rows
+                    .checked_add(1)
+                    .ok_or(MergeError::CoordinatorLimit)?;
                 if unique.insert(normalized) {
                     if unique.len() > MAX_DISTINCT_ROWS {
                         return Err(MergeError::CoordinatorLimit);
                     }
                     if unique.len() > offset && limit.is_none_or(|limit| returned < limit) {
-                        returned = returned.checked_add(1)
+                        returned = returned
+                            .checked_add(1)
                             .filter(|&count| count <= max_rows)
                             .ok_or(MergeError::CoordinatorLimit)?;
-                        let next = output.len().checked_add(row.len() + 1)
+                        let next = output
+                            .len()
+                            .checked_add(row.len() + 1)
                             .filter(|&size| size <= MAX_RESPONSE_BYTES)
                             .ok_or(MergeError::CoordinatorLimit)?;
                         output.reserve(next - output.len());
@@ -1076,8 +1139,8 @@ fn merge_grouped_integer_sums_query(
                 .position(|&byte| byte == b'\t')
                 .ok_or(MergeError::InvalidGroupedSum)?;
             let key = &row[..delimiter];
-            let normalized = normalized_group_key(key)
-                .map_err(|_| MergeError::InvalidGroupedSum)?;
+            let normalized =
+                normalized_group_key(key).map_err(|_| MergeError::InvalidGroupedSum)?;
             let value = &row[delimiter + 1..];
             let partial = if value == b"NULL" {
                 None
@@ -1132,9 +1195,13 @@ fn merge_grouped_integer_sums_query(
         if let Some(having) = &query.having {
             selected.retain(|&index| {
                 let relation = if unsigned {
-                    groups[index].2.map(|value| value.cmp(&u128::from(having.value)))
+                    groups[index]
+                        .2
+                        .map(|value| value.cmp(&u128::from(having.value)))
                 } else {
-                    groups[index].1.map(|value| value.cmp(&i128::from(having.value)))
+                    groups[index]
+                        .1
+                        .map(|value| value.cmp(&i128::from(having.value)))
                 };
                 relation.is_some_and(|ordering| match having.operator {
                     Operator::Eq => ordering.is_eq(),
@@ -1154,23 +1221,39 @@ fn merge_grouped_integer_sums_query(
                 } else {
                     groups[left].1.cmp(&groups[right].1)
                 };
-                let left_null = if unsigned { groups[left].2.is_none() } else { groups[left].1.is_none() };
-                let right_null = if unsigned { groups[right].2.is_none() } else { groups[right].1.is_none() };
+                let left_null = if unsigned {
+                    groups[left].2.is_none()
+                } else {
+                    groups[left].1.is_none()
+                };
+                let right_null = if unsigned {
+                    groups[right].2.is_none()
+                } else {
+                    groups[right].1.is_none()
+                };
                 let comparison = match (left_null, right_null, order.nulls_first) {
-                    (true, false, Some(true)) | (false, true, Some(false)) =>
-                        std::cmp::Ordering::Less,
-                    (true, false, Some(false)) | (false, true, Some(true)) =>
-                        std::cmp::Ordering::Greater,
-                    _ => if order.descending { comparison.reverse() } else { comparison },
+                    (true, false, Some(true)) | (false, true, Some(false)) => {
+                        std::cmp::Ordering::Less
+                    }
+                    (true, false, Some(false)) | (false, true, Some(true)) => {
+                        std::cmp::Ordering::Greater
+                    }
+                    _ => {
+                        if order.descending {
+                            comparison.reverse()
+                        } else {
+                            comparison
+                        }
+                    }
                 };
                 comparison.then_with(|| left.cmp(&right))
             };
             // Large distributed GROUP BY reports often request only the
             // highest few metric groups. Partition first, then sort the small
             // winning prefix rather than fully ranking every group.
-            let prefix = query.limit.and_then(|limit| {
-                query.offset.unwrap_or(0).checked_add(limit)
-            });
+            let prefix = query
+                .limit
+                .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
             if let Some(end) = prefix.filter(|&end| end < selected.len()) {
                 selected.select_nth_unstable_by(end, &compare);
                 selected.truncate(end);
@@ -1208,7 +1291,6 @@ fn merge_grouped_integer_sums_query(
     Ok(output)
 }
 
-
 #[cfg(test)]
 mod grouped_sum_intermediate_cap_tests {
     use super::*;
@@ -1217,23 +1299,27 @@ mod grouped_sum_intermediate_cap_tests {
     fn global_grouped_sum_pages_after_merging_more_groups_than_output_cap() {
         let query = parse_select(
             "SELECT region, sum(amount) FROM events GROUP BY region ORDER BY 2 DESC LIMIT 1",
-        ).unwrap();
+        )
+        .unwrap();
         let shards = [
             (8, b"region\tsum(amount)\na\t2\nb\t3\n".to_vec()),
             (8, b"region\tsum(amount)\nc\t4\nd\t7\n".to_vec()),
         ];
         assert_eq!(
-            merge_grouped_integer_sums_query(
-                &shards, 1, "Int64", "region", "amount", Some(&query)
-            ).unwrap(),
+            merge_grouped_integer_sums_query(&shards, 1, "Int64", "region", "amount", Some(&query))
+                .unwrap(),
             b"region\tsum(amount)\nd\t7\n"
         );
-        let no_limit = parse_select(
-            "SELECT region, sum(amount) FROM events GROUP BY region",
-        ).unwrap();
+        let no_limit =
+            parse_select("SELECT region, sum(amount) FROM events GROUP BY region").unwrap();
         assert_eq!(
             merge_grouped_integer_sums_query(
-                &shards, 1, "Int64", "region", "amount", Some(&no_limit)
+                &shards,
+                1,
+                "Int64",
+                "region",
+                "amount",
+                Some(&no_limit)
             ),
             Err(MergeError::CoordinatorLimit)
         );
@@ -1243,15 +1329,15 @@ mod grouped_sum_intermediate_cap_tests {
     fn grouped_sum_having_can_reduce_more_groups_than_final_cap() {
         let query = parse_select(
             "SELECT region, sum(amount) FROM events GROUP BY region HAVING sum(amount) > 6 LIMIT 1",
-        ).unwrap();
+        )
+        .unwrap();
         let shards = [
             (8, b"region\tsum(amount)\na\t2\nb\t3\n".to_vec()),
             (8, b"region\tsum(amount)\nc\t4\nd\t7\n".to_vec()),
         ];
         assert_eq!(
-            merge_grouped_integer_sums_query(
-                &shards, 1, "Int64", "region", "amount", Some(&query)
-            ).unwrap(),
+            merge_grouped_integer_sums_query(&shards, 1, "Int64", "region", "amount", Some(&query))
+                .unwrap(),
             b"region\tsum(amount)\nd\t7\n"
         );
     }
@@ -1334,8 +1420,8 @@ fn merge_grouped_counts_query(
                 .position(|&byte| byte == b'\t')
                 .ok_or(MergeError::InvalidGroupedCount)?;
             let key = &row[..delimiter];
-            let normalized = normalized_group_key(key)
-                .map_err(|_| MergeError::InvalidGroupedCount)?;
+            let normalized =
+                normalized_group_key(key).map_err(|_| MergeError::InvalidGroupedCount)?;
             let digits = &row[delimiter + 1..];
             if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
                 return Err(MergeError::InvalidGroupedCount);
@@ -1367,11 +1453,12 @@ fn merge_grouped_counts_query(
         let mut bounded_order = None;
         if let Some(order) = &select.order_by {
             let descending = order.descending;
-            let compare = |left: &( &[u8], u64), right: &( &[u8], u64)| {
+            let compare = |left: &(&[u8], u64), right: &(&[u8], u64)| {
                 let cmp = left.1.cmp(&right.1);
                 if descending { cmp.reverse() } else { cmp }
             };
-            let end = select.limit
+            let end = select
+                .limit
                 .and_then(|limit| select.offset.unwrap_or(0).checked_add(limit));
             if let Some(end) = end.filter(|&end| end < groups.len()) {
                 let mut indices = (0..groups.len()).collect::<Vec<_>>();
@@ -1387,12 +1474,14 @@ fn merge_grouped_counts_query(
             }
         }
         groups = if let Some(indices) = bounded_order {
-            indices.into_iter()
+            indices
+                .into_iter()
                 .skip(select.offset.unwrap_or(0))
                 .map(|index| groups[index])
                 .collect()
         } else {
-            groups.into_iter()
+            groups
+                .into_iter()
                 .skip(select.offset.unwrap_or(0))
                 .take(select.limit.unwrap_or(usize::MAX))
                 .collect()
@@ -1458,9 +1547,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
     };
     let sorted_query = is_safe_sorted_scan(&select);
-    let sorted_prefix = sorted_query.then(|| {
-        select.offset.unwrap_or(0) + select.limit.unwrap_or(0)
-    });
+    let sorted_prefix =
+        sorted_query.then(|| select.offset.unwrap_or(0) + select.limit.unwrap_or(0));
     let count_query = is_safe_count(&select) || is_safe_count_if(&select);
     let distinct_rows_query = is_safe_distinct_scan(&select);
     let distinct_count_column = match &select.projection {
@@ -1479,7 +1567,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if distinct_rows_query {
         match unpaged_scan_sql(sql, &select) {
             Some(query) => query,
-            None => return Response::text("400 Bad Request", "unsupported distributed DISTINCT pagination\n"),
+            None => {
+                return Response::text(
+                    "400 Bad Request",
+                    "unsupported distributed DISTINCT pagination\n",
+                );
+            }
         }
     } else if is_safe_scan(&select) {
         match bounded_scan_sql(sql, &select) {
@@ -1503,7 +1596,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if uniq_query {
         match uniq_state_shard_sql(sql, &select) {
             Some(query) => query,
-            None => return Response::text("400 Bad Request", "unsupported distributed uniq query\n"),
+            None => {
+                return Response::text("400 Bad Request", "unsupported distributed uniq query\n");
+            }
         }
     } else if distinct_count_column.is_some() {
         match distinct_shard_sql(sql, &select) {
@@ -1541,9 +1636,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 ..
             },
         ) => Some((table.as_str(), value_column.as_str())),
-        (Some(Source::Table(table)), Projection::Columns(columns)) if sorted_query => {
-            columns.first().map(|column| (table.as_str(), column.as_str()))
-        }
+        (Some(Source::Table(table)), Projection::Columns(columns)) if sorted_query => columns
+            .first()
+            .map(|column| (table.as_str(), column.as_str())),
         _ => None,
     };
     let group_schema = match (&select.source, &select.projection) {
@@ -1572,12 +1667,18 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     // Bound concurrency without wave barriers: a fast peer immediately
     // claims the next pending shard, even if an earlier peer is still slow.
     const MAX_INFLIGHT_SHARDS: usize = 8;
-    let results = dispatch::map_peers_bounded_failfast(cluster.peers(), MAX_INFLIGHT_SHARDS, |peer| {
-        read_shard(
-            peer, shard_sql.as_str(), sum_schema, group_schema, table,
-            sorted_prefix, &retained_input,
-        )
-    });
+    let results =
+        dispatch::map_peers_bounded_failfast(cluster.peers(), MAX_INFLIGHT_SHARDS, |peer| {
+            read_shard(
+                peer,
+                shard_sql.as_str(),
+                sum_schema,
+                group_schema,
+                table,
+                sorted_prefix,
+                &retained_input,
+            )
+        });
     let mut shards = Vec::with_capacity(results.len());
     let mut sum_type: Option<String> = None;
     let mut group_key_kind: Option<String> = None;
@@ -1634,7 +1735,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let merged = if count_query {
         sum_shard_counts(&shards)
     } else if let Some(column) = distinct_count_column {
-        let kind = expected_schema.as_deref()
+        let kind = expected_schema
+            .as_deref()
             .and_then(|schema| validated_schema_kind(schema, column));
         match kind {
             Some("Int32" | "Nullable(Int32)") => merge_distinct_bitmap32(&shards, column, true),
@@ -1643,8 +1745,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
     } else if uniq_query {
         match &select.projection {
-            Projection::ApproxDistinct { column } =>
-                merge_uniq_shard_states(&shards, column, select.alias.as_deref()),
+            Projection::ApproxDistinct { column } => {
+                merge_uniq_shard_states(&shards, column, select.alias.as_deref())
+            }
             _ => Err(MergeError::InvalidUniqState),
         }
     } else if sum_query {
@@ -1662,10 +1765,18 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if grouped_sum_query {
         match (sum_type.as_deref(), group_schema, sum_schema) {
             (Some(kind), Some((_, key)), Some((_, value))) => {
-                if select.having.is_some() || select.order_by.is_some()
-                    || select.limit.is_some() || select.offset.is_some() {
+                if select.having.is_some()
+                    || select.order_by.is_some()
+                    || select.limit.is_some()
+                    || select.offset.is_some()
+                {
                     merge_grouped_integer_sums_query(
-                        &shards, max_rows.min(250_000), kind, key, value, Some(&select),
+                        &shards,
+                        max_rows.min(250_000),
+                        kind,
+                        key,
+                        value,
+                        Some(&select),
                     )
                 } else {
                     merge_grouped_integer_sums(&shards, max_rows.min(250_000), kind, key, value)
@@ -1689,18 +1800,20 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         let Projection::Columns(columns) = &select.projection else {
             unreachable!("validated bounded sort");
         };
-        sum_type.as_deref().map_or(Err(MergeError::InvalidSortedScan), |kind| {
-            let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
-            merge_sorted_integer_rows_page(
-                &shards,
-                &names,
-                kind,
-                order.descending,
-                select.offset.unwrap_or(0),
-                select.limit.unwrap_or(0),
-                max_rows.min(250_000),
-            )
-        })
+        sum_type
+            .as_deref()
+            .map_or(Err(MergeError::InvalidSortedScan), |kind| {
+                let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
+                merge_sorted_integer_rows_page(
+                    &shards,
+                    &names,
+                    kind,
+                    order.descending,
+                    select.offset.unwrap_or(0),
+                    select.limit.unwrap_or(0),
+                    max_rows.min(250_000),
+                )
+            })
     } else if distinct_rows_query {
         merge_distinct_tsv(
             &shards,
@@ -1753,9 +1866,10 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(MergeError::InvalidGroupedSum) => {
             Response::text("502 Bad Gateway", "malformed shard grouped SUM response\n")
         }
-        Err(MergeError::InvalidSortedScan) => {
-            Response::text("502 Bad Gateway", "malformed shard sorted integer response\n")
-        }
+        Err(MergeError::InvalidSortedScan) => Response::text(
+            "502 Bad Gateway",
+            "malformed shard sorted integer response\n",
+        ),
         Err(MergeError::InvalidSum) => {
             Response::text("502 Bad Gateway", "malformed shard SUM response\n")
         }
@@ -1787,12 +1901,13 @@ mod tests {
             b"count(DISTINCT id)\n125000\n"
         );
         assert_eq!(
-            merge_distinct_bitmap32(&[shard(10, "id\n-1\n0\n-1\n\\N\n")],
-                "id", true).unwrap(),
+            merge_distinct_bitmap32(&[shard(10, "id\n-1\n0\n-1\n\\N\n")], "id", true).unwrap(),
             b"count(DISTINCT id)\n2\n"
         );
-        assert_eq!(validated_schema_kind(
-            br#"[{\"name\":\"id\",\"type\":\"UInt32\"}]"#, "id"), Some("UInt32"));
+        assert_eq!(
+            validated_schema_kind(br#"[{\"name\":\"id\",\"type\":\"UInt32\"}]"#, "id"),
+            Some("UInt32")
+        );
     }
 
     #[test]
@@ -1811,7 +1926,6 @@ mod tests {
     fn shard(cap: usize, data: &str) -> (usize, Vec<u8>) {
         (cap, data.as_bytes().to_vec())
     }
-
 
     #[test]
     fn globally_ranks_grouped_counts_after_reducing_shards() {
@@ -1835,7 +1949,10 @@ mod tests {
         );
         // Never push a local top-k to shards: it may remove a global winner.
         assert!(!is_safe_grouped_count(
-            &parse_select("SELECT region, count(*) FROM events GROUP BY region ORDER BY region LIMIT 2").unwrap()
+            &parse_select(
+                "SELECT region, count(*) FROM events GROUP BY region ORDER BY region LIMIT 2"
+            )
+            .unwrap()
         ));
     }
 
@@ -1850,7 +1967,11 @@ mod tests {
             Err(MergeError::ShardRowLimit)
         );
         assert_eq!(
-            merge_grouped_counts_query(&[shard(10, "region\tcount\na\tnot-a-number\n")], 1, Some(&query)),
+            merge_grouped_counts_query(
+                &[shard(10, "region\tcount\na\tnot-a-number\n")],
+                1,
+                Some(&query)
+            ),
             Err(MergeError::InvalidGroupedCount)
         );
     }
@@ -1869,7 +1990,15 @@ mod tests {
             shard(10, "region\tsum(amount)\nwest\t70\neast\t15\nnorth\t151\n"),
         ];
         assert_eq!(
-            merge_grouped_integer_sums_query(&shards, 10, "Int64", "region", "amount", Some(&select)).unwrap(),
+            merge_grouped_integer_sums_query(
+                &shards,
+                10,
+                "Int64",
+                "region",
+                "amount",
+                Some(&select)
+            )
+            .unwrap(),
             b"region\tsum(amount)\nnorth\t151\nwest\t150\n"
         );
     }
@@ -2515,7 +2644,8 @@ mod single_pass_page_tests {
         let expected_rows = (0..400).map(|row| format!("{row}\n")).collect::<Vec<_>>();
         for offset in [0, 1, 24, 25, 249, 399, 400, 900] {
             for limit in [None, Some(0), Some(1), Some(7), Some(100), Some(1000)] {
-                let selected = expected_rows.iter()
+                let selected = expected_rows
+                    .iter()
                     .skip(offset)
                     .take(limit.unwrap_or(usize::MAX))
                     .cloned()
@@ -2532,16 +2662,22 @@ mod single_pass_page_tests {
 
     #[test]
     fn late_shard_corruption_is_rejected_even_after_page_is_full() {
-        let shards = vec![
-            (10, b"x\na\nb\n".to_vec()),
-            (10, b"x\nc\nd\n".to_vec()),
-        ];
+        let shards = vec![(10, b"x\na\nb\n".to_vec()), (10, b"x\nc\nd\n".to_vec())];
         assert_eq!(merge_tsv_page(&shards, 1, 2, Some(1)).unwrap(), b"x\nc\n");
-        assert!(matches!(merge_tsv_page(&shards, 0, 0, Some(1)), Err(MergeError::CoordinatorLimit)));
+        assert!(matches!(
+            merge_tsv_page(&shards, 0, 0, Some(1)),
+            Err(MergeError::CoordinatorLimit)
+        ));
         let capped = vec![(10, b"x\na\n".to_vec()), (1, b"x\nb\n".to_vec())];
-        assert!(matches!(merge_tsv_page(&capped, 2, 0, Some(1)), Err(MergeError::ShardRowLimit)));
+        assert!(matches!(
+            merge_tsv_page(&capped, 2, 0, Some(1)),
+            Err(MergeError::ShardRowLimit)
+        ));
         let mismatched = vec![(10, b"x\na\n".to_vec()), (10, b"y\nb\n".to_vec())];
-        assert!(matches!(merge_tsv_page(&mismatched, 2, 0, Some(1)), Err(MergeError::SchemaMismatch)));
+        assert!(matches!(
+            merge_tsv_page(&mismatched, 2, 0, Some(1)),
+            Err(MergeError::SchemaMismatch)
+        ));
     }
 }
 
@@ -2556,8 +2692,9 @@ mod bounded_grouped_count_topk_tests {
             (250_000, b"dim\tcount\nA\t4\nB\t1\nC\t2\nD\t1\n".to_vec()),
         ];
         let sql = parse_select(
-            "SELECT dim, count(*) FROM facts GROUP BY dim ORDER BY count DESC LIMIT 2 OFFSET 1"
-        ).unwrap();
+            "SELECT dim, count(*) FROM facts GROUP BY dim ORDER BY count DESC LIMIT 2 OFFSET 1",
+        )
+        .unwrap();
         let merged = merge_grouped_counts_query(&shards, 2, Some(&sql)).unwrap();
         assert_eq!(merged, b"dim\tcount\nB\t3\nC\t3\n");
     }
@@ -2566,8 +2703,9 @@ mod bounded_grouped_count_topk_tests {
     fn zero_length_ranked_page_keeps_only_header() {
         let shards = vec![(250_000, b"dim\tcount\nA\t3\nB\t2\n".to_vec())];
         let sql = parse_select(
-            "SELECT dim, count(*) FROM facts GROUP BY dim ORDER BY count DESC LIMIT 0"
-        ).unwrap();
+            "SELECT dim, count(*) FROM facts GROUP BY dim ORDER BY count DESC LIMIT 0",
+        )
+        .unwrap();
         let merged = merge_grouped_counts_query(&shards, 1, Some(&sql)).unwrap();
         assert_eq!(merged, b"dim\tcount\n");
     }
@@ -2589,7 +2727,9 @@ mod concurrent_preflight_tests {
             let (mut first, _) = listener.accept().unwrap();
             let (mut second, _) = listener.accept().unwrap();
             for stream in [&mut first, &mut second] {
-                stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
                 let mut incoming = [0u8; 1024];
                 let size = stream.read(&mut incoming).unwrap();
                 let path = std::str::from_utf8(&incoming[..size]).unwrap();
@@ -2626,24 +2766,38 @@ mod distributed_grouped_sum_selection_tests {
             for i in (shard..3000).step_by(2) {
                 let value = (i * 379 % 997) as u64;
                 let row = format!("g{i:04}\t{value}\n");
-                if shard == 0 { first.extend_from_slice(row.as_bytes()); }
-                else { second.extend_from_slice(row.as_bytes()); }
+                if shard == 0 {
+                    first.extend_from_slice(row.as_bytes());
+                } else {
+                    second.extend_from_slice(row.as_bytes());
+                }
                 canonical.push((i, value));
             }
         }
         let shards = [(4000usize, first), (4000usize, second)];
         for descending in [true, false] {
             let mut order = canonical.clone();
-            if descending { order.sort_by(|a, b| b.1.cmp(&a.1)); }
-            else { order.sort_by(|a, b| a.1.cmp(&b.1)); }
+            if descending {
+                order.sort_by(|a, b| b.1.cmp(&a.1));
+            } else {
+                order.sort_by(|a, b| a.1.cmp(&b.1));
+            }
             for offset in [0, 1, 25, 2999, 3000] {
                 for limit in [0, 1, 7, 100, 3000] {
                     let direction = if descending { "DESC" } else { "ASC" };
-                    let sql = format!("SELECT dimension, sum(metric) FROM events GROUP BY dimension ORDER BY 2 {direction} LIMIT {limit} OFFSET {offset}");
+                    let sql = format!(
+                        "SELECT dimension, sum(metric) FROM events GROUP BY dimension ORDER BY 2 {direction} LIMIT {limit} OFFSET {offset}"
+                    );
                     let select = rusthouse_query::parse_select(&sql).unwrap();
                     let actual = merge_grouped_integer_sums_query(
-                        &shards, 4000, "UInt64", "dimension", "metric", Some(&select)
-                    ).unwrap();
+                        &shards,
+                        4000,
+                        "UInt64",
+                        "dimension",
+                        "metric",
+                        Some(&select),
+                    )
+                    .unwrap();
                     let mut expected = "dimension\tsum(metric)\n".to_string();
                     for (i, amount) in order.iter().skip(offset).take(limit) {
                         expected.push_str(&format!("g{i:04}\t{amount}\n"));
@@ -2654,7 +2808,6 @@ mod distributed_grouped_sum_selection_tests {
         }
     }
 }
-
 
 #[cfg(test)]
 mod distributed_uniq_state_tests {
@@ -2720,7 +2873,10 @@ mod coordinator_input_budget_tests {
         let bytes = AtomicUsize::new(0);
         assert!(reserve_shard_bytes(&bytes, MAX_SHARD_INPUT_BYTES - 10).is_ok());
         assert!(reserve_shard_bytes(&bytes, 11).is_err());
-        assert_eq!(bytes.load(AtomicOrdering::Relaxed), MAX_SHARD_INPUT_BYTES - 10);
+        assert_eq!(
+            bytes.load(AtomicOrdering::Relaxed),
+            MAX_SHARD_INPUT_BYTES - 10
+        );
         assert!(reserve_shard_bytes(&bytes, 10).is_ok());
         assert_eq!(bytes.load(AtomicOrdering::Relaxed), MAX_SHARD_INPUT_BYTES);
     }
@@ -2729,10 +2885,14 @@ mod coordinator_input_budget_tests {
     fn reservations_cannot_exceed_budget_under_contention() {
         let bytes = AtomicUsize::new(0);
         let succeeded = std::thread::scope(|scope| {
-            let tasks: Vec<_> = (0..16).map(|_| {
-                scope.spawn(|| reserve_shard_bytes(&bytes, 8 * 1024 * 1024).is_ok())
-            }).collect();
-            tasks.into_iter().map(|task| task.join().unwrap()).filter(|&ok| ok).count()
+            let tasks: Vec<_> = (0..16)
+                .map(|_| scope.spawn(|| reserve_shard_bytes(&bytes, 8 * 1024 * 1024).is_ok()))
+                .collect();
+            tasks
+                .into_iter()
+                .map(|task| task.join().unwrap())
+                .filter(|&ok| ok)
+                .count()
         });
         assert_eq!(succeeded, 8);
         assert_eq!(bytes.load(AtomicOrdering::Relaxed), MAX_SHARD_INPUT_BYTES);
@@ -2744,8 +2904,10 @@ mod shard_dispatch_wave_tests {
     #[test]
     fn bounded_waves_keep_stable_peer_order_without_skips() {
         let peers: Vec<usize> = (0..32).collect();
-        let selected: Vec<usize> = peers.chunks(8)
-            .flat_map(|wave| wave.iter().copied()).collect();
+        let selected: Vec<usize> = peers
+            .chunks(8)
+            .flat_map(|wave| wave.iter().copied())
+            .collect();
         assert_eq!(selected, peers);
         assert_eq!(peers.chunks(8).count(), 4);
     }
@@ -2761,7 +2923,8 @@ mod peer_schema_row_count_tests {
             content_type: "application/json; charset=utf-8".into(),
             body: format!(
                 "{{\"rows\":{rows},\"columns\":[{{\"name\":\"id\",\"type\":\"UInt64\"}}]}}\n"
-            ).into_bytes(),
+            )
+            .into_bytes(),
         }
     }
 
@@ -2791,10 +2954,17 @@ mod peer_capability_suffix_tests {
             loop {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
-                if line == "\r\n" { break; }
+                if line == "\r\n" {
+                    break;
+                }
             }
             let body = b"{\"name\":\"RustHouse\",\"source\":\"database\",\"read_only\":true,\"max_rows\":42extra}\n";
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len()).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
             stream.write_all(body).unwrap();
         });
         let peer = Peer::parse(&format!("127.0.0.1:{}", address.port())).unwrap();
@@ -2914,8 +3084,13 @@ mod structured_peer_schema_tests {
     #[test]
     fn accepts_whitespace_without_changing_the_column_signature() {
         let compact = peer(r#"{"rows":1,"columns":[{"name":"id","type":"UInt64"}]}"#);
-        let spaced = peer(" { \"rows\" : 999 , \"columns\" : [ { \"name\" : \"id\", \"type\" : \"UInt64\" } ] }\n");
-        assert_eq!(schema_signature(&compact).unwrap(), schema_signature(&spaced).unwrap());
+        let spaced = peer(
+            " { \"rows\" : 999 , \"columns\" : [ { \"name\" : \"id\", \"type\" : \"UInt64\" } ] }\n",
+        );
+        assert_eq!(
+            schema_signature(&compact).unwrap(),
+            schema_signature(&spaced).unwrap()
+        );
         assert_eq!(shard_column_kind(&spaced, "id").unwrap(), "UInt64");
     }
 
@@ -2961,15 +3136,15 @@ mod global_distinct_row_tests {
 
     #[test]
     fn distributed_distinct_policy_accepts_only_unordered_rows() {
-        assert!(is_safe_distinct_scan(&parse_select(
-            "SELECT DISTINCT id, region FROM events LIMIT 10 OFFSET 2"
-        ).unwrap()));
-        assert!(!is_safe_distinct_scan(&parse_select(
-            "SELECT DISTINCT id FROM events ORDER BY id LIMIT 10"
-        ).unwrap()));
-        assert!(!is_safe_distinct_scan(&parse_select(
-            "SELECT id FROM events"
-        ).unwrap()));
+        assert!(is_safe_distinct_scan(
+            &parse_select("SELECT DISTINCT id, region FROM events LIMIT 10 OFFSET 2").unwrap()
+        ));
+        assert!(!is_safe_distinct_scan(
+            &parse_select("SELECT DISTINCT id FROM events ORDER BY id LIMIT 10").unwrap()
+        ));
+        assert!(!is_safe_distinct_scan(
+            &parse_select("SELECT id FROM events").unwrap()
+        ));
     }
 }
 
@@ -2979,11 +3154,12 @@ mod malformed_distributed_tsv_tests {
 
     #[test]
     fn rejects_corrupt_wire_escapes_in_all_rows_including_skipped_pages() {
-        let invalid = vec![
-            (16, b"name\nfirst\nsecond\\q\n".to_vec()),
-        ];
+        let invalid = vec![(16, b"name\nfirst\nsecond\\q\n".to_vec())];
         assert_eq!(merge_tsv(&invalid, 16), Err(MergeError::InvalidResponse));
-        assert_eq!(merge_distinct_tsv(&invalid, 16, 0, None), Err(MergeError::InvalidResponse));
+        assert_eq!(
+            merge_distinct_tsv(&invalid, 16, 0, None),
+            Err(MergeError::InvalidResponse)
+        );
         assert_eq!(
             merge_tsv_page(&invalid, 16, 0, Some(1)),
             Err(MergeError::InvalidResponse),

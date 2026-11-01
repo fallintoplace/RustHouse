@@ -6,13 +6,20 @@ fn add_days_handles_leap_dates_and_utc_time() {
         ("SELECT addDays('2024-02-28', 1)", "2024-02-29"),
         ("SELECT addDays('2024-12-31', 1)", "2025-01-01"),
         ("SELECT addDays('2024-03-01', -1)", "2024-02-29"),
-        ("SELECT addDays('1970-01-01 23:59:59', 1)", "1970-01-02 23:59:59"),
+        (
+            "SELECT addDays('1970-01-01 23:59:59', 1)",
+            "1970-01-02 23:59:59",
+        ),
     ] {
         let select = parse_select(sql).unwrap();
         let Projection::Constants(columns) = select.projection else {
             panic!("expected constant expression for {sql}");
         };
-        assert_eq!(columns[0].value, ConstantValue::Text(expected.into()), "{sql}");
+        assert_eq!(
+            columns[0].value,
+            ConstantValue::Text(expected.into()),
+            "{sql}"
+        );
     }
     let Projection::Constants(columns) =
         parse_select("SELECT addDays(NULL, 1)").unwrap().projection

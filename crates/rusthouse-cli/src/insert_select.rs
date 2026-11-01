@@ -114,7 +114,9 @@ pub(super) fn run(database: &Path, statement: &InsertSelect) -> Result<(), Strin
         {
             let mut writer = BufWriter::new(file);
             execute(&query, part.as_deref(), &mut writer).map_err(|error| error.to_string())?;
-            writer.flush().map_err(|error| format!("cannot flush INSERT SELECT spool: {error}"))?;
+            writer
+                .flush()
+                .map_err(|error| format!("cannot flush INSERT SELECT spool: {error}"))?;
         }
         let file = File::open(&spool.0)
             .map_err(|error| format!("cannot reopen INSERT SELECT spool: {error}"))?;
@@ -153,10 +155,8 @@ mod tests {
         let occupied = directory.join("occupied.tmp");
         let available = directory.join("available.tmp");
         fs::write(&occupied, b"keep-original").unwrap();
-        let (spool, mut file) = open_insert_spool_candidates([
-            occupied.clone(),
-            available.clone(),
-        ]).unwrap();
+        let (spool, mut file) =
+            open_insert_spool_candidates([occupied.clone(), available.clone()]).unwrap();
         file.write_all(b"new").unwrap();
         drop(file);
         assert_eq!(fs::read(&available).unwrap(), b"new");
@@ -211,7 +211,10 @@ mod tests {
                 .unwrap();
         crate::database::with_write_lock(&database, || {
             let error = run(&database, &statement).unwrap_err();
-            assert!(error.contains("cannot acquire database write lock"), "{error}");
+            assert!(
+                error.contains("cannot acquire database write lock"),
+                "{error}"
+            );
             Ok(())
         })
         .unwrap();
@@ -238,8 +241,10 @@ mod shared_insert_select_decoder_tests {
 
     #[test]
     fn round_trips_all_tsv_control_escapes() {
-        assert_eq!(decode_field(r"\b\f\v\t\n\r\0").unwrap(),
-            Some("\u{0008}\u{000c}\u{000b}\t\n\r\0".into()));
+        assert_eq!(
+            decode_field(r"\b\f\v\t\n\r\0").unwrap(),
+            Some("\u{0008}\u{000c}\u{000b}\t\n\r\0".into())
+        );
         assert_eq!(decode_field(r"\x41\x42\\").unwrap(), Some("AB\\".into()));
         assert_eq!(decode_field(r"\N").unwrap(), None);
         assert_eq!(decode_field(r"\\N").unwrap(), Some(r"\N".into()));

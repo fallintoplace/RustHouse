@@ -1,4 +1,4 @@
-use rusthouse_query::{parse_select, Projection};
+use rusthouse_query::{Projection, parse_select};
 
 #[test]
 fn accepts_group_by_multiple_ordinals_for_counts_and_aggregates() {
@@ -25,9 +25,7 @@ fn out_of_range_and_duplicate_group_ordinals_remain_rejected() {
 
 #[test]
 fn grouping_positions_do_not_change_projection_key_order() {
-    let select = parse_select(
-        "SELECT region, city, count(*) FROM part GROUP BY 1, 2"
-    ).unwrap();
+    let select = parse_select("SELECT region, city, count(*) FROM part GROUP BY 1, 2").unwrap();
     match select.projection {
         Projection::GroupedMultiCount { columns } => {
             assert_eq!(columns, vec!["region", "city"]);

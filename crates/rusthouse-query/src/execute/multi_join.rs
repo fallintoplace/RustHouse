@@ -9,8 +9,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use super::join::{
-    MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES,
-    multi_join_row_key as row_key, multi_join_row_key_into as row_key_into, read_projected_build_rows,
+    MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key,
+    multi_join_row_key_into as row_key_into, read_projected_build_rows,
 };
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
@@ -20,7 +20,8 @@ const MAX_CHAIN_HASH_BYTES: usize = MAX_CHAIN_BYTES;
 /// Hash table keys are owned again after the build-side rows are decoded.
 /// Include duplicate row index lists, which are separate from row retention.
 fn charge_hash_bytes(used: &mut usize, additional: usize) -> Result<(), ExecutionError> {
-    let next = used.checked_add(additional)
+    let next = used
+        .checked_add(additional)
         .ok_or_else(|| invalid("JOIN hash memory estimate overflow"))?;
     if next > MAX_CHAIN_HASH_BYTES {
         return Err(invalid("JOIN hash keys exceed retained memory budget"));
@@ -30,7 +31,9 @@ fn charge_hash_bytes(used: &mut usize, additional: usize) -> Result<(), Executio
 }
 
 fn hash_key_bytes(key: &[typed::Key]) -> Result<usize, ExecutionError> {
-    let fixed = key.len().checked_mul(std::mem::size_of::<typed::Key>())
+    let fixed = key
+        .len()
+        .checked_mul(std::mem::size_of::<typed::Key>())
         .and_then(|n| n.checked_add(std::mem::size_of::<(Vec<typed::Key>, Bucket)>()))
         .ok_or_else(|| invalid("JOIN hash memory estimate overflow"))?;
     key.iter().try_fold(fixed, |bytes, value| {
@@ -39,7 +42,8 @@ fn hash_key_bytes(key: &[typed::Key]) -> Result<usize, ExecutionError> {
             typed::Key::Uuid(value) => value.len(),
             _ => 0,
         };
-        bytes.checked_add(payload)
+        bytes
+            .checked_add(payload)
             .ok_or_else(|| invalid("JOIN hash memory estimate overflow"))
     })
 }
@@ -171,9 +175,7 @@ fn push_visible_row(
     retained: &mut usize,
     filter: Option<(usize, bool)>,
 ) -> Result<(), ExecutionError> {
-    if filter.is_some_and(|(index, not_null)| {
-        matches!(row[index], typed::Cell::Null) == not_null
-    }) {
+    if filter.is_some_and(|(index, not_null)| matches!(row[index], typed::Cell::Null) == not_null) {
         return Ok(());
     }
     push_row(rows, row, retained)
@@ -321,12 +323,16 @@ fn required_physical_columns(
     relations: &[Relation],
     initial_step: &JoinStep,
 ) -> Result<Vec<Vec<usize>>, ExecutionError> {
-    let mut required = relations.iter()
+    let mut required = relations
+        .iter()
         .map(|relation| vec![false; relation.names.len()])
         .collect::<Vec<_>>();
     let mut retain_absolute = |absolute: usize| {
-        if let Some((index, relation)) = relations.iter().enumerate()
-            .rev().find(|(_, relation)| absolute >= relation.start)
+        if let Some((index, relation)) = relations
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, relation)| absolute >= relation.start)
         {
             required[index][absolute - relation.start] = true;
         }
@@ -335,11 +341,12 @@ fn required_physical_columns(
         if let Some(columns) = &query.columns {
             for column in columns {
                 if column.name == "*" {
-                    let relation = relations.iter()
+                    let relation = relations
+                        .iter()
                         .find(|relation| relation.alias == column.relation)
-                        .ok_or_else(|| invalid(format!(
-                            "unknown JOIN qualifier: {}", column.relation
-                        )))?;
+                        .ok_or_else(|| {
+                            invalid(format!("unknown JOIN qualifier: {}", column.relation))
+                        })?;
                     for local in 0..relation.names.len() {
                         retain_absolute(relation.start + local);
                     }
@@ -362,7 +369,8 @@ fn required_physical_columns(
         retain_absolute(column_index(relations, column)?);
     }
     for (step_index, step) in std::iter::once(initial_step)
-        .chain(query.steps.iter()).enumerate()
+        .chain(query.steps.iter())
+        .enumerate()
     {
         let width = relations[step_index + 1].start;
         let (left, right) = step_keys(step, &relations[..=step_index + 1], width)?;
@@ -377,9 +385,11 @@ fn required_physical_columns(
     // Keep one column to obtain exact row counts from the typed reader.
     let mut indices = Vec::with_capacity(relations.len());
     for (relation, columns) in relations.iter().zip(required) {
-        let mut keep = columns.into_iter().enumerate().filter_map(
-            |(index, needed)| needed.then_some(index)
-        ).collect::<Vec<_>>();
+        let mut keep = columns
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, needed)| needed.then_some(index))
+            .collect::<Vec<_>>();
         if keep.is_empty() {
             if relation.names.is_empty() {
                 return Err(invalid("JOIN requires nonempty table schemas"));
@@ -481,10 +491,10 @@ pub fn execute_multi_join<W: Write>(
 
     // Resolve the WHERE column across all relations before materialization.
     // Filtering early is safe only at the final JOIN, after null extension.
-    let output_filter = query.where_null.as_ref()
-        .map(|(column, not_null)| {
-            column_index(&relations, column).map(|index| (index, *not_null))
-        })
+    let output_filter = query
+        .where_null
+        .as_ref()
+        .map(|(column, not_null)| column_index(&relations, column).map(|index| (index, *not_null)))
         .transpose()?;
     let required = required_physical_columns(query, &relations, &initial_step)?;
     let mut rows = read_projected_build_rows(
@@ -561,7 +571,8 @@ pub fn execute_multi_join<W: Write>(
                                     matches.iter().len()
                                 }
                             }
-                            Some((filter_index, not_null)) => matches.iter()
+                            Some((filter_index, not_null)) => matches
+                                .iter()
                                 .take(if step.any { 1 } else { usize::MAX })
                                 .filter(|&&right_index| {
                                     matches!(
@@ -570,10 +581,19 @@ pub fn execute_multi_join<W: Write>(
                                     ) != not_null
                                 })
                                 .count(),
-                            None => if step.any { 1 } else { matches.iter().len() },
+                            None => {
+                                if step.any {
+                                    1
+                                } else {
+                                    matches.iter().len()
+                                }
+                            }
                         };
-                        count = count.checked_add(u64::try_from(multiplicity)
-                            .map_err(|_| invalid("JOIN count overflow"))?)
+                        count = count
+                            .checked_add(
+                                u64::try_from(multiplicity)
+                                    .map_err(|_| invalid("JOIN count overflow"))?,
+                            )
                             .ok_or_else(|| invalid("JOIN count overflow"))?;
                     }
                 }
@@ -711,13 +731,15 @@ mod reusable_chain_keys_tests {
 
     #[test]
     fn reused_text_keys_agree_with_fresh_materialized_keys() {
-        let rows = (0..200usize).map(|index| {
-            if index % 17 == 0 {
-                vec![typed::Cell::Null]
-            } else {
-                vec![typed::Cell::Text(format!("key-{}", index % 5).into_bytes())]
-            }
-        }).collect::<Vec<_>>();
+        let rows = (0..200usize)
+            .map(|index| {
+                if index % 17 == 0 {
+                    vec![typed::Cell::Null]
+                } else {
+                    vec![typed::Cell::Text(format!("key-{}", index % 5).into_bytes())]
+                }
+            })
+            .collect::<Vec<_>>();
         let mut fresh = HashMap::<Vec<typed::Key>, Bucket>::new();
         let mut reused = HashMap::<Vec<typed::Key>, Bucket>::new();
         let mut scratch = Vec::new();
@@ -725,13 +747,17 @@ mod reusable_chain_keys_tests {
             if let Some(key) = row_key(row, &[0]) {
                 match fresh.get_mut(key.as_slice()) {
                     Some(bucket) => bucket.push(index),
-                    None => { fresh.insert(key, Bucket::One(index)); }
+                    None => {
+                        fresh.insert(key, Bucket::One(index));
+                    }
                 }
             }
             if row_key_into(row, &[0], &mut scratch) {
                 match reused.get_mut(scratch.as_slice()) {
                     Some(bucket) => bucket.push(index),
-                    None => { reused.insert(scratch.clone(), Bucket::One(index)); }
+                    None => {
+                        reused.insert(scratch.clone(), Bucket::One(index));
+                    }
                 }
             }
         }
@@ -739,8 +765,10 @@ mod reusable_chain_keys_tests {
         assert_eq!(reused.len(), 5);
         for (key, expected) in &fresh {
             let actual = reused.get(key.as_slice()).unwrap();
-            assert_eq!(actual.iter().copied().collect::<Vec<_>>(),
-                       expected.iter().copied().collect::<Vec<_>>());
+            assert_eq!(
+                actual.iter().copied().collect::<Vec<_>>(),
+                expected.iter().copied().collect::<Vec<_>>()
+            );
         }
         let mut count = 0;
         for row in &rows {

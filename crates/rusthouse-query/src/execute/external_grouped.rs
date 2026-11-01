@@ -24,10 +24,13 @@ impl Scratch {
     fn create() -> Result<Self, ExecutionError> {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|cause| invalid(cause.to_string()))?.as_nanos();
+            .map_err(|cause| invalid(cause.to_string()))?
+            .as_nanos();
         let path = std::env::temp_dir().join(format!(
             "rusthouse-external-grouped-{}-{stamp}-{}",
-            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let mut dir = fs::DirBuilder::new();
         #[cfg(unix)]
         {
@@ -39,7 +42,9 @@ impl Scratch {
     }
 }
 impl Drop for Scratch {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 // Temporary sorted runs are private to a query, so use compact canonical
@@ -72,7 +77,9 @@ fn read_varint(input: &mut impl BufRead, eof_allowed: bool) -> Result<Option<u64
         let mut byte = [0_u8; 1];
         let read = input.read(&mut byte)?;
         if read == 0 {
-            if index == 0 && eof_allowed { return Ok(None); }
+            if index == 0 && eof_allowed {
+                return Ok(None);
+            }
             return Err(invalid("truncated GROUP BY spill varint"));
         }
         let value = byte[0] & 0x7f;
@@ -104,17 +111,19 @@ fn write_varint(output: &mut impl Write, mut value: u64) -> Result<(), Execution
     Ok(())
 }
 
-fn read_group(reader: &mut BufReader<File>)
-    -> Result<Option<(u64, u64)>, ExecutionError> {
-    let Some(key) = read_varint(reader, true)? else { return Ok(None); };
-    let count = read_varint(reader, false)?
-        .ok_or_else(|| invalid("truncated GROUP BY spill count"))?;
-    if count == 0 { return Err(invalid("invalid empty grouped spill entry")); }
+fn read_group(reader: &mut BufReader<File>) -> Result<Option<(u64, u64)>, ExecutionError> {
+    let Some(key) = read_varint(reader, true)? else {
+        return Ok(None);
+    };
+    let count =
+        read_varint(reader, false)?.ok_or_else(|| invalid("truncated GROUP BY spill count"))?;
+    if count == 0 {
+        return Err(invalid("invalid empty grouped spill entry"));
+    }
     Ok(Some((key, count)))
 }
 
-fn write_group(output: &mut impl Write, key: u64, count: u64)
-    -> Result<(), ExecutionError> {
+fn write_group(output: &mut impl Write, key: u64, count: u64) -> Result<(), ExecutionError> {
     let mut encoded = [0u8; 20];
     let mut remaining = &mut encoded[..];
     write_varint(&mut remaining, key)?;
@@ -128,7 +137,9 @@ fn merge_until(
     files: &[PathBuf],
     mut emit: impl FnMut(u64, u64) -> Result<bool, ExecutionError>,
 ) -> Result<(), ExecutionError> {
-    let mut streams = files.iter().map(File::open)
+    let mut streams = files
+        .iter()
+        .map(File::open)
         .map(|reader| reader.map(|file| BufReader::with_capacity(64 * 1024, file)))
         .collect::<Result<Vec<_>, _>>()?;
     let mut heap = BinaryHeap::<Reverse<(u64, usize, u64)>>::new();
@@ -144,12 +155,15 @@ fn merge_until(
         let Reverse((key, index, count)) = *top;
         match current.as_mut() {
             Some((last, total)) if *last == key => {
-                *total = total.checked_add(count)
+                *total = total
+                    .checked_add(count)
                     .ok_or_else(|| invalid("GROUP BY count overflow"))?;
             }
             _ => {
                 if let Some((last, total)) = current.take() {
-                    if !emit(last, total)? { return Ok(()); }
+                    if !emit(last, total)? {
+                        return Ok(());
+                    }
                 }
                 current = Some((key, count));
             }
@@ -166,7 +180,9 @@ fn merge_until(
             std::collections::binary_heap::PeekMut::pop(top);
         }
     }
-    if let Some((last, count)) = current { let _ = emit(last, count)?; }
+    if let Some((last, count)) = current {
+        let _ = emit(last, count)?;
+    }
     Ok(())
 }
 
@@ -175,7 +191,10 @@ fn merge(
     files: &[PathBuf],
     mut emit: impl FnMut(u64, u64) -> Result<(), ExecutionError>,
 ) -> Result<(), ExecutionError> {
-    merge_until(files, |key, count| { emit(key, count)?; Ok(true) })
+    merge_until(files, |key, count| {
+        emit(key, count)?;
+        Ok(true)
+    })
 }
 
 /// Stable eight-pass LSD radix sort for large encoded UInt64 group keys.
@@ -239,38 +258,66 @@ pub(super) struct ExternalGroupCount64 {
 impl ExternalGroupCount64 {
     pub(super) fn new(signed: bool, descending: bool) -> Self {
         Self {
-            scratch: None, keys: Vec::with_capacity(RUN_KEYS.min(8192)),
-            runs: Vec::new(), next_run: 0, disk_bytes: 0,
-            signed, descending,
+            scratch: None,
+            keys: Vec::with_capacity(RUN_KEYS.min(8192)),
+            runs: Vec::new(),
+            next_run: 0,
+            disk_bytes: 0,
+            signed,
+            descending,
         }
     }
     pub(super) fn insert(&mut self, value: u64) -> Result<(), ExecutionError> {
-        let sortable = if self.signed { value ^ (1 << 63) } else { value };
-        self.keys.push(if self.descending { !sortable } else { sortable });
-        if self.keys.len() == RUN_KEYS { self.flush()?; }
+        let sortable = if self.signed {
+            value ^ (1 << 63)
+        } else {
+            value
+        };
+        self.keys
+            .push(if self.descending { !sortable } else { sortable });
+        if self.keys.len() == RUN_KEYS {
+            self.flush()?;
+        }
         Ok(())
     }
     fn next_path(&mut self) -> Result<PathBuf, ExecutionError> {
-        if self.scratch.is_none() { self.scratch = Some(Scratch::create()?); }
+        if self.scratch.is_none() {
+            self.scratch = Some(Scratch::create()?);
+        }
         let index = self.next_run;
-        self.next_run = self.next_run.checked_add(1)
+        self.next_run = self
+            .next_run
+            .checked_add(1)
             .ok_or_else(|| invalid("too many GROUP BY spill runs"))?;
-        Ok(self.scratch.as_ref().unwrap().0.join(format!("run-{index:08}.bin")))
+        Ok(self
+            .scratch
+            .as_ref()
+            .unwrap()
+            .0
+            .join(format!("run-{index:08}.bin")))
     }
     fn preflight_disk(&self, additional: u64) -> Result<(), ExecutionError> {
-        if self.disk_bytes.checked_add(additional)
+        if self
+            .disk_bytes
+            .checked_add(additional)
             .is_none_or(|bytes| bytes > MAX_DISK_BYTES)
         {
-            return Err(invalid("GROUP BY exceeded the 32 GiB temporary disk budget"));
+            return Err(invalid(
+                "GROUP BY exceeded the 32 GiB temporary disk budget",
+            ));
         }
         Ok(())
     }
 
     fn reserve_disk(&mut self, path: &Path) -> Result<(), ExecutionError> {
-        self.disk_bytes = self.disk_bytes.checked_add(fs::metadata(path)?.len())
+        self.disk_bytes = self
+            .disk_bytes
+            .checked_add(fs::metadata(path)?.len())
             .ok_or_else(|| invalid("GROUP BY spill byte overflow"))?;
         if self.disk_bytes > MAX_DISK_BYTES {
-            return Err(invalid("GROUP BY exceeded the 32 GiB temporary disk budget"));
+            return Err(invalid(
+                "GROUP BY exceeded the 32 GiB temporary disk budget",
+            ));
         }
         Ok(())
     }
@@ -280,13 +327,17 @@ impl ExternalGroupCount64 {
     fn remove_run(&mut self, path: &Path) -> Result<(), ExecutionError> {
         let bytes = fs::metadata(path)?.len();
         fs::remove_file(path)?;
-        self.disk_bytes = self.disk_bytes.checked_sub(bytes)
+        self.disk_bytes = self
+            .disk_bytes
+            .checked_sub(bytes)
             .ok_or_else(|| invalid("GROUP BY spill accounting underflow"))?;
         Ok(())
     }
 
     fn flush(&mut self) -> Result<(), ExecutionError> {
-        if self.keys.is_empty() { return Ok(()); }
+        if self.keys.is_empty() {
+            return Ok(());
+        }
         sort_run_keys(&mut self.keys);
         // Exact canonical varint size, including run-length encoded counts.
         // Reject a spill that would exceed the quota before opening its file.
@@ -295,26 +346,37 @@ impl ExternalGroupCount64 {
             let count = u64::try_from(run.len())
                 .map_err(|_| invalid("GROUP BY spill run length overflow"))?;
             let width = |value: u64| u64::from((64 - value.leading_zeros()).div_ceil(7).max(1));
-            required = required.checked_add(width(run[0]) + width(count))
+            required = required
+                .checked_add(width(run[0]) + width(count))
                 .ok_or_else(|| invalid("GROUP BY spill byte overflow"))?;
         }
         self.preflight_disk(required)?;
         let path = self.next_path()?;
-        let mut stream = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
-            .write(true).create_new(true).open(&path)?);
+        let mut stream = BufWriter::with_capacity(
+            64 * 1024,
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?,
+        );
         let mut previous = None;
         let mut count = 0u64;
         for &key in &self.keys {
             if previous != Some(key) {
-                if let Some(last) = previous { write_group(&mut stream, last, count)?; }
+                if let Some(last) = previous {
+                    write_group(&mut stream, last, count)?;
+                }
                 previous = Some(key);
                 count = 1;
             } else {
-                count = count.checked_add(1)
+                count = count
+                    .checked_add(1)
                     .ok_or_else(|| invalid("GROUP BY count overflow"))?;
             }
         }
-        if let Some(last) = previous { write_group(&mut stream, last, count)?; }
+        if let Some(last) = previous {
+            write_group(&mut stream, last, count)?;
+        }
         stream.flush()?;
         self.reserve_disk(&path)?;
         self.runs.push(path);
@@ -326,41 +388,50 @@ impl ExternalGroupCount64 {
         if self.signed { key ^ (1 << 63) } else { key }
     }
     fn compact_runs(&mut self) -> Result<(), ExecutionError> {
-            while self.runs.len() > FAN_IN {
-                let previous = std::mem::take(&mut self.runs);
-                let mut reduced = Vec::new();
-                for chunk in previous.chunks(FAN_IN) {
-                    // An untouched tail run is already compacted. Rewriting
-                    // it uses scratch space and full read/write I/O for no gain.
-                    if let [single] = chunk {
-                        reduced.push(single.clone());
-                        continue;
-                    }
-                    // Compacting canonical counts never produces more bytes
-                    // than the combined input runs.
-                    let bytes = chunk.iter().try_fold(0u64, |total, file| {
-                        total.checked_add(fs::metadata(file)?.len())
-                            .ok_or_else(|| invalid("GROUP BY spill merge size overflow"))
-                    })?;
-                    self.preflight_disk(bytes)?;
-                    let path = self.next_path()?;
-                    let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
-                        .create_new(true).write(true).open(&path)?);
-                    merge(chunk, |key, count| write_group(&mut writer, key, count))?;
-                    writer.flush()?;
-                    self.reserve_disk(&path)?;
-                    reduced.push(path);
-                    for old in chunk { self.remove_run(old)?; }
+        while self.runs.len() > FAN_IN {
+            let previous = std::mem::take(&mut self.runs);
+            let mut reduced = Vec::new();
+            for chunk in previous.chunks(FAN_IN) {
+                // An untouched tail run is already compacted. Rewriting
+                // it uses scratch space and full read/write I/O for no gain.
+                if let [single] = chunk {
+                    reduced.push(single.clone());
+                    continue;
                 }
-                self.runs = reduced;
+                // Compacting canonical counts never produces more bytes
+                // than the combined input runs.
+                let bytes = chunk.iter().try_fold(0u64, |total, file| {
+                    total
+                        .checked_add(fs::metadata(file)?.len())
+                        .ok_or_else(|| invalid("GROUP BY spill merge size overflow"))
+                })?;
+                self.preflight_disk(bytes)?;
+                let path = self.next_path()?;
+                let mut writer = BufWriter::with_capacity(
+                    64 * 1024,
+                    OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(&path)?,
+                );
+                merge(chunk, |key, count| write_group(&mut writer, key, count))?;
+                writer.flush()?;
+                self.reserve_disk(&path)?;
+                reduced.push(path);
+                for old in chunk {
+                    self.remove_run(old)?;
+                }
             }
+            self.runs = reduced;
+        }
         Ok(())
     }
 
     /// Stop the final k-way merge when the client has received its page.
     /// Intermediate fan-in runs are always fully reduced before this step.
     pub(super) fn finish_until(
-        mut self, mut emit: impl FnMut(u64, u64) -> Result<bool, ExecutionError>,
+        mut self,
+        mut emit: impl FnMut(u64, u64) -> Result<bool, ExecutionError>,
     ) -> Result<(), ExecutionError> {
         self.flush()?;
         self.compact_runs()?;
@@ -373,7 +444,9 @@ impl ExternalGroupCount64 {
             while let Some((encoded, count)) = read_group(&mut reader)? {
                 let key = if descending { !encoded } else { encoded };
                 let key = if signed { key ^ (1 << 63) } else { key };
-                if !emit(key, count)? { break; }
+                if !emit(key, count)? {
+                    break;
+                }
             }
             return Ok(());
         }
@@ -385,9 +458,13 @@ impl ExternalGroupCount64 {
     }
 
     pub(super) fn finish(
-        self, mut emit: impl FnMut(u64, u64) -> Result<(), ExecutionError>,
+        self,
+        mut emit: impl FnMut(u64, u64) -> Result<(), ExecutionError>,
     ) -> Result<(), ExecutionError> {
-        self.finish_until(|key, count| { emit(key, count)?; Ok(true) })
+        self.finish_until(|key, count| {
+            emit(key, count)?;
+            Ok(true)
+        })
     }
 }
 
@@ -399,7 +476,10 @@ mod tests {
     fn grouped_spill_directory_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let scratch = Scratch::create().unwrap();
-        assert_eq!(fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o077, 0);
+        assert_eq!(
+            fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o077,
+            0
+        );
     }
 
     #[test]
@@ -423,14 +503,18 @@ mod tests {
             group.insert((id % 50_000) as u64).unwrap();
         }
         let mut values = Vec::new();
-        group.finish(|key, count| {
-            values.push((key, count));
-            Ok(())
-        }).unwrap();
+        group
+            .finish(|key, count| {
+                values.push((key, count));
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(values.len(), 50_000);
         assert!(values.windows(2).all(|pair| pair[0].0 < pair[1].0));
-        assert_eq!(values.iter().map(|(_, count)| *count).sum::<u64>(),
-            (RUN_KEYS * 35) as u64);
+        assert_eq!(
+            values.iter().map(|(_, count)| *count).sum::<u64>(),
+            (RUN_KEYS * 35) as u64
+        );
     }
 
     #[test]
@@ -445,9 +529,14 @@ mod tests {
                 self.bytes.extend_from_slice(data);
                 Ok(data.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
-        let mut output = CountWrites { calls: 0, bytes: Vec::new() };
+        let mut output = CountWrites {
+            calls: 0,
+            bytes: Vec::new(),
+        };
         write_group(&mut output, u64::MAX, 12_345).unwrap();
         assert_eq!(output.calls, 1);
         let mut encoded = output.bytes.as_slice();
@@ -466,10 +555,14 @@ mod tests {
         // A fixed-width run would need 16 bytes for every unique group.
         assert!(bytes < (RUN_KEYS as u64) * 8, "{bytes} bytes");
         let mut total = 0_u64;
-        groups.finish(|_, count| { total += count; Ok(()) }).unwrap();
+        groups
+            .finish(|_, count| {
+                total += count;
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(total, RUN_KEYS as u64);
     }
-
 
     #[test]
     fn single_run_fast_path_preserves_sort_and_early_stop() {
@@ -479,10 +572,12 @@ mod tests {
         }
         assert_eq!(group.runs.len(), 1);
         let mut output = Vec::new();
-        group.finish_until(|key, count| {
-            output.push((key, count));
-            Ok(output.len() < 17)
-        }).unwrap();
+        group
+            .finish_until(|key, count| {
+                output.push((key, count));
+                Ok(output.len() < 17)
+            })
+            .unwrap();
         assert_eq!(output.len(), 17);
         assert!(output.windows(2).all(|w| w[0].0 > w[1].0));
         assert_eq!(output[0].0, 498);
@@ -496,7 +591,10 @@ mod tests {
         assert!(read_varint(&mut excessive, true).is_err());
         let mut out = Vec::new();
         write_varint(&mut out, u64::MAX).unwrap();
-        assert_eq!(read_varint(&mut out.as_slice(), false).unwrap(), Some(u64::MAX));
+        assert_eq!(
+            read_varint(&mut out.as_slice(), false).unwrap(),
+            Some(u64::MAX)
+        );
     }
 
     #[test]
@@ -507,12 +605,20 @@ mod tests {
         }
         assert!(group.runs.len() > FAN_IN);
         group.compact_runs().unwrap();
-        let actual: u64 = group.runs.iter()
-            .map(|path| fs::metadata(path).unwrap().len()).sum();
+        let actual: u64 = group
+            .runs
+            .iter()
+            .map(|path| fs::metadata(path).unwrap().len())
+            .sum();
         assert_eq!(group.disk_bytes, actual);
         assert!(group.runs.len() <= FAN_IN);
         let mut seen = 0_u64;
-        group.finish(|_, count| { seen += count; Ok(()) }).unwrap();
+        group
+            .finish(|_, count| {
+                seen += count;
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(seen, (RUN_KEYS * (FAN_IN + 3)) as u64);
     }
 
@@ -524,14 +630,20 @@ mod tests {
         }
         let mut seen = 0usize;
         let mut selected = Vec::new();
-        group.finish_until(|key, count| {
-            if seen >= 100 && selected.len() < 7 { selected.push((key, count)); }
-            seen += 1;
-            Ok(selected.len() < 7)
-        }).unwrap();
+        group
+            .finish_until(|key, count| {
+                if seen >= 100 && selected.len() < 7 {
+                    selected.push((key, count));
+                }
+                seen += 1;
+                Ok(selected.len() < 7)
+            })
+            .unwrap();
         assert_eq!(seen, 107);
-        assert_eq!(selected.iter().map(|row| row.0).collect::<Vec<_>>(),
-            (100u64..107).collect::<Vec<_>>());
+        assert_eq!(
+            selected.iter().map(|row| row.0).collect::<Vec<_>>(),
+            (100u64..107).collect::<Vec<_>>()
+        );
         assert!(selected.iter().all(|row| row.1 > 0));
     }
 
@@ -542,10 +654,12 @@ mod tests {
             group.insert(value as u64).unwrap();
         }
         let mut result = Vec::new();
-        group.finish_until(|key, count| {
-            result.push((key as i64, count));
-            Ok(result.len() < 2)
-        }).unwrap();
+        group
+            .finish_until(|key, count| {
+                result.push((key as i64, count));
+                Ok(result.len() < 2)
+            })
+            .unwrap();
         assert_eq!(result, [(3, 3), (1, 1)]);
     }
 
@@ -582,9 +696,16 @@ mod tests {
     #[test]
     fn signed_descending_sort_preserves_negative_keys() {
         let mut groups = ExternalGroupCount64::new(true, true);
-        for number in [-1i64, -5, 1, 1, 0] { groups.insert(number as u64).unwrap(); }
+        for number in [-1i64, -5, 1, 1, 0] {
+            groups.insert(number as u64).unwrap();
+        }
         let mut rows = Vec::new();
-        groups.finish(|key, count| { rows.push((key as i64, count)); Ok(()) }).unwrap();
+        groups
+            .finish(|key, count| {
+                rows.push((key as i64, count));
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(rows, vec![(1, 2), (0, 1), (-1, 1), (-5, 1)]);
     }
 }
@@ -604,10 +725,15 @@ mod packed_grouped_varint_tests {
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
 
-        let mut out = Counting { calls: 0, bytes: Vec::new() };
+        let mut out = Counting {
+            calls: 0,
+            bytes: Vec::new(),
+        };
         let values = [0, 127, 128, 16_384, u32::MAX as u64, u64::MAX];
         for &number in &values {
             write_varint(&mut out, number).unwrap();
@@ -722,8 +848,11 @@ mod root_replacement_merge_tests {
         merge_until(&paths, |key, count| {
             actual.push((key, count));
             Ok(true)
-        }).unwrap();
-        let expected = expected.iter().enumerate()
+        })
+        .unwrap();
+        let expected = expected
+            .iter()
+            .enumerate()
             .filter(|&(_, &count)| count > 0)
             .map(|(key, &count)| (key as u64, count))
             .collect::<Vec<_>>();
@@ -733,7 +862,8 @@ mod root_replacement_merge_tests {
         merge_until(&paths, |key, count| {
             page.push((key, count));
             Ok(page.len() < 11)
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(page, expected[..11]);
     }
 
@@ -753,14 +883,18 @@ mod root_replacement_merge_tests {
         assert_eq!(groups.runs.len(), 2);
         assert_eq!(groups.runs[1], tail);
         let mut items = Vec::new();
-        groups.finish(|key, count| {
-            items.push((key, count));
-            Ok(())
-        }).unwrap();
-        assert_eq!(items, (0..FAN_IN + 1).map(|k| (k as u64, 1)).collect::<Vec<_>>());
+        groups
+            .finish(|key, count| {
+                items.push((key, count));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            items,
+            (0..FAN_IN + 1).map(|k| (k as u64, 1)).collect::<Vec<_>>()
+        );
     }
 }
-
 
 #[cfg(test)]
 mod spill_order_validation_tests {
@@ -781,7 +915,8 @@ mod spill_order_validation_tests {
         let error = merge_until(&[path], |key, count| {
             rows.push((key, count));
             Ok(true)
-        }).unwrap_err();
+        })
+        .unwrap_err();
         assert!(error.to_string().contains("not sorted"), "{error}");
     }
 
@@ -805,7 +940,8 @@ mod spill_order_validation_tests {
         merge_until(&paths, |key, count| {
             merged.push((key, count));
             Ok(true)
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(merged, vec![(1, 6), (2, 9), (4, 9)]);
     }
 }

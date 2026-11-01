@@ -25,10 +25,7 @@ fn checks_signed_or_zero_with_boundaries_and_nulls() {
 
 #[test]
 fn rejects_invalid_signed_or_zero_arguments() {
-    for query in [
-        "SELECT TOINT8ORZERO()",
-        "SELECT TOINT8ORZERO('1', '2')",
-    ] {
+    for query in ["SELECT TOINT8ORZERO()", "SELECT TOINT8ORZERO('1', '2')"] {
         let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", query])
             .output()

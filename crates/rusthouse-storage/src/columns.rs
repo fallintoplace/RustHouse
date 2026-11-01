@@ -4,7 +4,10 @@ use std::collections::HashSet;
 pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let mut lines = content.lines();
     if lines.next() != Some("columns format version: 1") {
-        return Err(invalid_columns_format_error(1, "expected columns format version: 1"));
+        return Err(invalid_columns_format_error(
+            1,
+            "expected columns format version: 1",
+        ));
     }
 
     let header = lines
@@ -22,30 +25,42 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let mut names: Option<HashSet<String>> = None;
     for index in 0..expected {
         let line_number = index + 3;
-        let line = lines
-            .next()
-            .ok_or_else(|| {
-                invalid_columns_format_error(line_number, "fewer columns than declared")
-            })?;
+        let line = lines.next().ok_or_else(|| {
+            invalid_columns_format_error(line_number, "fewer columns than declared")
+        })?;
         let column = parse_column(line, line_number)?;
         let duplicated = if columns.len() < 8 {
-            columns.iter().any(|existing: &Column| existing.name == column.name)
+            columns
+                .iter()
+                .any(|existing: &Column| existing.name == column.name)
         } else {
             let seen = names.get_or_insert_with(|| {
-                columns.iter().map(|existing: &Column| existing.name.clone()).collect()
+                columns
+                    .iter()
+                    .map(|existing: &Column| existing.name.clone())
+                    .collect()
             });
             !seen.insert(column.name.clone())
         };
         if duplicated {
-            return Err(invalid_columns_format_error(line_number, "duplicate column name"));
+            return Err(invalid_columns_format_error(
+                line_number,
+                "duplicate column name",
+            ));
         }
         columns.push(column);
     }
     if lines.next().is_some() {
-        return Err(invalid_columns_format_error(expected + 3, "more columns than declared"));
+        return Err(invalid_columns_format_error(
+            expected + 3,
+            "more columns than declared",
+        ));
     }
     if !content.ends_with('\n') {
-        return Err(invalid_columns_format_error(expected + 2, "missing final newline"));
+        return Err(invalid_columns_format_error(
+            expected + 2,
+            "missing final newline",
+        ));
     }
 
     Ok(columns)
@@ -119,7 +134,10 @@ fn append_identifier_escape(
 
 fn finish_column(name: Vec<u8>, data_type: &str, line_number: usize) -> Result<Column, PartError> {
     if name.is_empty() || data_type.is_empty() || data_type.trim() != data_type {
-        return Err(invalid_columns_format_error(line_number, "empty column name or invalid type"));
+        return Err(invalid_columns_format_error(
+            line_number,
+            "empty column name or invalid type",
+        ));
     }
     let name = String::from_utf8(name)
         .map_err(|_| invalid_columns_format_error(line_number, "column name is not valid UTF-8"))?;
@@ -145,15 +163,9 @@ fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
                 name.push(b'`');
             }
             '`' => {
-                let data_type = chars
-                    .as_str()
-                    .strip_prefix(' ')
-                    .ok_or_else(|| {
-                        invalid_columns_format_error(
-                            line_number,
-                            "expected a space after column name",
-                        )
-                    })?;
+                let data_type = chars.as_str().strip_prefix(' ').ok_or_else(|| {
+                    invalid_columns_format_error(line_number, "expected a space after column name")
+                })?;
                 return finish_column(name, data_type, line_number);
             }
             '\\' => append_identifier_escape(&mut chars, &mut name, line_number)?,
@@ -163,7 +175,10 @@ fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
         }
     }
 
-    Err(invalid_columns_format_error(line_number, "unterminated column name"))
+    Err(invalid_columns_format_error(
+        line_number,
+        "unterminated column name",
+    ))
 }
 
 #[cfg(test)]
@@ -373,6 +388,9 @@ mod lazy_column_name_set_tests {
     #[test]
     fn enormous_declared_column_counts_still_fail_on_missing_records() {
         let input = "columns format version: 1\n99999999 columns:\n\u{0060}only\u{0060} UInt64\n";
-        assert!(matches!(parse_columns(input), Err(PartError::InvalidColumns { .. })));
+        assert!(matches!(
+            parse_columns(input),
+            Err(PartError::InvalidColumns { .. })
+        ));
     }
 }

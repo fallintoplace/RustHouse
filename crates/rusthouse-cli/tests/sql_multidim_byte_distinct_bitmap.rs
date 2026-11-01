@@ -40,7 +40,11 @@ fn multidimensional_distinct_byte_bitmap_is_exact_across_parts() {
     ] {
         let result = sql(query, &database);
         assert!(result.status.success(), "{query}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(database).unwrap();
 }

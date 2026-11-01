@@ -27,7 +27,8 @@ impl Scratch {
         for _ in 0..64 {
             let sequence = NEXT_SORT.fetch_add(1, AtomicOrdering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "rusthouse-typed-sort-{}-{sequence}", std::process::id(),
+                "rusthouse-typed-sort-{}-{sequence}",
+                std::process::id(),
             ));
             let mut directory = fs::DirBuilder::new();
             #[cfg(unix)]
@@ -64,18 +65,24 @@ fn compare_entries(
     nulls_last_mask: u8,
 ) -> Ordering {
     compare_sort_keys(
-        &a.row.sort_keys, &b.row.sort_keys,
-        descending_mask, nulls_first_mask, nulls_last_mask,
-    ).then_with(|| a.ordinal.cmp(&b.ordinal))
+        &a.row.sort_keys,
+        &b.row.sort_keys,
+        descending_mask,
+        nulls_first_mask,
+        nulls_last_mask,
+    )
+    .then_with(|| a.ordinal.cmp(&b.ordinal))
 }
 
 fn entry_bytes(row: &Row) -> Result<usize, ExecutionError> {
     let mut cells = row.values.iter().chain(row.sort_keys.iter());
     cells.try_fold(
         std::mem::size_of::<SortEntry>()
-            .checked_add((row.values.len() + row.sort_keys.len())
-                .checked_mul(std::mem::size_of::<Cell>())
-                .ok_or_else(|| invalid("typed sort row-size overflow"))?)
+            .checked_add(
+                (row.values.len() + row.sort_keys.len())
+                    .checked_mul(std::mem::size_of::<Cell>())
+                    .ok_or_else(|| invalid("typed sort row-size overflow"))?,
+            )
             .ok_or_else(|| invalid("typed sort row-size overflow"))?,
         |used, cell| {
             let extra = match cell {
@@ -83,7 +90,8 @@ fn entry_bytes(row: &Row) -> Result<usize, ExecutionError> {
                 Cell::Uuid(value) => value.len(),
                 _ => 0,
             };
-            used.checked_add(extra).ok_or_else(|| invalid("typed sort row-size overflow"))
+            used.checked_add(extra)
+                .ok_or_else(|| invalid("typed sort row-size overflow"))
         },
     )
 }
@@ -116,8 +124,8 @@ fn write_cell(output: &mut impl Write, value: &Cell) -> Result<(), ExecutionErro
 }
 
 fn write_bytes(output: &mut impl Write, tag: u8, value: &[u8]) -> Result<(), ExecutionError> {
-    let length = u32::try_from(value.len())
-        .map_err(|_| invalid("typed sort value exceeds 4 GiB"))?;
+    let length =
+        u32::try_from(value.len()).map_err(|_| invalid("typed sort value exceeds 4 GiB"))?;
     if value.len() > MAX_FIELD_BYTES {
         return Err(invalid("typed sort value exceeds 32 MiB field limit"));
     }
@@ -160,13 +168,18 @@ fn read_cell(input: &mut impl Read, remaining_bytes: &mut usize) -> Result<Cell,
             Cell::Numeric(Number::Float(f64::from_bits(u64::from_le_bytes(data))))
         }
         4 => Cell::Text(read_bytes(input, remaining_bytes)?),
-        5 => Cell::Uuid(String::from_utf8(read_bytes(input, remaining_bytes)?)
-            .map_err(|_| invalid("invalid UUID bytes in typed sort run"))?),
+        5 => Cell::Uuid(
+            String::from_utf8(read_bytes(input, remaining_bytes)?)
+                .map_err(|_| invalid("invalid UUID bytes in typed sort run"))?,
+        ),
         _ => return Err(invalid("invalid typed sort cell tag")),
     })
 }
 
-fn read_bytes(input: &mut impl Read, remaining_bytes: &mut usize) -> Result<Vec<u8>, ExecutionError> {
+fn read_bytes(
+    input: &mut impl Read,
+    remaining_bytes: &mut usize,
+) -> Result<Vec<u8>, ExecutionError> {
     let mut size = [0u8; 4];
     input.read_exact(&mut size)?;
     let size = u32::from_le_bytes(size) as usize;
@@ -185,8 +198,8 @@ fn read_bytes(input: &mut impl Read, remaining_bytes: &mut usize) -> Result<Vec<
 }
 
 fn write_entry(output: &mut impl Write, entry: &SortEntry) -> Result<(), ExecutionError> {
-    let ordinal = u64::try_from(entry.ordinal)
-        .map_err(|_| invalid("typed sort sequence overflow"))?;
+    let ordinal =
+        u64::try_from(entry.ordinal).map_err(|_| invalid("typed sort sequence overflow"))?;
     let values = u16::try_from(entry.row.values.len())
         .map_err(|_| invalid("too many typed sort projection columns"))?;
     let sort_keys = u16::try_from(entry.row.sort_keys.len())
@@ -231,7 +244,10 @@ fn read_entry(input: &mut impl Read) -> Result<Option<SortEntry>, ExecutionError
         sorted.push(read_cell(input, &mut remaining_bytes)?);
     }
     Ok(Some(SortEntry {
-        row: Row { values: projected, sort_keys: sorted },
+        row: Row {
+            values: projected,
+            sort_keys: sorted,
+        },
         ordinal: usize::try_from(u64::from_le_bytes(ordinal))
             .map_err(|_| invalid("typed sort run sequence exceeds address space"))?,
     }))
@@ -246,18 +262,26 @@ struct HeapItem {
 }
 
 impl PartialEq for HeapItem {
-    fn eq(&self, other: &Self) -> bool { self.cmp(other).is_eq() }
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
 }
 impl Eq for HeapItem {}
 impl PartialOrd for HeapItem {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 impl Ord for HeapItem {
     fn cmp(&self, other: &Self) -> Ordering {
         compare_entries(
-            &other.entry, &self.entry,
-            self.descending, self.nulls_first, self.nulls_last,
-        ).then_with(|| other.source.cmp(&self.source))
+            &other.entry,
+            &self.entry,
+            self.descending,
+            self.nulls_first,
+            self.nulls_last,
+        )
+        .then_with(|| other.source.cmp(&self.source))
     }
 }
 
@@ -295,15 +319,22 @@ impl TypedExternalSort {
         if bytes > MAX_BUFFER_BYTES {
             return Err(invalid("typed sort row exceeds 32 MiB memory budget"));
         }
-        if self.buffer.len() >= MAX_BUFFER_ROWS ||
-            self.buffer_bytes.checked_add(bytes).is_none_or(|n| n > MAX_BUFFER_BYTES)
+        if self.buffer.len() >= MAX_BUFFER_ROWS
+            || self
+                .buffer_bytes
+                .checked_add(bytes)
+                .is_none_or(|n| n > MAX_BUFFER_BYTES)
         {
             self.flush()?;
         }
-        self.buffer_bytes = self.buffer_bytes.checked_add(bytes)
+        self.buffer_bytes = self
+            .buffer_bytes
+            .checked_add(bytes)
             .ok_or_else(|| invalid("typed sort memory accounting overflow"))?;
         let ordinal = self.ordinal;
-        self.ordinal = self.ordinal.checked_add(1)
+        self.ordinal = self
+            .ordinal
+            .checked_add(1)
             .ok_or_else(|| invalid("typed sort sequence overflow"))?;
         self.buffer.push(SortEntry { row, ordinal });
         Ok(())
@@ -312,9 +343,8 @@ impl TypedExternalSort {
     fn sort_buffer(&mut self) {
         let (descending, nulls_first, nulls_last) =
             (self.descending, self.nulls_first, self.nulls_last);
-        self.buffer.sort_unstable_by(|a, b| {
-            compare_entries(a, b, descending, nulls_first, nulls_last)
-        });
+        self.buffer
+            .sort_unstable_by(|a, b| compare_entries(a, b, descending, nulls_first, nulls_last));
     }
 
     fn next_path(&mut self) -> Result<PathBuf, ExecutionError> {
@@ -322,14 +352,23 @@ impl TypedExternalSort {
             self.scratch = Some(Scratch::new()?);
         }
         let ordinal = self.files_created;
-        self.files_created = self.files_created.checked_add(1)
+        self.files_created = self
+            .files_created
+            .checked_add(1)
             .ok_or_else(|| invalid("typed sort run count overflow"))?;
-        Ok(self.scratch.as_ref().unwrap().0.join(format!("run-{ordinal:016}.bin")))
+        Ok(self
+            .scratch
+            .as_ref()
+            .unwrap()
+            .0
+            .join(format!("run-{ordinal:016}.bin")))
     }
 
     fn charge_file(&mut self, path: &Path) -> Result<(), ExecutionError> {
         let bytes = fs::metadata(path)?.len();
-        let next = self.disk_bytes.checked_add(bytes)
+        let next = self
+            .disk_bytes
+            .checked_add(bytes)
             .ok_or_else(|| invalid("typed sort spill byte overflow"))?;
         if next > MAX_TEMP_BYTES {
             return Err(invalid("typed sort spill exceeds 32 GiB budget"));
@@ -348,26 +387,36 @@ impl TypedExternalSort {
     fn preflight_flush(&self) -> Result<(), ExecutionError> {
         let bytes = self.buffer.iter().try_fold(0u64, |total, entry| {
             let row = &entry.row;
-            let payload = row.values.iter().chain(row.sort_keys.iter())
-                .try_fold(12u64, |sum, cell| {
-                    let size = match cell {
-                        Cell::Null => 1,
-                        Cell::Numeric(Number::Unsigned(_) | Number::Signed(_)) => 17,
-                        Cell::Numeric(Number::Float(_)) => 9,
-                        Cell::Text(value) => u64::try_from(value.len()).ok()
-                            .and_then(|len| len.checked_add(5))
-                            .ok_or_else(|| invalid("typed sort run size overflow"))?,
-                        Cell::Uuid(value) => u64::try_from(value.len()).ok()
-                            .and_then(|len| len.checked_add(5))
-                            .ok_or_else(|| invalid("typed sort run size overflow"))?,
-                    };
-                    sum.checked_add(size)
-                        .ok_or_else(|| invalid("typed sort run size overflow"))
-                })?;
-            total.checked_add(payload)
+            let payload =
+                row.values
+                    .iter()
+                    .chain(row.sort_keys.iter())
+                    .try_fold(12u64, |sum, cell| {
+                        let size = match cell {
+                            Cell::Null => 1,
+                            Cell::Numeric(Number::Unsigned(_) | Number::Signed(_)) => 17,
+                            Cell::Numeric(Number::Float(_)) => 9,
+                            Cell::Text(value) => u64::try_from(value.len())
+                                .ok()
+                                .and_then(|len| len.checked_add(5))
+                                .ok_or_else(|| invalid("typed sort run size overflow"))?,
+                            Cell::Uuid(value) => u64::try_from(value.len())
+                                .ok()
+                                .and_then(|len| len.checked_add(5))
+                                .ok_or_else(|| invalid("typed sort run size overflow"))?,
+                        };
+                        sum.checked_add(size)
+                            .ok_or_else(|| invalid("typed sort run size overflow"))
+                    })?;
+            total
+                .checked_add(payload)
                 .ok_or_else(|| invalid("typed sort run size overflow"))
         })?;
-        if self.disk_bytes.checked_add(bytes).is_none_or(|sum| sum > MAX_TEMP_BYTES) {
+        if self
+            .disk_bytes
+            .checked_add(bytes)
+            .is_none_or(|sum| sum > MAX_TEMP_BYTES)
+        {
             return Err(invalid("typed sort spill exceeds 32 GiB budget"));
         }
         Ok(())
@@ -393,12 +442,9 @@ impl TypedExternalSort {
         Ok(())
     }
 
-    fn merge_group<F>(
-        &self,
-        paths: &[PathBuf],
-        mut emit: F,
-    ) -> Result<(), ExecutionError>
-    where F: FnMut(&SortEntry) -> Result<bool, ExecutionError>,
+    fn merge_group<F>(&self, paths: &[PathBuf], mut emit: F) -> Result<(), ExecutionError>
+    where
+        F: FnMut(&SortEntry) -> Result<bool, ExecutionError>,
     {
         if let [path] = paths {
             // A single pre-sorted run does not need a heap or comparisons.
@@ -407,28 +453,42 @@ impl TypedExternalSort {
             while let Some(entry) = current {
                 // LIMIT may stop before a corrupt trailing record. If another
                 // row is needed, validate its position in this sorted run.
-                if !emit(&entry)? { break; }
+                if !emit(&entry)? {
+                    break;
+                }
                 current = read_entry(&mut source)?;
                 if current.as_ref().is_some_and(|next| {
-                    compare_entries(&entry, next,
-                        self.descending, self.nulls_first, self.nulls_last).is_gt()
+                    compare_entries(
+                        &entry,
+                        next,
+                        self.descending,
+                        self.nulls_first,
+                        self.nulls_last,
+                    )
+                    .is_gt()
                 }) {
                     return Err(invalid("typed sort run is not sorted"));
                 }
             }
             return Ok(());
         }
-        let mut sources = paths.iter().map(|path| {
-            File::open(path)
-                .map(|file| BufReader::with_capacity(64 * 1024, file))
-                .map_err(ExecutionError::from)
-        }).collect::<Result<Vec<_>, _>>()?;
+        let mut sources = paths
+            .iter()
+            .map(|path| {
+                File::open(path)
+                    .map(|file| BufReader::with_capacity(64 * 1024, file))
+                    .map_err(ExecutionError::from)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut heap = BinaryHeap::new();
         for (index, source) in sources.iter_mut().enumerate() {
             if let Some(entry) = read_entry(source)? {
                 heap.push(HeapItem {
-                    entry, source: index, descending: self.descending,
-                    nulls_first: self.nulls_first, nulls_last: self.nulls_last,
+                    entry,
+                    source: index,
+                    descending: self.descending,
+                    nulls_first: self.nulls_first,
+                    nulls_last: self.nulls_last,
                 });
             }
         }
@@ -441,8 +501,14 @@ impl TypedExternalSort {
             }
             let source = root.source;
             if let Some(entry) = read_entry(&mut sources[source])? {
-                if compare_entries(&root.entry, &entry,
-                    self.descending, self.nulls_first, self.nulls_last).is_gt()
+                if compare_entries(
+                    &root.entry,
+                    &entry,
+                    self.descending,
+                    self.nulls_first,
+                    self.nulls_last,
+                )
+                .is_gt()
                 {
                     return Err(invalid("typed sort run is not sorted"));
                 }
@@ -464,10 +530,13 @@ impl TypedExternalSort {
                     continue;
                 }
                 let current_bytes = chunk.iter().try_fold(0u64, |total, path| {
-                    total.checked_add(fs::metadata(path)?.len())
+                    total
+                        .checked_add(fs::metadata(path)?.len())
                         .ok_or_else(|| invalid("typed sort merge size overflow"))
                 })?;
-                if self.disk_bytes.checked_add(current_bytes)
+                if self
+                    .disk_bytes
+                    .checked_add(current_bytes)
                     .is_none_or(|n| n > MAX_TEMP_BYTES)
                 {
                     return Err(invalid("typed sort needs more than 32 GiB scratch"));
@@ -515,7 +584,8 @@ impl TypedExternalSort {
                 write_row(output, &entry.row.values, data_types)?;
                 emitted += 1;
             }
-            seen = seen.checked_add(1)
+            seen = seen
+                .checked_add(1)
                 .ok_or_else(|| invalid("typed sort merge row count overflow"))?;
             Ok(emitted < limit)
         })?;
@@ -529,7 +599,10 @@ mod tests {
 
     fn row(text: &str, value: u64) -> Row {
         Row {
-            values: vec![Cell::Text(text.as_bytes().to_vec()), Cell::Numeric(Number::Unsigned(value as u128))],
+            values: vec![
+                Cell::Text(text.as_bytes().to_vec()),
+                Cell::Numeric(Number::Unsigned(value as u128)),
+            ],
             sort_keys: vec![Cell::Numeric(Number::Unsigned(value as u128))],
         }
     }
@@ -543,23 +616,35 @@ mod tests {
         sorter.flush().unwrap();
         assert_eq!(sorter.runs.len(), 1);
         let mut result = Vec::new();
-        sorter.write(&mut result, &["String", "UInt64"], 19, 3).unwrap();
-        assert_eq!(String::from_utf8(result).unwrap(),
-            "single-run\t19\nsingle-run\t20\nsingle-run\t21\n");
+        sorter
+            .write(&mut result, &["String", "UInt64"], 19, 3)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(result).unwrap(),
+            "single-run\t19\nsingle-run\t20\nsingle-run\t21\n"
+        );
     }
 
     #[test]
     fn short_string_spill_frame_uses_one_write() {
-        struct Calls { count: usize, bytes: Vec<u8> }
+        struct Calls {
+            count: usize,
+            bytes: Vec<u8>,
+        }
         impl Write for Calls {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
                 self.count += 1;
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
-        let mut output = Calls { count: 0, bytes: Vec::new() };
+        let mut output = Calls {
+            count: 0,
+            bytes: Vec::new(),
+        };
         write_bytes(&mut output, 4, b"hello").unwrap();
         let mut expected = vec![4u8];
         expected.extend_from_slice(&5u32.to_le_bytes());
@@ -574,7 +659,8 @@ mod tests {
         let entry = SortEntry {
             row: Row {
                 values: vec![
-                    Cell::Null, Cell::Text(b"hello\tworld".to_vec()),
+                    Cell::Null,
+                    Cell::Text(b"hello\tworld".to_vec()),
                     Cell::Uuid("61f0c404-5cb3-11e7-907b-a6006ad3dba0".into()),
                     Cell::Numeric(Number::Signed(-5)),
                     Cell::Numeric(Number::Float(1.5)),
@@ -589,8 +675,14 @@ mod tests {
         assert_eq!(recovered.row.values.len(), 5);
         assert!(matches!(&recovered.row.values[1], Cell::Text(value) if value == b"hello\tworld"));
         assert!(matches!(&recovered.row.values[2], Cell::Uuid(value) if value.starts_with("61f0")));
-        assert!(matches!(&recovered.row.values[3], Cell::Numeric(Number::Signed(-5))));
-        assert!(matches!(&recovered.row.values[4], Cell::Numeric(Number::Float(1.5))));
+        assert!(matches!(
+            &recovered.row.values[3],
+            Cell::Numeric(Number::Signed(-5))
+        ));
+        assert!(matches!(
+            &recovered.row.values[4],
+            Cell::Numeric(Number::Float(1.5))
+        ));
         let mut empty: &[u8] = &[];
         assert!(read_entry(&mut empty).unwrap().is_none());
     }
@@ -599,13 +691,20 @@ mod tests {
     fn many_runs_merge_with_stable_keys_and_global_limit_offset() {
         let mut sorter = TypedExternalSort::new(0, 0, 0);
         for index in 0..(MAX_BUFFER_ROWS * (MERGE_FAN_IN + 1)) {
-            sorter.push(row(&format!("key-{index:06}"), (index % 10) as u64)).unwrap();
+            sorter
+                .push(row(&format!("key-{index:06}"), (index % 10) as u64))
+                .unwrap();
         }
         let mut result = Vec::new();
-        sorter.write(&mut result, &["String", "UInt64"], 5, 3).unwrap();
+        sorter
+            .write(&mut result, &["String", "UInt64"], 5, 3)
+            .unwrap();
         let text = String::from_utf8(result).unwrap();
         // Equal keys preserve input order, and OFFSET is applied after global sort.
-        assert!(text.starts_with("key-000050\t0\nkey-000060\t0\nkey-000070\t0\n"), "{text}");
+        assert!(
+            text.starts_with("key-000050\t0\nkey-000060\t0\nkey-000070\t0\n"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -619,10 +718,16 @@ mod tests {
         // The incomplete final record would fail if a LIMIT 1 query reads
         // the entire run. Sorted order makes this file's first entry smallest.
         let first = sorter.runs[0].clone();
-        OpenOptions::new().append(true).open(&first).unwrap()
-            .write_all(&[0x11]).unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&first)
+            .unwrap()
+            .write_all(&[0x11])
+            .unwrap();
         let mut result = Vec::new();
-        sorter.write(&mut result, &["String", "UInt64"], 0, 1).unwrap();
+        sorter
+            .write(&mut result, &["String", "UInt64"], 0, 1)
+            .unwrap();
         assert_eq!(String::from_utf8(result).unwrap(), "a\t0\n");
     }
 
@@ -636,14 +741,25 @@ mod tests {
         corrupt.extend_from_slice(&0u16.to_le_bytes());
         corrupt.push(4);
         corrupt.extend_from_slice(&(MAX_FIELD_BYTES as u32).to_le_bytes());
-        let error = read_entry(&mut corrupt.as_slice()).err().expect("oversized row must fail");
-        assert!(matches!(error, ExecutionError::Invalid(message) if message.contains("memory budget")));
+        let error = read_entry(&mut corrupt.as_slice())
+            .err()
+            .expect("oversized row must fail");
+        assert!(
+            matches!(error, ExecutionError::Invalid(message) if message.contains("memory budget"))
+        );
     }
 
     #[test]
     fn read_entry_rejects_truncated_rows_and_invalid_tags() {
         let mut data = Vec::new();
-        write_entry(&mut data, &SortEntry { row: row("a", 5), ordinal: 1 }).unwrap();
+        write_entry(
+            &mut data,
+            &SortEntry {
+                row: row("a", 5),
+                ordinal: 1,
+            },
+        )
+        .unwrap();
         let short = &data[..data.len() - 1];
         assert!(read_entry(&mut short.as_ref()).is_err());
         let mut malformed = data;
@@ -678,7 +794,8 @@ mod typed_spill_preflight_tests {
                 Cell::Numeric(Number::Unsigned(11)),
             ],
             sort_keys: vec![Cell::Null],
-        }).unwrap();
+        })
+        .unwrap();
         // 12-byte row header + 8-byte text + 17-byte integer + 1-byte NULL.
         sort.disk_bytes = MAX_TEMP_BYTES - 37;
         assert!(sort.flush().is_err());
@@ -729,15 +846,24 @@ mod heap_root_regression_tests {
             }
             assert!(sorter.runs.len() >= 2);
             expected.sort_by(|a, b| {
-                (if descending { b.0.cmp(&a.0) } else { a.0.cmp(&b.0) })
-                    .then_with(|| a.1.cmp(&b.1))
+                (if descending {
+                    b.0.cmp(&a.0)
+                } else {
+                    a.0.cmp(&b.0)
+                })
+                .then_with(|| a.1.cmp(&b.1))
             });
             let offset = 8190usize;
             let limit = 100usize;
             let mut output = Vec::new();
-            sorter.write(&mut output, &["String", "UInt64"], offset, limit).unwrap();
+            sorter
+                .write(&mut output, &["String", "UInt64"], offset, limit)
+                .unwrap();
             let actual = String::from_utf8(output).unwrap();
-            let expected = expected.iter().skip(offset).take(limit)
+            let expected = expected
+                .iter()
+                .skip(offset)
+                .take(limit)
                 .map(|(key, index)| format!("row_{index}\t{key}\n"))
                 .collect::<String>();
             assert_eq!(actual, expected);
@@ -762,7 +888,9 @@ mod framed_text_spill_tests {
             Ok(buffer.len())
         }
 
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -790,7 +918,6 @@ mod framed_text_spill_tests {
     }
 }
 
-
 #[cfg(test)]
 mod typed_spill_order_validation_tests {
     use super::*;
@@ -799,13 +926,17 @@ mod typed_spill_order_validation_tests {
         let path = scratch.0.join(filename);
         let mut output = BufWriter::new(File::create(&path).unwrap());
         for (ordinal, &key) in keys.iter().enumerate() {
-            write_entry(&mut output, &SortEntry {
-                row: Row {
-                    values: vec![Cell::Text(format!("row-{ordinal}").into_bytes())],
-                    sort_keys: vec![Cell::Numeric(Number::Unsigned(key.into()))],
+            write_entry(
+                &mut output,
+                &SortEntry {
+                    row: Row {
+                        values: vec![Cell::Text(format!("row-{ordinal}").into_bytes())],
+                        sort_keys: vec![Cell::Numeric(Number::Unsigned(key.into()))],
+                    },
+                    ordinal,
                 },
-                ordinal,
-            }).unwrap();
+            )
+            .unwrap();
         }
         output.flush().unwrap();
         path
@@ -828,12 +959,18 @@ mod typed_spill_order_validation_tests {
         let scratch = Scratch::new().unwrap();
         let bad_desc = run(&scratch, "descending", &[6, 2, 4]);
         let sorter = TypedExternalSort::new(1, 0, 0);
-        assert!(sorter.merge_group(&[bad_desc.clone()], |_| Ok(true)).is_err());
+        assert!(
+            sorter
+                .merge_group(&[bad_desc.clone()], |_| Ok(true))
+                .is_err()
+        );
         let mut seen = 0;
-        sorter.merge_group(&[bad_desc], |_| {
-            seen += 1;
-            Ok(false)
-        }).unwrap();
+        sorter
+            .merge_group(&[bad_desc], |_| {
+                seen += 1;
+                Ok(false)
+            })
+            .unwrap();
         assert_eq!(seen, 1);
     }
 }

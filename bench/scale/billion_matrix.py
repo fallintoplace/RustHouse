@@ -14,10 +14,13 @@ import os
 import platform
 import re
 import statistics
+import stat
 import subprocess
 import tempfile
 import time
 from pathlib import Path
+
+from bench.common import file_change_time_ns
 
 from bench.scale.row_oracles import modulo_reference, sum_range
 
@@ -197,7 +200,7 @@ def _reject_nonstandard_case_number(token):
 
 def _file_identity(metadata):
     return (metadata.st_dev, metadata.st_ino, metadata.st_size,
-            metadata.st_mtime_ns, metadata.st_ctime_ns)
+            metadata.st_mtime_ns, file_change_time_ns(metadata))
 
 
 def read_case_json(path):

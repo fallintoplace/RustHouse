@@ -48,7 +48,10 @@ fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
         ScalarExpr::Integer(number) => {
             write!(output, "{number}").expect("writing to String cannot fail");
         }
-        ScalarExpr::Case { branches, else_expr } => {
+        ScalarExpr::Case {
+            branches,
+            else_expr,
+        } => {
             output.push_str("CASE");
             for (condition, value) in branches {
                 output.push_str(" WHEN ");
@@ -70,15 +73,26 @@ fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
         ScalarExpr::Subtract(left, right) => {
             render_expr_into(left, output);
             output.push_str(" - ");
-            let wrap = matches!(right.as_ref(), ScalarExpr::Add(..) | ScalarExpr::Subtract(..));
-            if wrap { output.push('('); }
+            let wrap = matches!(
+                right.as_ref(),
+                ScalarExpr::Add(..) | ScalarExpr::Subtract(..)
+            );
+            if wrap {
+                output.push('(');
+            }
             render_expr_into(right, output);
-            if wrap { output.push(')'); }
+            if wrap {
+                output.push(')');
+            }
         }
         ScalarExpr::Divide(left, right) | ScalarExpr::Modulo(left, right) => {
             output.push('(');
             render_expr_into(left, output);
-            output.push_str(if matches!(expr, ScalarExpr::Divide(..)) { ") / (" } else { ") % (" });
+            output.push_str(if matches!(expr, ScalarExpr::Divide(..)) {
+                ") / ("
+            } else {
+                ") % ("
+            });
             render_expr_into(right, output);
             output.push(')');
         }
@@ -98,14 +112,20 @@ fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
         }
         ScalarExpr::Multiply(left, right) => {
             for (index, operand) in [left.as_ref(), right.as_ref()].into_iter().enumerate() {
-                if index != 0 { output.push_str(" * "); }
+                if index != 0 {
+                    output.push_str(" * ");
+                }
                 let wrap = matches!(
                     operand,
                     ScalarExpr::Add(..) | ScalarExpr::Subtract(..) | ScalarExpr::Compare(..)
                 );
-                if wrap { output.push('('); }
+                if wrap {
+                    output.push('(');
+                }
                 render_expr_into(operand, output);
-                if wrap { output.push(')'); }
+                if wrap {
+                    output.push(')');
+                }
             }
         }
     }
@@ -223,14 +243,16 @@ mod tests {
 
     #[test]
     fn count_empty_parentheses_cannot_bypass_aggregate_list_limit() {
-        let within = format!("SELECT {} FROM numbers(1)",
-            vec!["count()"; 128].join(", "));
+        let within = format!("SELECT {} FROM numbers(1)", vec!["count()"; 128].join(", "));
         assert!(parse_select(&within).is_ok());
-        let oversized = format!("SELECT {} FROM numbers(1)",
-            vec!["count()"; 129].join(", "));
+        let oversized = format!("SELECT {} FROM numbers(1)", vec!["count()"; 129].join(", "));
         assert!(parse_select(&oversized).is_err());
-        let mixed = format!("SELECT {} FROM numbers(1)",
-            [vec!["count()"; 128], vec!["sum(number)"]].concat().join(", "));
+        let mixed = format!(
+            "SELECT {} FROM numbers(1)",
+            [vec!["count()"; 128], vec!["sum(number)"]]
+                .concat()
+                .join(", ")
+        );
         assert!(parse_select(&mixed).is_err());
     }
 
@@ -283,8 +305,9 @@ mod tests {
     #[test]
     fn tpch_decimal_literals_in_computed_aggregates() {
         let query = parse_select(
-            "SELECT sum(l_extendedprice * (1 - l_discount)), sum(l_quantity * 0.05) FROM lineitem"
-        ).unwrap();
+            "SELECT sum(l_extendedprice * (1 - l_discount)), sum(l_quantity * 0.05) FROM lineitem",
+        )
+        .unwrap();
         let Projection::MultipleAggregates(items) = query.projection else {
             panic!("expected computed aggregates");
         };
@@ -317,10 +340,8 @@ mod aggregate_header_rendering_tests {
             Box::new(ScalarExpr::Column("x".into())),
             Box::new(ScalarExpr::Integer(2)),
         );
-        let negative = ScalarExpr::Subtract(
-            Box::new(ScalarExpr::Integer(10)),
-            Box::new(plus.clone()),
-        );
+        let negative =
+            ScalarExpr::Subtract(Box::new(ScalarExpr::Integer(10)), Box::new(plus.clone()));
         assert_eq!(render_expr(&negative), "10 - (x + 2)");
         let product = ScalarExpr::Multiply(Box::new(plus), Box::new(negative));
         assert_eq!(render_expr(&product), "(x + 2) * (10 - (x + 2))");

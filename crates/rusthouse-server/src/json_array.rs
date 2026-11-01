@@ -247,14 +247,19 @@ mod compact_json_row_frame_tests {
     use super::*;
 
     #[derive(Default)]
-    struct Counted { writes: usize, bytes: Vec<u8> }
+    struct Counted {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
     impl Write for Counted {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.writes += 1;
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]

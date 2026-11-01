@@ -22,10 +22,7 @@ fn evaluates_utc_parity_and_null_inputs() {
         value("SELECT toUnixTimestamp('2024-01-01T01:00:00+01:00')"),
         ConstantValue::Integer(1704067200)
     );
-    assert_eq!(
-        value("SELECT toUnixTimestamp(NULL)"),
-        ConstantValue::Null
-    );
+    assert_eq!(value("SELECT toUnixTimestamp(NULL)"), ConstantValue::Null);
 }
 
 #[test]

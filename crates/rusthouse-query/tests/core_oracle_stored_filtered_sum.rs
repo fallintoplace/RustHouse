@@ -17,8 +17,12 @@ fn filtered_sum_and_count_cover_every_boundary_row_once() {
         let rows = (start..stop)
             .map(|value| vec![Some(value.to_string())])
             .collect::<Vec<_>>();
-        write_wide_part(&root.join(format!("all_{index}_{index}_0")), &columns, &rows)
-            .unwrap();
+        write_wide_part(
+            &root.join(format!("all_{index}_{index}_0")),
+            &columns,
+            &rows,
+        )
+        .unwrap();
     }
     let sql = "SELECT sum(id), count(*) FROM part WHERE id >= 1019";
     let mut output = Vec::new();
