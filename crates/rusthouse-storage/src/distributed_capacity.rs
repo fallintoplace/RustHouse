@@ -607,3 +607,163 @@ mod batched_replica_reservation_tests {
         ).is_err());
     }
 }
+
+
+/// A small exact alternative to greedy transfer batching.
+///
+/// For up to 24 immutable objects, maximize total transferred bytes under
+/// available capacity, then maximize object count, then select the earliest
+/// original indexes. The operation is pure and does not reserve capacity.
+pub fn plan_capacity_optimal_objects(
+    capacity: Capacity,
+    object_sizes: &[u64],
+) -> Result<Vec<usize>, &'static str> {
+    if object_sizes.len() > 24 {
+        return Err("capacity-optimal transfer exceeds 24 objects");
+    }
+    let available = capacity.available()?;
+    // Each half has at most 12 items, limiting enumeration to 4096 states.
+    #[derive(Clone, Copy)]
+    struct Subset {
+        bytes: u64,
+        count: u32,
+        mask: u32,
+    }
+    fn lex_earlier(left: u32, right: u32) -> bool {
+        let differing = left ^ right;
+        differing != 0 && left & (1u32 << differing.trailing_zeros()) != 0
+    }
+    fn better(left: Subset, right: Subset) -> bool {
+        left.bytes > right.bytes
+            || (left.bytes == right.bytes
+                && (left.count > right.count
+                    || (left.count == right.count
+                        && lex_earlier(left.mask, right.mask))))
+    }
+    fn enumerate(sizes: &[u64], budget: u64) -> Vec<Subset> {
+        let mut subsets = Vec::with_capacity(1 << sizes.len());
+        for mask in 0..(1u32 << sizes.len()) {
+            let mut bytes = Some(0u64);
+            for (index, &size) in sizes.iter().enumerate() {
+                if mask & (1u32 << index) != 0 {
+                    bytes = bytes.and_then(|sum| sum.checked_add(size));
+                    if bytes.is_none_or(|sum| sum > budget) {
+                        break;
+                    }
+                }
+            }
+            if let Some(bytes) = bytes.filter(|&bytes| bytes <= budget) {
+                subsets.push(Subset {
+                    bytes, count: mask.count_ones(), mask,
+                });
+            }
+        }
+        subsets
+    }
+
+    let left_len = object_sizes.len() / 2;
+    let left = enumerate(&object_sizes[..left_len], available);
+    let mut right = enumerate(&object_sizes[left_len..], available);
+    right.sort_unstable_by_key(|subset| subset.bytes);
+    // Keep the preferred subset for each achievable byte total. This makes
+    // binary search choose the best right half even with duplicate sizes.
+    let mut compressed: Vec<Subset> = Vec::with_capacity(right.len());
+    for subset in right {
+        if let Some(last) = compressed.last_mut() {
+            if last.bytes == subset.bytes {
+                if better(subset, *last) {
+                    *last = subset;
+                }
+                continue;
+            }
+        }
+        compressed.push(subset);
+    }
+
+    let mut best = Subset { bytes: 0, count: 0, mask: 0 };
+    for subset in left {
+        let remaining = available - subset.bytes;
+        let end = compressed.partition_point(|candidate| candidate.bytes <= remaining);
+        if end == 0 {
+            continue;
+        }
+        let other = compressed[end - 1];
+        let combined = Subset {
+            bytes: subset.bytes + other.bytes,
+            count: subset.count + other.count,
+            mask: subset.mask | (other.mask << left_len),
+        };
+        if better(combined, best) {
+            best = combined;
+        }
+    }
+    Ok((0..object_sizes.len())
+        .filter(|&index| best.mask & (1u32 << index) != 0)
+        .collect())
+}
+
+#[cfg(test)]
+mod exact_capacity_transfer_subset_tests {
+    use super::*;
+
+    fn capacity(total: u64) -> Capacity {
+        Capacity { total, used: 0, reserved: 0 }
+    }
+
+    #[test]
+    fn finds_non_greedy_optimum_and_deterministic_ties() {
+        assert_eq!(plan_capacity_optimal_objects(capacity(10), &[8, 6, 4]).unwrap(),
+            [1, 2]);
+        assert_eq!(plan_capacity_optimal_objects(capacity(9), &[9, 5, 4]).unwrap(),
+            [1, 2]);
+        assert_eq!(plan_capacity_optimal_objects(capacity(5), &[5, 5]).unwrap(),
+            [0]);
+        assert_eq!(plan_capacity_optimal_objects(capacity(0), &[0, 0, 1]).unwrap(),
+            [0, 1]);
+        assert_eq!(plan_capacity_optimal_objects(
+            capacity(u64::MAX), &[u64::MAX, 1, u64::MAX - 1],
+        ).unwrap(), [1, 2]);
+    }
+
+    #[test]
+    fn exhaustive_small_inputs_match_full_subset_reference() {
+        for count in 0..=10usize {
+            let sizes = (0..count).map(|index| ((index * 13 + 3) % 8) as u64)
+                .collect::<Vec<_>>();
+            for budget in 0..=20u64 {
+                let selected = plan_capacity_optimal_objects(capacity(budget), &sizes).unwrap();
+                let selected_total = selected.iter().map(|&index| sizes[index]).sum::<u64>();
+                let mut best_bytes = 0u64;
+                let mut best_count = 0usize;
+                let mut best = Vec::<usize>::new();
+                for mask in 0..(1usize << count) {
+                    let indexes = (0..count).filter(|&index| mask & (1 << index) != 0)
+                        .collect::<Vec<_>>();
+                    let bytes = indexes.iter().map(|&index| sizes[index]).sum::<u64>();
+                    if bytes <= budget && (bytes > best_bytes
+                        || (bytes == best_bytes && indexes.len() > best_count)
+                        || (bytes == best_bytes && indexes.len() == best_count
+                            && indexes < best))
+                    {
+                        best_bytes = bytes;
+                        best_count = indexes.len();
+                        best = indexes;
+                    }
+                }
+                assert_eq!(selected_total, best_bytes);
+                assert_eq!(selected, best, "count={count}, budget={budget}");
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_accounting_and_oversized_search_fail_before_planning() {
+        assert!(plan_capacity_optimal_objects(
+            Capacity { total: 4, used: 4, reserved: 1 }, &[1],
+        ).is_err());
+        assert!(plan_capacity_optimal_objects(capacity(1), &[0; 25]).is_err());
+        assert_eq!(plan_capacity_optimal_objects(
+            Capacity { total: 10, used: 7, reserved: 2 }, &[2, 1, 0],
+        ).unwrap(), [1, 2]);
+    }
+}

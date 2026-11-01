@@ -6,6 +6,11 @@ import re
 import sys
 from pathlib import Path
 
+if __package__:
+    from ._pr_artifact_io import read_bounded_artifact, write_summary_atomically
+else:
+    from _pr_artifact_io import read_bounded_artifact, write_summary_atomically
+
 CASES = ("min", "avg", "max")
 HEADER = re.compile(
     r"RustHouse grouped scans: (\d+) rows, (\d+) keys, (\d+) samples", re.ASCII
@@ -81,14 +86,7 @@ MAX_REPORT_BYTES = 16 * 1024 * 1024
 
 
 def _read_bounded_report(path):
-    path = Path(path)
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("PR comparison artifact must be regular and non-symlinked")
-    with path.open("rb") as source:
-        contents = source.read(MAX_REPORT_BYTES + 1)
-    if len(contents) > MAX_REPORT_BYTES:
-        raise ValueError("PR comparison artifact exceeds 16 MiB")
-    return contents.decode("utf-8")
+    return read_bounded_artifact(path, MAX_REPORT_BYTES)
 
 
 def main(argv=None):
@@ -102,7 +100,7 @@ def main(argv=None):
             _read_bounded_report(args.baseline),
             _read_bounded_report(args.candidate),
         )
-        args.summary.write_text(report, encoding="utf-8")
+        write_summary_atomically(args.summary, report, args.baseline, args.candidate)
     except (OSError, ValueError) as error:
         print(f"GROUP BY comparison failed: {error}", file=sys.stderr)
         return 1

@@ -3,6 +3,8 @@
 import argparse
 import json
 import math
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -15,10 +17,25 @@ MAX_REPORT_BYTES = 2 * 1024 * 1024
 
 def read_bounded(path, limit):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("canonical input must be a regular, non-symlinked file")
-    with path.open("rb") as stream:
+
+    def identity(metadata):
+        return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(opened) != identity(before):
+            raise ValueError("canonical input changed while opening")
         content = stream.read(limit + 1)
+        if identity(opened) != identity(os.fstat(stream.fileno())):
+            raise ValueError("canonical input changed while reading")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError("canonical input changed while reading")
     if len(content) > limit:
         raise ValueError("canonical input exceeds its byte limit")
     return content.decode("utf-8")
@@ -81,14 +98,31 @@ def run_full(binary, database, queries_dir, reference_dir, report_path,
     if not Path(report_path).is_file():
         raise ValueError("full-query runner did not produce a JSON report")
     report = parse_report(report_path)
-    records = report.get("results", [])
-    verified = sorted(record["query"] for record in records
-                      if record.get("status") == "passed")
+    records = report.get("results")
+    if not isinstance(records, list):
+        raise ValueError("full-query report requires a results array")
+    verified = []
+    failed = []
+    seen = set()
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("full-query report contains an invalid result")
+        number, status = record.get("query"), record.get("status")
+        # A boolean or 1.0 compares equal to integer 1 in Python. Such IDs
+        # must not count toward full 22-query reference verification.
+        if (type(number) is not int or not 1 <= number <= 22
+                or number in seen or not isinstance(status, str)):
+            raise ValueError("full-query report has invalid or duplicate query results")
+        seen.add(number)
+        if status == "passed":
+            verified.append(number)
+        else:
+            failed.append({"query": number, "status": status})
+    verified.sort()
     complete = (outcome.returncode == 0 and report.get("reference_checked") is True
                 and verified == list(range(1, 23)) and len(records) == 22)
     return {"complete": complete, "verified_queries": verified,
-            "failed": [{"query": record["query"], "status": record["status"]}
-                       for record in records if record.get("status") != "passed"],
+            "failed": failed,
             "runner_exit_code": outcome.returncode,
             "report": str(report_path), "official_tpch_score": False}
 
