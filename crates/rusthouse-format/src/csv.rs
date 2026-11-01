@@ -89,9 +89,27 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
         if field.len() <= 8190 {
             return write_buffered_unescaped_field::<8192, _>(output, field);
         }
-        output.write_all(b"\"")?;
-        output.write_all(field)?;
-        return output.write_all(b"\"");
+        // Socket writers can frame a large plain field in one vectored I/O
+        // without copying its bytes into a temporary buffer.
+        let slices = [
+            io::IoSlice::new(b"\""),
+            io::IoSlice::new(field),
+            io::IoSlice::new(b"\""),
+        ];
+        let written = loop {
+            match output.write_vectored(&slices) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+                Ok(written) => break written,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        if written < field.len() + 2 {
+            let payload_written = written.saturating_sub(1).min(field.len());
+            output.write_all(&field[payload_written..])?;
+            output.write_all(b"\"")?;
+        }
+        return Ok(());
     }
     if field.len() <= 64 {
         write_short_quoted_csv_field(output, field)
@@ -446,5 +464,77 @@ mod sparse_quoted_field_tests {
         write_quoted_csv_field(&mut output, &input).unwrap();
         assert_eq!(output.bytes.len(), input.len() + 3);
         assert!(output.calls <= 51, "unexpected writes: {}", output.calls);
+    }
+}
+
+#[cfg(test)]
+mod vectored_csv_plain_field_tests {
+    use super::*;
+    use std::io::IoSlice;
+
+    struct ShortVectoredWriter {
+        data: Vec<u8>,
+        max_per_call: usize,
+        vector_calls: usize,
+    }
+
+    impl Write for ShortVectoredWriter {
+        fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+            let bytes = input.len().min(self.max_per_call);
+            self.data.extend_from_slice(&input[..bytes]);
+            Ok(bytes)
+        }
+
+        fn write_vectored(&mut self, slices: &[IoSlice<'_>]) -> io::Result<usize> {
+            self.vector_calls += 1;
+            let mut total = 0;
+            for input in slices {
+                let count = input.len().min(self.max_per_call - total);
+                self.data.extend_from_slice(&input[..count]);
+                total += count;
+                if total == self.max_per_call {
+                    break;
+                }
+            }
+            Ok(total)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn large_unescaped_fields_use_one_vectored_call_with_correct_fallback() {
+        let payload = vec![b'x'; 32 * 1024];
+        let mut expected = vec![b'"'];
+        expected.extend_from_slice(&payload);
+        expected.push(b'"');
+        for max_per_call in [1, 23, 1024, usize::MAX] {
+            let mut output = ShortVectoredWriter {
+                data: Vec::new(),
+                max_per_call,
+                vector_calls: 0,
+            };
+            write_quoted_csv_field(&mut output, &payload).unwrap();
+            assert_eq!(output.data, expected, "max_per_call={max_per_call}");
+            assert_eq!(output.vector_calls, 1);
+        }
+        let mut fallback = Vec::new();
+        write_quoted_csv_field(&mut fallback, &payload).unwrap();
+        assert_eq!(fallback, expected);
+    }
+
+    #[test]
+    fn vectored_write_zero_fails_without_emitting_a_false_complete_field() {
+        let mut output = ShortVectoredWriter {
+            data: Vec::new(), max_per_call: 0, vector_calls: 0,
+        };
+        assert_eq!(
+            write_quoted_csv_field(&mut output, &vec![b'a'; 8191])
+                .unwrap_err().kind(),
+            io::ErrorKind::WriteZero
+        );
+        assert!(output.data.is_empty());
     }
 }
