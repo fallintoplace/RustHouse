@@ -131,6 +131,24 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(result["results"][0]["parser_accepted"])
         self.assertEqual(len(result["results"][0]["reason"]), 500)
 
+    @unittest.skipUnless(__import__("os").name == "posix", "POSIX output quotas required")
+    def test_noisy_parser_does_not_exhaust_temp_storage(self):
+        import sys
+        from sql_compat_audit import MAX_CHILD_OUTPUT_BYTES
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "noisy-parser"
+            binary.write_text(
+                "#!" + sys.executable + "\\n"
+                "import os\\n"
+                "for _ in range(256):\\n"
+                "    os.write(2, b'x' * 65536)\\n"
+            )
+            binary.chmod(0o700)
+            result = audit(binary, [(1, "SELECT 1")], timeout=10)
+        self.assertEqual(result["accepted"], 0)
+        self.assertIn("output exceeded", result["results"][0]["reason"])
+        self.assertLess(MAX_CHILD_OUTPUT_BYTES, 256 * 65536)
+
     def test_explain_only_and_counts_rejections(self):
         run = Mock()
         run.return_value.returncode = 1
