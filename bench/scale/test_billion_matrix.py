@@ -68,6 +68,43 @@ class TestBillionMatrix(unittest.TestCase):
                 load_cases(root)
             self.assertFalse(path.is_symlink())
 
+    def test_loader_rejects_case_replacement_during_open(self):
+        from unittest.mock import patch
+        from bench.scale import billion_matrix
+        with tempfile.TemporaryDirectory() as folder:
+            candidate = Path(folder) / "01-original.json"
+            replacement = Path(folder) / "replacement.json"
+            candidate.write_text('{"name":"original"}')
+            replacement.write_text('{"name":"replacement"}')
+            real_open = billion_matrix.os.open
+
+            def swapped(path, flags):
+                if Path(path) == candidate:
+                    candidate.unlink()
+                    replacement.rename(candidate)
+                return real_open(path, flags)
+
+            with patch.object(billion_matrix.os, "open", side_effect=swapped):
+                with self.assertRaisesRegex(ValueError, "changed before opening"):
+                    load_cases(folder)
+
+    def test_loader_rejects_growth_after_preflight(self):
+        from unittest.mock import patch
+        from bench.scale import billion_matrix
+        with tempfile.TemporaryDirectory() as folder:
+            candidate = Path(folder) / "01-growth.json"
+            candidate.write_text('{"name":"small"}')
+            real_open = billion_matrix.os.open
+
+            def growing(path, flags):
+                if Path(path) == candidate:
+                    candidate.write_bytes(b"x" * (64 * 1024 + 1))
+                return real_open(path, flags)
+
+            with patch.object(billion_matrix.os, "open", side_effect=growing):
+                with self.assertRaisesRegex(ValueError, "changed before opening"):
+                    load_cases(folder)
+
     def test_doctor_requires_real_row_count(self):
         def doctor(command, **_):
             return SimpleNamespace(returncode=0, stdout=b'OK events: 100000 rows, 2 parts\n', stderr=b'')
