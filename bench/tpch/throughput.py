@@ -16,6 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json, latency_summary
 from run import load_queries, select_queries
+from bench.common import _leading_sql_keyword
+from bench.scale.query_digest import _has_sql_separator
 
 MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
@@ -77,6 +79,10 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None,
                 or len(entry[1].encode("utf-8")) > 65_536):
             raise ValueError("queries need distinct positive IDs and nonempty SQL within 64 KiB")
         seen.add(entry[0])
+        statement = entry[1].strip().removesuffix(";").rstrip()
+        if (_leading_sql_keyword(statement) not in ("SELECT", "WITH")
+                or _has_sql_separator(statement)):
+            raise ValueError("throughput needs one SELECT or WITH query without other statements")
     tasks = [(number, sql) for _ in range(rounds) for number, sql in queries]
 
     def once(task):

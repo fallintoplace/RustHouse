@@ -78,6 +78,24 @@ class ThroughputTests(unittest.TestCase):
         self.assertGreater(report["successful_queries_per_second"], 0)
         self.assertFalse(report["official_tpch_score"])
 
+    def test_only_single_read_only_queries_reach_workers(self):
+        invoked = []
+        def execute(sql):
+            invoked.append(sql)
+            return b"1\n"
+        for statement in ("INSERT INTO t VALUES (1)",
+                          "/* comment */ DELETE FROM t",
+                          "SELECT 1; DELETE FROM t",
+                          "WITH cte AS (SELECT 1) SELECT 1; DELETE FROM t"):
+            with self.subTest(statement=statement), self.assertRaisesRegex(
+                    ValueError, "SELECT or WITH"):
+                run_throughput([(1, statement)], execute, rounds=1)
+        self.assertEqual(invoked, [])
+        for statement in ("/* comment */ SELECT 1",
+                          "WITH vals AS (SELECT 1) SELECT * FROM vals"):
+            result = run_throughput([(1, statement)], execute, rounds=1)
+            self.assertEqual(result["successful_executions"], 1)
+
     def test_only_byte_results_count_as_success(self):
         report = run_throughput(
             [(1, "SELECT 1")], lambda _: "1\n", rounds=1
