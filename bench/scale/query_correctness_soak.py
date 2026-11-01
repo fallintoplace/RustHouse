@@ -125,7 +125,7 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
             or len(sql.encode("utf-8")) > 65_536):
         raise ValueError("soak requires a bounded read-only SELECT")
     statement = sql.strip().removesuffix(";").rstrip()
-    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or _has_sql_separator(statement):
+    if _leading_sql_keyword(statement) != "SELECT" or _has_sql_separator(statement):
         raise ValueError("soak requires one read-only SELECT")
     expected_file = Path(expected_file)
     reference, size = read_reference(expected_file)
