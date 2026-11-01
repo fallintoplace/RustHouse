@@ -690,8 +690,8 @@ mod plain_marks_size_preflight_tests {
     fn rejects_invalid_record_lengths_without_decoding_entire_file() {
         for (extension, record_size) in [("mrk", 16usize), ("mrk2", 24usize)] {
             let path = std::env::temp_dir().join(format!(
-                "rusthouse-plain-marks-preflight-{}-{}.{}",
-                std::process::id(), std::thread::current().name().unwrap_or("test"), extension
+                "rusthouse-plain-marks-preflight-{}-{:?}.{}",
+                std::process::id(), std::thread::current().id(), extension
             ));
             let file = File::create(&path).unwrap();
             file.set_len(1_048_577).unwrap();
