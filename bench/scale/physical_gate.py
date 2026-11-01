@@ -10,6 +10,8 @@ import os
 import stat
 from pathlib import Path
 
+from bench.common import file_change_time_ns
+
 from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
 
 QUERIES = ("count_even", "sum_even")
@@ -110,7 +112,7 @@ def parse_report(path):
 
 def _file_identity(metadata):
     return (metadata.st_dev, metadata.st_ino, metadata.st_size,
-            metadata.st_mtime_ns, metadata.st_ctime_ns)
+            metadata.st_mtime_ns, file_change_time_ns(metadata))
 
 
 def _read_bounded_report(path):

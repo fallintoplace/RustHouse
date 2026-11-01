@@ -11,6 +11,8 @@ import os
 import stat
 from pathlib import Path
 
+from bench.common import file_change_time_ns
+
 
 def part_density(root, *, small_part_rows=8192, target_part_rows=65536,
                  max_entries=1_000_000):
@@ -48,15 +50,15 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536,
             payload = source.read(23)
             finished = os.fstat(source.fileno())
             if (opened.st_dev, opened.st_ino, opened.st_size,
-                    opened.st_mtime_ns, opened.st_ctime_ns) != (
+                    opened.st_mtime_ns, file_change_time_ns(opened)) != (
                     finished.st_dev, finished.st_ino, finished.st_size,
-                    finished.st_mtime_ns, finished.st_ctime_ns):
+                    finished.st_mtime_ns, file_change_time_ns(finished)):
                 raise ValueError(f"count.txt changed during read: {child.name}")
         after = count_file.lstat()
         if (before.st_dev, before.st_ino, before.st_size,
-                before.st_mtime_ns, before.st_ctime_ns) != (
+                before.st_mtime_ns, file_change_time_ns(before)) != (
                 after.st_dev, after.st_ino, after.st_size,
-                after.st_mtime_ns, after.st_ctime_ns):
+                after.st_mtime_ns, file_change_time_ns(after)):
             raise ValueError(f"count.txt changed during read: {child.name}")
         if len(payload) > 22:
             raise ValueError(f"invalid oversized count.txt in {child.name}")

@@ -4,9 +4,11 @@ import stat
 import tempfile
 from pathlib import Path
 
+from bench.common import file_change_time_ns
+
 
 def _identity(info):
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, file_change_time_ns(info))
 
 
 def read_bounded_artifact(path, max_bytes):
