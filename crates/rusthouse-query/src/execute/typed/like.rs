@@ -20,7 +20,10 @@ fn compiled_literal(bytes: Vec<u8>) -> LikeLiteral {
 // across every scanned row instead of doing worst-case quadratic comparisons.
 fn compiled_contains_literal(bytes: Vec<u8>) -> LikeLiteral {
     let mut literal = compiled_literal(bytes);
-    if literal.bytes.is_ascii() && literal.bytes.len() >= 16 {
+    // Retain the skip table for both ASCII ILIKE and byte-exact LIKE.
+    // Even with binary haystacks, ASCII folding only reduces skip distances;
+    // it can never skip a byte-exact match.
+    if literal.bytes.len() >= 16 {
         let length = literal.bytes.len();
         let mut shifts = Box::new([length; 256]);
         for (index, &byte) in literal.bytes[..length - 1].iter().enumerate() {
@@ -51,6 +54,34 @@ fn contains_ascii_folded(haystack: &[u8], needle: &[u8], shifts: &[usize; 256]) 
         if remaining == 0 {
             return true;
         }
+        start += shifts[usize::from(haystack[start + last].to_ascii_lowercase())];
+    }
+    false
+}
+
+fn contains_bytes_horspool(haystack: &[u8], needle: &[u8], shifts: &[usize; 256]) -> bool {
+    debug_assert!(!needle.is_empty());
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    let last = needle.len() - 1;
+    let mut start = 0;
+    while start <= haystack.len() - needle.len() {
+        // Compare from the end, which is where the Horspool shift byte
+        // lives. On a long repeated-prefix near miss (aaaa...ab against
+        // aaaa...), a forward slice comparison rereads nearly the entire
+        // needle at every position. Right-to-left rejects in one byte.
+        let mut remaining = needle.len();
+        while remaining > 0
+            && haystack[start + remaining - 1] == needle[remaining - 1]
+        {
+            remaining -= 1;
+        }
+        if remaining == 0 {
+            return true;
+        }
+        // The table is ASCII-folded so it can also serve ILIKE. A folded
+        // shift is no larger than the exact-byte shift and stays safe.
         start += shifts[usize::from(haystack[start + last].to_ascii_lowercase())];
     }
     false
@@ -339,7 +370,11 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 // Avoid a substring search for the common LIKE '%x%' case.
                 value.contains(&bytes[0])
             } else if !case_insensitive {
-                if let (Ok(haystack), Ok(needle)) =
+                if let Some(shifts) = literal.ascii_contains_skip.as_deref() {
+                    // Long binary String values may not be UTF-8. Avoid
+                    // quadratic fallback scanning for their LIKE substrings.
+                    contains_bytes_horspool(value, bytes, shifts)
+                } else if let (Ok(haystack), Ok(needle)) =
                     (std::str::from_utf8(value), std::str::from_utf8(bytes))
                 {
                     haystack.contains(needle)
@@ -715,5 +750,58 @@ mod compiled_ascii_contains_tests {
         assert!(!contains_ascii_folded(b"short", needle, shifts));
         assert!(compiled_contains_literal(b"short".to_vec())
             .ascii_contains_skip.is_none());
+    }
+}
+
+#[cfg(test)]
+mod binary_horspool_like_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_like_contains_matches_binary_window_oracle() {
+        for literal in [
+            format!("{}b", "a".repeat(31)),
+            "0123456789abcdef0123456789".to_owned(),
+            "AaaAAaaaAaaAAaaaAaaA".to_owned(),
+        ] {
+            let pattern = compile_like(&format!("%{literal}%")).unwrap();
+            let needle = literal.as_bytes();
+            for length in [0usize, 1, 16, 31, 32, 33, 128, 4096] {
+                let mut haystack = vec![b'a'; length];
+                haystack.extend_from_slice(&[0, 0xff, 0x80, b'B', 0]);
+                for start in [0, 1, length / 2, length] {
+                    let mut input = haystack.clone();
+                    let at = start.min(input.len());
+                    input.splice(at..at, needle.iter().copied());
+                    let oracle = input.windows(needle.len()).any(|part| part == needle);
+                    assert_eq!(like_matches(&input, &pattern, false), oracle,
+                        "length={length}, at={at}");
+                }
+                let oracle = haystack.windows(needle.len()).any(|part| part == needle);
+                assert_eq!(like_matches(&haystack, &pattern, false), oracle);
+            }
+        }
+    }
+
+    #[test]
+    fn folded_skip_table_preserves_exact_case_sensitive_matches() {
+        let needle = "AaBbCcDdEeFfGgHh";
+        let pattern = compile_like(&format!("%{needle}%")).unwrap();
+        assert!(like_matches(format!("xx{needle}yy").as_bytes(), &pattern, false));
+        assert!(!like_matches(b"xxaabbccddeeffgghhyy", &pattern, false));
+        assert!(like_matches(b"xxaabbccddeeffgghhyy", &pattern, true));
+    }
+
+    #[test]
+    fn long_repeated_prefix_near_misses_remain_linear_with_binary_rows() {
+        let needle = format!("{}b", "a".repeat(127));
+        let pattern = compile_like(&format!("%{needle}%")).unwrap();
+        let mut input = vec![b'a'; 256 * 1024];
+        input.extend_from_slice(&[0xff, 0x80]);
+        assert!(!like_matches(&input, &pattern, false));
+        input.extend_from_slice(needle.as_bytes());
+        assert!(like_matches(&input, &pattern, false));
+        input.pop();
+        assert!(!like_matches(&input, &pattern, false));
     }
 }

@@ -11,9 +11,11 @@ fn chained_join_skips_unused_huge_dimension_payload_columns() {
         "rusthouse-chained-pruning-{}-{}",
         std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
     ));
+    fs::create_dir_all(&root).unwrap();
     let a = root.join("a");
     let b = root.join("b");
     let c = root.join("c");
+    fs::create_dir_all(&root).unwrap();
     let schema = [
         Column { name: "id".into(), data_type: "UInt64".into() },
         Column { name: "payload".into(), data_type: "String".into() },

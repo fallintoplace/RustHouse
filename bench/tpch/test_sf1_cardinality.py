@@ -23,6 +23,16 @@ class SF1CardinalityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "invalid count"):
                     verify(None, None, execute=lambda sql: raw)
 
+    def test_rejects_extra_whitespace_or_multiple_count_lines(self):
+        for payload in (b" 5\n", b"5 \n", b"5\n\n", b"5\r\r\n", b"5\t"):
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(ValueError, "invalid count"):
+                    verify(None, None, execute=lambda _: payload)
+        lookup = {f"SELECT count(*) FROM {table}": f"{rows}\r\n".encode()
+                  for table, rows in SF1_ROWS.items()}
+        self.assertEqual(verify(None, None, execute=lambda sql: lookup[sql])["tables_checked"], 8)
+
+
     def test_invalid_timeout_rejected_before_executing(self):
         with self.assertRaisesRegex(ValueError, "timeout"):
             verify(None, None, timeout=0, execute=lambda _: b"5\n")

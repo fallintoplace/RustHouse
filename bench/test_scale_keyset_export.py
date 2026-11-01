@@ -64,6 +64,19 @@ class KeysetExportTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertEqual(list(Path(temp).glob("*.pending")), [])
 
+    def test_default_query_uses_remaining_total_deadline(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "export.tsv"
+            with patch("bench.scale.keyset_export.query", return_value=b"0\n") as query:
+                with patch("bench.scale.keyset_export.time.monotonic",
+                           side_effect=[100.0, 100.25, 100.3]):
+                    result = export("binary", "db", "events", output, 0, 1,
+                                    timeout=30, max_total_seconds=1)
+            self.assertEqual(result["pages"], 1)
+            self.assertEqual(output.read_bytes(), b"0\n")
+            self.assertEqual(query.call_args.args[3], 0.75)
+
     def test_detects_duplicates_and_leaves_no_visible_file(self):
         with tempfile.TemporaryDirectory() as temp:
             dest = Path(temp) / "out.tsv"
@@ -115,6 +128,35 @@ class SpoolingKeysetQueryTests(unittest.TestCase):
             self.assertTrue(hasattr(kwargs["stderr"], "write"))
             kwargs["stdout"].truncate(2 * 1024 * 1024 + 1)
             return SimpleNamespace(returncode=0)
+
+        with patch("bench.scale.keyset_export.subprocess.run", side_effect=run):
+            with self.assertRaisesRegex(ValueError, "2 MiB"):
+                query("binary", "db", "SELECT id FROM t", 3)
+
+    def test_posix_keyset_child_has_file_size_cap(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.keyset_export import query
+
+        def run(_command, **kwargs):
+            if os.name == "posix":
+                self.assertTrue(callable(kwargs.get("preexec_fn")))
+            else:
+                self.assertNotIn("preexec_fn", kwargs)
+            return SimpleNamespace(returncode=0)
+
+        with patch("bench.scale.keyset_export.subprocess.run", side_effect=run):
+            self.assertEqual(query("binary", "db", "SELECT id FROM t", 3), b"")
+
+    def test_failed_oversized_keyset_pages_raise_a_size_error(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bench.scale.keyset_export import query
+
+        def run(_command, **kwargs):
+            kwargs["stdout"].truncate(2 * 1024 * 1024)
+            return SimpleNamespace(returncode=-25)
 
         with patch("bench.scale.keyset_export.subprocess.run", side_effect=run):
             with self.assertRaisesRegex(ValueError, "2 MiB"):

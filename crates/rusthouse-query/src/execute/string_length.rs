@@ -34,7 +34,23 @@ const MAX_DISTINCT_LENGTHS: usize = 100_000;
 
 fn append_length_line(buffer: &mut Vec<u8>, length: Option<usize>) -> std::io::Result<()> {
     match length {
-        Some(length) => writeln!(buffer, "{length}")?,
+        Some(mut value) => {
+            // Avoid formatting machinery and its repeated Writer calls for
+            // every LENGTH row. Render digits into a tiny stack array then
+            // append the complete decimal number in one bulk copy.
+            let mut ascii = [0u8; size_of::<usize>() * 3];
+            let mut start = ascii.len();
+            loop {
+                start -= 1;
+                ascii[start] = b'0' + (value % 10) as u8;
+                value /= 10;
+                if value == 0 {
+                    break;
+                }
+            }
+            buffer.extend_from_slice(&ascii[start..]);
+            buffer.push(b'\n');
+        }
         None => buffer.extend_from_slice(b"\\N\n"),
     }
     Ok(())
@@ -73,21 +89,29 @@ pub(super) fn execute<W: Write>(
         ));
     }
     let names = projection_columns(query, column);
-    let indices: HashMap<_, _> = names
-        .iter()
-        .enumerate()
-        .map(|(index, name)| (name.clone(), index))
-        .collect();
-    let types: HashMap<_, _> = metadata
-        .columns
-        .iter()
-        .map(|column| (column.name.clone(), column.data_type.clone()))
-        .collect();
-    let mut conditions = Vec::with_capacity(query.or_predicates.len() + 1);
-    conditions.push(typed::compile(&query.predicates, &indices, &types)?);
-    for branch in &query.or_predicates {
-        conditions.push(typed::compile(branch, &indices, &types)?);
-    }
+    let is_unfiltered = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // Unfiltered LENGTH only needs its first projected column. Avoid
+    // cloning the full schema into two hash tables for every simple scan.
+    let conditions = if is_unfiltered {
+        Vec::new()
+    } else {
+        let indices: HashMap<_, _> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), index))
+            .collect();
+        let types: HashMap<_, _> = metadata
+            .columns
+            .iter()
+            .map(|column| (column.name.clone(), column.data_type.clone()))
+            .collect();
+        let mut conditions = Vec::with_capacity(query.or_predicates.len() + 1);
+        conditions.push(typed::compile(&query.predicates, &indices, &types)?);
+        for branch in &query.or_predicates {
+            conditions.push(typed::compile(branch, &indices, &types)?);
+        }
+        conditions
+    };
 
     if let Some(alias) = query.alias.as_deref() {
         writeln!(output, "{alias}")?;
@@ -103,7 +127,6 @@ pub(super) fn execute<W: Write>(
     let mut written = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
-    let is_unfiltered = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut output_batch = Vec::with_capacity(OUTPUT_BATCH_BYTES);
     // DISTINCT is applied before OFFSET, and NULL contributes one distinct value.
     let mut seen_lengths = HashSet::<Option<usize>>::new();
@@ -118,8 +141,9 @@ pub(super) fn execute<W: Write>(
             .first()
             .ok_or_else(|| ExecutionError::Invalid("empty LENGTH input batch".into()))?
             .len();
+        // projection_columns always puts the requested String first.
         let values = batch
-            .get(indices[column])
+            .first()
             .ok_or_else(|| ExecutionError::Invalid("missing LENGTH input column".into()))?;
         let (offsets, nulls) = match values {
             TypedColumn::Text(values) => (values.offsets(), None),
@@ -181,9 +205,39 @@ mod tests {
     use rusthouse_storage::read_legacy_strings;
 
     #[test]
+    fn length_decimal_renderer_matches_standard_formatting() {
+        let mut output = Vec::new();
+        let values = [0usize, 1, 9, 10, 99, 100, 999, 1000,
+            1_000_000, usize::MAX];
+        for &value in &values {
+            append_length_line(&mut output, Some(value)).unwrap();
+        }
+        append_length_line(&mut output, None).unwrap();
+        let wanted = values.iter().map(|value| format!("{value}\n"))
+            .collect::<String>() + "\\N\n";
+        assert_eq!(output, wanted.as_bytes());
+
+        let mut many = Vec::new();
+        for value in 0..50_000usize {
+            append_length_line(&mut many, Some(value)).unwrap();
+        }
+        assert_eq!(many.iter().filter(|&&byte| byte == b'\n').count(), 50_000);
+        assert!(many.starts_with(b"0\n1\n2\n"));
+        assert!(many.ends_with(b"49999\n"));
+    }
+
+    #[test]
     fn length_projection_without_predicates_uses_one_column() {
         let query = crate::parse_select("SELECT length(name) FROM data").unwrap();
         assert_eq!(projection_columns(&query, "name"), vec!["name"]);
+    }
+
+    #[test]
+    fn length_predicates_keep_requested_column_first() {
+        let query = crate::parse_select(
+            "SELECT LENGTH(name) FROM part WHERE category = 'ok'",
+        ).unwrap();
+        assert_eq!(projection_columns(&query, "name"), vec!["name", "category"]);
     }
 
     #[test]

@@ -15,6 +15,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json
 from run import benchmark_one, summarize_coverage
 
+MAX_REFERENCE_LINE_CHARS = 1024 * 1024
+
+
+def bounded_reference_lines(stream):
+    while True:
+        line = stream.readline(MAX_REFERENCE_LINE_CHARS + 1)
+        if not line:
+            return
+        if len(line) > MAX_REFERENCE_LINE_CHARS:
+            raise ValueError("Q6 reference record exceeds 1 MiB")
+        yield line
+
+
 Q6 = (
     "SELECT SUM(l_extendedprice * l_discount) AS revenue "
     "FROM lineitem WHERE l_shipdate >= '1994-01-01' "
@@ -26,8 +39,11 @@ Q6 = (
 def expected_revenue_details(path):
     total = 0
     matched = 0
-    with Path(path).open("r", encoding="utf-8", newline="") as stream:
-        reader = csv.DictReader(stream, delimiter="\t")
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Q6 reference must be a regular, non-symlinked file")
+    with path.open("r", encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(bounded_reference_lines(stream), delimiter="\t")
         required = ("l_shipdate", "l_discount", "l_quantity", "l_extendedprice")
         fields = reader.fieldnames or []
         if len(set(fields)) != len(fields) or any(name not in fields for name in required):

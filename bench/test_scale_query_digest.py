@@ -70,6 +70,30 @@ class QueryDigestTests(unittest.TestCase):
             self.assertEqual(query_digest("binary", "part", "SELECT 1")["bytes"], 3)
 
 
+    def test_ignores_sql_delimiters_in_strings_identifiers_and_comments(self):
+        from bench.scale.query_digest import _has_sql_separator
+        for query in (
+            "SELECT 'a;b' AS label",
+            "SELECT 'it''s;fine' AS label",
+            'SELECT "semi;name"',
+            "SELECT 1 /* nested /* ; */ ; */",
+            "SELECT 1 -- ignored ;\n + 2",
+            "SELECT 1 # ignored ;\r + 2",
+        ):
+            self.assertFalse(_has_sql_separator(query), query)
+        for query in ("SELECT 1; DROP TABLE t", "SELECT 1 /* unclosed",
+                      "SELECT 'unclosed", "SELECT 1 # comment\n; SELECT 2"):
+            self.assertTrue(_has_sql_separator(query), query)
+
+        def execute(command, **kwargs):
+            kwargs["stdout"].write(b"ok\n")
+            return SimpleNamespace(returncode=0, stderr=b"")
+
+        for query in ("SELECT 'a;b' AS label", "SELECT 1 /* ; */"):
+            result = query_digest("binary", "part", query, run=execute)
+            self.assertEqual(result["bytes"], 3)
+
+
     def test_refuses_mutations_and_multiple_statements(self):
         def never_run(*_args, **_kwargs):
             self.fail("mutating SQL must be rejected before execution")

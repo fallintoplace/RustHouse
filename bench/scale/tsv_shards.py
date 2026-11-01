@@ -57,8 +57,11 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536,
         with os.fdopen(descriptor, "rb") as stream:
             opened = os.fstat(stream.fileno())
             if (not stat.S_ISREG(opened.st_mode)
-                    or (opened.st_dev, opened.st_ino) !=
-                       (source_before.st_dev, source_before.st_ino)):
+                    or (opened.st_dev, opened.st_ino, opened.st_size,
+                        opened.st_mtime_ns, opened.st_ctime_ns) !=
+                       (source_before.st_dev, source_before.st_ino,
+                        source_before.st_size, source_before.st_mtime_ns,
+                        source_before.st_ctime_ns)):
                 raise ValueError("TSV source changed before opening")
             while True:
                 record = stream.readline(MAX_RECORD_BYTES + 1)
@@ -92,13 +95,14 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536,
                 current["rows"] += 1
                 total_rows += 1
             finished = os.fstat(stream.fileno())
-            if (opened.st_size, opened.st_mtime_ns) != (finished.st_size, finished.st_mtime_ns):
+            if ((opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+                    != (finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns)):
                 raise ValueError("TSV source changed while splitting")
         source_after = source.lstat()
         if ((source_before.st_dev, source_before.st_ino,
-             source_before.st_size, source_before.st_mtime_ns)
+             source_before.st_size, source_before.st_mtime_ns, source_before.st_ctime_ns)
                 != (source_after.st_dev, source_after.st_ino,
-                    source_after.st_size, source_after.st_mtime_ns)):
+                    source_after.st_size, source_after.st_mtime_ns, source_after.st_ctime_ns)):
             raise ValueError("TSV source changed while splitting")
         if current is not None:
             finish_current()

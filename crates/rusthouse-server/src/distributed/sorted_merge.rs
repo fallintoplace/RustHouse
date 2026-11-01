@@ -177,6 +177,27 @@ fn next_row(
     Ok(Some((parse_integer_sort_key(key, kind)?, end)))
 }
 
+/// Step through an already validated shard while merging. The validation
+/// pass checked every TSV field, its escapes and its column count. Repeating
+/// those checks for every emitted row is wasted work, especially with wide
+/// projections. Only recover the next key and row boundary here.
+fn next_validated_row(
+    data: &[u8],
+    start: usize,
+    kind: IntegerType,
+) -> Result<Option<(IntegerKey, usize)>, MergeError> {
+    if start == data.len() {
+        return Ok(None);
+    }
+    let newline = data[start..].iter()
+        .position(|&byte| byte == b'\n')
+        .ok_or(MergeError::InvalidSortedScan)?;
+    let row = &data[start..start + newline];
+    let key_len = row.iter().position(|&byte| byte == b'\t').unwrap_or(row.len());
+    let key = parse_integer_sort_key(&row[..key_len], kind)?;
+    Ok(Some((key, start + newline + 1)))
+}
+
 /// Validate the full sorted shard streams before returning any rows.
 /// Retain only one integer key and byte cursor per peer, rather than
 /// materializing every shard row at the coordinator.
@@ -275,7 +296,7 @@ pub(super) fn merge_sorted_integer_rows_page(
             if returned >= limit {
                 break 'merge;
             }
-            let Some((key, next_position)) = next_row(body, end, kind, columns.len())? else {
+            let Some((key, next_position)) = next_validated_row(body, end, kind)? else {
                 break;
             };
             let advanced = cursor.advance(key, next_position);
@@ -556,5 +577,57 @@ mod one_pass_tsv_field_tests {
             merge_sorted_integer_rows_page(&[(3, short)], &names, "UInt32", false, 0, 1, 1),
             Err(MergeError::InvalidSortedScan)
         );
+    }
+}
+
+#[cfg(test)]
+mod validated_sorted_merge_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn validated_stepper_matches_full_tsv_parser_for_long_escaped_rows() {
+        let body = [
+            format!("0\t{}\\t{}\n", "x".repeat(30_000), "y".repeat(400)),
+            "12\t\\n\\\\\\t\n".to_string(),
+            "9223372036854775807\t\\N\n".to_string(),
+        ].concat().into_bytes();
+        let kind = IntegerType::from_schema("Int64").unwrap();
+        let mut offset = 0;
+        while offset < body.len() {
+            let checked = next_row(&body, offset, kind, 2).unwrap().unwrap();
+            assert_eq!(next_validated_row(&body, offset, kind).unwrap(), Some(checked));
+            offset = checked.1;
+        }
+        assert_eq!(next_validated_row(&body, body.len(), kind).unwrap(), None);
+    }
+
+    #[test]
+    fn repeated_wide_rows_preserve_sorted_merge_pagination_and_ties() {
+        let columns = ["id", "payload"];
+        let header = b"id\tpayload\n";
+        let mut shards = Vec::new();
+        for shard in 0..4usize {
+            let mut body = header.to_vec();
+            for id in 0..80usize {
+                body.extend_from_slice(format!(
+                    "{id}\tshard_{shard}_{}\\t\n", "z".repeat(180)
+                ).as_bytes());
+            }
+            shards.push((1000usize, body));
+        }
+        let merged = merge_sorted_integer_rows_page(
+            &shards, &columns, "UInt64", false, 21, 31, 1000
+        ).unwrap();
+        let mut expected = header.to_vec();
+        let mut all = (0..80usize)
+            .flat_map(|id| (0..4usize).map(move |shard| (id, shard)))
+            .collect::<Vec<_>>();
+        all.sort();
+        for (id, shard) in all.into_iter().skip(21).take(31) {
+            expected.extend_from_slice(format!(
+                "{id}\tshard_{shard}_{}\\t\n", "z".repeat(180)
+            ).as_bytes());
+        }
+        assert_eq!(merged, expected);
     }
 }
