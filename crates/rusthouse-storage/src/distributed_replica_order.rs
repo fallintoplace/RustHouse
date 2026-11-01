@@ -621,17 +621,15 @@ mod bounded_read_replica_prefix_tests {
             for limit in [1usize, 2, 3, 8, 9, 32, 64] {
                 let all = rank_read_replicas(&replicas);
                 let prefix = rank_read_replicas_top_k(&replicas, limit);
-                assert_eq!(prefix.as_ref().ok(), all.as_ref().ok().map(|v| {
-                    &v[..v.len().min(limit)]
-                }).map(|_| prefix.as_ref().unwrap()));
+                assert_eq!(all.is_ok(), prefix.is_ok());
                 if let (Ok(full), Ok(partial)) = (all, prefix) {
-                    assert_eq!(partial, full[..full.len().min(limit)]);
+                    assert_eq!(partial.as_slice(), &full[..full.len().min(limit)]);
                 }
                 let full = rank_read_replicas_at_least(&replicas, 3, 7);
                 let partial = rank_read_replicas_at_least_top_k(&replicas, 3, 7, limit);
                 assert_eq!(full.is_ok(), partial.is_ok());
                 if let (Ok(full), Ok(partial)) = (full, partial) {
-                    assert_eq!(partial, full[..full.len().min(limit)]);
+                    assert_eq!(partial.as_slice(), &full[..full.len().min(limit)]);
                 }
             }
         }
