@@ -266,15 +266,18 @@ impl ResumeMap {
     /// rescanning a nearly completed transfer for each continuation page.
     pub fn remaining_indices_from(&self, start: usize) -> impl Iterator<Item = usize> + '_ {
         let start = start.min(self.chunks);
-        self.completed
-            .iter()
-            .enumerate()
-            .skip(start / 8)
-            .flat_map(move |(byte_index, &completed)| {
-                let base = byte_index * 8;
-                let mut missing = !completed & low_bit_mask((self.chunks - base).min(8));
+        let full_words = self.chunks / 64;
+        let word_start = (start / 64).min(full_words);
+        // Jump directly to the cursor's 64-bit word. Fully verified words
+        // produce no missing indexes and require only one popcount-scale test.
+        let words = self.completed[word_start * 8..full_words * 8]
+            .chunks_exact(8).enumerate().flat_map(move |(offset, bytes)| {
+                let base = (word_start + offset) * 64;
+                let mut missing = !u64::from_le_bytes(
+                    bytes.try_into().expect("exactly eight checkpoint bytes")
+                );
                 if base < start {
-                    missing &= u8::MAX << (start - base);
+                    missing &= u64::MAX << (start - base);
                 }
                 std::iter::from_fn(move || {
                     if missing == 0 {
@@ -284,7 +287,26 @@ impl ResumeMap {
                     missing &= missing - 1;
                     Some(base + bit)
                 })
-            })
+            });
+        let tail_base = full_words * 64;
+        let tail_start = start.saturating_sub(tail_base) / 8;
+        let tail = self.completed[full_words * 8 + tail_start..]
+            .iter().enumerate().flat_map(move |(offset, &completed)| {
+                let first = tail_base + (tail_start + offset) * 8;
+                let mut missing = !completed & low_bit_mask((self.chunks - first).min(8));
+                if first < start {
+                    missing &= u8::MAX << (start - first);
+                }
+                std::iter::from_fn(move || {
+                    if missing == 0 {
+                        return None;
+                    }
+                    let bit = missing.trailing_zeros() as usize;
+                    missing &= missing - 1;
+                    Some(first + bit)
+                })
+            });
+        words.chain(tail)
     }
 
     pub fn remaining(&self) -> Vec<usize> {
@@ -1147,6 +1169,46 @@ mod checkpoint_cursor_tests {
                     .collect::<Vec<_>>();
                 assert_eq!(map.remaining_indices_from(start).collect::<Vec<_>>(), expected);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod resume_continuation_word_reference_tests {
+    use super::*;
+
+    #[test]
+    fn word_jump_matches_full_missing_iterator_at_every_cursor_boundary() {
+        for length in [0, 1, 7, 8, 9, 31, 63, 64, 65, 66, 127, 128, 129, 191, 192, 255, 256, 257, 1025] {
+            let mut map = ResumeMap::new(length).unwrap();
+            for index in 0..length {
+                if index % 7 != 0 && index % 11 != 0 {
+                    map.mark_complete(index).unwrap();
+                }
+            }
+            let missing = map.remaining_indices().collect::<Vec<_>>();
+            for start in 0..=length + 2 {
+                let expected = missing.iter().copied()
+                    .filter(|&index| index >= start).collect::<Vec<_>>();
+                assert_eq!(map.remaining_indices_from(start).collect::<Vec<_>>(),
+                    expected, "len={length}, cursor={start}");
+            }
+        }
+    }
+
+    #[test]
+    fn huge_completed_prefix_and_sparse_tail_preserve_exact_continuation() {
+        let mut map = ResumeMap::new(65_536).unwrap();
+        map.mark_complete_range(0, 65_536).unwrap();
+        let missing = [0usize, 31, 63, 64, 8191, 32_768, 65_535];
+        map.invalidate_indices(&missing).unwrap();
+        for start in [0, 1, 31, 32, 63, 64, 65, 8190, 8191,
+                      8192, 32_768, 65_534, 65_535, 65_536, usize::MAX] {
+            assert_eq!(
+                map.remaining_indices_from(start).collect::<Vec<_>>(),
+                missing.iter().copied().filter(|&index| index >= start).collect::<Vec<_>>(),
+                "cursor={start}",
+            );
         }
     }
 }
