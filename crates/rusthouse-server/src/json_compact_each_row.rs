@@ -1,14 +1,24 @@
 //! Write one JSON array per bounded TSV result row.
-use super::{jsonl::decode_tsv_value, write_json_string};
+use super::write_json_string;
+use rusthouse_format::decode_tsv_field_into;
+#[cfg(test)]
+use super::jsonl::decode_tsv_value;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
-fn write_compact_field(output: &mut Vec<u8>, value: &[u8]) -> io::Result<()> {
+fn write_compact_field_into(
+    output: &mut Vec<u8>,
+    value: &[u8],
+    decoded: &mut Vec<u8>,
+) -> io::Result<()> {
     if value == b"\\N" {
         output.write_all(b"null")?;
     } else if value.contains(&b'\\') {
-        write_json_string(output, &decode_tsv_value(value)?)?;
+        decode_tsv_field_into(value, decoded)?;
+        let text = std::str::from_utf8(decoded)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field"))?;
+        write_json_string(output, text)?;
     } else if value
         .iter()
         .all(|&byte| (0x20..0x7f).contains(&byte) && byte != b'"')
@@ -31,6 +41,7 @@ fn write_compact_row_into<W: Write>(
     line: &[u8],
     columns: usize,
     row: &mut Vec<u8>,
+    decoded: &mut Vec<u8>,
 ) -> io::Result<()> {
     // The private staging buffer keeps malformed rows out of the output.
     // Validate the column count while encoding to avoid rescanning the input.
@@ -54,7 +65,7 @@ fn write_compact_row_into<W: Write>(
             row.write_all(b",")?;
         }
         width += 1;
-        write_compact_field(row, value)?;
+        write_compact_field_into(row, value, decoded)?;
     }
     if width != columns {
         return Err(io::Error::new(
@@ -67,8 +78,13 @@ fn write_compact_row_into<W: Write>(
 }
 
 #[cfg(test)]
+fn write_compact_field(output: &mut Vec<u8>, value: &[u8]) -> io::Result<()> {
+    write_compact_field_into(output, value, &mut Vec::new())
+}
+
+#[cfg(test)]
 fn write_compact_row<W: Write>(output: &mut W, line: &[u8], columns: usize) -> io::Result<()> {
-    write_compact_row_into(output, line, columns, &mut Vec::new())
+    write_compact_row_into(output, line, columns, &mut Vec::new(), &mut Vec::new())
 }
 
 pub(super) struct JsonCompactEachRowWriter<W: Write> {
@@ -76,6 +92,7 @@ pub(super) struct JsonCompactEachRowWriter<W: Write> {
     columns: Option<usize>,
     line: Vec<u8>,
     encoded: Vec<u8>,
+    decoded: Vec<u8>,
 }
 
 impl<W: Write> JsonCompactEachRowWriter<W> {
@@ -85,6 +102,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
             columns: None,
             line: Vec::new(),
             encoded: Vec::new(),
+            decoded: Vec::new(),
         }
     }
 
@@ -107,7 +125,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
             self.line.clear();
             return Ok(());
         };
-        write_compact_row_into(&mut self.output, &self.line, columns, &mut self.encoded)?;
+        write_compact_row_into(&mut self.output, &self.line, columns, &mut self.encoded, &mut self.decoded)?;
         self.line.clear();
         Ok(())
     }
@@ -148,7 +166,7 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
             }
             if complete && self.line.is_empty() {
                 if let Some(columns) = self.columns {
-                    write_compact_row_into(&mut self.output, fragment, columns, &mut self.encoded)?;
+                    write_compact_row_into(&mut self.output, fragment, columns, &mut self.encoded, &mut self.decoded)?;
                     continue;
                 }
             }
@@ -290,10 +308,10 @@ mod overwide_row_tests {
     fn overwide_compact_rows_leave_the_output_untouched() {
         let mut output = Vec::new();
         let mut row = Vec::new();
-        let error = write_compact_row_into(&mut output, b"one\ttwo", 1, &mut row).unwrap_err();
+        let error = write_compact_row_into(&mut output, b"one\ttwo", 1, &mut row, &mut Vec::new()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(output.is_empty());
-        write_compact_row_into(&mut output, b"one", 1, &mut row).unwrap();
+        write_compact_row_into(&mut output, b"one", 1, &mut row, &mut Vec::new()).unwrap();
         assert_eq!(output, b"[\"one\"]\n");
     }
 }
@@ -353,5 +371,50 @@ mod crlf_record_tests {
         writer.write_all(b"b\r").unwrap();
         writer.write_all(b"\n").unwrap();
         assert_eq!(writer.output, "[\"alice\"]\n[\"bob\"]\n".as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod reusable_compact_json_escape_tests {
+    use super::*;
+
+    #[test]
+    fn escaped_fields_reuse_decoder_capacity_across_rows() {
+        let mut writer = JsonCompactEachRowWriter::new(Vec::new());
+        writer.write_all(b"note\nfirst\\tvalue\n").unwrap();
+        let capacity = writer.decoded.capacity();
+        let first_ptr = writer.decoded.as_ptr();
+        assert!(capacity >= b"first\\tvalue".len() - 1);
+        for _ in 0..200 {
+            writer.write_all(b"other\\tvalue\n").unwrap();
+        }
+        assert_eq!(writer.decoded.capacity(), capacity);
+        assert_eq!(writer.decoded.as_ptr(), first_ptr);
+        let output = writer.finish().unwrap();
+        assert!(output.starts_with(b"[\"first\\tvalue\"]\n"));
+        assert_eq!(output.iter().filter(|&&byte| byte == b'\n').count(), 201);
+    }
+
+    #[test]
+    fn failed_decode_cannot_leak_a_partial_compact_row() {
+        let mut output = Vec::new();
+        let mut encoded = Vec::new();
+        let mut decoded = Vec::new();
+        assert!(write_compact_row_into(
+            &mut output,
+            b"ok\\tfield\tbad\\q",
+            2,
+            &mut encoded,
+            &mut decoded,
+        ).is_err());
+        assert!(output.is_empty());
+        write_compact_row_into(
+            &mut output,
+            b"ok\\tfield\tgood\\nvalue",
+            2,
+            &mut encoded,
+            &mut decoded,
+        ).unwrap();
+        assert_eq!(output, b"[\"ok\\tfield\",\"good\\nvalue\"]\n");
     }
 }
