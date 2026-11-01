@@ -44,6 +44,7 @@ def _has_separator(sql):
                 else:
                     index += 1
             if depth:
+                return True
             continue
         elif char in ("'", '"'):
             quote = char
