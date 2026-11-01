@@ -7,6 +7,12 @@ pub(super) fn is_ascii_digit_at(bytes: &[u8], index: usize) -> bool {
 pub(super) fn advance_ascii_digits(bytes: &[u8], index: &mut usize) {
     while is_ascii_digit_at(bytes, *index) {
         *index += 1;
+        // ClickHouse accepts readability separators between numeric digits.
+        // Reject leading, trailing and consecutive underscores by stopping
+        // unless the separator is followed by another digit.
+        if bytes.get(*index) == Some(&b'_') && is_ascii_digit_at(bytes, *index + 1) {
+            *index += 1;
+        }
     }
 }
 
@@ -52,7 +58,15 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
         advance_ascii_digits(bytes, index);
     }
     scan_exponent(bytes, index)?;
-    Ok(Token::Number(sql[start..*index].into()))
+    let raw = &sql[start..*index];
+    // Preserve the fast path for ordinary numbers, while passing canonical
+    // digits to every downstream Int64/Float64 literal and cast parser.
+    let canonical = if raw.contains('_') {
+        raw.replace('_', "")
+    } else {
+        raw.to_owned()
+    };
+    Ok(Token::Number(canonical))
 }
 
 pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
@@ -259,6 +273,29 @@ mod exponent_tests {
         let token = scan_string(r"'a\nb\tc\r\0\b\f\_z'", &mut index).unwrap();
         assert_eq!(token, Token::String("a\nb\tc\r\0\x08\x0c\\_z".into()));
         assert_eq!(index, r"'a\nb\tc\r\0\b\f\_z'".len());
+    }
+
+    #[test]
+    fn ignores_digit_separators_without_losing_source_offsets() {
+        for (input, canonical) in [
+            ("1_640_995_200_123", "1640995200123"),
+            ("-12_345", "-12345"),
+            ("-1_2.3_4e+5_6", "-12.34e+56"),
+            (".1_2", ".12"),
+            ("10_0.", "100."),
+        ] {
+            let mut index = 0;
+            assert_eq!(
+                scan_number(input, &mut index).unwrap(),
+                Token::Number(canonical.into()),
+            );
+            assert_eq!(index, input.len());
+        }
+        let parsed = crate::parse_select("SELECT 1_000").unwrap();
+        assert!(matches!(parsed.projection, crate::Projection::Literal(1000)));
+        for bad in ["SELECT _123", "SELECT 1__2", "SELECT 10_"] {
+            assert!(crate::parse_select(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
