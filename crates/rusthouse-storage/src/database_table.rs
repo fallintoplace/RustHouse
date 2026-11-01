@@ -6,6 +6,23 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+// Opening the schema normally on Windows allows another process to replace
+// it between the path check and the final schema/part consistency check.
+#[cfg(windows)]
+fn open_catalog_schema(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_catalog_schema(path: &Path) -> std::io::Result<fs::File> {
+    fs::File::open(path)
+}
+
 // Validate an unchanged catalog schema, including same-size in-place
 // rewrites that retain the inode but change Unix ctime.
 fn same_schema_state(before: &fs::Metadata, after: &fs::Metadata) -> bool {
@@ -44,7 +61,7 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
     if !schema_metadata.file_type().is_file() || schema_metadata.len() > 32 * 1024 {
         return Err(format!("invalid database schema for {table}"));
     }
-    let mut file = fs::File::open(&schema)
+    let mut file = open_catalog_schema(&schema)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
     let opened_schema_metadata = file
         .metadata()
@@ -222,5 +239,33 @@ mod stable_schema_identity_tests {
             &fs::symlink_metadata(&path).unwrap()
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_catalog_sharing_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn schema_cannot_be_replaced_while_reader_checks_catalog() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-schema-sharing-{}-{}",
+            std::process::id(),
+            NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("events.schema");
+        fs::write(&path, b"rusthouse-schema-v1\nid\tUInt64\n").unwrap();
+        let first = open_catalog_schema(&path).unwrap();
+        let second = open_catalog_schema(&path).unwrap();
+        assert!(fs::rename(&path, directory.join("swapped.schema")).is_err());
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        drop(first);
+        drop(second);
+        fs::OpenOptions::new().write(true).open(&path).unwrap();
+        fs::remove_dir_all(directory).unwrap();
     }
 }
