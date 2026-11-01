@@ -360,7 +360,9 @@ pub fn capacity_aware_replicas_for(
     if replicas == 0 || replicas > members.len() || capacities.len() != members.len() {
         return Err("invalid capacity-aware replica configuration");
     }
-    let mut eligible = Vec::with_capacity(members.len());
+    // Keep validated full membership borrowed unless capacity filters a node.
+    // Cloning eligible members is only necessary once filtering begins.
+    let mut eligible: Option<Vec<crate::distributed_membership::Member>> = None;
     if capacities.len() <= 8 {
         // A typical replica group has only a few nodes. Validate every
         // capacity name before matching, while keeping the lookup borrowed
@@ -371,13 +373,17 @@ pub fn capacity_aware_replicas_for(
                 return Err("duplicate replica capacity entry");
             }
         }
-        for member in members {
+        for (index, member) in members.iter().enumerate() {
             let capacity = capacities.iter()
                 .find(|&&(node, _)| node == member.node.as_str())
                 .map(|&(_, capacity)| capacity)
                 .ok_or("missing replica capacity")?;
             if capacity.available()? >= object_bytes {
-                eligible.push(member.clone());
+                if let Some(filtered) = eligible.as_mut() {
+                    filtered.push(member.clone());
+                }
+            } else if eligible.is_none() {
+                eligible = Some(members[..index].to_vec());
             }
         }
     } else {
@@ -387,18 +393,26 @@ pub fn capacity_aware_replicas_for(
                 return Err("duplicate replica capacity entry");
             }
         }
-        for member in members {
+        for (index, member) in members.iter().enumerate() {
             let capacity = by_node.get(member.node.as_str())
                 .ok_or("missing replica capacity")?;
             if capacity.available()? >= object_bytes {
-                eligible.push(member.clone());
+                if let Some(filtered) = eligible.as_mut() {
+                    filtered.push(member.clone());
+                }
+            } else if eligible.is_none() {
+                eligible = Some(members[..index].to_vec());
             }
         }
     }
-    if eligible.len() < replicas {
-        return Err("insufficient replica capacity for requested redundancy");
+    if let Some(filtered) = eligible {
+        if filtered.len() < replicas {
+            return Err("insufficient replica capacity for requested redundancy");
+        }
+        zone_aware_replicas_for(shard, &filtered, replicas)
+    } else {
+        zone_aware_replicas_for(shard, members, replicas)
     }
-    zone_aware_replicas_for(shard, &eligible, replicas)
 }
 
 #[cfg(test)]
@@ -1289,5 +1303,63 @@ mod verified_rebalance_barrier_tests {
         assert!(plan_guarded_zone_rebalance_step(
             "events", &previous, &next, 2, &[], 65,
         ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod borrowed_capacity_placement_tests {
+    use super::*;
+    use crate::distributed_capacity::Capacity;
+    use crate::distributed_membership::Member;
+
+    fn nodes() -> Vec<Member> {
+        (0..24).map(|index| Member {
+            node: format!("node_{index}"),
+            zone: format!("zone_{}", index % 4),
+            weight: (index * 31 + 1) as u16,
+        }).collect()
+    }
+
+    #[test]
+    fn entirely_eligible_membership_matches_direct_zone_ranking() {
+        let members = nodes();
+        let capacities = members.iter().map(|member| (
+            member.node.as_str(), Capacity { total: 200, used: 50, reserved: 25 },
+        )).collect::<Vec<_>>();
+        for id in 0..128 {
+            let shard = format!("shard_{id}");
+            for replicas in [1, 2, 3, 8, 24] {
+                assert_eq!(
+                    capacity_aware_replicas_for(&shard, &members, &capacities, 125, replicas),
+                    zone_aware_replicas_for(&shard, &members, replicas),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn filtered_capacity_and_error_contracts_remain_unchanged() {
+        let members = nodes();
+        let capacities = members.iter().enumerate().map(|(index, member)| (
+            member.node.as_str(), Capacity {
+                total: 100, used: if index % 3 == 0 { 99 } else { 0 }, reserved: 0,
+            },
+        )).collect::<Vec<_>>();
+        let eligible = members.iter().enumerate().filter_map(|(index, member)| {
+            (index % 3 != 0).then_some(member.clone())
+        }).collect::<Vec<_>>();
+        for id in 0..64 {
+            let shard = format!("shard_{id}");
+            for replicas in [1, 2, 4, 16] {
+                assert_eq!(
+                    capacity_aware_replicas_for(&shard, &members, &capacities, 2, replicas),
+                    zone_aware_replicas_for(&shard, &eligible, replicas),
+                );
+            }
+        }
+        assert!(capacity_aware_replicas_for("shard", &members, &capacities, 2, 17).is_err());
+        let mut broken = capacities.clone();
+        broken[20].1.reserved = u64::MAX;
+        assert!(capacity_aware_replicas_for("shard", &members, &broken, 2, 1).is_err());
     }
 }
