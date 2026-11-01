@@ -266,12 +266,39 @@ impl ResumeMap {
     /// rescanning a nearly completed transfer for each continuation page.
     pub fn remaining_indices_from(&self, start: usize) -> impl Iterator<Item = usize> + '_ {
         let start = start.min(self.chunks);
-        self.completed
-            .iter()
+        // Skip directly to the cursor's 64-bit word, not just its byte.
+        // Large mostly-complete checkpoints can then reject 64 verified
+        // chunks with one word comparison on every continuation poll.
+        let full_words = self.chunks / 64;
+        let words = self.completed[..full_words * 8]
+            .chunks_exact(8)
             .enumerate()
-            .skip(start / 8)
-            .flat_map(move |(byte_index, &completed)| {
-                let base = byte_index * 8;
+            .skip(start / 64)
+            .flat_map(move |(word_index, bytes)| {
+                let base = word_index * 64;
+                let mut missing = !u64::from_le_bytes(
+                    bytes.try_into().expect("full checkpoint word")
+                );
+                if base < start {
+                    missing &= u64::MAX << (start - base);
+                }
+                std::iter::from_fn(move || {
+                    if missing == 0 {
+                        return None;
+                    }
+                    let bit = missing.trailing_zeros() as usize;
+                    missing &= missing - 1;
+                    Some(base + bit)
+                })
+            });
+        // The partial tail may have padding bits. Mask those before
+        // filtering the cursor so they never surface as missing chunks.
+        let tail_base = full_words * 64;
+        let skip_tail_bytes = start.saturating_sub(tail_base) / 8;
+        let tail = self.completed[full_words * 8 + skip_tail_bytes..]
+            .iter().enumerate()
+            .flat_map(move |(offset, &completed)| {
+                let base = tail_base + (skip_tail_bytes + offset) * 8;
                 let mut missing = !completed & low_bit_mask((self.chunks - base).min(8));
                 if base < start {
                     missing &= u8::MAX << (start - base);
@@ -284,7 +311,8 @@ impl ResumeMap {
                     missing &= missing - 1;
                     Some(base + bit)
                 })
-            })
+            });
+        words.chain(tail)
     }
 
     pub fn remaining(&self) -> Vec<usize> {
@@ -1148,6 +1176,45 @@ mod checkpoint_cursor_tests {
                 assert_eq!(map.remaining_indices_from(start).collect::<Vec<_>>(), expected);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod word_cursor_checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn word_aligned_and_unaligned_pages_match_full_iteration() {
+        for chunks in [0usize, 1, 7, 8, 9, 63, 64, 65, 127, 128, 129, 255, 256, 257, 8193] {
+            for stride in [1usize, 2, 5, 31, 64] {
+                let mut map = ResumeMap::new(chunks).unwrap();
+                for index in (0..chunks).step_by(stride) {
+                    map.mark_complete(index).unwrap();
+                }
+                let complete = map.remaining_indices().collect::<Vec<_>>();
+                let mut cursors = vec![0, chunks / 2, chunks];
+                cursors.extend([1, 7, 8, 31, 63, 64, 65, 127, 128, 129, 255, 256, 257]);
+                for start in cursors {
+                    let actual = map.remaining_indices_from(start).collect::<Vec<_>>();
+                    let expected = complete.iter().copied()
+                        .filter(|&index| index >= start)
+                        .collect::<Vec<_>>();
+                    assert_eq!(actual, expected, "chunks={chunks} stride={stride} start={start}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dense_large_checkpoint_keeps_only_final_unverified_indices() {
+        let mut map = ResumeMap::new(65_535).unwrap();
+        map.mark_complete_range(0, 65_530).unwrap();
+        let expected = (65_530..65_535).collect::<Vec<_>>();
+        assert_eq!(map.remaining_indices_from(0).collect::<Vec<_>>(), expected);
+        assert_eq!(map.remaining_indices_from(65_532).collect::<Vec<_>>(),
+                   vec![65_532, 65_533, 65_534]);
+        assert_eq!(map.remaining_indices_from(65_535).count(), 0);
+        assert_eq!(map.remaining_indices_from(usize::MAX).count(), 0);
     }
 }
 
