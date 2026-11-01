@@ -19,7 +19,7 @@ class MixedUnorderedOracleIndexTests(unittest.TestCase):
             oracle.assert_matches(b"1\t0.2\n2\t0.3\n1\t0.5\n", expected, unordered=True)
 
     def test_null_text_and_numeric_keys_do_not_alias(self):
-        expected = [(None, 1.25), (r"\\N", 2.5), (1, 3.75)]
+        expected = [(None, 1.25), (r"\N", 2.5), (1, 3.75)]
         oracle.assert_matches(b"1\t3.75\n\\\\N\t2.5\n\\N\t1.25\n", expected, unordered=True)
 
     def test_all_float_columns_keep_tolerant_matching(self):
