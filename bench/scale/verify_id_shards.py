@@ -73,10 +73,26 @@ def verify_file(path, start, rows, step=1):
 
 def verify(manifest_path):
     manifest_path = Path(manifest_path)
-    if manifest_path.is_symlink():
-        raise ValueError("refusing symlinked shard manifest")
-    with manifest_path.open("rb") as stream:
+    before = manifest_path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("refusing a nonregular shard manifest")
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(manifest_path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened):
+            raise ValueError("shard manifest changed before opening")
         payload = stream.read(MAX_MANIFEST_BYTES + 1)
+        finished = os.fstat(stream.fileno())
+        if identity(opened) != identity(finished):
+            raise ValueError("shard manifest changed during read")
+    if identity(before) != identity(manifest_path.lstat()):
+        raise ValueError("shard manifest changed during read")
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("shard manifest exceeds 8 MiB")
     manifest_path = manifest_path.resolve()
@@ -88,7 +104,11 @@ def verify(manifest_path):
             result[name] = value
         return result
 
-    manifest = json.loads(payload, object_pairs_hook=unique_fields)
+    def reject_nonfinite(value):
+        raise ValueError(f"invalid shard manifest JSON constant: {value}")
+
+    manifest = json.loads(payload, object_pairs_hook=unique_fields,
+                          parse_constant=reject_nonfinite)
     if not isinstance(manifest, dict):
         raise ValueError("shard manifest must be a JSON object")
     # bool == 1 in Python, but a JSON boolean is not a schema version.
