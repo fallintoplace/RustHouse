@@ -554,7 +554,8 @@ mod bounded_retry_timeline_allocation_tests {
             .map(|index| format!("node_{index:02}"))
             .collect::<Vec<_>>();
         let mut nodes = owned.iter().map(|name| (name.as_str(), 0u64)).collect::<Vec<_>>();
-        nodes[63].0 = nodes[0].0;
+        let duplicate = nodes[0].0;
+        nodes[63].0 = duplicate;
         assert!(plan_replica_retry_timeline(&nodes, 0, 1, 10, Duration::ZERO).is_err());
         nodes[63].0 = "invalid/node";
         assert!(plan_replica_retry_timeline(&nodes, 0, 1, 10, Duration::ZERO).is_err());
