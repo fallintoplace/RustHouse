@@ -65,6 +65,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "REVERSE"
                 | "REVERSEUTF8"
                 | "INITCAP"
+                | "INITCAPUTF8"
                 | "TOSTARTOFTENMINUTES"
                 | "CONCAT"
                 | "CONCATASSUMEINJECTIVE"
@@ -1904,7 +1905,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "INITCAP" => {
+        "INITCAP" | "INITCAPUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "INITCAP requires one argument")?;
             match input {
