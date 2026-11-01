@@ -127,10 +127,10 @@ class BackupTests(unittest.TestCase):
             (source / "part.bin").write_bytes(b"data")
             binary = base / "noisy-doctor"
             binary.write_text(
-                "#!" + sys.executable + "\\n"
-                "import os\\n"
-                "for _ in range(256):\\n"
-                "    os.write(2, b'x' * 65536)\\n"
+                "#!" + sys.executable + "\n"
+                "import os\n"
+                "for _ in range(256):\n"
+                "    os.write(2, b'x' * 65536)\n"
             )
             binary.chmod(0o700)
             with self.assertRaisesRegex(RuntimeError, "output exceeded 8 MiB"):
