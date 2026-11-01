@@ -139,12 +139,16 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
     paths = []
     snapshots = []
     seen_names = set()
-    for entry in shards:
+    for index, entry in enumerate(shards):
         if not isinstance(entry, dict):
             raise ValueError("invalid shard manifest entry")
         name = entry.get("path")
         if not isinstance(name, str) or not re.fullmatch(r"part-[0-9]{6}\.tsv", name):
             raise ValueError("invalid shard path")
+        # The shard writer emits a continuous, ordered sequence. Reject a
+        # swapped or omitted manifest entry before any non-atomic COPY.
+        if name != f"part-{index:06d}.tsv":
+            raise ValueError("shard manifest is not in canonical part order")
         if name in seen_names:
             raise ValueError(f"duplicate shard path: {name}")
         seen_names.add(name)
