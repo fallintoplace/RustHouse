@@ -577,13 +577,13 @@ pub fn plan_capacity_optimal_objects(
     // binary search choose the best right half even with duplicate sizes.
     let mut compressed: Vec<Subset> = Vec::with_capacity(right.len());
     for subset in right {
-        if let Some(last) = compressed.last_mut()
-            && last.bytes == subset.bytes
-        {
-            if better(subset, *last) {
-                *last = subset;
+        if let Some(last) = compressed.last_mut() {
+            if last.bytes == subset.bytes {
+                if better(subset, *last) {
+                    *last = subset;
+                }
+                continue;
             }
-            continue;
         }
         compressed.push(subset);
     }
