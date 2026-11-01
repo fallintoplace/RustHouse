@@ -47,12 +47,17 @@ impl Parser<'_> {
                     let escape = *self.input.get(self.offset).ok_or_else(invalid)?;
                     self.offset += 1;
                     if escape == b'u' {
-                        for _ in 0..4 {
-                            let digit = *self.input.get(self.offset).ok_or_else(invalid)?;
-                            if !digit.is_ascii_hexdigit() {
+                        let first = self.unicode_hex()?;
+                        if (0xD800..=0xDBFF).contains(&first) {
+                            if !self.eat(b'\\') || !self.eat(b'u') {
                                 return Err(invalid());
                             }
-                            self.offset += 1;
+                            let second = self.unicode_hex()?;
+                            if !(0xDC00..=0xDFFF).contains(&second) {
+                                return Err(invalid());
+                            }
+                        } else if (0xDC00..=0xDFFF).contains(&first) {
+                            return Err(invalid());
                         }
                     } else if !matches!(escape, b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') {
                         return Err(invalid());
@@ -62,6 +67,22 @@ impl Parser<'_> {
                 _ => {}
             }
         }
+    }
+
+    fn unicode_hex(&mut self) -> io::Result<u16> {
+        let mut value = 0u16;
+        for _ in 0..4 {
+            let byte = *self.input.get(self.offset).ok_or_else(invalid)?;
+            let digit = match byte {
+                b'0'..=b'9' => u16::from(byte - b'0'),
+                b'a'..=b'f' => u16::from(byte - b'a' + 10),
+                b'A'..=b'F' => u16::from(byte - b'A' + 10),
+                _ => return Err(invalid()),
+            };
+            value = (value << 4) | digit;
+            self.offset += 1;
+        }
+        Ok(value)
     }
 
     fn number(&mut self) -> io::Result<()> {
@@ -232,5 +253,35 @@ mod tests {
         validate_json_object(valid.as_bytes()).unwrap();
         let invalid = format!("{{\"value\":{}0{}}}", "[".repeat(256), "]".repeat(256));
         assert!(validate_json_object(invalid.as_bytes()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod surrogate_pair_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_exact_unicode_surrogate_pairs() {
+        for row in [
+            br#"{"emoji":"\uD83D\uDE03"}"#.as_slice(),
+            br#"{"lowest":"\uD800\uDC00","highest":"\uDBFF\uDFFF"}"#.as_slice(),
+            br#"{"escaped":"\\uD800"}"#.as_slice(),
+        ] {
+            validate_json_object(row).unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_isolated_and_mismatched_surrogates() {
+        for row in [
+            br#"{"x":"\uD800"}"#.as_slice(),
+            br#"{"x":"\uDC00"}"#.as_slice(),
+            br#"{"x":"\uD800\u0041"}"#.as_slice(),
+            br#"{"x":"\uDBFF\uE000"}"#.as_slice(),
+            br#"{"x":"\uD800\uD800"}"#.as_slice(),
+            br#"{"x":"\uD800\u"}"#.as_slice(),
+        ] {
+            assert_eq!(validate_json_object(row).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        }
     }
 }
