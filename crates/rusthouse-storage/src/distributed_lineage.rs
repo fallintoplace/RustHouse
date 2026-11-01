@@ -405,6 +405,32 @@ pub fn highest_quorum_observed_snapshot(
         }))
 }
 
+/// Metadata-only write-quorum candidate and the exact peers advertising it.
+/// Returning supporter IDs does not establish committed writes, prove ancestry,
+/// or authorize replication. A caller must verify their object bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuorumSnapshotSupport {
+    pub version: SnapshotVersion,
+    pub members: Vec<String>,
+}
+
+/// Report the peers advertising the highest write-quorum-observed generation.
+/// Preserve configured membership order rather than trusting response order,
+/// and never include newer minority versions in a quorum's supporters.
+pub fn highest_quorum_snapshot_supporters(
+    policy: crate::distributed_quorum::QuorumPolicy,
+    members: &[&str],
+    observations: &[(&str, SnapshotVersion)],
+) -> Result<Option<QuorumSnapshotSupport>, &'static str> {
+    let Some(version) = highest_quorum_observed_snapshot(policy, members, observations)? else {
+        return Ok(None);
+    };
+    let supporters = members.iter().filter(|&&member| {
+        observations.iter().any(|&(node, observed)| node == member && observed == version)
+    }).map(|&member| member.to_owned()).collect();
+    Ok(Some(QuorumSnapshotSupport { version, members: supporters }))
+}
+
 #[cfg(test)]
 mod quorum_snapshot_selection_tests {
     use super::*;
@@ -576,5 +602,46 @@ mod consensus_sized_snapshot_selection_tests {
                 hash_reference(&wrong_epoch)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod snapshot_supporter_selection_tests {
+    use super::*;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    #[test]
+    fn reports_only_same_generation_supporters_in_membership_order() {
+        let policy = QuorumPolicy::new(5, 2, 3).unwrap();
+        let members = ["a", "b", "c", "d", "e"];
+        let old = SnapshotVersion { epoch: 7, generation: 11, fingerprint: 101 };
+        let new = SnapshotVersion { epoch: 7, generation: 12, fingerprint: 102 };
+        let observations = [("e", old), ("d", new), ("b", old), ("a", old), ("c", new)];
+        let supported = highest_quorum_snapshot_supporters(policy, &members, &observations)
+            .unwrap().unwrap();
+        assert_eq!(supported.version, old);
+        assert_eq!(supported.members, ["a", "b", "e"]);
+
+        let more_new = [("e", new), ("d", new), ("b", old), ("a", old), ("c", new)];
+        let supported = highest_quorum_snapshot_supporters(policy, &members, &more_new)
+            .unwrap().unwrap();
+        assert_eq!(supported.version, new);
+        assert_eq!(supported.members, ["c", "d", "e"]);
+    }
+
+    #[test]
+    fn no_quorum_or_conflicting_metadata_never_returns_supporters() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let members = ["a", "b", "c"];
+        let version = SnapshotVersion { epoch: 1, generation: 10, fingerprint: 11 };
+        assert_eq!(highest_quorum_snapshot_supporters(policy, &members, &[("c", version)])
+            .unwrap(), None);
+        assert!(highest_quorum_snapshot_supporters(policy, &members,
+            &[("a", version), ("b", SnapshotVersion { fingerprint: 12, ..version })])
+            .is_err());
+        assert!(highest_quorum_snapshot_supporters(policy, &members,
+            &[("a", version), ("a", version)]).is_err());
+        assert!(highest_quorum_snapshot_supporters(policy, &members,
+            &[("a", version), ("outsider", version)]).is_err());
     }
 }
