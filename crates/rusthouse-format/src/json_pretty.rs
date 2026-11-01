@@ -147,8 +147,10 @@ pub fn write_pretty_json_row_prefixed<W: Write>(
     prefix: &[u8],
     row: &[u8],
 ) -> io::Result<()> {
-    // Never expose a framing prefix for an invalid nested JSON row.
-    validate_pretty_depth(row)?;
+    // A public formatter must not emit its prefix for malformed JSON.
+    // The shared parser validates strings, escapes, numbers and nesting
+    // before the first byte reaches a writer.
+    super::json_validate::validate_json_object(row)?;
     output.write_all(prefix)?;
     let mut writer = RowWriter::new(output);
     write_pretty_json_row_into(&mut writer, row)?;
@@ -633,5 +635,45 @@ mod atomic_pretty_json_validation_tests {
         let mut rendered = Vec::new();
         write_pretty_json_row(&mut rendered, &nested).unwrap();
         assert!(rendered.starts_with(b"["));
+    }
+}
+
+#[cfg(test)]
+mod strict_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_json_never_publishes_the_framing_prefix() {
+        for bad in [
+            br#"{"x":truth}"#.as_slice(),
+            br#"{"x":01}"#.as_slice(),
+            br#"{"x":1e+}"#.as_slice(),
+            br#"{"x":[1,,2]}"#.as_slice(),
+            br#"{"x":"\uD800"}"#.as_slice(),
+            br#"{"x":true,}"#.as_slice(),
+            br#"[1,2]"#.as_slice(),
+            br#"{"x":1}{"y":2}"#.as_slice(),
+        ] {
+            let mut output = Vec::new();
+            assert_eq!(
+                write_pretty_json_row_prefixed(&mut output, b"record:", bad)
+                    .unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert!(output.is_empty(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn valid_surrogate_pair_is_prettified_after_validation() {
+        let mut output = Vec::new();
+        write_pretty_json_row_prefixed(
+            &mut output,
+            b"record:",
+            br#"{"emoji":"\uD83D\uDE03"}"#,
+        )
+        .unwrap();
+        assert!(output.starts_with(b"record:{"));
+        assert!(output.windows(12).any(|span| span == br#"\uD83D\uDE03"#));
     }
 }
