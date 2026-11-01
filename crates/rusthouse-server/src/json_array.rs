@@ -1,16 +1,10 @@
 //! Stream validated JSONL objects as one bounded JSON array.
 use super::MAX_RESPONSE_BYTES;
-use rusthouse_format::write_pretty_json_row;
+use rusthouse_format::{validate_json_object, write_pretty_json_row};
 use std::io::{self, Write};
 
 fn validate_complete_object(row: &[u8]) -> io::Result<()> {
-    if !row.starts_with(b"{") || !row.ends_with(b"}") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "expected a complete JSON object",
-        ));
-    }
-    Ok(())
+    validate_json_object(row)
 }
 
 fn emit_json_row<W: Write>(output: &mut W, row: &[u8], pretty: bool) -> io::Result<()> {
@@ -280,5 +274,45 @@ mod compact_json_row_frame_tests {
         let mut pretty = JsonArraySink::new_pretty(Vec::new());
         pretty.write_all(b"{\"a\":1}\n").unwrap();
         assert_eq!(pretty.finish().unwrap(), b"[\n  {\n    \"a\": 1\n  }\n]\n");
+    }
+}
+
+#[cfg(test)]
+mod invalid_json_forwarding_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_object_bodies_before_emitting_array_delimiters() {
+        for row in [
+            b"{not-json}\n".as_slice(),
+            b"{\"x\":01}\n".as_slice(),
+            b"{\"x\":1,}\n".as_slice(),
+            b"{\"x\":\"unterminated}\n".as_slice(),
+            b"{\"x\":true}garbage\n".as_slice(),
+            b"{\"x\":NaN}\n".as_slice(),
+        ] {
+            let mut sink = JsonArraySink::new(Vec::new());
+            assert_eq!(sink.write_all(row).unwrap_err().kind(), io::ErrorKind::InvalidData);
+            assert!(sink.output.is_empty(), "invalid object leaked array framing");
+        }
+    }
+
+    #[test]
+    fn fragmented_invalid_json_also_leaves_output_unmodified() {
+        let mut sink = JsonArraySink::new_pretty(Vec::new());
+        sink.write_all(b"{\"a\":").unwrap();
+        sink.write_all(b"false,}\n").unwrap_err();
+        assert!(sink.output.is_empty());
+    }
+
+    #[test]
+    fn nested_valid_utf8_and_escaped_json_survive_streaming() {
+        let mut sink = JsonArraySink::new(Vec::new());
+        sink.write_all(b"{\"a\":[true,null,{\"b\":-3.25e+2}],\"c\":\"\\\\\\\"\\u00e9\"}\n")
+            .unwrap();
+        assert_eq!(
+            sink.finish().unwrap(),
+            b"[{\"a\":[true,null,{\"b\":-3.25e+2}],\"c\":\"\\\\\\\"\\u00e9\"}]\n"
+        );
     }
 }
