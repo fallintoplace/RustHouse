@@ -158,29 +158,39 @@ pub fn membership_changes(
 ) -> Result<Vec<MembershipChange>, &'static str> {
     validate_membership(before)?;
     validate_membership(after)?;
-    let mut old = before.iter().collect::<Vec<_>>();
-    let mut new = after.iter().collect::<Vec<_>>();
-    old.sort_unstable_by(|left, right| left.node.cmp(&right.node));
-    new.sort_unstable_by(|left, right| left.node.cmp(&right.node));
+    // Membership is capped at 64 nodes. Sort borrowed pointers in fixed
+    // stack slots instead of allocating two temporary Vecs for every diff.
+    let mut old = [None; MAX_MEMBER_RECORDS];
+    let mut new = [None; MAX_MEMBER_RECORDS];
+    for (slot, member) in old.iter_mut().zip(before) {
+        *slot = Some(member);
+    }
+    for (slot, member) in new.iter_mut().zip(after) {
+        *slot = Some(member);
+    }
+    let old = &mut old[..before.len()];
+    let new = &mut new[..after.len()];
+    old.sort_unstable_by_key(|entry| entry.map(|member| member.node.as_str()));
+    new.sort_unstable_by_key(|entry| entry.map(|member| member.node.as_str()));
 
     let mut changes = Vec::new();
     let (mut left, mut right) = (0usize, 0usize);
     while left < old.len() || right < new.len() {
-        match (old.get(left), new.get(right)) {
+        match (old.get(left).copied().flatten(), new.get(right).copied().flatten()) {
             (Some(a), Some(b)) => match a.node.cmp(&b.node) {
                 std::cmp::Ordering::Less => {
-                    changes.push(MembershipChange::Removed((**a).clone()));
+                    changes.push(MembershipChange::Removed((*a).clone()));
                     left += 1;
                 }
                 std::cmp::Ordering::Greater => {
-                    changes.push(MembershipChange::Added((**b).clone()));
+                    changes.push(MembershipChange::Added((*b).clone()));
                     right += 1;
                 }
                 std::cmp::Ordering::Equal => {
                     if a.zone != b.zone || a.weight != b.weight {
                         changes.push(MembershipChange::Reconfigured {
-                            before: (**a).clone(),
-                            after: (**b).clone(),
+                            before: (*a).clone(),
+                            after: (*b).clone(),
                         });
                     }
                     left += 1;
@@ -188,11 +198,11 @@ pub fn membership_changes(
                 }
             },
             (Some(a), None) => {
-                changes.push(MembershipChange::Removed((**a).clone()));
+                changes.push(MembershipChange::Removed((*a).clone()));
                 left += 1;
             }
             (None, Some(b)) => {
-                changes.push(MembershipChange::Added((**b).clone()));
+                changes.push(MembershipChange::Added((*b).clone()));
                 right += 1;
             }
             (None, None) => break,
@@ -651,6 +661,49 @@ mod stack_membership_index_tests {
         assert_eq!(parse_membership(&text).unwrap().len(), 64);
         assert!(parse_membership(&(text.clone() + "new_node zone_0 1\n")).is_err());
         assert!(parse_membership(&(text + "node_00 zone_0 1\n")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod borrowed_membership_diff_tests {
+    use super::*;
+
+    #[test]
+    fn unsorted_snapshot_diffs_keep_canonical_order_and_values() {
+        let before = parse_membership("gamma z1 1\nalpha z1 1\nbeta z2 2\n").unwrap();
+        let after = parse_membership("beta z2 3\ndelta z1 1\nalpha z1 1\n").unwrap();
+        let changes = membership_changes(&before, &after).unwrap();
+        assert_eq!(
+            changes,
+            vec![
+                MembershipChange::Reconfigured {
+                    before: before[2].clone(),
+                    after: after[0].clone(),
+                },
+                MembershipChange::Added(after[1].clone()),
+                MembershipChange::Removed(before[0].clone()),
+            ]
+        );
+
+        let mut reversed_before = before.clone();
+        reversed_before.reverse();
+        let mut reversed_after = after.clone();
+        reversed_after.reverse();
+        assert_eq!(membership_changes(&reversed_before, &reversed_after).unwrap(), changes);
+    }
+
+    #[test]
+    fn fully_identical_maximum_memberships_do_not_emit_changes() {
+        let nodes = (0..64)
+            .map(|index| Member {
+                node: format!("node_{index:02}"),
+                zone: format!("zone_{}", index % 8),
+                weight: 1,
+            })
+            .collect::<Vec<_>>();
+        let mut reverse = nodes.clone();
+        reverse.reverse();
+        assert!(membership_changes(&nodes, &reverse).unwrap().is_empty());
     }
 }
 
