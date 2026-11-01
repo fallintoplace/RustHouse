@@ -28,6 +28,13 @@ class SQLiteGoldenTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "overwrite"):
                 generate(database, query_dir, base / "goldens")
 
+    def test_rejects_nonfinite_float_references(self):
+        for value in (float("nan"), float("inf"), -float("inf")):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "nonfinite"):
+                tsv_cell(value)
+        self.assertEqual(tsv_cell(1.25), "1.25")
+
+
     def test_null_and_unsupported_query(self):
         self.assertEqual(tsv_cell(None, r"\N"), r"\N")
         with tempfile.TemporaryDirectory() as root:

@@ -6,7 +6,9 @@ import argparse
 import concurrent.futures
 import json
 import math
+import os
 import re
+import stat
 import statistics
 import subprocess
 import tempfile
@@ -15,34 +17,71 @@ from pathlib import Path
 
 
 def _has_separator(statement):
-    # Delimiters inside quoted SQL text do not separate statements.
+    # Ignore separators inside SQL literals and comments, including nested
+    # block comments. Reject unfinished constructs rather than guessing
+    # whether the apparent tail of a query is executable SQL.
     quote = None
+    depth = 0
     index = 0
     while index < len(statement):
         char = statement[index]
+        following = statement[index + 1:index + 2]
         if quote is not None:
-            if char == "\\":
+            if char == "\\" and following:
                 index += 2
                 continue
             if char == quote:
-                if index + 1 < len(statement) and statement[index + 1] == quote:
+                if following == quote:
                     index += 2
                     continue
                 quote = None
-        elif char in ("'", '"'):
+        elif depth:
+            if char == "/" and following == "*":
+                depth += 1
+                if depth > 32:
+                    return True
+                index += 2
+                continue
+            if char == "*" and following == "/":
+                depth -= 1
+                index += 2
+                continue
+        elif char in ("'", '"', "`"):
             quote = char
+        elif char == "#" or (char == "-" and following == "-"):
+            index += 1 if char == "#" else 2
+            while index < len(statement) and statement[index] not in "\r\n":
+                index += 1
+            continue
+        elif char == "/" and following == "*":
+            depth = 1
+            index += 2
+            continue
         elif char == ";":
             return True
         index += 1
-    return quote is not None
-
+    return quote is not None or depth != 0
 
 def read_reference(path):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("reference must be a regular non-symlinked file")
-    with path.open("rb") as stream:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("reference changed before opening")
         payload = stream.read(1024 * 1024 + 1)
+        finished = os.fstat(stream.fileno())
+        identity = lambda item: (item.st_dev, item.st_ino, item.st_size,
+                                 item.st_mtime_ns, item.st_ctime_ns)
+        if identity(opened) != identity(finished):
+            raise ValueError("reference changed during read")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError("reference changed during read")
     if len(payload) > 1024 * 1024:
         raise ValueError("reference exceeds 1 MiB")
     return payload

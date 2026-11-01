@@ -15,6 +15,32 @@ class CorrectnessSoakTests(unittest.TestCase):
                              (hashlib.sha256(b"count\n2\n").hexdigest(), 8))
         self.assertEqual(percentile([3, 1, 2], 95), 3)
 
+    def test_soak_rejects_excessive_reference_and_query_output(self):
+        from io import BytesIO
+        from unittest.mock import patch
+        from bench.scale.query_correctness_soak import run_sql
+        self.assertEqual(digest_file(BytesIO(b"12345678"), max_bytes=8)[1], 8)
+        with self.assertRaisesRegex(ValueError, "exceeds"):
+            digest_file(BytesIO(b"123456789"), max_bytes=8)
+        with tempfile.TemporaryDirectory() as root:
+            oracle = Path(root) / "reference.tsv"
+            oracle.write_bytes(b"123456789")
+            with patch("bench.scale.query_correctness_soak.MAX_SOAK_OUTPUT_BYTES", 8):
+                with self.assertRaisesRegex(ValueError, "exceeds"):
+                    soak("unused", "unused", "SELECT 1", oracle, runs=1,
+                         execute=lambda: self.fail("must not run"))
+
+                def oversized_process(_command, **kwargs):
+                    from types import SimpleNamespace
+                    kwargs["stdout"].write(b"123456789")
+                    return SimpleNamespace(returncode=0)
+
+                with patch("bench.scale.query_correctness_soak.subprocess.run",
+                           side_effect=oversized_process):
+                    with self.assertRaisesRegex(ValueError, "exceeds"):
+                        run_sql("binary", "database", "SELECT 1", 1)
+
+
     def test_percentile_rejects_invalid_duration_samples(self):
         for values in ([float("nan")], [float("inf")], [-1], [True], ["0.1"]):
             with self.subTest(values=values), self.assertRaisesRegex(ValueError, "invalid sample"):
@@ -88,6 +114,69 @@ class CorrectnessSoakTests(unittest.TestCase):
                 soak("rusthouse", "db", statement, "nonexistent-reference.tsv",
                      execute=lambda: self.fail("must not run unsafe SQL"))
 
+    def test_allows_semicolons_in_sql_literals_and_comments(self):
+        with tempfile.TemporaryDirectory() as folder:
+            expected = Path(folder) / "reference.tsv"
+            expected.write_bytes(b"result")
+            digest = hashlib.sha256(b"result").hexdigest()
+            for statement in (
+                "SELECT ';' AS delimiter",
+                "SELECT 1 /* ; harmless comment */",
+                "SELECT '-- ;' AS marker",
+                "SELECT 1 -- ; line comment",
+            ):
+                with self.subTest(statement=statement):
+                    response = soak("rusthouse", "db", statement, expected,
+                                    runs=1, warmups=0,
+                                    execute=lambda: (digest, 6, 0.1))
+                    self.assertTrue(response["verified"])
+
+    def test_rejects_unsafe_sql_after_comment_aware_scan(self):
+        for statement in (
+            "SELECT 1; SELECT 2",
+            "SELECT 'unclosed",
+            "SELECT 1 /* unterminated",
+            "SELECT 1; -- followed by comment",
+        ):
+            with self.subTest(statement=statement), self.assertRaisesRegex(ValueError, "read-only SELECT"):
+                soak("rusthouse", "db", statement, "missing.tsv",
+                     runs=1, execute=lambda: self.fail("must not run unsafe SQL"))
+
+    def test_reference_replacement_between_stat_and_open_is_rejected(self):
+        import os
+        from unittest.mock import patch
+        from bench.scale.query_correctness_soak import read_reference
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "reference.tsv"
+            replacement = Path(root) / "new.tsv"
+            path.write_bytes(b"trusted")
+            replacement.write_bytes(b"changed")
+            real_open = os.open
+
+            def swapped(file, flags):
+                path.unlink()
+                replacement.rename(path)
+                return real_open(file, flags)
+
+            with patch("bench.scale.query_correctness_soak.os.open", side_effect=swapped):
+                with self.assertRaisesRegex(ValueError, "changed before opening"):
+                    read_reference(path)
+
+    def test_reference_mutation_during_hashing_is_rejected(self):
+        from unittest.mock import patch
+        from bench.scale.query_correctness_soak import read_reference
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "reference.tsv"
+            path.write_bytes(b"trusted")
+            def rewritten(source):
+                value = digest_file(source)
+                # Change the length as well so coarse filesystem timestamps
+                # cannot make this race test pass accidentally.
+                path.write_bytes(b"changed and extended")
+                return value
+            with patch("bench.scale.query_correctness_soak.digest_file", side_effect=rewritten):
+                with self.assertRaisesRegex(ValueError, "changed during hashing"):
+                    read_reference(path)
     def test_soak_caps_sql_output_to_reference_size(self):
         import os
         from types import SimpleNamespace
@@ -119,6 +208,7 @@ class CorrectnessSoakTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "max_output_bytes"):
             run_sql("rusthouse", "db", "SELECT 42", 2, max_output_bytes=-1)
+
 
 if __name__ == "__main__":
     unittest.main()

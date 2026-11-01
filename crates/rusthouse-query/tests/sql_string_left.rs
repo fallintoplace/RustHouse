@@ -39,3 +39,15 @@ fn left_rejects_negative_counts_bad_arity_and_from_clause() {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
+
+#[test]
+fn left_counts_unicode_codepoints_without_cutting_utf8_bytes() {
+    assert_eq!(
+        value("SELECT LEFT('é😀xyz', 2)"),
+        ConstantValue::Text("é😀".into())
+    );
+    assert_eq!(
+        value("SELECT LEFT('é😀xyz', 3)"),
+        ConstantValue::Text("é😀x".into())
+    );
+}

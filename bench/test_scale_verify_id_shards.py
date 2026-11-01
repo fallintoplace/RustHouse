@@ -9,6 +9,35 @@ from bench.scale.verify_id_shards import verify, verify_file
 
 
 class VerifyShardsTests(unittest.TestCase):
+    def test_manifest_replacement_before_open_is_rejected(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "manifest.json"
+            replacement = Path(folder) / "replacement.json"
+            path.write_text('{"schema_version": 1}')
+            replacement.write_text('{"schema_version": 2}')
+            real_open = os.open
+
+            def swapped(candidate, flags):
+                if Path(candidate) == path:
+                    os.replace(replacement, path)
+                return real_open(candidate, flags)
+
+            with patch("bench.scale.verify_id_shards.os.open", side_effect=swapped):
+                with self.assertRaisesRegex(ValueError, "changed before opening"):
+                    verify(path)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows CI may disallow symlinks")
+    def test_manifest_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            original = Path(folder) / "original.json"
+            alias = Path(folder) / "manifest.json"
+            original.write_text('{"schema_version": 1}')
+            alias.symlink_to(original)
+            with self.assertRaisesRegex(ValueError, "symlinked"):
+                verify(alias)
+
     def test_direct_verification_rejects_invalid_ranges_before_file_open(self):
         missing = Path("missing-shard.tsv")
         for args in ((0, 0, 1), (-1, 1, 1), (True, 1, 1),

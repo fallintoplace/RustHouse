@@ -58,17 +58,24 @@ def invoke(args, timeout):
 
 
 def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact"):
-    if runs < 1 or warmups < 0:
-        raise ValueError("runs must be positive and warmups nonnegative")
+    if (type(runs) is not int or type(warmups) is not int
+            or runs < 1 or warmups < 0 or 2 * runs + warmups > 500):
+        raise ValueError("paired rounds and warmups must be bounded integers")
     if not isinstance(reference, bytes):
         raise TypeError("reference must be exact TSV bytes")
 
+    if len(reference) > MAX_REFERENCE_BYTES:
+        raise ValueError("paired reference exceeds 16 MiB")
     samples = {engine: [] for engine in ENGINES}
     def checked(engine):
         output, seconds = execute(engine, sql)
+        if type(output) is not bytes or len(output) > MAX_REFERENCE_BYTES:
+            raise ValueError("paired query returned invalid or oversized TSV")
         if not compare_reference(output, reference, comparison):
             raise ValueError(f"{engine} result differs from the reference TSV")
-        if not math.isfinite(seconds) or seconds <= 0:
+        if (type(seconds) not in (int, float) or seconds <= 0
+                or (isinstance(seconds, int) and seconds.bit_length() >= 1024)
+                or not math.isfinite(seconds)):
             raise ValueError("timings must be finite and positive")
         return seconds
 
