@@ -3004,7 +3004,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if tail.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("LPAD result is too large".into()));
                     }
-                    let size = if unicode { tail.chars().count() } else { tail.len() };
+                    let size = if unicode {
+                        tail.chars().count()
+                    } else {
+                        tail.len()
+                    };
                     let missing = width - size;
                     if missing > 0 && padding.is_empty() {
                         return Err(ParseError("LPAD padding cannot be empty".into()));
@@ -3013,7 +3017,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if missing > 0 {
                         if unicode {
                             for character in padding.chars().cycle().take(missing) {
-                                if result.len() + character.len_utf8() + tail.len() > MAX_TEXT_BYTES {
+                                if result.len() + character.len_utf8() + tail.len() > MAX_TEXT_BYTES
+                                {
                                     return Err(ParseError("LPAD result is too large".into()));
                                 }
                                 result.push(character);
