@@ -57,20 +57,12 @@ fn weighted_rank_order(left: &(f64, &str), right: &(f64, &str)) -> std::cmp::Ord
         .then_with(|| left.1.cmp(right.1))
 }
 
-/// Rank up to 64 distinct nodes for one shard. This is placement, not membership consensus.
-pub fn replicas_for(
-    shard: &str,
-    nodes: &[String],
-    replicas: usize,
-) -> Result<Vec<String>, &'static str> {
-    if !valid_shard(shard) {
-        return Err("invalid shard identifier");
-    }
-    if nodes.is_empty() || nodes.len() > MAX_PLACEMENT_NODES || replicas == 0 || replicas > nodes.len() {
+fn validate_replica_nodes(nodes: &[String], replicas: usize) -> Result<(), &'static str> {
+    if nodes.is_empty() || nodes.len() > MAX_PLACEMENT_NODES
+        || replicas == 0 || replicas > nodes.len()
+    {
         return Err("invalid replica placement configuration");
     }
-    // Most replica sets fit in a handful of nodes. Validate borrowed names
-    // in-place instead of allocating a hash table for every shard placement.
     if nodes.len() <= 8 {
         for (index, node) in nodes.iter().enumerate() {
             if !valid_node(node) || nodes[..index].contains(node) {
@@ -85,8 +77,11 @@ pub fn replicas_for(
             }
         }
     }
-    let seed = shard_seed(shard);
-    // A single winner does not need sorting all candidate replicas.
+    Ok(())
+}
+
+/// Place one shard with already validated candidate membership.
+fn rank_replicas_with_seed(seed: u64, nodes: &[String], replicas: usize) -> Vec<String> {
     if replicas == 1 {
         let mut winning_node = nodes[0].as_str();
         let mut winning_score = score_with_seed(seed, winning_node);
@@ -97,10 +92,8 @@ pub fn replicas_for(
                 winning_score = score;
             }
         }
-        return Ok(vec![winning_node.to_owned()]);
+        return vec![winning_node.to_owned()];
     }
-    // Two replicas are common: select the top two without allocating and
-    // partitioning a ranking vector for all candidates.
     if replicas == 2 {
         let outranks = |left: (u64, &str), right: (u64, &str)| {
             left.0 > right.0 || (left.0 == right.0 && left.1 < right.1)
@@ -116,27 +109,55 @@ pub fn replicas_for(
                 second = Some(candidate);
             }
         }
-        return Ok(vec![
+        return vec![
             first.expect("at least two validated nodes").1.to_owned(),
             second.expect("at least two validated nodes").1.to_owned(),
-        ]);
+        ];
     }
     let mut ranked: Vec<(u64, &str)> = nodes
         .iter()
         .map(|node| (score_with_seed(seed, node), node.as_str()))
         .collect();
     if replicas < ranked.len() {
-        // Partition the ranking when only a prefix is requested.
         ranked.select_nth_unstable_by(replicas, |left, right| {
             right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
         });
         ranked.truncate(replicas);
     }
     ranked.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
-    Ok(ranked
-        .into_iter()
-        .take(replicas)
-        .map(|(_, node)| node.to_owned())
+    ranked.into_iter().take(replicas).map(|(_, node)| node.to_owned()).collect()
+}
+
+/// Rank up to 64 distinct nodes for one shard. This is placement, not membership consensus.
+pub fn replicas_for(
+    shard: &str,
+    nodes: &[String],
+    replicas: usize,
+) -> Result<Vec<String>, &'static str> {
+    if !valid_shard(shard) {
+        return Err("invalid shard identifier");
+    }
+    validate_replica_nodes(nodes, replicas)?;
+    Ok(rank_replicas_with_seed(shard_seed(shard), nodes, replicas))
+}
+
+/// Place a bounded set of shards using one shared membership validation.
+/// Each shard still has its own deterministic rendezvous seed and ranking.
+pub fn replicas_for_many(
+    shards: &[&str],
+    nodes: &[String],
+    replicas: usize,
+) -> Result<Vec<Vec<String>>, &'static str> {
+    if shards.len() > 4096 {
+        return Err("too many shards in placement batch");
+    }
+    validate_replica_nodes(nodes, replicas)?;
+    // Reject malformed shards before allocating or producing any placements.
+    if shards.iter().any(|&shard| !valid_shard(shard)) {
+        return Err("invalid shard identifier");
+    }
+    Ok(shards.iter()
+        .map(|&shard| rank_replicas_with_seed(shard_seed(shard), nodes, replicas))
         .collect())
 }
 
@@ -1006,5 +1027,34 @@ mod hash_threshold_rebalance_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod batched_rendezvous_placement_tests {
+    use super::*;
+
+    #[test]
+    fn batch_ranking_matches_per_shard_placement_for_all_replica_counts() {
+        let nodes = (0..32).map(|i| format!("node_{i:02}")).collect::<Vec<_>>();
+        let shard_names = (0..256).map(|i| format!("tenant_{i:04}")).collect::<Vec<_>>();
+        let shards = shard_names.iter().map(String::as_str).collect::<Vec<_>>();
+        for replicas in [1, 2, 3, 7, 16, 32] {
+            let batch = replicas_for_many(&shards, &nodes, replicas).unwrap();
+            assert_eq!(batch.len(), shards.len());
+            for (shard, actual) in shards.iter().zip(batch) {
+                assert_eq!(actual, replicas_for(shard, &nodes, replicas).unwrap(), "{shard}");
+            }
+        }
+    }
+
+    #[test]
+    fn bad_node_sets_and_invalid_shards_fail_atomically() {
+        let nodes = vec!["n1".to_owned(), "n2".to_owned(), "n3".to_owned()];
+        assert_eq!(replicas_for_many(&[], &nodes, 2).unwrap(), Vec::<Vec<String>>::new());
+        assert!(replicas_for_many(&["good", "../bad"], &nodes, 2).is_err());
+        assert!(replicas_for_many(&["good"], &["duplicate".into(), "duplicate".into()], 1).is_err());
+        assert!(replicas_for_many(&["good"], &nodes, 4).is_err());
+        assert!(replicas_for_many(&vec!["shard"; 4097], &nodes, 1).is_err());
     }
 }
