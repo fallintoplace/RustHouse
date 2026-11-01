@@ -204,6 +204,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "REPEAT"
                 | "BASE64_DECODE"
                 | "BASE64URLDECODE"
+                | "TRYBASE64URLDECODE"
                 | "TRYBASE64DECODE"
                 | "BASE64DECODE"
                 | "APPENDTRAILINGCHARIFABSENT"
@@ -4516,7 +4517,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             }
         }
         "BASE64_DECODE" | "BASE64DECODE" | "TRYBASE64DECODE" | "BASE64URLDECODE"
-        | "FROM_BASE64" | "FROM_BASE64URL" => {
+        | "FROM_BASE64" | "FROM_BASE64URL" | "TRYBASE64URLDECODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
             match input {
@@ -4549,8 +4550,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             }
                         }
                         let mut normalized = Vec::new();
-                        let source: &[u8] = if name == "BASE64URLDECODE" || name == "FROM_BASE64URL"
-                        {
+                        let source: &[u8] = if matches!(
+                            name.as_str(),
+                            "BASE64URLDECODE" | "FROM_BASE64URL" | "TRYBASE64URLDECODE"
+                        ) {
                             normalized.reserve(value.len().saturating_add(3));
                             for byte in value.bytes() {
                                 normalized.push(match byte {
@@ -4628,7 +4631,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     })();
                     match decoded {
                         Ok(value) => value,
-                        Err(_) if name == "TRYBASE64DECODE" => ConstantValue::Text(String::new()),
+                        Err(_)
+                            if matches!(
+                                name.as_str(),
+                                "TRYBASE64DECODE" | "TRYBASE64URLDECODE"
+                            ) =>
+                        {
+                            ConstantValue::Text(String::new())
+                        }
                         Err(error) => return Err(error),
                     }
                 }
