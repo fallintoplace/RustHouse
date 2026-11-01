@@ -40,7 +40,7 @@ def write_fixture(path, rows, *, batch_rows=8192):
         raise ValueError("fixture rows must be in 1..1000000000")
     if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("fixture batch_rows must be in 1..1000000")
-    with path.open("w", encoding="ascii", buffering=1024 * 1024) as output:
+    with path.open("w", encoding="ascii", newline="\n", buffering=1024 * 1024) as output:
         for start in range(0, rows, batch_rows):
             output.write("".join(f"{value}\n" for value in range(start, min(start + batch_rows, rows))))
 
