@@ -494,6 +494,25 @@ mod resolved_scrub_preflight_tests {
     }
 }
 
+/// Resolve a continuation cursor without rescanning up to 16,384 parts.
+/// The caller must sort the paths by file name before this binary search.
+fn scrub_cursor_index(parts: &[std::path::PathBuf], after: &str) -> Result<usize, PartError> {
+    if after.is_empty() || after.contains('/') || after.contains('\\') {
+        return Err(PartError::InvalidScan(
+            "invalid snapshot scrub cursor".into(),
+        ));
+    }
+    let name = Some(std::ffi::OsStr::new(after));
+    parts
+        .binary_search_by(|part| part.file_name().cmp(&name))
+        .map(|index| index + 1)
+        .map_err(|_| {
+            PartError::InvalidScan(
+                "snapshot scrub cursor was not found in active generation".into(),
+            )
+        })
+}
+
 /// A completed page of read-only immutable-part verification.
 ///
 /// Keep generation unchanged when passing its cursor to the next page.
@@ -535,24 +554,7 @@ pub fn scrub_snapshot_page(
         ));
     }
     parts.sort_unstable_by(|left, right| left.file_name().cmp(&right.file_name()));
-    let start = if let Some(after) = after_part {
-        if after.is_empty() || after.contains('/') || after.contains('\\') {
-            return Err(PartError::InvalidScan(
-                "invalid snapshot scrub cursor".into(),
-            ));
-        }
-        let last = parts
-            .iter()
-            .position(|part| part.file_name().is_some_and(|name| name == after))
-            .ok_or_else(|| {
-                PartError::InvalidScan(
-                    "snapshot scrub cursor was not found in active generation".into(),
-                )
-            })?;
-        last + 1
-    } else {
-        0
-    };
+    let start = after_part.map_or(Ok(0), |after| scrub_cursor_index(&parts, after))?;
     let end = start.saturating_add(max_page_parts).min(parts.len());
     let mut report = ScrubReport::default();
     for part in &parts[start..end] {
@@ -656,5 +658,30 @@ mod pinned_snapshot_scrub_pages_tests {
         fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
         assert!(scrub_snapshot_page(&root, Some(&first.generation), None, 1,).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod indexed_scrub_cursor_tests {
+    use super::*;
+
+    #[test]
+    fn binary_cursor_matches_a_linear_reference_over_maximum_part_count() {
+        let parts = (0..16_384)
+            .map(|index| std::path::PathBuf::from(format!("part_{index:05}")))
+            .collect::<Vec<_>>();
+        for index in [0, 1, 127, 255, 256, 4095, 8191, 16_383] {
+            let name = format!("part_{index:05}");
+            assert_eq!(scrub_cursor_index(&parts, &name).unwrap(), index + 1);
+        }
+        for invalid in [
+            "",
+            "../part_00001",
+            "part_00001/",
+            "part_00001\\x",
+            "part_16384",
+        ] {
+            assert!(scrub_cursor_index(&parts, invalid).is_err());
+        }
     }
 }
