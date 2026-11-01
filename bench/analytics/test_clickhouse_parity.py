@@ -108,6 +108,32 @@ class ClickHouseDifferentialTests(unittest.TestCase):
             assert_clickhouse_json_parity(actual.replace(b'"NA"', b'"EU"'),
                                          expected, unordered=True)
 
+    def test_unordered_mixed_integer_rows_scale_and_preserve_multiplicity(self):
+        def encode(rows):
+            return ("".join(json.dumps(row, separators=(",", ":")) + "\n"
+                            for row in rows)).encode("utf-8")
+
+        expected = [
+            {"region": f"r-{index % 19}", "n": (1 << 63) + index % 31,
+             "ok": index % 2 == 0, "coupon": None if index % 3 else "promo"}
+            for index in range(3072)
+        ]
+        actual = [
+            {key: (str(int(value)) if type(value) in (int, bool) else value)
+             for key, value in row.items()}
+            for row in reversed(expected)
+        ]
+        self.assertEqual(assert_clickhouse_json_parity(
+            encode(actual), encode(expected), unordered=True
+        ), len(expected))
+
+        corrupted = list(actual)
+        corrupted[-1] = {**corrupted[-1], "n": "0"}
+        with self.assertRaisesRegex(ValueError, "multiset"):
+            assert_clickhouse_json_parity(
+                encode(corrupted), encode(expected), unordered=True
+            )
+
     def test_json_oracle_respects_columns_and_boolean_values(self):
         actual = b'{"ok":"1","value":"7"}\n'
         expected = b'{"ok":true,"value":7}\n'

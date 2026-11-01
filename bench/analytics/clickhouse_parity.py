@@ -127,6 +127,22 @@ def assert_clickhouse_json_parity(rusthouse_output, clickhouse_output, unordered
             if actual_counts != expected_counts:
                 raise ValueError("JSON result multiset differs from ClickHouse")
             return len(expected)
+        # Most analytical outputs mix dimension text with exact integer
+        # aggregates. Match those by ordered column/value tuples in O(n)
+        # instead of searching the remaining rows quadratically.
+        if (all(all(value is None or type(value) in (str, int, bool)
+                    for value in row.values()) for row in expected)
+                and all(all(value is None or isinstance(value, str)
+                            for value in row.values()) for row in actual)):
+            exact_reference = Counter(
+                tuple((name, str(int(value)) if type(value) in (int, bool) else value)
+                      for name, value in row.items())
+                for row in expected
+            )
+            if Counter(tuple(row.items()) for row in actual) == exact_reference:
+                return len(expected)
+        # Float results and noncanonical numeric text still use the tolerant
+        # typed comparator, retaining its existing compatibility semantics.
         unmatched = list(actual)
         for reference in expected:
             index = next((i for i, row in enumerate(unmatched) if equal(row, reference)), None)
