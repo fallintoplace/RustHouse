@@ -4547,7 +4547,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                                 2 => normalized.extend_from_slice(b"=="),
                                 3 => normalized.push(b'='),
                                 _ => {
-                                    return Err(ParseError("invalid BASE64URLDECODE length".into()));
+                                    return Err(ParseError(
+                                        "invalid BASE64URLDECODE length".into(),
+                                    ));
                                 }
                             }
                             normalized.as_slice()

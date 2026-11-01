@@ -80,6 +80,25 @@ use predicates::{
     sparse_generated_positions,
 };
 
+// Charge each shared memory reservation atomically on all supported Rust versions.
+fn try_reserve_shared(budget: &AtomicUsize, amount: usize, limit: usize) -> bool {
+    let mut current = budget.load(AtomicOrdering::Acquire);
+    loop {
+        let Some(next) = current.checked_add(amount).filter(|&total| total <= limit) else {
+            return false;
+        };
+        match budget.compare_exchange_weak(
+            current,
+            next,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ExecutionError {
     Storage(PartError),

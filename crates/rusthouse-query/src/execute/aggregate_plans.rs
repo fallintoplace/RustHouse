@@ -232,7 +232,7 @@ fn parallel_integer_grouped_count(
     kind: &str,
 ) -> Result<Option<GroupedCounts>, ExecutionError> {
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::atomic::AtomicUsize;
     const MAX_PARTIAL_KEYS: usize = 100_000;
     let parts = rusthouse_storage::query_parts(part)?;
     let workers = std::thread::available_parallelism()
@@ -272,18 +272,7 @@ fn parallel_integer_grouped_count(
                                                 })?;
                                             }
                                             std::collections::hash_map::Entry::Vacant(entry) => {
-                                                if retained
-                                                    .try_update(
-                                                        AtomicOrdering::AcqRel,
-                                                        AtomicOrdering::Acquire,
-                                                        |current| {
-                                                            current.checked_add(1).filter(
-                                                                |&total| total <= MAX_PARTIAL_KEYS,
-                                                            )
-                                                        },
-                                                    )
-                                                    .is_err()
-                                                {
+                                                if !super::try_reserve_shared(retained, 1, MAX_PARTIAL_KEYS) {
                                                     return Ok(false);
                                                 }
                                                 entry.insert(counts.len());

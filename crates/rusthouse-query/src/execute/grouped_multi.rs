@@ -10,11 +10,23 @@ use std::path::Path;
 const MAX_GROUPS: usize = 200_000;
 const MAX_PARALLEL_KEY_BYTES: usize = 64 * 1024 * 1024;
 
+fn reserve_parallel_group_bytes(
+    budget: &std::sync::atomic::AtomicUsize,
+    bytes: usize,
+) -> Result<(), ExecutionError> {
+    if super::try_reserve_shared(budget, bytes, MAX_PARALLEL_KEY_BYTES) {
+        Ok(())
+    } else {
+        Err(ExecutionError::Invalid(
+            "parallel GROUP BY exceeds 64 MiB worker key budget".into(),
+        ))
+    }
+}
+
 fn reserve_parallel_group(
     budget: &std::sync::atomic::AtomicUsize,
     keys: &[Key],
 ) -> Result<(), ExecutionError> {
-    use std::sync::atomic::Ordering;
     let fixed = keys
         .len()
         .checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
@@ -29,16 +41,7 @@ fn reserve_parallel_group(
         sum.checked_add(extra)
             .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))
     })?;
-    budget
-        .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            current
-                .checked_add(bytes)
-                .filter(|&total| total <= MAX_PARALLEL_KEY_BYTES)
-        })
-        .map(|_| ())
-        .map_err(|_| {
-            ExecutionError::Invalid("parallel GROUP BY exceeds 64 MiB worker key budget".into())
-        })
+    reserve_parallel_group_bytes(budget, bytes)
 }
 
 /// Encoded probes reuse one buffer on hits. Charge only the owned text
@@ -50,7 +53,6 @@ fn reserve_parallel_encoded_group(
     group_indices: &[usize],
     row: usize,
 ) -> Result<(), ExecutionError> {
-    use std::sync::atomic::Ordering;
     let fixed = group_indices
         .len()
         .checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
@@ -68,16 +70,7 @@ fn reserve_parallel_encoded_group(
             .and_then(|bytes| total.checked_add(bytes))
             .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))
     })?;
-    budget
-        .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            current
-                .checked_add(bytes)
-                .filter(|&total| total <= MAX_PARALLEL_KEY_BYTES)
-        })
-        .map(|_| ())
-        .map_err(|_| {
-            ExecutionError::Invalid("parallel GROUP BY exceeds 64 MiB worker key budget".into())
-        })
+    reserve_parallel_group_bytes(budget, bytes)
 }
 
 const MAX_GROUP_KEY_BYTES: usize = 64 * 1024 * 1024;

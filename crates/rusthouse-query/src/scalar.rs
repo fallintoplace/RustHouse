@@ -1375,7 +1375,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                     return Err(ParseError("xor accepts at most 16 values".into()));
                 }
                 let next = expression(parser, depth + 1)?;
-                result ^= (next != 0);
+                result ^= next != 0;
                 arguments += 1;
             }
             if arguments < 2 {
