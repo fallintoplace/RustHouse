@@ -3,6 +3,8 @@
 import argparse
 import json
 import math
+import os
+import stat
 import sys
 from pathlib import Path
 
@@ -24,10 +26,25 @@ def _reject_nonstandard_number(token):
 
 def load_manifest(path):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("manifest must be a regular non-symlinked file")
-    with path.open("rb") as source:
+
+    def identity(metadata):
+        return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened):
+            raise ValueError("benchmark manifest changed while opening")
         payload = source.read(MAX_MANIFEST_BYTES + 1)
+        if identity(opened) != identity(os.fstat(source.fileno())):
+            raise ValueError("benchmark manifest changed while reading")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError("benchmark manifest changed while reading")
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("manifest exceeds 2 MiB")
     return json.loads(payload, object_pairs_hook=reject_duplicate_keys,

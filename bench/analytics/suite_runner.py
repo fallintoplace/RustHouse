@@ -6,6 +6,8 @@ Results are synthetic compatibility/performance observations, not certified scor
 import argparse
 import json
 import math
+import os
+import stat
 import sqlite3
 import subprocess
 import tempfile
@@ -51,10 +53,25 @@ def load_workload(path):
         return parsed
 
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("analytics workload must be a regular, non-symlinked file")
-    with path.open("rb") as source:
+
+    def identity(metadata):
+        return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(opened) != identity(before):
+            raise ValueError("analytics workload changed while opening")
         raw = source.read(1_048_577)
+        if identity(opened) != identity(os.fstat(source.fileno())):
+            raise ValueError("analytics workload changed while reading")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError("analytics workload changed while reading")
     if len(raw) > 1_048_576:
         raise ValueError("analytics workload exceeds 1 MiB")
     data = json.loads(raw, object_pairs_hook=unique_fields,
