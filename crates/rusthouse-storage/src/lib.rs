@@ -75,7 +75,7 @@ pub use fixed_strings::{
     FixedStringColumn, FixedStringReadError, read_fixed_string_granule, read_fixed_strings,
 };
 pub use granules::{read_mark_bytes, read_numeric_granule, read_u64_granule};
-pub use ip::{read_ipv4_values, read_ipv6_values};
+pub use ip::{read_ipv4_values, read_ipv6_values, write_ipv4_values, write_ipv6_values};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
 pub use metadata::{Column, PartMetadata, inspect_part, read_part_row_count};
