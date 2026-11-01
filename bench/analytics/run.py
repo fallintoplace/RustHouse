@@ -15,7 +15,7 @@ from pathlib import Path
 from functools import lru_cache
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import cli_sql, emit_json, latency_summary
+from common import cli_sql, emit_json, file_change_time_ns, latency_summary
 
 
 DEFAULT_QUERIES = Path(__file__).with_name("queries.sql")
@@ -135,7 +135,7 @@ def reference_failure(expected_path, output):
     except OSError:
         return "unsafe_reference", str(expected_path)
     identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
-                             info.st_mtime_ns, info.st_ctime_ns)
+                             info.st_mtime_ns, file_change_time_ns(info))
     if (identity(before) != identity(opened)
             or identity(opened) != identity(finished)
             or identity(finished) != identity(after)):
