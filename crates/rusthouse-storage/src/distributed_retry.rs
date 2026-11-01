@@ -504,3 +504,172 @@ mod resumed_replica_retry_tests {
         );
     }
 }
+
+/// Persisted position in a deterministic, absolute-offset retry schedule.
+///
+/// `elapsed` is the exact sum of delays for attempts before `next_attempt`,
+/// not wall-clock time since a process restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplicaRetryCheckpoint<'a> {
+    pub node: &'a str,
+    pub seed: u64,
+    pub next_attempt: u32,
+    pub elapsed: Duration,
+}
+
+/// Resume the remaining per-node retry events from validated checkpoints.
+///
+/// A checkpoint with the wrong seed, attempt number or elapsed delay must not
+/// silently replay a different schedule. The existing bounded heap planner
+/// supplies the same deterministic global event order as an unbroken run.
+pub fn plan_replica_retry_timeline_from(
+    checkpoints: &[ReplicaRetryCheckpoint<'_>],
+    attempts_per_node: u32,
+    base_ms: u64,
+    max_ms: u64,
+    deadline: Duration,
+) -> Result<Vec<ReplicaRetryEvent>, &'static str> {
+    if checkpoints.is_empty() || checkpoints.len() > 64 || attempts_per_node > 33 {
+        return Err("replica retry timeline exceeds limits");
+    }
+    for checkpoint in checkpoints {
+        if checkpoint.next_attempt > attempts_per_node {
+            return Err("replica retry checkpoint exceeds attempt budget");
+        }
+        let expected = (0..checkpoint.next_attempt).try_fold(
+            Duration::ZERO,
+            |elapsed, attempt| {
+                let delay = retry_delay(attempt, base_ms, max_ms, checkpoint.seed)?;
+                elapsed
+                    .checked_add(delay)
+                    .ok_or("replica retry checkpoint duration overflow")
+            },
+        )?;
+        if checkpoint.elapsed != expected {
+            return Err("replica retry checkpoint does not match deterministic delays");
+        }
+    }
+    let nodes = checkpoints
+        .iter()
+        .map(|checkpoint| (checkpoint.node, checkpoint.seed))
+        .collect::<Vec<_>>();
+    let mut events =
+        plan_replica_retry_timeline(&nodes, attempts_per_node, base_ms, max_ms, deadline)?;
+    events.retain(|event| {
+        checkpoints.iter().any(|checkpoint| {
+            event.node == checkpoint.node && event.attempt >= checkpoint.next_attempt
+        })
+    });
+    Ok(events)
+}
+
+#[cfg(test)]
+mod resumed_timeline_checkpoint_tests {
+    use super::*;
+
+    fn elapsed(seed: u64, attempts: u32) -> Duration {
+        (0..attempts)
+            .map(|attempt| retry_delay(attempt, 100, 1000, seed).unwrap())
+            .sum()
+    }
+
+    #[test]
+    fn resumed_events_match_uninterrupted_absolute_schedule() {
+        let nodes = [("west", 3), ("east", 99), ("south", u64::MAX)];
+        let checkpoints = [
+            ReplicaRetryCheckpoint {
+                node: "west",
+                seed: 3,
+                next_attempt: 4,
+                elapsed: elapsed(3, 4),
+            },
+            ReplicaRetryCheckpoint {
+                node: "east",
+                seed: 99,
+                next_attempt: 7,
+                elapsed: elapsed(99, 7),
+            },
+            ReplicaRetryCheckpoint {
+                node: "south",
+                seed: u64::MAX,
+                next_attempt: 0,
+                elapsed: Duration::ZERO,
+            },
+        ];
+        let deadline = Duration::from_secs(10);
+        let full = plan_replica_retry_timeline(&nodes, 33, 100, 1000, deadline).unwrap();
+        let expected = full
+            .into_iter()
+            .filter(|event| {
+                checkpoints.iter().any(|checkpoint| {
+                    event.node == checkpoint.node && event.attempt >= checkpoint.next_attempt
+                })
+            })
+            .collect::<Vec<_>>();
+        let resumed =
+            plan_replica_retry_timeline_from(&checkpoints, 33, 100, 1000, deadline).unwrap();
+        assert_eq!(resumed, expected);
+    }
+
+    #[test]
+    fn rejects_tampered_and_duplicate_checkpoints() {
+        let valid = ReplicaRetryCheckpoint {
+            node: "west",
+            seed: 3,
+            next_attempt: 4,
+            elapsed: elapsed(3, 4),
+        };
+        let changed = ReplicaRetryCheckpoint {
+            elapsed: valid.elapsed + Duration::from_millis(1),
+            ..valid
+        };
+        assert!(plan_replica_retry_timeline_from(&[changed], 33, 100, 1000, Duration::MAX).is_err());
+        assert!(plan_replica_retry_timeline_from(&[valid], 3, 100, 1000, Duration::MAX).is_err());
+        assert!(
+            plan_replica_retry_timeline_from(&[valid, valid], 33, 100, 1000, Duration::MAX)
+                .is_err()
+        );
+        assert!(
+            plan_replica_retry_timeline_from(&[valid], 33, 0, 1000, Duration::MAX)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn deadline_excludes_future_events_but_preserves_checkpoint_validity() {
+        let checkpoint = ReplicaRetryCheckpoint {
+            node: "west",
+            seed: 3,
+            next_attempt: 2,
+            elapsed: elapsed(3, 2),
+        };
+        let events = plan_replica_retry_timeline_from(
+            &[checkpoint],
+            33,
+            100,
+            1000,
+            checkpoint.elapsed,
+        )
+        .unwrap();
+        assert!(events.is_empty());
+        let empty = ReplicaRetryCheckpoint {
+            node: "west",
+            seed: 3,
+            next_attempt: 0,
+            elapsed: Duration::ZERO,
+        };
+        let entire = plan_replica_retry_timeline_from(
+            &[empty],
+            33,
+            100,
+            1000,
+            Duration::MAX,
+        )
+        .unwrap();
+        assert_eq!(
+            entire,
+            plan_replica_retry_timeline(&[("west", 3)], 33, 100, 1000, Duration::MAX).unwrap()
+        );
+    }
+}
+
