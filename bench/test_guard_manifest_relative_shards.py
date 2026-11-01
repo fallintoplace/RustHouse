@@ -19,7 +19,7 @@ class ManifestRelativeShardTests(unittest.TestCase):
                 "shards": [{"path": "rows.tsv", "start": 0, "rows": 2,
                             "sha256": hashlib.sha256(shard.read_bytes()).hexdigest()}],
             }))
-            self.assertEqual(verify(manifest), {"verified": True, "rows": 2, "shards": 1})
+            self.assertEqual(verify(manifest), {"verified": True, "rows": 2, "step": 1, "shards": 1})
 
 
 if __name__ == "__main__":
