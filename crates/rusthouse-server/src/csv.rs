@@ -77,7 +77,7 @@ fn write_csv_field_from_tsv<W: Write>(output: &mut W, field: &[u8]) -> io::Resul
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field"))?,
         )
     };
-    let needs_quotes = value.as_ref() == "\\N"
+    let needs_quotes = value.is_empty() || value.as_ref() == "\\N"
         || value
             .bytes()
             .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\n' | b'\r'));
@@ -320,5 +320,27 @@ mod single_pass_row_tests {
             io::ErrorKind::InvalidData
         );
         assert_eq!(csv.output, b"a,b\r\n1,2\r\n");
+    }
+}
+
+#[cfg(test)]
+mod empty_csv_roundtrip_tests {
+    use super::*;
+
+    #[test]
+    fn empty_strings_are_quoted_but_nulls_are_not() {
+        let mut writer = CsvWriter::new(Vec::new());
+        writer.write_all(b"name\tmissing\n\t\\N\nabc\t\\N\n").unwrap();
+        assert_eq!(writer.output, b"name,missing\r\n\"\",\\N\r\nabc,\\N\r\n");
+    }
+
+    #[test]
+    fn direct_empty_cell_uses_exactly_two_quote_bytes() {
+        let mut output = Vec::new();
+        write_csv_field_from_tsv(&mut output, b"").unwrap();
+        assert_eq!(output, b"\"\"");
+        output.clear();
+        write_csv_field_from_tsv(&mut output, b"\\N").unwrap();
+        assert_eq!(output, b"\\N");
     }
 }

@@ -8,7 +8,10 @@ fn keyword<'a>(input: &'a str, expected: &str) -> Option<&'a str> {
         return None;
     }
     let rest = input.get(expected.len()..)?;
-    if rest.chars().next().is_some_and(|ch| !ch.is_whitespace()) {
+    if rest.chars().next().is_some_and(|ch| !ch.is_whitespace())
+        && !rest.starts_with("/*")
+        && !rest.starts_with("--")
+    {
         return None;
     }
     Some(rest.trim_start())
@@ -98,3 +101,17 @@ mod delete_comment_tests {
         assert!(parse_delete("DELETE /* comment */ data").is_err());
     }
 }
+
+#[cfg(test)]
+mod delete_adjacent_comment_tests {
+    use super::*;
+
+    #[test]
+    fn comments_separate_delete_from_following_from_token() {
+        assert!(parse_delete("DELETE/* tracked */FROM events WHERE id = 1")
+            .unwrap().is_some());
+        assert!(parse_delete("DELETE-- maintenance\nFROM events")
+            .unwrap().is_some());
+        assert!(parse_delete("DELETE/*comment*/events").is_err());
+        assert!(parse_delete("DELETEX FROM events").unwrap().is_none());
+    }

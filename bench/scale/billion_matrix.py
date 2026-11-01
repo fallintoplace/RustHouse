@@ -191,6 +191,10 @@ def unique_case_fields(pairs):
     return values
 
 
+def _reject_nonstandard_case_number(token):
+    raise ValueError(f"nonstandard billion-row case JSON number: {token}")
+
+
 def load_cases(directory):
     paths = sorted(itertools.islice(
         Path(directory).glob("[0-9][0-9]-*.json"), MAX_CASES + 1
@@ -207,7 +211,8 @@ def load_cases(directory):
         if path.stat().st_size > 64 * 1024:
             raise ValueError(f"benchmark case JSON exceeds 64 KiB: {path}")
         case = json.loads(path.read_text(encoding="utf-8"),
-                          object_pairs_hook=unique_case_fields)
+                          object_pairs_hook=unique_case_fields,
+                          parse_constant=_reject_nonstandard_case_number)
         if (not isinstance(case, dict) or not isinstance(case.get("name"), str)
                 or case["name"] in names):
             raise ValueError(f"duplicate or malformed case: {path}")

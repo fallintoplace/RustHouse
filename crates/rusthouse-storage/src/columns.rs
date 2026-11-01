@@ -16,7 +16,10 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     // Keep malformed huge counts from triggering an unbounded allocation.
     let capacity = expected.min(1024);
     let mut columns = Vec::with_capacity(capacity);
-    let mut names = (expected > 8).then(|| HashSet::with_capacity(capacity));
+    // A malformed columns.txt can advertise a huge count and then end
+    // immediately. Allocate a duplicate-name set only after nine actual
+    // records, not from the untrusted declared count alone.
+    let mut names: Option<HashSet<String>> = None;
     for index in 0..expected {
         let line_number = index + 3;
         let line = lines
@@ -25,10 +28,13 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
                 invalid_columns_format_error(line_number, "fewer columns than declared")
             })?;
         let column = parse_column(line, line_number)?;
-        let duplicated = if let Some(seen) = names.as_mut() {
-            !seen.insert(column.name.clone())
-        } else {
+        let duplicated = if columns.len() < 8 {
             columns.iter().any(|existing: &Column| existing.name == column.name)
+        } else {
+            let seen = names.get_or_insert_with(|| {
+                columns.iter().map(|existing: &Column| existing.name.clone()).collect()
+            });
+            !seen.insert(column.name.clone())
         };
         if duplicated {
             return Err(invalid_columns_format_error(line_number, "duplicate column name"));
@@ -337,5 +343,36 @@ mod tests {
             let content = format!("columns format version: 1\n1 columns:\n{row}\n");
             assert!(parse_columns(&content).is_err(), "accepted: {row:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod lazy_column_name_set_tests {
+    use super::*;
+
+    fn columns_file(names: &[String]) -> String {
+        let mut text = format!("columns format version: 1\n{} columns:\n", names.len());
+        for name in names {
+            text.push_str(&format!("\u{0060}{name}\u{0060} UInt64\n"));
+        }
+        text
+    }
+
+    #[test]
+    fn duplicate_validation_is_identical_at_the_eight_to_nine_boundary() {
+        for count in [1usize, 8, 9, 64] {
+            let mut names = (0..count).map(|i| format!("col_{i}")).collect::<Vec<_>>();
+            assert_eq!(parse_columns(&columns_file(&names)).unwrap().len(), count);
+            if count > 1 {
+                names[count - 1] = "col_0".into();
+                assert!(parse_columns(&columns_file(&names)).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn enormous_declared_column_counts_still_fail_on_missing_records() {
+        let input = "columns format version: 1\n99999999 columns:\n\u{0060}only\u{0060} UInt64\n";
+        assert!(matches!(parse_columns(input), Err(PartError::InvalidColumns { .. })));
     }
 }
