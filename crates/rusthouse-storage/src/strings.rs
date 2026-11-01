@@ -244,14 +244,28 @@ pub fn read_sized_strings<S: Read, D: Read>(
 ) -> Result<StringColumn, StringReadError> {
     checked_rows(rows)?;
     let mut values = StringColumn::new(rows);
-    // Read size entries in bounded chunks without consuming bytes from the next batch.
-    let mut buffer = [0u8; SIZE_ENTRY_BYTES * 8192];
-    let mut decoded_rows = 0;
-    while decoded_rows < rows {
-        let batch_rows = (rows - decoded_rows).min(buffer.len() / SIZE_ENTRY_BYTES);
-        sizes.read_exact(&mut buffer[..batch_rows * SIZE_ENTRY_BYTES])?;
-        append_sized_offsets(&mut values, &buffer[..batch_rows * SIZE_ENTRY_BYTES])?;
-        decoded_rows += batch_rows;
+    // Most marks have few rows. Avoid initializing a full 64 KiB size
+    // buffer when their entire offset stream fits in a small stack array.
+    let size_bytes = rows * SIZE_ENTRY_BYTES;
+    if size_bytes <= 512 {
+        let mut buffer = [0u8; 512];
+        sizes.read_exact(&mut buffer[..size_bytes])?;
+        append_sized_offsets(&mut values, &buffer[..size_bytes])?;
+    } else if size_bytes <= 8192 {
+        let mut buffer = [0u8; 8192];
+        sizes.read_exact(&mut buffer[..size_bytes])?;
+        append_sized_offsets(&mut values, &buffer[..size_bytes])?;
+    } else {
+        // Large batches retain the bounded sequential read path and never
+        // consume bytes belonging to the following size batch.
+        let mut buffer = [0u8; SIZE_ENTRY_BYTES * 8192];
+        let mut decoded_rows = 0;
+        while decoded_rows < rows {
+            let batch_rows = (rows - decoded_rows).min(buffer.len() / SIZE_ENTRY_BYTES);
+            sizes.read_exact(&mut buffer[..batch_rows * SIZE_ENTRY_BYTES])?;
+            append_sized_offsets(&mut values, &buffer[..batch_rows * SIZE_ENTRY_BYTES])?;
+            decoded_rows += batch_rows;
+        }
     }
     let bytes = *values.offsets.last().unwrap();
     values.data.resize(bytes, 0);
@@ -669,6 +683,59 @@ mod preflight_flattening_tests {
         assert_eq!(column.offsets.last(), Some(&expected_bytes));
         for row in 0..8_192 {
             assert_eq!(column.get(row).unwrap(), vec![b'x'; row % 11]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod sized_string_mark_buffer_tests {
+    use super::*;
+    use std::io::{Cursor, Read};
+
+    #[test]
+    fn decodes_across_all_buffer_thresholds_without_read_ahead() {
+        for rows in [0usize, 1, 64, 65, 1024, 1025, 8192, 8193] {
+            let mut sizes = vec![];
+            for index in 0..rows {
+                sizes.extend_from_slice(&((index % 3) as u64).to_le_bytes());
+            }
+            let mut payload = (0..rows).flat_map(|index| {
+                std::iter::repeat_n((index % 251) as u8, index % 3)
+            }).collect::<Vec<_>>();
+            let bytes = payload.len();
+            sizes.extend_from_slice(&u64::MAX.to_le_bytes());
+            payload.push(0xfe);
+            let mut sizes = Cursor::new(sizes);
+            let mut data = Cursor::new(payload);
+            let result = read_sized_strings(&mut sizes, &mut data, rows).unwrap();
+            assert_eq!(result.len(), rows);
+            assert_eq!(result.data().len(), bytes);
+            assert_eq!(sizes.position(), (rows * 8) as u64);
+            assert_eq!(data.position(), bytes as u64);
+            for index in 0..rows {
+                assert_eq!(result.get(index), Some(
+                    std::iter::repeat_n((index % 251) as u8, index % 3)
+                        .collect::<Vec<_>>().as_slice()
+                ));
+            }
+            let mut tail = [0u8; 8];
+            sizes.read_exact(&mut tail).unwrap();
+            assert_eq!(tail, u64::MAX.to_le_bytes());
+            let mut data_tail = [0u8; 1];
+            data.read_exact(&mut data_tail).unwrap();
+            assert_eq!(data_tail, [0xfe]);
+        }
+    }
+
+    #[test]
+    fn rejects_truncated_size_streams_at_each_threshold() {
+        for rows in [1, 65, 1025, 8193] {
+            let mut sizes = vec![0u8; rows * 8 - 1].as_slice();
+            let mut data = std::io::empty();
+            assert!(matches!(
+                read_sized_strings(&mut sizes, &mut data, rows),
+                Err(StringReadError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof
+            ));
         }
     }
 }
