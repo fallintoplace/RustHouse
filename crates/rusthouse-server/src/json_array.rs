@@ -1,6 +1,6 @@
 //! Stream validated JSONL objects as one bounded JSON array.
 use super::MAX_RESPONSE_BYTES;
-use rusthouse_format::{validate_json_object, write_pretty_json_row};
+use rusthouse_format::{validate_json_object, write_pretty_json_row, write_pretty_json_row_prefixed};
 use std::io::{self, Write};
 
 fn validate_complete_object(row: &[u8]) -> io::Result<()> {
@@ -54,7 +54,13 @@ impl<W: Write> JsonArraySink<W> {
 
     fn emit_complete_row(&mut self, row: &[u8]) -> io::Result<()> {
         validate_complete_object(row)?;
-        if !self.pretty && row.len() <= 4095 {
+        if self.pretty {
+            let prefix: &[u8] = if self.first { b"[\n  " } else { b",\n  " };
+            write_pretty_json_row_prefixed(&mut self.output, prefix, row)?;
+            self.first = false;
+            return Ok(());
+        }
+        if row.len() <= 4095 {
             let mut framed = [0u8; 4096];
             framed[0] = if self.first { b'[' } else { b',' };
             framed[1..row.len() + 1].copy_from_slice(row);
@@ -80,8 +86,14 @@ impl<W: Write> JsonArraySink<W> {
 
     fn finish_row(&mut self) -> io::Result<()> {
         validate_complete_object(&self.row)?;
-        self.write_row_prefix()?;
-        emit_json_row(&mut self.output, &self.row, self.pretty)?;
+        if self.pretty {
+            let prefix: &[u8] = if self.first { b"[\n  " } else { b",\n  " };
+            write_pretty_json_row_prefixed(&mut self.output, prefix, &self.row)?;
+            self.first = false;
+        } else {
+            self.write_row_prefix()?;
+            emit_json_row(&mut self.output, &self.row, false)?;
+        }
         self.row.clear();
         Ok(())
     }
@@ -314,5 +326,29 @@ mod invalid_json_forwarding_tests {
             sink.finish().unwrap(),
             b"[{\"a\":[true,null,{\"b\":-3.25e+2}],\"c\":\"\\\\\\\"\\u00e9\"}]\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod atomic_pretty_framing_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_first_row_never_emits_a_prefix() {
+        let mut sink = JsonArraySink::new_pretty(Vec::new());
+        assert!(sink.write_all(b"{\"a\":[}\n").is_err());
+        assert!(sink.output.is_empty());
+        assert!(sink.first);
+    }
+
+    #[test]
+    fn malformed_fragmented_row_preserves_prior_framing() {
+        let mut sink = JsonArraySink::new_pretty(Vec::new());
+        sink.write_all(b"{\"a\":1}\n").unwrap();
+        let committed = sink.output.clone();
+        sink.write_all(b"{\"b\":").unwrap();
+        assert!(sink.write_all(b"[}\n").is_err());
+        assert_eq!(sink.output, committed);
+        assert!(!sink.first);
     }
 }

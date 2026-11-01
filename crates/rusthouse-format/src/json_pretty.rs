@@ -142,12 +142,21 @@ impl<W: Write> Write for RowWriter<'_, W> {
 }
 
 /// Pretty-print a validated JSON row, preserving punctuation inside strings.
-pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
-    // Fail before writing a prefix that would leave the destination invalid.
+pub fn write_pretty_json_row_prefixed<W: Write>(
+    output: &mut W,
+    prefix: &[u8],
+    row: &[u8],
+) -> io::Result<()> {
+    // Never expose a framing prefix for an invalid nested JSON row.
     validate_pretty_depth(row)?;
+    output.write_all(prefix)?;
     let mut writer = RowWriter::new(output);
     write_pretty_json_row_into(&mut writer, row)?;
     writer.finish()
+}
+
+pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
+    write_pretty_json_row_prefixed(output, b"", row)
 }
 
 fn write_pretty_json_row_into<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
