@@ -42,7 +42,10 @@ fn billion_row_virtual_series_does_not_iterate_or_allocate_keys() {
         "uniq(number)\n1000000000\n"
     );
     assert_eq!(
-        ok(&db, "SELECT uniq(number) FROM numbers(1000000000) WHERE number < 1000"),
+        ok(
+            &db,
+            "SELECT uniq(number) FROM numbers(1000000000) WHERE number < 1000"
+        ),
         "uniq(number)\n1000\n"
     );
     fs::remove_dir_all(db).unwrap();
@@ -69,7 +72,10 @@ fn stored_high_cardinality_distinct_estimates_in_fixed_memory() {
 fn null_string_values_do_not_contribute_cardinality() {
     let db = database();
     ok(&db, "CREATE TABLE texts (id UInt64, tag Nullable(String))");
-    ok(&db, "INSERT INTO texts VALUES (1, 'blue'), (2, NULL), (3, 'blue'), (4, 'red')");
+    ok(
+        &db,
+        "INSERT INTO texts VALUES (1, 'blue'), (2, NULL), (3, 'blue'), (4, 'red')",
+    );
     assert_eq!(ok(&db, "SELECT uniq(tag) FROM texts"), "uniq(tag)\n2\n");
     fs::remove_dir_all(db).unwrap();
 }

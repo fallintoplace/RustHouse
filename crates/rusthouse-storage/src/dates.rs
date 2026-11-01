@@ -149,8 +149,7 @@ fn format_calendar_day(days: i64) -> String {
         output[3] = b'0' + (year % 10) as u8;
         put_two_digits(&mut output, 5, month as u32);
         put_two_digits(&mut output, 8, day as u32);
-        return String::from_utf8(output.to_vec())
-            .expect("calendar date formatting emits ASCII");
+        return String::from_utf8(output.to_vec()).expect("calendar date formatting emits ASCII");
     }
     format!("{year:04}-{month:02}-{day:02}")
 }

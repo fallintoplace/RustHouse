@@ -1,16 +1,15 @@
 //! Read typed batches from immutable wide MergeTree parts.
 //! This reader is deliberately separate from the optimized numeric-only scan.
 use crate::granules::{read_mark_bytes_cached, read_numeric_granule_cached};
-use crate::strings::read_legacy_strings_buffered;
 use crate::mark_validation::validate_wide_marks_reader;
 use crate::numeric::numeric_storage_type;
 use crate::query_parts;
 use crate::scan_layout::ScanLayout;
+use crate::strings::read_legacy_strings_buffered;
 use crate::{
     ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError,
     PartMetadata, StringColumn, UuidValue, WideMark, inspect_part, read_array_offsets,
-    read_part_row_count,
-    read_numeric_array_column, read_numeric_column, read_uuid_values,
+    read_numeric_array_column, read_numeric_column, read_part_row_count, read_uuid_values,
     read_wide_marks,
 };
 use std::fs::File;
@@ -158,7 +157,11 @@ impl Read for MarkStream<'_> {
 
 impl BufRead for MarkStream<'_> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
-        while self.block.as_ref().is_none_or(|block| self.offset == block.data.len()) {
+        while self
+            .block
+            .as_ref()
+            .is_none_or(|block| self.offset == block.data.len())
+        {
             let scratch = self.block.take().map_or_else(Vec::new, |block| block.data);
             self.block = match self.stream.reader.next_decoded_reusing(scratch) {
                 None => return Ok(&[]),
@@ -386,8 +389,8 @@ fn read_string_key_map(
             ),
         )
     };
-    let mut decoded = StringColumn::builder(rows)
-        .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+    let mut decoded =
+        StringColumn::builder(rows).map_err(|error| PartError::InvalidScan(error.to_string()))?;
     let mut output = String::new();
     let mut decoded_bytes = 0usize;
     for row in 0..rows {
@@ -441,11 +444,7 @@ struct ColumnReader {
 
 // Stream initialization reads separate immutable files and can run on
 // independent workers. Layout checks run after all streams are opened.
-fn open_typed_column(
-    part: &Path,
-    name: &str,
-    data_type: &str,
-) -> Result<ColumnReader, PartError> {
+fn open_typed_column(part: &Path, name: &str, data_type: &str) -> Result<ColumnReader, PartError> {
     let kind = StorageKind::from_data_type(data_type)?;
     let data_name = if kind.needs_map_streams() {
         format!("{name}.keys")
@@ -515,9 +514,10 @@ fn decode_typed_column(
             )
         }
         StorageKind::NumericArray(kind) => {
-            let sizes = column.array_sizes.as_mut().ok_or_else(|| {
-                PartError::InvalidScan("missing Array size stream".into())
-            })?;
+            let sizes = column
+                .array_sizes
+                .as_mut()
+                .ok_or_else(|| PartError::InvalidScan("missing Array size stream".into()))?;
             let mut sizes_stream = MarkStream::open(sizes, index)?;
             let mut data_stream = MarkStream::open(&mut column.data, index)?;
             let arrays = read_numeric_array_column(
@@ -535,9 +535,9 @@ fn decode_typed_column(
                 .map_err(|error| PartError::InvalidScan(error.to_string()))?;
             let mut text = String::new();
             for row in 0..rows {
-                let range = arrays.row_range(row).ok_or_else(|| {
-                    PartError::InvalidScan("invalid Array row range".into())
-                })?;
+                let range = arrays
+                    .row_range(row)
+                    .ok_or_else(|| PartError::InvalidScan("invalid Array row range".into()))?;
                 text.clear();
                 text.push('[');
                 for element in range {
@@ -554,9 +554,10 @@ fn decode_typed_column(
             TypedColumn::Text(decoded)
         }
         StorageKind::StringMap(value_type) => {
-            let values = column.map_values.as_mut().ok_or_else(|| {
-                PartError::InvalidScan("missing Map values stream".into())
-            })?;
+            let values = column
+                .map_values
+                .as_mut()
+                .ok_or_else(|| PartError::InvalidScan("missing Map values stream".into()))?;
             let sizes = column
                 .map_sizes
                 .as_mut()
@@ -573,9 +574,8 @@ fn decode_typed_column(
         StorageKind::Uuid => {
             let bytes = column.data.read_fixed(
                 index,
-                rows.checked_mul(16).ok_or_else(|| {
-                    PartError::InvalidScan("UUID granule too large".into())
-                })?,
+                rows.checked_mul(16)
+                    .ok_or_else(|| PartError::InvalidScan("UUID granule too large".into()))?,
             )?;
             TypedColumn::Uuid(
                 read_uuid_values(&mut bytes.as_slice(), rows)
@@ -601,7 +601,8 @@ fn decode_typed_columns(
     workers: usize,
 ) -> Result<Vec<TypedColumn>, PartError> {
     if workers <= 1 || columns.len() < 2 {
-        return columns.iter_mut()
+        return columns
+            .iter_mut()
             .map(|column| decode_typed_column(column, index, rows))
             .collect();
     }
@@ -611,7 +612,8 @@ fn decode_typed_columns(
         for chunk in columns.chunks_mut(chunk_width) {
             let handle = std::thread::Builder::new()
                 .spawn_scoped(scope, move || {
-                    chunk.iter_mut()
+                    chunk
+                        .iter_mut()
                         .map(|column| decode_typed_column(column, index, rows))
                         .collect::<Result<Vec<_>, PartError>>()
                 })
@@ -620,10 +622,13 @@ fn decode_typed_columns(
                 })?;
             handles.push(handle);
         }
-        Ok(handles.into_iter()
-            .map(|handle| handle.join().unwrap_or_else(|_| {
-                Err(PartError::InvalidScan("typed mark decoder panicked".into()))
-            }))
+        Ok(handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(PartError::InvalidScan("typed mark decoder panicked".into()))
+                })
+            })
             .collect::<Vec<_>>())
     })?;
     let mut batch = Vec::with_capacity(columns.len());
@@ -648,7 +653,9 @@ impl TypedPartReader {
         // strings so binding itself does not duplicate schema allocations.
         let mut schema = std::collections::HashMap::with_capacity(metadata.columns.len());
         for column in &metadata.columns {
-            schema.entry(column.name.as_str()).or_insert(column.data_type.as_str());
+            schema
+                .entry(column.name.as_str())
+                .or_insert(column.data_type.as_str());
         }
         let mut types = Vec::with_capacity(names.len());
         for name in names {
@@ -836,21 +843,21 @@ impl TypedPartReader {
         // ScanLayout has already validated that all requested column streams
         // share the same adaptive granule row count. Decode this once instead
         // of repeating the conversion for every column in a wide projection.
-        let rows = usize::try_from(
-            self.columns[0].data.marks[index].rows.ok_or_else(|| {
+        let rows =
+            usize::try_from(self.columns[0].data.marks[index].rows.ok_or_else(|| {
                 PartError::InvalidScan("typed scan requires adaptive marks".into())
-            })?,
-        )
-        .map_err(|_| PartError::InvalidScan("row count too large".into()))?;
+            })?)
+            .map_err(|_| PartError::InvalidScan("row count too large".into()))?;
         const PARALLEL_DECODE_ROWS: usize = 4096;
         const PARALLEL_DECODE_COLUMNS: usize = 8;
-        let workers = if rows >= PARALLEL_DECODE_ROWS
-            && self.columns.len() >= PARALLEL_DECODE_COLUMNS
-        {
-            std::thread::available_parallelism().map_or(1, |count| count.get()).min(4)
-        } else {
-            1
-        };
+        let workers =
+            if rows >= PARALLEL_DECODE_ROWS && self.columns.len() >= PARALLEL_DECODE_COLUMNS {
+                std::thread::available_parallelism()
+                    .map_or(1, |count| count.get())
+                    .min(4)
+            } else {
+                1
+            };
         let batch = decode_typed_columns(&mut self.columns, index, rows, workers)?;
         self.next_mark += 1;
         Ok(Some(batch))
@@ -873,7 +880,10 @@ impl PartPrefetchWorker {
         let thread = std::thread::Builder::new()
             .spawn(move || {
                 while let Ok(path) = requests.recv() {
-                    if responses.send(TypedPartReader::open(&path, &columns)).is_err() {
+                    if responses
+                        .send(TypedPartReader::open(&path, &columns))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -974,10 +984,14 @@ impl TypedQueryReader {
                 return;
             }
             #[cfg(test)]
-            { self.prefetch_worker_starts += 1; }
+            {
+                self.prefetch_worker_starts += 1;
+            }
         }
         let path = self.parts[self.next_part].clone();
-        let queued = self.worker.as_ref()
+        let queued = self
+            .worker
+            .as_ref()
             .and_then(|worker| worker.queue.as_ref())
             .is_some_and(|queue| queue.send(path).is_ok());
         if queued {
@@ -991,15 +1005,16 @@ impl TypedQueryReader {
     fn advance_part(&mut self) -> Result<bool, PartError> {
         let reader = if self.prefetched {
             self.prefetched = false;
-            self.worker.as_ref().ok_or_else(|| {
-                PartError::InvalidScan("missing part prefetch worker".into())
-            })?.results.recv().map_err(|_| {
-                PartError::InvalidScan("typed snapshot part opener stopped".into())
-            })??
+            self.worker
+                .as_ref()
+                .ok_or_else(|| PartError::InvalidScan("missing part prefetch worker".into()))?
+                .results
+                .recv()
+                .map_err(|_| {
+                    PartError::InvalidScan("typed snapshot part opener stopped".into())
+                })??
         } else if self.next_part < self.parts.len() {
-            let reader = TypedPartReader::open(
-                &self.parts[self.next_part], &self.columns,
-            )?;
+            let reader = TypedPartReader::open(&self.parts[self.next_part], &self.columns)?;
             self.next_part += 1;
             reader
         } else {
@@ -1098,19 +1113,21 @@ mod tests {
     fn tiny_typed_snapshot_opens_parts_without_a_prefetch_thread() {
         use crate::{Column, write_wide_part};
         use std::fs;
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-tiny-prefetch-{}", std::process::id(),
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-tiny-prefetch-{}", std::process::id(),));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let columns = [Column {
-            name: "value".into(), data_type: "UInt64".into(),
+            name: "value".into(),
+            data_type: "UInt64".into(),
         }];
         for index in 0..2u64 {
             write_wide_part(
                 &root.join(format!("all_{index}_{index}_0")),
-                &columns, &[vec![Some(index.to_string())]],
-            ).unwrap();
+                &columns,
+                &[vec![Some(index.to_string())]],
+            )
+            .unwrap();
         }
         let mut scan = TypedQueryReader::open(&root, &["value".into()]).unwrap();
         let mut seen = Vec::new();
@@ -1132,17 +1149,22 @@ mod tests {
         use std::fs;
 
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-typed-part-prefetch-{}", std::process::id()
+            "rusthouse-typed-part-prefetch-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let cols = [Column { name: "category".into(), data_type: "String".into() }];
+        let cols = [Column {
+            name: "category".into(),
+            data_type: "String".into(),
+        }];
         for index in 0..24 {
             write_wide_part(
                 &root.join(format!("all_{index}_{index}_0")),
                 &cols,
                 &[vec![Some(format!("category-{index}"))]],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let mut scan = TypedQueryReader::open(&root, &["category".into()]).unwrap();
@@ -1157,7 +1179,9 @@ mod tests {
         }
         assert_eq!(
             seen,
-            (0..24).map(|index| format!("category-{index}").into_bytes()).collect::<Vec<_>>()
+            (0..24)
+                .map(|index| format!("category-{index}").into_bytes())
+                .collect::<Vec<_>>()
         );
         assert_eq!(scan.prefetch_worker_starts, 1);
         drop(scan);
@@ -1175,7 +1199,9 @@ mod tests {
         }
         assert_eq!(
             after_offset,
-            (18..24).map(|index| format!("category-{index}").into_bytes()).collect::<Vec<_>>()
+            (18..24)
+                .map(|index| format!("category-{index}").into_bytes())
+                .collect::<Vec<_>>()
         );
         drop(paged);
         fs::remove_dir_all(root).unwrap();
@@ -1186,18 +1212,25 @@ mod tests {
         use crate::{Column, write_wide_part};
         use std::fs;
 
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-nullmap-prefetch-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-nullmap-prefetch-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let cols = [Column { name: "value".into(), data_type: "Nullable(UInt64)".into() }];
+        let cols = [Column {
+            name: "value".into(),
+            data_type: "Nullable(UInt64)".into(),
+        }];
         for index in 0..16 {
             write_wide_part(
                 &root.join(format!("all_{index}_{index}_0")),
                 &cols,
-                &[vec![if index % 3 == 0 { None } else { Some(index.to_string()) }]],
-            ).unwrap();
+                &[vec![if index % 3 == 0 {
+                    None
+                } else {
+                    Some(index.to_string())
+                }]],
+            )
+            .unwrap();
         }
         let mut scan = TypedQueryReader::open(&root, &["value".into()]).unwrap();
         let mut nullmaps = Vec::new();
@@ -1206,7 +1239,9 @@ mod tests {
         }
         assert_eq!(
             nullmaps,
-            (0..16).map(|index| if index % 3 == 0 { 1u8 } else { 0u8 }).collect::<Vec<_>>()
+            (0..16)
+                .map(|index| if index % 3 == 0 { 1u8 } else { 0u8 })
+                .collect::<Vec<_>>()
         );
         drop(scan);
         fs::remove_dir_all(root).unwrap();
@@ -1376,23 +1411,30 @@ mod tests {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
             "rusthouse-typed-page-part-skip-{}-{}",
-            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&root).unwrap();
-        let columns = vec![Column { name: "text".into(), data_type: "String".into() }];
+        let columns = vec![Column {
+            name: "text".into(),
+            data_type: "String".into(),
+        }];
         for i in 0..4 {
             write_wide_part(
                 &root.join(format!("all_{i}_{i}_0")),
                 &columns,
                 &[vec![Some(format!("row-{i}"))]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let metadata = crate::inspect_query_source(&root).unwrap();
         let mut scan =
             TypedQueryReader::open_with_metadata(&root, &["text".into()], &metadata).unwrap();
         assert_eq!(scan.skip_prefix_rows(3).unwrap(), 3);
         let tail = scan.next_batch().unwrap().unwrap();
-        assert!(matches!(&tail[0], TypedColumn::Text(values) if values.get(0) == Some(b"row-3".as_slice())));
+        assert!(
+            matches!(&tail[0], TypedColumn::Text(values) if values.get(0) == Some(b"row-3".as_slice()))
+        );
         assert!(scan.next_batch().unwrap().is_none());
         fs::remove_dir_all(&root).unwrap();
     }
@@ -1409,7 +1451,6 @@ mod tests {
         quoted_map_text(&mut output, b"").unwrap();
         assert_eq!(output, "\"\"");
     }
-
 }
 
 #[cfg(test)]
@@ -1423,8 +1464,7 @@ mod map_row_fast_path_tests {
         text.push(':');
         quoted_map_text(&mut text, "caf\u{e9}\n".as_bytes()).unwrap();
         text.push('}');
-        let rows = StringColumn::from_rows(vec![text.as_bytes().to_vec(), b"{}".to_vec()])
-            .unwrap();
+        let rows = StringColumn::from_rows(vec![text.as_bytes().to_vec(), b"{}".to_vec()]).unwrap();
         assert_eq!(rows.get(0), Some(text.as_bytes()));
         assert_eq!(rows.get(1), Some(&b"{}"[..]));
     }
@@ -1439,7 +1479,6 @@ mod map_row_fast_path_tests {
         assert_eq!(row, "{}");
         assert!(row.capacity() >= reserved);
     }
-
 }
 
 #[cfg(test)]
@@ -1483,9 +1522,8 @@ mod parallel_typed_open_tests {
 
     #[test]
     fn wide_projection_opens_all_streams_in_order() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-typed-wide-open-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-typed-wide-open-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let columns = (0..10)
             .map(|index| Column {
@@ -1494,10 +1532,17 @@ mod parallel_typed_open_tests {
             })
             .collect::<Vec<_>>();
         let data = (0..2)
-            .map(|row| (0..10).map(|index| Some((index + row * 100).to_string())).collect::<Vec<_>>())
+            .map(|row| {
+                (0..10)
+                    .map(|index| Some((index + row * 100).to_string()))
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
         write_wide_part(&root, &columns, &data).unwrap();
-        let names = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+        let names = columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>();
         let mut reader = TypedPartReader::open(&root, &names).unwrap();
         let batch = reader.next_batch().unwrap().unwrap();
         assert_eq!(batch.len(), 10);
@@ -1516,18 +1561,28 @@ mod parallel_wide_decode_tests {
     #[test]
     fn parallel_columns_match_serial_granule_decode_and_projection_order() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-typed-wide-decode-{}", std::process::id()
+            "rusthouse-typed-wide-decode-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
-        let columns = (0..12).map(|i| Column {
-            name: format!("metric{i}"),
-            data_type: "UInt64".into(),
-        }).collect::<Vec<_>>();
-        let rows = (0..1024).map(|i| (0..12)
-            .map(|column| Some((i * 1000 + column).to_string()))
-            .collect::<Vec<_>>()).collect::<Vec<_>>();
+        let columns = (0..12)
+            .map(|i| Column {
+                name: format!("metric{i}"),
+                data_type: "UInt64".into(),
+            })
+            .collect::<Vec<_>>();
+        let rows = (0..1024)
+            .map(|i| {
+                (0..12)
+                    .map(|column| Some((i * 1000 + column).to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         write_wide_part(&root, &columns, &rows).unwrap();
-        let projection = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+        let projection = columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>();
         let mut serial = TypedPartReader::open(&root, &projection).unwrap();
         let mut parallel = TypedPartReader::open(&root, &projection).unwrap();
         let left = decode_typed_columns(&mut serial.columns, 0, 1024, 1).unwrap();
@@ -1535,8 +1590,10 @@ mod parallel_wide_decode_tests {
         assert_eq!(left.len(), 12);
         for (column, (a, b)) in left.into_iter().zip(right).enumerate() {
             match (a, b) {
-                (TypedColumn::Numeric(NumericColumn::UInt64(a)),
-                 TypedColumn::Numeric(NumericColumn::UInt64(b))) => {
+                (
+                    TypedColumn::Numeric(NumericColumn::UInt64(a)),
+                    TypedColumn::Numeric(NumericColumn::UInt64(b)),
+                ) => {
                     assert_eq!(a, b);
                     assert_eq!(a[0], column as u64);
                     assert_eq!(a[1023], 1_023_000 + column as u64);
@@ -1554,18 +1611,25 @@ mod strict_null_map_tests {
 
     #[test]
     fn rejects_noncanonical_and_mismatched_nullable_bitmaps() {
-        assert!(wrap_null_map(
-            TypedColumn::Numeric(NumericColumn::UInt8(vec![1, 2])),
-            Some(vec![0, 2]),
-        ).is_err());
-        assert!(wrap_null_map(
-            TypedColumn::Numeric(NumericColumn::UInt8(vec![1, 2])),
-            Some(vec![0]),
-        ).is_err());
+        assert!(
+            wrap_null_map(
+                TypedColumn::Numeric(NumericColumn::UInt8(vec![1, 2])),
+                Some(vec![0, 2]),
+            )
+            .is_err()
+        );
+        assert!(
+            wrap_null_map(
+                TypedColumn::Numeric(NumericColumn::UInt8(vec![1, 2])),
+                Some(vec![0]),
+            )
+            .is_err()
+        );
         let result = wrap_null_map(
             TypedColumn::Numeric(NumericColumn::UInt8(vec![1, 2])),
             Some(vec![0, 1]),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(matches!(
             result,
             TypedColumn::NullableNumeric { nulls, .. } if nulls == vec![0, 1]
@@ -1583,19 +1647,28 @@ mod wide_typed_schema_binding_tests {
     fn reversed_96_column_projection_keeps_names_types_and_value_order() {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-typed-schema-binding-{}-{:?}",
-            std::process::id(), std::thread::current().id(),
+            std::process::id(),
+            std::thread::current().id(),
         ));
         let _ = fs::remove_dir_all(&root);
-        let definitions = (0..96usize).map(|index| Column {
-            name: format!("metric_{index:03}"),
-            data_type: "UInt64".to_owned(),
-        }).collect::<Vec<_>>();
-        let rows = (0..4usize).map(|row| {
-            (0..96usize).map(|column| Some((row * 1000 + column).to_string()))
-                .collect::<Vec<_>>()
-        }).collect::<Vec<_>>();
+        let definitions = (0..96usize)
+            .map(|index| Column {
+                name: format!("metric_{index:03}"),
+                data_type: "UInt64".to_owned(),
+            })
+            .collect::<Vec<_>>();
+        let rows = (0..4usize)
+            .map(|row| {
+                (0..96usize)
+                    .map(|column| Some((row * 1000 + column).to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         write_wide_part(&root, &definitions, &rows).unwrap();
-        let names = definitions.iter().rev().map(|column| column.name.clone())
+        let names = definitions
+            .iter()
+            .rev()
+            .map(|column| column.name.clone())
             .collect::<Vec<_>>();
         let mut reader = TypedPartReader::open(&root, &names).unwrap();
         let result = reader.next_batch().unwrap().unwrap();
@@ -1607,7 +1680,8 @@ mod wide_typed_schema_binding_tests {
             };
             assert_eq!(
                 values,
-                &(0..4).map(|row| (row * 1000 + expected_column) as u64)
+                &(0..4)
+                    .map(|row| (row * 1000 + expected_column) as u64)
                     .collect::<Vec<_>>(),
             );
         }

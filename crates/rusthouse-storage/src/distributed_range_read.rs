@@ -1,7 +1,6 @@
 //! Safe seek-and-read support for a future replica object service.
 use std::fs::{self, File};
 use std::io;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 const ABSOLUTE_MAX_RANGE: usize = 8 * 1024 * 1024;
@@ -33,9 +32,9 @@ fn object_state_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return same_object_identity(before, after)
+        same_object_identity(before, after)
             && before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec();
+            && before.ctime_nsec() == after.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
@@ -44,9 +43,7 @@ fn object_state_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
 fn verify_object_after_read(path: &Path, file: &File, before: &fs::Metadata) -> io::Result<()> {
     let end_fd = file.metadata()?;
     let end_path = fs::symlink_metadata(path)?;
-    if !object_state_unchanged(before, &end_fd)
-        || !object_state_unchanged(before, &end_path)
-    {
+    if !object_state_unchanged(before, &end_fd) || !object_state_unchanged(before, &end_path) {
         return Err(io::Error::other("replica object changed during range read"));
     }
     Ok(())
@@ -88,13 +85,15 @@ fn read_at(file: &mut File, offset: u64, length: usize) -> io::Result<Vec<u8>> {
 // A handful of out-of-order mark ranges can be proven disjoint with
 // stack-only pair checks. Avoid sorting an index vector for these requests.
 fn small_scattered_disjoint(ranges: &[(u64, usize)]) -> bool {
-    ranges.len() <= 8 && ranges.iter().enumerate().all(|(index, &(start, length))| {
-        length == 0 || ranges[..index].iter().all(|&(other_start, other_length)| {
-            other_length == 0
-                || start > other_start + other_length as u64
-                || other_start > start + length as u64
+    ranges.len() <= 8
+        && ranges.iter().enumerate().all(|(index, &(start, length))| {
+            length == 0
+                || ranges[..index].iter().all(|&(other_start, other_length)| {
+                    other_length == 0
+                        || start > other_start + other_length as u64
+                        || other_start > start + length as u64
+                })
         })
-    })
 }
 
 /// Read an exact byte range from a frozen regular file, rejecting short reads.
@@ -148,14 +147,17 @@ pub fn read_object_ranges(
     // vector or a second copy. Adjacent or overlapping ranges keep the
     // coalescing path below to preserve the reduced syscall count.
     let mut previous_end = None;
-    let strictly_disjoint = ranges.iter().filter(|(_, len)| *len > 0)
+    let strictly_disjoint = ranges
+        .iter()
+        .filter(|(_, len)| *len > 0)
         .all(|&(offset, length)| {
             let ordered = previous_end.is_none_or(|end| offset > end);
             previous_end = Some(offset + length as u64); // bounds checked above
             ordered
         });
     if strictly_disjoint || small_scattered_disjoint(ranges) {
-        let result = ranges.iter()
+        let result = ranges
+            .iter()
             .map(|&(offset, length)| read_at(&mut file, offset, length))
             .collect::<io::Result<Vec<_>>>()?;
         verify_object_after_read(path, &file, &baseline)?;
@@ -234,7 +236,9 @@ pub fn read_object_ranges_checked(
     const INLINE_RANGES: usize = 8;
     let mut inline = [(0u64, 0usize); INLINE_RANGES];
     let owned = (ranges.len() > INLINE_RANGES).then(|| {
-        ranges.iter().map(|&(offset, length, _)| (offset, length))
+        ranges
+            .iter()
+            .map(|&(offset, length, _)| (offset, length))
             .collect::<Vec<_>>()
     });
     let spans: &[(u64, usize)] = if let Some(ref spans) = owned {
@@ -288,7 +292,8 @@ pub fn verify_object_ranges_crc32c(
     }
     let mut requested = 0u64;
     for &(_, length, _) in ranges {
-        requested = requested.checked_add(length)
+        requested = requested
+            .checked_add(length)
             .ok_or_else(|| io::Error::other("object checksum range size overflow"))?;
         if requested > max_total_bytes || requested > MAX_VERIFY_BYTES {
             return Err(io::Error::other("object checksum ranges exceed byte limit"));
@@ -296,23 +301,28 @@ pub fn verify_object_ranges_crc32c(
     }
     let (mut file, before) = open_verified_object(path)?;
     for &(offset, length, _) in ranges {
-        let end = offset.checked_add(length)
+        let end = offset
+            .checked_add(length)
             .ok_or_else(|| io::Error::other("object checksum range overflow"))?;
         if end > before.len() {
-            return Err(io::Error::other("object checksum range exceeds file length"));
+            return Err(io::Error::other(
+                "object checksum range exceeds file length",
+            ));
         }
     }
     let mut buffer = [0u8; 64 * 1024];
     // Already-ordered disjoint scrub ranges need no sorting or active-state
     // bookkeeping. Preserve that fast path for ordinary sequential copies.
     let mut previous_end = None;
-    let ordered_disjoint = ranges.iter()
-        .filter(|(_, length, _)| *length > 0)
-        .all(|&(offset, length, _)| {
-            let sorted = previous_end.is_none_or(|end| offset >= end);
-            previous_end = Some(offset + length); // checked against file bounds
-            sorted
-        });
+    let ordered_disjoint =
+        ranges
+            .iter()
+            .filter(|(_, length, _)| *length > 0)
+            .all(|&(offset, length, _)| {
+                let sorted = previous_end.is_none_or(|end| offset >= end);
+                previous_end = Some(offset + length); // checked against file bounds
+                sorted
+            });
 
     if ordered_disjoint {
         for &(offset, length, expected) in ranges {
@@ -328,7 +338,8 @@ pub fn verify_object_ranges_crc32c(
             }
             if checksum.checksum() != expected {
                 return Err(io::Error::new(
-                    io::ErrorKind::InvalidData, "replica checksum range mismatch",
+                    io::ErrorKind::InvalidData,
+                    "replica checksum range mismatch",
                 ));
             }
         }
@@ -336,15 +347,17 @@ pub fn verify_object_ranges_crc32c(
         // For overlapping requests, read each physical byte once and update
         // every live checksum for that segment. Memory is bounded by one 64 KiB
         // I/O buffer, 1024 checksum states, and 1024 active interval indices.
-        let mut intervals: Vec<(u64, u64, usize)> = ranges.iter().enumerate()
+        let mut intervals: Vec<(u64, u64, usize)> = ranges
+            .iter()
+            .enumerate()
             .filter_map(|(index, &(offset, length, _))| {
                 (length > 0).then_some((offset, offset + length, index))
             })
             .collect();
         intervals.sort_unstable_by_key(|entry| entry.0);
-        let mut states = (0..ranges.len()).map(|_| {
-            crate::distributed_crc32c::Crc32cState::new()
-        }).collect::<Vec<_>>();
+        let mut states = (0..ranges.len())
+            .map(|_| crate::distributed_crc32c::Crc32cState::new())
+            .collect::<Vec<_>>();
         let mut active = Vec::<usize>::new();
         let mut next = 0usize;
         let mut position = 0u64;
@@ -357,10 +370,13 @@ pub fn verify_object_ranges_crc32c(
                 next += 1;
             }
             let next_start = intervals.get(next).map_or(u64::MAX, |entry| entry.0);
-            let next_end = active.iter().map(|&index| {
-                ranges[index].0 + ranges[index].1
-            }).min().unwrap_or(u64::MAX);
-            let boundary = next_start.min(next_end)
+            let next_end = active
+                .iter()
+                .map(|&index| ranges[index].0 + ranges[index].1)
+                .min()
+                .unwrap_or(u64::MAX);
+            let boundary = next_start
+                .min(next_end)
                 .min(position.saturating_add(buffer.len() as u64));
             let amount = (boundary - position) as usize;
             read_scrub_chunk(&mut file, position, &mut buffer[..amount])?;
@@ -373,7 +389,8 @@ pub fn verify_object_ranges_crc32c(
         for ((_, _, expected), checksum) in ranges.iter().zip(&states) {
             if checksum.checksum() != *expected {
                 return Err(io::Error::new(
-                    io::ErrorKind::InvalidData, "replica checksum range mismatch",
+                    io::ErrorKind::InvalidData,
+                    "replica checksum range mismatch",
                 ));
             }
         }
@@ -388,9 +405,13 @@ mod streaming_checksum_range_tests {
     #[test]
     fn validates_large_sparse_overlapping_ranges_without_retaining_bytes() {
         let path = std::env::temp_dir().join(format!(
-            "rusthouse-stream-check-{}-{:?}", std::process::id(), std::thread::current().id()
+            "rusthouse-stream-check-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
         ));
-        let bytes = (0..(512 * 1024)).map(|index| (index % 251) as u8).collect::<Vec<_>>();
+        let bytes = (0..(512 * 1024))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
         fs::write(&path, &bytes).unwrap();
         let checksum = crate::distributed_crc32c::crc32c;
         let ranges = [
@@ -403,7 +424,9 @@ mod streaming_checksum_range_tests {
         let mut bad = ranges;
         bad[1].2 ^= 1;
         assert_eq!(
-            verify_object_ranges_crc32c(&path, &bad, 700_000).unwrap_err().kind(),
+            verify_object_ranges_crc32c(&path, &bad, 700_000)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData,
         );
         assert!(verify_object_ranges_crc32c(&path, &ranges, 1024).is_err());
@@ -415,9 +438,13 @@ mod streaming_checksum_range_tests {
     #[test]
     fn streamed_crc_agrees_with_checked_range_reader_for_small_ranges() {
         let path = std::env::temp_dir().join(format!(
-            "rusthouse-stream-compare-{}-{:?}", std::process::id(), std::thread::current().id()
+            "rusthouse-stream-compare-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
         ));
-        let bytes = (0..16_384).map(|i| (i * 13 % 251) as u8).collect::<Vec<_>>();
+        let bytes = (0..16_384)
+            .map(|i| (i * 13 % 251) as u8)
+            .collect::<Vec<_>>();
         fs::write(&path, &bytes).unwrap();
         let mut ranges = Vec::new();
         for index in 0..48usize {
@@ -427,9 +454,10 @@ mod streaming_checksum_range_tests {
             ranges.push((start as u64, len as u64, expected));
         }
         verify_object_ranges_crc32c(&path, &ranges, 48 * 193).unwrap();
-        let read_ranges = ranges.iter().map(|&(offset, len, checksum)| {
-            (offset, len as usize, checksum)
-        }).collect::<Vec<_>>();
+        let read_ranges = ranges
+            .iter()
+            .map(|&(offset, len, checksum)| (offset, len as usize, checksum))
+            .collect::<Vec<_>>();
         assert!(read_object_ranges_checked(&path, &read_ranges, 48 * 193).is_ok());
         fs::remove_file(path).unwrap();
     }
@@ -441,9 +469,8 @@ mod immutable_object_identity_tests {
 
     #[test]
     fn rejects_an_unrelated_equal_length_inode() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-range-identity-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-range-identity-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let a = root.join("a");
@@ -452,13 +479,25 @@ mod immutable_object_identity_tests {
         fs::write(&a, b"same").unwrap();
         fs::write(&b, b"size").unwrap();
         fs::hard_link(&a, &link).unwrap();
-        assert!(same_object_identity(&fs::metadata(&a).unwrap(), &fs::metadata(&link).unwrap()));
-        assert!(!same_object_identity(&fs::metadata(&a).unwrap(), &fs::metadata(&b).unwrap()));
+        assert!(same_object_identity(
+            &fs::metadata(&a).unwrap(),
+            &fs::metadata(&link).unwrap()
+        ));
+        assert!(!same_object_identity(
+            &fs::metadata(&a).unwrap(),
+            &fs::metadata(&b).unwrap()
+        ));
         let baseline = fs::metadata(&a).unwrap();
         assert!(object_state_unchanged(&baseline, &baseline));
-        assert!(!object_state_unchanged(&baseline, &fs::metadata(&b).unwrap()));
+        assert!(!object_state_unchanged(
+            &baseline,
+            &fs::metadata(&b).unwrap()
+        ));
         fs::write(&a, b"longer").unwrap();
-        assert!(!object_state_unchanged(&baseline, &fs::metadata(&a).unwrap()));
+        assert!(!object_state_unchanged(
+            &baseline,
+            &fs::metadata(&a).unwrap()
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -469,9 +508,8 @@ mod tests {
 
     #[test]
     fn singleton_multi_range_reader_returns_exact_bytes() {
-        let path = std::env::temp_dir().join(format!(
-            "rusthouse-single-range-{}", std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("rusthouse-single-range-{}", std::process::id()));
         fs::write(&path, b"abcdefgh").unwrap();
         assert_eq!(
             read_object_ranges(&path, &[(2, 4)], 4).unwrap(),
@@ -517,29 +555,38 @@ mod multi_range_tests {
 
     #[test]
     fn overlapping_and_adjacent_ranges_preserve_request_order() {
-        let path = std::env::temp_dir().join(format!(
-            "rusthouse-overlap-ranges-{}", std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("rusthouse-overlap-ranges-{}", std::process::id()));
         fs::write(&path, b"abcdefghijklmnop").unwrap();
         let selections = [(8, 4), (0, 4), (2, 5), (7, 1), (8, 0), (14, 2)];
         let ranges = read_object_ranges(&path, &selections, 17).unwrap();
-        assert_eq!(ranges, vec![
-            b"ijkl".to_vec(), b"abcd".to_vec(), b"cdefg".to_vec(),
-            b"h".to_vec(), Vec::new(), b"op".to_vec(),
-        ]);
+        assert_eq!(
+            ranges,
+            vec![
+                b"ijkl".to_vec(),
+                b"abcd".to_vec(),
+                b"cdefg".to_vec(),
+                b"h".to_vec(),
+                Vec::new(),
+                b"op".to_vec(),
+            ]
+        );
         fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn disjoint_large_ranges_return_exact_data_in_request_order() {
-        let path = std::env::temp_dir().join(format!(
-            "rusthouse-disjoint-ranges-{}", std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("rusthouse-disjoint-ranges-{}", std::process::id()));
         let bytes = (0..256 * 1024)
             .map(|index| (index % 251) as u8)
             .collect::<Vec<_>>();
         fs::write(&path, &bytes).unwrap();
-        let ranges = [(128 * 1024, 64 * 1024), (0, 32 * 1024), (224 * 1024, 16 * 1024)];
+        let ranges = [
+            (128 * 1024, 64 * 1024),
+            (0, 32 * 1024),
+            (224 * 1024, 16 * 1024),
+        ];
         let result = read_object_ranges(&path, &ranges, 112 * 1024).unwrap();
         for (index, &(start, len)) in ranges.iter().enumerate() {
             assert_eq!(&result[index], &bytes[start as usize..start as usize + len]);
@@ -549,9 +596,8 @@ mod multi_range_tests {
 
     #[test]
     fn reads_multiple_intervals_in_request_order() {
-        let path = std::env::temp_dir().join(format!(
-            "rusthouse-multi-range-{}", std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("rusthouse-multi-range-{}", std::process::id()));
         fs::write(&path, b"0123456789").unwrap();
         assert_eq!(
             read_object_ranges(&path, &[(8, 2), (0, 3), (5, 0)], 5).unwrap(),
@@ -570,13 +616,23 @@ mod zero_offset_object_ranges_tests {
 
     #[test]
     fn reads_prefix_and_nonzero_offsets_in_both_range_apis() {
-        let path = std::env::temp_dir().join(format!("rusthouse-range-zero-seek-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("rusthouse-range-zero-seek-{}", std::process::id()));
         fs::write(&path, b"abcdefghijkl").unwrap();
         assert_eq!(read_object_range(&path, 0, 4, 12).unwrap(), b"abcd");
         assert_eq!(read_object_range(&path, 4, 4, 12).unwrap(), b"efgh");
-        assert_eq!(read_object_ranges(&path, &[(0, 4)], 4).unwrap(), vec![b"abcd".to_vec()]);
-        assert_eq!(read_object_ranges(&path, &[(8, 2), (0, 3)], 5).unwrap(), vec![b"ij".to_vec(), b"abc".to_vec()]);
-        assert_eq!(read_object_ranges(&path, &[(0, 6), (3, 6)], 12).unwrap(), vec![b"abcdef".to_vec(), b"defghi".to_vec()]);
+        assert_eq!(
+            read_object_ranges(&path, &[(0, 4)], 4).unwrap(),
+            vec![b"abcd".to_vec()]
+        );
+        assert_eq!(
+            read_object_ranges(&path, &[(8, 2), (0, 3)], 5).unwrap(),
+            vec![b"ij".to_vec(), b"abc".to_vec()]
+        );
+        assert_eq!(
+            read_object_ranges(&path, &[(0, 6), (3, 6)], 12).unwrap(),
+            vec![b"abcdef".to_vec(), b"defghi".to_vec()]
+        );
         fs::remove_file(path).unwrap();
     }
 }
@@ -587,9 +643,8 @@ mod checked_multi_range_tests {
 
     #[test]
     fn verifies_overlapping_chunk_checksums_and_rejects_corruption() {
-        let path = std::env::temp_dir().join(format!(
-            "rusthouse-checked-range-{}", std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("rusthouse-checked-range-{}", std::process::id()));
         let bytes = b"the quick brown fox jumped over a lazy dog";
         fs::write(&path, bytes).unwrap();
         let checksum = crate::distributed_crc32c::crc32c;
@@ -600,15 +655,21 @@ mod checked_multi_range_tests {
             (2, 4, checksum(&bytes[2..6])),
         ];
         let result = read_object_ranges_checked(&path, &ranges, 32).unwrap();
-        assert_eq!(result, vec![
-            bytes[0..9].to_vec(), bytes[4..20].to_vec(),
-            Vec::new(), bytes[2..6].to_vec(),
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                bytes[0..9].to_vec(),
+                bytes[4..20].to_vec(),
+                Vec::new(),
+                bytes[2..6].to_vec(),
+            ]
+        );
         let mut corrupted = ranges.clone();
         corrupted[1].2 ^= 1;
         assert_eq!(
             read_object_ranges_checked(&path, &corrupted, 32)
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData
         );
         assert!(read_object_ranges_checked(&path, &ranges, 8).is_err());
@@ -624,17 +685,31 @@ mod positioned_range_tests {
     #[test]
     fn positioned_reads_preserve_cursor_and_match_ordinary_seeks() {
         let path = std::env::temp_dir().join(format!(
-            "rusthouse-positioned-ranges-{}-{}", std::process::id(), line!()
+            "rusthouse-positioned-ranges-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let input = (0..256 * 1024).map(|i| (i % 251) as u8).collect::<Vec<_>>();
         fs::write(&path, &input).unwrap();
         let mut file = File::open(&path).unwrap();
         file.seek(SeekFrom::Start(71)).unwrap();
-        for (start, length) in [(0, 5), (80_000, 77), (17, 4096), (250_000, 144), (256 * 1024, 0)] {
-            assert_eq!(read_at(&mut file, start, length).unwrap(), &input[start as usize..start as usize + length]);
+        for (start, length) in [
+            (0, 5),
+            (80_000, 77),
+            (17, 4096),
+            (250_000, 144),
+            (256 * 1024, 0),
+        ] {
+            assert_eq!(
+                read_at(&mut file, start, length).unwrap(),
+                &input[start as usize..start as usize + length]
+            );
             assert_eq!(file.stream_position().unwrap(), 71);
         }
-        assert_eq!(read_at(&mut file, 256 * 1024, 1).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            read_at(&mut file, 256 * 1024, 1).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
         assert_eq!(file.stream_position().unwrap(), 71);
         fs::remove_file(path).unwrap();
     }
@@ -649,15 +724,18 @@ mod range_open_metadata_consistency_tests {
     fn a_same_size_overwrite_is_not_a_stable_immutable_object() {
         let path = std::env::temp_dir().join(format!(
             "rusthouse-range-open-metadata-{}-{:?}",
-            std::process::id(), std::thread::current().id()
+            std::process::id(),
+            std::thread::current().id()
         ));
         fs::write(&path, b"original").unwrap();
         let before = fs::symlink_metadata(&path).unwrap();
         // Force a distinct timestamp even on filesystems with coarse clocks.
         let file = File::options().write(true).open(&path).unwrap();
-        file.set_times(std::fs::FileTimes::new().set_modified(
-            SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
-        )).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new()
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)),
+        )
+        .unwrap();
         let after = file.metadata().unwrap();
         assert_eq!(before.len(), after.len());
         assert!(!object_state_unchanged(&before, &after));
@@ -679,7 +757,9 @@ mod direct_disjoint_range_read_tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let path = root.join("part.bin");
-        let data = (0..8192usize).map(|n| (n * 31 % 256) as u8).collect::<Vec<_>>();
+        let data = (0..8192usize)
+            .map(|n| (n * 31 % 256) as u8)
+            .collect::<Vec<_>>();
         fs::write(&path, &data).unwrap();
         for ranges in [
             vec![(0, 32), (64, 32), (200, 800), (4000, 100), (8100, 92)],
@@ -689,9 +769,10 @@ mod direct_disjoint_range_read_tests {
         ] {
             let total = ranges.iter().map(|(_, length)| *length).sum::<usize>();
             let actual = read_object_ranges(&path, &ranges, total).unwrap();
-            let expected = ranges.iter().map(|&(offset, length)| {
-                data[offset as usize..offset as usize + length].to_vec()
-            }).collect::<Vec<_>>();
+            let expected = ranges
+                .iter()
+                .map(|&(offset, length)| data[offset as usize..offset as usize + length].to_vec())
+                .collect::<Vec<_>>();
             assert_eq!(actual, expected, "ranges={ranges:?}");
         }
         fs::remove_dir_all(root).unwrap();
@@ -700,7 +781,8 @@ mod direct_disjoint_range_read_tests {
     #[test]
     fn sorted_disjoint_reads_still_check_total_budget_and_bounds() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-range-bounds-{}-{:?}", std::process::id(),
+            "rusthouse-range-bounds-{}-{:?}",
+            std::process::id(),
             std::thread::current().id()
         ));
         fs::create_dir_all(&root).unwrap();
@@ -720,7 +802,8 @@ mod positioned_scrub_regression_tests {
     fn unaligned_out_of_order_and_overlapping_scrubs_match_reference_crc() {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-positioned-scrub-{}-{:?}",
-            std::process::id(), std::thread::current().id()
+            std::process::id(),
+            std::thread::current().id()
         ));
         let _ = fs::remove_file(&root);
         let bytes = (0..(256 * 1024 + 17))
@@ -748,7 +831,8 @@ mod positioned_scrub_regression_tests {
         invalid[3].2 ^= 0x4000;
         assert_eq!(
             verify_object_ranges_crc32c(&root, &invalid, budget)
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData
         );
         fs::remove_file(root).unwrap();
@@ -763,7 +847,8 @@ mod single_checked_range_fast_path_tests {
     fn single_checked_reads_preserve_bounds_empty_ranges_and_crc_contract() {
         let path = std::env::temp_dir().join(format!(
             "rusthouse-checked-single-{}-{:?}",
-            std::process::id(), std::thread::current().id()
+            std::process::id(),
+            std::thread::current().id()
         ));
         let bytes = (0u32..256).map(|n| (n % 251) as u8).collect::<Vec<_>>();
         fs::write(&path, &bytes).unwrap();
@@ -780,7 +865,9 @@ mod single_checked_range_fast_path_tests {
         );
         let bad = (17, 64, correct.2 ^ 1);
         assert_eq!(
-            read_object_ranges_checked(&path, &[bad], 64).unwrap_err().kind(),
+            read_object_ranges_checked(&path, &[bad], 64)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData
         );
         assert!(read_object_ranges_checked(&path, &[correct], 63).is_err());
@@ -796,7 +883,10 @@ mod small_scattered_disjoint_tests {
     #[test]
     fn keeps_scattered_disjoint_requests_on_the_direct_read_path() {
         assert!(small_scattered_disjoint(&[
-            (15, 3), (0, 2), (8, 4), (21, 0)
+            (15, 3),
+            (0, 2),
+            (8, 4),
+            (21, 0)
         ]));
         assert!(!small_scattered_disjoint(&[(15, 3), (17, 3)]));
         assert!(!small_scattered_disjoint(&[(10, 2), (12, 3)]));
@@ -806,7 +896,9 @@ mod small_scattered_disjoint_tests {
     #[test]
     fn reads_out_of_order_small_ranges_in_original_order() {
         let path = std::env::temp_dir().join(format!(
-            "rusthouse-scattered-range-{}-{}", std::process::id(), line!()
+            "rusthouse-scattered-range-{}-{}",
+            std::process::id(),
+            line!()
         ));
         std::fs::write(&path, b"abcdefghijklmnopqrstuvwxyz").unwrap();
         let spans = [(20, 3), (0, 3), (10, 2), (6, 0)];
@@ -830,8 +922,10 @@ mod inline_checked_range_tests {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-checked-ranges-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("object.bin");
@@ -843,7 +937,7 @@ mod inline_checked_range_tests {
                     let offset = ((count - index) * 7) as u64;
                     let len = 23usize;
                     let crc = crate::distributed_crc32c::crc32c(
-                        &bytes[offset as usize..offset as usize + len]
+                        &bytes[offset as usize..offset as usize + len],
                     );
                     (offset, len, crc)
                 })
@@ -874,7 +968,8 @@ mod coalesced_scrub_crc_tests {
     fn overlapping_unordered_ranges_across_io_boundaries_match_independent_crc() {
         let path = std::env::temp_dir().join(format!(
             "rusthouse-coalesced-crc-{}-{}.bin",
-            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let bytes = (0..(256 * 1024 + 37usize))
             .map(|index| (index * 29 % 251) as u8)
@@ -888,16 +983,20 @@ mod coalesced_scrub_crc_tests {
             (7, 200_000),
             (255_000, 800),
         ];
-        let mut ranges = spans.iter().map(|&(offset, length)| {
-            let start = offset as usize;
-            let expected = crc32c(&bytes[start..start + length as usize]);
-            (offset, length, expected)
-        }).collect::<Vec<_>>();
+        let mut ranges = spans
+            .iter()
+            .map(|&(offset, length)| {
+                let start = offset as usize;
+                let expected = crc32c(&bytes[start..start + length as usize]);
+                (offset, length, expected)
+            })
+            .collect::<Vec<_>>();
         verify_object_ranges_crc32c(&path, &ranges, 64 * 1024 * 1024).unwrap();
         ranges[2].2 ^= 1;
         assert_eq!(
             verify_object_ranges_crc32c(&path, &ranges, 64 * 1024 * 1024)
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData
         );
         std::fs::remove_file(&path).unwrap();

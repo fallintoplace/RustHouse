@@ -19,10 +19,12 @@ pub fn parse_delete(sql: &str) -> Result<Option<Select>, ParseError> {
     // Work on the original tokens so a valid 65536-byte DELETE is not rejected
     // just because the SELECT projection is two bytes longer.
     let mut select_tokens = tokenize(sql)?;
-    if !matches!(select_tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("DELETE")) {
+    if !matches!(select_tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("DELETE"))
+    {
         return Ok(None);
     }
-    if !matches!(select_tokens.get(1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("FROM")) {
+    if !matches!(select_tokens.get(1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("FROM"))
+    {
         return Err(ParseError("DELETE requires FROM table".into()));
     }
     select_tokens.splice(..1, [Token::Word("SELECT".into()), Token::Star]);
@@ -85,8 +87,16 @@ mod delete_comment_tests {
 
     #[test]
     fn comment_before_from_is_tokenized_as_whitespace() {
-        assert!(parse_delete("DELETE /* maintenance */ FROM data WHERE id = 1").unwrap().is_some());
-        assert!(parse_delete("DELETE -- maintenance\nFROM data WHERE id = 1").unwrap().is_some());
+        assert!(
+            parse_delete("DELETE /* maintenance */ FROM data WHERE id = 1")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            parse_delete("DELETE -- maintenance\nFROM data WHERE id = 1")
+                .unwrap()
+                .is_some()
+        );
         assert!(parse_delete("DELETE /* comment */ data").is_err());
     }
 }
@@ -97,10 +107,16 @@ mod delete_adjacent_comment_tests {
 
     #[test]
     fn comments_separate_delete_from_following_from_token() {
-        assert!(parse_delete("DELETE/* tracked */FROM events WHERE id = 1")
-            .unwrap().is_some());
-        assert!(parse_delete("DELETE-- maintenance\nFROM events")
-            .unwrap().is_some());
+        assert!(
+            parse_delete("DELETE/* tracked */FROM events WHERE id = 1")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            parse_delete("DELETE-- maintenance\nFROM events")
+                .unwrap()
+                .is_some()
+        );
         assert!(parse_delete("DELETE/*comment*/events").is_err());
         assert!(parse_delete("DELETEX FROM events").unwrap().is_none());
     }
@@ -112,7 +128,12 @@ mod leading_delete_comment_tests {
 
     #[test]
     fn delete_accepts_all_lexer_supported_leading_comments() {
-        for prefix in ["/* explanation */ ", "-- line comment\n", "# comment\r\n", "/* outer /* inner */ end */\n"] {
+        for prefix in [
+            "/* explanation */ ",
+            "-- line comment\n",
+            "# comment\r\n",
+            "/* outer /* inner */ end */\n",
+        ] {
             let sql = format!("{prefix}DELETE FROM events WHERE id = 42");
             let result = parse_delete(&sql).unwrap().unwrap();
             assert_eq!(result.source, Some(Source::Table("events".into())));
@@ -122,7 +143,11 @@ mod leading_delete_comment_tests {
 
     #[test]
     fn non_delete_statements_remain_unrecognized() {
-        assert!(parse_delete("/* comment */ SELECT * FROM events").unwrap().is_none());
+        assert!(
+            parse_delete("/* comment */ SELECT * FROM events")
+                .unwrap()
+                .is_none()
+        );
         assert!(parse_delete("-- comment only").unwrap().is_none());
     }
 }
@@ -139,6 +164,10 @@ mod delete_projection_guard_tests {
         ] {
             assert!(parse_delete(sql).is_err(), "{sql}");
         }
-        assert!(parse_delete("DELETE FROM events WHERE id = 2").unwrap().is_some());
+        assert!(
+            parse_delete("DELETE FROM events WHERE id = 2")
+                .unwrap()
+                .is_some()
+        );
     }
 }

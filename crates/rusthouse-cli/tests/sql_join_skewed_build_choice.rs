@@ -12,10 +12,8 @@ fn sql(statement: &str, database: &Path) -> Output {
 
 #[test]
 fn unordered_inner_join_can_hash_small_left_and_stream_large_right() {
-    let database = std::env::temp_dir().join(format!(
-        "rusthouse-adaptive-join-{}",
-        std::process::id()
-    ));
+    let database =
+        std::env::temp_dir().join(format!("rusthouse-adaptive-join-{}", std::process::id()));
     let _ = fs::remove_dir_all(&database);
     for statement in [
         "CREATE TABLE small (id UInt64)",

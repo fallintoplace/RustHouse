@@ -23,7 +23,11 @@ pub(super) fn handle(
         return Response::text("400 Bad Request", "JOIN requires a database\n");
     };
     let join_row_cap = config.max_rows.min(250_000);
-    query.limit = Some(query.limit.map_or(join_row_cap, |limit| limit.min(join_row_cap)));
+    query.limit = Some(
+        query
+            .limit
+            .map_or(join_row_cap, |limit| limit.min(join_row_cap)),
+    );
     if explain {
         return Response::text(
             "200 OK",
@@ -56,9 +60,7 @@ pub(super) fn handle(
     let result = match format {
         QueryFormat::Tsv | QueryFormat::TsvNoHeader => run(&mut writer),
         QueryFormat::Csv => run(&mut CsvWriter::new(&mut writer)),
-        QueryFormat::CsvNoHeader => {
-            run(&mut CsvWriter::new(WithoutHeader::new(&mut writer)))
-        }
+        QueryFormat::CsvNoHeader => run(&mut CsvWriter::new(WithoutHeader::new(&mut writer))),
         QueryFormat::Jsonl => run(&mut JsonlWriter::new(&mut writer)),
         QueryFormat::Markdown => run(&mut MarkdownWriter::new(&mut writer)),
         QueryFormat::SqlValues => {
@@ -98,9 +100,7 @@ pub(super) fn handle(
                 QueryFormat::Jsonl | QueryFormat::JsonCompactEachRow => {
                     "application/x-ndjson; charset=utf-8"
                 }
-                QueryFormat::Json | QueryFormat::JsonPretty => {
-                    "application/json; charset=utf-8"
-                }
+                QueryFormat::Json | QueryFormat::JsonPretty => "application/json; charset=utf-8",
                 QueryFormat::SqlValues => "text/plain; charset=utf-8",
                 QueryFormat::Markdown => "text/markdown; charset=utf-8",
             },

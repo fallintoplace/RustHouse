@@ -16,8 +16,7 @@ fn reserved_windows_device_name(value: &str) -> bool {
         .iter()
         .any(|device| stem.eq_ignore_ascii_case(device))
         || (stem.len() == 4
-            && (stem[..3].eq_ignore_ascii_case("COM")
-                || stem[..3].eq_ignore_ascii_case("LPT"))
+            && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
             && matches!(stem.as_bytes()[3], b'1'..=b'9'))
 }
 
@@ -151,12 +150,13 @@ mod tests {
             assert!(component(valid));
         }
         assert!(component(&"a".repeat(128)));
-        for invalid in ["", ".a", "a.", "a..b", "a/...b", "é", "a\\b", "CON", "com1.txt"] {
+        for invalid in [
+            "", ".a", "a.", "a..b", "a/...b", "é", "a\\b", "CON", "com1.txt",
+        ] {
             assert!(!component(invalid), "{invalid}");
         }
         assert!(!component(&"a".repeat(129)));
     }
-
 
     #[test]
     fn constructs_stable_generation_scoped_keys() {
@@ -200,12 +200,17 @@ mod parse_relative_tests {
     #[test]
     fn canonical_paths_accept_many_simple_keys_without_normalization() {
         for generation in 1..128u64 {
-            let key = ObjectKey::new("cluster", "shard_1", generation, "part_10", "data.bin").unwrap();
-            assert_eq!(ObjectKey::parse_relative(&key.relative_path()).unwrap(), key);
+            let key =
+                ObjectKey::new("cluster", "shard_1", generation, "part_10", "data.bin").unwrap();
+            assert_eq!(
+                ObjectKey::parse_relative(&key.relative_path()).unwrap(),
+                key
+            );
         }
-        assert!(ObjectKey::parse_relative(
-            std::path::Path::new("cluster/shard_1/g1/part_10/data.bin")
-        ).is_ok());
+        assert!(
+            ObjectKey::parse_relative(std::path::Path::new("cluster/shard_1/g1/part_10/data.bin"))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -220,14 +225,20 @@ mod parse_relative_tests {
             "/prod/shard_4/g432/part_1/data.bin",
             "prod/shard_4/g0432/part_1/data.bin",
         ] {
-            assert!(ObjectKey::parse_relative(std::path::Path::new(invalid)).is_err(), "{invalid}");
+            assert!(
+                ObjectKey::parse_relative(std::path::Path::new(invalid)).is_err(),
+                "{invalid}"
+            );
         }
     }
 
     #[test]
     fn round_trips_generation_scoped_paths() {
         let key = ObjectKey::new("cluster", "s1", 42, "all_0_0_0", "data.bin").unwrap();
-        assert_eq!(ObjectKey::parse_relative(&key.relative_path()).unwrap(), key);
+        assert_eq!(
+            ObjectKey::parse_relative(&key.relative_path()).unwrap(),
+            key
+        );
     }
 
     #[test]
@@ -245,7 +256,10 @@ mod parse_relative_tests {
             "cluster/s1/g1/part",
             "cluster/s1/g1/part/file/extra",
         ] {
-            assert!(ObjectKey::parse_relative(PathBuf::from(path).as_path()).is_err(), "{path}");
+            assert!(
+                ObjectKey::parse_relative(PathBuf::from(path).as_path()).is_err(),
+                "{path}"
+            );
         }
     }
 }
@@ -296,16 +310,36 @@ mod portable_device_name_tests {
 
     #[test]
     fn rejects_windows_device_aliases_on_every_platform() {
-        for name in ["CON", "con.txt", "PrN.csv", "aux", "NUL.bin", "COM1", "com9.dat", "LPT1", "lpt9.log"] {
-            assert!(ObjectKey::new(name, "shard", 1, "part", "data.bin").is_err(), "{name}");
-            assert!(ObjectKey::new("cluster", name, 1, "part", "data.bin").is_err(), "{name}");
-            assert!(ObjectKey::new("cluster", "shard", 1, name, "data.bin").is_err(), "{name}");
-            assert!(ObjectKey::new("cluster", "shard", 1, "part", name).is_err(), "{name}");
+        for name in [
+            "CON", "con.txt", "PrN.csv", "aux", "NUL.bin", "COM1", "com9.dat", "LPT1", "lpt9.log",
+        ] {
+            assert!(
+                ObjectKey::new(name, "shard", 1, "part", "data.bin").is_err(),
+                "{name}"
+            );
+            assert!(
+                ObjectKey::new("cluster", name, 1, "part", "data.bin").is_err(),
+                "{name}"
+            );
+            assert!(
+                ObjectKey::new("cluster", "shard", 1, name, "data.bin").is_err(),
+                "{name}"
+            );
+            assert!(
+                ObjectKey::new("cluster", "shard", 1, "part", name).is_err(),
+                "{name}"
+            );
         }
         for name in ["CONTEXT", "COM10", "LPT10", "NULL", "COM0", "part.txt"] {
-            assert!(ObjectKey::new("cluster", "shard", 1, "part", name).is_ok(), "{name}");
+            assert!(
+                ObjectKey::new("cluster", "shard", 1, "part", name).is_ok(),
+                "{name}"
+            );
         }
-        assert!(ObjectKey::parse_relative(std::path::Path::new("cluster/shard/g1/part/NUL.txt")).is_err());
+        assert!(
+            ObjectKey::parse_relative(std::path::Path::new("cluster/shard/g1/part/NUL.txt"))
+                .is_err()
+        );
     }
 }
 
@@ -333,20 +367,26 @@ mod borrowed_canonical_key_tests {
             "region/shard/g1/part/file.bin/",
             "region/shard/g1/part/./file.bin",
         ] {
-            assert!(ObjectKey::parse_relative(std::path::Path::new(alias)).is_err(), "{alias}");
+            assert!(
+                ObjectKey::parse_relative(std::path::Path::new(alias)).is_err(),
+                "{alias}"
+            );
         }
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_slash_spellings_are_equivalent_without_allowing_aliases() {
-        let value = ObjectKey::parse_relative(std::path::Path::new(
-            "region\\shard/g3\\part/file.bin",
-        )).unwrap();
-        assert_eq!(value.relative_path(),
-            std::path::Path::new("region/shard/g3/part/file.bin"));
-        assert!(ObjectKey::parse_relative(std::path::Path::new(
-            "region\\\\shard/g3/part/file.bin",
-        )).is_err());
+        let value =
+            ObjectKey::parse_relative(std::path::Path::new("region\\shard/g3\\part/file.bin"))
+                .unwrap();
+        assert_eq!(
+            value.relative_path(),
+            std::path::Path::new("region/shard/g3/part/file.bin")
+        );
+        assert!(
+            ObjectKey::parse_relative(std::path::Path::new("region\\\\shard/g3/part/file.bin",))
+                .is_err()
+        );
     }
 }

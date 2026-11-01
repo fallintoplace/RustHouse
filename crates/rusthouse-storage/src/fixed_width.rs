@@ -129,7 +129,6 @@ mod empty_batch_fast_path_tests {
 mod small_mark_tests {
     use super::*;
 
-
     #[test]
     fn decodes_across_small_medium_and_bulk_thresholds_without_read_ahead() {
         for rows in [64usize, 65, 1024, 1025] {
@@ -162,13 +161,13 @@ mod small_mark_tests {
             data.extend_from_slice(&number.to_le_bytes());
         }
         let mut input = data.as_slice();
-        let first = read_fixed_width::<_, u64, 8>(
-            &mut input, 3, "invalid size", u64::from_le_bytes,
-        ).unwrap();
+        let first =
+            read_fixed_width::<_, u64, 8>(&mut input, 3, "invalid size", u64::from_le_bytes)
+                .unwrap();
         assert_eq!(first, vec![4, 5, 6]);
-        let second = read_fixed_width::<_, u64, 8>(
-            &mut input, 1, "invalid size", u64::from_le_bytes,
-        ).unwrap();
+        let second =
+            read_fixed_width::<_, u64, 8>(&mut input, 1, "invalid size", u64::from_le_bytes)
+                .unwrap();
         assert_eq!(second, vec![7]);
         assert!(input.is_empty());
     }

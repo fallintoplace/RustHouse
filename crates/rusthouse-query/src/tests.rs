@@ -857,10 +857,15 @@ fn parses_in_and_checks_list_bounds() {
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
-    let sql_for_values = |count| format!(
-        "SELECT number FROM numbers(9) WHERE number IN ({})",
-        (0..count).map(|value| value.to_string()).collect::<Vec<_>>().join(",")
-    );
+    let sql_for_values = |count| {
+        format!(
+            "SELECT number FROM numbers(9) WHERE number IN ({})",
+            (0..count)
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
     assert!(parse_select(&sql_for_values(4_096)).is_ok());
     assert!(parse_select(&sql_for_values(4_097)).is_err());
 }
@@ -1115,9 +1120,7 @@ fn allows_grouped_numeric_ordering_by_aggregate_position() {
     )
     .unwrap();
     assert_eq!(query.order_by_extra.len(), 1);
-    for invalid in [
-        "SELECT category, sum(amount) FROM part GROUP BY category ORDER BY 3",
-    ] {
+    for invalid in ["SELECT category, sum(amount) FROM part GROUP BY category ORDER BY 3"] {
         assert!(parse_select(invalid).is_err(), "{invalid}");
     }
 }

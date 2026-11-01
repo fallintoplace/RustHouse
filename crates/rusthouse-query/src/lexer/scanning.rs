@@ -110,10 +110,8 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
 
 fn valid_quoted_identifier(bytes: &[u8]) -> bool {
     let mut characters = bytes.iter().copied();
-    matches!(
-        characters.next(),
-        Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')
-    ) && characters.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    matches!(characters.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
+        && characters.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 /// Parse quoted identifiers without treating reserved words as SQL keywords.
@@ -157,9 +155,7 @@ pub(super) fn scan_quoted_identifier(sql: &str, index: &mut usize) -> Result<Tok
         }
         // Both doubled quotes and backslash-escaped delimiters are accepted,
         // then validated against the safe identifier grammar below.
-        if (byte == delimiter || byte == b'\\')
-            && bytes.get(cursor + 1) == Some(&delimiter)
-        {
+        if (byte == delimiter || byte == b'\\') && bytes.get(cursor + 1) == Some(&delimiter) {
             decoded.push(delimiter);
             cursor += 2;
         } else {
@@ -241,15 +237,20 @@ mod exponent_tests {
     #[test]
     fn accepts_trailing_dot_decimal_literals_without_accepting_bare_dot() {
         for (input, expected) in [
-            ("1.", "1."), ("-12.", "-12."), ("1.e2", "1.e2"),
-            (".5", ".5"), ("-.5", "-.5"),
+            ("1.", "1."),
+            ("-12.", "-12."),
+            ("1.e2", "1.e2"),
+            (".5", ".5"),
+            ("-.5", "-.5"),
         ] {
             let mut index = 0;
-            assert_eq!(scan_number(input, &mut index).unwrap(),
-                Token::Number(expected.into()));
+            assert_eq!(
+                scan_number(input, &mut index).unwrap(),
+                Token::Number(expected.into())
+            );
             assert_eq!(index, input.len());
         }
-        assert!(scan_number("-.",&mut 0).is_err());
+        assert!(scan_number("-.", &mut 0).is_err());
     }
 
     #[test]
@@ -293,7 +294,14 @@ mod quoted_identifier_fast_path_tests {
 
     #[test]
     fn escaped_and_invalid_identifiers_keep_existing_validation() {
-        for source in ["`bad-name`", "`a``b`", "`a\\`b`", "`1bad`", "`café`", "`unterminated"] {
+        for source in [
+            "`bad-name`",
+            "`a``b`",
+            "`a\\`b`",
+            "`1bad`",
+            "`café`",
+            "`unterminated",
+        ] {
             assert!(scan_quoted_identifier(source, &mut 0).is_err(), "{source}");
         }
         let long = format!("`{}`", "x".repeat(129));
@@ -314,7 +322,10 @@ mod plain_string_literal_fast_path_tests {
         let value = "a".repeat(32 * 1024);
         let sql = format!("'{value}' + 5");
         let mut cursor = 0;
-        assert_eq!(scan_string(&sql, &mut cursor).unwrap(), Token::String(value));
+        assert_eq!(
+            scan_string(&sql, &mut cursor).unwrap(),
+            Token::String(value)
+        );
         assert_eq!(sql.as_bytes()[cursor], b' ');
     }
 
@@ -364,7 +375,10 @@ mod escaped_string_bulk_span_tests {
         for sql in ["'a\\qword'", "'a\\qword\\ntrail'"] {
             let mut cursor = 0;
             let expected = sql[1..sql.len() - 1].replace("\\n", "\n");
-            assert_eq!(scan_string(sql, &mut cursor).unwrap(), Token::String(expected));
+            assert_eq!(
+                scan_string(sql, &mut cursor).unwrap(),
+                Token::String(expected)
+            );
             assert_eq!(cursor, sql.len());
         }
         for sql in ["'prefix\\nunterminated", "'prefix\\q"] {

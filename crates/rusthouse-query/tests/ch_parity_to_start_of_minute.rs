@@ -10,9 +10,18 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn minute_bucket_uses_utc_and_keeps_calendar_boundaries() {
     for (sql, expected) in [
-        ("SELECT toStartOfMinute('2024-02-29 23:59:58')", "2024-02-29 23:59:00"),
-        ("SELECT toStartOfMinute('2024-03-01T00:00:30+01:00')", "2024-02-29 23:00:00"),
-        ("SELECT toStartOfMinute('1970-01-01 00:00:59')", "1970-01-01 00:00:00"),
+        (
+            "SELECT toStartOfMinute('2024-02-29 23:59:58')",
+            "2024-02-29 23:59:00",
+        ),
+        (
+            "SELECT toStartOfMinute('2024-03-01T00:00:30+01:00')",
+            "2024-02-29 23:00:00",
+        ),
+        (
+            "SELECT toStartOfMinute('1970-01-01 00:00:59')",
+            "1970-01-01 00:00:00",
+        ),
     ] {
         assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
     }

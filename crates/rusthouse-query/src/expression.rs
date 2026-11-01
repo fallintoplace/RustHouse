@@ -19,15 +19,17 @@ pub enum ScalarExpr {
     Divide(Box<ScalarExpr>, Box<ScalarExpr>),
     Modulo(Box<ScalarExpr>, Box<ScalarExpr>),
     Compare(Box<ScalarExpr>, Operator, Box<ScalarExpr>),
-    Case { branches: Vec<(ScalarExpr, ScalarExpr)>, else_expr: Option<Box<ScalarExpr>> },
+    Case {
+        branches: Vec<(ScalarExpr, ScalarExpr)>,
+        else_expr: Option<Box<ScalarExpr>>,
+    },
 }
 
 impl ScalarExpr {
     pub fn referenced_columns(&self, out: &mut Vec<String>) {
         // Most scalar expressions reference only a handful of columns.
         // Avoid building a hash table until linear scans become expensive.
-        let mut seen = (out.len() >= 8)
-            .then(|| out.iter().cloned().collect::<HashSet<_>>());
+        let mut seen = (out.len() >= 8).then(|| out.iter().cloned().collect::<HashSet<_>>());
         self.collect_unique_referenced_columns(out, &mut seen);
     }
 
@@ -50,7 +52,10 @@ impl ScalarExpr {
                 }
             }
             Self::Integer(_) | Self::Decimal(_) => {}
-            Self::Case { branches, else_expr } => {
+            Self::Case {
+                branches,
+                else_expr,
+            } => {
                 for (condition, value) in branches {
                     condition.collect_unique_referenced_columns(out, seen);
                     value.collect_unique_referenced_columns(out, seen);
@@ -87,7 +92,9 @@ fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarEx
         };
         operator_count += 1;
         if operator_count > 128 {
-            return Err(ParseError("arithmetic operator chain exceeds 128 terms".into()));
+            return Err(ParseError(
+                "arithmetic operator chain exceeds 128 terms".into(),
+            ));
         }
         let right = product(parser, depth)?;
         expr = if addition {
@@ -114,7 +121,9 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
     while let Some((expr, depth)) = pending.pop() {
         total += 1;
         if depth >= 256 || total > 4096 {
-            return Err(ParseError("numeric expression exceeds complexity budget".into()));
+            return Err(ParseError(
+                "numeric expression exceeds complexity budget".into(),
+            ));
         }
         match expr {
             ScalarExpr::Add(left, right)
@@ -126,7 +135,10 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
                 pending.push((right, depth + 1));
                 pending.push((left, depth + 1));
             }
-            ScalarExpr::Case { branches, else_expr } => {
+            ScalarExpr::Case {
+                branches,
+                else_expr,
+            } => {
                 if let Some(value) = else_expr {
                     pending.push((value, depth + 1));
                 }
@@ -135,23 +147,35 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
                     pending.push((value, depth + 1));
                 }
             }
-            ScalarExpr::Column(_) | ScalarExpr::TextLength(_) | ScalarExpr::Integer(_) | ScalarExpr::Decimal(_) => {}
+            ScalarExpr::Column(_)
+            | ScalarExpr::TextLength(_)
+            | ScalarExpr::Integer(_)
+            | ScalarExpr::Decimal(_) => {}
         }
     }
     Ok(())
 }
 
-fn parse_expression_tokens_at_depth(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+fn parse_expression_tokens_at_depth(
+    parser: &mut Parser,
+    depth: usize,
+) -> Result<ScalarExpr, ParseError> {
     let left = parse_arithmetic_tokens(parser, depth)?;
     if let Some(Token::Operator(operator)) = parser.tokens.get(parser.index) {
         let operator = *operator;
-        if !matches!(operator, Operator::Eq | Operator::Ne | Operator::Lt
-            | Operator::Le | Operator::Gt | Operator::Ge) {
+        if !matches!(
+            operator,
+            Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge
+        ) {
             return Err(ParseError("invalid operator in numeric expression".into()));
         }
         parser.index += 1;
         let right = parse_arithmetic_tokens(parser, depth)?;
-        Ok(ScalarExpr::Compare(Box::new(left), operator, Box::new(right)))
+        Ok(ScalarExpr::Compare(
+            Box::new(left),
+            operator,
+            Box::new(right),
+        ))
     } else {
         Ok(left)
     }
@@ -325,22 +349,33 @@ mod case_when_parser_tests {
     fn parses_multi_branch_case_and_collects_columns() {
         let expr = parse_scalar_expression(
             "CASE WHEN amount > 0 THEN amount WHEN amount < 0 THEN 0 ELSE threshold END",
-        ).unwrap();
+        )
+        .unwrap();
         let mut columns = Vec::new();
         expr.referenced_columns(&mut columns);
         assert_eq!(columns, ["amount", "threshold"]);
-        assert!(matches!(expr, ScalarExpr::Case { branches, else_expr: Some(_) } if branches.len() == 2));
-        assert!(matches!(parse_scalar_expression("CASE WHEN flag > 0 THEN 1 END").unwrap(),
-            ScalarExpr::Case { branches, else_expr: None } if branches.len() == 1));
-        for invalid in ["CASE WHEN flag > 0 THEN 1", "CASE WHEN flag > 0 END",
-                        "CASE WHEN flag > 0 THEN 1 ELSE END", "CASE WHEN flag > 0 THEN 1 WHEN flag > 2 END"] {
+        assert!(
+            matches!(expr, ScalarExpr::Case { branches, else_expr: Some(_) } if branches.len() == 2)
+        );
+        assert!(
+            matches!(parse_scalar_expression("CASE WHEN flag > 0 THEN 1 END").unwrap(),
+            ScalarExpr::Case { branches, else_expr: None } if branches.len() == 1)
+        );
+        for invalid in [
+            "CASE WHEN flag > 0 THEN 1",
+            "CASE WHEN flag > 0 END",
+            "CASE WHEN flag > 0 THEN 1 ELSE END",
+            "CASE WHEN flag > 0 THEN 1 WHEN flag > 2 END",
+        ] {
             assert!(parse_scalar_expression(invalid).is_err(), "{invalid}");
         }
     }
     #[test]
     fn case_expression_depth_remains_bounded() {
         let mut expr = String::from("1");
-        for _ in 0..100 { expr = format!("CASE WHEN 1 THEN {expr} ELSE 0 END"); }
+        for _ in 0..100 {
+            expr = format!("CASE WHEN 1 THEN {expr} ELSE 0 END");
+        }
         assert!(parse_scalar_expression(&expr).is_err());
     }
 }

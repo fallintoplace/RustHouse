@@ -20,8 +20,13 @@ fn decodes_complete_bytes_into_utf8_text() {
 }
 #[test]
 fn refuses_broken_bit_groups_and_utf8() {
-    for sql in ["SELECT unbin('101')", "SELECT unbin('0011000X')",
-                "SELECT unbin('11111111')", "SELECT unbin()", "SELECT unbin(1)"] {
+    for sql in [
+        "SELECT unbin('101')",
+        "SELECT unbin('0011000X')",
+        "SELECT unbin('11111111')",
+        "SELECT unbin()",
+        "SELECT unbin(1)",
+    ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }

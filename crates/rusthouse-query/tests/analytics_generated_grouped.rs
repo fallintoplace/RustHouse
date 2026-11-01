@@ -1,9 +1,13 @@
 //! Grouped analytics over virtual ClickHouse numbers sources.
-use rusthouse_query::{execute,parse_select};
-fn run(sql:&str)->Result<String,String>{
-    let mut out=Vec::new();
-    execute(&parse_select(sql).map_err(|e|e.to_string())?,None,&mut out)
-        .map_err(|e|e.to_string())?;
+use rusthouse_query::{execute, parse_select};
+fn run(sql: &str) -> Result<String, String> {
+    let mut out = Vec::new();
+    execute(
+        &parse_select(sql).map_err(|e| e.to_string())?,
+        None,
+        &mut out,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(String::from_utf8(out).unwrap())
 }
 #[test]
@@ -24,5 +28,8 @@ fn groups_generated_series_with_multiple_numeric_metrics() {
         run("SELECT number, sum(number), count(number) FROM numbers(0) GROUP BY number").unwrap(),
         "number\tsum(number)\tcount(number)\n"
     );
-    assert!(run("SELECT number, sum(number), count(number) FROM numbers(200001) GROUP BY number").is_err());
+    assert!(
+        run("SELECT number, sum(number), count(number) FROM numbers(200001) GROUP BY number")
+            .is_err()
+    );
 }

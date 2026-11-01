@@ -54,10 +54,10 @@ fn same_active_pointer_state(before: &fs::Metadata, after: &fs::Metadata) -> boo
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return before.dev() == after.dev()
+        before.dev() == after.dev()
             && before.ino() == after.ino()
             && before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec();
+            && before.ctime_nsec() == after.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
@@ -70,10 +70,11 @@ fn verify_active_pointer_unchanged(
 ) -> Result<(), PartError> {
     let opened = file.metadata().map_err(|error| io_error(pointer, error))?;
     let current = fs::symlink_metadata(pointer).map_err(|error| io_error(pointer, error))?;
-    if !same_active_pointer_state(initial, &opened)
-        || !same_active_pointer_state(initial, &current)
+    if !same_active_pointer_state(initial, &opened) || !same_active_pointer_state(initial, &current)
     {
-        return Err(PartError::InvalidScan("active pointer changed during read".into()));
+        return Err(PartError::InvalidScan(
+            "active pointer changed during read".into(),
+        ));
     }
     Ok(())
 }
@@ -90,11 +91,14 @@ fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), Part
                 return Err(PartError::InvalidScan("active pointer changed".into()));
             }
             let mut current = String::new();
-            (&file).take(65)
+            (&file)
+                .take(65)
                 .read_to_string(&mut current)
                 .map_err(|error| io_error(pointer, error))?;
             if current.len() > 64 || current.len() as u64 != opened.len() {
-                return Err(PartError::InvalidScan("active pointer changed during read".into()));
+                return Err(PartError::InvalidScan(
+                    "active pointer changed during read".into(),
+                ));
             }
             verify_active_pointer_unchanged(pointer, &file, &meta)?;
             let prior = current
@@ -142,7 +146,11 @@ pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), 
         for entry in fs::read_dir(&part).map_err(|error| io_error(&part, error))? {
             let entry = entry.map_err(|error| io_error(&part, error))?;
             let path = entry.path();
-            if !entry.file_type().map_err(|error| io_error(&path, error))?.is_file() {
+            if !entry
+                .file_type()
+                .map_err(|error| io_error(&path, error))?
+                .is_file()
+            {
                 return Err(PartError::InvalidScan(
                     "replica generation contains non-regular part entries".into(),
                 ));
@@ -201,7 +209,9 @@ pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
     let pointer = root.join(".rusthouse-active");
     let initial = match fs::symlink_metadata(&pointer) {
         Ok(meta) if !meta.file_type().is_file() || meta.len() > 64 => {
-            return Err(PartError::InvalidScan("invalid active generation pointer".into()));
+            return Err(PartError::InvalidScan(
+                "invalid active generation pointer".into(),
+            ));
         }
         Ok(meta) => meta,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -210,14 +220,19 @@ pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
     let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
     let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
     if opened.len() > 64 || !same_active_pointer_state(&initial, &opened) {
-        return Err(PartError::InvalidScan("active generation pointer changed".into()));
+        return Err(PartError::InvalidScan(
+            "active generation pointer changed".into(),
+        ));
     }
     let mut bytes = Vec::new();
-    (&file).take(65)
+    (&file)
+        .take(65)
         .read_to_end(&mut bytes)
         .map_err(|error| io_error(&pointer, error))?;
     if bytes.len() as u64 != opened.len() {
-        return Err(PartError::InvalidScan("active generation pointer changed during read".into()));
+        return Err(PartError::InvalidScan(
+            "active generation pointer changed during read".into(),
+        ));
     }
     verify_active_pointer_unchanged(&pointer, &file, &initial)?;
     let text = std::str::from_utf8(&bytes)
@@ -228,7 +243,9 @@ pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
         .and_then(|value| value.parse::<u64>().ok())
         .ok_or_else(|| PartError::InvalidScan("invalid active generation pointer".into()))?;
     if generation == 0 || text != format!("g{generation}\n") {
-        return Err(PartError::InvalidScan("noncanonical active generation pointer".into()));
+        return Err(PartError::InvalidScan(
+            "noncanonical active generation pointer".into(),
+        ));
     }
     Ok(Some(generation))
 }
@@ -240,7 +257,8 @@ mod pointer_stage_collision_tests {
     #[test]
     fn stale_pending_pointer_is_never_truncated_or_reused() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-active-stage-collision-{}", std::process::id()
+            "rusthouse-active-stage-collision-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -250,8 +268,13 @@ mod pointer_stage_collision_tests {
         let mut attempts = 0;
         let (created, mut file) = create_pending_pointer_with(|| {
             attempts += 1;
-            if attempts == 1 { orphan.clone() } else { fresh.clone() }
-        }).unwrap();
+            if attempts == 1 {
+                orphan.clone()
+            } else {
+                fresh.clone()
+            }
+        })
+        .unwrap();
         file.write_all(b"g2\n").unwrap();
         drop(file);
         assert_eq!(attempts, 2);
@@ -304,7 +327,8 @@ mod tests {
                 data_type: "UInt64".into(),
             }],
             &[vec![Some("12".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         // A file outside checksums.txt passes the manifest's stored-file check.
         fs::write(part.join("extra.bin"), b"bad-block").unwrap();
         fs::write(part.join("extra.mrk2"), b"bad-mark").unwrap();
@@ -351,9 +375,8 @@ mod active_generation_read_tests {
 
     #[test]
     fn reads_only_valid_canonical_generation_pointers() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-active-read-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-active-read-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         assert_eq!(read_active_generation(&root).unwrap(), None);
@@ -371,9 +394,8 @@ mod active_generation_read_tests {
     #[test]
     fn refuses_symlinked_active_pointers() {
         use std::os::unix::fs::symlink;
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-active-symlink-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-active-symlink-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("real"), "g1\n").unwrap();
@@ -390,14 +412,18 @@ mod promotion_pointer_canonical_tests {
     #[test]
     fn rejects_noncanonical_active_generation_before_promotion() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-promotion-pointer-{}", std::process::id()
+            "rusthouse-promotion-pointer-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let pointer = root.join(".rusthouse-active");
         for malformed in ["g01\n", "g0\n", "g+1\n", "g1\r\n"] {
             fs::write(&pointer, malformed).unwrap();
-            assert!(validate_fresh_generation(&pointer, 2).is_err(), "{malformed:?}");
+            assert!(
+                validate_fresh_generation(&pointer, 2).is_err(),
+                "{malformed:?}"
+            );
         }
         fs::write(&pointer, "g1\n").unwrap();
         assert!(validate_fresh_generation(&pointer, 2).is_ok());
@@ -412,10 +438,8 @@ mod prior_pointer_validation_tests {
 
     #[test]
     fn refuses_zero_and_noncanonical_prior_versions() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-prior-pointer-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-prior-pointer-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let pointer = root.join(".rusthouse-active");
@@ -471,12 +495,20 @@ mod pointer_metadata_stability_tests {
         fs::write(&pointer, b"g12\n").unwrap();
         let before = fs::symlink_metadata(&pointer).unwrap();
         let file = fs::File::open(&pointer).unwrap();
-        assert!(same_active_pointer_state(&before, &file.metadata().unwrap()));
+        assert!(same_active_pointer_state(
+            &before,
+            &file.metadata().unwrap()
+        ));
         verify_active_pointer_unchanged(&pointer, &file, &before).unwrap();
 
         let changed = fs::OpenOptions::new().write(true).open(&pointer).unwrap();
-        changed.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
-        assert!(!same_active_pointer_state(&before, &changed.metadata().unwrap()));
+        changed
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        assert!(!same_active_pointer_state(
+            &before,
+            &changed.metadata().unwrap()
+        ));
         assert!(verify_active_pointer_unchanged(&pointer, &file, &before).is_err());
 
         fs::remove_dir_all(root).unwrap();

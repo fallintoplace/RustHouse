@@ -62,9 +62,7 @@ pub fn scrub_snapshot_with_byte_limit(
     if max_bytes != u64::MAX {
         // The active generation was resolved above. Avoid resolving it a
         // second time while preflighting the byte budget.
-        crate::distributed_inventory::inventory_active_snapshot(
-            &active, 1_048_576, max_bytes,
-        )?;
+        crate::distributed_inventory::inventory_active_snapshot(&active, 1_048_576, max_bytes)?;
     }
     const PARALLEL_THRESHOLD: usize = 16;
     let mut report = ScrubReport::default();
@@ -130,9 +128,9 @@ pub fn scrub_snapshot_with_byte_limit(
             handles.push(handle);
         }
         for handle in handles {
-            handle.join().map_err(|_| {
-                PartError::InvalidScan("snapshot scrub worker panicked".into())
-            })?;
+            handle
+                .join()
+                .map_err(|_| PartError::InvalidScan("snapshot scrub worker panicked".into()))?;
         }
         Ok(())
     })?;
@@ -144,7 +142,8 @@ pub fn scrub_snapshot_with_byte_limit(
         if index > first_failure {
             break;
         }
-        let checked = slot.into_inner()
+        let checked = slot
+            .into_inner()
             .ok_or_else(|| PartError::InvalidScan("missing snapshot scrub result".into()))??;
         report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
     }
@@ -173,18 +172,21 @@ mod tests {
 
     #[test]
     fn scrubs_large_multi_part_snapshot_without_losing_report_counts() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-parallel-scrub-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-parallel-scrub-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
         for index in 0..20 {
             let part = root.join(format!("all_{index}_{index}_0"));
             write_wide_part(
                 &part,
-                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[Column {
+                    name: "id".into(),
+                    data_type: "UInt64".into(),
+                }],
                 &[vec![Some(index.to_string())]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let report = scrub_snapshot(&root, 20).unwrap();
         assert_eq!(report.parts, 20);
@@ -245,17 +247,20 @@ mod targeted_scrub_tests {
 
     #[test]
     fn verifies_one_part_and_rejects_corruption() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-targeted-scrub-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-targeted-scrub-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let part = root.join("all_0_0_0");
         write_wide_part(
             &part,
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("8".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         let report = scrub_part(&part).unwrap();
         assert_eq!(report.parts, 1);
         assert!(report.checked_files > 0);
@@ -273,15 +278,16 @@ mod byte_budget_tests {
 
     #[test]
     fn rejects_oversized_scrubs_without_touching_snapshot_files() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-scrub-budget-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-scrub-budget-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         write_wide_part(
             &root.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("4".into())]],
         )
         .unwrap();
@@ -301,17 +307,38 @@ mod pinned_scrub_preflight_tests {
 
     #[test]
     fn scrub_budget_is_applied_to_selected_active_generation() {
-        let root = std::env::temp_dir().join(format!("rusthouse-scrub-generation-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-scrub-generation-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let versions = root.join(".rusthouse-versions");
         let first = versions.join("g1");
         let second = versions.join("g2");
         fs::create_dir_all(&first).unwrap();
         fs::create_dir_all(&second).unwrap();
-        write_wide_part(&first.join("all_0_0_0"), &[Column { name: "value".into(), data_type: "UInt64".into() }], &[vec![Some("1".into())]]).unwrap();
-        write_wide_part(&second.join("all_0_0_0"), &[Column { name: "value".into(), data_type: "String".into() }], &[vec![Some("a".repeat(512))]]).unwrap();
+        write_wide_part(
+            &first.join("all_0_0_0"),
+            &[Column {
+                name: "value".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[vec![Some("1".into())]],
+        )
+        .unwrap();
+        write_wide_part(
+            &second.join("all_0_0_0"),
+            &[Column {
+                name: "value".into(),
+                data_type: "String".into(),
+            }],
+            &[vec![Some("a".repeat(512))]],
+        )
+        .unwrap();
         fs::write(root.join(".rusthouse-active"), "g1\n").unwrap();
-        let first_bytes = crate::distributed_inventory::inventory_snapshot(&first, 1024, u64::MAX).unwrap().iter().map(|e| e.bytes).sum::<u64>();
+        let first_bytes = crate::distributed_inventory::inventory_snapshot(&first, 1024, u64::MAX)
+            .unwrap()
+            .iter()
+            .map(|e| e.bytes)
+            .sum::<u64>();
         assert!(scrub_snapshot_with_byte_limit(&root, 1, first_bytes).is_ok());
         fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
         assert!(scrub_snapshot_with_byte_limit(&root, 1, first_bytes).is_err());
@@ -327,7 +354,9 @@ mod scrub_generation_stability_tests {
     #[test]
     fn active_generation_switch_is_not_a_successful_scrub() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-scrub-generation-{}-{}", std::process::id(), line!()
+            "rusthouse-scrub-generation-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&root);
         let first = root.join(".rusthouse-versions/g1");
@@ -352,16 +381,22 @@ mod fail_fast_scrub_tests {
     #[test]
     fn returns_earliest_corrupt_part_with_parallel_workers() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-fail-fast-scrub-{}-{}", std::process::id(), line!()
+            "rusthouse-fail-fast-scrub-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         for index in 0..32 {
             write_wide_part(
                 &root.join(format!("all_{index}_{index}_0")),
-                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[Column {
+                    name: "id".into(),
+                    data_type: "UInt64".into(),
+                }],
                 &[vec![Some(index.to_string())]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         assert_eq!(scrub_snapshot(&root, 32).unwrap().parts, 32);
         fs::write(root.join("all_1_1_0/count.txt"), "999\n").unwrap();
@@ -381,17 +416,20 @@ mod hash_first_scrub_tests {
 
     #[test]
     fn corrupted_stream_fails_hash_validation_before_decoding() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-scrub-hash-first-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-scrub-hash-first-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let part = root.join("all_0_0_0");
         write_wide_part(
             &part,
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("7".into())], vec![Some("8".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         assert!(scrub_part(&part).is_ok());
         let stream = part.join("id.bin");
         let mut content = fs::read(&stream).unwrap();
@@ -415,32 +453,46 @@ mod resolved_scrub_preflight_tests {
     #[test]
     fn bounded_scrub_preflight_uses_the_selected_generation() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-scrub-resolved-{}-{}", std::process::id(), line!()
+            "rusthouse-scrub-resolved-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&root);
         let old = root.join(".rusthouse-versions/g1");
         let newer = root.join(".rusthouse-versions/g2");
         fs::create_dir_all(&old).unwrap();
         fs::create_dir_all(&newer).unwrap();
-        write_wide_part(&old.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+        write_wide_part(
+            &old.join("all_0_0_0"),
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("1".into())]],
-        ).unwrap();
-        write_wide_part(&newer.join("all_0_0_0"),
-            &[Column { name: "text".into(), data_type: "String".into() }],
+        )
+        .unwrap();
+        write_wide_part(
+            &newer.join("all_0_0_0"),
+            &[Column {
+                name: "text".into(),
+                data_type: "String".into(),
+            }],
             &[vec![Some("x".repeat(8192))]],
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(root.join(".rusthouse-active"), "g1\n").unwrap();
-        let old_bytes = crate::distributed_inventory::inventory_active_snapshot(
-            &old, 128, u64::MAX,
-        ).unwrap().iter().map(|file| file.bytes).sum();
+        let old_bytes =
+            crate::distributed_inventory::inventory_active_snapshot(&old, 128, u64::MAX)
+                .unwrap()
+                .iter()
+                .map(|file| file.bytes)
+                .sum();
         assert!(scrub_snapshot_with_byte_limit(&root, 1, old_bytes).is_ok());
         fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
         assert!(scrub_snapshot_with_byte_limit(&root, 1, old_bytes).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
-
 
 /// A completed page of read-only immutable-part verification.
 ///
@@ -466,7 +518,9 @@ pub fn scrub_snapshot_page(
     max_page_parts: usize,
 ) -> Result<PagedScrubReport, PartError> {
     if max_page_parts == 0 || max_page_parts > 256 {
-        return Err(PartError::InvalidScan("invalid snapshot scrub page size".into()));
+        return Err(PartError::InvalidScan(
+            "invalid snapshot scrub page size".into(),
+        ));
     }
     let active = resolve_active_snapshot(root)?;
     if pinned_generation.is_some_and(|expected| expected != active) {
@@ -476,18 +530,25 @@ pub fn scrub_snapshot_page(
     }
     let mut parts = query_parts(&active)?;
     if parts.len() > 16_384 {
-        return Err(PartError::InvalidScan("replica scrub exceeds part limit".into()));
+        return Err(PartError::InvalidScan(
+            "replica scrub exceeds part limit".into(),
+        ));
     }
     parts.sort_unstable_by(|left, right| left.file_name().cmp(&right.file_name()));
     let start = if let Some(after) = after_part {
         if after.is_empty() || after.contains('/') || after.contains('\\') {
-            return Err(PartError::InvalidScan("invalid snapshot scrub cursor".into()));
+            return Err(PartError::InvalidScan(
+                "invalid snapshot scrub cursor".into(),
+            ));
         }
-        let last = parts.iter()
+        let last = parts
+            .iter()
             .position(|part| part.file_name().is_some_and(|name| name == after))
-            .ok_or_else(|| PartError::InvalidScan(
-                "snapshot scrub cursor was not found in active generation".into(),
-            ))?;
+            .ok_or_else(|| {
+                PartError::InvalidScan(
+                    "snapshot scrub cursor was not found in active generation".into(),
+                )
+            })?;
         last + 1
     } else {
         0
@@ -500,15 +561,20 @@ pub fn scrub_snapshot_page(
     }
     require_unchanged_snapshot(root, &active)?;
     let next_after_part = if end < parts.len() {
-        Some(parts[end - 1].file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| PartError::InvalidScan("non-UTF8 part scrub cursor".into()))?
-            .to_owned())
+        Some(
+            parts[end - 1]
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| PartError::InvalidScan("non-UTF8 part scrub cursor".into()))?
+                .to_owned(),
+        )
     } else {
         None
     };
     Ok(PagedScrubReport {
-        generation: active, verified: report, next_after_part,
+        generation: active,
+        verified: report,
+        next_after_part,
     })
 }
 
@@ -520,7 +586,9 @@ mod pinned_snapshot_scrub_pages_tests {
 
     fn test_root() -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "rusthouse-scrub-page-{}-{}", std::process::id(), line!(),
+            "rusthouse-scrub-page-{}-{}",
+            std::process::id(),
+            line!(),
         ))
     }
 
@@ -530,19 +598,23 @@ mod pinned_snapshot_scrub_pages_tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         for index in 0..5 {
-            write_wide_part(&root.join(format!("all_{index}_{index}_0")),
-                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &[Column {
+                    name: "id".into(),
+                    data_type: "UInt64".into(),
+                }],
                 &[vec![Some(index.to_string())]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let complete = scrub_snapshot(&root, 5).unwrap();
         let mut generation = None;
         let mut cursor: Option<String> = None;
         let mut observed = ScrubReport::default();
         for expected_parts in [2, 2, 1] {
-            let page = scrub_snapshot_page(
-                &root, generation.as_deref(), cursor.as_deref(), 2,
-            ).unwrap();
+            let page =
+                scrub_snapshot_page(&root, generation.as_deref(), cursor.as_deref(), 2).unwrap();
             assert_eq!(page.verified.parts, expected_parts);
             observed.parts += page.verified.parts;
             observed.checked_files += page.verified.checked_files;
@@ -553,8 +625,9 @@ mod pinned_snapshot_scrub_pages_tests {
         }
         assert_eq!(cursor, None);
         assert_eq!(observed, complete);
-        assert!(scrub_snapshot_page(&root, generation.as_deref(),
-            Some("missing_part"), 1).is_err());
+        assert!(
+            scrub_snapshot_page(&root, generation.as_deref(), Some("missing_part"), 1).is_err()
+        );
         assert!(scrub_snapshot_page(&root, None, None, 0).is_err());
         fs::remove_dir_all(root).unwrap();
     }
@@ -568,17 +641,20 @@ mod pinned_snapshot_scrub_pages_tests {
         fs::create_dir_all(&old).unwrap();
         fs::create_dir_all(&new).unwrap();
         for path in [&old, &new] {
-            write_wide_part(&path.join("all_0_0_0"),
-                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            write_wide_part(
+                &path.join("all_0_0_0"),
+                &[Column {
+                    name: "id".into(),
+                    data_type: "UInt64".into(),
+                }],
                 &[vec![Some("7".into())]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         fs::write(root.join(".rusthouse-active"), "g1\n").unwrap();
         let first = scrub_snapshot_page(&root, None, None, 1).unwrap();
         fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
-        assert!(scrub_snapshot_page(
-            &root, Some(&first.generation), None, 1,
-        ).is_err());
+        assert!(scrub_snapshot_page(&root, Some(&first.generation), None, 1,).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }

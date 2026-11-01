@@ -25,8 +25,13 @@ struct DistinctValues {
 
 impl DistinctValues {
     fn len(&self) -> usize {
-        self.other.len() + self.text.len() + self.uuids.len()
-            + self.bitmap32.as_ref().map_or(0, |bitmap| bitmap.len() as usize)
+        self.other.len()
+            + self.text.len()
+            + self.uuids.len()
+            + self
+                .bitmap32
+                .as_ref()
+                .map_or(0, |bitmap| bitmap.len() as usize)
     }
 
     fn insert_key(&mut self, key: typed::Key) -> Result<(), ExecutionError> {
@@ -49,15 +54,18 @@ impl DistinctValues {
                 "COUNT(DISTINCT) supports at most 100000 values".into(),
             ));
         }
-        let additional = value.len().checked_add(
-            std::mem::size_of::<Vec<u8>>() + 2 * std::mem::size_of::<usize>()
-        ).ok_or_else(|| ExecutionError::Invalid(
-            "multi-aggregate DISTINCT String memory overflow".into(),
-        ))?;
-        let next = self.retained_text_bytes.checked_add(additional)
-            .ok_or_else(|| ExecutionError::Invalid(
-                "multi-aggregate DISTINCT String memory overflow".into(),
-            ))?;
+        let additional = value
+            .len()
+            .checked_add(std::mem::size_of::<Vec<u8>>() + 2 * std::mem::size_of::<usize>())
+            .ok_or_else(|| {
+                ExecutionError::Invalid("multi-aggregate DISTINCT String memory overflow".into())
+            })?;
+        let next = self
+            .retained_text_bytes
+            .checked_add(additional)
+            .ok_or_else(|| {
+                ExecutionError::Invalid("multi-aggregate DISTINCT String memory overflow".into())
+            })?;
         if next > MAX_DISTINCT_TEXT_BYTES {
             return Err(ExecutionError::Invalid(
                 "multi-aggregate COUNT(DISTINCT) String keys exceed 64 MiB".into(),
@@ -82,17 +90,20 @@ impl DistinctValues {
         if let Some(bitmap) = self.bitmap32.as_mut() {
             let value = match column {
                 TypedColumn::Numeric(NumericColumn::UInt32(values)) => Some(values[row]),
-                TypedColumn::Numeric(NumericColumn::Int32(values)) =>
-                    Some(values[row] as u32),
+                TypedColumn::Numeric(NumericColumn::Int32(values)) => Some(values[row] as u32),
                 TypedColumn::NullableNumeric {
-                    values: NumericColumn::UInt32(values), nulls,
+                    values: NumericColumn::UInt32(values),
+                    nulls,
                 } => (nulls[row] == 0).then_some(values[row]),
                 TypedColumn::NullableNumeric {
-                    values: NumericColumn::Int32(values), nulls,
+                    values: NumericColumn::Int32(values),
+                    nulls,
                 } => (nulls[row] == 0).then_some(values[row] as u32),
-                _ => return Err(ExecutionError::Invalid(
-                    "32-bit distinct bitmap requires a 32-bit integer column".into(),
-                )),
+                _ => {
+                    return Err(ExecutionError::Invalid(
+                        "32-bit distinct bitmap requires a 32-bit integer column".into(),
+                    ));
+                }
             };
             if let Some(key) = value {
                 bitmap.insert(key)?;
@@ -143,7 +154,10 @@ enum BoundExpr {
     Divide(Box<Self>, Box<Self>),
     Modulo(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
-    Case { branches: Vec<(Self, Self)>, else_expr: Option<Box<Self>> },
+    Case {
+        branches: Vec<(Self, Self)>,
+        else_expr: Option<Box<Self>>,
+    },
 }
 
 impl BoundExpr {
@@ -158,12 +172,20 @@ impl BoundExpr {
                 .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {name}")))
         };
         Ok(match expression {
-            ScalarExpr::Case { branches, else_expr } => Self::Case {
-                branches: branches.iter().map(|(condition, value)| {
-                    Ok((Self::bind(condition, indices)?, Self::bind(value, indices)?))
-                }).collect::<Result<Vec<_>, ExecutionError>>()?,
-                else_expr: else_expr.as_ref()
-                    .map(|value| Self::bind(value, indices).map(Box::new)).transpose()?,
+            ScalarExpr::Case {
+                branches,
+                else_expr,
+            } => Self::Case {
+                branches: branches
+                    .iter()
+                    .map(|(condition, value)| {
+                        Ok((Self::bind(condition, indices)?, Self::bind(value, indices)?))
+                    })
+                    .collect::<Result<Vec<_>, ExecutionError>>()?,
+                else_expr: else_expr
+                    .as_ref()
+                    .map(|value| Self::bind(value, indices).map(Box::new))
+                    .transpose()?,
             },
             ScalarExpr::Column(name) => Self::Column(index(name)?),
             ScalarExpr::TextLength(name) => Self::TextLength(index(name)?),
@@ -176,7 +198,7 @@ impl BoundExpr {
                     return Err(ExecutionError::Invalid("non-finite decimal literal".into()));
                 }
                 Self::Float(value)
-            },
+            }
             ScalarExpr::Add(left, right) => {
                 if let (ScalarExpr::Column(name), ScalarExpr::Integer(constant)) =
                     (left.as_ref(), right.as_ref())
@@ -256,14 +278,22 @@ fn numeric_argument_at(
 /// Float64 values; fractional portions are resolved after integer comparison.
 fn compare_unsigned_float(integer: u128, float: f64) -> Option<std::cmp::Ordering> {
     use std::cmp::Ordering;
-    if float.is_nan() { return None; }
-    if float < 0.0 { return Some(Ordering::Greater); }
+    if float.is_nan() {
+        return None;
+    }
+    if float < 0.0 {
+        return Some(Ordering::Greater);
+    }
     if float.is_infinite() || float >= 2.0_f64.powi(128) {
         return Some(Ordering::Less);
     }
     let whole = float.trunc() as u128;
     Some(integer.cmp(&whole).then_with(|| {
-        if float.fract() > 0.0 { Ordering::Less } else { Ordering::Equal }
+        if float.fract() > 0.0 {
+            Ordering::Less
+        } else {
+            Ordering::Equal
+        }
     }))
 }
 
@@ -273,8 +303,7 @@ fn compare_signed_float(integer: i128, float: f64) -> Option<std::cmp::Ordering>
     } else if float >= 0.0 {
         Some(std::cmp::Ordering::Less)
     } else {
-        compare_unsigned_float(integer.unsigned_abs(), -float)
-            .map(std::cmp::Ordering::reverse)
+        compare_unsigned_float(integer.unsigned_abs(), -float).map(std::cmp::Ordering::reverse)
     }
 }
 
@@ -282,25 +311,23 @@ fn compare_signed_float(integer: i128, float: f64) -> Option<std::cmp::Ordering>
 /// internal Number enum variant order used by mixed-type sort keys.
 fn compare_expression_numbers(left: Number, right: Number) -> Option<std::cmp::Ordering> {
     match (left, right) {
-        (Number::Unsigned(left), Number::Signed(right)) => Some(
-            match u128::try_from(right) {
-                Ok(right) => left.cmp(&right),
-                Err(_) => std::cmp::Ordering::Greater,
-            }
-        ),
-        (Number::Signed(left), Number::Unsigned(right)) => Some(
-            match u128::try_from(left) {
-                Ok(left) => left.cmp(&right),
-                Err(_) => std::cmp::Ordering::Less,
-            }
-        ),
+        (Number::Unsigned(left), Number::Signed(right)) => Some(match u128::try_from(right) {
+            Ok(right) => left.cmp(&right),
+            Err(_) => std::cmp::Ordering::Greater,
+        }),
+        (Number::Signed(left), Number::Unsigned(right)) => Some(match u128::try_from(left) {
+            Ok(left) => left.cmp(&right),
+            Err(_) => std::cmp::Ordering::Less,
+        }),
         (Number::Float(left), Number::Float(right)) => left.partial_cmp(&right),
         (Number::Unsigned(left), Number::Float(right)) => compare_unsigned_float(left, right),
         (Number::Signed(left), Number::Float(right)) => compare_signed_float(left, right),
-        (Number::Float(left), Number::Unsigned(right)) => compare_unsigned_float(right, left)
-            .map(std::cmp::Ordering::reverse),
-        (Number::Float(left), Number::Signed(right)) => compare_signed_float(right, left)
-            .map(std::cmp::Ordering::reverse),
+        (Number::Float(left), Number::Unsigned(right)) => {
+            compare_unsigned_float(right, left).map(std::cmp::Ordering::reverse)
+        }
+        (Number::Float(left), Number::Signed(right)) => {
+            compare_signed_float(right, left).map(std::cmp::Ordering::reverse)
+        }
         _ => Some(super::compare_numbers(left, right)),
     }
 }
@@ -311,7 +338,10 @@ fn eval_number(
     row: usize,
 ) -> Result<Option<Number>, ExecutionError> {
     match expression {
-        BoundExpr::Case { branches, else_expr } => {
+        BoundExpr::Case {
+            branches,
+            else_expr,
+        } => {
             for (condition, value) in branches {
                 let truthy = match eval_number(condition, batch, row)? {
                     Some(Number::Unsigned(value)) => value != 0,
@@ -319,7 +349,9 @@ fn eval_number(
                     Some(Number::Float(value)) => value != 0.0,
                     None => false,
                 };
-                if truthy { return eval_number(value, batch, row); }
+                if truthy {
+                    return eval_number(value, batch, row);
+                }
             }
             match else_expr {
                 Some(value) => eval_number(value, batch, row),
@@ -328,8 +360,12 @@ fn eval_number(
         }
         BoundExpr::Column(index) => numeric_argument_at(batch, *index, row),
         BoundExpr::Compare(left, operator, right) => {
-            let Some(left) = eval_number(left, batch, row)? else {return Ok(None)};
-            let Some(right) = eval_number(right, batch, row)? else {return Ok(None)};
+            let Some(left) = eval_number(left, batch, row)? else {
+                return Ok(None);
+            };
+            let Some(right) = eval_number(right, batch, row)? else {
+                return Ok(None);
+            };
             let order = compare_expression_numbers(left, right);
             let matched = match operator {
                 crate::Operator::Eq => order.is_some_and(|order| order.is_eq()),
@@ -338,11 +374,14 @@ fn eval_number(
                 crate::Operator::Le => order.is_some_and(|order| order.is_le()),
                 crate::Operator::Gt => order.is_some_and(|order| order.is_gt()),
                 crate::Operator::Ge => order.is_some_and(|order| order.is_ge()),
-                _ => return Err(ExecutionError::Invalid(
-                    "unsupported numeric comparison operator".into())),
+                _ => {
+                    return Err(ExecutionError::Invalid(
+                        "unsupported numeric comparison operator".into(),
+                    ));
+                }
             };
             Ok(Some(Number::Unsigned(u128::from(matched))))
-        },
+        }
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::Float(value) => Ok(Some(Number::Float(*value))),
         BoundExpr::AffineColumn {
@@ -350,11 +389,9 @@ fn eval_number(
             constant,
             subtract,
         } => match numeric_argument_at(batch, *index, row)? {
-            Some(value) => checked_binary(
-                value,
-                Number::Signed(i128::from(*constant)),
-                *subtract,
-            ).map(Some),
+            Some(value) => {
+                checked_binary(value, Number::Signed(i128::from(*constant)), *subtract).map(Some)
+            }
             None => Ok(None),
         },
         BoundExpr::TextLength(index) => match &batch[*index] {
@@ -444,9 +481,7 @@ fn distinct_argument(
             TypedColumn::Text(values) => values
                 .get(row)
                 .map(|value| typed::Key::Text(value.to_vec())),
-            TypedColumn::Uuid(values) => {
-                Some(typed::Key::UuidBytes(*values[row].as_bytes()))
-            },
+            TypedColumn::Uuid(values) => Some(typed::Key::UuidBytes(*values[row].as_bytes())),
             TypedColumn::NullableNumeric { values, nulls } => (nulls[row] == 0)
                 .then(|| typed::Key::Numeric(NumberKey::from(number_at(values, row)))),
             TypedColumn::NullableText { values, nulls } => {
@@ -476,7 +511,6 @@ fn count_argument(
     }
 }
 
-
 /// Compute independent exact multi-aggregate partials over physical parts,
 /// then merge the checked integer SUM and COUNT states. Other aggregate types
 /// retain serial ordering to avoid changing floating-point semantics.
@@ -502,60 +536,88 @@ fn parallel_exact_multi_aggregates(
     let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let cursor = &cursor;
         let paths = &parts;
-        let handles = (0..workers).map(|_| {
-            std::thread::Builder::new().spawn_scoped(scope, move || -> Result<Vec<State>, ExecutionError> {
-                let mut states = items.iter().map(|item| match item.function {
-                    Some(function) => State::Numeric(AggregateState::new(function)),
-                    None => State::Count(0),
-                }).collect::<Vec<_>>();
-                while let Some(path) = paths.get(
-                    cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                ) {
-                    let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
-                    while let Some(batch) = reader.next_batch()? {
-                        for row in 0..batch[0].len() {
-                            if !no_filters && !typed::passes(&batch, row, conditions) {
-                                continue;
-                            }
-                            for (state, argument) in states.iter_mut().zip(arguments) {
-                                match state {
-                                    State::Count(value) => {
-                                        if count_argument(argument.as_ref(), &batch, row)? {
-                                            *value = value.checked_add(1).ok_or_else(|| {
-                                                ExecutionError::Invalid("COUNT overflow".into())
-                                            })?;
+        let handles = (0..workers)
+            .map(|_| {
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || -> Result<Vec<State>, ExecutionError> {
+                        let mut states = items
+                            .iter()
+                            .map(|item| match item.function {
+                                Some(function) => State::Numeric(AggregateState::new(function)),
+                                None => State::Count(0),
+                            })
+                            .collect::<Vec<_>>();
+                        while let Some(path) =
+                            paths.get(cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                        {
+                            let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
+                            while let Some(batch) = reader.next_batch()? {
+                                for row in 0..batch[0].len() {
+                                    if !no_filters && !typed::passes(&batch, row, conditions) {
+                                        continue;
+                                    }
+                                    for (state, argument) in states.iter_mut().zip(arguments) {
+                                        match state {
+                                            State::Count(value) => {
+                                                if count_argument(argument.as_ref(), &batch, row)? {
+                                                    *value =
+                                                        value.checked_add(1).ok_or_else(|| {
+                                                            ExecutionError::Invalid(
+                                                                "COUNT overflow".into(),
+                                                            )
+                                                        })?;
+                                                }
+                                            }
+                                            State::Numeric(value) => {
+                                                let expr = argument.as_ref().ok_or_else(|| {
+                                                    ExecutionError::Invalid(
+                                                        "aggregate argument missing".into(),
+                                                    )
+                                                })?;
+                                                if let Some(next) = eval_number(expr, &batch, row)?
+                                                {
+                                                    value.update(next)?;
+                                                }
+                                            }
+                                            State::Distinct(_) => {
+                                                unreachable!("only exact SUM and COUNT selected")
+                                            }
                                         }
                                     }
-                                    State::Numeric(value) => {
-                                        let expr = argument.as_ref().ok_or_else(|| {
-                                            ExecutionError::Invalid("aggregate argument missing".into())
-                                        })?;
-                                        if let Some(next) = eval_number(expr, &batch, row)? {
-                                            value.update(next)?;
-                                        }
-                                    }
-                                    State::Distinct(_) => unreachable!("only exact SUM and COUNT selected"),
                                 }
                             }
                         }
-                    }
-                }
-                Ok(states)
-            }).map_err(|error| ExecutionError::Invalid(format!("cannot start aggregate worker: {error}")))
-        }).collect::<Result<Vec<_>, _>>()?;
-        Ok(handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
-            Err(ExecutionError::Invalid("parallel multi-aggregate worker panicked".into()))
-        })).collect::<Vec<_>>())
+                        Ok(states)
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!("cannot start aggregate worker: {error}"))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(ExecutionError::Invalid(
+                        "parallel multi-aggregate worker panicked".into(),
+                    ))
+                })
+            })
+            .collect::<Vec<_>>())
     })?;
-    let mut totals = items.iter().map(|item| match item.function {
-        Some(function) => State::Numeric(AggregateState::new(function)),
-        None => State::Count(0),
-    }).collect::<Vec<_>>();
+    let mut totals = items
+        .iter()
+        .map(|item| match item.function {
+            Some(function) => State::Numeric(AggregateState::new(function)),
+            None => State::Count(0),
+        })
+        .collect::<Vec<_>>();
     for chunk in chunks {
         for (total, partial) in totals.iter_mut().zip(chunk?) {
             match (total, partial) {
                 (State::Count(total), State::Count(partial)) => {
-                    *total = total.checked_add(partial)
+                    *total = total
+                        .checked_add(partial)
                         .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
                 }
                 (State::Numeric(total), State::Numeric(partial)) => {
@@ -563,9 +625,11 @@ fn parallel_exact_multi_aggregates(
                         total.update(value)?;
                     }
                 }
-                _ => return Err(ExecutionError::Invalid(
-                    "invalid parallel multi-aggregate state".into(),
-                )),
+                _ => {
+                    return Err(ExecutionError::Invalid(
+                        "invalid parallel multi-aggregate state".into(),
+                    ));
+                }
             }
         }
     }
@@ -685,14 +749,16 @@ pub(super) fn execute<W: Write>(
                 continue;
             }
             let mut reader = TypedQueryReader::open_with_metadata(
-                part, std::slice::from_ref(column), &metadata
+                part,
+                std::slice::from_ref(column),
+                &metadata,
             )?;
             let mut nonnull = 0u64;
             while let Some(nulls) = reader.next_null_batch()? {
                 let count = nulls.iter().filter(|&&value| value == 0).count() as u64;
-                nonnull = nonnull.checked_add(count).ok_or_else(|| {
-                    ExecutionError::Invalid("COUNT overflow".into())
-                })?;
+                nonnull = nonnull
+                    .checked_add(count)
+                    .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
             }
             cached.insert(column.clone(), nonnull);
         }
@@ -702,8 +768,9 @@ pub(super) fn execute<W: Write>(
                     output.write_all(b"\t")?;
                 }
                 let count = match &item.argument {
-                    Some(ScalarExpr::Column(column)) if types[column].starts_with("Nullable(") =>
-                        cached[column],
+                    Some(ScalarExpr::Column(column)) if types[column].starts_with("Nullable(") => {
+                        cached[column]
+                    }
                     _ => metadata.rows,
                 };
                 write!(output, "{count}")?;
@@ -718,15 +785,20 @@ pub(super) fn execute<W: Write>(
             Some(function) => State::Numeric(AggregateState::new(function)),
             None if item.distinct => {
                 let bitmap32 = match item.argument.as_ref() {
-                    Some(ScalarExpr::Column(column)) if types.get(column).is_some_and(|kind| {
-                        matches!(typed::base_type(kind), "UInt32" | "Int32")
-                    }) => Some(BitmapDistinct32::new()),
+                    Some(ScalarExpr::Column(column))
+                        if types.get(column).is_some_and(|kind| {
+                            matches!(typed::base_type(kind), "UInt32" | "Int32")
+                        }) =>
+                    {
+                        Some(BitmapDistinct32::new())
+                    }
                     _ => None,
                 };
                 State::Distinct(DistinctValues {
-                    bitmap32, ..DistinctValues::default()
+                    bitmap32,
+                    ..DistinctValues::default()
                 })
-            },
+            }
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
@@ -740,21 +812,34 @@ pub(super) fn execute<W: Write>(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    let parallel_safe = items.iter().all(|item| match (&item.function, &item.argument, item.distinct) {
-        (None, _, false) => true,
-        (Some(crate::AggregateFunction::Sum), Some(crate::ScalarExpr::Column(column)), false) => {
-            types.get(column).is_some_and(|kind| matches!(
-                typed::base_type(kind),
-                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-            ))
-        }
-        _ => false,
-    });
+    let parallel_safe =
+        items.iter().all(
+            |item| match (&item.function, &item.argument, item.distinct) {
+                (None, _, false) => true,
+                (
+                    Some(crate::AggregateFunction::Sum),
+                    Some(crate::ScalarExpr::Column(column)),
+                    false,
+                ) => types.get(column).is_some_and(|kind| {
+                    matches!(
+                        typed::base_type(kind),
+                        "UInt8"
+                            | "UInt16"
+                            | "UInt32"
+                            | "UInt64"
+                            | "UInt128"
+                            | "Int8"
+                            | "Int16"
+                            | "Int32"
+                            | "Int64"
+                            | "Int128"
+                    )
+                }),
+                _ => false,
+            },
+        );
     let parallel = if parallel_safe {
-        parallel_exact_multi_aggregates(
-            part, &names, items, &arguments, &conditions, no_filters,
-        )?
+        parallel_exact_multi_aggregates(part, &names, items, &arguments, &conditions, no_filters)?
     } else {
         None
     };
@@ -763,11 +848,16 @@ pub(super) fn execute<W: Write>(
         states = partial;
     }
     let mut reader = if scan_serially {
-        Some(TypedQueryReader::open_with_metadata(part, &names, &metadata)?)
+        Some(TypedQueryReader::open_with_metadata(
+            part, &names, &metadata,
+        )?)
     } else {
         None
     };
-    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
+    while let Some(batch) = reader
+        .as_mut()
+        .map_or(Ok(None), TypedQueryReader::next_batch)?
+    {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
@@ -829,12 +919,19 @@ pub(super) fn execute<W: Write>(
 pub(super) fn supports_generated_series_metrics(items: &[AggregateItem]) -> bool {
     items.iter().all(|item| {
         !item.distinct
-            && item.argument.as_ref().is_none_or(|expression| {
-                matches!(expression, ScalarExpr::Column(name) if name == "number")
-            })
-            && matches!(item.function, None | Some(crate::AggregateFunction::Count
-                | crate::AggregateFunction::Sum | crate::AggregateFunction::Min
-                | crate::AggregateFunction::Max | crate::AggregateFunction::Avg))
+            && item.argument.as_ref().is_none_or(
+                |expression| matches!(expression, ScalarExpr::Column(name) if name == "number"),
+            )
+            && matches!(
+                item.function,
+                None | Some(
+                    crate::AggregateFunction::Count
+                        | crate::AggregateFunction::Sum
+                        | crate::AggregateFunction::Min
+                        | crate::AggregateFunction::Max
+                        | crate::AggregateFunction::Avg
+                )
+            )
     })
 }
 
@@ -859,19 +956,27 @@ fn generated_series_metrics(
     } else {
         n * ((first + last) / 2)
     };
-    let results = items.iter().map(|item| {
-        Ok(match item.function {
-            None | Some(crate::AggregateFunction::Count) => rows.to_string(),
-            Some(crate::AggregateFunction::Sum) if n > 0 => sum.to_string(),
-            Some(crate::AggregateFunction::Min) if n > 0 => first.to_string(),
-            Some(crate::AggregateFunction::Max) if n > 0 => last.to_string(),
-            Some(crate::AggregateFunction::Avg) if n > 0 =>
-                ((first as f64 + last as f64) / 2.0).to_string(),
-            Some(crate::AggregateFunction::Sum | crate::AggregateFunction::Min
-                | crate::AggregateFunction::Max | crate::AggregateFunction::Avg) => "NULL".into(),
-            _ => unreachable!("fast path excludes other aggregate functions"),
+    let results = items
+        .iter()
+        .map(|item| {
+            Ok(match item.function {
+                None | Some(crate::AggregateFunction::Count) => rows.to_string(),
+                Some(crate::AggregateFunction::Sum) if n > 0 => sum.to_string(),
+                Some(crate::AggregateFunction::Min) if n > 0 => first.to_string(),
+                Some(crate::AggregateFunction::Max) if n > 0 => last.to_string(),
+                Some(crate::AggregateFunction::Avg) if n > 0 => {
+                    ((first as f64 + last as f64) / 2.0).to_string()
+                }
+                Some(
+                    crate::AggregateFunction::Sum
+                    | crate::AggregateFunction::Min
+                    | crate::AggregateFunction::Max
+                    | crate::AggregateFunction::Avg,
+                ) => "NULL".into(),
+                _ => unreachable!("fast path excludes other aggregate functions"),
+            })
         })
-    }).collect::<Result<Vec<_>, ExecutionError>>();
+        .collect::<Result<Vec<_>, ExecutionError>>();
     Some(results)
 }
 
@@ -1075,9 +1180,8 @@ mod tpch_decimal_literal_tests {
 
     #[test]
     fn binds_and_evaluates_decimal_constant_once() {
-        let bound = BoundExpr::bind(
-            &ScalarExpr::Decimal("0.05".to_owned()), &HashMap::new()
-        ).unwrap();
+        let bound =
+            BoundExpr::bind(&ScalarExpr::Decimal("0.05".to_owned()), &HashMap::new()).unwrap();
         let value = eval_number(&bound, &[], 0).unwrap();
         assert!(matches!(value, Some(Number::Float(f)) if (f - 0.05).abs() < 1e-15));
     }
@@ -1097,13 +1201,28 @@ mod direct_numeric_argument_tests {
                 nulls: vec![0, 1],
             },
         ];
-        assert!(matches!(eval_number(&BoundExpr::Column(0), &batch, 1).unwrap(),
-            Some(Number::Unsigned(200))));
-        assert!(matches!(eval_number(&BoundExpr::Column(1), &batch, 0).unwrap(),
-            Some(Number::Signed(-5))));
-        assert!(eval_number(&BoundExpr::Column(1), &batch, 1).unwrap().is_none());
-        let affine = BoundExpr::AffineColumn { index: 0, constant: 5, subtract: false };
-        assert!(matches!(eval_number(&affine, &batch, 0).unwrap(), Some(Number::Unsigned(105)) | Some(Number::Signed(105))));
+        assert!(matches!(
+            eval_number(&BoundExpr::Column(0), &batch, 1).unwrap(),
+            Some(Number::Unsigned(200))
+        ));
+        assert!(matches!(
+            eval_number(&BoundExpr::Column(1), &batch, 0).unwrap(),
+            Some(Number::Signed(-5))
+        ));
+        assert!(
+            eval_number(&BoundExpr::Column(1), &batch, 1)
+                .unwrap()
+                .is_none()
+        );
+        let affine = BoundExpr::AffineColumn {
+            index: 0,
+            constant: 5,
+            subtract: false,
+        };
+        assert!(matches!(
+            eval_number(&affine, &batch, 0).unwrap(),
+            Some(Number::Unsigned(105)) | Some(Number::Signed(105))
+        ));
     }
 }
 
@@ -1124,12 +1243,14 @@ mod mixed_integer_expression_comparison_tests {
             assert!(matches!(eval_number(&expression, &batch, row).unwrap(),
                 Some(Number::Unsigned(value)) if value == expected));
         }
-        assert_eq!(compare_expression_numbers(
-            Number::Unsigned(u128::MAX), Number::Signed(-1)
-        ), Some(std::cmp::Ordering::Greater));
-        assert_eq!(compare_expression_numbers(
-            Number::Signed(i128::MIN), Number::Unsigned(0)
-        ), Some(std::cmp::Ordering::Less));
+        assert_eq!(
+            compare_expression_numbers(Number::Unsigned(u128::MAX), Number::Signed(-1)),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_expression_numbers(Number::Signed(i128::MIN), Number::Unsigned(0)),
+            Some(std::cmp::Ordering::Less)
+        );
     }
 }
 
@@ -1140,11 +1261,14 @@ mod ieee_comparison_tests {
 
     #[test]
     fn compares_float_zero_normally_and_nan_as_unordered() {
-        assert_eq!(compare_expression_numbers(
-            Number::Float(-0.0), Number::Float(0.0)),
-            Some(std::cmp::Ordering::Equal));
-        assert_eq!(compare_expression_numbers(
-            Number::Float(f64::NAN), Number::Float(f64::NAN)), None);
+        assert_eq!(
+            compare_expression_numbers(Number::Float(-0.0), Number::Float(0.0)),
+            Some(std::cmp::Ordering::Equal)
+        );
+        assert_eq!(
+            compare_expression_numbers(Number::Float(f64::NAN), Number::Float(f64::NAN)),
+            None
+        );
         let batch = [
             TypedColumn::Numeric(NumericColumn::Float64(vec![-0.0, f64::NAN])),
             TypedColumn::Numeric(NumericColumn::Float64(vec![0.0, f64::NAN])),
@@ -1158,7 +1282,8 @@ mod ieee_comparison_tests {
             (crate::Operator::Ge, 1, 0),
         ] {
             let expression = BoundExpr::Compare(
-                Box::new(BoundExpr::Column(0)), operator,
+                Box::new(BoundExpr::Column(0)),
+                operator,
                 Box::new(BoundExpr::Column(1)),
             );
             assert!(matches!(eval_number(&expression, &batch, row).unwrap(),
@@ -1176,23 +1301,43 @@ mod exact_mixed_float_integer_comparison_tests {
     #[test]
     fn integer_float_comparisons_keep_u128_precision() {
         let border = 9_007_199_254_740_992u128;
-        assert_eq!(compare_unsigned_float(border + 1, border as f64), Some(Ordering::Greater));
-        assert_eq!(compare_unsigned_float(u128::MAX, 2.0_f64.powi(128)), Some(Ordering::Less));
-        assert_eq!(compare_unsigned_float(u128::MAX, f64::INFINITY), Some(Ordering::Less));
+        assert_eq!(
+            compare_unsigned_float(border + 1, border as f64),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_unsigned_float(u128::MAX, 2.0_f64.powi(128)),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            compare_unsigned_float(u128::MAX, f64::INFINITY),
+            Some(Ordering::Less)
+        );
         assert_eq!(compare_unsigned_float(0, -0.0), Some(Ordering::Equal));
         assert_eq!(compare_signed_float(-1, -1.5), Some(Ordering::Greater));
-        assert_eq!(compare_signed_float(i128::MIN, -2.0_f64.powi(127)), Some(Ordering::Equal));
-        assert_eq!(compare_signed_float(-1, f64::NEG_INFINITY), Some(Ordering::Greater));
+        assert_eq!(
+            compare_signed_float(i128::MIN, -2.0_f64.powi(127)),
+            Some(Ordering::Equal)
+        );
+        assert_eq!(
+            compare_signed_float(-1, f64::NEG_INFINITY),
+            Some(Ordering::Greater)
+        );
         assert_eq!(compare_unsigned_float(1, f64::NAN), None);
-        assert_eq!(compare_expression_numbers(
-            Number::Float(-1.5), Number::Signed(-1)), Some(Ordering::Less));
+        assert_eq!(
+            compare_expression_numbers(Number::Float(-1.5), Number::Signed(-1)),
+            Some(Ordering::Less)
+        );
     }
 
     #[test]
     fn float_columns_compare_against_signed_constant_literals() {
-        let batch = [TypedColumn::Numeric(NumericColumn::Float64(
-            vec![-1.0, 3.0, 4.5, f64::NAN]
-        ))];
+        let batch = [TypedColumn::Numeric(NumericColumn::Float64(vec![
+            -1.0,
+            3.0,
+            4.5,
+            f64::NAN,
+        ]))];
         let comparison = BoundExpr::Compare(
             Box::new(BoundExpr::Column(0)),
             crate::Operator::Gt,
@@ -1236,17 +1381,21 @@ mod dynamic_multiagg_workers_tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let cursor = AtomicUsize::new(0);
         let mut indices = std::thread::scope(|scope| {
-            let handles = (0..4).map(|_| {
-                scope.spawn(|| {
-                    let mut mine = Vec::new();
-                    while let index @ 0..=250 = cursor.fetch_add(1, Ordering::Relaxed) {
-                        mine.push(index);
-                    }
-                    mine
+            let handles = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut mine = Vec::new();
+                        while let index @ 0..=250 = cursor.fetch_add(1, Ordering::Relaxed) {
+                            mine.push(index);
+                        }
+                        mine
+                    })
                 })
-            }).collect::<Vec<_>>();
-            handles.into_iter()
-                .flat_map(|worker| worker.join().unwrap()).collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .flat_map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
         });
         indices.sort_unstable();
         assert_eq!(indices, (0..=250).collect::<Vec<_>>());
@@ -1267,7 +1416,9 @@ mod sparse_generated_multi_metric_tests {
     #[test]
     fn billion_row_sparse_or_predicates_are_deduplicated() {
         assert_eq!(
-            run("SELECT sum(number), count(*) FROM numbers(1000000000) WHERE number IN (42, 99) OR number = 42 OR number = 999999998"),
+            run(
+                "SELECT sum(number), count(*) FROM numbers(1000000000) WHERE number IN (42, 99) OR number = 42 OR number = 999999998"
+            ),
             "sum(number)\tcount(*)\n1000000139\t3\n",
         );
     }
@@ -1275,7 +1426,9 @@ mod sparse_generated_multi_metric_tests {
     #[test]
     fn large_sparse_multi_metrics_preserve_exact_min_max_and_count() {
         assert_eq!(
-            run("SELECT count(*), min(number), max(number) FROM numbers(1000000000) WHERE number IN (2, 4, 6)"),
+            run(
+                "SELECT count(*), min(number), max(number) FROM numbers(1000000000) WHERE number IN (2, 4, 6)"
+            ),
             "count(*)\tmin(number)\tmax(number)\n3\t2\t6\n",
         );
     }

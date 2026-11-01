@@ -197,7 +197,11 @@ mod tests {
                 panic!("invalid numeric type must not read the source");
             }
         }
-        for kind in ["Nullable(String)", "Nullable(UInt256)", "Nullable(DateTime64(10))"] {
+        for kind in [
+            "Nullable(String)",
+            "Nullable(UInt256)",
+            "Nullable(DateTime64(10))",
+        ] {
             assert!(read_nullable_numeric_column(&mut NoRead, &mut NoRead, kind, 10).is_err());
         }
     }

@@ -10,13 +10,25 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn formats_bounded_epoch_ticks_in_utc() {
     for (sql, expected) in [
-        ("SELECT fromUnixTimestamp64Milli(1_640_995_200_123)", "2022-01-01 00:00:00.123"),
-        ("SELECT fromUnixTimestamp64Milli(0)", "1970-01-01 00:00:00.000"),
-        ("SELECT fromUnixTimestamp64Milli(1)", "1970-01-01 00:00:00.001"),
+        (
+            "SELECT fromUnixTimestamp64Milli(1_640_995_200_123)",
+            "2022-01-01 00:00:00.123",
+        ),
+        (
+            "SELECT fromUnixTimestamp64Milli(0)",
+            "1970-01-01 00:00:00.000",
+        ),
+        (
+            "SELECT fromUnixTimestamp64Milli(1)",
+            "1970-01-01 00:00:00.001",
+        ),
     ] {
         assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
     }
-    assert_eq!(value("SELECT fromUnixTimestamp64Milli(NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT fromUnixTimestamp64Milli(NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]

@@ -58,15 +58,12 @@ pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     validate_part_directory(path)?;
     let count_path = path.join("count.txt");
     let columns_path = path.join("columns.txt");
-    let count_before = fs::symlink_metadata(&count_path)
-        .map_err(|source| io_error(&count_path, source))?;
-    let columns_before = fs::symlink_metadata(&columns_path)
-        .map_err(|source| io_error(&columns_path, source))?;
+    let count_before =
+        fs::symlink_metadata(&count_path).map_err(|source| io_error(&count_path, source))?;
+    let columns_before =
+        fs::symlink_metadata(&columns_path).map_err(|source| io_error(&columns_path, source))?;
     let rows = read_part_row_count(path)?;
-    let columns = parse_columns(&read_metadata(
-        &columns_path,
-        MAX_COLUMNS_BYTES,
-    )?)?;
+    let columns = parse_columns(&read_metadata(&columns_path, MAX_COLUMNS_BYTES)?)?;
     ensure_inspection_generation(&count_path, &count_before)?;
     ensure_inspection_generation(&columns_path, &columns_before)?;
 
@@ -96,10 +93,10 @@ fn metadata_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return before.dev() == after.dev()
+        before.dev() == after.dev()
             && before.ino() == after.ino()
             && before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec();
+            && before.ctime_nsec() == after.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
@@ -108,7 +105,10 @@ fn metadata_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
 fn ensure_inspection_generation(path: &Path, before: &fs::Metadata) -> Result<(), PartError> {
     let after = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !metadata_unchanged(before, &after) {
-        return Err(invalid_metadata(path, "part metadata changed during inspection"));
+        return Err(invalid_metadata(
+            path,
+            "part metadata changed during inspection",
+        ));
     }
     Ok(())
 }
@@ -133,9 +133,7 @@ fn read_bounded_metadata_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, Pa
     ensure_exact_metadata_length(path, opened.len(), bytes.len())?;
     let finished = file.metadata().map_err(|source| io_error(path, source))?;
     let current = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
-    if !metadata_unchanged(&opened, &finished)
-        || !metadata_unchanged(&opened, &current)
-    {
+    if !metadata_unchanged(&opened, &finished) || !metadata_unchanged(&opened, &current) {
         return Err(invalid_metadata(path, "metadata changed during read"));
     }
     Ok(bytes)
@@ -168,7 +166,10 @@ fn ensure_exact_metadata_length(
     read_size: usize,
 ) -> Result<(), PartError> {
     if read_size as u64 != opened_size {
-        return Err(invalid_metadata(path, "part metadata length changed during read"));
+        return Err(invalid_metadata(
+            path,
+            "part metadata length changed during read",
+        ));
     }
     Ok(())
 }
@@ -228,9 +229,8 @@ mod tests {
 
     #[test]
     fn reads_part_counts_without_parsing_a_wide_schema() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-count-only-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-count-only-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
         fs::write(root.join("count.txt"), "4096\n").unwrap();
@@ -359,7 +359,8 @@ mod bounded_metadata_length_tests {
 
     #[test]
     fn bounded_metadata_reads_still_reject_changed_file_contents() {
-        let root = std::env::temp_dir().join(format!("rusthouse-metadata-length-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-metadata-length-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let path = root.join("count.txt");
@@ -393,7 +394,8 @@ mod immutable_metadata_baseline_tests {
     fn detects_metadata_changes_without_size_or_mtime_changes() {
         let directory = std::env::temp_dir().join(format!(
             "rusthouse-metadata-immutable-{}-{:?}",
-            std::process::id(), std::thread::current().id(),
+            std::process::id(),
+            std::thread::current().id(),
         ));
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join("count.txt");
@@ -428,7 +430,6 @@ mod canonical_part_count_tests {
     }
 }
 
-
 #[cfg(test)]
 mod consistent_part_metadata_snapshot_tests {
     use super::*;
@@ -436,7 +437,8 @@ mod consistent_part_metadata_snapshot_tests {
     #[test]
     fn cross_file_snapshot_catches_changes_after_the_first_metadata_read() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-metadata-snapshot-{}", std::process::id()
+            "rusthouse-metadata-snapshot-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -460,7 +462,8 @@ mod consistent_part_metadata_snapshot_tests {
     #[test]
     fn same_length_replacement_does_not_reuse_immutable_schema_identity() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-metadata-inode-snapshot-{}", std::process::id()
+            "rusthouse-metadata-inode-snapshot-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();

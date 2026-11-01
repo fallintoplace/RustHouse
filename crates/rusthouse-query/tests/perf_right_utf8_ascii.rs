@@ -11,9 +11,18 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn ascii_fast_path_retains_unicode_and_null_results() {
     for (sql, expected) in [
-        ("SELECT rightUTF8('abcdef', 3)", ConstantValue::Text("def".into())),
-        ("SELECT rightUTF8('éabc', 2)", ConstantValue::Text("bc".into())),
-        ("SELECT rightUTF8('abé', 2)", ConstantValue::Text("bé".into())),
+        (
+            "SELECT rightUTF8('abcdef', 3)",
+            ConstantValue::Text("def".into()),
+        ),
+        (
+            "SELECT rightUTF8('éabc', 2)",
+            ConstantValue::Text("bc".into()),
+        ),
+        (
+            "SELECT rightUTF8('abé', 2)",
+            ConstantValue::Text("bé".into()),
+        ),
         ("SELECT rightUTF8('é', 50)", ConstantValue::Text("é".into())),
         ("SELECT rightUTF8('abc', 0)", ConstantValue::Text("".into())),
     ] {

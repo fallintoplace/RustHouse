@@ -9,14 +9,14 @@ fn rewrites_validated_ordered_global_pagination() {
         sorted_scan_sql(sql, &parsed).as_deref(),
         Some("SELECT id FROM events WHERE id > 4 ORDER BY id DESC LIMIT 5")
     );
-    let multi = parse_select(
-        "SELECT id, name FROM events ORDER BY id LIMIT 3 OFFSET 2"
-    ).unwrap();
+    let multi = parse_select("SELECT id, name FROM events ORDER BY id LIMIT 3 OFFSET 2").unwrap();
     assert!(is_safe_sorted_scan(&multi));
     assert_eq!(
         sorted_scan_sql(
-            "SELECT id, name FROM events ORDER BY id LIMIT 3 OFFSET 2", &multi,
-        ).as_deref(),
+            "SELECT id, name FROM events ORDER BY id LIMIT 3 OFFSET 2",
+            &multi,
+        )
+        .as_deref(),
         Some("SELECT id, name FROM events ORDER BY id LIMIT 5"),
     );
     assert!(!is_safe_sorted_scan(

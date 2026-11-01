@@ -39,7 +39,6 @@ pub fn compare_snapshots(local: SnapshotVersion, remote: SnapshotVersion) -> Ver
     }
 }
 
-
 /// Find the newest snapshot that was independently observed on enough
 /// distinct replica members to satisfy a read quorum.
 ///
@@ -56,13 +55,19 @@ pub fn newest_quorum_observed_snapshot(
     // The policy permits at most 16 members. Validate their identities once,
     // then accumulate observed generations and fingerprints in fixed storage.
     policy.observe(members, &[])?;
-    let empty = SnapshotVersion { epoch: 0, generation: 0, fingerprint: 0 };
+    let empty = SnapshotVersion {
+        epoch: 0,
+        generation: 0,
+        fingerprint: 0,
+    };
     let mut groups = [(empty, 0usize); 16];
     let mut groups_len = 0usize;
     let mut seen = 0u16;
     let mut epoch = None;
     for &(node, version) in observations {
-        let member_index = members.iter().position(|&member| member == node)
+        let member_index = members
+            .iter()
+            .position(|&member| member == node)
             .ok_or("acknowledgement from unknown replica")?;
         let bit = 1u16 << member_index;
         if seen & bit != 0 {
@@ -73,7 +78,8 @@ pub fn newest_quorum_observed_snapshot(
             return Err("invalid or mismatched snapshot epoch");
         }
         epoch = Some(version.epoch);
-        if let Some(group) = groups[..groups_len].iter_mut()
+        if let Some(group) = groups[..groups_len]
+            .iter_mut()
             .find(|group| group.0.generation == version.generation)
         {
             if group.0.fingerprint != version.fingerprint {
@@ -85,7 +91,8 @@ pub fn newest_quorum_observed_snapshot(
             groups_len += 1;
         }
     }
-    Ok(groups[..groups_len].iter()
+    Ok(groups[..groups_len]
+        .iter()
         .filter(|group| group.1 >= policy.reads)
         .max_by_key(|group| group.0.generation)
         .map(|group| group.0))
@@ -100,25 +107,33 @@ mod quorum_snapshot_observation_tests {
     fn picks_only_quorum_supported_versions() {
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
         let members = ["a", "b", "c"];
-        let v4 = SnapshotVersion { epoch: 2, generation: 4, fingerprint: 44 };
-        let v5 = SnapshotVersion { generation: 5, fingerprint: 55, ..v4 };
+        let v4 = SnapshotVersion {
+            epoch: 2,
+            generation: 4,
+            fingerprint: 44,
+        };
+        let v5 = SnapshotVersion {
+            generation: 5,
+            fingerprint: 55,
+            ..v4
+        };
         assert_eq!(
-            newest_quorum_observed_snapshot(
-                policy, &members, &[("a", v4), ("b", v4), ("c", v5)]
-            ).unwrap(), Some(v4)
+            newest_quorum_observed_snapshot(policy, &members, &[("a", v4), ("b", v4), ("c", v5)])
+                .unwrap(),
+            Some(v4)
         );
         assert_eq!(
-            newest_quorum_observed_snapshot(
-                policy, &members, &[("a", v5), ("b", v5), ("c", v4)]
-            ).unwrap(), Some(v5)
+            newest_quorum_observed_snapshot(policy, &members, &[("a", v5), ("b", v5), ("c", v4)])
+                .unwrap(),
+            Some(v5)
         );
         assert_eq!(
-            newest_quorum_observed_snapshot(
-                policy, &members, &[("a", v4), ("b", v5)]
-            ).unwrap(), None
+            newest_quorum_observed_snapshot(policy, &members, &[("a", v4), ("b", v5)]).unwrap(),
+            None
         );
         assert_eq!(
-            newest_quorum_observed_snapshot(policy, &members, &[]).unwrap(), None
+            newest_quorum_observed_snapshot(policy, &members, &[]).unwrap(),
+            None
         );
     }
 
@@ -126,26 +141,53 @@ mod quorum_snapshot_observation_tests {
     fn refuses_duplicates_unknowns_and_conflicting_histories() {
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
         let members = ["a", "b", "c"];
-        let version = SnapshotVersion { epoch: 1, generation: 1, fingerprint: 1 };
-        assert!(newest_quorum_observed_snapshot(
-            policy, &members, &[("a", version), ("a", version)]
-        ).is_err());
-        assert!(newest_quorum_observed_snapshot(
-            policy, &members, &[("unknown", version)]
-        ).is_err());
-        assert!(newest_quorum_observed_snapshot(
-            policy, &members, &[("a", version), ("b", SnapshotVersion {
-                fingerprint: 2, ..version
-            })]
-        ).is_err());
-        assert!(newest_quorum_observed_snapshot(
-            policy, &members, &[("a", version), ("b", SnapshotVersion {
-                epoch: 2, ..version
-            })]
-        ).is_err());
-        assert!(newest_quorum_observed_snapshot(
-            policy, &["a", "a", "c"], &[]
-        ).is_err());
+        let version = SnapshotVersion {
+            epoch: 1,
+            generation: 1,
+            fingerprint: 1,
+        };
+        assert!(
+            newest_quorum_observed_snapshot(policy, &members, &[("a", version), ("a", version)])
+                .is_err()
+        );
+        assert!(
+            newest_quorum_observed_snapshot(policy, &members, &[("unknown", version)]).is_err()
+        );
+        assert!(
+            newest_quorum_observed_snapshot(
+                policy,
+                &members,
+                &[
+                    ("a", version),
+                    (
+                        "b",
+                        SnapshotVersion {
+                            fingerprint: 2,
+                            ..version
+                        }
+                    )
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            newest_quorum_observed_snapshot(
+                policy,
+                &members,
+                &[
+                    ("a", version),
+                    (
+                        "b",
+                        SnapshotVersion {
+                            epoch: 2,
+                            ..version
+                        }
+                    )
+                ]
+            )
+            .is_err()
+        );
+        assert!(newest_quorum_observed_snapshot(policy, &["a", "a", "c"], &[]).is_err());
     }
 }
 
@@ -308,25 +350,44 @@ mod snapshot_selection_tests {
             });
             assert!(newest_consistent_snapshot(&conflicting).is_err());
             let mut wrong_epoch = versions.clone();
-            wrong_epoch.push(SnapshotVersion { epoch: 8, ..versions[0] });
+            wrong_epoch.push(SnapshotVersion {
+                epoch: 8,
+                ..versions[0]
+            });
             assert!(newest_consistent_snapshot(&wrong_epoch).is_err());
         }
     }
 
     #[test]
     fn selects_latest_candidate_only_without_conflicts() {
-        let older = SnapshotVersion { epoch: 2, generation: 3, fingerprint: 11 };
-        let newer = SnapshotVersion { epoch: 2, generation: 5, fingerprint: 22 };
-        assert_eq!(newest_consistent_snapshot(&[newer, older, newer]).unwrap(), newer);
+        let older = SnapshotVersion {
+            epoch: 2,
+            generation: 3,
+            fingerprint: 11,
+        };
+        let newer = SnapshotVersion {
+            epoch: 2,
+            generation: 5,
+            fingerprint: 22,
+        };
+        assert_eq!(
+            newest_consistent_snapshot(&[newer, older, newer]).unwrap(),
+            newer
+        );
         assert!(newest_consistent_snapshot(&[]).is_err());
-        assert!(newest_consistent_snapshot(&[
-            older,
-            SnapshotVersion { epoch: 3, ..newer },
-        ]).is_err());
-        assert!(newest_consistent_snapshot(&[
-            newer,
-            SnapshotVersion { fingerprint: 33, ..newer },
-        ]).is_err());
+        assert!(
+            newest_consistent_snapshot(&[older, SnapshotVersion { epoch: 3, ..newer },]).is_err()
+        );
+        assert!(
+            newest_consistent_snapshot(&[
+                newer,
+                SnapshotVersion {
+                    fingerprint: 33,
+                    ..newer
+                },
+            ])
+            .is_err()
+        );
     }
 }
 
@@ -343,9 +404,15 @@ mod invalid_version_comparison_tests {
         };
         for invalid in [
             SnapshotVersion { epoch: 0, ..good },
-            SnapshotVersion { generation: 0, ..good },
+            SnapshotVersion {
+                generation: 0,
+                ..good
+            },
         ] {
-            assert_eq!(compare_snapshots(invalid, invalid), VersionRelation::Diverged);
+            assert_eq!(
+                compare_snapshots(invalid, invalid),
+                VersionRelation::Diverged
+            );
             assert_eq!(compare_snapshots(good, invalid), VersionRelation::Diverged);
             assert_eq!(compare_snapshots(invalid, good), VersionRelation::Diverged);
         }
@@ -375,7 +442,9 @@ pub fn highest_quorum_observed_snapshot(
     let mut groups = [(0u64, 0u128, 0usize); 16];
     let mut group_count = 0usize;
     for &(member, version) in observations {
-        let index = members.iter().position(|&known| member == known)
+        let index = members
+            .iter()
+            .position(|&known| member == known)
             .ok_or("snapshot observation from unknown replica")?;
         let bit = 1u16 << index;
         if observed_nodes & bit != 0 {
@@ -389,7 +458,8 @@ pub fn highest_quorum_observed_snapshot(
             return Err("mismatched snapshot epoch");
         }
         epoch = Some(version.epoch);
-        if let Some(group) = groups[..group_count].iter_mut()
+        if let Some(group) = groups[..group_count]
+            .iter_mut()
             .find(|group| group.0 == version.generation)
         {
             if group.1 != version.fingerprint {
@@ -432,10 +502,19 @@ pub fn highest_quorum_snapshot_supporters(
     let Some(version) = highest_quorum_observed_snapshot(policy, members, observations)? else {
         return Ok(None);
     };
-    let supporters = members.iter().filter(|&&member| {
-        observations.iter().any(|&(node, observed)| node == member && observed == version)
-    }).map(|&member| member.to_owned()).collect();
-    Ok(Some(QuorumSnapshotSupport { version, members: supporters }))
+    let supporters = members
+        .iter()
+        .filter(|&&member| {
+            observations
+                .iter()
+                .any(|&(node, observed)| node == member && observed == version)
+        })
+        .map(|&member| member.to_owned())
+        .collect();
+    Ok(Some(QuorumSnapshotSupport {
+        version,
+        members: supporters,
+    }))
 }
 
 #[cfg(test)]
@@ -446,17 +525,33 @@ mod quorum_snapshot_selection_tests {
     #[test]
     fn minority_newer_generation_does_not_displace_quorum_snapshot() {
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
-        let old = SnapshotVersion { epoch: 1, generation: 9, fingerprint: 99 };
-        let new = SnapshotVersion { epoch: 1, generation: 10, fingerprint: 101 };
+        let old = SnapshotVersion {
+            epoch: 1,
+            generation: 9,
+            fingerprint: 99,
+        };
+        let new = SnapshotVersion {
+            epoch: 1,
+            generation: 10,
+            fingerprint: 101,
+        };
         let members = ["a", "b", "c"];
         assert_eq!(
-            highest_quorum_observed_snapshot(policy, &members,
-                &[("a", new), ("b", old), ("c", old)]).unwrap(),
+            highest_quorum_observed_snapshot(
+                policy,
+                &members,
+                &[("a", new), ("b", old), ("c", old)]
+            )
+            .unwrap(),
             Some(old),
         );
         assert_eq!(
-            highest_quorum_observed_snapshot(policy, &members,
-                &[("a", new), ("b", new), ("c", old)]).unwrap(),
+            highest_quorum_observed_snapshot(
+                policy,
+                &members,
+                &[("a", new), ("b", new), ("c", old)]
+            )
+            .unwrap(),
             Some(new),
         );
         assert_eq!(
@@ -469,22 +564,66 @@ mod quorum_snapshot_selection_tests {
     fn rejects_conflicts_duplicate_votes_foreign_epochs_and_nodes() {
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
         let members = ["a", "b", "c"];
-        let version = SnapshotVersion { epoch: 5, generation: 7, fingerprint: 19 };
-        assert!(highest_quorum_observed_snapshot(policy, &members, &[
-            ("a", version), ("b", SnapshotVersion { fingerprint: 20, ..version })
-        ]).is_err());
-        assert!(highest_quorum_observed_snapshot(policy, &members, &[
-            ("a", version), ("a", version)
-        ]).is_err());
-        assert!(highest_quorum_observed_snapshot(policy, &members, &[
-            ("a", version), ("b", SnapshotVersion { epoch: 6, ..version })
-        ]).is_err());
-        assert!(highest_quorum_observed_snapshot(policy, &members, &[
-            ("unknown", version)
-        ]).is_err());
-        assert!(highest_quorum_observed_snapshot(policy, &members, &[
-            ("a", SnapshotVersion { generation: 0, ..version })
-        ]).is_err());
+        let version = SnapshotVersion {
+            epoch: 5,
+            generation: 7,
+            fingerprint: 19,
+        };
+        assert!(
+            highest_quorum_observed_snapshot(
+                policy,
+                &members,
+                &[
+                    ("a", version),
+                    (
+                        "b",
+                        SnapshotVersion {
+                            fingerprint: 20,
+                            ..version
+                        }
+                    )
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            highest_quorum_observed_snapshot(policy, &members, &[("a", version), ("a", version)])
+                .is_err()
+        );
+        assert!(
+            highest_quorum_observed_snapshot(
+                policy,
+                &members,
+                &[
+                    ("a", version),
+                    (
+                        "b",
+                        SnapshotVersion {
+                            epoch: 6,
+                            ..version
+                        }
+                    )
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            highest_quorum_observed_snapshot(policy, &members, &[("unknown", version)]).is_err()
+        );
+        assert!(
+            highest_quorum_observed_snapshot(
+                policy,
+                &members,
+                &[(
+                    "a",
+                    SnapshotVersion {
+                        generation: 0,
+                        ..version
+                    }
+                )]
+            )
+            .is_err()
+        );
         assert!(highest_quorum_observed_snapshot(policy, &["a", "a", "c"], &[]).is_err());
     }
 
@@ -493,10 +632,24 @@ mod quorum_snapshot_selection_tests {
         let policy = QuorumPolicy::new(16, 9, 9).unwrap();
         let names = (0..16).map(|i| format!("node_{i}")).collect::<Vec<_>>();
         let members = names.iter().map(String::as_str).collect::<Vec<_>>();
-        let version = SnapshotVersion { epoch: 2, generation: 7, fingerprint: 99 };
-        let observed = members.iter().take(9).map(|&id| (id, version)).collect::<Vec<_>>();
-        assert_eq!(highest_quorum_observed_snapshot(policy, &members, &observed).unwrap(), Some(version));
-        assert_eq!(highest_quorum_observed_snapshot(policy, &members, &observed[..8]).unwrap(), None);
+        let version = SnapshotVersion {
+            epoch: 2,
+            generation: 7,
+            fingerprint: 99,
+        };
+        let observed = members
+            .iter()
+            .take(9)
+            .map(|&id| (id, version))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            highest_quorum_observed_snapshot(policy, &members, &observed).unwrap(),
+            Some(version)
+        );
+        assert_eq!(
+            highest_quorum_observed_snapshot(policy, &members, &observed[..8]).unwrap(),
+            None
+        );
     }
 }
 
@@ -509,7 +662,9 @@ mod stack_quorum_snapshot_tests {
     #[test]
     fn stack_groups_match_reference_for_all_quorum_sizes() {
         for replicas in 1..=16usize {
-            let names = (0..replicas).map(|i| format!("node_{i}")).collect::<Vec<_>>();
+            let names = (0..replicas)
+                .map(|i| format!("node_{i}"))
+                .collect::<Vec<_>>();
             let members = names.iter().map(String::as_str).collect::<Vec<_>>();
             for writes in (replicas / 2 + 1)..=replicas {
                 let policy = QuorumPolicy::new(replicas, replicas - writes + 1, writes).unwrap();
@@ -517,20 +672,27 @@ mod stack_quorum_snapshot_tests {
                     let versions = (0..replicas)
                         .map(|i| {
                             let generation = 1 + ((i + shift) % 7) as u64;
-                            (members[i], SnapshotVersion {
-                                epoch: 3, generation, fingerprint: u128::from(generation * 19),
-                            })
+                            (
+                                members[i],
+                                SnapshotVersion {
+                                    epoch: 3,
+                                    generation,
+                                    fingerprint: u128::from(generation * 19),
+                                },
+                            )
                         })
                         .collect::<Vec<_>>();
                     let mut reference = BTreeMap::<u64, usize>::new();
                     for &(_, version) in &versions {
                         *reference.entry(version.generation).or_default() += 1;
                     }
-                    let expected = reference.iter().rev()
-                        .find(|entry| *entry.1 >= writes)
-                        .map(|(&generation, _)| SnapshotVersion {
-                            epoch: 3, generation, fingerprint: u128::from(generation * 19),
-                        });
+                    let expected = reference.iter().rev().find(|entry| *entry.1 >= writes).map(
+                        |(&generation, _)| SnapshotVersion {
+                            epoch: 3,
+                            generation,
+                            fingerprint: u128::from(generation * 19),
+                        },
+                    );
                     assert_eq!(
                         highest_quorum_observed_snapshot(policy, &members, &versions).unwrap(),
                         expected,
@@ -545,14 +707,36 @@ mod stack_quorum_snapshot_tests {
     fn rejects_conflicting_identity_even_without_a_quorum() {
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
         let members = ["a", "b", "c"];
-        let version = SnapshotVersion { epoch: 1, generation: 10, fingerprint: 100 };
-        assert!(highest_quorum_observed_snapshot(policy, &members, &[
-            ("a", version), ("b", SnapshotVersion { fingerprint: 101, ..version }),
-        ]).is_err());
-        assert!(highest_quorum_observed_snapshot(policy, &members, &[
-            ("a", version), ("a", version),
-        ]).is_err());
-        assert_eq!(highest_quorum_observed_snapshot(policy, &members, &[]).unwrap(), None);
+        let version = SnapshotVersion {
+            epoch: 1,
+            generation: 10,
+            fingerprint: 100,
+        };
+        assert!(
+            highest_quorum_observed_snapshot(
+                policy,
+                &members,
+                &[
+                    ("a", version),
+                    (
+                        "b",
+                        SnapshotVersion {
+                            fingerprint: 101,
+                            ..version
+                        }
+                    ),
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            highest_quorum_observed_snapshot(policy, &members, &[("a", version), ("a", version),])
+                .is_err()
+        );
+        assert_eq!(
+            highest_quorum_observed_snapshot(policy, &members, &[]).unwrap(),
+            None
+        );
     }
 }
 
@@ -572,7 +756,8 @@ mod consensus_sized_snapshot_selection_tests {
             if !valid_epoch_member(version, epoch) {
                 return Err("invalid or mismatched snapshot epoch");
             }
-            if seen.insert(version.generation, version.fingerprint)
+            if seen
+                .insert(version.generation, version.fingerprint)
                 .is_some_and(|previous| previous != version.fingerprint)
             {
                 return Err("conflicting snapshot fingerprint");
@@ -587,12 +772,17 @@ mod consensus_sized_snapshot_selection_tests {
     #[test]
     fn candidate_limits_preserve_exact_large_path_semantics() {
         for count in [1, 2, 8, 9, 15, 16, 17, 128] {
-            let versions = (0..count).map(|index| SnapshotVersion {
-                epoch: 4,
-                generation: (index % 11 + 1) as u64,
-                fingerprint: ((index % 11) * 71 + 3) as u128,
-            }).collect::<Vec<_>>();
-            assert_eq!(newest_consistent_snapshot(&versions), hash_reference(&versions));
+            let versions = (0..count)
+                .map(|index| SnapshotVersion {
+                    epoch: 4,
+                    generation: (index % 11 + 1) as u64,
+                    fingerprint: ((index % 11) * 71 + 3) as u128,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                newest_consistent_snapshot(&versions),
+                hash_reference(&versions)
+            );
             let mut conflicting = versions.clone();
             conflicting.push(SnapshotVersion {
                 fingerprint: u128::MAX,
@@ -603,7 +793,10 @@ mod consensus_sized_snapshot_selection_tests {
                 hash_reference(&conflicting)
             );
             let mut wrong_epoch = versions;
-            wrong_epoch.push(SnapshotVersion { epoch: 9, ..wrong_epoch[0] });
+            wrong_epoch.push(SnapshotVersion {
+                epoch: 9,
+                ..wrong_epoch[0]
+            });
             assert_eq!(
                 newest_consistent_snapshot(&wrong_epoch),
                 hash_reference(&wrong_epoch)
@@ -622,20 +815,40 @@ mod stack_read_quorum_observation_tests {
         for replicas in 1usize..=16 {
             let reads = (replicas / 2) + 1;
             let policy = QuorumPolicy::new(replicas, reads, reads).unwrap();
-            let names = (0..replicas).map(|i| format!("node{i}")).collect::<Vec<_>>();
+            let names = (0..replicas)
+                .map(|i| format!("node{i}"))
+                .collect::<Vec<_>>();
             let members = names.iter().map(String::as_str).collect::<Vec<_>>();
             for present in 0..=replicas {
-                let observations = members.iter().take(present).enumerate()
-                    .map(|(index, &node)| (node, SnapshotVersion {
-                        epoch: 3, generation: (index % 3 + 1) as u64,
-                        fingerprint: (index % 3 + 1) as u128 * 29,
-                    })).collect::<Vec<_>>();
-                let expected = (1..=3u64).rev().find(|&generation| {
-                    observations.iter().filter(|(_, version)| version.generation == generation)
-                        .count() >= reads
-                }).map(|generation| SnapshotVersion {
-                    epoch: 3, generation, fingerprint: u128::from(generation) * 29,
-                });
+                let observations = members
+                    .iter()
+                    .take(present)
+                    .enumerate()
+                    .map(|(index, &node)| {
+                        (
+                            node,
+                            SnapshotVersion {
+                                epoch: 3,
+                                generation: (index % 3 + 1) as u64,
+                                fingerprint: (index % 3 + 1) as u128 * 29,
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let expected = (1..=3u64)
+                    .rev()
+                    .find(|&generation| {
+                        observations
+                            .iter()
+                            .filter(|(_, version)| version.generation == generation)
+                            .count()
+                            >= reads
+                    })
+                    .map(|generation| SnapshotVersion {
+                        epoch: 3,
+                        generation,
+                        fingerprint: u128::from(generation) * 29,
+                    });
                 assert_eq!(
                     newest_quorum_observed_snapshot(policy, &members, &observations).unwrap(),
                     expected,
@@ -648,14 +861,32 @@ mod stack_read_quorum_observation_tests {
     #[test]
     fn rejects_conflicting_metadata_before_selecting_a_quorum() {
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
-        let v = SnapshotVersion { epoch: 1, generation: 2, fingerprint: 7 };
-        assert!(newest_quorum_observed_snapshot(
-            policy, &["a", "b", "c"], &[("a", v), ("a", v)],
-        ).is_err());
-        assert!(newest_quorum_observed_snapshot(
-            policy, &["a", "b", "c"],
-            &[("a", v), ("b", SnapshotVersion { fingerprint: 8, ..v })],
-        ).is_err());
+        let v = SnapshotVersion {
+            epoch: 1,
+            generation: 2,
+            fingerprint: 7,
+        };
+        assert!(
+            newest_quorum_observed_snapshot(policy, &["a", "b", "c"], &[("a", v), ("a", v)],)
+                .is_err()
+        );
+        assert!(
+            newest_quorum_observed_snapshot(
+                policy,
+                &["a", "b", "c"],
+                &[
+                    ("a", v),
+                    (
+                        "b",
+                        SnapshotVersion {
+                            fingerprint: 8,
+                            ..v
+                        }
+                    )
+                ],
+            )
+            .is_err()
+        );
     }
 }
 
@@ -668,17 +899,27 @@ mod snapshot_supporter_selection_tests {
     fn reports_only_same_generation_supporters_in_membership_order() {
         let policy = QuorumPolicy::new(5, 3, 3).unwrap();
         let members = ["a", "b", "c", "d", "e"];
-        let old = SnapshotVersion { epoch: 7, generation: 11, fingerprint: 101 };
-        let new = SnapshotVersion { epoch: 7, generation: 12, fingerprint: 102 };
+        let old = SnapshotVersion {
+            epoch: 7,
+            generation: 11,
+            fingerprint: 101,
+        };
+        let new = SnapshotVersion {
+            epoch: 7,
+            generation: 12,
+            fingerprint: 102,
+        };
         let observations = [("e", old), ("d", new), ("b", old), ("a", old), ("c", new)];
         let supported = highest_quorum_snapshot_supporters(policy, &members, &observations)
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(supported.version, old);
         assert_eq!(supported.members, ["a", "b", "e"]);
 
         let more_new = [("e", new), ("d", new), ("b", old), ("a", old), ("c", new)];
         let supported = highest_quorum_snapshot_supporters(policy, &members, &more_new)
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(supported.version, new);
         assert_eq!(supported.members, ["c", "d", "e"]);
     }
@@ -687,19 +928,46 @@ mod snapshot_supporter_selection_tests {
     fn no_quorum_or_conflicting_metadata_never_returns_supporters() {
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
         let members = ["a", "b", "c"];
-        let version = SnapshotVersion { epoch: 1, generation: 10, fingerprint: 11 };
-        assert_eq!(highest_quorum_snapshot_supporters(policy, &members, &[("c", version)])
-            .unwrap(), None);
-        assert!(highest_quorum_snapshot_supporters(policy, &members,
-            &[("a", version), ("b", SnapshotVersion { fingerprint: 12, ..version })])
-            .is_err());
-        assert!(highest_quorum_snapshot_supporters(policy, &members,
-            &[("a", version), ("a", version)]).is_err());
-        assert!(highest_quorum_snapshot_supporters(policy, &members,
-            &[("a", version), ("outsider", version)]).is_err());
+        let version = SnapshotVersion {
+            epoch: 1,
+            generation: 10,
+            fingerprint: 11,
+        };
+        assert_eq!(
+            highest_quorum_snapshot_supporters(policy, &members, &[("c", version)]).unwrap(),
+            None
+        );
+        assert!(
+            highest_quorum_snapshot_supporters(
+                policy,
+                &members,
+                &[
+                    ("a", version),
+                    (
+                        "b",
+                        SnapshotVersion {
+                            fingerprint: 12,
+                            ..version
+                        }
+                    )
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            highest_quorum_snapshot_supporters(policy, &members, &[("a", version), ("a", version)])
+                .is_err()
+        );
+        assert!(
+            highest_quorum_snapshot_supporters(
+                policy,
+                &members,
+                &[("a", version), ("outsider", version)]
+            )
+            .is_err()
+        );
     }
 }
-
 
 /// Diagnostics about reports relative to a quorum-observed snapshot.
 ///
@@ -756,22 +1024,38 @@ mod quorum_snapshot_lag_classification_tests {
     #[test]
     fn minority_newer_versions_are_not_marked_as_committed() {
         let policy = QuorumPolicy::new(5, 3, 3).unwrap();
-        let v4 = SnapshotVersion { epoch: 7, generation: 4, fingerprint: 44 };
-        let v3 = SnapshotVersion { generation: 3, fingerprint: 33, ..v4 };
-        let v5 = SnapshotVersion { generation: 5, fingerprint: 55, ..v4 };
+        let v4 = SnapshotVersion {
+            epoch: 7,
+            generation: 4,
+            fingerprint: 44,
+        };
+        let v3 = SnapshotVersion {
+            generation: 3,
+            fingerprint: 33,
+            ..v4
+        };
+        let v5 = SnapshotVersion {
+            generation: 5,
+            fingerprint: 55,
+            ..v4
+        };
         let members = ["e", "d", "c", "b", "a"];
         let report = classify_quorum_snapshot_lag(
-            policy, &members,
+            policy,
+            &members,
             &[("a", v4), ("b", v4), ("c", v4), ("d", v3), ("e", v5)],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(report.confirmed, Some(v4));
         assert_eq!(report.behind, ["d"]);
         assert_eq!(report.ahead_without_quorum, ["e"]);
         assert!(report.unobserved.is_empty());
         let report = classify_quorum_snapshot_lag(
-            policy, &members,
+            policy,
+            &members,
             &[("a", v4), ("b", v4), ("c", v4), ("d", v3)],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(report.confirmed, Some(v4));
         assert_eq!(report.behind, ["d"]);
         assert_eq!(report.unobserved, ["e"]);
@@ -780,11 +1064,19 @@ mod quorum_snapshot_lag_classification_tests {
     #[test]
     fn no_quorum_never_labels_a_replica_safe_to_repair() {
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
-        let v1 = SnapshotVersion { epoch: 1, generation: 1, fingerprint: 10 };
-        let v2 = SnapshotVersion { generation: 2, fingerprint: 20, ..v1 };
-        let report = classify_quorum_snapshot_lag(
-            policy, &["a", "b", "c"], &[("a", v1), ("b", v2)],
-        ).unwrap();
+        let v1 = SnapshotVersion {
+            epoch: 1,
+            generation: 1,
+            fingerprint: 10,
+        };
+        let v2 = SnapshotVersion {
+            generation: 2,
+            fingerprint: 20,
+            ..v1
+        };
+        let report =
+            classify_quorum_snapshot_lag(policy, &["a", "b", "c"], &[("a", v1), ("b", v2)])
+                .unwrap();
         assert_eq!(report.confirmed, None);
         assert!(report.behind.is_empty());
         assert!(report.ahead_without_quorum.is_empty());
@@ -794,15 +1086,26 @@ mod quorum_snapshot_lag_classification_tests {
     #[test]
     fn conflicting_history_unknown_nodes_and_duplicate_reports_fail_closed() {
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
-        let v1 = SnapshotVersion { epoch: 1, generation: 1, fingerprint: 10 };
+        let v1 = SnapshotVersion {
+            epoch: 1,
+            generation: 1,
+            fingerprint: 10,
+        };
         for reports in [
-            vec![("a", v1), ("b", SnapshotVersion { fingerprint: 11, ..v1 })],
+            vec![
+                ("a", v1),
+                (
+                    "b",
+                    SnapshotVersion {
+                        fingerprint: 11,
+                        ..v1
+                    },
+                ),
+            ],
             vec![("a", v1), ("a", v1)],
             vec![("missing", v1)],
         ] {
-            assert!(classify_quorum_snapshot_lag(
-                policy, &["a", "b", "c"], &reports,
-            ).is_err());
+            assert!(classify_quorum_snapshot_lag(policy, &["a", "b", "c"], &reports,).is_err());
         }
     }
 }

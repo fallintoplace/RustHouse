@@ -5,9 +5,13 @@ use std::fs;
 #[test]
 fn constant_physical_histogram_has_one_exact_bucket() {
     let path = std::env::temp_dir().join(format!(
-        "rusthouse-perf-hist-constant-{}", std::process::id(),
+        "rusthouse-perf-hist-constant-{}",
+        std::process::id(),
     ));
-    let columns = [Column { name: "value".into(), data_type: "UInt64".into() }];
+    let columns = [Column {
+        name: "value".into(),
+        data_type: "UInt64".into(),
+    }];
     let rows = vec![vec![Some("42".into())]; 1024];
     write_wide_part(&path, &columns, &rows).unwrap();
     let query = parse_select("SELECT histogram(32)(value) FROM part").unwrap();

@@ -11,8 +11,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn ends_with_utf8_values() {
     for (sql, expected) in [
-        ("SELECT endsWithUTF8('привет','вет')", ConstantValue::Integer(1)),
-        ("SELECT endsWithUTF8('привет','при')", ConstantValue::Integer(0)),
+        (
+            "SELECT endsWithUTF8('привет','вет')",
+            ConstantValue::Integer(1),
+        ),
+        (
+            "SELECT endsWithUTF8('привет','при')",
+            ConstantValue::Integer(0),
+        ),
         ("SELECT endsWithUTF8('abc','')", ConstantValue::Integer(1)),
         ("SELECT endsWithUTF8(NULL,'x')", ConstantValue::Null),
     ] {

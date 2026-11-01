@@ -49,12 +49,7 @@ fn parallel_text_groups_preserve_null_empty_utf8_and_tuple_boundaries() {
     ];
     // More than 16 parts selects the parallel multi-key scan on multicore hosts.
     for part in 1..=24 {
-        write_wide_part(
-            &root.join(format!("all_{part}_{part}_0")),
-            &columns,
-            &rows,
-        )
-        .unwrap();
+        write_wide_part(&root.join(format!("all_{part}_{part}_0")), &columns, &rows).unwrap();
     }
 
     let mut all = vec![
@@ -73,12 +68,7 @@ fn parallel_text_groups_preserve_null_empty_utf8_and_tuple_boundaries() {
         all
     );
 
-    let mut filtered = vec![
-        "\tbc\t24",
-        "NULL\tbc\t24",
-        "a\tbc\t24",
-        "é\tß\t24",
-    ];
+    let mut filtered = vec!["\tbc\t24", "NULL\tbc\t24", "a\tbc\t24", "é\tß\t24"];
     filtered.sort_unstable();
     assert_eq!(
         groups(

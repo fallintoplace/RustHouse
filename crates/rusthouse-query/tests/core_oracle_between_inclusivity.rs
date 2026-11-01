@@ -10,9 +10,8 @@ fn run(sql: &str) -> String {
 #[test]
 fn between_matches_inclusive_bounds_around_scan_edges() {
     for rows in [1, 17, 18, 1024, 1025, 4097] {
-        let between = format!(
-            "SELECT sum(number) FROM numbers({rows}) WHERE number BETWEEN 17 AND 1024"
-        );
+        let between =
+            format!("SELECT sum(number) FROM numbers({rows}) WHERE number BETWEEN 17 AND 1024");
         let comparisons = format!(
             "SELECT sum(number) FROM numbers({rows}) WHERE number >= 17 AND number <= 1024"
         );

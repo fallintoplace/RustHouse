@@ -6,7 +6,10 @@ fn streaming_right_join_preserves_unmatched_rows_with_pruned_left_payloads() {
     let db = std::env::temp_dir().join(format!("rusthouse-right-pruned-{}", std::process::id()));
     let sql = |query: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
-            .args(["sql", query, "--database"]).arg(&db).output().unwrap()
+            .args(["sql", query, "--database"])
+            .arg(&db)
+            .output()
+            .unwrap()
     };
     for query in [
         "CREATE TABLE lookup (id UInt64, payload String)",

@@ -25,7 +25,6 @@ const HEX_NIBBLES: [u8; 256] = {
     table
 };
 
-
 // Hash the canonical UInt128 little-endian encoding once per tiny value.
 const SMALL_UNSIGNED_HASHES: [u64; 256] = {
     let mut values = [0u64; 256];
@@ -92,8 +91,8 @@ impl HyperLogLog {
         let index = (hash >> (64 - PRECISION)) as usize;
         // A zero suffix has rank 64 - PRECISION + 1, not 65.
         // Keep every emitted register valid for strict shard-state decoding.
-        let rank = ((hash << PRECISION).leading_zeros() + 1)
-            .min(u32::from(MAX_REGISTER_RANK)) as u8;
+        let rank =
+            ((hash << PRECISION).leading_zeros() + 1).min(u32::from(MAX_REGISTER_RANK)) as u8;
         self.registers[index] = self.registers[index].max(rank);
     }
 
@@ -131,11 +130,16 @@ impl HyperLogLog {
         self.add(hash);
     }
 
-    pub(super) fn observe(&mut self, column: &TypedColumn, row: usize) -> Result<(), ExecutionError> {
+    pub(super) fn observe(
+        &mut self,
+        column: &TypedColumn,
+        row: usize,
+    ) -> Result<(), ExecutionError> {
         match column {
             TypedColumn::Numeric(values) => self.observe_number(number_at(values, row)),
-            TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 =>
-                self.observe_number(number_at(values, row)),
+            TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+                self.observe_number(number_at(values, row))
+            }
             TypedColumn::Text(values) => {
                 let value = values.get(row).ok_or_else(|| {
                     ExecutionError::Invalid("missing String value in uniq()".into())
@@ -204,13 +208,13 @@ impl HyperLogLog {
         // Each rank is bounded to 64 - PRECISION + 1. Its contribution
         // is an exact normal binary64 power of two, so avoid 16K powi calls.
         // Count zero registers in the same pass.
-        let (harmonic, zero_register_count) = self.registers.iter().fold(
-            (0.0f64, 0usize),
-            |(sum, zeros), &rank| {
-                let contribution = f64::from_bits((1023 - u64::from(rank)) << 52);
-                (sum + contribution, zeros + usize::from(rank == 0))
-            },
-        );
+        let (harmonic, zero_register_count) =
+            self.registers
+                .iter()
+                .fold((0.0f64, 0usize), |(sum, zeros), &rank| {
+                    let contribution = f64::from_bits((1023 - u64::from(rank)) << 52);
+                    (sum + contribution, zeros + usize::from(rank == 0))
+                });
         let alpha = 0.7213 / (1.0 + 1.079 / register_count);
         let raw_estimate = alpha * register_count * register_count / harmonic;
         let estimate = if raw_estimate <= 2.5 * register_count && zero_register_count > 0 {
@@ -251,7 +255,9 @@ mod tests {
             state.add(HyperLogLog::hash(&number.to_le_bytes()));
         }
         let zeros = state.registers.iter().filter(|&&rank| rank == 0).count();
-        let harmonic = state.registers.iter()
+        let harmonic = state
+            .registers
+            .iter()
             .map(|&rank| 2.0f64.powi(-i32::from(rank)))
             .sum::<f64>();
         let m = REGISTERS as f64;
@@ -262,7 +268,10 @@ mod tests {
         } else {
             raw
         };
-        assert_eq!(state.estimate(), estimate.round().min(u64::MAX as f64) as u64);
+        assert_eq!(
+            state.estimate(),
+            estimate.round().min(u64::MAX as f64) as u64
+        );
     }
 
     #[test]
@@ -325,7 +334,6 @@ mod tests {
     }
 }
 
-
 /// Decode strict, fixed-size shard states and calculate the global union.
 pub(super) fn merge_state_hex_values(states: &[&str]) -> Result<u64, String> {
     if states.is_empty() {
@@ -374,7 +382,10 @@ mod state_tests {
         }
         let encoded = sketch.encode_state();
         let repeated = vec![encoded.as_str(); 256];
-        assert_eq!(merge_state_hex_values(&repeated).unwrap(), sketch.estimate());
+        assert_eq!(
+            merge_state_hex_values(&repeated).unwrap(),
+            sketch.estimate()
+        );
         let mut invalid = repeated;
         invalid.push("00");
         assert!(merge_state_hex_values(&invalid).is_err());
@@ -384,7 +395,7 @@ mod state_tests {
     fn malformed_truncated_or_noncanonical_hll_states_are_rejected() {
         let valid = HyperLogLog::default().encode_state();
         assert!(merge_state_hex_values(&[]).is_err());
-        assert!(merge_state_hex_values(&[&valid[..valid.len()-2]]).is_err());
+        assert!(merge_state_hex_values(&[&valid[..valid.len() - 2]]).is_err());
         assert!(merge_state_hex_values(&[&format!("ff{}", &valid[2..])]).is_err());
         assert!(merge_state_hex_values(&[&format!("zz{}", &valid[2..])]).is_err());
         assert!(merge_state_hex_values(&[&format!("AA{}", &valid[2..])]).is_err());
@@ -419,7 +430,11 @@ mod atomic_invalid_hll_merge_tests {
         let count = incoming.len();
         incoming[count - 2] = b'f';
         incoming[count - 1] = b'f';
-        assert!(target.merge_hex_state(&String::from_utf8(incoming).unwrap()).is_err());
+        assert!(
+            target
+                .merge_hex_state(&String::from_utf8(incoming).unwrap())
+                .is_err()
+        );
         assert_eq!(target.encode_state(), HyperLogLog::default().encode_state());
     }
 }
@@ -476,9 +491,11 @@ mod nibble_decoder_regression_tests {
         let mut invalid_rank = valid.into_bytes();
         invalid_rank[0..2].copy_from_slice(b"ff");
         let mut unchanged = HyperLogLog::default();
-        assert!(unchanged.merge_hex_state(
-            std::str::from_utf8(&invalid_rank).unwrap()
-        ).is_err());
+        assert!(
+            unchanged
+                .merge_hex_state(std::str::from_utf8(&invalid_rank).unwrap())
+                .is_err()
+        );
         assert_eq!(unchanged.estimate(), 0);
     }
 
@@ -506,20 +523,26 @@ mod decoded_hll_merge_equivalence_tests {
         for shard in 0..48u128 {
             let mut incoming = HyperLogLog::default();
             for offset in 0..1000u128 {
-                incoming.observe_number(Number::Unsigned(
-                    (shard * 713 + offset * 137) % 100_000
-                ));
+                incoming.observe_number(Number::Unsigned((shard * 713 + offset * 137) % 100_000));
             }
             let encoded = incoming.encode_state();
             actual.merge_hex_state(&encoded).unwrap();
             expected.merge(&incoming);
-            assert_eq!(actual.encode_state(), expected.encode_state(), "shard={shard}");
+            assert_eq!(
+                actual.encode_state(),
+                expected.encode_state(),
+                "shard={shard}"
+            );
         }
         let original = actual.encode_state();
         let mut invalid = original.into_bytes();
         let last = invalid.len() - 2;
         invalid[last] = b'g';
-        assert!(actual.merge_hex_state(&String::from_utf8(invalid).unwrap()).is_err());
+        assert!(
+            actual
+                .merge_hex_state(&String::from_utf8(invalid).unwrap())
+                .is_err()
+        );
         assert_eq!(actual.encode_state(), expected.encode_state());
     }
 }

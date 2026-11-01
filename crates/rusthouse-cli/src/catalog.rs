@@ -199,16 +199,11 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
 }
 
 #[cfg(unix)]
-fn validate_schema_identity(
-    before: &fs::Metadata,
-    file: &fs::File,
-) -> std::io::Result<()> {
+fn validate_schema_identity(before: &fs::Metadata, file: &fs::File) -> std::io::Result<()> {
     use std::os::unix::fs::MetadataExt;
 
     let opened = file.metadata()?;
-    if !opened.file_type().is_file()
-        || before.dev() != opened.dev()
-        || before.ino() != opened.ino()
+    if !opened.file_type().is_file() || before.dev() != opened.dev() || before.ino() != opened.ino()
     {
         return Err(std::io::Error::other("schema changed during open"));
     }
@@ -272,8 +267,8 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
     }
     // Validate the opened inode as well as the original path metadata.
     // A symlink or file replacement between inspection and open must fail.
-    let mut file = fs::File::open(&path)
-        .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    let mut file =
+        fs::File::open(&path).map_err(|error| format!("cannot read table {name}: {error}"))?;
     #[cfg(unix)]
     validate_schema_identity(&metadata, &file)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
@@ -542,11 +537,17 @@ mod catalog_entry_budget_tests {
     #[test]
     fn table_discovery_counts_unrelated_entries_too() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-catalog-entry-cap-{}-{}", std::process::id(), line!()
+            "rusthouse-catalog-entry-cap-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
-        fs::write(root.join("events.schema"), "rusthouse-schema-v1\nid\tUInt64\n").unwrap();
+        fs::write(
+            root.join("events.schema"),
+            "rusthouse-schema-v1\nid\tUInt64\n",
+        )
+        .unwrap();
         fs::write(root.join("unrelated.txt"), b"x").unwrap();
         assert!(show_tables_with_entry_limit(&root, None, false, 1).is_err());
         assert!(show_tables_with_entry_limit(&root, None, false, 2).is_ok());
@@ -620,7 +621,6 @@ mod durable_catalog_rename_tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
-
 
 #[cfg(test)]
 mod postread_catalog_schema_tests {

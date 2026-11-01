@@ -9,15 +9,22 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 fn exact_uint32_distinct_in_multiple_aggregates_exceeds_100k_distinct_values() {
     let dir = std::env::temp_dir().join(format!(
         "rusthouse-multi-u32-distinct-{}-{}",
-        std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let cols = [
-        Column { name: "id".into(), data_type: "UInt32".into() },
-        Column { name: "revenue".into(), data_type: "UInt8".into() },
+        Column {
+            name: "id".into(),
+            data_type: "UInt32".into(),
+        },
+        Column {
+            name: "revenue".into(),
+            data_type: "UInt8".into(),
+        },
     ];
-    let rows = (0..120_100u32).map(|id| {
-        vec![Some(id.to_string()), Some("1".into())]
-    }).collect::<Vec<_>>();
+    let rows = (0..120_100u32)
+        .map(|id| vec![Some(id.to_string()), Some("1".into())])
+        .collect::<Vec<_>>();
     write_wide_part(&dir, &cols, &rows).unwrap();
     let query = parse_select("SELECT count(DISTINCT id), sum(revenue) FROM part").unwrap();
     let mut output = Vec::new();
@@ -33,11 +40,18 @@ fn exact_uint32_distinct_in_multiple_aggregates_exceeds_100k_distinct_values() {
 fn mixed_nullable_signed_int32_distinct_ignores_null_and_preserves_bit_patterns() {
     let dir = std::env::temp_dir().join(format!(
         "rusthouse-multi-i32-distinct-{}-{}",
-        std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let cols = [
-        Column { name: "id".into(), data_type: "Nullable(Int32)".into() },
-        Column { name: "revenue".into(), data_type: "UInt8".into() },
+        Column {
+            name: "id".into(),
+            data_type: "Nullable(Int32)".into(),
+        },
+        Column {
+            name: "revenue".into(),
+            data_type: "UInt8".into(),
+        },
     ];
     let rows = [
         vec![Some((-1i32).to_string()), Some("1".into())],

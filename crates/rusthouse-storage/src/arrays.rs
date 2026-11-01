@@ -128,10 +128,12 @@ fn append_array_offset<const ABSOLUTE: bool>(
     let next = if ABSOLUTE {
         encoded
     } else {
-        absolute.checked_add(encoded).ok_or(ArrayReadError::InvalidOffset {
-            row,
-            reason: "array size overflows u64",
-        })?
+        absolute
+            .checked_add(encoded)
+            .ok_or(ArrayReadError::InvalidOffset {
+                row,
+                reason: "array size overflows u64",
+            })?
     };
     if next < *absolute {
         return Err(ArrayReadError::InvalidOffset {
@@ -168,11 +170,17 @@ fn decode_array_offsets<const ABSOLUTE: bool, O: Read>(
         offset_stream
             .read_exact(&mut scratch[..bytes])
             .map_err(ArrayReadError::Offsets)?;
-        for (row, record) in scratch[..bytes].chunks_exact(OFFSET_ENTRY_BYTES).enumerate() {
+        for (row, record) in scratch[..bytes]
+            .chunks_exact(OFFSET_ENTRY_BYTES)
+            .enumerate()
+        {
             let encoded = u64::from_le_bytes(record.try_into().unwrap());
             append_array_offset::<ABSOLUTE>(base, &mut absolute, encoded, row, &mut offsets)?;
         }
-        return Ok(ArrayOffsets { offsets, last_absolute_offset: absolute });
+        return Ok(ArrayOffsets {
+            offsets,
+            last_absolute_offset: absolute,
+        });
     }
 
     // Typical medium marks fit within 8 KiB. Decode them with one exact
@@ -181,13 +189,20 @@ fn decode_array_offsets<const ABSOLUTE: bool, O: Read>(
     if rows <= MEDIUM_ROWS {
         let mut scratch = [0u8; MEDIUM_ROWS * OFFSET_ENTRY_BYTES];
         let bytes = rows * OFFSET_ENTRY_BYTES;
-        offset_stream.read_exact(&mut scratch[..bytes])
+        offset_stream
+            .read_exact(&mut scratch[..bytes])
             .map_err(ArrayReadError::Offsets)?;
-        for (row, record) in scratch[..bytes].chunks_exact(OFFSET_ENTRY_BYTES).enumerate() {
+        for (row, record) in scratch[..bytes]
+            .chunks_exact(OFFSET_ENTRY_BYTES)
+            .enumerate()
+        {
             let encoded = u64::from_le_bytes(record.try_into().unwrap());
             append_array_offset::<ABSOLUTE>(base, &mut absolute, encoded, row, &mut offsets)?;
         }
-        return Ok(ArrayOffsets { offsets, last_absolute_offset: absolute });
+        return Ok(ArrayOffsets {
+            offsets,
+            last_absolute_offset: absolute,
+        });
     }
 
     let mut buffer = [0u8; 64 * 1024];
@@ -221,8 +236,9 @@ pub fn read_array_offsets<O: Read>(
     }
     match encoding {
         ArrayOffsetsEncoding::Sizes => decode_array_offsets::<false, O>(offset_stream, rows, 0),
-        ArrayOffsetsEncoding::Absolute { previous_offset } =>
-            decode_array_offsets::<true, O>(offset_stream, rows, previous_offset),
+        ArrayOffsetsEncoding::Absolute { previous_offset } => {
+            decode_array_offsets::<true, O>(offset_stream, rows, previous_offset)
+        }
     }
 }
 
@@ -286,14 +302,20 @@ mod tests {
     fn small_array_marks_keep_absolute_bases_and_input_position() {
         use std::io::Cursor;
         for rows in [0usize, 1, 32, 63, 64, 65] {
-            let mut data = (1..=rows as u64).map(|row| 100 + row)
-                .flat_map(u64::to_le_bytes).collect::<Vec<_>>();
+            let mut data = (1..=rows as u64)
+                .map(|row| 100 + row)
+                .flat_map(u64::to_le_bytes)
+                .collect::<Vec<_>>();
             data.extend_from_slice(&9999u64.to_le_bytes());
             let mut input = Cursor::new(data);
             let values = read_array_offsets(
-                &mut input, rows,
-                ArrayOffsetsEncoding::Absolute { previous_offset: 100 },
-            ).unwrap();
+                &mut input,
+                rows,
+                ArrayOffsetsEncoding::Absolute {
+                    previous_offset: 100,
+                },
+            )
+            .unwrap();
             assert_eq!(values.len(), rows);
             assert_eq!(values.element_count(), rows);
             assert_eq!(values.last_absolute_offset(), 100 + rows as u64);
@@ -616,11 +638,21 @@ mod numeric_array_type_fastcheck_tests {
 
     #[test]
     fn validates_numeric_array_inner_type_without_decoding() {
-        for ty in ["Array(UInt64)", "Array(Int16)", "Array(Float64)", "Array(Date)",
-            "Array(DateTime64(3, 'UTC'))"] {
+        for ty in [
+            "Array(UInt64)",
+            "Array(Int16)",
+            "Array(Float64)",
+            "Array(Date)",
+            "Array(DateTime64(3, 'UTC'))",
+        ] {
             assert!(validated_numeric_array_element_type(ty).is_ok(), "{ty}");
         }
-        for ty in ["Array(String)", "Array(Nullable(UInt64))", "Array(garbage)", "Array()"] {
+        for ty in [
+            "Array(String)",
+            "Array(Nullable(UInt64))",
+            "Array(garbage)",
+            "Array()",
+        ] {
             assert!(validated_numeric_array_element_type(ty).is_err(), "{ty}");
         }
     }
@@ -632,40 +664,68 @@ mod specialized_array_offset_mode_tests {
 
     #[test]
     fn large_absolute_and_size_modes_produce_identical_relative_offsets() {
-        let sizes = (0..24_000u64).map(|index| (index % 7 == 0) as u64 * 3)
+        let sizes = (0..24_000u64)
+            .map(|index| (index % 7 == 0) as u64 * 3)
             .collect::<Vec<_>>();
         let mut final_offset = 50_000u64;
-        let absolute = sizes.iter().map(|&size| {
-            final_offset += size;
-            final_offset
-        }).collect::<Vec<_>>();
-        let size_bytes = sizes.iter().flat_map(|value| value.to_le_bytes())
+        let absolute = sizes
+            .iter()
+            .map(|&size| {
+                final_offset += size;
+                final_offset
+            })
             .collect::<Vec<_>>();
-        let absolute_bytes = absolute.iter().flat_map(|value| value.to_le_bytes())
+        let size_bytes = sizes
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let absolute_bytes = absolute
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
             .collect::<Vec<_>>();
         let decoded_sizes = read_array_offsets(
-            &mut size_bytes.as_slice(), sizes.len(), ArrayOffsetsEncoding::Sizes
-        ).unwrap();
+            &mut size_bytes.as_slice(),
+            sizes.len(),
+            ArrayOffsetsEncoding::Sizes,
+        )
+        .unwrap();
         let decoded_absolute = read_array_offsets(
-            &mut absolute_bytes.as_slice(), absolute.len(),
-            ArrayOffsetsEncoding::Absolute { previous_offset: 50_000 }
-        ).unwrap();
+            &mut absolute_bytes.as_slice(),
+            absolute.len(),
+            ArrayOffsetsEncoding::Absolute {
+                previous_offset: 50_000,
+            },
+        )
+        .unwrap();
         assert_eq!(decoded_sizes.offsets(), decoded_absolute.offsets());
         assert_eq!(decoded_absolute.last_absolute_offset(), final_offset);
-        assert_eq!(decoded_sizes.element_count(), (final_offset - 50_000) as usize);
+        assert_eq!(
+            decoded_sizes.element_count(),
+            (final_offset - 50_000) as usize
+        );
     }
 
     #[test]
     fn specialized_modes_reject_overflow_and_backward_offsets() {
-        let sizes = [u64::MAX, 1u64].into_iter().flat_map(u64::to_le_bytes)
+        let sizes = [u64::MAX, 1u64]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
             .collect::<Vec<_>>();
         assert!(read_array_offsets(&mut sizes.as_slice(), 2, ArrayOffsetsEncoding::Sizes).is_err());
-        let absolute = [5u64].into_iter().flat_map(u64::to_le_bytes)
+        let absolute = [5u64]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
             .collect::<Vec<_>>();
-        assert!(read_array_offsets(
-            &mut absolute.as_slice(), 1,
-            ArrayOffsetsEncoding::Absolute { previous_offset: 10 },
-        ).is_err());
+        assert!(
+            read_array_offsets(
+                &mut absolute.as_slice(),
+                1,
+                ArrayOffsetsEncoding::Absolute {
+                    previous_offset: 10
+                },
+            )
+            .is_err()
+        );
     }
 }
 
@@ -676,26 +736,39 @@ mod small_offsets_codegen_regression_tests {
     #[test]
     fn small_and_large_batches_use_identical_size_and_absolute_semantics() {
         for rows in [0usize, 1, 2, 63, 64, 65, 128] {
-            let sizes = (0..rows).map(|index| (index % 7) as u64).collect::<Vec<_>>();
-            let encoded_sizes = sizes.iter()
+            let sizes = (0..rows)
+                .map(|index| (index % 7) as u64)
+                .collect::<Vec<_>>();
+            let encoded_sizes = sizes
+                .iter()
                 .flat_map(|value| value.to_le_bytes())
                 .collect::<Vec<_>>();
             let mut offsets = Vec::with_capacity(rows + 1);
             offsets.push(0);
             let mut absolute = 1000u64;
-            let absolute_data = sizes.iter().map(|value| {
-                absolute += value;
-                offsets.push((absolute - 1000) as usize);
-                absolute
-            }).flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
+            let absolute_data = sizes
+                .iter()
+                .map(|value| {
+                    absolute += value;
+                    offsets.push((absolute - 1000) as usize);
+                    absolute
+                })
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>();
             let from_sizes = read_array_offsets(
-                &mut encoded_sizes.as_slice(), rows, ArrayOffsetsEncoding::Sizes
-            ).unwrap();
+                &mut encoded_sizes.as_slice(),
+                rows,
+                ArrayOffsetsEncoding::Sizes,
+            )
+            .unwrap();
             let from_absolute = read_array_offsets(
                 &mut absolute_data.as_slice(),
                 rows,
-                ArrayOffsetsEncoding::Absolute { previous_offset: 1000 },
-            ).unwrap();
+                ArrayOffsetsEncoding::Absolute {
+                    previous_offset: 1000,
+                },
+            )
+            .unwrap();
             assert_eq!(from_sizes.offsets(), offsets);
             assert_eq!(from_absolute.offsets(), offsets);
             assert_eq!(from_absolute.last_absolute_offset(), absolute);
@@ -708,17 +781,29 @@ mod small_offsets_codegen_regression_tests {
         let mut backward = backward_bytes.as_slice();
         assert!(matches!(
             read_array_offsets(
-                &mut backward, 1, ArrayOffsetsEncoding::Absolute { previous_offset: 7 }
+                &mut backward,
+                1,
+                ArrayOffsetsEncoding::Absolute { previous_offset: 7 }
             ),
-            Err(ArrayReadError::InvalidOffset { reason: "offset moves backwards", .. })
+            Err(ArrayReadError::InvalidOffset {
+                reason: "offset moves backwards",
+                ..
+            })
         ));
         let overflow_bytes = 1u64.to_le_bytes();
         let mut overflow = overflow_bytes.as_slice();
         assert!(matches!(
             read_array_offsets(
-                &mut overflow, 1, ArrayOffsetsEncoding::Absolute { previous_offset: u64::MAX }
+                &mut overflow,
+                1,
+                ArrayOffsetsEncoding::Absolute {
+                    previous_offset: u64::MAX
+                }
             ),
-            Err(ArrayReadError::InvalidOffset { reason: "offset moves backwards", .. })
+            Err(ArrayReadError::InvalidOffset {
+                reason: "offset moves backwards",
+                ..
+            })
         ));
     }
 }
@@ -728,18 +813,17 @@ mod small_array_mark_regression_tests {
     use super::*;
 
     fn encoded(values: &[u64]) -> Vec<u8> {
-        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
     }
 
     #[test]
     fn small_size_and_absolute_marks_share_exact_boundaries() {
         let sizes = encoded(&[2, 0, 3]);
-        let offsets = read_array_offsets(
-            &mut sizes.as_slice(),
-            3,
-            ArrayOffsetsEncoding::Sizes,
-        )
-        .unwrap();
+        let offsets =
+            read_array_offsets(&mut sizes.as_slice(), 3, ArrayOffsetsEncoding::Sizes).unwrap();
         assert_eq!(offsets.offsets(), &[0, 2, 2, 5]);
         assert_eq!(offsets.last_absolute_offset(), 5);
 
@@ -747,7 +831,9 @@ mod small_array_mark_regression_tests {
         let offsets = read_array_offsets(
             &mut absolutes.as_slice(),
             3,
-            ArrayOffsetsEncoding::Absolute { previous_offset: 10 },
+            ArrayOffsetsEncoding::Absolute {
+                previous_offset: 10,
+            },
         )
         .unwrap();
         assert_eq!(offsets.offsets(), &[0, 2, 2, 5]);
@@ -761,7 +847,9 @@ mod small_array_mark_regression_tests {
             read_array_offsets(
                 &mut backward.as_slice(),
                 1,
-                ArrayOffsetsEncoding::Absolute { previous_offset: 10 },
+                ArrayOffsetsEncoding::Absolute {
+                    previous_offset: 10
+                },
             ),
             Err(ArrayReadError::InvalidOffset { .. })
         ));
@@ -791,13 +879,22 @@ mod medium_array_mark_tests {
                 raw.extend_from_slice(&123456789u64.to_le_bytes());
                 let mut source = Cursor::new(raw);
                 let mode = if absolute {
-                    ArrayOffsetsEncoding::Absolute { previous_offset: base }
+                    ArrayOffsetsEncoding::Absolute {
+                        previous_offset: base,
+                    }
                 } else {
                     ArrayOffsetsEncoding::Sizes
                 };
                 let decoded = read_array_offsets(&mut source, rows, mode).unwrap();
-                assert_eq!(decoded.element_count(), rows, "rows={rows} absolute={absolute}");
-                assert_eq!(decoded.last_absolute_offset(), rows as u64 + if absolute { base } else { 0 });
+                assert_eq!(
+                    decoded.element_count(),
+                    rows,
+                    "rows={rows} absolute={absolute}"
+                );
+                assert_eq!(
+                    decoded.last_absolute_offset(),
+                    rows as u64 + if absolute { base } else { 0 }
+                );
                 assert!(decoded.offsets().iter().copied().eq(0..=rows));
                 assert_eq!(source.position(), (rows * 8) as u64);
                 let mut sentinel = [0u8; 8];

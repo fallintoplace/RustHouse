@@ -299,9 +299,16 @@ mod tests {
 
         let typ16 = "Enum16('a' = -32768, 'b' = -1, 'c' = 0, 'd' = 1, 'e' = 32767)";
         let signed = [i16::MIN, -1, 0, 1, i16::MAX].repeat(200);
-        let mut encoded = signed.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
-        assert_eq!(read_enum_column(&mut encoded.as_slice(), typ16, 1000)
-            .unwrap().codes(), signed.as_slice());
+        let mut encoded = signed
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            read_enum_column(&mut encoded.as_slice(), typ16, 1000)
+                .unwrap()
+                .codes(),
+            signed.as_slice()
+        );
         encoded[2 * 511..2 * 511 + 2].copy_from_slice(&42i16.to_le_bytes());
         assert!(matches!(
             read_enum_column(&mut encoded.as_slice(), typ16, 1000),

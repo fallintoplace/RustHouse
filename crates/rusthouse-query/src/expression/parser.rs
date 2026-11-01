@@ -41,24 +41,39 @@ fn parse_case(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseErro
         return Err(ParseError("CASE requires WHEN".into()));
     }
     let else_expr = if parser.keyword("ELSE") {
-        Some(Box::new(parse_expression_tokens_at_depth(parser, depth + 1)?))
-    } else { None };
+        Some(Box::new(parse_expression_tokens_at_depth(
+            parser,
+            depth + 1,
+        )?))
+    } else {
+        None
+    };
     if !parser.keyword("END") {
         return Err(ParseError("CASE expression requires END".into()));
     }
-    Ok(ScalarExpr::Case { branches, else_expr })
+    Ok(ScalarExpr::Case {
+        branches,
+        else_expr,
+    })
 }
 
 fn parse_numeric_literal(number: &str) -> Result<ScalarExpr, ParseError> {
-    if number.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) {
-        let value = number.parse::<f64>()
+    if number
+        .bytes()
+        .any(|byte| matches!(byte, b'.' | b'e' | b'E'))
+    {
+        let value = number
+            .parse::<f64>()
             .map_err(|_| ParseError("invalid decimal expression literal".into()))?;
         if !value.is_finite() {
-            return Err(ParseError("decimal expression literal must be finite".into()));
+            return Err(ParseError(
+                "decimal expression literal must be finite".into(),
+            ));
         }
         Ok(ScalarExpr::Decimal(number.to_owned()))
     } else {
-        let value = number.parse::<i64>()
+        let value = number
+            .parse::<i64>()
             .map_err(|_| ParseError("integer expression literal is out of Int64 range".into()))?;
         Ok(ScalarExpr::Integer(value))
     }
@@ -66,7 +81,9 @@ fn parse_numeric_literal(number: &str) -> Result<ScalarExpr, ParseError> {
 
 pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     if depth >= MAX_EXPRESSION_DEPTH {
-        return Err(ParseError("scalar expression exceeds nesting depth of 64".into()));
+        return Err(ParseError(
+            "scalar expression exceeds nesting depth of 64".into(),
+        ));
     }
     match parser.tokens.get(parser.index) {
         Some(Token::Plus) => {
@@ -115,7 +132,9 @@ pub(super) fn product(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
         };
         operators += 1;
         if operators > 128 {
-            return Err(ParseError("multiplicative operator chain exceeds 128 terms".into()));
+            return Err(ParseError(
+                "multiplicative operator chain exceeds 128 terms".into(),
+            ));
         }
         let right = Box::new(primary(parser, depth)?);
         expr = match operator {

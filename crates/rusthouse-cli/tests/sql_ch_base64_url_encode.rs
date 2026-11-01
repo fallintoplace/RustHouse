@@ -14,7 +14,11 @@ fn base64_url_encode_reports_correct_values() {
             .args(["sql", query])
             .output()
             .expect("run SQL");
-        assert!(output.status.success(), "{query}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(output.stdout, expected.as_bytes(), "{query}");
     }
 }

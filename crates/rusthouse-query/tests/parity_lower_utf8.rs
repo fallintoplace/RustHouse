@@ -10,7 +10,10 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn clickhouse_compatibility_cases() {
     for (sql, expected) in [
-        ("SELECT lowerUTF8('MÜNCHEN')", ConstantValue::Text("münchen".into())),
+        (
+            "SELECT lowerUTF8('MÜNCHEN')",
+            ConstantValue::Text("münchen".into()),
+        ),
         ("SELECT lowerUTF8('ABC')", ConstantValue::Text("abc".into())),
         ("SELECT lowerUTF8(NULL)", ConstantValue::Null),
     ] {
@@ -19,10 +22,7 @@ fn clickhouse_compatibility_cases() {
 }
 #[test]
 fn rejects_invalid_arguments() {
-    for sql in [
-        "SELECT lowerUTF8()",
-        "SELECT lowerUTF8(3)",
-    ] {
+    for sql in ["SELECT lowerUTF8()", "SELECT lowerUTF8(3)"] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }

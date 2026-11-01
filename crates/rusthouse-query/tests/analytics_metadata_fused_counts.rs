@@ -9,12 +9,22 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 fn with_part<F: FnOnce(&std::path::Path)>(test: F) {
     let dir = std::env::temp_dir().join(format!(
         "rusthouse-metadata-multi-count-{}-{}",
-        std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let schema = [
-        Column { name: "id".into(), data_type: "UInt64".into() },
-        Column { name: "label".into(), data_type: "String".into() },
-        Column { name: "nullable".into(), data_type: "Nullable(UInt64)".into() },
+        Column {
+            name: "id".into(),
+            data_type: "UInt64".into(),
+        },
+        Column {
+            name: "label".into(),
+            data_type: "String".into(),
+        },
+        Column {
+            name: "nullable".into(),
+            data_type: "Nullable(UInt64)".into(),
+        },
     ];
     let rows = [
         vec![Some("1".into()), Some("a".into()), Some("3".into())],

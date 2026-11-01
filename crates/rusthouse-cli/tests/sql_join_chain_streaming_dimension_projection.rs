@@ -26,12 +26,8 @@ fn streaming_join_ignores_unreferenced_wide_dimension_payloads() {
     }
     let payload = "x".repeat(8192);
     let inserts = [
-        format!(
-            "INSERT INTO dimension VALUES (10, 100, '{payload}'), (20, 200, '{payload}')"
-        ),
-        format!(
-            "INSERT INTO region VALUES (100, 'east', '{payload}'), (200, 'west', '{payload}')"
-        ),
+        format!("INSERT INTO dimension VALUES (10, 100, '{payload}'), (20, 200, '{payload}')"),
+        format!("INSERT INTO region VALUES (100, 'east', '{payload}'), (200, 'west', '{payload}')"),
     ];
     for statement in inserts {
         let output = sql(&statement);

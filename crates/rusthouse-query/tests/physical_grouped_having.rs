@@ -18,12 +18,10 @@ fn physical_grouped_having() {
     ));
     fs::create_dir(&root).unwrap();
 
-    let schema = [
-        Column {
-            name: "region".into(),
-            data_type: "String".into(),
-        },
-    ];
+    let schema = [Column {
+        name: "region".into(),
+        data_type: "String".into(),
+    }];
     let parts: Vec<Vec<Vec<Option<String>>>> = vec![
         vec![
             vec![Some("NA".into())],
@@ -42,7 +40,8 @@ fn physical_grouped_having() {
         write_wide_part(&part, &schema, rows).unwrap();
     }
 
-    let sql = "SELECT region, count(*) FROM part GROUP BY region HAVING count(*) > 2 ORDER BY region";
+    let sql =
+        "SELECT region, count(*) FROM part GROUP BY region HAVING count(*) > 2 ORDER BY region";
     let expected = "region\tcount\nEU\t3\nNA\t3\n";
     assert_eq!(run(&root, sql), expected, "{sql}");
     fs::remove_dir_all(root).unwrap();

@@ -85,9 +85,12 @@ pub fn coalesce_indexed_chunks(
     // Validate and coalesce in one walk instead of traversing all chunks twice.
     for chunk in chunks {
         let item = chunk.chunk;
-        let end = item.offset.checked_add(item.length)
+        let end = item
+            .offset
+            .checked_add(item.length)
             .ok_or("transfer chunk range overflow")?;
-        if item.length == 0 || item.length > max_run_bytes
+        if item.length == 0
+            || item.length > max_run_bytes
             || item.offset < previous_end
             || previous_index.is_some_and(|index| chunk.index <= index)
         {
@@ -98,7 +101,8 @@ pub fn coalesce_indexed_chunks(
         if let Some(last) = runs.last_mut() {
             let next_index = last.first_index + last.chunk_count;
             let run_end = last.offset + last.length;
-            if chunk.index == next_index && item.offset == run_end
+            if chunk.index == next_index
+                && item.offset == run_end
                 && item.length <= max_run_bytes - last.length
             {
                 last.chunk_count += 1;
@@ -132,20 +136,37 @@ mod coalesced_chunk_runs_tests {
                 }
                 for run_budget in [7u64, 14, 28, 56, 4096] {
                     let planned = plan_missing_chunks_from_resume(
-                        bytes, 7, 65_536, &checkpoint, bytes, 65_536,
-                    ).unwrap();
+                        bytes,
+                        7,
+                        65_536,
+                        &checkpoint,
+                        bytes,
+                        65_536,
+                    )
+                    .unwrap();
                     let runs = coalesce_indexed_chunks(&planned, run_budget).unwrap();
-                    let expanded = runs.iter().flat_map(|run| {
-                        (0..run.chunk_count).map(move |shift| {
-                            let index = run.first_index + shift;
-                            indexed_chunk_at(bytes, 7, index)
+                    let expanded = runs
+                        .iter()
+                        .flat_map(|run| {
+                            (0..run.chunk_count).map(move |shift| {
+                                let index = run.first_index + shift;
+                                indexed_chunk_at(bytes, 7, index)
+                            })
                         })
-                    }).collect::<Vec<_>>();
-                    assert_eq!(expanded, planned, "bytes={bytes}, stride={stride}, run_budget={run_budget}");
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        expanded, planned,
+                        "bytes={bytes}, stride={stride}, run_budget={run_budget}"
+                    );
                     assert!(runs.iter().all(|run| run.length <= run_budget));
-                    assert_eq!(runs.iter().map(|run| run.length).sum::<u64>(),
-                        planned.iter().map(|item| item.chunk.length).sum::<u64>());
-                    assert!(runs.windows(2).all(|pair| pair[0].first_index < pair[1].first_index));
+                    assert_eq!(
+                        runs.iter().map(|run| run.length).sum::<u64>(),
+                        planned.iter().map(|item| item.chunk.length).sum::<u64>()
+                    );
+                    assert!(
+                        runs.windows(2)
+                            .all(|pair| pair[0].first_index < pair[1].first_index)
+                    );
                 }
             }
         }
@@ -154,13 +175,22 @@ mod coalesced_chunk_runs_tests {
     #[test]
     fn fully_missing_chunks_coalesce_to_minimum_io_requests() {
         let plan = plan_chunks(10_000, 1000, 10).unwrap();
-        let indexed = plan.into_iter().enumerate()
-            .map(|(index, chunk)| IndexedChunk { index, chunk }).collect::<Vec<_>>();
+        let indexed = plan
+            .into_iter()
+            .enumerate()
+            .map(|(index, chunk)| IndexedChunk { index, chunk })
+            .collect::<Vec<_>>();
         let runs = coalesce_indexed_chunks(&indexed, 4000).unwrap();
         assert_eq!(runs.len(), 3);
-        assert_eq!(runs[0], ChunkRun {
-            first_index: 0, chunk_count: 4, offset: 0, length: 4000,
-        });
+        assert_eq!(
+            runs[0],
+            ChunkRun {
+                first_index: 0,
+                chunk_count: 4,
+                offset: 0,
+                length: 4000,
+            }
+        );
         assert_eq!(runs[1].chunk_count, 4);
         assert_eq!(runs[2].chunk_count, 2);
         assert_eq!(coalesce_indexed_chunks(&indexed, 1000).unwrap().len(), 10);
@@ -168,19 +198,64 @@ mod coalesced_chunk_runs_tests {
 
     #[test]
     fn invalid_ranges_and_budget_fail_before_returning_partial_plan() {
-        let sample = IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 7 } };
+        let sample = IndexedChunk {
+            index: 0,
+            chunk: Chunk {
+                offset: 0,
+                length: 7,
+            },
+        };
         assert!(coalesce_indexed_chunks(&[sample], 0).is_err());
         assert!(coalesce_indexed_chunks(&[sample], 6).is_err());
-        assert!(coalesce_indexed_chunks(&[
-            sample, IndexedChunk { index: 1, chunk: Chunk { offset: 6, length: 1 } },
-        ], 8).is_err());
-        assert!(coalesce_indexed_chunks(&[
-            sample, IndexedChunk { index: 0, chunk: Chunk { offset: 7, length: 1 } },
-        ], 8).is_err());
-        assert!(coalesce_indexed_chunks(&[
-            IndexedChunk { index: 2, chunk: Chunk { offset: u64::MAX, length: 2 } },
-        ], u64::MAX).is_err());
-        assert_eq!(coalesce_indexed_chunks(&[], 1024).unwrap(), Vec::<ChunkRun>::new());
+        assert!(
+            coalesce_indexed_chunks(
+                &[
+                    sample,
+                    IndexedChunk {
+                        index: 1,
+                        chunk: Chunk {
+                            offset: 6,
+                            length: 1
+                        }
+                    },
+                ],
+                8
+            )
+            .is_err()
+        );
+        assert!(
+            coalesce_indexed_chunks(
+                &[
+                    sample,
+                    IndexedChunk {
+                        index: 0,
+                        chunk: Chunk {
+                            offset: 7,
+                            length: 1
+                        }
+                    },
+                ],
+                8
+            )
+            .is_err()
+        );
+        assert!(
+            coalesce_indexed_chunks(
+                &[IndexedChunk {
+                    index: 2,
+                    chunk: Chunk {
+                        offset: u64::MAX,
+                        length: 2
+                    }
+                },],
+                u64::MAX
+            )
+            .is_err()
+        );
+        assert_eq!(
+            coalesce_indexed_chunks(&[], 1024).unwrap(),
+            Vec::<ChunkRun>::new()
+        );
     }
 }
 
@@ -246,7 +321,6 @@ pub fn plan_missing_chunks(
     Ok(selected)
 }
 
-
 /// Schedule only incomplete chunks directly from a bit-packed checkpoint.
 ///
 /// Unlike building ResumeMap::remaining() first, this keeps temporary
@@ -260,7 +334,13 @@ pub fn plan_missing_chunks_from_resume(
     max_batch_chunks: usize,
 ) -> Result<Vec<IndexedChunk>, &'static str> {
     plan_missing_chunks_from_resume_after(
-        total_bytes, chunk_bytes, max_chunks, progress, 0, byte_budget, max_batch_chunks
+        total_bytes,
+        chunk_bytes,
+        max_chunks,
+        progress,
+        0,
+        byte_budget,
+        max_batch_chunks,
     )
 }
 
@@ -317,7 +397,6 @@ pub fn plan_missing_chunks_from_resume_after(
     Ok(selected)
 }
 
-
 /// Schedule coalesced transfer I/O directly from a packed completion map.
 ///
 /// Unlike planning individual missing chunks and merging them afterwards,
@@ -332,8 +411,14 @@ pub fn plan_missing_runs_from_resume(
     max_run_bytes: u64,
 ) -> Result<Vec<ChunkRun>, &'static str> {
     plan_missing_runs_from_resume_after(
-        total_bytes, chunk_bytes, max_chunks, progress, 0,
-        byte_budget, max_batch_chunks, max_run_bytes,
+        total_bytes,
+        chunk_bytes,
+        max_chunks,
+        progress,
+        0,
+        byte_budget,
+        max_batch_chunks,
+        max_run_bytes,
     )
 }
 
@@ -415,12 +500,16 @@ mod direct_resumable_run_tests {
                     for limit in [0, 1, 2, 7, 128] {
                         for max_run in [1, 6, 7, 14, 63, 8192] {
                             let reference = plan_missing_chunks_from_resume(
-                                bytes, 7, 65_536, &progress, budget, limit
-                            ).and_then(|chunks| coalesce_indexed_chunks(&chunks, max_run));
+                                bytes, 7, 65_536, &progress, budget, limit,
+                            )
+                            .and_then(|chunks| coalesce_indexed_chunks(&chunks, max_run));
                             let planned = plan_missing_runs_from_resume(
-                                bytes, 7, 65_536, &progress, budget, limit, max_run
+                                bytes, 7, 65_536, &progress, budget, limit, max_run,
                             );
-                            assert_eq!(planned, reference, "{bytes}:{stride}:{budget}:{limit}:{max_run}");
+                            assert_eq!(
+                                planned, reference,
+                                "{bytes}:{stride}:{budget}:{limit}:{max_run}"
+                            );
                         }
                     }
                 }
@@ -436,7 +525,12 @@ mod direct_resumable_run_tests {
         assert!(plan_missing_runs_from_resume(8, 4, 3, &map, 8, 65_537, 8).is_err());
         assert_eq!(
             plan_missing_runs_from_resume(8, 4, 3, &map, 8, 2, 8).unwrap(),
-            vec![ChunkRun { first_index: 0, chunk_count: 2, offset: 0, length: 8 }]
+            vec![ChunkRun {
+                first_index: 0,
+                chunk_count: 2,
+                offset: 0,
+                length: 8
+            }]
         );
     }
 }
@@ -457,9 +551,16 @@ mod checkpoint_scheduling_tests {
                 }
                 for budget in [0, 1, 2, 6, 7, 13, 14, 21, 1000] {
                     for limit in [0, 1, 2, 5, 128] {
-                        let expected = plan_missing_chunks(bytes, 7, 65_536, &map.remaining(), budget, limit).unwrap();
-                        let actual = plan_missing_chunks_from_resume(bytes, 7, 65_536, &map, budget, limit).unwrap();
-                        assert_eq!(actual, expected, "{bytes} {complete_modulus} {budget} {limit}");
+                        let expected =
+                            plan_missing_chunks(bytes, 7, 65_536, &map.remaining(), budget, limit)
+                                .unwrap();
+                        let actual =
+                            plan_missing_chunks_from_resume(bytes, 7, 65_536, &map, budget, limit)
+                                .unwrap();
+                        assert_eq!(
+                            actual, expected,
+                            "{bytes} {complete_modulus} {budget} {limit}"
+                        );
                     }
                 }
             }
@@ -504,7 +605,12 @@ pub fn plan_chunk_window(
     if start_index > count || requested > count - start_index {
         return Err("transfer chunk window exceeds bounds");
     }
-    Ok(build_chunk_window(total_bytes, chunk_bytes, start_index, requested))
+    Ok(build_chunk_window(
+        total_bytes,
+        chunk_bytes,
+        start_index,
+        requested,
+    ))
 }
 
 /// Return up to requested chunks, stopping at the end of the transfer.
@@ -543,9 +649,11 @@ mod tests {
         assert_eq!(first.len(), 3);
         assert_eq!(tail.len(), 1);
         assert_eq!(tail[0].chunk, all[3]);
-        assert!(plan_chunk_window_clamped(10, 3, 4, 4, usize::MAX)
-            .unwrap()
-            .is_empty());
+        assert!(
+            plan_chunk_window_clamped(10, 3, 4, 4, usize::MAX)
+                .unwrap()
+                .is_empty()
+        );
         assert!(plan_chunk_window_clamped(10, 3, 4, 5, 1).is_err());
         assert!(plan_chunk_window(10, 3, 4, 3, 2).is_err());
     }
@@ -599,8 +707,20 @@ mod tests {
         assert_eq!(
             plan_missing_chunks(10, 4, 3, &[0, 1, 2], 7, 3).unwrap(),
             vec![
-                IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
-                IndexedChunk { index: 2, chunk: Chunk { offset: 8, length: 2 } },
+                IndexedChunk {
+                    index: 0,
+                    chunk: Chunk {
+                        offset: 0,
+                        length: 4
+                    }
+                },
+                IndexedChunk {
+                    index: 2,
+                    chunk: Chunk {
+                        offset: 8,
+                        length: 2
+                    }
+                },
             ],
         );
         assert_eq!(
@@ -624,9 +744,11 @@ mod tests {
     #[test]
     fn zero_budget_still_validates_indexes_before_skipping_work() {
         let indexes = (0..65_536).collect::<Vec<_>>();
-        assert!(plan_missing_chunks(65_536, 1, 65_536, &indexes, 0, 65_536)
-            .unwrap()
-            .is_empty());
+        assert!(
+            plan_missing_chunks(65_536, 1, 65_536, &indexes, 0, 65_536)
+                .unwrap()
+                .is_empty()
+        );
         assert!(plan_missing_chunks(4, 1, 4, &[3, 3], 0, 0).is_err());
         assert!(plan_missing_chunks(4, 1, 4, &[3, 4], 0, 2).is_err());
         assert!(plan_missing_chunks(4, 1, 4, &[3], 4, 0).unwrap().is_empty());
@@ -708,11 +830,17 @@ mod chunk_window_tests {
             vec![
                 IndexedChunk {
                     index: 1,
-                    chunk: Chunk { offset: 4, length: 4 },
+                    chunk: Chunk {
+                        offset: 4,
+                        length: 4
+                    },
                 },
                 IndexedChunk {
                     index: 2,
-                    chunk: Chunk { offset: 8, length: 2 },
+                    chunk: Chunk {
+                        offset: 8,
+                        length: 2
+                    },
                 },
             ]
         );
@@ -737,10 +865,25 @@ mod skipped_chunk_budget_tests {
     fn smaller_tail_can_progress_when_first_chunk_does_not_fit() {
         assert_eq!(
             plan_missing_chunks(10, 4, 3, &[0, 2], 2, 2).unwrap(),
-            vec![IndexedChunk { index: 2, chunk: Chunk { offset: 8, length: 2 } }]
+            vec![IndexedChunk {
+                index: 2,
+                chunk: Chunk {
+                    offset: 8,
+                    length: 2
+                }
+            }]
         );
-        assert!(plan_missing_chunks(10, 4, 3, &[0, 2], 1, 2).unwrap().is_empty());
-        assert_eq!(plan_missing_chunks(10, 4, 3, &[0, 1, 2], 6, 3).unwrap().len(), 2);
+        assert!(
+            plan_missing_chunks(10, 4, 3, &[0, 2], 1, 2)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            plan_missing_chunks(10, 4, 3, &[0, 1, 2], 6, 3)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 }
 
@@ -754,8 +897,17 @@ mod clamped_window_fast_path_tests {
             let count = total.div_ceil(7);
             for start in 0..=count {
                 for request in 0..=count - start {
-                    let strict = plan_chunk_window(total, 7, 65536, start as usize, request as usize).unwrap();
-                    let clamped = plan_chunk_window_clamped(total, 7, 65536, start as usize, request as usize).unwrap();
+                    let strict =
+                        plan_chunk_window(total, 7, 65536, start as usize, request as usize)
+                            .unwrap();
+                    let clamped = plan_chunk_window_clamped(
+                        total,
+                        7,
+                        65536,
+                        start as usize,
+                        request as usize,
+                    )
+                    .unwrap();
                     assert_eq!(strict, clamped);
                 }
             }
@@ -780,14 +932,27 @@ mod tiny_checkpoint_page_tests {
         for page_limit in [1, 2, 3, 4, 8, 64] {
             for byte_budget in [1, 2, 4, 64, u64::MAX] {
                 let expected = plan_missing_chunks(
-                    chunks as u64, 1, chunks, &progress.remaining(),
-                    byte_budget, page_limit
-                ).unwrap();
+                    chunks as u64,
+                    1,
+                    chunks,
+                    &progress.remaining(),
+                    byte_budget,
+                    page_limit,
+                )
+                .unwrap();
                 let actual = plan_missing_chunks_from_resume(
-                    chunks as u64, 1, chunks, &progress,
-                    byte_budget, page_limit
-                ).unwrap();
-                assert_eq!(actual, expected, "page_limit={page_limit} budget={byte_budget}");
+                    chunks as u64,
+                    1,
+                    chunks,
+                    &progress,
+                    byte_budget,
+                    page_limit,
+                )
+                .unwrap();
+                assert_eq!(
+                    actual, expected,
+                    "page_limit={page_limit} budget={byte_budget}"
+                );
             }
         }
     }
@@ -805,8 +970,16 @@ mod short_tail_binary_search_tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].index, 65_535);
         assert_eq!(selected[0].chunk.length, 3);
-        assert!(plan_missing_chunks(total_bytes, 8, 65_536, &missing, 2, 4).unwrap().is_empty());
-        assert!(plan_missing_chunks(total_bytes, 8, 65_536, &missing[..65_535], 3, 4).unwrap().is_empty());
+        assert!(
+            plan_missing_chunks(total_bytes, 8, 65_536, &missing, 2, 4)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            plan_missing_chunks(total_bytes, 8, 65_536, &missing[..65_535], 3, 4)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
@@ -817,25 +990,83 @@ mod single_pass_coalescing_regression_tests {
     #[test]
     fn consecutive_runs_and_completed_gaps_keep_original_indices() {
         let chunks = [
-            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
-            IndexedChunk { index: 1, chunk: Chunk { offset: 4, length: 4 } },
-            IndexedChunk { index: 4, chunk: Chunk { offset: 16, length: 4 } },
-            IndexedChunk { index: 5, chunk: Chunk { offset: 20, length: 4 } },
+            IndexedChunk {
+                index: 0,
+                chunk: Chunk {
+                    offset: 0,
+                    length: 4,
+                },
+            },
+            IndexedChunk {
+                index: 1,
+                chunk: Chunk {
+                    offset: 4,
+                    length: 4,
+                },
+            },
+            IndexedChunk {
+                index: 4,
+                chunk: Chunk {
+                    offset: 16,
+                    length: 4,
+                },
+            },
+            IndexedChunk {
+                index: 5,
+                chunk: Chunk {
+                    offset: 20,
+                    length: 4,
+                },
+            },
         ];
-        assert_eq!(coalesce_indexed_chunks(&chunks, 8).unwrap(), vec![
-            ChunkRun { first_index: 0, chunk_count: 2, offset: 0, length: 8 },
-            ChunkRun { first_index: 4, chunk_count: 2, offset: 16, length: 8 },
-        ]);
+        assert_eq!(
+            coalesce_indexed_chunks(&chunks, 8).unwrap(),
+            vec![
+                ChunkRun {
+                    first_index: 0,
+                    chunk_count: 2,
+                    offset: 0,
+                    length: 8
+                },
+                ChunkRun {
+                    first_index: 4,
+                    chunk_count: 2,
+                    offset: 16,
+                    length: 8
+                },
+            ]
+        );
     }
 
     #[test]
     fn late_invalid_chunk_rejects_whole_coalescing_plan() {
         let chunks = [
-            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
-            IndexedChunk { index: 1, chunk: Chunk { offset: 4, length: 4 } },
-            IndexedChunk { index: 2, chunk: Chunk { offset: u64::MAX, length: 2 } },
+            IndexedChunk {
+                index: 0,
+                chunk: Chunk {
+                    offset: 0,
+                    length: 4,
+                },
+            },
+            IndexedChunk {
+                index: 1,
+                chunk: Chunk {
+                    offset: 4,
+                    length: 4,
+                },
+            },
+            IndexedChunk {
+                index: 2,
+                chunk: Chunk {
+                    offset: u64::MAX,
+                    length: 2,
+                },
+            },
         ];
-        assert_eq!(coalesce_indexed_chunks(&chunks, 8), Err("transfer chunk range overflow"));
+        assert_eq!(
+            coalesce_indexed_chunks(&chunks, 8),
+            Err("transfer chunk range overflow")
+        );
     }
 }
 
@@ -856,23 +1087,27 @@ mod paged_resume_planner_tests {
                 if start > chunks {
                     continue;
                 }
-                let subset = map.remaining().into_iter().filter(|&index| index >= start)
+                let subset = map
+                    .remaining()
+                    .into_iter()
+                    .filter(|&index| index >= start)
                     .collect::<Vec<_>>();
                 for budget in [0, 1, 4, 5, 9, 100] {
                     for limit in [0, 1, 2, 16, 128] {
-                        let expected = plan_missing_chunks(
-                            bytes, 5, 65_536, &subset, budget, limit
-                        ).unwrap();
+                        let expected =
+                            plan_missing_chunks(bytes, 5, 65_536, &subset, budget, limit).unwrap();
                         let actual = plan_missing_chunks_from_resume_after(
-                            bytes, 5, 65_536, &map, start, budget, limit
-                        ).unwrap();
+                            bytes, 5, 65_536, &map, start, budget, limit,
+                        )
+                        .unwrap();
                         assert_eq!(actual, expected);
                     }
                 }
             }
-            assert!(plan_missing_chunks_from_resume_after(
-                bytes, 5, 65_536, &map, chunks + 1, 0, 0
-            ).is_err());
+            assert!(
+                plan_missing_chunks_from_resume_after(bytes, 5, 65_536, &map, chunks + 1, 0, 0)
+                    .is_err()
+            );
         }
     }
 }
@@ -897,13 +1132,29 @@ mod paged_coalesced_resume_reference_tests {
                     for limit in [0, 1, 2, 5, 32] {
                         for max_run in [1, 7, 14, 100] {
                             let expected = plan_missing_chunks_from_resume_after(
-                                total_bytes, 7, 65_536, &progress, cursor, budget, limit
-                            ).and_then(|chunks| coalesce_indexed_chunks(&chunks, max_run));
+                                total_bytes,
+                                7,
+                                65_536,
+                                &progress,
+                                cursor,
+                                budget,
+                                limit,
+                            )
+                            .and_then(|chunks| coalesce_indexed_chunks(&chunks, max_run));
                             let actual = plan_missing_runs_from_resume_after(
-                                total_bytes, 7, 65_536, &progress, cursor, budget, limit, max_run
+                                total_bytes,
+                                7,
+                                65_536,
+                                &progress,
+                                cursor,
+                                budget,
+                                limit,
+                                max_run,
                             );
-                            assert_eq!(actual, expected,
-                                "bytes={total_bytes} cursor={cursor} budget={budget} limit={limit} max_run={max_run}");
+                            assert_eq!(
+                                actual, expected,
+                                "bytes={total_bytes} cursor={cursor} budget={budget} limit={limit} max_run={max_run}"
+                            );
                         }
                     }
                 }
@@ -917,11 +1168,13 @@ mod paged_coalesced_resume_reference_tests {
         assert!(plan_missing_runs_from_resume_after(8, 4, 2, &progress, 3, 0, 0, 8).is_err());
         assert!(plan_missing_runs_from_resume_after(8, 4, 2, &progress, 2, 0, 0, 0).is_err());
         assert!(plan_missing_runs_from_resume_after(10, 4, 3, &progress, 0, 0, 0, 8).is_err());
-        assert!(plan_missing_runs_from_resume_after(8, 4, 2, &progress, 2, 8, 4, 8)
-            .unwrap().is_empty());
+        assert!(
+            plan_missing_runs_from_resume_after(8, 4, 2, &progress, 2, 8, 4, 8)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
-
 
 /// One validated immutable object and its verified transfer checkpoint.
 pub struct FairTransferSource<'a> {
@@ -956,14 +1209,18 @@ pub fn plan_fair_replica_transfers(
         if source.checkpoint.len() != chunks {
             return Err("transfer checkpoint does not match object layout");
         }
-        if sources[..index].iter().any(|earlier| earlier.key == source.key) {
+        if sources[..index]
+            .iter()
+            .any(|earlier| earlier.key == source.key)
+        {
             return Err("duplicate immutable object transfer");
         }
     }
     if byte_budget == 0 || max_batch_chunks == 0 {
         return Ok(Vec::new());
     }
-    let mut iterators = sources.iter()
+    let mut iterators = sources
+        .iter()
         .map(|source| source.checkpoint.remaining_indices())
         .collect::<Vec<_>>();
     let mut remaining = byte_budget;
@@ -974,11 +1231,14 @@ pub fn plan_fair_replica_transfers(
             // A large chunk may be unaffordable while a shorter final chunk
             // remains schedulable. Consume its cursor rather than retrying
             // the same unaffordable work on every subsequent fair round.
-            while let Some(index) = iterators[source_index].next() {
+            for index in iterators[source_index].by_ref() {
                 let indexed = indexed_chunk_at(source.total_bytes, source.chunk_bytes, index);
                 if indexed.chunk.length <= remaining {
                     remaining -= indexed.chunk.length;
-                    output.push(FairTransferChunk { source_index, indexed });
+                    output.push(FairTransferChunk {
+                        source_index,
+                        indexed,
+                    });
                     progress = true;
                     break;
                 }
@@ -1010,14 +1270,32 @@ mod fair_replica_transfer_tests {
         let mut second = ResumeMap::new(6).unwrap();
         second.mark_complete_indices(&[0, 2]).unwrap();
         let sources = [
-            FairTransferSource { key: &keys[0], total_bytes: 6, chunk_bytes: 1, checkpoint: &first },
-            FairTransferSource { key: &keys[1], total_bytes: 6, chunk_bytes: 1, checkpoint: &second },
+            FairTransferSource {
+                key: &keys[0],
+                total_bytes: 6,
+                chunk_bytes: 1,
+                checkpoint: &first,
+            },
+            FairTransferSource {
+                key: &keys[1],
+                total_bytes: 6,
+                chunk_bytes: 1,
+                checkpoint: &second,
+            },
         ];
         let selected = plan_fair_replica_transfers(&sources, 6, 6).unwrap();
-        let pairs = selected.iter().map(|item| (item.source_index, item.indexed.index))
+        let pairs = selected
+            .iter()
+            .map(|item| (item.source_index, item.indexed.index))
             .collect::<Vec<_>>();
         assert_eq!(pairs, [(0, 0), (1, 1), (0, 1), (1, 3), (0, 2), (1, 4)]);
-        assert_eq!(selected.iter().map(|item| item.indexed.chunk.length).sum::<u64>(), 6);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| item.indexed.chunk.length)
+                .sum::<u64>(),
+            6
+        );
         assert_eq!(first.completed_count(), 0);
         assert_eq!(second.completed_count(), 2);
     }
@@ -1028,14 +1306,30 @@ mod fair_replica_transfer_tests {
         let full = ResumeMap::new(3).unwrap();
         let tail = ResumeMap::new(3).unwrap();
         let sources = [
-            FairTransferSource { key: &keys[0], total_bytes: 24, chunk_bytes: 8, checkpoint: &full },
-            FairTransferSource { key: &keys[1], total_bytes: 17, chunk_bytes: 8, checkpoint: &tail },
+            FairTransferSource {
+                key: &keys[0],
+                total_bytes: 24,
+                chunk_bytes: 8,
+                checkpoint: &full,
+            },
+            FairTransferSource {
+                key: &keys[1],
+                total_bytes: 17,
+                chunk_bytes: 8,
+                checkpoint: &tail,
+            },
         ];
         assert_eq!(
             plan_fair_replica_transfers(&sources, 1, 8).unwrap(),
             [FairTransferChunk {
                 source_index: 1,
-                indexed: IndexedChunk { index: 2, chunk: Chunk { offset: 16, length: 1 } },
+                indexed: IndexedChunk {
+                    index: 2,
+                    chunk: Chunk {
+                        offset: 16,
+                        length: 1
+                    }
+                },
             }],
         );
     }
@@ -1046,16 +1340,27 @@ mod fair_replica_transfer_tests {
         let valid = ResumeMap::new(2).unwrap();
         let bad = ResumeMap::new(1).unwrap();
         let source = FairTransferSource {
-            key: &id, total_bytes: 8, chunk_bytes: 4, checkpoint: &valid,
+            key: &id,
+            total_bytes: 8,
+            chunk_bytes: 4,
+            checkpoint: &valid,
         };
         let duplicate = [
             FairTransferSource { ..source },
             FairTransferSource { ..source },
         ];
         assert!(plan_fair_replica_transfers(&duplicate, 0, 0).is_err());
-        assert!(plan_fair_replica_transfers(&[
-            FairTransferSource { checkpoint: &bad, ..source },
-        ], 0, 0).is_err());
+        assert!(
+            plan_fair_replica_transfers(
+                &[FairTransferSource {
+                    checkpoint: &bad,
+                    ..source
+                },],
+                0,
+                0
+            )
+            .is_err()
+        );
         assert!(plan_fair_replica_transfers(&[source], 1, 65_537).is_err());
     }
 }

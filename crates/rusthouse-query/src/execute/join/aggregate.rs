@@ -1,7 +1,7 @@
 //! Stream numeric aggregates over joined rows without materializing pair output.
 
-use super::*;
 use super::super::AggregateState;
+use super::*;
 use crate::AggregateFunction;
 
 #[allow(clippy::too_many_arguments)]
@@ -25,7 +25,11 @@ pub(super) fn execute_numeric<W: Write>(
     } else {
         inspect_query_source(right_path)?
     };
-    let source_index = if index < left_column_count { index } else { index - left_column_count };
+    let source_index = if index < left_column_count {
+        index
+    } else {
+        index - left_column_count
+    };
     let data_type = base_type(&metadata.columns[source_index].data_type);
     if matches!(data_type, "String" | "UUID" | "Date" | "DateTime")
         || data_type.starts_with("Array(")
@@ -41,7 +45,13 @@ pub(super) fn execute_numeric<W: Write>(
 
     let selected = [(index, header.clone(), None)];
     let right_meta = inspect_query_source(right_path)?;
-    let keep = retained_build_columns(right_names, right_keys, &selected, null_filter, left_column_count);
+    let keep = retained_build_columns(
+        right_names,
+        right_keys,
+        &selected,
+        null_filter,
+        left_column_count,
+    );
     let right_rows = read_projected_build_rows(
         right_path,
         right_names,
@@ -50,7 +60,8 @@ pub(super) fn execute_numeric<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
+    let mut hash =
+        HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
     for (row_index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
             if query.any {

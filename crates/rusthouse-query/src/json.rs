@@ -39,7 +39,13 @@ impl<'a> JsonValue<'a> {
             JsonKind::Primitive => match self.raw {
                 "true" | "false" => "Bool",
                 "null" => "Null",
-                text if text.as_bytes().iter().any(|byte| matches!(byte, b'.' | b'e' | b'E')) => "Double",
+                text if text
+                    .as_bytes()
+                    .iter()
+                    .any(|byte| matches!(byte, b'.' | b'e' | b'E')) =>
+                {
+                    "Double"
+                }
                 // A JSON integer outside the physical integer range must
                 // not be advertised as an Int64/UInt64 value that cannot hold it.
                 text if text.parse::<i64>().is_ok() => "Int64",
@@ -93,7 +99,10 @@ impl<'a> Parser<'a> {
     }
 
     fn skip_ws(&mut self) {
-        while self.next().is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) {
+        while self
+            .next()
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+        {
             self.offset += 1;
         }
     }
@@ -133,7 +142,8 @@ impl<'a> Parser<'a> {
         self.expect(b'"')?;
         // Parse the common escape-free string without byte-by-byte dispatch.
         if let Some(end) = self.bytes()[self.offset..]
-            .iter().position(|&byte| byte == b'"' || byte == b'\\' || byte < 0x20)
+            .iter()
+            .position(|&byte| byte == b'"' || byte == b'\\' || byte < 0x20)
         {
             if self.bytes()[self.offset + end] == b'"' {
                 let begin = self.offset;
@@ -308,7 +318,11 @@ pub(crate) fn parse_json(text: &str) -> Result<JsonValue<'_>, &'static str> {
     if text.len() > MAX_JSON_BYTES {
         return Err("JSON exceeds 1 MiB");
     }
-    let mut parser = Parser { text, offset: 0, nodes: 0 };
+    let mut parser = Parser {
+        text,
+        offset: 0,
+        nodes: 0,
+    };
     let value = parser.value(0)?;
     parser.skip_ws();
     if parser.offset != text.len() {
@@ -333,8 +347,8 @@ pub fn parse_json_each_row_fields(text: &str) -> Result<Vec<(String, Option<Stri
     {
         // Short JSONEachRow records are common. Check borrowed field names
         // directly instead of creating a per-record hash table.
-        let mut seen = (fields.len() > 8)
-            .then(|| std::collections::HashSet::with_capacity(fields.len()));
+        let mut seen =
+            (fields.len() > 8).then(|| std::collections::HashSet::with_capacity(fields.len()));
         for (index, (key, _)) in fields.iter().enumerate() {
             if key.is_empty() || key.len() > 128 {
                 return Err("JSONEachRow field names must be between 1 and 128 bytes".into());
@@ -370,8 +384,14 @@ mod tests {
     #[test]
     fn plain_json_string_fast_path_preserves_utf8_and_escaped_fallback() {
         let parsed = parse_json(r#"{"café":"zażółć","escaped":"a\nb"}"#).unwrap();
-        assert_eq!(parsed.at_path("café").and_then(|v| v.as_string()), Some("zażółć"));
-        assert_eq!(parsed.at_path("escaped").and_then(|v| v.as_string()), Some("a\nb"));
+        assert_eq!(
+            parsed.at_path("café").and_then(|v| v.as_string()),
+            Some("zażółć")
+        );
+        assert_eq!(
+            parsed.at_path("escaped").and_then(|v| v.as_string()),
+            Some("a\nb")
+        );
         assert!(parse_json("{\"bad\":\"unterminated").is_err());
         assert!(parse_json("{\"bad\":\"unescaped\ncontrol\"}").is_err());
     }
@@ -445,7 +465,8 @@ mod json_integer_range_type_tests {
             "\"u_over\":18446744073709551616,",
             "\"huge_negative\":-99999999999999999999999999,",
             "\"decimal\":1.0}"
-        )).unwrap();
+        ))
+        .unwrap();
         for (field, expected) in [
             ("i_min", "Int64"),
             ("i_low", "Double"),
@@ -456,7 +477,11 @@ mod json_integer_range_type_tests {
             ("huge_negative", "Double"),
             ("decimal", "Double"),
         ] {
-            assert_eq!(value.at_path(field).unwrap().type_name(), expected, "{field}");
+            assert_eq!(
+                value.at_path(field).unwrap().type_name(),
+                expected,
+                "{field}"
+            );
         }
     }
 }
@@ -468,26 +493,37 @@ mod borrowed_json_each_row_field_tests {
     #[test]
     fn preserves_insertion_order_nulls_unicode_and_nested_literals() {
         let result = parse_json_each_row_fields(
-            r#"{"café":"mémoire","id":42,"empty":null,"nested":[1,true],"flag":false}"#
-        ).unwrap();
-        assert_eq!(result, vec![
-            ("café".into(), Some("mémoire".into())),
-            ("id".into(), Some("42".into())),
-            ("empty".into(), None),
-            ("nested".into(), Some("[1,true]".into())),
-            ("flag".into(), Some("false".into())),
-        ]);
+            r#"{"café":"mémoire","id":42,"empty":null,"nested":[1,true],"flag":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            vec![
+                ("café".into(), Some("mémoire".into())),
+                ("id".into(), Some("42".into())),
+                ("empty".into(), None),
+                ("nested".into(), Some("[1,true]".into())),
+                ("flag".into(), Some("false".into())),
+            ]
+        );
     }
 
     #[test]
     fn validates_all_keys_before_converting_many_columns() {
-        let wide = format!("{{{}}}", (0..128).map(|index| format!(
-            "\"column_{index}\":{index}"
-        )).collect::<Vec<_>>().join(","));
+        let wide = format!(
+            "{{{}}}",
+            (0..128)
+                .map(|index| format!("\"column_{index}\":{index}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         assert_eq!(parse_json_each_row_fields(&wide).unwrap().len(), 128);
         let duplicated = wide.replace("\"column_127\":127", "\"column_3\":88");
-        assert!(parse_json_each_row_fields(&duplicated).unwrap_err()
-            .starts_with("duplicate JSONEachRow field:"));
+        assert!(
+            parse_json_each_row_fields(&duplicated)
+                .unwrap_err()
+                .starts_with("duplicate JSONEachRow field:")
+        );
         assert!(parse_json_each_row_fields(r#"{"":1}"#).is_err());
         assert!(parse_json_each_row_fields(r#"{"a":1,"a":2}"#).is_err());
     }
@@ -500,16 +536,33 @@ mod json_node_budget_tests {
     #[test]
     fn limits_wide_arrays_even_below_the_input_byte_cap() {
         let allowed = format!("[{}]", vec!["0"; MAX_JSON_NODES - 1].join(","));
-        assert_eq!(parse_json(&allowed).unwrap().container_len(), MAX_JSON_NODES - 1);
+        assert_eq!(
+            parse_json(&allowed).unwrap().container_len(),
+            MAX_JSON_NODES - 1
+        );
         let too_many = format!("[{}]", vec!["0"; MAX_JSON_NODES].join(","));
-        assert_eq!(parse_json(&too_many).unwrap_err(), "JSON contains too many values");
+        assert_eq!(
+            parse_json(&too_many).unwrap_err(),
+            "JSON contains too many values"
+        );
     }
 
     #[test]
     fn counts_nested_object_and_array_values_in_the_same_budget() {
-        assert_eq!(parse_json(r#"{"a":[1,2],"b":true}"#).unwrap().container_len(), 2);
-        let too_many = format!("{{\"items\":[{}]}}", vec!["null"; MAX_JSON_NODES - 1].join(","));
-        assert_eq!(parse_json(&too_many).unwrap_err(), "JSON contains too many values");
+        assert_eq!(
+            parse_json(r#"{"a":[1,2],"b":true}"#)
+                .unwrap()
+                .container_len(),
+            2
+        );
+        let too_many = format!(
+            "{{\"items\":[{}]}}",
+            vec!["null"; MAX_JSON_NODES - 1].join(",")
+        );
+        assert_eq!(
+            parse_json(&too_many).unwrap_err(),
+            "JSON contains too many values"
+        );
         assert_eq!(parse_json("null").unwrap().type_name(), "Null");
     }
 }
@@ -521,9 +574,13 @@ mod short_json_each_row_key_tests {
     #[test]
     fn small_and_large_field_sets_preserve_all_values() {
         for count in [0, 1, 2, 8, 9, 128] {
-            let json = format!("{{{}}}", (0..count)
-                .map(|index| format!("\"k{index}\":{index}"))
-                .collect::<Vec<_>>().join(","));
+            let json = format!(
+                "{{{}}}",
+                (0..count)
+                    .map(|index| format!("\"k{index}\":{index}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
             let fields = parse_json_each_row_fields(&json).unwrap();
             assert_eq!(fields.len(), count);
             for (index, (key, value)) in fields.iter().enumerate() {
@@ -557,18 +614,26 @@ mod borrowed_json_string_tests {
     fn plain_values_borrow_the_source_and_escaped_values_are_owned() {
         let input = r#"{"plain":"éclair-😀","escaped":"line\nbreak"}"#;
         let parsed = parse_json(input).unwrap();
-        let JsonKind::Object(fields) = &parsed.kind else { panic!("expected object") };
-        assert!(matches!(&fields[0].1.kind, JsonKind::Text(Cow::Borrowed(_))));
+        let JsonKind::Object(fields) = &parsed.kind else {
+            panic!("expected object")
+        };
+        assert!(matches!(
+            &fields[0].1.kind,
+            JsonKind::Text(Cow::Borrowed(_))
+        ));
         assert!(matches!(&fields[1].1.kind, JsonKind::Text(Cow::Owned(_))));
         assert_eq!(fields[0].1.as_string(), Some("éclair-😀"));
         assert_eq!(fields[1].1.as_string(), Some("line\nbreak"));
 
         // JSONEachRow owns the returned values even after its input is dropped.
         let converted = parse_json_each_row_fields(input).unwrap();
-        assert_eq!(converted, vec![
-            ("plain".into(), Some("éclair-😀".into())),
-            ("escaped".into(), Some("line\nbreak".into())),
-        ]);
+        assert_eq!(
+            converted,
+            vec![
+                ("plain".into(), Some("éclair-😀".into())),
+                ("escaped".into(), Some("line\nbreak".into())),
+            ]
+        );
     }
 
     #[test]
@@ -576,7 +641,9 @@ mod borrowed_json_string_tests {
         let long = "界".repeat(12_000);
         let input = format!("{{\"data\":\"{long}\"}}");
         let parsed = parse_json(&input).unwrap();
-        let JsonKind::Object(fields) = &parsed.kind else { panic!("expected object") };
+        let JsonKind::Object(fields) = &parsed.kind else {
+            panic!("expected object")
+        };
         let JsonKind::Text(Cow::Borrowed(value)) = &fields[0].1.kind else {
             panic!("plain strings must not allocate a second copy")
         };

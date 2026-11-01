@@ -48,7 +48,9 @@ fn unsigned_with_signed(
     let magnitude = signed.unsigned_abs();
     let add = (signed >= 0) != subtract;
     if add {
-        unsigned.checked_add(magnitude).map(mixed_positive)
+        unsigned
+            .checked_add(magnitude)
+            .map(mixed_positive)
             .ok_or_else(aggregate_overflow)
     } else if unsigned >= magnitude {
         Ok(mixed_positive(unsigned - magnitude))
@@ -65,7 +67,9 @@ fn signed_minus_unsigned(signed: i128, unsigned: u128) -> Result<Number, Executi
             mixed_negative(unsigned - signed as u128)
         }
     } else {
-        signed.unsigned_abs().checked_add(unsigned)
+        signed
+            .unsigned_abs()
+            .checked_add(unsigned)
             .ok_or_else(aggregate_overflow)
             .and_then(mixed_negative)
     }
@@ -102,22 +106,18 @@ pub(super) fn checked_binary(
                 ExecutionError::Invalid("unsigned aggregate expression overflow".into())
             })
         }
-        (Number::Unsigned(a), Number::Signed(b)) =>
-            unsigned_with_signed(a, b, subtract),
-        (Number::Signed(a), Number::Unsigned(b)) if subtract =>
-            signed_minus_unsigned(a, b),
-        (Number::Signed(a), Number::Unsigned(b)) =>
-            unsigned_with_signed(b, a, false),
-        (a, b) => {
-            op(number_as_i128(a)?, number_as_i128(b)?)
-                .map(Number::Signed)
-                .ok_or_else(aggregate_overflow)
-        }
+        (Number::Unsigned(a), Number::Signed(b)) => unsigned_with_signed(a, b, subtract),
+        (Number::Signed(a), Number::Unsigned(b)) if subtract => signed_minus_unsigned(a, b),
+        (Number::Signed(a), Number::Unsigned(b)) => unsigned_with_signed(b, a, false),
+        (a, b) => op(number_as_i128(a)?, number_as_i128(b)?)
+            .map(Number::Signed)
+            .ok_or_else(aggregate_overflow),
     }
 }
 
 fn multiply_unsigned_signed(unsigned: u128, signed: i128) -> Result<Number, ExecutionError> {
-    let magnitude = unsigned.checked_mul(signed.unsigned_abs())
+    let magnitude = unsigned
+        .checked_mul(signed.unsigned_abs())
         .ok_or_else(aggregate_overflow)?;
     if signed < 0 {
         mixed_negative(magnitude)
@@ -128,22 +128,21 @@ fn multiply_unsigned_signed(unsigned: u128, signed: i128) -> Result<Number, Exec
 
 pub(super) fn checked_multiply(left: Number, right: Number) -> Result<Number, ExecutionError> {
     match (left, right) {
-        (Number::Float(_), _) | (_, Number::Float(_)) => {
-            Ok(Number::Float(number_as_float(left) * number_as_float(right)))
-        }
+        (Number::Float(_), _) | (_, Number::Float(_)) => Ok(Number::Float(
+            number_as_float(left) * number_as_float(right),
+        )),
         (Number::Unsigned(a), Number::Unsigned(b)) => {
             a.checked_mul(b).map(Number::Unsigned).ok_or_else(|| {
                 ExecutionError::Invalid("unsigned aggregate expression overflow".into())
             })
         }
-        (Number::Unsigned(a), Number::Signed(b))
-        | (Number::Signed(b), Number::Unsigned(a)) => multiply_unsigned_signed(a, b),
-        (a, b) => {
-            number_as_i128(a)?
-                .checked_mul(number_as_i128(b)?)
-                .map(Number::Signed)
-                .ok_or_else(aggregate_overflow)
+        (Number::Unsigned(a), Number::Signed(b)) | (Number::Signed(b), Number::Unsigned(a)) => {
+            multiply_unsigned_signed(a, b)
         }
+        (a, b) => number_as_i128(a)?
+            .checked_mul(number_as_i128(b)?)
+            .map(Number::Signed)
+            .ok_or_else(aggregate_overflow),
     }
 }
 
@@ -153,19 +152,31 @@ mod mixed_uint128_binary_tests {
 
     #[test]
     fn full_width_unsigned_and_signed_offsets_preserve_exact_results() {
-        assert!(matches!(checked_binary(Number::Unsigned(u128::MAX), Number::Signed(-1), false),
-            Ok(Number::Unsigned(value)) if value == u128::MAX - 1));
-        assert!(matches!(checked_binary(Number::Unsigned(u128::MAX), Number::Signed(1), true),
-            Ok(Number::Unsigned(value)) if value == u128::MAX - 1));
+        assert!(
+            matches!(checked_binary(Number::Unsigned(u128::MAX), Number::Signed(-1), false),
+            Ok(Number::Unsigned(value)) if value == u128::MAX - 1)
+        );
+        assert!(
+            matches!(checked_binary(Number::Unsigned(u128::MAX), Number::Signed(1), true),
+            Ok(Number::Unsigned(value)) if value == u128::MAX - 1)
+        );
         assert!(checked_binary(Number::Unsigned(u128::MAX), Number::Signed(1), false).is_err());
-        assert!(matches!(checked_binary(Number::Signed(-1), Number::Unsigned(u128::MAX), false),
-            Ok(Number::Unsigned(value)) if value == u128::MAX - 1));
-        assert!(matches!(checked_binary(Number::Unsigned(0), Number::Signed(1), true),
-            Ok(Number::Signed(-1))));
-        assert!(matches!(checked_binary(Number::Signed(0), Number::Unsigned(1), true),
-            Ok(Number::Signed(-1))));
-        assert!(matches!(checked_binary(Number::Unsigned(0), Number::Signed(i128::MIN), false),
-            Ok(Number::Signed(i128::MIN))));
+        assert!(
+            matches!(checked_binary(Number::Signed(-1), Number::Unsigned(u128::MAX), false),
+            Ok(Number::Unsigned(value)) if value == u128::MAX - 1)
+        );
+        assert!(matches!(
+            checked_binary(Number::Unsigned(0), Number::Signed(1), true),
+            Ok(Number::Signed(-1))
+        ));
+        assert!(matches!(
+            checked_binary(Number::Signed(0), Number::Unsigned(1), true),
+            Ok(Number::Signed(-1))
+        ));
+        assert!(matches!(
+            checked_binary(Number::Unsigned(0), Number::Signed(i128::MIN), false),
+            Ok(Number::Signed(i128::MIN))
+        ));
         assert!(checked_binary(Number::Signed(i128::MIN), Number::Unsigned(1), true).is_err());
     }
 }
@@ -176,16 +187,24 @@ mod full_width_mixed_multiply_tests {
 
     #[test]
     fn preserves_u128_range_and_exact_negative_limit() {
-        assert!(matches!(checked_multiply(Number::Unsigned(u128::MAX), Number::Signed(0)),
-            Ok(Number::Signed(0))));
-        assert!(matches!(checked_multiply(Number::Signed(1), Number::Unsigned(u128::MAX)),
-            Ok(Number::Unsigned(value)) if value == u128::MAX));
-        assert!(matches!(checked_multiply(Number::Unsigned(1_u128 << 127), Number::Signed(-1)),
-            Ok(Number::Signed(i128::MIN))));
+        assert!(matches!(
+            checked_multiply(Number::Unsigned(u128::MAX), Number::Signed(0)),
+            Ok(Number::Signed(0))
+        ));
+        assert!(
+            matches!(checked_multiply(Number::Signed(1), Number::Unsigned(u128::MAX)),
+            Ok(Number::Unsigned(value)) if value == u128::MAX)
+        );
+        assert!(matches!(
+            checked_multiply(Number::Unsigned(1_u128 << 127), Number::Signed(-1)),
+            Ok(Number::Signed(i128::MIN))
+        ));
         assert!(checked_multiply(Number::Unsigned(u128::MAX), Number::Signed(-1)).is_err());
         assert!(checked_multiply(Number::Unsigned(u128::MAX), Number::Signed(2)).is_err());
-        assert!(matches!(checked_multiply(Number::Signed(-1), Number::Unsigned(1)),
-            Ok(Number::Signed(-1))));
+        assert!(matches!(
+            checked_multiply(Number::Signed(-1), Number::Unsigned(1)),
+            Ok(Number::Signed(-1))
+        ));
     }
 }
 
@@ -195,32 +214,43 @@ pub(super) fn checked_remainder(left: Number, right: Number) -> Result<Number, E
         let dividend = number_as_float(left);
         let divisor = number_as_float(right);
         if divisor == 0.0 {
-            return Err(ExecutionError::Invalid("modulo by zero in aggregate expression".into()));
+            return Err(ExecutionError::Invalid(
+                "modulo by zero in aggregate expression".into(),
+            ));
         }
         let remainder = dividend % divisor;
         if !remainder.is_finite() {
-            return Err(ExecutionError::Invalid("non-finite aggregate remainder".into()));
+            return Err(ExecutionError::Invalid(
+                "non-finite aggregate remainder".into(),
+            ));
         }
         return Ok(Number::Float(remainder));
     }
     match (left, right) {
-        (Number::Unsigned(a), Number::Unsigned(b)) => a.checked_rem(b)
-            .map(Number::Unsigned).ok_or_else(|| {
-                ExecutionError::Invalid("modulo by zero in aggregate expression".into())
-            }),
-        (Number::Signed(a), Number::Signed(b)) => a.checked_rem(b)
-            .map(Number::Signed).ok_or_else(|| {
-                ExecutionError::Invalid("invalid signed aggregate remainder".into())
-            }),
-        (Number::Unsigned(a), Number::Signed(b)) => {
-            a.checked_rem(b.unsigned_abs()).map(Number::Unsigned).ok_or_else(|| {
+        (Number::Unsigned(a), Number::Unsigned(b)) => {
+            a.checked_rem(b).map(Number::Unsigned).ok_or_else(|| {
                 ExecutionError::Invalid("modulo by zero in aggregate expression".into())
             })
         }
+        (Number::Signed(a), Number::Signed(b)) => a
+            .checked_rem(b)
+            .map(Number::Signed)
+            .ok_or_else(|| ExecutionError::Invalid("invalid signed aggregate remainder".into())),
+        (Number::Unsigned(a), Number::Signed(b)) => a
+            .checked_rem(b.unsigned_abs())
+            .map(Number::Unsigned)
+            .ok_or_else(|| {
+                ExecutionError::Invalid("modulo by zero in aggregate expression".into())
+            }),
         (Number::Signed(a), Number::Unsigned(b)) => {
-            let magnitude = a.unsigned_abs().checked_rem(b)
-                .ok_or_else(|| ExecutionError::Invalid("modulo by zero in aggregate expression".into()))?;
-            if a < 0 { mixed_negative(magnitude) } else { Ok(mixed_positive(magnitude)) }
+            let magnitude = a.unsigned_abs().checked_rem(b).ok_or_else(|| {
+                ExecutionError::Invalid("modulo by zero in aggregate expression".into())
+            })?;
+            if a < 0 {
+                mixed_negative(magnitude)
+            } else {
+                Ok(mixed_positive(magnitude))
+            }
         }
         _ => unreachable!("float operands handled above"),
     }

@@ -4,7 +4,7 @@ use crate::{
 };
 use std::error::Error;
 use std::fmt;
-use std::io::{self, Read};
+use std::io::Read;
 use std::ops::Range;
 
 /// Flattened Array(Array(T)) with two levels of offsets.
@@ -366,13 +366,24 @@ mod direct_nested_array_type_tests {
 
     #[test]
     fn type_lookup_matches_zero_row_numeric_decoder() {
-        for leaf in ["UInt8", "Int64", "UInt128", "Float64", "Date",
-                     "DateTime64(9)", "DateTime('Europe/Berlin')",
-                     "DateTime64(11)", "String", "Nullable(UInt16)", "Float16"] {
+        for leaf in [
+            "UInt8",
+            "Int64",
+            "UInt128",
+            "Float64",
+            "Date",
+            "DateTime64(9)",
+            "DateTime('Europe/Berlin')",
+            "DateTime64(11)",
+            "String",
+            "Nullable(UInt16)",
+            "Float16",
+        ] {
             let expected = read_numeric_column(&mut io::empty(), leaf, 0).is_ok();
             assert_eq!(
                 validated_nested_numeric_leaf_type(&format!("Array(Array({leaf}))")).is_ok(),
-                expected, "leaf type: {leaf}"
+                expected,
+                "leaf type: {leaf}"
             );
         }
     }

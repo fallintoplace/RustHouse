@@ -21,11 +21,7 @@ fn clickhouse_constant_function() {
 
 #[test]
 fn invalid_arguments() {
-    for sql in [
-        "SELECT hex()",
-        "SELECT hex(1)",
-        "SELECT hex('x', 'y')",
-    ] {
+    for sql in ["SELECT hex()", "SELECT hex(1)", "SELECT hex('x', 'y')"] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }

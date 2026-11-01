@@ -1,4 +1,4 @@
-use rusthouse_query::{parse_select, ConstantValue, Projection};
+use rusthouse_query::{ConstantValue, Projection, parse_select};
 
 fn scalar(sql: &str) -> ConstantValue {
     match parse_select(sql).unwrap().projection {

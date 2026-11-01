@@ -45,9 +45,7 @@ fn parse_member(line: &str) -> Result<(&str, &str, u16), &'static str> {
     }
     // Reject alternate spellings such as +1 or 001. Membership manifests
     // should have one canonical byte representation per numeric weight.
-    if weight_text.starts_with('0')
-        || !weight_text.bytes().all(|byte| byte.is_ascii_digit())
-    {
+    if weight_text.starts_with('0') || !weight_text.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("noncanonical member weight");
     }
     let weight = weight_text
@@ -102,8 +100,7 @@ fn serialized_membership_bytes(members: &[Member]) -> Result<usize, &'static str
     let mut seen = [""; MAX_MEMBER_RECORDS];
     let mut bytes = 0usize;
     for (index, member) in members.iter().enumerate() {
-        if !valid_member_identity(&member.node, &member.zone)
-            || !valid_member_weight(member.weight)
+        if !valid_member_identity(&member.node, &member.zone) || !valid_member_weight(member.weight)
         {
             return Err("invalid or duplicate membership record");
         }
@@ -114,8 +111,7 @@ fn serialized_membership_bytes(members: &[Member]) -> Result<usize, &'static str
         seen.copy_within(position..index, position + 1);
         seen[position] = member.node.as_str();
         // Two spaces and one newline. Weight is always a positive u16.
-        bytes += member.node.len() + member.zone.len()
-            + member.weight.ilog10() as usize + 1 + 3;
+        bytes += member.node.len() + member.zone.len() + member.weight.ilog10() as usize + 1 + 3;
         if bytes > MAX_MANIFEST_BYTES {
             return Err("membership manifest too large");
         }
@@ -214,18 +210,15 @@ pub struct ZoneCapacity {
 }
 
 /// Aggregate valid membership weights by zone for placement planning.
-pub fn membership_capacity_by_zone(
-    members: &[Member],
-) -> Result<Vec<ZoneCapacity>, &'static str> {
+pub fn membership_capacity_by_zone(members: &[Member]) -> Result<Vec<ZoneCapacity>, &'static str> {
     validate_membership(members)?;
     // Most clusters use far fewer zones than members. Aggregate borrowed
     // zone names without a tree allocation for the small common case.
     if members.len() <= 16 {
         let mut zones = Vec::<(&str, usize, u64)>::new();
         for member in members {
-            if let Some((_, nodes, weight)) = zones
-                .iter_mut()
-                .find(|(zone, _, _)| *zone == member.zone)
+            if let Some((_, nodes, weight)) =
+                zones.iter_mut().find(|(zone, _, _)| *zone == member.zone)
             {
                 *nodes += 1;
                 *weight += u64::from(member.weight);
@@ -311,7 +304,10 @@ mod tests {
         assert!(format_membership(&members).is_err());
         let small = parse_membership("a zone1 42\nb zone2 2\n").unwrap();
         assert!(validate_membership(&small).is_ok());
-        assert_eq!(format_membership(&small).unwrap(), "a zone1 42\nb zone2 2\n");
+        assert_eq!(
+            format_membership(&small).unwrap(),
+            "a zone1 42\nb zone2 2\n"
+        );
     }
 
     #[test]
@@ -342,14 +338,27 @@ mod zone_capacity_tests {
         assert_eq!(
             membership_capacity_by_zone(&members).unwrap(),
             vec![
-                ZoneCapacity { zone: "zone_a".into(), nodes: 2, weight: 7 },
-                ZoneCapacity { zone: "zone_b".into(), nodes: 1, weight: 2 },
+                ZoneCapacity {
+                    zone: "zone_a".into(),
+                    nodes: 2,
+                    weight: 7
+                },
+                ZoneCapacity {
+                    zone: "zone_b".into(),
+                    nodes: 1,
+                    weight: 2
+                },
             ]
         );
         assert!(membership_capacity_by_zone(&[]).is_err());
-        assert!(membership_capacity_by_zone(&[Member {
-            node: "bad".into(), zone: "a".into(), weight: 0
-        }]).is_err());
+        assert!(
+            membership_capacity_by_zone(&[Member {
+                node: "bad".into(),
+                zone: "a".into(),
+                weight: 0
+            }])
+            .is_err()
+        );
     }
 }
 
@@ -360,9 +369,13 @@ mod small_membership_validation_tests {
     #[test]
     fn small_and_large_validation_reject_the_same_duplicates() {
         for count in [1, 2, 3, 8, 9, 16, 64] {
-            let valid = (0..count).map(|index| Member {
-                node: format!("node_{index}"), zone: format!("zone_{}", index % 3), weight: 1,
-            }).collect::<Vec<_>>();
+            let valid = (0..count)
+                .map(|index| Member {
+                    node: format!("node_{index}"),
+                    zone: format!("zone_{}", index % 3),
+                    weight: 1,
+                })
+                .collect::<Vec<_>>();
             assert!(validate_membership(&valid).is_ok());
             if count > 1 {
                 let mut invalid = valid.clone();
@@ -395,7 +408,10 @@ mod borrowed_member_parsing_tests {
         assert_eq!(members[0].node, "n1");
         assert_eq!(members[0].weight, 23);
         assert_eq!(members[1].zone, "zone2");
-        assert_eq!(format_membership(&members).unwrap(), "n1 zone1 23\nn2 zone2 7\n");
+        assert_eq!(
+            format_membership(&members).unwrap(),
+            "n1 zone1 23\nn2 zone2 7\n"
+        );
     }
 }
 
@@ -436,11 +452,13 @@ mod exact_membership_format_size_tests {
     #[test]
     fn validation_size_matches_wire_output_for_long_member_names() {
         for count in [1, 8, 9, 32, 64] {
-            let members = (0..count).map(|index| Member {
-                node: format!("replica_{index:02}_{}", "n".repeat(40)),
-                zone: format!("zone_{}", index % 7),
-                weight: [1, 9, 10, 999, 1000][index % 5],
-            }).collect::<Vec<_>>();
+            let members = (0..count)
+                .map(|index| Member {
+                    node: format!("replica_{index:02}_{}", "n".repeat(40)),
+                    zone: format!("zone_{}", index % 7),
+                    weight: [1, 9, 10, 999, 1000][index % 5],
+                })
+                .collect::<Vec<_>>();
             let size = serialized_membership_bytes(&members).unwrap();
             let formatted = format_membership(&members).unwrap();
             assert_eq!(formatted.len(), size);
@@ -450,7 +468,11 @@ mod exact_membership_format_size_tests {
 
     #[test]
     fn sizing_does_not_skip_duplicate_or_oversized_validation() {
-        let item = Member { node: "n".into(), zone: "z".into(), weight: 1 };
+        let item = Member {
+            node: "n".into(),
+            zone: "z".into(),
+            weight: 1,
+        };
         assert!(serialized_membership_bytes(&[item.clone(), item]).is_err());
         assert!(serialized_membership_bytes(&[]).is_err());
     }
@@ -490,7 +512,10 @@ mod ascii_membership_delimiter_tests {
         }
         let members = parse_membership("n1\tzone\t1\r\nn2 zone 2\n").unwrap();
         assert_eq!(members.len(), 2);
-        assert_eq!(format_membership(&members).unwrap(), "n1 zone 1\nn2 zone 2\n");
+        assert_eq!(
+            format_membership(&members).unwrap(),
+            "n1 zone 1\nn2 zone 2\n"
+        );
     }
 }
 
@@ -518,7 +543,10 @@ mod small_zone_capacity_regressions {
                 assert_eq!(zone.zone, format!("z{index}"));
                 let matching = members.iter().filter(|m| m.zone == zone.zone);
                 assert_eq!(zone.nodes, matching.clone().count());
-                assert_eq!(zone.weight, matching.map(|m| u64::from(m.weight)).sum::<u64>());
+                assert_eq!(
+                    zone.weight,
+                    matching.map(|m| u64::from(m.weight)).sum::<u64>()
+                );
             }
         }
     }
@@ -540,14 +568,17 @@ mod membership_reconciliation_tests {
         let before = parse_membership("c zone0 1\nb zone1 2\na zone1 3\n").unwrap();
         let after = parse_membership("d zone3 1\na zone1 3\nb zone2 2\n").unwrap();
         let changes = membership_changes(&before, &after).unwrap();
-        assert_eq!(changes, vec![
-            MembershipChange::Reconfigured {
-                before: before[1].clone(),
-                after: after[2].clone(),
-            },
-            MembershipChange::Removed(before[0].clone()),
-            MembershipChange::Added(after[0].clone()),
-        ]);
+        assert_eq!(
+            changes,
+            vec![
+                MembershipChange::Reconfigured {
+                    before: before[1].clone(),
+                    after: after[2].clone(),
+                },
+                MembershipChange::Removed(before[0].clone()),
+                MembershipChange::Added(after[0].clone()),
+            ]
+        );
         let mut reordered = before.clone();
         reordered.reverse();
         assert!(membership_changes(&before, &reordered).unwrap().is_empty());
@@ -555,11 +586,13 @@ mod membership_reconciliation_tests {
 
     #[test]
     fn large_manifest_only_clones_changed_members() {
-        let before = (0..64).map(|index| Member {
-            node: format!("node_{index:03}"),
-            zone: format!("zone_{}", index % 4),
-            weight: 1,
-        }).collect::<Vec<_>>();
+        let before = (0..64)
+            .map(|index| Member {
+                node: format!("node_{index:03}"),
+                zone: format!("zone_{}", index % 4),
+                weight: 1,
+            })
+            .collect::<Vec<_>>();
         let mut after = before.clone();
         after.reverse();
         assert!(membership_changes(&before, &after).unwrap().is_empty());
@@ -585,12 +618,16 @@ mod stack_membership_index_tests {
     #[test]
     fn full_membership_roundtrips_without_losing_duplicate_detection() {
         for size in [1usize, 2, 8, 9, 16, 32, 64] {
-            let records = (0..size).rev().map(|index| {
-                format!("node_{index:02} zone_{} {}\n", index % 7, index % 1000 + 1)
-            }).collect::<String>();
+            let records = (0..size)
+                .rev()
+                .map(|index| format!("node_{index:02} zone_{} {}\n", index % 7, index % 1000 + 1))
+                .collect::<String>();
             let members = parse_membership(&records).unwrap();
             assert_eq!(members.len(), size);
-            assert_eq!(serialized_membership_bytes(&members).unwrap(), records.len());
+            assert_eq!(
+                serialized_membership_bytes(&members).unwrap(),
+                records.len()
+            );
             assert_eq!(format_membership(&members).unwrap(), records);
             let mut duplicates = members.clone();
             if size == 1 {
@@ -607,9 +644,9 @@ mod stack_membership_index_tests {
 
     #[test]
     fn exhausted_index_rejects_new_names_and_old_duplicates() {
-        let text = (0..64).map(|index| {
-            format!("node_{index:02} zone_{} 1\n", index % 4)
-        }).collect::<String>();
+        let text = (0..64)
+            .map(|index| format!("node_{index:02} zone_{} 1\n", index % 4))
+            .collect::<String>();
         assert_eq!(parse_membership(&text).unwrap().len(), 64);
         assert!(parse_membership(&(text.clone() + "new_node zone_0 1\n")).is_err());
         assert!(parse_membership(&(text + "node_00 zone_0 1\n")).is_err());

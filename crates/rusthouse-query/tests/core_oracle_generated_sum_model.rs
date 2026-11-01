@@ -12,6 +12,10 @@ fn generated_sum_matches_independent_arithmetic_progression() {
     for rows in [1u64, 2, 17, 1024, 1025, 20_000] {
         let expected = u128::from(rows) * u128::from(rows - 1) / 2;
         let sql = format!("SELECT sum(number) FROM numbers({rows})");
-        assert_eq!(run(&sql), format!("sum(number)\n{expected}\n"), "rows={rows}");
+        assert_eq!(
+            run(&sql),
+            format!("sum(number)\n{expected}\n"),
+            "rows={rows}"
+        );
     }
 }

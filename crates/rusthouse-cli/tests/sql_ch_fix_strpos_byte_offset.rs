@@ -18,5 +18,4 @@ fn verifies_strpos_byte_offset_semantics() {
         );
         assert_eq!(output.stdout, expected.as_bytes(), "{query}");
     }
-
 }

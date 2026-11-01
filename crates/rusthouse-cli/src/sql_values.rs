@@ -30,7 +30,10 @@ fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
     let mut remaining = value.as_bytes();
     // Most SQL result values contain neither quotes nor backslashes. Copy
     // those spans directly rather than branching for every ordinary byte.
-    while let Some(index) = remaining.iter().position(|&byte| byte == b'\'' || byte == b'\\') {
+    while let Some(index) = remaining
+        .iter()
+        .position(|&byte| byte == b'\'' || byte == b'\\')
+    {
         output.extend_from_slice(&remaining[..index]);
         if remaining[index] == b'\'' {
             output.extend_from_slice(b"''");
@@ -43,7 +46,12 @@ fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
     output.push(b'\'');
 }
 
-fn encode_values_row_into(line: &[u8], columns: usize, values: &mut Vec<u8>, prefix: &[u8]) -> io::Result<()> {
+fn encode_values_row_into(
+    line: &[u8],
+    columns: usize,
+    values: &mut Vec<u8>,
+    prefix: &[u8],
+) -> io::Result<()> {
     values.clear();
     values.reserve(
         line.len()
@@ -125,7 +133,13 @@ impl<W: Write> SqlValuesWriter<W> {
             self.line.clear();
             return Ok(());
         };
-        emit_values_row(&mut self.output, &mut self.encoded, &mut self.rows, &self.line, columns)?;
+        emit_values_row(
+            &mut self.output,
+            &mut self.encoded,
+            &mut self.rows,
+            &self.line,
+            columns,
+        )?;
         self.line.clear();
         Ok(())
     }
@@ -204,7 +218,11 @@ mod tests {
         writer.write_all(format!("{value}\n").as_bytes()).unwrap();
         assert_eq!(writer.line.capacity(), before);
         writer.finish().unwrap();
-        assert!(writer.output.ends_with(format!("('{value}');\n").as_bytes()));
+        assert!(
+            writer
+                .output
+                .ends_with(format!("('{value}');\n").as_bytes())
+        );
     }
 
     #[test]
@@ -316,7 +334,9 @@ mod reuse_sql_values_row_buffer_tests {
     fn encoded_buffer_capacity_is_reused_for_subsequent_rows() {
         let mut writer = SqlValuesWriter::new(Vec::new());
         let large = "x".repeat(32 * 1024);
-        writer.write_all(format!("value\n{large}\n").as_bytes()).unwrap();
+        writer
+            .write_all(format!("value\n{large}\n").as_bytes())
+            .unwrap();
         let capacity = writer.encoded.capacity();
         writer.write_all(b"small\nsmall\n").unwrap();
         assert_eq!(writer.encoded.capacity(), capacity);
@@ -332,10 +352,14 @@ mod crlf_values_regressions {
     fn strips_record_carriage_returns_not_escaped_field_data() {
         let mut writer = SqlValuesWriter::new(Vec::new());
         writer.write_all(b"id\tvalue\r\n").unwrap();
-        writer.write_all(b"1\tfirst\r\n2\tsecond\n3\tthird\\r\r\n").unwrap();
+        writer
+            .write_all(b"1\tfirst\r\n2\tsecond\n3\tthird\\r\r\n")
+            .unwrap();
         writer.finish().unwrap();
-        assert_eq!(writer.output,
-            b"VALUES ('1', 'first'),\n('2', 'second'),\n('3', 'third\r');\n");
+        assert_eq!(
+            writer.output,
+            b"VALUES ('1', 'first'),\n('2', 'second'),\n('3', 'third\r');\n"
+        );
     }
     #[test]
     fn handles_crlf_split_across_write_boundaries() {
@@ -353,14 +377,19 @@ mod single_write_cli_values_row_tests {
     use super::*;
 
     #[derive(Default)]
-    struct Counted { calls: usize, bytes: Vec<u8> }
+    struct Counted {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
     impl Write for Counted {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.calls += 1;
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]

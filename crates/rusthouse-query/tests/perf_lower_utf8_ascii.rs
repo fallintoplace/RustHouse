@@ -11,10 +11,19 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn ascii_fast_path_matches_unicode_and_null_behavior() {
     for (sql, expected) in [
-        ("SELECT lowerUTF8('ABC-123')", ConstantValue::Text("abc-123".into())),
-        ("SELECT lowerUTF8('MünChen')", ConstantValue::Text("münchen".into())),
+        (
+            "SELECT lowerUTF8('ABC-123')",
+            ConstantValue::Text("abc-123".into()),
+        ),
+        (
+            "SELECT lowerUTF8('MünChen')",
+            ConstantValue::Text("münchen".into()),
+        ),
         ("SELECT lowerUTF8('')", ConstantValue::Text("".into())),
-        ("SELECT lowerUTF8(lowerUTF8('XYZ'))", ConstantValue::Text("xyz".into())),
+        (
+            "SELECT lowerUTF8(lowerUTF8('XYZ'))",
+            ConstantValue::Text("xyz".into()),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }

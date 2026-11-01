@@ -51,12 +51,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
     }
 
     fn write_row(&mut self, columns: usize) -> io::Result<()> {
-        write_complete_row(
-            &mut self.output,
-            &mut self.encoded,
-            &self.line,
-            columns,
-        )
+        write_complete_row(&mut self.output, &mut self.encoded, &self.line, columns)
     }
 }
 
@@ -67,33 +62,33 @@ fn write_complete_row<W: Write>(
     columns: usize,
 ) -> io::Result<()> {
     // Stage one full JSON row and validate its width before sending it.
-        // Counting fields in this encoding pass avoids a full input rescan.
-        // Quotes and separators expand plain TSV rows by about three
-        // bytes per field, so reserve that framing before serializing.
-        let capacity = line
-            .len()
-            .saturating_add(columns.saturating_mul(3))
-            .saturating_add(3);
-        encoded.clear();
-        encoded.reserve(capacity);
-        encoded.write_all(b"[")?;
-        let mut field_count = 0usize;
-        for value in line.split(|byte| *byte == b'\t') {
-            if field_count != 0 {
-                encoded.write_all(b",")?;
-            }
-            write_json_value(&mut *encoded, value)?;
-            field_count += 1;
+    // Counting fields in this encoding pass avoids a full input rescan.
+    // Quotes and separators expand plain TSV rows by about three
+    // bytes per field, so reserve that framing before serializing.
+    let capacity = line
+        .len()
+        .saturating_add(columns.saturating_mul(3))
+        .saturating_add(3);
+    encoded.clear();
+    encoded.reserve(capacity);
+    encoded.write_all(b"[")?;
+    let mut field_count = 0usize;
+    for value in line.split(|byte| *byte == b'\t') {
+        if field_count != 0 {
+            encoded.write_all(b",")?;
         }
-        if field_count != columns {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "JSON row width differs from header",
-            ));
-        }
-        encoded.write_all(b"]\n")?;
-        output.write_all(encoded)?;
-        Ok(())
+        write_json_value(&mut *encoded, value)?;
+        field_count += 1;
+    }
+    if field_count != columns {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "JSON row width differs from header",
+        ));
+    }
+    encoded.write_all(b"]\n")?;
+    output.write_all(encoded)?;
+    Ok(())
 }
 
 impl<W: Write> JsonCompactEachRowWriter<W> {
@@ -126,12 +121,7 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
             }
             if complete && self.line.is_empty() {
                 if let Some(columns) = self.columns {
-                    write_complete_row(
-                        &mut self.output,
-                        &mut self.encoded,
-                        fragment,
-                        columns,
-                    )?;
+                    write_complete_row(&mut self.output, &mut self.encoded, fragment, columns)?;
                     continue;
                 }
             }

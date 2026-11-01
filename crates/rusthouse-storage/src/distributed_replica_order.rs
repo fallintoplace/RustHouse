@@ -62,9 +62,10 @@ fn ranked_node_ids<'a>(replicas: impl Iterator<Item = &'a ReplicaStatus>) -> Vec
             right.expect("initialized replica ranking"),
         )
     });
-    ranked.iter().map(|item| {
-        item.expect("initialized replica ranking").node.clone()
-    }).collect()
+    ranked
+        .iter()
+        .map(|item| item.expect("initialized replica ranking").node.clone())
+        .collect()
 }
 
 /// Return healthy node IDs, newest advertised version first.
@@ -95,13 +96,11 @@ pub fn rank_read_replicas_at_least(
     if minimum_epoch == 0 || minimum_generation == 0 {
         return Err("invalid replica freshness floor");
     }
-    let ranked = ranked_node_ids(replicas
-        .iter()
-        .filter(|replica| {
-            replica.healthy
-                && replica.epoch == minimum_epoch
-                && replica.generation >= minimum_generation
-        }));
+    let ranked = ranked_node_ids(replicas.iter().filter(|replica| {
+        replica.healthy
+            && replica.epoch == minimum_epoch
+            && replica.generation >= minimum_generation
+    }));
     if ranked.is_empty() {
         return Err(if replicas.iter().any(|replica| replica.healthy) {
             "no storage replica meets the freshness floor"
@@ -122,7 +121,10 @@ pub fn rank_read_replicas_top_k(
         return Err("invalid replica read ranking limit");
     }
     validate_replica_nodes(replicas)?;
-    let ranked = ranked_node_prefix(replicas.iter().filter(|replica| replica.healthy), max_results);
+    let ranked = ranked_node_prefix(
+        replicas.iter().filter(|replica| replica.healthy),
+        max_results,
+    );
     if ranked.is_empty() {
         return Err("no healthy storage replica");
     }
@@ -143,10 +145,14 @@ pub fn rank_read_replicas_at_least_top_k(
     if minimum_epoch == 0 || minimum_generation == 0 {
         return Err("invalid replica freshness floor");
     }
-    let ranked = ranked_node_prefix(replicas.iter().filter(|replica| {
-        replica.healthy && replica.epoch == minimum_epoch
-            && replica.generation >= minimum_generation
-    }), max_results);
+    let ranked = ranked_node_prefix(
+        replicas.iter().filter(|replica| {
+            replica.healthy
+                && replica.epoch == minimum_epoch
+                && replica.generation >= minimum_generation
+        }),
+        max_results,
+    );
     if ranked.is_empty() {
         return Err(if replicas.iter().any(|replica| replica.healthy) {
             "no storage replica meets the freshness floor"
@@ -185,9 +191,10 @@ fn ranked_node_prefix<'a>(
         }
         best[position] = Some(candidate);
     }
-    best[..count].iter().map(|replica| {
-        replica.expect("ranked entry").node.clone()
-    }).collect()
+    best[..count]
+        .iter()
+        .map(|replica| replica.expect("ranked entry").node.clone())
+        .collect()
 }
 
 /// Select only the preferred healthy replica in one scan.
@@ -243,12 +250,14 @@ mod tests {
     #[test]
     fn small_replica_validation_rejects_duplicates_and_invalid_versions() {
         for count in [1usize, 2, 8, 9, 64] {
-            let mut replicas = (0..count).map(|index| ReplicaStatus {
-                node: format!("n{index}"),
-                epoch: 1,
-                generation: (index + 1) as u64,
-                healthy: true,
-            }).collect::<Vec<_>>();
+            let mut replicas = (0..count)
+                .map(|index| ReplicaStatus {
+                    node: format!("n{index}"),
+                    epoch: 1,
+                    generation: (index + 1) as u64,
+                    healthy: true,
+                })
+                .collect::<Vec<_>>();
             assert_eq!(rank_read_replicas(&replicas).unwrap().len(), count);
             if count > 1 {
                 replicas[count - 1].node = replicas[0].node.clone();
@@ -378,9 +387,24 @@ mod freshness_floor_tests {
     #[test]
     fn rejects_stale_read_replicas() {
         let replicas = [
-            ReplicaStatus { node: "old".into(), epoch: 4, generation: 9, healthy: true },
-            ReplicaStatus { node: "new".into(), epoch: 4, generation: 10, healthy: true },
-            ReplicaStatus { node: "next".into(), epoch: 5, generation: 1, healthy: true },
+            ReplicaStatus {
+                node: "old".into(),
+                epoch: 4,
+                generation: 9,
+                healthy: true,
+            },
+            ReplicaStatus {
+                node: "new".into(),
+                epoch: 4,
+                generation: 10,
+                healthy: true,
+            },
+            ReplicaStatus {
+                node: "next".into(),
+                epoch: 5,
+                generation: 1,
+                healthy: true,
+            },
         ];
         assert_eq!(
             rank_read_replicas_at_least(&replicas, 4, 10).unwrap(),
@@ -404,8 +428,20 @@ mod zero_version_replica_tests {
             healthy: true,
         };
         assert!(rank_read_replicas(&[base.clone()]).is_ok());
-        assert!(rank_read_replicas(&[ReplicaStatus { epoch: 0, ..base.clone() }]).is_err());
-        assert!(rank_read_replicas(&[ReplicaStatus { generation: 0, ..base }]).is_err());
+        assert!(
+            rank_read_replicas(&[ReplicaStatus {
+                epoch: 0,
+                ..base.clone()
+            }])
+            .is_err()
+        );
+        assert!(
+            rank_read_replicas(&[ReplicaStatus {
+                generation: 0,
+                ..base
+            }])
+            .is_err()
+        );
     }
 }
 
@@ -465,7 +501,9 @@ pub fn rank_quorum_snapshot_replicas(
     let mut seen = 0u16;
     let mut acknowledgements = Vec::with_capacity(replicas.len());
     for replica in replicas {
-        let index = members.iter().position(|&member| member == replica.node.as_str())
+        let index = members
+            .iter()
+            .position(|&member| member == replica.node.as_str())
             .ok_or("snapshot from unknown replica")?;
         let bit = 1u16 << index;
         if seen & bit != 0 {
@@ -480,9 +518,13 @@ pub fn rank_quorum_snapshot_replicas(
         }
     }
     let snapshot = crate::distributed_lineage::highest_quorum_observed_snapshot(
-        policy, members, &acknowledgements,
-    )?.ok_or("no quorum-observed healthy snapshot")?;
-    let mut nodes = replicas.iter()
+        policy,
+        members,
+        &acknowledgements,
+    )?
+    .ok_or("no quorum-observed healthy snapshot")?;
+    let mut nodes = replicas
+        .iter()
         .filter(|status| status.healthy && status.snapshot == snapshot)
         .map(|status| status.node.clone())
         .collect::<Vec<_>>();
@@ -500,12 +542,32 @@ mod quorum_snapshot_read_tests {
     fn a_minoritys_newer_generation_cannot_redirect_quorum_reads() {
         let members = ["a", "b", "c"];
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
-        let older = SnapshotVersion { epoch: 2, generation: 7, fingerprint: 40 };
-        let newer = SnapshotVersion { epoch: 2, generation: 8, fingerprint: 41 };
+        let older = SnapshotVersion {
+            epoch: 2,
+            generation: 7,
+            fingerprint: 40,
+        };
+        let newer = SnapshotVersion {
+            epoch: 2,
+            generation: 8,
+            fingerprint: 41,
+        };
         let replicas = [
-            ReplicaSnapshotStatus { node: "c".into(), snapshot: newer, healthy: true },
-            ReplicaSnapshotStatus { node: "b".into(), snapshot: older, healthy: true },
-            ReplicaSnapshotStatus { node: "a".into(), snapshot: older, healthy: true },
+            ReplicaSnapshotStatus {
+                node: "c".into(),
+                snapshot: newer,
+                healthy: true,
+            },
+            ReplicaSnapshotStatus {
+                node: "b".into(),
+                snapshot: older,
+                healthy: true,
+            },
+            ReplicaSnapshotStatus {
+                node: "a".into(),
+                snapshot: older,
+                healthy: true,
+            },
         ];
         assert_eq!(
             rank_quorum_snapshot_replicas(&members, policy, &replicas).unwrap(),
@@ -513,9 +575,7 @@ mod quorum_snapshot_read_tests {
         );
         let mut changed = replicas.clone();
         changed[0].snapshot = older;
-        let (version, nodes) = rank_quorum_snapshot_replicas(
-            &members, policy, &changed,
-        ).unwrap();
+        let (version, nodes) = rank_quorum_snapshot_replicas(&members, policy, &changed).unwrap();
         assert_eq!(version, older);
         assert_eq!(nodes, ["a", "b", "c"]);
     }
@@ -524,25 +584,82 @@ mod quorum_snapshot_read_tests {
     fn rejects_conflicting_and_duplicate_advertisements() {
         let members = ["a", "b", "c"];
         let policy = QuorumPolicy::new(3, 2, 2).unwrap();
-        let v = SnapshotVersion { epoch: 2, generation: 7, fingerprint: 40 };
-        let a = ReplicaSnapshotStatus { node: "a".into(), snapshot: v, healthy: true };
-        let b = ReplicaSnapshotStatus { node: "b".into(), snapshot: v, healthy: true };
+        let v = SnapshotVersion {
+            epoch: 2,
+            generation: 7,
+            fingerprint: 40,
+        };
+        let a = ReplicaSnapshotStatus {
+            node: "a".into(),
+            snapshot: v,
+            healthy: true,
+        };
+        let b = ReplicaSnapshotStatus {
+            node: "b".into(),
+            snapshot: v,
+            healthy: true,
+        };
         assert!(rank_quorum_snapshot_replicas(&members, policy, &[a.clone()]).is_err());
         assert!(rank_quorum_snapshot_replicas(&members, policy, &[a.clone(), a.clone()]).is_err());
-        assert!(rank_quorum_snapshot_replicas(&members, policy, &[
-            a.clone(), ReplicaSnapshotStatus { snapshot: SnapshotVersion {
-                fingerprint: 99, ..v }, ..b.clone() }
-        ]).is_err());
-        assert!(rank_quorum_snapshot_replicas(&members, policy, &[
-            a.clone(), ReplicaSnapshotStatus { healthy: false, ..b.clone() }
-        ]).is_err());
-        assert!(rank_quorum_snapshot_replicas(&members, policy, &[
-            ReplicaSnapshotStatus { node: "unknown".into(), ..a.clone() }, b.clone()
-        ]).is_err());
-        assert!(rank_quorum_snapshot_replicas(&members, policy, &[
-            ReplicaSnapshotStatus { snapshot: SnapshotVersion {
-                epoch: 0, ..v }, ..a }, b,
-        ]).is_err());
+        assert!(
+            rank_quorum_snapshot_replicas(
+                &members,
+                policy,
+                &[
+                    a.clone(),
+                    ReplicaSnapshotStatus {
+                        snapshot: SnapshotVersion {
+                            fingerprint: 99,
+                            ..v
+                        },
+                        ..b.clone()
+                    }
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            rank_quorum_snapshot_replicas(
+                &members,
+                policy,
+                &[
+                    a.clone(),
+                    ReplicaSnapshotStatus {
+                        healthy: false,
+                        ..b.clone()
+                    }
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            rank_quorum_snapshot_replicas(
+                &members,
+                policy,
+                &[
+                    ReplicaSnapshotStatus {
+                        node: "unknown".into(),
+                        ..a.clone()
+                    },
+                    b.clone()
+                ]
+            )
+            .is_err()
+        );
+        assert!(
+            rank_quorum_snapshot_replicas(
+                &members,
+                policy,
+                &[
+                    ReplicaSnapshotStatus {
+                        snapshot: SnapshotVersion { epoch: 0, ..v },
+                        ..a
+                    },
+                    b,
+                ]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -550,12 +667,26 @@ mod quorum_snapshot_read_tests {
         let names = (0..16).map(|i| format!("node_{i}")).collect::<Vec<_>>();
         let members = names.iter().map(String::as_str).collect::<Vec<_>>();
         let policy = QuorumPolicy::new(16, 9, 9).unwrap();
-        let v = SnapshotVersion { epoch: 1, generation: 11, fingerprint: 222 };
-        let statuses = names.iter().enumerate().map(|(i, node)| {
-            ReplicaSnapshotStatus { node: node.clone(), snapshot: v, healthy: i < 9 }
-        }).collect::<Vec<_>>();
+        let v = SnapshotVersion {
+            epoch: 1,
+            generation: 11,
+            fingerprint: 222,
+        };
+        let statuses = names
+            .iter()
+            .enumerate()
+            .map(|(i, node)| ReplicaSnapshotStatus {
+                node: node.clone(),
+                snapshot: v,
+                healthy: i < 9,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            rank_quorum_snapshot_replicas(&members, policy, &statuses).unwrap().1.len(), 9,
+            rank_quorum_snapshot_replicas(&members, policy, &statuses)
+                .unwrap()
+                .1
+                .len(),
+            9,
         );
         let mut less = statuses;
         less[8].healthy = false;
@@ -570,27 +701,39 @@ mod inline_replica_ranking_tests {
     #[test]
     fn inline_and_spilled_groups_match_full_sort() {
         for count in [1, 2, 8, 9, 16, 64] {
-            let statuses = (0..count).map(|index| ReplicaStatus {
-                node: format!("node_{index:02}"),
-                epoch: 1 + (index % 3) as u64,
-                generation: 1 + (index % 5) as u64,
-                healthy: index % 4 != 0,
-            }).collect::<Vec<_>>();
-            let mut expected = statuses.iter().filter(|status| status.healthy).collect::<Vec<_>>();
+            let statuses = (0..count)
+                .map(|index| ReplicaStatus {
+                    node: format!("node_{index:02}"),
+                    epoch: 1 + (index % 3) as u64,
+                    generation: 1 + (index % 5) as u64,
+                    healthy: index % 4 != 0,
+                })
+                .collect::<Vec<_>>();
+            let mut expected = statuses
+                .iter()
+                .filter(|status| status.healthy)
+                .collect::<Vec<_>>();
             expected.sort_unstable_by(|a, b| newest_first(a, b));
-            let expected = expected.iter().map(|status| status.node.clone()).collect::<Vec<_>>();
+            let expected = expected
+                .iter()
+                .map(|status| status.node.clone())
+                .collect::<Vec<_>>();
             assert_eq!(rank_read_replicas(&statuses).unwrap_or_default(), expected);
-            let expected_floor = statuses.iter().filter(|status| {
-                status.healthy && status.epoch == 2 && status.generation >= 3
-            }).map(|status| status.node.clone()).collect::<Vec<_>>();
-            let ranked_floor = rank_read_replicas_at_least(&statuses, 2, 3)
-                .unwrap_or_default();
+            let expected_floor = statuses
+                .iter()
+                .filter(|status| status.healthy && status.epoch == 2 && status.generation >= 3)
+                .map(|status| status.node.clone())
+                .collect::<Vec<_>>();
+            let ranked_floor = rank_read_replicas_at_least(&statuses, 2, 3).unwrap_or_default();
             assert_eq!(ranked_floor.len(), expected_floor.len());
-            assert!(ranked_floor.iter().all(|node| expected_floor.contains(node)));
+            assert!(
+                ranked_floor
+                    .iter()
+                    .all(|node| expected_floor.contains(node))
+            );
         }
     }
 }
-
 
 /// Prefer an independent failure zone for each early read fallback.
 ///
@@ -606,9 +749,7 @@ pub fn rank_zone_diverse_read_replicas_at_least(
 ) -> Result<Vec<String>, &'static str> {
     // Strictly validate all metadata, including unhealthy nodes, before
     // using any zone for a read failover decision.
-    let ranked = rank_read_replicas_at_least(
-        replicas, minimum_epoch, minimum_generation,
-    )?;
+    let ranked = rank_read_replicas_at_least(replicas, minimum_epoch, minimum_generation)?;
     if zones.len() != replicas.len() {
         return Err("replica zone membership count mismatch");
     }
@@ -616,9 +757,9 @@ pub fn rank_zone_diverse_read_replicas_at_least(
         if !valid_node(node)
             || zone.is_empty()
             || zone.len() > 64
-            || !zone.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
-            })
+            || !zone
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
             || zones[..index].iter().any(|&(prior, _)| prior == node)
             || !replicas.iter().any(|replica| replica.node == node)
         {
@@ -632,7 +773,8 @@ pub fn rank_zone_diverse_read_replicas_at_least(
     let mut diverse = Vec::with_capacity(ranked.len());
     let mut fallback = Vec::new();
     for node in ranked {
-        let zone = zones.iter()
+        let zone = zones
+            .iter()
             .find(|&&(candidate, _)| candidate == node)
             .map(|&(_, zone)| zone)
             .expect("validated one-to-one zone inventory");
@@ -651,19 +793,31 @@ mod zone_diverse_read_ranking_tests {
     use super::*;
 
     fn replica(node: &str, generation: u64, healthy: bool) -> ReplicaStatus {
-        ReplicaStatus { node: node.into(), epoch: 3, generation, healthy }
+        ReplicaStatus {
+            node: node.into(),
+            epoch: 3,
+            generation,
+            healthy,
+        }
     }
 
     #[test]
     fn spreads_fallbacks_over_zones_without_crossing_the_snapshot_floor() {
         let replicas = [
-            replica("a", 20, true), replica("b", 19, true),
-            replica("c", 18, true), replica("d", 17, true),
-            replica("e", 16, false), replica("f", 9, true),
+            replica("a", 20, true),
+            replica("b", 19, true),
+            replica("c", 18, true),
+            replica("d", 17, true),
+            replica("e", 16, false),
+            replica("f", 9, true),
         ];
         let zones = [
-            ("a", "east"), ("b", "east"), ("c", "west"),
-            ("d", "south"), ("e", "north"), ("f", "spare"),
+            ("a", "east"),
+            ("b", "east"),
+            ("c", "west"),
+            ("d", "south"),
+            ("e", "north"),
+            ("f", "spare"),
         ];
         assert_eq!(
             rank_zone_diverse_read_replicas_at_least(&replicas, &zones, 3, 15).unwrap(),
@@ -689,19 +843,25 @@ mod zone_diverse_read_ranking_tests {
             vec![("a", "east"), ("b", "../west")],
             vec![("a", "east"), ("b", "")],
         ] {
-            assert!(rank_zone_diverse_read_replicas_at_least(
-                &replicas, &zones, 3, 1,
-            ).is_err());
+            assert!(rank_zone_diverse_read_replicas_at_least(&replicas, &zones, 3, 1,).is_err());
         }
-        assert!(rank_zone_diverse_read_replicas_at_least(
-            &replicas, &[("a", "east"), ("b", "west")], 0, 1,
-        ).is_err());
+        assert!(
+            rank_zone_diverse_read_replicas_at_least(
+                &replicas,
+                &[("a", "east"), ("b", "west")],
+                0,
+                1,
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn all_healthy_candidates_in_one_zone_preserve_default_rank() {
         let replicas = [
-            replica("a", 10, true), replica("b", 12, true), replica("c", 11, true),
+            replica("a", 10, true),
+            replica("b", 12, true),
+            replica("c", 11, true),
         ];
         let zones = [("a", "same"), ("b", "same"), ("c", "same")];
         assert_eq!(
@@ -718,12 +878,15 @@ mod bounded_read_replica_prefix_tests {
     #[test]
     fn top_k_matches_full_rankings_for_skewed_healthy_and_stale_nodes() {
         for count in [1usize, 2, 3, 8, 9, 32, 64] {
-            let replicas = (0..count).rev().map(|i| ReplicaStatus {
-                node: format!("node{i:02}"),
-                epoch: if i % 5 == 0 { 2 } else { 3 },
-                generation: (i % 19 + 1) as u64,
-                healthy: i % 7 != 0,
-            }).collect::<Vec<_>>();
+            let replicas = (0..count)
+                .rev()
+                .map(|i| ReplicaStatus {
+                    node: format!("node{i:02}"),
+                    epoch: if i % 5 == 0 { 2 } else { 3 },
+                    generation: (i % 19 + 1) as u64,
+                    healthy: i % 7 != 0,
+                })
+                .collect::<Vec<_>>();
             for limit in [1usize, 2, 3, 8, 9, 32, 64] {
                 let all = rank_read_replicas(&replicas);
                 let prefix = rank_read_replicas_top_k(&replicas, limit);
@@ -744,12 +907,18 @@ mod bounded_read_replica_prefix_tests {
     #[test]
     fn top_k_rejects_invalid_limits_and_duplicate_nodes() {
         let node = ReplicaStatus {
-            node: "node".into(), epoch: 2, generation: 10, healthy: true,
+            node: "node".into(),
+            epoch: 2,
+            generation: 10,
+            healthy: true,
         };
         assert!(rank_read_replicas_top_k(&[node.clone()], 0).is_err());
         assert!(rank_read_replicas_top_k(&[node.clone()], 65).is_err());
         assert!(rank_read_replicas_top_k(&[node.clone(), node.clone()], 1).is_err());
-        assert_eq!(rank_read_replicas_top_k(&[node.clone()], 1).unwrap(), vec!["node"]);
+        assert_eq!(
+            rank_read_replicas_top_k(&[node.clone()], 1).unwrap(),
+            vec!["node"]
+        );
     }
 }
 
@@ -769,10 +938,15 @@ mod stack_read_replica_order_tests {
                     healthy: index % 7 != 0,
                 })
                 .collect::<Vec<_>>();
-            let mut expected = statuses.iter()
-                .filter(|status| status.healthy).collect::<Vec<_>>();
+            let mut expected = statuses
+                .iter()
+                .filter(|status| status.healthy)
+                .collect::<Vec<_>>();
             expected.sort_unstable_by(|a, b| newest_first(a, b));
-            let expected = expected.iter().map(|item| item.node.clone()).collect::<Vec<_>>();
+            let expected = expected
+                .iter()
+                .map(|item| item.node.clone())
+                .collect::<Vec<_>>();
             assert_eq!(rank_read_replicas(&statuses).unwrap_or_default(), expected);
             if size > 1 {
                 let mut duplicates = statuses.clone();
@@ -785,17 +959,25 @@ mod stack_read_replica_order_tests {
 
     #[test]
     fn freshness_rank_uses_same_order_and_rejects_bad_versions() {
-        let statuses = (0..64).map(|index| ReplicaStatus {
-            node: format!("node_{index:02}"),
-            epoch: 4,
-            generation: 1 + (index % 12) as u64,
-            healthy: true,
-        }).collect::<Vec<_>>();
-        let expected = statuses.iter().filter(|status| status.generation >= 5)
-            .cloned().collect::<Vec<_>>();
+        let statuses = (0..64)
+            .map(|index| ReplicaStatus {
+                node: format!("node_{index:02}"),
+                epoch: 4,
+                generation: 1 + (index % 12) as u64,
+                healthy: true,
+            })
+            .collect::<Vec<_>>();
+        let expected = statuses
+            .iter()
+            .filter(|status| status.generation >= 5)
+            .cloned()
+            .collect::<Vec<_>>();
         let mut sorted = expected;
         sorted.sort_unstable_by(newest_first);
-        let names = sorted.iter().map(|status| status.node.clone()).collect::<Vec<_>>();
+        let names = sorted
+            .iter()
+            .map(|status| status.node.clone())
+            .collect::<Vec<_>>();
         assert_eq!(rank_read_replicas_at_least(&statuses, 4, 5).unwrap(), names);
         let mut invalid = statuses;
         invalid[63].epoch = 0;

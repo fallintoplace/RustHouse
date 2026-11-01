@@ -45,7 +45,9 @@ pub(crate) fn validate_wide_marks_reader<R: Read + Seek>(
 }
 
 fn checked_compressed_end(offset: u64, compressed_size: u32) -> Option<u64> {
-    offset.checked_add(16)?.checked_add(u64::from(compressed_size))
+    offset
+        .checked_add(16)?
+        .checked_add(u64::from(compressed_size))
 }
 
 fn validate_wide_mark_target(

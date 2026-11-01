@@ -21,11 +21,12 @@ fn numeric_column_error() -> ExecutionError {
 }
 
 fn charge_median_value(used: &mut usize) -> Result<(), ExecutionError> {
-    let next = used.checked_add(std::mem::size_of::<Number>())
+    let next = used
+        .checked_add(std::mem::size_of::<Number>())
         .ok_or_else(|| ExecutionError::Invalid("composite group median memory overflow".into()))?;
     if next > MAX_RETAINED_GROUP_BYTES {
         return Err(ExecutionError::Invalid(
-            "composite GROUP BY median exceeds 64 MiB retained memory".into()
+            "composite GROUP BY median exceeds 64 MiB retained memory".into(),
         ));
     }
     *used = next;
@@ -39,11 +40,16 @@ fn charge_group(
     payload_bytes: usize,
 ) -> Result<(), ExecutionError> {
     let per_key = std::mem::size_of::<Key>() + std::mem::size_of::<Cell>();
-    let fixed = dimensions.checked_mul(per_key)
-        .and_then(|keys| metrics.checked_mul(std::mem::size_of::<AggregateState>())
-            .and_then(|states| keys.checked_add(states)))
+    let fixed = dimensions
+        .checked_mul(per_key)
+        .and_then(|keys| {
+            metrics
+                .checked_mul(std::mem::size_of::<AggregateState>())
+                .and_then(|states| keys.checked_add(states))
+        })
         .ok_or_else(|| ExecutionError::Invalid("grouped metric memory overflow".into()))?;
-    let used = payload_bytes.checked_mul(2)
+    let used = payload_bytes
+        .checked_mul(2)
         .and_then(|payload| fixed.checked_add(payload))
         .and_then(|bytes| total.checked_add(bytes))
         .ok_or_else(|| ExecutionError::Invalid("grouped metric memory overflow".into()))?;
@@ -55,7 +61,6 @@ fn charge_group(
     *total = used;
     Ok(())
 }
-
 
 // Convert a non-nullable 8-bit numeric key into a compact slot index.
 fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
@@ -172,10 +177,15 @@ pub(super) fn execute<W: Write>(
         if !names.contains(filter) {
             names.push(filter.clone());
         }
-        let column_type = metadata.columns.iter().find(|column| &column.name == filter)
+        let column_type = metadata
+            .columns
+            .iter()
+            .find(|column| &column.name == filter)
             .ok_or_else(|| ExecutionError::Invalid(format!("unknown filter column: {filter}")))?;
         if matches!(typed::base_type(&column_type.data_type), "String" | "UUID") {
-            return Err(ExecutionError::Invalid("conditional metric filters must be numeric".into()));
+            return Err(ExecutionError::Invalid(
+                "conditional metric filters must be numeric".into(),
+            ));
         }
     }
     for predicate in query
@@ -211,7 +221,7 @@ pub(super) fn execute<W: Write>(
             if let Some(filter) = filters.get(index).and_then(Option::as_deref) {
                 write!(output, "\t{}If({column}, {filter})", function.name())?;
             } else {
-            write!(output, "\t{}({column})", function.name())?;
+                write!(output, "\t{}({column})", function.name())?;
             }
         }
     }
@@ -229,12 +239,13 @@ pub(super) fn execute<W: Write>(
         .map(|(_, column)| indices[column])
         .collect::<Vec<_>>();
     // Composite text GROUP BY otherwise clones every string key on each row.
-    let has_text_key = columns.iter().any(|column| {
-        matches!(typed::base_type(types[column].as_str()), "String")
-    });
+    let has_text_key = columns
+        .iter()
+        .any(|column| matches!(typed::base_type(types[column].as_str()), "String"));
     let mut encoded_groups = HashMap::<Vec<u8>, usize>::new();
     let mut encoded_probe = Vec::<u8>::new();
-    let filter_indices = filters.iter()
+    let filter_indices = filters
+        .iter()
         .map(|value| value.as_ref().map(|column| indices[column]))
         .collect::<Vec<_>>();
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
@@ -268,7 +279,12 @@ pub(super) fn execute<W: Write>(
                 if *index != usize::MAX {
                     *index
                 } else {
-                    charge_group(&mut retained_group_bytes, group_indices.len(), items.len(), 0)?;
+                    charge_group(
+                        &mut retained_group_bytes,
+                        group_indices.len(),
+                        items.len(),
+                        0,
+                    )?;
                     *index = groups.len();
                     groups.push((
                         group_indices
@@ -299,8 +315,10 @@ pub(super) fn execute<W: Write>(
                         .map(|&column| typed::cell(&batch[column], row))
                         .collect::<Vec<_>>();
                     charge_group(
-                        &mut retained_group_bytes, group_indices.len(),
-                        items.len(), encoded_probe.len(),
+                        &mut retained_group_bytes,
+                        group_indices.len(),
+                        items.len(),
+                        encoded_probe.len(),
                     )?;
                     encoded_groups.insert(std::mem::take(&mut encoded_probe), index);
                     encoded_probe = Vec::with_capacity(group_indices.len() * 24);
@@ -329,7 +347,12 @@ pub(super) fn execute<W: Write>(
                         .iter()
                         .map(|&column| typed::cell(&batch[column], row))
                         .collect::<Vec<_>>();
-                    charge_group(&mut retained_group_bytes, group_indices.len(), items.len(), 0)?;
+                    charge_group(
+                        &mut retained_group_bytes,
+                        group_indices.len(),
+                        items.len(),
+                        0,
+                    )?;
                     by_key.insert(std::mem::take(&mut probe_key), index);
                     probe_key = Vec::with_capacity(group_indices.len());
                     groups.push((
@@ -354,7 +377,9 @@ pub(super) fn execute<W: Write>(
                         Some(Number::Float(value)) => value != 0.0,
                         None => false,
                     };
-                    if !enabled {continue;}
+                    if !enabled {
+                        continue;
+                    }
                 }
                 if *function == AggregateFunction::Count {
                     if !typed::is_null_at(&batch[index], row) {
@@ -373,44 +398,70 @@ pub(super) fn execute<W: Write>(
     }
 
     if let Some(having) = &query.having {
-        let index = having.aggregate_index.ok_or_else(|| {
-            ExecutionError::Invalid("HAVING metric index is required".into())
-        })?;
-        groups.retain(|(_, states)| states.get(index)
-            .is_some_and(|state| state.passes_having(having)));
+        let index = having
+            .aggregate_index
+            .ok_or_else(|| ExecutionError::Invalid("HAVING metric index is required".into()))?;
+        groups.retain(|(_, states)| {
+            states
+                .get(index)
+                .is_some_and(|state| state.passes_having(having))
+        });
     }
-    let terms = query.order_terms().map(|term| {
-        let metric = term.column.strip_prefix("#aggregate")
-            .and_then(|number| number.parse::<usize>().ok());
-        let group = columns.iter().position(|column| column == &term.column);
-        (group, metric, term.descending, term.nulls_first)
-    }).collect::<Vec<_>>();
-    let compare = |(left_keys, left_states): &(Vec<Cell>, Vec<AggregateState>),
-                   (right_keys, right_states): &(Vec<Cell>, Vec<AggregateState>)| {
-        for &(group, metric, descending, nulls_first) in &terms {
-            let order = if let Some(index) = metric {
-                typed::compare_order_cells(&left_states[index].sort_cell(),
-                    &right_states[index].sort_cell(), descending, nulls_first)
-            } else {
-                let index = group.expect("GROUP BY ORDER BY validated by parser");
-                typed::compare_order_cells(&left_keys[index], &right_keys[index], descending, nulls_first)
-            };
-            if order != Ordering::Equal {
-                return order;
+    let terms = query
+        .order_terms()
+        .map(|term| {
+            let metric = term
+                .column
+                .strip_prefix("#aggregate")
+                .and_then(|number| number.parse::<usize>().ok());
+            let group = columns.iter().position(|column| column == &term.column);
+            (group, metric, term.descending, term.nulls_first)
+        })
+        .collect::<Vec<_>>();
+    let compare =
+        |(left_keys, left_states): &(Vec<Cell>, Vec<AggregateState>),
+         (right_keys, right_states): &(Vec<Cell>, Vec<AggregateState>)| {
+            for &(group, metric, descending, nulls_first) in &terms {
+                let order = if let Some(index) = metric {
+                    typed::compare_order_cells(
+                        &left_states[index].sort_cell(),
+                        &right_states[index].sort_cell(),
+                        descending,
+                        nulls_first,
+                    )
+                } else {
+                    let index = group.expect("GROUP BY ORDER BY validated by parser");
+                    typed::compare_order_cells(
+                        &left_keys[index],
+                        &right_keys[index],
+                        descending,
+                        nulls_first,
+                    )
+                };
+                if order != Ordering::Equal {
+                    return order;
+                }
             }
-        }
-        Ordering::Equal
-    };
+            Ordering::Equal
+        };
     let mut bounded_order = None;
     if !terms.is_empty() {
         let end = query
             .limit
             .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
-        let cached_medians = terms.iter().filter_map(|(_, metric, _, _)| *metric)
+        let cached_medians = terms
+            .iter()
+            .filter_map(|(_, metric, _, _)| *metric)
             .filter(|&metric| items[metric].0 == AggregateFunction::Median)
-            .map(|metric| (metric, groups.iter()
-                .map(|(_, states)| states[metric].sort_cell())
-                .collect::<Vec<_>>()))
+            .map(|metric| {
+                (
+                    metric,
+                    groups
+                        .iter()
+                        .map(|(_, states)| states[metric].sort_cell())
+                        .collect::<Vec<_>>(),
+                )
+            })
             .collect::<HashMap<_, _>>();
         if !cached_medians.is_empty() {
             // Select each group's median only once, including composite
@@ -423,21 +474,33 @@ pub(super) fn execute<W: Write>(
                             // Median sort cells were materialized once; borrow
                             // them instead of cloning on every comparison.
                             typed::compare_order_cells(
-                                &keys[*left], &keys[*right], descending, nulls_first,
+                                &keys[*left],
+                                &keys[*right],
+                                descending,
+                                nulls_first,
                             )
                         } else {
                             let left_cell = groups[*left].1[index].sort_cell();
                             let right_cell = groups[*right].1[index].sort_cell();
                             typed::compare_order_cells(
-                                &left_cell, &right_cell, descending, nulls_first,
+                                &left_cell,
+                                &right_cell,
+                                descending,
+                                nulls_first,
                             )
                         }
                     } else {
                         let index = group.expect("GROUP BY ORDER BY validated by parser");
-                        typed::compare_order_cells(&groups[*left].0[index], &groups[*right].0[index],
-                            descending, nulls_first)
+                        typed::compare_order_cells(
+                            &groups[*left].0[index],
+                            &groups[*right].0[index],
+                            descending,
+                            nulls_first,
+                        )
                     };
-                    if order != Ordering::Equal { return order; }
+                    if order != Ordering::Equal {
+                        return order;
+                    }
                 }
                 left.cmp(right)
             };
@@ -518,7 +581,8 @@ mod direct_grouped_numeric_tests {
         let third = key(2, &mut scratch);
         assert_ne!(first, second);
         assert_ne!(first, third);
-        let zeroes = TypedColumn::Numeric(NumericColumn::Float64(vec![-0.0, 0.0, f64::NAN, f64::NAN]));
+        let zeroes =
+            TypedColumn::Numeric(NumericColumn::Float64(vec![-0.0, 0.0, f64::NAN, f64::NAN]));
         scratch.clear();
         append_group_component(&zeroes, 0, &mut scratch);
         let positive_zero = scratch.clone();
@@ -619,11 +683,12 @@ mod cached_composite_group_median_order_tests {
             state.update(Number::Unsigned(second)).unwrap();
             state
         });
-        let medians = groups.iter().map(AggregateState::sort_cell).collect::<Vec<_>>();
+        let medians = groups
+            .iter()
+            .map(AggregateState::sort_cell)
+            .collect::<Vec<_>>();
         let mut indices = (0..groups.len()).collect::<Vec<_>>();
-        indices.sort_by(|&a, &b| typed::compare_order_cells(
-            &medians[a], &medians[b], false, None
-        ));
+        indices.sort_by(|&a, &b| typed::compare_order_cells(&medians[a], &medians[b], false, None));
         assert_eq!(indices, [1, 2, 0]);
     }
 }

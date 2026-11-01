@@ -85,7 +85,11 @@ fn options() -> (usize, usize, usize) {
                     .unwrap()
             }
             "--samples" => {
-                samples = args.next().expect("--samples needs a value").parse().unwrap()
+                samples = args
+                    .next()
+                    .expect("--samples needs a value")
+                    .parse()
+                    .unwrap()
             }
             "-h" | "--help" => {
                 println!("Usage: join [--rows 8192] [--match-percent 50] [--samples 11]");
@@ -99,7 +103,10 @@ fn options() -> (usize, usize, usize) {
         (1..=100).contains(&match_percent),
         "match-percent must be 1..100"
     );
-    assert!(samples > 0 && samples % 2 == 1, "samples must be positive and odd");
+    assert!(
+        samples > 0 && samples % 2 == 1,
+        "samples must be positive and odd"
+    );
     (rows, match_percent, samples)
 }
 
@@ -113,16 +120,26 @@ fn main() {
     let mut output = Vec::new();
     for _ in 0..WARMUPS {
         output.clear();
-        execute_join(black_box(&query), &fixture.left, &fixture.right, &mut output)
-            .expect("JOIN warmup failed");
+        execute_join(
+            black_box(&query),
+            &fixture.left,
+            &fixture.right,
+            &mut output,
+        )
+        .expect("JOIN warmup failed");
         assert_eq!(output, fixture.expected, "JOIN warmup output mismatch");
     }
     let mut timings = Vec::with_capacity(samples);
     for _ in 0..samples {
         output.clear();
         let start = Instant::now();
-        execute_join(black_box(&query), &fixture.left, &fixture.right, &mut output)
-            .expect("JOIN execution failed");
+        execute_join(
+            black_box(&query),
+            &fixture.left,
+            &fixture.right,
+            &mut output,
+        )
+        .expect("JOIN execution failed");
         timings.push(start.elapsed());
         black_box(&output);
         assert_eq!(output, fixture.expected, "JOIN output mismatch");

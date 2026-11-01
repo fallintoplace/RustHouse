@@ -12,9 +12,8 @@ fn sql(statement: &str, database: &Path) -> Output {
 
 #[test]
 fn selective_final_outer_join_filter_runs_before_intermediate_row_limit() {
-    let database = std::env::temp_dir().join(format!(
-        "rusthouse-filtered-chain-{}", std::process::id()
-    ));
+    let database =
+        std::env::temp_dir().join(format!("rusthouse-filtered-chain-{}", std::process::id()));
     let _ = fs::remove_dir_all(&database);
     for statement in [
         "CREATE TABLE fact (id UInt64, dimension_id UInt64)",
@@ -27,10 +26,12 @@ fn selective_final_outer_join_filter_runs_before_intermediate_row_limit() {
     }
     let fact_rows = (0..300)
         .map(|id| format!("({id}, 10)"))
-        .collect::<Vec<_>>().join(", ");
+        .collect::<Vec<_>>()
+        .join(", ");
     let region_rows = (0..500)
         .map(|_| "(20, 'present')".to_owned())
-        .collect::<Vec<_>>().join(", ");
+        .collect::<Vec<_>>()
+        .join(", ");
     for statement in [
         format!("INSERT INTO fact VALUES {fact_rows}"),
         format!("INSERT INTO region VALUES {region_rows}"),

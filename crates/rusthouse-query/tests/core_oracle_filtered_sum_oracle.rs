@@ -14,9 +14,11 @@ fn filtered_sum_matches_reference_modular_reduction() {
             .filter(|value| value % 11 == 3)
             .map(u128::from)
             .sum();
-        let sql = format!(
-            "SELECT sum(number) FROM numbers({rows}) WHERE number % 11 = 3"
+        let sql = format!("SELECT sum(number) FROM numbers({rows}) WHERE number % 11 = 3");
+        assert_eq!(
+            run(&sql),
+            format!("sum(number)\n{expected}\n"),
+            "rows={rows}"
         );
-        assert_eq!(run(&sql), format!("sum(number)\n{expected}\n"), "rows={rows}");
     }
 }

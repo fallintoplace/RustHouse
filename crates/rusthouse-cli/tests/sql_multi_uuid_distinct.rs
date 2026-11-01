@@ -21,6 +21,9 @@ fn multiple_aggregates_distinct_uuid_uses_exact_byte_identity() {
     }
     let result = sql("SELECT count(DISTINCT user_id), sum(amount) FROM events");
     assert!(result.status.success(), "{result:?}");
-    assert_eq!(result.stdout, b"countDistinct(user_id)\tsum(amount)\n3\t23\n");
+    assert_eq!(
+        result.stdout,
+        b"countDistinct(user_id)\tsum(amount)\n3\t23\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

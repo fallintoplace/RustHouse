@@ -21,13 +21,26 @@ fn single_string_in_uses_comparison_semantics_for_nullable_rows() {
         assert!(output.status.success(), "{statement}: {output:?}");
     }
     for (statement, expected) in [
-        ("SELECT id FROM events WHERE tag IN ('red') ORDER BY id", "id\n1\n4\n"),
-        ("SELECT id FROM events WHERE tag NOT IN ('red') ORDER BY id", "id\n2\n"),
-        ("SELECT id FROM events WHERE tag IN ('missing') ORDER BY id", "id\n"),
+        (
+            "SELECT id FROM events WHERE tag IN ('red') ORDER BY id",
+            "id\n1\n4\n",
+        ),
+        (
+            "SELECT id FROM events WHERE tag NOT IN ('red') ORDER BY id",
+            "id\n2\n",
+        ),
+        (
+            "SELECT id FROM events WHERE tag IN ('missing') ORDER BY id",
+            "id\n",
+        ),
     ] {
         let output = sql(statement, &db);
         assert!(output.status.success(), "{statement}: {output:?}");
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{statement}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{statement}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

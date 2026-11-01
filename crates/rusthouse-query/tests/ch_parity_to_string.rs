@@ -14,7 +14,10 @@ fn formats_integer_and_string_constants() {
         ("SELECT toString(-42)", ConstantValue::Text("-42".into())),
         ("SELECT toString(2 + 3)", ConstantValue::Text("5".into())),
         ("SELECT toString('猫')", ConstantValue::Text("猫".into())),
-        ("SELECT toString(concat('a', 'b'))", ConstantValue::Text("ab".into())),
+        (
+            "SELECT toString(concat('a', 'b'))",
+            ConstantValue::Text("ab".into()),
+        ),
         ("SELECT toString(NULL)", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");

@@ -58,8 +58,7 @@ pub(super) fn candidate_mark_range<T: Ord + Copy>(
     if matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded) {
         return Some(0..len);
     }
-    mark_keys_sorted(len, &key_at)
-        .then(|| candidate_mark_range_sorted(len, &key_at, lower, upper))
+    mark_keys_sorted(len, &key_at).then(|| candidate_mark_range_sorted(len, &key_at, lower, upper))
 }
 
 /// Validate the entire sorted index only once when planning several
@@ -76,11 +75,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     if intervals.iter().any(|(lower, upper)| {
         matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded)
     }) {
-        return Some(if len == 0 {
-            Vec::new()
-        } else {
-            vec![0..len]
-        });
+        return Some(if len == 0 { Vec::new() } else { vec![0..len] });
     }
     if !mark_keys_sorted(len, &key_at) {
         return None;
@@ -193,15 +188,18 @@ mod in_place_interval_union_tests {
         let intervals = (0..4096usize)
             .map(|index| {
                 let start = ((index * 47) % 8192) as u64;
-                (Bound::Included(start), Bound::Included(start + (index % 19) as u64))
+                (
+                    Bound::Included(start),
+                    Bound::Included(start + (index % 19) as u64),
+                )
             })
             .collect::<Vec<_>>();
         let expected = {
             let mut selected = [false; 8192];
             for &(lower, upper) in &intervals {
-                let interval = candidate_mark_range(
-                    selected.len(), |mark| Some(mark as u64), lower, upper
-                ).unwrap();
+                let interval =
+                    candidate_mark_range(selected.len(), |mark| Some(mark as u64), lower, upper)
+                        .unwrap();
                 for mark in interval {
                     selected[mark] = true;
                 }
@@ -210,13 +208,16 @@ mod in_place_interval_union_tests {
         };
         for unsorted in [false, true] {
             let mut input = intervals.clone();
-            if unsorted { input.reverse(); }
-            let actual = candidate_mark_ranges(8192, |mark| Some(mark as u64), &input)
-                .unwrap();
+            if unsorted {
+                input.reverse();
+            }
+            let actual = candidate_mark_ranges(8192, |mark| Some(mark as u64), &input).unwrap();
             assert!(actual.windows(2).all(|r| r[0].end < r[1].start));
             let mut selected = [false; 8192];
             for range in actual {
-                for mark in range { selected[mark] = true; }
+                for mark in range {
+                    selected[mark] = true;
+                }
             }
             assert_eq!(selected, expected);
         }
@@ -236,9 +237,14 @@ mod in_place_interval_union_tests {
         );
         // The last mark is conservatively included as predecessor when
         // every indexed key lies below the lower bound.
-        assert_eq!(candidate_mark_ranges(
-            100, |mark| Some(mark as u64),
-            &[(Bound::Included(200u64), Bound::Included(300))]
-        ).unwrap(), vec![99..100]);
+        assert_eq!(
+            candidate_mark_ranges(
+                100,
+                |mark| Some(mark as u64),
+                &[(Bound::Included(200u64), Bound::Included(300))]
+            )
+            .unwrap(),
+            vec![99..100]
+        );
     }
 }

@@ -18,12 +18,10 @@ fn physical_unsigned_distinct() {
     ));
     fs::create_dir(&root).unwrap();
 
-    let schema = [
-        Column {
-            name: "id".into(),
-            data_type: "UInt64".into(),
-        },
-    ];
+    let schema = [Column {
+        name: "id".into(),
+        data_type: "UInt64".into(),
+    }];
     let parts: Vec<Vec<Vec<Option<String>>>> = vec![
         vec![
             vec![Some("0".into())],

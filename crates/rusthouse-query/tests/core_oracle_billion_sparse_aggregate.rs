@@ -9,7 +9,8 @@ fn run(sql: &str) -> String {
 
 #[test]
 fn sparse_billion_row_membership_has_exact_sum_and_count() {
-    let sql = "SELECT sum(number), count(*) FROM numbers(1000000000) WHERE number IN (42, 99, 999999998)";
+    let sql =
+        "SELECT sum(number), count(*) FROM numbers(1000000000) WHERE number IN (42, 99, 999999998)";
     let expected = "sum(number)\tcount(*)\n1000000139\t3\n";
     assert_eq!(run(sql), expected);
 }

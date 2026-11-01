@@ -17,7 +17,11 @@ fn decodes_padded_and_unpadded_url_safe_base64() {
             .args(["sql", query])
             .output()
             .unwrap();
-        assert!(output.status.success(), "{query}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(output.stdout, expected.as_bytes(), "{query}");
     }
 }

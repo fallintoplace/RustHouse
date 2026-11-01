@@ -3,13 +3,13 @@ use std::process::Command;
 
 #[test]
 fn streaming_ordered_join_keeps_sort_only_columns_on_build_side() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-ordered-pruned-{}",
-        std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-ordered-pruned-{}", std::process::id()));
     let sql = |query: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
-            .args(["sql", query, "--database"]).arg(&db).output().unwrap()
+            .args(["sql", query, "--database"])
+            .arg(&db)
+            .output()
+            .unwrap()
     };
     for query in [
         "CREATE TABLE facts (id UInt64)",
@@ -20,7 +20,9 @@ fn streaming_ordered_join_keeps_sort_only_columns_on_build_side() {
         let out = sql(query);
         assert!(out.status.success(), "{query}: {out:?}");
     }
-    let out = sql("SELECT f.id FROM facts f JOIN dimension d ON f.id = d.id ORDER BY d.score DESC LIMIT 2");
+    let out = sql(
+        "SELECT f.id FROM facts f JOIN dimension d ON f.id = d.id ORDER BY d.score DESC LIMIT 2",
+    );
     assert!(out.status.success(), "{out:?}");
     assert_eq!(out.stdout, b"f.id\n2\n3\n");
     fs::remove_dir_all(db).unwrap();

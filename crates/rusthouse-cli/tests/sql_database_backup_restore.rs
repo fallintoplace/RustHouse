@@ -166,9 +166,7 @@ fn cold_restore_preserves_renamed_table_and_latest_truncate_generation() {
     must_succeed(sql(&source, "TRUNCATE TABLE archive"));
     must_succeed(sql(&source, "INSERT INTO archive VALUES (9, 'current')"));
 
-    let expected = must_succeed(
-        sql(&source, "SELECT id, name FROM archive ORDER BY id")
-    ).stdout;
+    let expected = must_succeed(sql(&source, "SELECT id, name FROM archive ORDER BY id")).stdout;
     assert_eq!(expected, b"id\tname\n9\tcurrent\n");
     assert!(!sql(&source, "SELECT id FROM events").status.success());
     must_succeed(doctor(&source));

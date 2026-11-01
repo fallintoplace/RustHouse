@@ -184,9 +184,11 @@ where
         let mut buffer = [0u8; SMALL_BYTES];
         let size = rows * WIDTH;
         reader.read_exact(&mut buffer[..size])?;
-        values.extend(buffer[..size].chunks_exact(WIDTH).map(|bytes| {
-            parse(bytes.try_into().expect("exact fixed-width numeric chunk"))
-        }));
+        values.extend(
+            buffer[..size]
+                .chunks_exact(WIDTH)
+                .map(|bytes| parse(bytes.try_into().expect("exact fixed-width numeric chunk"))),
+        );
         return Ok(values);
     }
 
@@ -245,8 +247,10 @@ mod tests {
         }
         let encoded = 42u16.to_le_bytes();
         let mut reader = Bytewise(&encoded[..]);
-        assert_eq!(read_numeric_column(&mut reader, "UInt16", 1).unwrap(),
-            NumericColumn::UInt16(vec![42]));
+        assert_eq!(
+            read_numeric_column(&mut reader, "UInt16", 1).unwrap(),
+            NumericColumn::UInt16(vec![42])
+        );
         assert!(matches!(
             read_numeric_column(&mut &b"abc"[..], "UInt64", 1),
             Err(NumericReadError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof

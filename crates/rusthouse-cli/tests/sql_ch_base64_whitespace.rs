@@ -16,7 +16,11 @@ fn decoders_ignore_permitted_base64_whitespace() {
         ("SELECT tryBase64Decode(' Zm8= ') AS value", "value\nfo\n"),
     ] {
         let output = sql(query);
-        assert!(output.status.success(), "{query}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(output.stdout, expected.as_bytes(), "{query}");
     }
 }

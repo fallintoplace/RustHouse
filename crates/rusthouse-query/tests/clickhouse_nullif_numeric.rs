@@ -22,7 +22,11 @@ fn handles_numeric_and_string_nullif() {
 }
 #[test]
 fn validates_nullif_arity() {
-    for sql in ["SELECT nullIf()", "SELECT nullIf(1)", "SELECT nullIf(1,2,3)"] {
+    for sql in [
+        "SELECT nullIf()",
+        "SELECT nullIf(1)",
+        "SELECT nullIf(1,2,3)",
+    ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }

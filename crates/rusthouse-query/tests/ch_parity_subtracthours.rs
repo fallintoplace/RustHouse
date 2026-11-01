@@ -17,10 +17,7 @@ fn checks_utc_boundaries_and_null_values() {
         value("SELECT subtractHours('2024-03-01 00:00:00', -1)"),
         ConstantValue::Text("2024-03-01 01:00:00".into())
     );
-    assert_eq!(
-        value("SELECT subtractHours(NULL, 1)"),
-        ConstantValue::Null
-    );
+    assert_eq!(value("SELECT subtractHours(NULL, 1)"), ConstantValue::Null);
     assert_eq!(
         value("SELECT subtractHours('2024-03-01 00:00:00', NULL)"),
         ConstantValue::Null

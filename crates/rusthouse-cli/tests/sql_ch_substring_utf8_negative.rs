@@ -4,7 +4,10 @@ use std::process::Command;
 fn verifies_substring_utf8_negative_semantics() {
     for (query, expected) in [
         ("SELECT substringUTF8('aé中', -2, 1) AS value", "value\né\n"),
-        ("SELECT substringUTF8('hello', -1, 1) AS value", "value\no\n"),
+        (
+            "SELECT substringUTF8('hello', -1, 1) AS value",
+            "value\no\n",
+        ),
         ("SELECT substringUTF8('hello', 0, 2) AS value", "value\n\n"),
         ("SELECT substringUTF8('hello', -2) AS value", "value\nlo\n"),
     ] {

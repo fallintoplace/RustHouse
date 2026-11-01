@@ -412,7 +412,9 @@ impl JsonEachRowRecords {
     fn next_record(&mut self) -> Result<Option<Vec<Option<String>>>, String> {
         loop {
             self.buffer.clear();
-            let read = self.reader.by_ref()
+            let read = self
+                .reader
+                .by_ref()
                 .take((MAX_JSONEACHROW_RECORD_BYTES + 1) as u64)
                 .read_until(b'\n', &mut self.buffer)
                 .map_err(|error| format!("cannot read JSONEachRow record: {error}"))?;
@@ -440,7 +442,9 @@ impl JsonEachRowRecords {
             let fields = parse_json_each_row_fields(text)?;
             let mut values = vec![None; self.column_count];
             for (name, value) in fields {
-                let index = *self.column_indices.get(&name)
+                let index = *self
+                    .column_indices
+                    .get(&name)
                     .ok_or_else(|| format!("unknown JSONEachRow column: {name}"))?;
                 values[index] = value;
             }
@@ -454,7 +458,9 @@ fn run_json_each_row(database: &Path, statement: &CopyFrom) -> Result<(), String
         explicit
     } else {
         crate::catalog::read_schema(database, &statement.table)?
-            .into_iter().map(|column| column.name).collect()
+            .into_iter()
+            .map(|column| column.name)
+            .collect()
     };
     let column_count = columns.len();
     let mut column_indices = HashMap::with_capacity(column_count);
@@ -466,16 +472,21 @@ fn run_json_each_row(database: &Path, statement: &CopyFrom) -> Result<(), String
     let source: Box<dyn Read> = if statement.path == "-" {
         Box::new(std::io::stdin())
     } else {
-        Box::new(File::open(&statement.path)
-            .map_err(|error| format!("cannot open COPY file {}: {error}", statement.path))?)
+        Box::new(
+            File::open(&statement.path)
+                .map_err(|error| format!("cannot open COPY file {}: {error}", statement.path))?,
+        )
     };
     let mut reader = JsonEachRowRecords {
-        reader: BufReader::new(source), buffer: Vec::new(),
-        first: true, column_indices, column_count,
+        reader: BufReader::new(source),
+        buffer: Vec::new(),
+        first: true,
+        column_indices,
+        column_count,
     };
-    crate::database::insert_stream(
-        database, &statement.table, Some(columns), || reader.next_record(),
-    )
+    crate::database::insert_stream(database, &statement.table, Some(columns), || {
+        reader.next_record()
+    })
 }
 
 pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
@@ -696,10 +707,18 @@ mod csv_large_ingest_allocation_tests {
             buffer: Vec::new(),
             first: true,
         };
-        assert_eq!(reader.next_record().unwrap().unwrap(),
-            vec![Some("1".into()), Some("alpha\nbeta".into()), Some("9".into())]);
-        assert_eq!(reader.next_record().unwrap().unwrap(),
-            vec![Some("2".into()), Some("a\"b".into()), Some("10".into())]);
+        assert_eq!(
+            reader.next_record().unwrap().unwrap(),
+            vec![
+                Some("1".into()),
+                Some("alpha\nbeta".into()),
+                Some("9".into())
+            ]
+        );
+        assert_eq!(
+            reader.next_record().unwrap().unwrap(),
+            vec![Some("2".into()), Some("a\"b".into()), Some("10".into())]
+        );
     }
 }
 

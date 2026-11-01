@@ -42,7 +42,9 @@ fn push_sql_statement(statements: &mut Vec<String>, statement: &str) -> Result<(
         return Ok(());
     }
     if statement.len() > MAX_SQL_BYTES {
-        return Err(format!("SQL script statement exceeds {MAX_SQL_BYTES} bytes"));
+        return Err(format!(
+            "SQL script statement exceeds {MAX_SQL_BYTES} bytes"
+        ));
     }
     if statements.len() >= MAX_SCRIPT_STATEMENTS {
         return Err(format!(
@@ -65,13 +67,16 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
         // Ordinary SQL spans need no delimiter parsing. Only quotes and
         // escapes matter inside strings; unquoted spans also inspect comment
         // and statement delimiters. The stop bytes are all ASCII boundaries.
-        let plain = bytes[index..].iter().position(|&byte| {
-            if quoted {
-                matches!(byte, b'\\' | b'\'')
-            } else {
-                matches!(byte, b'\'' | b'#' | b'-' | b'/' | b';')
-            }
-        }).unwrap_or(bytes.len() - index);
+        let plain = bytes[index..]
+            .iter()
+            .position(|&byte| {
+                if quoted {
+                    matches!(byte, b'\\' | b'\'')
+                } else {
+                    matches!(byte, b'\'' | b'#' | b'-' | b'/' | b';')
+                }
+            })
+            .unwrap_or(bytes.len() - index);
         index += plain;
         if index == bytes.len() {
             break;
@@ -192,10 +197,15 @@ mod sql_bom_input_tests {
     #[test]
     fn strips_only_a_leading_bom_and_keeps_utf8_unchanged() {
         let sql = "SELECT 'café'";
-        assert_eq!(read_sql_input(format!("\u{feff}{sql}").as_bytes(), "stdin", "SQL").unwrap(), sql);
+        assert_eq!(
+            read_sql_input(format!("\u{feff}{sql}").as_bytes(), "stdin", "SQL").unwrap(),
+            sql
+        );
         assert_eq!(read_sql_input(sql.as_bytes(), "stdin", "SQL").unwrap(), sql);
-        assert_eq!(read_sql_input(b"SELECT \xef\xbb\xbf 1".as_slice(), "stdin", "SQL").unwrap(),
-            "SELECT \u{feff} 1");
+        assert_eq!(
+            read_sql_input(b"SELECT \xef\xbb\xbf 1".as_slice(), "stdin", "SQL").unwrap(),
+            "SELECT \u{feff} 1"
+        );
     }
 
     #[test]
@@ -223,8 +233,7 @@ mod block_comment_tests {
             vec!["SELECT 1", "SELECT 2"]
         );
         assert_eq!(
-            split_sql_script("SELECT '#literal;still' AS value; # trailing ;")
-                .unwrap(),
+            split_sql_script("SELECT '#literal;still' AS value; # trailing ;").unwrap(),
             vec!["SELECT '#literal;still' AS value"]
         );
         assert!(split_sql_script("# only a comment ; ;").is_err());
@@ -277,9 +286,7 @@ mod cr_only_script_comments_tests {
     #[test]
     fn preserves_statements_after_cr_only_line_comments() {
         assert_eq!(
-            split_sql_script(
-                "SELECT 1; -- comment\rSELECT 2; # another\rSELECT 3;"
-            ).unwrap(),
+            split_sql_script("SELECT 1; -- comment\rSELECT 2; # another\rSELECT 3;").unwrap(),
             ["SELECT 1", "SELECT 2", "SELECT 3"],
         );
         assert_eq!(
@@ -330,11 +337,15 @@ mod plain_script_span_tests {
     #[test]
     fn splits_long_utf8_statements_and_preserves_quoted_semicolons() {
         let long = "éabc".repeat(8192);
-        let input = format!("SELECT '{long};x' AS value; /* outer /* inner ; */ done */ SELECT 42;");
-        assert_eq!(split_sql_script(&input).unwrap(), vec![
-            format!("SELECT '{long};x' AS value"),
-            "SELECT 42".to_string(),
-        ]);
+        let input =
+            format!("SELECT '{long};x' AS value; /* outer /* inner ; */ done */ SELECT 42;");
+        assert_eq!(
+            split_sql_script(&input).unwrap(),
+            vec![
+                format!("SELECT '{long};x' AS value"),
+                "SELECT 42".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -342,6 +353,9 @@ mod plain_script_span_tests {
         let prefix = "SELECT ".to_string() + &"a".repeat(16384);
         assert!(split_sql_script(&format!("{prefix} 'unfinished")).is_err());
         assert!(split_sql_script(&format!("{prefix} /* unfinished")).is_err());
-        assert_eq!(split_sql_script(&format!("{prefix};")).unwrap(), vec![prefix]);
+        assert_eq!(
+            split_sql_script(&format!("{prefix};")).unwrap(),
+            vec![prefix]
+        );
     }
 }

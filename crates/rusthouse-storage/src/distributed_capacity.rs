@@ -20,11 +20,7 @@ impl Capacity {
             .ok_or("replica capacity exceeded")
     }
 
-    fn remaining_reservation(
-        self,
-        bytes: u64,
-        error: &'static str,
-    ) -> Result<u64, &'static str> {
+    fn remaining_reservation(self, bytes: u64, error: &'static str) -> Result<u64, &'static str> {
         self.reserved.checked_sub(bytes).ok_or(error)
     }
 
@@ -48,7 +44,8 @@ impl Capacity {
 
     /// Convert reserved bytes into committed usage.
     pub fn commit(self, bytes: u64) -> Result<Self, &'static str> {
-        let remaining_reserved_bytes = self.remaining_reservation(bytes, "cannot commit unreserved bytes")?;
+        let remaining_reserved_bytes =
+            self.remaining_reservation(bytes, "cannot commit unreserved bytes")?;
         self.available()?;
         Ok(Self {
             used: self
@@ -153,7 +150,9 @@ impl Capacity {
         let available = self.available()?;
         let mut bytes = 0u64;
         for &size in object_sizes {
-            bytes = bytes.checked_add(size).ok_or("replica batch size overflow")?;
+            bytes = bytes
+                .checked_add(size)
+                .ok_or("replica batch size overflow")?;
             if bytes > available {
                 return Err("insufficient replica capacity");
             }
@@ -168,7 +167,11 @@ mod batch_reservation_tests {
 
     #[test]
     fn reserves_all_objects_as_one_transaction() {
-        let capacity = Capacity { total: 100, used: 10, reserved: 5 };
+        let capacity = Capacity {
+            total: 100,
+            used: 10,
+            reserved: 5,
+        };
         let booked = capacity.reserve_many(&[30, 25, 30]).unwrap();
         assert_eq!(booked.available().unwrap(), 0);
         assert_eq!(booked.reserved, 90);
@@ -178,16 +181,34 @@ mod batch_reservation_tests {
 
     #[test]
     fn stops_reserving_when_a_batch_already_exceeds_capacity() {
-        let capacity = Capacity { total: 10, used: 1, reserved: 2 };
-        assert_eq!(capacity.reserve_many(&[3, 4]).unwrap().available().unwrap(), 0);
+        let capacity = Capacity {
+            total: 10,
+            used: 1,
+            reserved: 2,
+        };
+        assert_eq!(
+            capacity.reserve_many(&[3, 4]).unwrap().available().unwrap(),
+            0
+        );
         assert!(capacity.reserve_many(&[3, 5, u64::MAX]).is_err());
         assert_eq!(capacity.reserve_many(&[0, 0, 0]).unwrap(), capacity);
-        assert_eq!(capacity, Capacity { total: 10, used: 1, reserved: 2 });
+        assert_eq!(
+            capacity,
+            Capacity {
+                total: 10,
+                used: 1,
+                reserved: 2
+            }
+        );
     }
 
     #[test]
     fn refuses_overflow_and_unbounded_batches() {
-        let capacity = Capacity { total: u64::MAX, used: 0, reserved: 0 };
+        let capacity = Capacity {
+            total: u64::MAX,
+            used: 0,
+            reserved: 0,
+        };
         assert!(capacity.reserve_many(&[u64::MAX, 1]).is_err());
         assert!(capacity.reserve_many(&vec![0; 65_537]).is_err());
         assert_eq!(capacity.reserve_many(&[]).unwrap(), capacity);
@@ -200,7 +221,10 @@ impl Capacity {
     pub fn reclaim_used(self, bytes: u64) -> Result<Self, &'static str> {
         self.available()?;
         Ok(Self {
-            used: self.used.checked_sub(bytes).ok_or("cannot reclaim unused bytes")?,
+            used: self
+                .used
+                .checked_sub(bytes)
+                .ok_or("cannot reclaim unused bytes")?,
             ..self
         })
     }
@@ -214,7 +238,9 @@ impl Capacity {
         }
         self.available()?;
         let reclaimed = object_sizes.iter().try_fold(0u64, |total, &bytes| {
-            total.checked_add(bytes).ok_or("replica batch size overflow")
+            total
+                .checked_add(bytes)
+                .ok_or("replica batch size overflow")
         })?;
         self.reclaim_used(reclaimed)
     }
@@ -226,13 +252,32 @@ mod reclaim_used_tests {
 
     #[test]
     fn reclaim_frees_only_committed_bytes_and_preserves_reservations() {
-        let initial = Capacity { total: 100, used: 60, reserved: 20 };
+        let initial = Capacity {
+            total: 100,
+            used: 60,
+            reserved: 20,
+        };
         let after = initial.reclaim_used(30).unwrap();
-        assert_eq!(after, Capacity { total: 100, used: 30, reserved: 20 });
+        assert_eq!(
+            after,
+            Capacity {
+                total: 100,
+                used: 30,
+                reserved: 20
+            }
+        );
         assert_eq!(after.available().unwrap(), 50);
         assert!(initial.reclaim_used(61).is_err());
         assert_eq!(initial.reclaim_used(0).unwrap(), initial);
-        assert!(Capacity { total: 1, used: 2, reserved: 0 }.reclaim_used(1).is_err());
+        assert!(
+            Capacity {
+                total: 1,
+                used: 2,
+                reserved: 0
+            }
+            .reclaim_used(1)
+            .is_err()
+        );
     }
 }
 
@@ -245,10 +290,17 @@ mod batch_reservation_fast_path_tests {
         for total in 0..=16u64 {
             for used in 0..=total {
                 for reserved in 0..=total - used {
-                    let capacity = Capacity { total, used, reserved };
+                    let capacity = Capacity {
+                        total,
+                        used,
+                        reserved,
+                    };
                     for first in 0..=total - used - reserved {
                         let second = (total - used - reserved) - first;
-                        assert_eq!(capacity.reserve_many(&[first, second]).unwrap(), capacity.reserve(first + second).unwrap());
+                        assert_eq!(
+                            capacity.reserve_many(&[first, second]).unwrap(),
+                            capacity.reserve(first + second).unwrap()
+                        );
                     }
                 }
             }
@@ -287,12 +339,29 @@ mod atomic_batch_capacity_tests {
 
     #[test]
     fn batch_reserve_commit_release_preserve_exact_usage() {
-        let initial = Capacity { total: 100, used: 9, reserved: 3 };
+        let initial = Capacity {
+            total: 100,
+            used: 9,
+            reserved: 3,
+        };
         let reserved = initial.reserve_many(&[11, 19, 7]).unwrap();
         let committed = reserved.commit_many(&[11, 19]).unwrap();
-        assert_eq!(committed, Capacity { total: 100, used: 39, reserved: 10 });
-        assert_eq!(committed.release_many(&[7]).unwrap(),
-            Capacity { total: 100, used: 39, reserved: 3 });
+        assert_eq!(
+            committed,
+            Capacity {
+                total: 100,
+                used: 39,
+                reserved: 10
+            }
+        );
+        assert_eq!(
+            committed.release_many(&[7]).unwrap(),
+            Capacity {
+                total: 100,
+                used: 39,
+                reserved: 3
+            }
+        );
         assert!(reserved.commit_many(&[11, 19, 60]).is_err());
         assert!(reserved.release_many(&[11, 19, 60]).is_err());
         assert_eq!(initial.reserve_many(&[11, 19, 7]).unwrap(), reserved);
@@ -303,7 +372,11 @@ mod atomic_batch_capacity_tests {
         for total in 0..=24u64 {
             for used in 0..=total {
                 for held in 0..=total - used {
-                    let state = Capacity { total, used, reserved: held };
+                    let state = Capacity {
+                        total,
+                        used,
+                        reserved: held,
+                    };
                     for first in 0..=held {
                         for second in 0..=held - first {
                             assert_eq!(
@@ -323,7 +396,11 @@ mod atomic_batch_capacity_tests {
 
     #[test]
     fn batch_totals_reject_overflow_and_oversized_lists() {
-        let state = Capacity { total: u64::MAX, used: 0, reserved: u64::MAX };
+        let state = Capacity {
+            total: u64::MAX,
+            used: 0,
+            reserved: u64::MAX,
+        };
         assert!(state.commit_many(&[u64::MAX, 1]).is_err());
         assert!(state.release_many(&[u64::MAX, 1]).is_err());
         assert!(state.commit_many(&vec![0; 65_537]).is_err());
@@ -341,11 +418,18 @@ mod atomic_committed_reclaim_tests {
         for total in 0..=20u64 {
             for used in 0..=total {
                 for reserved in 0..=total - used {
-                    let capacity = Capacity { total, used, reserved };
+                    let capacity = Capacity {
+                        total,
+                        used,
+                        reserved,
+                    };
                     for first in 0..=used {
                         let second = used - first;
-                        let expected = capacity.reclaim_used(first).unwrap()
-                            .reclaim_used(second).unwrap();
+                        let expected = capacity
+                            .reclaim_used(first)
+                            .unwrap()
+                            .reclaim_used(second)
+                            .unwrap();
                         let batched = capacity.reclaim_used_many(&[first, second]).unwrap();
                         assert_eq!(batched, expected);
                         assert_eq!(batched.reserved, reserved);
@@ -358,15 +442,32 @@ mod atomic_committed_reclaim_tests {
 
     #[test]
     fn detects_overflow_unaccounted_deletion_and_bad_state() {
-        let state = Capacity { total: 100, used: 50, reserved: 20 };
-        assert_eq!(state.reclaim_used_many(&[20, 10]).unwrap(),
-            Capacity { total: 100, used: 20, reserved: 20 });
+        let state = Capacity {
+            total: 100,
+            used: 50,
+            reserved: 20,
+        };
+        assert_eq!(
+            state.reclaim_used_many(&[20, 10]).unwrap(),
+            Capacity {
+                total: 100,
+                used: 20,
+                reserved: 20
+            }
+        );
         assert!(state.reclaim_used_many(&[30, 21]).is_err());
         assert!(state.reclaim_used_many(&[u64::MAX, 1]).is_err());
         assert!(state.reclaim_used_many(&vec![0; 65_537]).is_err());
         assert_eq!(state.reclaim_used_many(&[]).unwrap(), state);
-        assert!(Capacity { total: 1, used: 2, reserved: 0 }
-            .reclaim_used_many(&[]).is_err());
+        assert!(
+            Capacity {
+                total: 1,
+                used: 2,
+                reserved: 0
+            }
+            .reclaim_used_many(&[])
+            .is_err()
+        );
     }
 }
 
@@ -390,20 +491,23 @@ pub fn reserve_replica_capacity_plan(
         return Err("invalid multi-replica reservation limits");
     }
     // Keep small node lookups borrowed; large groups use the indexed path.
-    let mut index = (nodes.len() > 8)
-        .then(|| std::collections::HashMap::with_capacity(nodes.len()));
+    let mut index =
+        (nodes.len() > 8).then(|| std::collections::HashMap::with_capacity(nodes.len()));
     let mut available = [0u64; 64];
     for (position, node) in nodes.iter().enumerate() {
         let duplicate = if let Some(index) = index.as_mut() {
             index.insert(node.node.as_str(), position).is_some()
         } else {
-            nodes[..position].iter().any(|previous| previous.node == node.node)
+            nodes[..position]
+                .iter()
+                .any(|previous| previous.node == node.node)
         };
         if node.node.is_empty()
             || node.node.len() > 64
-            || !node.node.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
-            })
+            || !node
+                .node
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
             || duplicate
         {
             return Err("invalid or duplicate reservation node");
@@ -419,10 +523,13 @@ pub fn reserve_replica_capacity_plan(
         let position = if let Some(index) = &index {
             *index.get(node).ok_or("unknown replica reservation node")?
         } else {
-            nodes.iter().position(|entry| entry.node == node)
+            nodes
+                .iter()
+                .position(|entry| entry.node == node)
                 .ok_or("unknown replica reservation node")?
         };
-        let updated = reserved[position].checked_add(bytes)
+        let updated = reserved[position]
+            .checked_add(bytes)
             .ok_or("insufficient replica capacity")?;
         if updated > available[position] {
             return Err("insufficient replica capacity");
@@ -445,16 +552,19 @@ mod multi_replica_capacity_planning_tests {
     fn node(name: &str, total: u64, used: u64, reserved: u64) -> ReplicaNodeCapacity {
         ReplicaNodeCapacity {
             node: name.into(),
-            capacity: Capacity { total, used, reserved },
+            capacity: Capacity {
+                total,
+                used,
+                reserved,
+            },
         }
     }
 
     #[test]
     fn repeated_node_requests_commit_as_one_atomic_value_plan() {
         let before = [node("a", 10, 2, 0), node("b", 9, 0, 1)];
-        let planned = reserve_replica_capacity_plan(
-            &before, &[("a", 3), ("b", 4), ("a", 2)]
-        ).unwrap();
+        let planned =
+            reserve_replica_capacity_plan(&before, &[("a", 3), ("b", 4), ("a", 2)]).unwrap();
         assert_eq!(planned[0], node("a", 10, 2, 5));
         assert_eq!(planned[1], node("b", 9, 0, 5));
         assert_eq!(planned[0].capacity.available().unwrap(), 3);
@@ -463,43 +573,31 @@ mod multi_replica_capacity_planning_tests {
         assert_eq!(before[1], node("b", 9, 0, 1));
         assert_eq!(
             planned,
-            reserve_replica_capacity_plan(
-                &before, &[("a", 2), ("a", 3), ("b", 4)]
-            ).unwrap()
+            reserve_replica_capacity_plan(&before, &[("a", 2), ("a", 3), ("b", 4)]).unwrap()
         );
     }
 
     #[test]
     fn rejects_partial_capacity_and_invalid_members_without_mutation() {
         let before = [node("a", 10, 2, 0), node("b", 9, 0, 1)];
-        assert!(reserve_replica_capacity_plan(
-            &before, &[("a", 3), ("b", 9)]
-        ).is_err());
-        assert!(reserve_replica_capacity_plan(
-            &before, &[("a", 3), ("unknown", 1)]
-        ).is_err());
+        assert!(reserve_replica_capacity_plan(&before, &[("a", 3), ("b", 9)]).is_err());
+        assert!(reserve_replica_capacity_plan(&before, &[("a", 3), ("unknown", 1)]).is_err());
         assert_eq!(before[0].capacity.reserved, 0);
-        assert!(reserve_replica_capacity_plan(
-            &[before[0].clone(), before[0].clone()], &[]
-        ).is_err());
-        assert!(reserve_replica_capacity_plan(
-            &[node("a", 10, 9, 2)], &[]
-        ).is_err());
-        assert!(reserve_replica_capacity_plan(
-            &before, &vec![("a", 0); 65_537]
-        ).is_err());
+        assert!(
+            reserve_replica_capacity_plan(&[before[0].clone(), before[0].clone()], &[]).is_err()
+        );
+        assert!(reserve_replica_capacity_plan(&[node("a", 10, 9, 2)], &[]).is_err());
+        assert!(reserve_replica_capacity_plan(&before, &vec![("a", 0); 65_537]).is_err());
         assert!(reserve_replica_capacity_plan(&[], &[]).is_err());
     }
 
     #[test]
     fn detects_full_width_reservation_overflow_and_is_order_stable() {
         let before = [node("node_1", u64::MAX, 0, 0)];
-        assert!(reserve_replica_capacity_plan(
-            &before, &[("node_1", u64::MAX), ("node_1", 1)]
-        ).is_err());
-        let planned = reserve_replica_capacity_plan(
-            &before, &[("node_1", u64::MAX)]
-        ).unwrap();
+        assert!(
+            reserve_replica_capacity_plan(&before, &[("node_1", u64::MAX), ("node_1", 1)]).is_err()
+        );
+        let planned = reserve_replica_capacity_plan(&before, &[("node_1", u64::MAX)]).unwrap();
         assert_eq!(planned[0].capacity.available().unwrap(), 0);
     }
 }
@@ -553,7 +651,9 @@ mod batched_replica_reservation_tests {
     ) -> Result<Vec<ReplicaNodeCapacity>, &'static str> {
         let mut planned = nodes.to_vec();
         for &(node, bytes) in requests {
-            let position = planned.iter().position(|item| item.node == node)
+            let position = planned
+                .iter()
+                .position(|item| item.node == node)
                 .ok_or("unknown replica reservation node")?;
             planned[position].capacity = planned[position].capacity.reserve(bytes)?;
         }
@@ -563,16 +663,25 @@ mod batched_replica_reservation_tests {
     #[test]
     fn batched_totals_match_sequential_plans_for_all_replica_counts() {
         for size in [1usize, 2, 8, 9, 16, 64] {
-            let nodes = (0..size).map(|index| ReplicaNodeCapacity {
-                node: format!("replica_{index:02}"),
-                capacity: Capacity {
-                    total: 100_000, used: (index as u64) * 3, reserved: 7,
-                },
-            }).collect::<Vec<_>>();
+            let nodes = (0..size)
+                .map(|index| ReplicaNodeCapacity {
+                    node: format!("replica_{index:02}"),
+                    capacity: Capacity {
+                        total: 100_000,
+                        used: (index as u64) * 3,
+                        reserved: 7,
+                    },
+                })
+                .collect::<Vec<_>>();
             for request_count in [0usize, 1, 8, 9, 128, 4_096, 65_536] {
-                let requests = (0..request_count).map(|index| {
-                    (nodes[(index * 37 + 11) % size].node.as_str(), (index % 3) as u64)
-                }).collect::<Vec<_>>();
+                let requests = (0..request_count)
+                    .map(|index| {
+                        (
+                            nodes[(index * 37 + 11) % size].node.as_str(),
+                            (index % 3) as u64,
+                        )
+                    })
+                    .collect::<Vec<_>>();
                 assert_eq!(
                     reserve_replica_capacity_plan(&nodes, &requests),
                     reference(&nodes, &requests),
@@ -595,19 +704,22 @@ mod batched_replica_reservation_tests {
     fn max_request_batch_preserves_exact_capacity_and_input() {
         let before = [ReplicaNodeCapacity {
             node: "replica".into(),
-            capacity: Capacity { total: 65_536, used: 0, reserved: 0 },
+            capacity: Capacity {
+                total: 65_536,
+                used: 0,
+                reserved: 0,
+            },
         }];
         let requests = vec![("replica", 1); 65_536];
         let result = reserve_replica_capacity_plan(&before, &requests).unwrap();
         assert_eq!(result[0].capacity.reserved, 65_536);
         assert_eq!(result[0].capacity.available().unwrap(), 0);
         assert_eq!(before[0].capacity.reserved, 0);
-        assert!(reserve_replica_capacity_plan(
-            &before, &vec![("replica", u64::MAX); 65_536]
-        ).is_err());
+        assert!(
+            reserve_replica_capacity_plan(&before, &vec![("replica", u64::MAX); 65_536]).is_err()
+        );
     }
 }
-
 
 /// A small exact alternative to greedy transfer batching.
 ///
@@ -637,8 +749,7 @@ pub fn plan_capacity_optimal_objects(
         left.bytes > right.bytes
             || (left.bytes == right.bytes
                 && (left.count > right.count
-                    || (left.count == right.count
-                        && lex_earlier(left.mask, right.mask))))
+                    || (left.count == right.count && lex_earlier(left.mask, right.mask))))
     }
     fn enumerate(sizes: &[u64], budget: u64) -> Vec<Subset> {
         let mut subsets = Vec::with_capacity(1 << sizes.len());
@@ -654,7 +765,9 @@ pub fn plan_capacity_optimal_objects(
             }
             if let Some(bytes) = bytes.filter(|&bytes| bytes <= budget) {
                 subsets.push(Subset {
-                    bytes, count: mask.count_ones(), mask,
+                    bytes,
+                    count: mask.count_ones(),
+                    mask,
                 });
             }
         }
@@ -680,7 +793,11 @@ pub fn plan_capacity_optimal_objects(
         compressed.push(subset);
     }
 
-    let mut best = Subset { bytes: 0, count: 0, mask: 0 };
+    let mut best = Subset {
+        bytes: 0,
+        count: 0,
+        mask: 0,
+    };
     for subset in left {
         let remaining = available - subset.bytes;
         let end = compressed.partition_point(|candidate| candidate.bytes <= remaining);
@@ -707,28 +824,43 @@ mod exact_capacity_transfer_subset_tests {
     use super::*;
 
     fn capacity(total: u64) -> Capacity {
-        Capacity { total, used: 0, reserved: 0 }
+        Capacity {
+            total,
+            used: 0,
+            reserved: 0,
+        }
     }
 
     #[test]
     fn finds_non_greedy_optimum_and_deterministic_ties() {
-        assert_eq!(plan_capacity_optimal_objects(capacity(10), &[8, 6, 4]).unwrap(),
-            [1, 2]);
-        assert_eq!(plan_capacity_optimal_objects(capacity(9), &[9, 5, 4]).unwrap(),
-            [1, 2]);
-        assert_eq!(plan_capacity_optimal_objects(capacity(5), &[5, 5]).unwrap(),
-            [0]);
-        assert_eq!(plan_capacity_optimal_objects(capacity(0), &[0, 0, 1]).unwrap(),
-            [0, 1]);
-        assert_eq!(plan_capacity_optimal_objects(
-            capacity(u64::MAX), &[u64::MAX, 1, u64::MAX - 1],
-        ).unwrap(), [1, 2]);
+        assert_eq!(
+            plan_capacity_optimal_objects(capacity(10), &[8, 6, 4]).unwrap(),
+            [1, 2]
+        );
+        assert_eq!(
+            plan_capacity_optimal_objects(capacity(9), &[9, 5, 4]).unwrap(),
+            [1, 2]
+        );
+        assert_eq!(
+            plan_capacity_optimal_objects(capacity(5), &[5, 5]).unwrap(),
+            [0]
+        );
+        assert_eq!(
+            plan_capacity_optimal_objects(capacity(0), &[0, 0, 1]).unwrap(),
+            [0, 1]
+        );
+        assert_eq!(
+            plan_capacity_optimal_objects(capacity(u64::MAX), &[u64::MAX, 1, u64::MAX - 1],)
+                .unwrap(),
+            [1, 2]
+        );
     }
 
     #[test]
     fn exhaustive_small_inputs_match_full_subset_reference() {
         for count in 0..=10usize {
-            let sizes = (0..count).map(|index| ((index * 13 + 3) % 8) as u64)
+            let sizes = (0..count)
+                .map(|index| ((index * 13 + 3) % 8) as u64)
                 .collect::<Vec<_>>();
             for budget in 0..=20u64 {
                 let selected = plan_capacity_optimal_objects(capacity(budget), &sizes).unwrap();
@@ -737,13 +869,16 @@ mod exact_capacity_transfer_subset_tests {
                 let mut best_count = 0usize;
                 let mut best = Vec::<usize>::new();
                 for mask in 0..(1usize << count) {
-                    let indexes = (0..count).filter(|&index| mask & (1 << index) != 0)
+                    let indexes = (0..count)
+                        .filter(|&index| mask & (1 << index) != 0)
                         .collect::<Vec<_>>();
                     let bytes = indexes.iter().map(|&index| sizes[index]).sum::<u64>();
-                    if bytes <= budget && (bytes > best_bytes
-                        || (bytes == best_bytes && indexes.len() > best_count)
-                        || (bytes == best_bytes && indexes.len() == best_count
-                            && indexes < best))
+                    if bytes <= budget
+                        && (bytes > best_bytes
+                            || (bytes == best_bytes && indexes.len() > best_count)
+                            || (bytes == best_bytes
+                                && indexes.len() == best_count
+                                && indexes < best))
                     {
                         best_bytes = bytes;
                         best_count = indexes.len();
@@ -758,12 +893,29 @@ mod exact_capacity_transfer_subset_tests {
 
     #[test]
     fn invalid_accounting_and_oversized_search_fail_before_planning() {
-        assert!(plan_capacity_optimal_objects(
-            Capacity { total: 4, used: 4, reserved: 1 }, &[1],
-        ).is_err());
+        assert!(
+            plan_capacity_optimal_objects(
+                Capacity {
+                    total: 4,
+                    used: 4,
+                    reserved: 1
+                },
+                &[1],
+            )
+            .is_err()
+        );
         assert!(plan_capacity_optimal_objects(capacity(1), &[0; 25]).is_err());
-        assert_eq!(plan_capacity_optimal_objects(
-            Capacity { total: 10, used: 7, reserved: 2 }, &[2, 1, 0],
-        ).unwrap(), [1, 2]);
+        assert_eq!(
+            plan_capacity_optimal_objects(
+                Capacity {
+                    total: 10,
+                    used: 7,
+                    reserved: 2
+                },
+                &[2, 1, 0],
+            )
+            .unwrap(),
+            [1, 2]
+        );
     }
 }

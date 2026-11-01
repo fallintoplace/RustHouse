@@ -1,4 +1,4 @@
-use rusthouse_query::{parse_select, ConstantValue, Projection};
+use rusthouse_query::{ConstantValue, Projection, parse_select};
 
 fn scalar(sql: &str) -> i64 {
     match parse_select(sql).unwrap().projection {
@@ -27,5 +27,4 @@ fn issquare_handles_signed_inputs_and_errors() {
     }
     assert!(parse_select("SELECT isSquare()").is_err());
     assert!(parse_select("SELECT isSquare(1, 2)").is_err());
-
 }

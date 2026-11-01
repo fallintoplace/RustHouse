@@ -19,10 +19,10 @@ fn same_schema_state(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return before.dev() == after.dev()
+        before.dev() == after.dev()
             && before.ino() == after.ino()
             && before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec();
+            && before.ctime_nsec() == after.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
@@ -59,14 +59,15 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
         .take(32 * 1024 + 1)
         .read_to_end(&mut content)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
-    let finished_schema_metadata = file
-        .metadata()
-        .map_err(|error| format!("cannot inspect database schema after read for {table}: {error}"))?;
+    let finished_schema_metadata = file.metadata().map_err(|error| {
+        format!("cannot inspect database schema after read for {table}: {error}")
+    })?;
     if !same_schema_state(&schema_metadata, &finished_schema_metadata) {
         return Err(format!("database schema changed during read for {table}"));
     }
-    let final_path = fs::symlink_metadata(&schema)
-        .map_err(|error| format!("cannot inspect database schema path after read for {table}: {error}"))?;
+    let final_path = fs::symlink_metadata(&schema).map_err(|error| {
+        format!("cannot inspect database schema path after read for {table}: {error}")
+    })?;
     if !same_schema_state(&schema_metadata, &final_path) {
         return Err(format!("database schema changed during read for {table}"));
     }
@@ -140,10 +141,8 @@ mod schema_identity_tests {
 
     #[test]
     fn separate_same_size_schema_files_have_distinct_inodes() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-schema-identity-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-schema-identity-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let a = root.join("a");
@@ -168,7 +167,9 @@ mod schema_version_tests {
         use std::io::Read;
 
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-schema-version-{}-{}", std::process::id(), line!()
+            "rusthouse-schema-version-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
@@ -177,7 +178,10 @@ mod schema_version_tests {
         let mut file = fs::File::open(&path).unwrap();
         let initial = file.metadata().unwrap();
         let mut bytes = Vec::new();
-        (&mut file).take(32 * 1024 + 1).read_to_end(&mut bytes).unwrap();
+        (&mut file)
+            .take(32 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .unwrap();
         file.set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
             .unwrap();
         let finished = file.metadata().unwrap();
@@ -202,14 +206,21 @@ mod stable_schema_identity_tests {
         let path = root.join("test.schema");
         fs::write(&path, b"schema-content").unwrap();
         let original = fs::symlink_metadata(&path).unwrap();
-        assert!(same_schema_state(&original, &fs::File::open(&path).unwrap().metadata().unwrap()));
+        assert!(same_schema_state(
+            &original,
+            &fs::File::open(&path).unwrap().metadata().unwrap()
+        ));
         let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-        file.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
         assert!(!same_schema_state(&original, &file.metadata().unwrap()));
         fs::remove_file(&path).unwrap();
         fs::write(&path, b"schema-content").unwrap();
         #[cfg(unix)]
-        assert!(!same_schema_state(&original, &fs::symlink_metadata(&path).unwrap()));
+        assert!(!same_schema_state(
+            &original,
+            &fs::symlink_metadata(&path).unwrap()
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 }

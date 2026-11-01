@@ -90,7 +90,9 @@ fn read_peer_chunk(reader: &mut impl Read, buffer: &mut [u8]) -> Result<Option<u
 /// An untrusted peer can trickle its header one byte at a time; rescanning
 /// the complete prefix after every read would make framing quadratic.
 fn new_header_terminator(raw: &[u8], scan_from: &mut usize) -> bool {
-    let found = raw[*scan_from..].windows(4).any(|window| window == b"\r\n\r\n");
+    let found = raw[*scan_from..]
+        .windows(4)
+        .any(|window| window == b"\r\n\r\n");
     *scan_from = raw.len().saturating_sub(3);
     found
 }
@@ -129,8 +131,7 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
         }
         raw.extend_from_slice(&buffer[..size]);
         if expected_length.is_none()
-            && (new_header_terminator(&raw, &mut header_scan_from)
-                || raw.len() >= MAX_HEADER_BYTES)
+            && (new_header_terminator(&raw, &mut header_scan_from) || raw.len() >= MAX_HEADER_BYTES)
         {
             expected_length = expected_wire_length(&raw)?;
         }
@@ -254,7 +255,8 @@ mod tests {
             b"POST / HTTP/1.1\r\n\r\n",
             b"SELECT 1",
             Duration::ZERO,
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert_eq!(error, "peer request write deadline exceeded");
     }
 
@@ -414,8 +416,10 @@ mod data_plane_deadline_tests {
     fn scan_requests_get_longer_bounded_deadline_than_metadata() {
         assert_eq!(response_timeout("POST", "/"), Duration::from_secs(120));
         for (method, path) in [
-            ("GET", "/capabilities"), ("GET", "/schema?table=facts"),
-            ("GET", "/"), ("POST", "/unrelated"),
+            ("GET", "/capabilities"),
+            ("GET", "/schema?table=facts"),
+            ("GET", "/"),
+            ("POST", "/unrelated"),
         ] {
             assert_eq!(response_timeout(method, path), Duration::from_secs(3));
         }
@@ -438,7 +442,10 @@ mod incremental_peer_header_tests {
         for end in 1..=wire.len() {
             if new_header_terminator(&wire[..end], &mut scan_from) {
                 detections.push(end);
-                assert_eq!(expected_wire_length(&wire[..end]).unwrap(), Some(wire.len()));
+                assert_eq!(
+                    expected_wire_length(&wire[..end]).unwrap(),
+                    Some(wire.len())
+                );
             }
         }
         assert_eq!(detections, vec![header.len()]);
@@ -447,12 +454,14 @@ mod incremental_peer_header_tests {
     #[test]
     fn coarse_and_fine_chunking_use_the_same_content_length() {
         let body = b"1234567890";
-        let mut wire = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nContent-Type: text/plain\r\n\r\n".to_vec();
+        let mut wire =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nContent-Type: text/plain\r\n\r\n".to_vec();
         wire.extend_from_slice(body);
         for chunk_size in [1, 2, 3, 4, 7, 16, 4096] {
             let mut scan_from = 0;
             let mut length = None;
-            for end in (1..=wire.len()).step_by(chunk_size)
+            for end in (1..=wire.len())
+                .step_by(chunk_size)
                 .chain(std::iter::once(wire.len()))
             {
                 if length.is_none() && new_header_terminator(&wire[..end], &mut scan_from) {

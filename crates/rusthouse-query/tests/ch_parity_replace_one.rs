@@ -11,8 +11,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn clickhouse_constant_function() {
     for (sql, expected) in [
-        ("SELECT replaceOne('banana', 'na', '!')", ConstantValue::Text("ba!na".into())),
-        ("SELECT replaceOne('xxx', 'y', 'z')", ConstantValue::Text("xxx".into())),
+        (
+            "SELECT replaceOne('banana', 'na', '!')",
+            ConstantValue::Text("ba!na".into()),
+        ),
+        (
+            "SELECT replaceOne('xxx', 'y', 'z')",
+            ConstantValue::Text("xxx".into()),
+        ),
         ("SELECT replaceOne(NULL, 'a', 'b')", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");

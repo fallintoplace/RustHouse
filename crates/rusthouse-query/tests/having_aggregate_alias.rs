@@ -9,11 +9,18 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 fn having_accepts_selected_metric_alias_and_preserves_aggregation() {
     let path = std::env::temp_dir().join(format!(
         "rusthouse-having-alias-{}-{}",
-        std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let columns = [
-        Column { name: "region".into(), data_type: "String".into() },
-        Column { name: "value".into(), data_type: "UInt64".into() },
+        Column {
+            name: "region".into(),
+            data_type: "String".into(),
+        },
+        Column {
+            name: "value".into(),
+            data_type: "UInt64".into(),
+        },
     ];
     let rows = [
         vec![Some("east".into()), Some("20".into())],
@@ -24,7 +31,10 @@ fn having_accepts_selected_metric_alias_and_preserves_aggregation() {
     let sql = "SELECT region, sum(value) AS total, count(value) AS samples FROM part GROUP BY region HAVING total > 40 ORDER BY region";
     let mut out = Vec::new();
     execute(&parse_select(sql).unwrap(), Some(&path), &mut out).unwrap();
-    assert_eq!(String::from_utf8(out).unwrap(), "region\ttotal\tsamples\neast\t50\t2\n");
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "region\ttotal\tsamples\neast\t50\t2\n"
+    );
     fs::remove_dir_all(path).unwrap();
 }
 

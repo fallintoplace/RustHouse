@@ -18,8 +18,8 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8], decoded: &mut Vec<u8>) -> 
     } else {
         field
     };
-    let value = std::str::from_utf8(bytes)
-        .map_err(|_| invalid("SQL VALUES output requires UTF-8 text"))?;
+    let value =
+        std::str::from_utf8(bytes).map_err(|_| invalid("SQL VALUES output requires UTF-8 text"))?;
     append_quoted_text(output, value);
     Ok(())
 }
@@ -49,7 +49,10 @@ fn encode_values_row(line: &[u8], columns: usize, values: &mut Vec<u8>) -> io::R
 }
 
 fn encode_values_row_prefixed(
-    line: &[u8], columns: usize, values: &mut Vec<u8>, prefix: &[u8],
+    line: &[u8],
+    columns: usize,
+    values: &mut Vec<u8>,
+    prefix: &[u8],
     decoded: &mut Vec<u8>,
 ) -> io::Result<()> {
     values.clear();
@@ -132,7 +135,14 @@ impl<W: Write> SqlValuesWriter<W> {
             self.line.clear();
             return Ok(());
         };
-        emit_values_row(&mut self.output, &mut self.values, &mut self.decoded, &mut self.rows, &self.line, columns)?;
+        emit_values_row(
+            &mut self.output,
+            &mut self.values,
+            &mut self.decoded,
+            &mut self.rows,
+            &self.line,
+            columns,
+        )?;
         self.line.clear();
         Ok(())
     }
@@ -224,7 +234,11 @@ mod tests {
         writer.write_all(format!("{value}\n").as_bytes()).unwrap();
         assert_eq!(writer.line.capacity(), before);
         writer.finish().unwrap();
-        assert!(writer.output.ends_with(format!("('{value}');\n").as_bytes()));
+        assert!(
+            writer
+                .output
+                .ends_with(format!("('{value}');\n").as_bytes())
+        );
     }
 
     #[test]
@@ -337,10 +351,14 @@ mod crlf_values_regressions {
     fn strips_record_carriage_returns_not_escaped_field_data() {
         let mut writer = SqlValuesWriter::new(Vec::new());
         writer.write_all(b"id\tvalue\r\n").unwrap();
-        writer.write_all(b"1\tfirst\r\n2\tsecond\n3\tthird\\r\r\n").unwrap();
+        writer
+            .write_all(b"1\tfirst\r\n2\tsecond\n3\tthird\\r\r\n")
+            .unwrap();
         writer.finish().unwrap();
-        assert_eq!(writer.output,
-            b"VALUES ('1', 'first'),\n('2', 'second'),\n('3', 'third\r');\n");
+        assert_eq!(
+            writer.output,
+            b"VALUES ('1', 'first'),\n('2', 'second'),\n('3', 'third\r');\n"
+        );
     }
     #[test]
     fn handles_crlf_split_across_write_boundaries() {
@@ -358,14 +376,19 @@ mod single_write_server_values_row_tests {
     use super::*;
 
     #[derive(Default)]
-    struct Counted { calls: usize, bytes: Vec<u8> }
+    struct Counted {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
     impl Write for Counted {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.calls += 1;
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -374,8 +397,24 @@ mod single_write_server_values_row_tests {
         let mut encoded = Vec::new();
         let mut decoded = Vec::new();
         let mut rows = 0;
-        emit_values_row(&mut output, &mut encoded, &mut decoded, &mut rows, b"one", 1).unwrap();
-        emit_values_row(&mut output, &mut encoded, &mut decoded, &mut rows, b"two", 1).unwrap();
+        emit_values_row(
+            &mut output,
+            &mut encoded,
+            &mut decoded,
+            &mut rows,
+            b"one",
+            1,
+        )
+        .unwrap();
+        emit_values_row(
+            &mut output,
+            &mut encoded,
+            &mut decoded,
+            &mut rows,
+            b"two",
+            1,
+        )
+        .unwrap();
         assert_eq!(rows, 2);
         assert_eq!(output.calls, 2);
         assert_eq!(output.bytes, b"VALUES ('one'),\n('two')");

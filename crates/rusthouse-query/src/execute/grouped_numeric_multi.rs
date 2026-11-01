@@ -24,9 +24,11 @@ fn filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionErr
             Some(super::number_at(values, row))
         }
         TypedColumn::NullableNumeric { .. } => None,
-        _ => return Err(ExecutionError::Invalid(
-            "conditional metric filter must be numeric".into(),
-        )),
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "conditional metric filter must be numeric".into(),
+            ));
+        }
     };
     Ok(match number {
         Some(Number::Unsigned(value)) => value != 0,
@@ -36,11 +38,11 @@ fn filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionErr
     })
 }
 
-
 const MAX_GROUP_STATE_BYTES: usize = 64 * 1024 * 1024;
 
 fn reserve_median_value(retained: &mut usize) -> Result<(), ExecutionError> {
-    let bytes = retained.checked_add(std::mem::size_of::<Number>())
+    let bytes = retained
+        .checked_add(std::mem::size_of::<Number>())
         .ok_or_else(|| ExecutionError::Invalid("grouped median memory overflow".into()))?;
     if bytes > MAX_GROUP_STATE_BYTES {
         return Err(ExecutionError::Invalid(
@@ -58,20 +60,25 @@ fn reserve_group(
 ) -> Result<(), ExecutionError> {
     let fixed = std::mem::size_of::<(Cell, Vec<AggregateState>)>()
         .checked_add(std::mem::size_of::<typed::Key>())
-        .and_then(|v| metric_count.checked_mul(std::mem::size_of::<AggregateState>())
-            .and_then(|states| v.checked_add(states)))
+        .and_then(|v| {
+            metric_count
+                .checked_mul(std::mem::size_of::<AggregateState>())
+                .and_then(|states| v.checked_add(states))
+        })
         .ok_or_else(|| ExecutionError::Invalid("group memory estimate overflow".into()))?;
-    let next = variable_bytes.checked_mul(2)
+    let next = variable_bytes
+        .checked_mul(2)
         .and_then(|variable| fixed.checked_add(variable))
         .and_then(|additional| retained.checked_add(additional))
         .ok_or_else(|| ExecutionError::Invalid("group memory estimate overflow".into()))?;
     if next > MAX_GROUP_STATE_BYTES {
-        return Err(ExecutionError::Invalid("GROUP BY exceeds 64 MiB group-state budget".into()));
+        return Err(ExecutionError::Invalid(
+            "GROUP BY exceeds 64 MiB group-state budget".into(),
+        ));
     }
     *retained = next;
     Ok(())
 }
-
 
 pub(super) fn execute<W: Write>(
     query: &Select,
@@ -108,10 +115,13 @@ pub(super) fn execute<W: Write>(
         if !names.contains(filter) {
             names.push(filter.clone());
         }
-        let column_type = types.get(filter)
+        let column_type = types
+            .get(filter)
             .ok_or_else(|| ExecutionError::Invalid(format!("unknown filter column: {filter}")))?;
         if matches!(typed::base_type(column_type), "String" | "UUID") {
-            return Err(ExecutionError::Invalid("conditional metric filters must be numeric".into()));
+            return Err(ExecutionError::Invalid(
+                "conditional metric filters must be numeric".into(),
+            ));
         }
     }
     for predicate in query
@@ -144,7 +154,7 @@ pub(super) fn execute<W: Write>(
             if let Some(filter) = filters.get(index).and_then(Option::as_deref) {
                 write!(output, "\t{}If({value_column}, {filter})", function.name())?;
             } else {
-            write!(output, "\t{}({value_column})", function.name())?;
+                write!(output, "\t{}({value_column})", function.name())?;
             }
         }
     }
@@ -158,7 +168,8 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|(_, name)| indices[name])
         .collect::<Vec<_>>();
-    let filter_indices = filters.iter()
+    let filter_indices = filters
+        .iter()
         .map(|value| value.as_ref().map(|column| indices[column]))
         .collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
@@ -293,7 +304,9 @@ pub(super) fn execute<W: Write>(
             {
                 if let Some(&filter_index) = filter_indices.get(metric).and_then(Option::as_ref) {
                     let enabled = filter_enabled(&batch[filter_index], row)?;
-                    if !enabled {continue;}
+                    if !enabled {
+                        continue;
+                    }
                 }
                 if *function == AggregateFunction::Median
                     && !typed::is_null_at(&batch[column_index], row)
@@ -329,24 +342,36 @@ pub(super) fn execute<W: Write>(
         }
     }
     if let Some(having) = &query.having {
-        let index = having.aggregate_index.ok_or_else(|| {
-            ExecutionError::Invalid("HAVING metric index is required".into())
-        })?;
-        groups.retain(|(_, states)| states.get(index)
-            .is_some_and(|state| state.passes_having(having)));
+        let index = having
+            .aggregate_index
+            .ok_or_else(|| ExecutionError::Invalid("HAVING metric index is required".into()))?;
+        groups.retain(|(_, states)| {
+            states
+                .get(index)
+                .is_some_and(|state| state.passes_having(having))
+        });
     }
     let mut bounded_order = None;
     if query.order_by.is_some() {
-        let terms = query.order_terms().map(|order| {
-            let metric = order.column.strip_prefix("#aggregate")
-                .and_then(|number| number.parse::<usize>().ok());
-            (metric, order.descending, order.nulls_first)
-        }).collect::<Vec<_>>();
+        let terms = query
+            .order_terms()
+            .map(|order| {
+                let metric = order
+                    .column
+                    .strip_prefix("#aggregate")
+                    .and_then(|number| number.parse::<usize>().ok());
+                (metric, order.descending, order.nulls_first)
+            })
+            .collect::<Vec<_>>();
         let compare = |left: &(Cell, Vec<AggregateState>), right: &(Cell, Vec<AggregateState>)| {
             for &(metric, descending, nulls_first) in &terms {
                 let ordering = if let Some(index) = metric {
-                    typed::compare_order_cells(&left.1[index].sort_cell(), &right.1[index].sort_cell(),
-                        descending, nulls_first)
+                    typed::compare_order_cells(
+                        &left.1[index].sort_cell(),
+                        &right.1[index].sort_cell(),
+                        descending,
+                        nulls_first,
+                    )
                 } else {
                     typed::compare_order_cells(&left.0, &right.0, descending, nulls_first)
                 };
@@ -359,11 +384,19 @@ pub(super) fn execute<W: Write>(
         let end = query
             .limit
             .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
-        let cached_medians = terms.iter().filter_map(|(metric, _, _)| *metric)
+        let cached_medians = terms
+            .iter()
+            .filter_map(|(metric, _, _)| *metric)
             .filter(|&metric| items[metric].0 == AggregateFunction::Median)
-            .map(|metric| (metric, groups.iter()
-                .map(|(_, states)| states[metric].sort_cell())
-                .collect::<Vec<_>>()))
+            .map(|metric| {
+                (
+                    metric,
+                    groups
+                        .iter()
+                        .map(|(_, states)| states[metric].sort_cell())
+                        .collect::<Vec<_>>(),
+                )
+            })
             .collect::<HashMap<_, _>>();
         if !cached_medians.is_empty() {
             // Avoid cloning a median's entire input vector in each
@@ -374,20 +407,32 @@ pub(super) fn execute<W: Write>(
                     let order = if let Some(index) = metric {
                         if let Some(keys) = cached_medians.get(&index) {
                             typed::compare_order_cells(
-                                &keys[*left], &keys[*right], descending, nulls_first,
+                                &keys[*left],
+                                &keys[*right],
+                                descending,
+                                nulls_first,
                             )
                         } else {
                             let left_cell = groups[*left].1[index].sort_cell();
                             let right_cell = groups[*right].1[index].sort_cell();
                             typed::compare_order_cells(
-                                &left_cell, &right_cell, descending, nulls_first,
+                                &left_cell,
+                                &right_cell,
+                                descending,
+                                nulls_first,
                             )
                         }
                     } else {
-                        typed::compare_order_cells(&groups[*left].0, &groups[*right].0,
-                            descending, nulls_first)
+                        typed::compare_order_cells(
+                            &groups[*left].0,
+                            &groups[*right].0,
+                            descending,
+                            nulls_first,
+                        )
                     };
-                    if order != std::cmp::Ordering::Equal { return order; }
+                    if order != std::cmp::Ordering::Equal {
+                        return order;
+                    }
                 }
                 left.cmp(right)
             };
@@ -504,9 +549,8 @@ mod cached_multimetric_median_sort_tests {
             median.sort_cell()
         });
         let mut positions = (0..keys.len()).collect::<Vec<_>>();
-        positions.sort_unstable_by(|&a, &b| {
-            typed::compare_order_cells(&keys[a], &keys[b], false, None)
-        });
+        positions
+            .sort_unstable_by(|&a, &b| typed::compare_order_cells(&keys[a], &keys[b], false, None));
         assert_eq!(positions, [2, 0, 3, 1]);
     }
 
@@ -518,11 +562,14 @@ mod cached_multimetric_median_sort_tests {
             state.update(Number::Unsigned(b)).unwrap();
             state
         });
-        let cached = groups.iter().map(AggregateState::sort_cell).collect::<Vec<_>>();
+        let cached = groups
+            .iter()
+            .map(AggregateState::sort_cell)
+            .collect::<Vec<_>>();
         let mut order = (0..groups.len()).collect::<Vec<_>>();
-        order.sort_by(|&left, &right| typed::compare_order_cells(
-            &cached[left], &cached[right], false, None
-        ));
+        order.sort_by(|&left, &right| {
+            typed::compare_order_cells(&cached[left], &cached[right], false, None)
+        });
         assert_eq!(order, [1, 2, 0]);
     }
 }

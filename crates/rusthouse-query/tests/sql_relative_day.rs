@@ -1,4 +1,4 @@
-use rusthouse_query::{parse_select, ConstantValue, Projection};
+use rusthouse_query::{ConstantValue, Projection, parse_select};
 
 fn scalar(sql: &str) -> ConstantValue {
     match parse_select(sql).unwrap().projection {
@@ -9,11 +9,7 @@ fn scalar(sql: &str) -> ConstantValue {
 
 #[test]
 fn day_buckets_handle_utc_boundaries_and_null() {
-    for (value, expected) in [
-        ("1969-12-31", -1),
-        ("1970-01-01", 0),
-        ("1970-01-02", 1),
-    ] {
+    for (value, expected) in [("1969-12-31", -1), ("1970-01-01", 0), ("1970-01-02", 1)] {
         let sql = format!("SELECT toRelativeDayNum('{value}')");
         assert_eq!(scalar(&sql), ConstantValue::Integer(expected), "{sql}");
     }

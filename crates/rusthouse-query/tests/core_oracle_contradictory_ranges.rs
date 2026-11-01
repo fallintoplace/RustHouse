@@ -10,9 +10,8 @@ fn run(sql: &str) -> String {
 #[test]
 fn contradictory_numeric_predicates_keep_count_at_zero() {
     for rows in [1, 9, 20, 1024, 4097, 1_000_000] {
-        let sql = format!(
-            "SELECT count(*) FROM numbers({rows}) WHERE number >= 20 AND number < 10"
-        );
+        let sql =
+            format!("SELECT count(*) FROM numbers({rows}) WHERE number >= 20 AND number < 10");
         assert_eq!(run(&sql), "count\n0\n", "rows={rows}");
     }
 }

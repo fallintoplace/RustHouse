@@ -18,7 +18,11 @@ fn supports_clickhouse_base64_aliases() {
         ("SELECT to_base64url(NULL) AS value", "value\n\\N\n"),
     ] {
         let result = output(sql);
-        assert!(result.status.success(), "{sql}: {}", String::from_utf8_lossy(&result.stderr));
+        assert!(
+            result.status.success(),
+            "{sql}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
         assert_eq!(result.stdout, expected.as_bytes(), "{sql}");
     }
 }

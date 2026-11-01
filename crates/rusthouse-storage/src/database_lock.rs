@@ -185,7 +185,8 @@ mod read_only_lock_tests {
     #[test]
     fn read_lock_can_open_an_existing_read_only_lock_file() {
         let directory = std::env::temp_dir().join(format!(
-            "rusthouse-read-only-db-lock-{}", std::process::id()
+            "rusthouse-read-only-db-lock-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir(&directory).unwrap();

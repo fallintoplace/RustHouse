@@ -55,7 +55,6 @@ impl StringColumn {
         Ok(column)
     }
 
-
     /// Construct a bounded column for incremental row appends.
     pub(crate) fn builder(rows: usize) -> Result<Self, StringReadError> {
         checked_rows(rows)?;
@@ -654,7 +653,10 @@ mod buffered_varuint_bulk_tests {
     #[test]
     fn multi_byte_varuint_reads_one_buffer_and_preserves_following_data() {
         let input = [0x80, 0x80, 0x80, 0x80, 0x80, 1, 0xfe];
-        let mut reader = OneBuffer { remaining: &input, fills: 0 };
+        let mut reader = OneBuffer {
+            remaining: &input,
+            fills: 0,
+        };
         assert_eq!(read_varuint_buffered(&mut reader).unwrap(), 1u64 << 35);
         assert_eq!(reader.fills, 1);
         assert_eq!(reader.remaining, &[0xfe]);
@@ -663,8 +665,14 @@ mod buffered_varuint_bulk_tests {
     #[test]
     fn corrupt_tail_is_consumed_and_rejected() {
         let input = [0x80, 0];
-        let mut reader = OneBuffer { remaining: &input, fills: 0 };
-        assert!(matches!(read_varuint_buffered(&mut reader), Err(StringReadError::InvalidVarUInt)));
+        let mut reader = OneBuffer {
+            remaining: &input,
+            fills: 0,
+        };
+        assert!(matches!(
+            read_varuint_buffered(&mut reader),
+            Err(StringReadError::InvalidVarUInt)
+        ));
         assert!(reader.remaining.is_empty());
     }
 }
@@ -699,9 +707,9 @@ mod sized_string_mark_buffer_tests {
             for index in 0..rows {
                 sizes.extend_from_slice(&((index % 3) as u64).to_le_bytes());
             }
-            let mut payload = (0..rows).flat_map(|index| {
-                std::iter::repeat_n((index % 251) as u8, index % 3)
-            }).collect::<Vec<_>>();
+            let mut payload = (0..rows)
+                .flat_map(|index| std::iter::repeat_n((index % 251) as u8, index % 3))
+                .collect::<Vec<_>>();
             let bytes = payload.len();
             sizes.extend_from_slice(&u64::MAX.to_le_bytes());
             payload.push(0xfe);
@@ -713,8 +721,8 @@ mod sized_string_mark_buffer_tests {
             assert_eq!(sizes.position(), (rows * 8) as u64);
             assert_eq!(data.position(), bytes as u64);
             for index in 0..rows {
-                let expected = std::iter::repeat_n((index % 251) as u8, index % 3)
-                    .collect::<Vec<_>>();
+                let expected =
+                    std::iter::repeat_n((index % 251) as u8, index % 3).collect::<Vec<_>>();
                 assert_eq!(result.get(index), Some(expected.as_slice()));
             }
             let mut tail = [0u8; 8];

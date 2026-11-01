@@ -2,7 +2,10 @@ use super::*;
 
 const MAX_ENCODED_QUERY_BYTES: usize = MAX_QUERY_BYTES * 3;
 
-fn write_plain_json_string<const N: usize, W: Write>(writer: &mut W, bytes: &[u8]) -> io::Result<()> {
+fn write_plain_json_string<const N: usize, W: Write>(
+    writer: &mut W,
+    bytes: &[u8],
+) -> io::Result<()> {
     let mut quoted = [0u8; N];
     quoted[0] = b'"';
     quoted[1..bytes.len() + 1].copy_from_slice(bytes);
@@ -79,7 +82,10 @@ pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
 pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
     let bytes = value.as_bytes();
     // Plain UTF-8 fields are copied without transformation.
-    if !bytes.iter().any(|&byte| byte < 0x20 || byte == b'"' || byte == b'\\') {
+    if !bytes
+        .iter()
+        .any(|&byte| byte < 0x20 || byte == b'"' || byte == b'\\')
+    {
         if bytes.len() <= 2048 {
             // Quote-free fields frequently exceed 256 bytes. Avoid three
             // buffered writes when they still fit in a small stack array.
@@ -228,14 +234,19 @@ mod medium_json_string_write_tests {
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
     fn plain_json_strings_up_to_two_kibibytes_need_one_write() {
         for length in [257, 512, 2048] {
             let value = "q".repeat(length);
-            let mut out = Counted { calls: 0, bytes: Vec::new() };
+            let mut out = Counted {
+                calls: 0,
+                bytes: Vec::new(),
+            };
             write_json_string(&mut out, &value).unwrap();
             assert_eq!(out.calls, 1);
             assert_eq!(out.bytes.len(), length + 2);
@@ -269,7 +280,10 @@ mod sparse_percent_span_tests {
     #[test]
     fn respects_exact_decoded_limit_and_utf8_validation() {
         let value = "v".repeat(MAX_QUERY_BYTES - 1);
-        assert_eq!(decode_url(&format!("{value}%20")).unwrap().len(), MAX_QUERY_BYTES);
+        assert_eq!(
+            decode_url(&format!("{value}%20")).unwrap().len(),
+            MAX_QUERY_BYTES
+        );
         assert!(decode_url(&format!("{value}%20x")).is_err());
         assert_eq!(decode_url("caf%C3%A9+bar").unwrap(), "café bar");
         assert!(decode_url("%FF").is_err());
@@ -302,8 +316,7 @@ mod sparse_json_escape_span_tests {
         let mut expected = vec![b'"'];
         expected.extend_from_slice(left.as_bytes());
         expected.extend_from_slice(&[
-            b'\\', b'n', b'\\', b'u', b'0', b'0', b'0', b'1',
-            b'\\', b'\\', b'\\', b'"',
+            b'\\', b'n', b'\\', b'u', b'0', b'0', b'0', b'1', b'\\', b'\\', b'\\', b'"',
         ]);
         expected.extend_from_slice(right.as_bytes());
         expected.extend_from_slice(&[b'\\', b't', b'"']);
@@ -337,7 +350,10 @@ mod larger_plain_json_write_tests {
     fn large_plain_json_values_are_quoted_without_three_writes() {
         for size in [4095, 5000, 8190, 8191, 20_000] {
             let input = "é".repeat(size / 2) + if size % 2 == 0 { "" } else { "x" };
-            let mut counted = CountingWriter { calls: 0, output: Vec::new() };
+            let mut counted = CountingWriter {
+                calls: 0,
+                output: Vec::new(),
+            };
             write_json_string(&mut counted, &input).unwrap();
             let mut expected = vec![b'"'];
             expected.extend_from_slice(input.as_bytes());
@@ -380,14 +396,18 @@ mod vectored_large_plain_json_tests {
             Ok(written)
         }
 
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
     fn large_ordinary_utf8_is_framed_in_one_vectored_call() {
         let payload = "🥨very_long".repeat(1024);
         let mut writer = ShortVectoredWriter {
-            bytes: Vec::new(), max_per_call: usize::MAX, vector_calls: 0,
+            bytes: Vec::new(),
+            max_per_call: usize::MAX,
+            vector_calls: 0,
         };
         write_json_string(&mut writer, &payload).unwrap();
         assert_eq!(writer.bytes, format!("\"{payload}\"").into_bytes());
@@ -398,7 +418,9 @@ mod vectored_large_plain_json_tests {
     fn partial_vectored_writes_and_default_fallback_preserve_exact_json() {
         let payload = "0123456789".repeat(1024);
         let mut writer = ShortVectoredWriter {
-            bytes: Vec::new(), max_per_call: 23, vector_calls: 0,
+            bytes: Vec::new(),
+            max_per_call: 23,
+            vector_calls: 0,
         };
         write_json_string(&mut writer, &payload).unwrap();
         let expected = format!("\"{payload}\"").into_bytes();

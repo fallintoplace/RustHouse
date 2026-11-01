@@ -19,7 +19,10 @@ pub struct Update {
     pub select: Select,
 }
 
-fn parse_update_assignment_value(parser: &mut Parser, column: &str) -> Result<UpdateValue, ParseError> {
+fn parse_update_assignment_value(
+    parser: &mut Parser,
+    column: &str,
+) -> Result<UpdateValue, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::String(value)) | Some(Token::Number(value)) => {
             parser.index += 1;
@@ -40,9 +43,12 @@ fn parse_update_assignment_value(parser: &mut Parser, column: &str) -> Result<Up
             };
             let value = parser.number()?;
             if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err(ParseError("UPDATE offset must be a non-negative integer".into()));
+                return Err(ParseError(
+                    "UPDATE offset must be a non-negative integer".into(),
+                ));
             }
-            let delta = value.parse::<u128>()
+            let delta = value
+                .parse::<u128>()
                 .map_err(|_| ParseError("UPDATE offset exceeds UInt128".into()))?;
             Ok(UpdateValue::Offset { delta, subtract })
         }
@@ -250,12 +256,29 @@ mod checked_integer_update_parser_tests {
     #[test]
     fn self_arithmetic_uses_a_typed_offset_not_a_string_literal() {
         let update = parse_update(
-            "UPDATE inventory SET amount = amount + 7, stock = stock - 3 WHERE id = 4"
-        ).unwrap().unwrap();
-        assert_eq!(update.assignments, vec![
-            ("amount".into(), UpdateValue::Offset { delta: 7, subtract: false }),
-            ("stock".into(), UpdateValue::Offset { delta: 3, subtract: true }),
-        ]);
+            "UPDATE inventory SET amount = amount + 7, stock = stock - 3 WHERE id = 4",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            update.assignments,
+            vec![
+                (
+                    "amount".into(),
+                    UpdateValue::Offset {
+                        delta: 7,
+                        subtract: false
+                    }
+                ),
+                (
+                    "stock".into(),
+                    UpdateValue::Offset {
+                        delta: 3,
+                        subtract: true
+                    }
+                ),
+            ]
+        );
         assert_eq!(update.select.predicates.len(), 1);
     }
 

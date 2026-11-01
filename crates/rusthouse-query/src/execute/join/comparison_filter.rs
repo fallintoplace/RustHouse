@@ -21,9 +21,9 @@ fn prefilter_dimension_rows(
 ) {
     if !any && filter.column >= left_width {
         let column = filter.column - left_width;
-        rows.retain(|row| typed::matches_comparison(
-            &row[column], &filter.literal, filter.operator,
-        ));
+        rows.retain(|row| {
+            typed::matches_comparison(&row[column], &filter.literal, filter.operator)
+        });
     }
 }
 
@@ -51,9 +51,7 @@ fn scan<W: Write>(
     let mut matched = 0u64;
     let mut written = 0usize;
     let max_matches = match limit {
-        Some(limit) if limit <= MAX_RESULT_ROWS => {
-            offset.checked_add(limit).map(|end| end as u64)
-        }
+        Some(limit) if limit <= MAX_RESULT_ROWS => offset.checked_add(limit).map(|end| end as u64),
         _ => None,
     };
     while let Some(batch) = reader.next_batch()? {
@@ -62,11 +60,7 @@ fn scan<W: Write>(
             // to evaluate before hashing, including for ANY joins.
             if filter.column < width {
                 let candidate = typed::cell(&batch[filter.column], row_index);
-                if !typed::matches_comparison(
-                    &candidate,
-                    &filter.literal,
-                    filter.operator,
-                ) {
+                if !typed::matches_comparison(&candidate, &filter.literal, filter.operator) {
                     continue;
                 }
             }
@@ -84,11 +78,7 @@ fn scan<W: Write>(
                 // Filtering build rows first would change first-match semantics.
                 if filter.column >= width {
                     let candidate = &right_rows[right_index][filter.column - width];
-                    if !typed::matches_comparison(
-                        candidate,
-                        &filter.literal,
-                        filter.operator,
-                    ) {
+                    if !typed::matches_comparison(candidate, &filter.literal, filter.operator) {
                         continue;
                     }
                 }
@@ -107,20 +97,21 @@ fn scan<W: Write>(
                             output.write_all(b"\t")?;
                         }
                         let value: &typed::Cell = if *index < width {
-                            left_cells[*index].get_or_insert_with(|| {
-                                typed::cell(&batch[*index], row_index)
-                            })
+                            left_cells[*index]
+                                .get_or_insert_with(|| typed::cell(&batch[*index], row_index))
                         } else {
                             &right_rows[right_index][*index - width]
                         };
                         let value = if matches!(value, typed::Cell::Null) {
-                            fallback.and_then(|index| {
-                                if index >= width {
-                                    right_rows[right_index].get(index - width)
-                                } else {
-                                    None
-                                }
-                            }).unwrap_or(value)
+                            fallback
+                                .and_then(|index| {
+                                    if index >= width {
+                                        right_rows[right_index].get(index - width)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(value)
                         } else {
                             value
                         };
@@ -210,8 +201,18 @@ pub(super) fn execute<W: Write>(
     if !hash.is_empty() {
         // Validate the full stream and output row cap before writing output.
         scan(
-            left_path, left_names, left_keys, &right_rows, &hash, &filter,
-            selected, query.any, query.offset, query.limit, false, &mut std::io::sink(),
+            left_path,
+            left_names,
+            left_keys,
+            &right_rows,
+            &hash,
+            &filter,
+            selected,
+            query.any,
+            query.offset,
+            query.limit,
+            false,
+            &mut std::io::sink(),
         )?;
     }
     writeln!(output, "{header}")?;
@@ -219,8 +220,18 @@ pub(super) fn execute<W: Write>(
         return Ok(());
     }
     scan(
-        left_path, left_names, left_keys, &right_rows, &hash, &filter,
-        selected, query.any, query.offset, query.limit, true, output,
+        left_path,
+        left_names,
+        left_keys,
+        &right_rows,
+        &hash,
+        &filter,
+        selected,
+        query.any,
+        query.offset,
+        query.limit,
+        true,
+        output,
     )
 }
 
@@ -230,10 +241,12 @@ mod prefilter_right_comparison_tests {
 
     #[test]
     fn all_join_filters_dimension_before_hash_but_any_keeps_first_key() {
-        let mk = |key, value| vec![
-            typed::Cell::Numeric(Number::Signed(key)),
-            typed::Cell::Numeric(Number::Signed(value)),
-        ];
+        let mk = |key, value| {
+            vec![
+                typed::Cell::Numeric(Number::Signed(key)),
+                typed::Cell::Numeric(Number::Signed(value)),
+            ]
+        };
         let rows = vec![mk(3, 5), mk(3, 15), mk(4, 20)];
         let filter = BoundFilter {
             column: 3,
@@ -242,12 +255,14 @@ mod prefilter_right_comparison_tests {
         };
         let mut all = rows.clone();
         prefilter_dimension_rows(&mut all, &filter, 2, false);
-        let values = |rows: &[Vec<typed::Cell>]| rows.iter().map(|row| {
-            match &row[1] {
-                typed::Cell::Numeric(Number::Signed(value)) => *value,
-                _ => panic!("expected signed test value"),
-            }
-        }).collect::<Vec<_>>();
+        let values = |rows: &[Vec<typed::Cell>]| {
+            rows.iter()
+                .map(|row| match &row[1] {
+                    typed::Cell::Numeric(Number::Signed(value)) => *value,
+                    _ => panic!("expected signed test value"),
+                })
+                .collect::<Vec<_>>()
+        };
         assert_eq!(values(&all), vec![15, 20]);
 
         let mut any = rows.clone();
@@ -255,7 +270,10 @@ mod prefilter_right_comparison_tests {
         assert_eq!(values(&any), vec![5, 15, 20], "ANY preserves first match");
 
         let mut fact_filter = rows.clone();
-        let left_filter = BoundFilter { column: 0, ..filter };
+        let left_filter = BoundFilter {
+            column: 0,
+            ..filter
+        };
         prefilter_dimension_rows(&mut fact_filter, &left_filter, 2, false);
         assert_eq!(values(&fact_filter), vec![5, 15, 20]);
     }

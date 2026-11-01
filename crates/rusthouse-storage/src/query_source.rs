@@ -49,10 +49,10 @@ fn pointer_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return before.dev() == after.dev()
+        before.dev() == after.dev()
             && before.ino() == after.ino()
             && before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec();
+            && before.ctime_nsec() == after.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
@@ -75,7 +75,9 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
     let mut file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
     let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
     if !pointer_unchanged(&metadata, &opened) || opened.len() > 64 {
-        return Err(PartError::InvalidScan("active pointer changed before read".into()));
+        return Err(PartError::InvalidScan(
+            "active pointer changed before read".into(),
+        ));
     }
     let mut label = String::new();
     (&mut file)
@@ -84,16 +86,20 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
         .map_err(|error| io_error(&pointer, error))?;
     let finished = file.metadata().map_err(|error| io_error(&pointer, error))?;
     let current = fs::symlink_metadata(&pointer).map_err(|error| io_error(&pointer, error))?;
-    if !pointer_unchanged(&opened, &finished)
-        || !pointer_unchanged(&opened, &current)
-    {
-        return Err(PartError::InvalidScan("active pointer changed during read".into()));
+    if !pointer_unchanged(&opened, &finished) || !pointer_unchanged(&opened, &current) {
+        return Err(PartError::InvalidScan(
+            "active pointer changed during read".into(),
+        ));
     }
     if label.len() > 64 {
-        return Err(PartError::InvalidScan("active pointer exceeds size limit".into()));
+        return Err(PartError::InvalidScan(
+            "active pointer exceeds size limit".into(),
+        ));
     }
     if label.len() as u64 != opened.len() {
-        return Err(PartError::InvalidScan("active pointer changed during read".into()));
+        return Err(PartError::InvalidScan(
+            "active pointer changed during read".into(),
+        ));
     }
     let label = label
         .strip_suffix('\n')
@@ -174,13 +180,17 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
     query_parts_with_entry_limit(path, MAX_TABLE_DIRECTORY_ENTRIES)
 }
 
-fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<PathBuf>, PartError> {
+fn query_parts_with_entry_limit(
+    path: &Path,
+    max_entries: usize,
+) -> Result<Vec<PathBuf>, PartError> {
     require_snapshot_directory(path, "snapshot source must be a real directory")?;
     let has_root_count = entry_present(&path.join("count.txt"))?;
     let has_root_columns = entry_present(&path.join("columns.txt"))?;
     if has_root_count != has_root_columns {
         return Err(PartError::InvalidScan(format!(
-            "incomplete part metadata in {}", path.display()
+            "incomplete part metadata in {}",
+            path.display()
         )));
     }
     if has_root_count {
@@ -205,7 +215,8 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
             // just because its directory was replaced by a file or symlink.
             if name.to_str().is_some_and(|name| part_span(name).is_some()) {
                 return Err(PartError::InvalidScan(format!(
-                    "active part is not a real directory: {}", entry.path().display()
+                    "active part is not a real directory: {}",
+                    entry.path().display()
                 )));
             }
             continue; // Ordinary metadata files are not active parts.
@@ -262,9 +273,7 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
 
 /// List a snapshot's active parts and validate their combined metadata in one pass.
 /// Callers that need both results should not re-enumerate thousands of parts.
-pub fn query_parts_with_metadata(
-    path: &Path,
-) -> Result<(Vec<PathBuf>, PartMetadata), PartError> {
+pub fn query_parts_with_metadata(path: &Path) -> Result<(Vec<PathBuf>, PartMetadata), PartError> {
     let parts = query_parts(path)?;
     let metadata = inspect_parts_metadata(path, &parts)?;
     Ok((parts, metadata))
@@ -293,31 +302,28 @@ fn inspect_parts_metadata_with_workers(
     paths: &[PathBuf],
     workers: usize,
 ) -> Result<PartMetadata, PartError> {
-    let first_path = paths.first().ok_or_else(|| {
-        PartError::InvalidScan("snapshot contains no readable parts".into())
-    })?;
+    let first_path = paths
+        .first()
+        .ok_or_else(|| PartError::InvalidScan("snapshot contains no readable parts".into()))?;
     let first = inspect_part(first_path)?;
     let mut rows = u128::from(first.rows);
     let mut first_read_error: Option<(usize, PartError)> = None;
     let mut first_schema_error: Option<usize> = None;
-    let mut record = |index: usize, result: Result<PartMetadata, PartError>| {
-        match result {
-            Err(error) => {
-                if first_read_error
-                    .as_ref()
-                    .is_none_or(|(previous, _)| index < *previous)
-                {
-                    first_read_error = Some((index, error));
-                }
+    let mut record = |index: usize, result: Result<PartMetadata, PartError>| match result {
+        Err(error) => {
+            if first_read_error
+                .as_ref()
+                .is_none_or(|(previous, _)| index < *previous)
+            {
+                first_read_error = Some((index, error));
             }
-            Ok(item) => {
-                if item.columns != first.columns {
-                    first_schema_error = Some(first_schema_error.map_or(index, |previous| {
-                        previous.min(index)
-                    }));
-                }
-                rows += u128::from(item.rows);
+        }
+        Ok(item) => {
+            if item.columns != first.columns {
+                first_schema_error =
+                    Some(first_schema_error.map_or(index, |previous| previous.min(index)));
             }
+            rows += u128::from(item.rows);
         }
     };
 
@@ -414,7 +420,10 @@ impl NumericPartPrefetchWorker {
         let thread = std::thread::Builder::new()
             .spawn(move || {
                 while let Ok(path) = jobs.recv() {
-                    if answers.send(NumericPartReader::open(&path, &columns)).is_err() {
+                    if answers
+                        .send(NumericPartReader::open(&path, &columns))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -510,10 +519,14 @@ impl NumericQueryReader {
                 return;
             }
             #[cfg(test)]
-            { self.prefetch_worker_starts += 1; }
+            {
+                self.prefetch_worker_starts += 1;
+            }
         }
         let path = self.parts[self.next_part].clone();
-        let queued = self.worker.as_ref()
+        let queued = self
+            .worker
+            .as_ref()
             .and_then(|worker| worker.requests.as_ref())
             .is_some_and(|queue| queue.send(path).is_ok());
         if queued {
@@ -527,15 +540,18 @@ impl NumericQueryReader {
     fn advance_part(&mut self) -> Result<bool, PartError> {
         let reader = if self.prefetched {
             self.prefetched = false;
-            self.worker.as_ref().ok_or_else(|| {
-                PartError::InvalidScan("missing numeric part prefetch worker".into())
-            })?.responses.recv().map_err(|_| {
-                PartError::InvalidScan("numeric snapshot part opener stopped".into())
-            })??
+            self.worker
+                .as_ref()
+                .ok_or_else(|| {
+                    PartError::InvalidScan("missing numeric part prefetch worker".into())
+                })?
+                .responses
+                .recv()
+                .map_err(|_| {
+                    PartError::InvalidScan("numeric snapshot part opener stopped".into())
+                })??
         } else if self.next_part < self.parts.len() {
-            let reader = NumericPartReader::open(
-                &self.parts[self.next_part], &self.columns,
-            )?;
+            let reader = NumericPartReader::open(&self.parts[self.next_part], &self.columns)?;
             self.next_part += 1;
             reader
         } else {
@@ -668,17 +684,22 @@ mod tests {
     fn prefetches_numeric_part_open_without_reordering_batches_or_offset() {
         use crate::write_wide_part;
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-numeric-part-prefetch-{}", std::process::id()
+            "rusthouse-numeric-part-prefetch-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let columns = vec![Column { name: "id".into(), data_type: "UInt64".into() }];
+        let columns = vec![Column {
+            name: "id".into(),
+            data_type: "UInt64".into(),
+        }];
         for index in 0..24u64 {
             write_wide_part(
                 &root.join(format!("all_{index}_{index}_0")),
                 &columns,
                 &[vec![Some(index.to_string())]],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let mut scan = NumericQueryReader::open(&root, &["id".to_owned()]).unwrap();
         let mut seen = Vec::new();
@@ -810,7 +831,10 @@ mod tests {
 
         ranges[1].1 = 4;
         sort_and_validate_part_ranges(&mut ranges).unwrap();
-        assert_eq!(ranges.iter().map(|part| part.1).collect::<Vec<_>>(), [1, 4, 10]);
+        assert_eq!(
+            ranges.iter().map(|part| part.1).collect::<Vec<_>>(),
+            [1, 4, 10]
+        );
 
         ranges.push(("west".to_owned(), 1, 20, PathBuf::from("west")));
         sort_and_validate_part_ranges(&mut ranges).unwrap();
@@ -824,11 +848,9 @@ mod snapshot_root_identity_tests {
 
     #[test]
     fn rejects_symlinked_snapshot_roots() {
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/all_1_1_0");
-        let link = std::env::temp_dir().join(format!(
-            "rusthouse-query-root-link-{}", std::process::id()
-        ));
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/all_1_1_0");
+        let link =
+            std::env::temp_dir().join(format!("rusthouse-query-root-link-{}", std::process::id()));
         let _ = fs::remove_file(&link);
         symlink(&fixture, &link).unwrap();
         assert!(query_parts(&link).is_err());
@@ -846,7 +868,14 @@ mod active_pointer_canonical_tests {
             assert!(valid_generation_label(label), "{label}");
         }
         for label in [
-            "", "g", "g0", "g00", "g01", "g+1", "G1", "g1 ",
+            "",
+            "g",
+            "g0",
+            "g00",
+            "g01",
+            "g+1",
+            "G1",
+            "g1 ",
             "g18446744073709551616",
         ] {
             assert!(!valid_generation_label(label), "{label}");
@@ -887,7 +916,8 @@ mod active_pointer_length_tests {
 
     #[test]
     fn resolves_frozen_generations_after_pointer_size_changes() {
-        let root = std::env::temp_dir().join(format!("rusthouse-pointer-length-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-pointer-length-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let first = root.join(".rusthouse-versions/g1");
         let second = root.join(".rusthouse-versions/g100");
@@ -917,7 +947,11 @@ mod missing_part_metadata_regressions {
         fs::create_dir_all(&good).unwrap();
         fs::create_dir_all(&broken).unwrap();
         fs::write(good.join("count.txt"), "1\n").unwrap();
-        fs::write(good.join("columns.txt"), "columns format version: 1\n1 columns:\n`id` UInt64\n").unwrap();
+        fs::write(
+            good.join("columns.txt"),
+            "columns format version: 1\n1 columns:\n`id` UInt64\n",
+        )
+        .unwrap();
 
         assert!(matches!(
             query_parts(&root),
@@ -938,7 +972,9 @@ mod dangling_part_metadata_tests {
     #[test]
     fn dangling_metadata_links_are_not_silently_skipped() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-part-metadata-link-{}-{}", std::process::id(), line!()
+            "rusthouse-part-metadata-link-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let _ = fs::remove_dir_all(&root);
         let part = root.join("all_0_0_0");
@@ -960,15 +996,20 @@ mod snapshot_entry_budget_tests {
     #[test]
     fn rejects_excessive_nonpart_directory_entries() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-snapshot-entry-budget-{}", std::process::id()
+            "rusthouse-snapshot-entry-budget-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         write_wide_part(
             &root.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("1".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(root.join("orphan-a"), b"x").unwrap();
         fs::write(root.join("orphan-b"), b"y").unwrap();
         assert!(query_parts_with_entry_limit(&root, 2).is_err());
@@ -986,7 +1027,8 @@ mod active_pointer_stability_tests {
     fn detects_same_size_active_pointer_replacement_and_ctime_changes() {
         let dir = std::env::temp_dir().join(format!(
             "rusthouse-pointer-stability-{}-{:?}",
-            std::process::id(), std::thread::current().id(),
+            std::process::id(),
+            std::thread::current().id(),
         ));
         fs::create_dir_all(&dir).unwrap();
         let pointer = dir.join(".rusthouse-active");
@@ -995,7 +1037,10 @@ mod active_pointer_stability_tests {
         fs::write(&other, b"g456\n").unwrap();
         let original = fs::metadata(&pointer).unwrap();
         assert!(pointer_unchanged(&original, &original));
-        assert!(!pointer_unchanged(&original, &fs::metadata(&other).unwrap()));
+        assert!(!pointer_unchanged(
+            &original,
+            &fs::metadata(&other).unwrap()
+        ));
         std::thread::sleep(std::time::Duration::from_millis(20));
         let mut permissions = original.permissions();
         permissions.set_mode(permissions.mode() ^ 0o100);

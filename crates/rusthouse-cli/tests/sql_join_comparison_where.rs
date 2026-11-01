@@ -3,9 +3,7 @@ use std::process::Command;
 
 #[test]
 fn streamed_inner_joins_filter_typed_fact_and_dimension_columns() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-join-comparison-{}", std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-join-comparison-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])

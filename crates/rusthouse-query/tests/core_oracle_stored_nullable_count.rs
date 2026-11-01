@@ -39,15 +39,20 @@ fn nullable_count_differs_from_physical_rows_across_parts() {
         ],
     ];
     for (index, rows) in parts.iter().enumerate() {
-        write_wide_part(&root.join(format!("all_{index}_{index}_0")), &columns, rows)
-            .unwrap();
+        write_wide_part(&root.join(format!("all_{index}_{index}_0")), &columns, rows).unwrap();
     }
     assert_eq!(
-        run(&root, "SELECT grp, count(*) FROM part GROUP BY grp ORDER BY grp"),
+        run(
+            &root,
+            "SELECT grp, count(*) FROM part GROUP BY grp ORDER BY grp"
+        ),
         "grp\tcount\nalpha\t3\nbeta\t3\n"
     );
     assert_eq!(
-        run(&root, "SELECT grp, count(value) FROM part GROUP BY grp ORDER BY grp"),
+        run(
+            &root,
+            "SELECT grp, count(value) FROM part GROUP BY grp ORDER BY grp"
+        ),
         "grp\tcount(value)\nalpha\t2\nbeta\t1\n"
     );
     fs::remove_dir_all(root).unwrap();

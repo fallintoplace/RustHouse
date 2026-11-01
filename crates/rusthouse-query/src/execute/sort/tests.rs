@@ -6,14 +6,20 @@ fn external_merge_can_stop_before_reading_the_remaining_run() {
     let path = scratch.0.join("run.bin");
     let directions: Arc<[bool]> = Arc::from(Vec::<bool>::new());
     let first = SortedRow {
-        key: Number::Unsigned(1), extra_keys: Vec::new(),
-        values: vec![Number::Unsigned(1)], sequence: 0,
-        descending: false, extra_descending: directions.clone(),
+        key: Number::Unsigned(1),
+        extra_keys: Vec::new(),
+        values: vec![Number::Unsigned(1)],
+        sequence: 0,
+        descending: false,
+        extra_descending: directions.clone(),
     };
     let second = SortedRow {
-        key: Number::Unsigned(2), extra_keys: Vec::new(),
-        values: vec![Number::Unsigned(2)], sequence: 1,
-        descending: false, extra_descending: directions.clone(),
+        key: Number::Unsigned(2),
+        extra_keys: Vec::new(),
+        values: vec![Number::Unsigned(2)],
+        sequence: 1,
+        descending: false,
+        extra_descending: directions.clone(),
     };
     let mut writer = BufWriter::new(File::create(&path).unwrap());
     write_sorted_row(&mut writer, &first).unwrap();
@@ -24,7 +30,8 @@ fn external_merge_can_stop_before_reading_the_remaining_run() {
     merge_runs(&[path], false, &directions, |_| {
         visited += 1;
         Ok(false)
-    }).unwrap();
+    })
+    .unwrap();
     assert_eq!(visited, 1);
 }
 
@@ -45,7 +52,10 @@ fn rejects_noncanonical_float_spill_bytes() {
 fn scratch_directory_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let scratch = SortScratch::new().unwrap();
-    assert_eq!(fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o077, 0);
+    assert_eq!(
+        fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o077,
+        0
+    );
 }
 
 #[test]
@@ -58,12 +68,15 @@ fn external_sort_merges_many_runs_and_preserves_stable_ties() {
     assert!(sort.run_paths.len() > 32);
     let mut bytes = Vec::new();
     sort.write(&mut bytes).unwrap();
-    let parsed = std::str::from_utf8(&bytes).unwrap().lines()
-        .map(|s| s.parse::<u128>().unwrap()).collect::<Vec<_>>();
+    let parsed = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .map(|s| s.parse::<u128>().unwrap())
+        .collect::<Vec<_>>();
     assert_eq!(parsed.len(), 10_000);
     // Rows with the same ORDER BY key retain input arrival order.
     assert_eq!(&parsed[..4], &[9980, 9960, 9940, 9920]);
-    assert_eq!(&parsed[parsed.len()-4..], &[79, 59, 39, 19]);
+    assert_eq!(&parsed[parsed.len() - 4..], &[79, 59, 39, 19]);
 }
 
 #[test]
@@ -75,11 +88,15 @@ fn external_sort_handles_descending_multikey_pages_beyond_memory_cap() {
             Number::Unsigned(index % 10),
             vec![Number::Unsigned(index)],
             vec![Number::Unsigned(index)],
-        ).unwrap();
+        )
+        .unwrap();
     }
     let mut bytes = Vec::new();
     sort.write(&mut bytes).unwrap();
-    let rows = std::str::from_utf8(&bytes).unwrap().lines().collect::<Vec<_>>();
+    let rows = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .collect::<Vec<_>>();
     assert_eq!(rows.len(), 495);
     assert_eq!(rows[0], "59");
 }

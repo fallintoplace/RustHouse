@@ -68,7 +68,10 @@ fn read_mark_bytes_cow_cached<'a, R: Read + Seek>(
         if offset >= first.data.len() {
             return Err(invalid_mark(mark, "decompressed offset is outside block"));
         }
-        if offset.checked_add(byte_count).is_some_and(|end| end <= first.data.len()) {
+        if offset
+            .checked_add(byte_count)
+            .is_some_and(|end| end <= first.data.len())
+        {
             *cached = Some(first);
         } else {
             let mut result = Vec::with_capacity(byte_count);
@@ -223,14 +226,15 @@ mod tests {
     fn borrows_cold_single_block_marks_and_copies_only_spanning_marks() {
         use std::borrow::Cow;
 
-        let first = [11u64, 22].into_iter()
-            .flat_map(u64::to_le_bytes).collect::<Vec<_>>();
+        let first = [11u64, 22]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect::<Vec<_>>();
         let block = checked_block(0x82, &first);
         let mut reader = reader(block.clone());
         let mut cache = None;
-        let bytes = read_mark_bytes_cow_cached(
-            &mut reader, &mark(0, 0, Some(2)), 16, &mut cache,
-        ).unwrap();
+        let bytes =
+            read_mark_bytes_cow_cached(&mut reader, &mark(0, 0, Some(2)), 16, &mut cache).unwrap();
         assert!(matches!(bytes, Cow::Borrowed(_)));
         assert_eq!(bytes.as_ref(), first.as_slice());
 
@@ -238,9 +242,8 @@ mod tests {
         let second_block = checked_block(0x82, &first[8..]);
         let mut reader = self::reader([first_block, second_block].concat());
         let mut cache = None;
-        let bytes = read_mark_bytes_cow_cached(
-            &mut reader, &mark(0, 0, Some(2)), 16, &mut cache,
-        ).unwrap();
+        let bytes =
+            read_mark_bytes_cow_cached(&mut reader, &mark(0, 0, Some(2)), 16, &mut cache).unwrap();
         assert!(matches!(bytes, Cow::Owned(_)));
         assert_eq!(bytes.as_ref(), first.as_slice());
     }

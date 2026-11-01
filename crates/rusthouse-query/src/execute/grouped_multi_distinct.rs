@@ -4,7 +4,7 @@ use super::{ExecutionError, Number};
 use crate::Select;
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
@@ -19,22 +19,25 @@ fn fixed_group_bytes(columns: usize) -> Result<usize, ExecutionError> {
     std::mem::size_of::<Group>()
         .checked_add(std::mem::size_of::<(Vec<Key>, usize)>())
         .and_then(|base| {
-            columns.checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
+            columns
+                .checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
                 .and_then(|keys| base.checked_add(keys))
         })
         .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))
 }
 
 fn charge_bytes(used: &mut usize, bytes: usize) -> Result<(), ExecutionError> {
-    let next = used.checked_add(bytes)
+    let next = used
+        .checked_add(bytes)
         .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?;
     if next > MAX_RETAINED_BYTES {
-        return Err(ExecutionError::Invalid("grouped DISTINCT exceeds 64 MiB retained budget".into()));
+        return Err(ExecutionError::Invalid(
+            "grouped DISTINCT exceeds 64 MiB retained budget".into(),
+        ));
     }
     *used = next;
     Ok(())
 }
-
 
 struct Group {
     keys: Vec<Cell>,
@@ -78,16 +81,22 @@ pub(super) fn execute<W: Write>(
     value_column: &str,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    let metadata=inspect_query_source(part)?;
-    let types=metadata.columns.iter()
-        .map(|column|(column.name.clone(),column.data_type.clone()))
-        .collect::<HashMap<_,_>>();
-    let mut names=columns.to_vec();
-    if !names.iter().any(|column|column==value_column) {
+    let metadata = inspect_query_source(part)?;
+    let types = metadata
+        .columns
+        .iter()
+        .map(|column| (column.name.clone(), column.data_type.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut names = columns.to_vec();
+    if !names.iter().any(|column| column == value_column) {
         names.push(value_column.to_owned());
     }
-    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
-        if !names.iter().any(|column|column==predicate.column()) {
+    for predicate in query
+        .predicates
+        .iter()
+        .chain(query.or_predicates.iter().flatten())
+    {
+        if !names.iter().any(|column| column == predicate.column()) {
             names.push(predicate.column().to_owned());
         }
     }
@@ -96,37 +105,52 @@ pub(super) fn execute<W: Write>(
             return Err(ExecutionError::Invalid(format!("unknown column: {name}")));
         }
     }
-    let indices=names.iter().enumerate()
-        .map(|(index,name)|(name.clone(),index)).collect::<HashMap<_,_>>();
-    let mut conditions=vec![typed::compile(&query.predicates,&indices,&types)?];
+    let indices = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let mut conditions = vec![typed::compile(&query.predicates, &indices, &types)?];
     for branch in &query.or_predicates {
-        conditions.push(typed::compile(branch,&indices,&types)?);
+        conditions.push(typed::compile(branch, &indices, &types)?);
     }
-    writeln!(output,"{}\tcountDistinct({value_column})",columns.join("\t"))?;
-    if query.limit==Some(0) { return Ok(()); }
-    let group_indices=columns.iter().map(|name|indices[name]).collect::<Vec<_>>();
-    let value_index=indices[value_column];
-    let byte_values=matches!(typed::base_type(types[value_column].as_str()), "UInt8" | "Int8");
-    let mut reader=TypedQueryReader::open_with_metadata(part,&names,&metadata)?;
-    let mut groups=Vec::<Group>::new();
-    let mut lookup=HashMap::<Vec<Key>,usize>::new();
-    let mut probes=Vec::<Key>::with_capacity(columns.len());
-    let mut total_pairs=0usize;
+    writeln!(
+        output,
+        "{}\tcountDistinct({value_column})",
+        columns.join("\t")
+    )?;
+    if query.limit == Some(0) {
+        return Ok(());
+    }
+    let group_indices = columns.iter().map(|name| indices[name]).collect::<Vec<_>>();
+    let value_index = indices[value_column];
+    let byte_values = matches!(
+        typed::base_type(types[value_column].as_str()),
+        "UInt8" | "Int8"
+    );
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
+    let mut groups = Vec::<Group>::new();
+    let mut lookup = HashMap::<Vec<Key>, usize>::new();
+    let mut probes = Vec::<Key>::with_capacity(columns.len());
+    let mut total_pairs = 0usize;
     let mut retained_bytes = 0usize;
-    let no_filters=query.predicates.is_empty()&&query.or_predicates.is_empty();
-    while let Some(batch)=reader.next_batch()? {
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !no_filters && !typed::passes(&batch,row,&conditions) { continue; }
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
+                continue;
+            }
             probes.clear();
             for &index in &group_indices {
-                probes.push(typed::key_at(&batch[index],row));
+                probes.push(typed::key_at(&batch[index], row));
             }
-            let group=if let Some(&index)=lookup.get(probes.as_slice()) {
+            let group = if let Some(&index) = lookup.get(probes.as_slice()) {
                 index
             } else {
-                if groups.len()>=MAX_GROUPS {
+                if groups.len() >= MAX_GROUPS {
                     return Err(ExecutionError::Invalid(
-                        "GROUP BY supports at most 200000 groups".into()));
+                        "GROUP BY supports at most 200000 groups".into(),
+                    ));
                 }
                 // Hash keys and projected group cells each own variable-width data.
                 let fixed = fixed_group_bytes(columns.len())?;
@@ -135,36 +159,47 @@ pub(super) fn execute<W: Write>(
                         Key::Text(text) => text.len().checked_mul(2),
                         Key::Uuid(text) => text.len().checked_mul(2),
                         _ => Some(0),
-                    }.ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?;
-                    total.checked_add(dynamic)
-                        .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))
+                    }
+                    .ok_or_else(|| {
+                        ExecutionError::Invalid("grouped DISTINCT memory overflow".into())
+                    })?;
+                    total.checked_add(dynamic).ok_or_else(|| {
+                        ExecutionError::Invalid("grouped DISTINCT memory overflow".into())
+                    })
                 })?;
                 charge_bytes(&mut retained_bytes, bytes)?;
-                let index=groups.len();
-                lookup.insert(std::mem::take(&mut probes),index);
-                probes=Vec::with_capacity(columns.len());
+                let index = groups.len();
+                lookup.insert(std::mem::take(&mut probes), index);
+                probes = Vec::with_capacity(columns.len());
                 groups.push(Group {
-                    keys:group_indices.iter().map(|&i|typed::cell(&batch[i],row)).collect(),
-                    values:HashMap::new(),
+                    keys: group_indices
+                        .iter()
+                        .map(|&i| typed::cell(&batch[i], row))
+                        .collect(),
+                    values: HashMap::new(),
                     byte_values: [0; 4],
                     distinct_count: 0,
                 });
                 index
             };
-            if typed::is_null_at(&batch[value_index],row) { continue; }
+            if typed::is_null_at(&batch[value_index], row) {
+                continue;
+            }
             if byte_values {
-                let byte = numeric_byte_at(&batch[value_index], row)
-                    .ok_or_else(|| ExecutionError::Invalid("expected byte-width DISTINCT value".into()))?;
+                let byte = numeric_byte_at(&batch[value_index], row).ok_or_else(|| {
+                    ExecutionError::Invalid("expected byte-width DISTINCT value".into())
+                })?;
                 groups[group].mark_byte(byte);
                 continue;
             }
-            let value=typed::key_at(&batch[value_index],row);
+            let value = typed::key_at(&batch[value_index], row);
             // An Entry probes the table once. contains() followed by insert()
             // hashed every new DISTINCT value twice.
             if let Entry::Vacant(slot) = groups[group].values.entry(value) {
                 if total_pairs >= MAX_PAIRS {
                     return Err(ExecutionError::Invalid(
-                        "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into()));
+                        "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
+                    ));
                 }
                 let dynamic = match slot.key() {
                     Key::Text(text) => text.len(),
@@ -175,7 +210,9 @@ pub(super) fn execute<W: Write>(
                     &mut retained_bytes,
                     std::mem::size_of::<Key>()
                         .checked_add(dynamic)
-                        .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?,
+                        .ok_or_else(|| {
+                            ExecutionError::Invalid("grouped DISTINCT memory overflow".into())
+                        })?,
                 )?;
                 slot.insert(());
                 groups[group].distinct_count += 1;
@@ -183,7 +220,7 @@ pub(super) fn execute<W: Write>(
             }
         }
     }
-    if let Some(having)=&query.having {
+    if let Some(having) = &query.having {
         groups.retain(|group| {
             super::predicates::number_matches(
                 Number::Unsigned(group.cardinality() as u128),
@@ -194,10 +231,13 @@ pub(super) fn execute<W: Write>(
     }
     let mut bounded_order = None;
     if query.order_by.is_some() {
-        let terms = query.order_terms().map(|term| {
-            let index = columns.iter().position(|key| key == &term.column);
-            (index, term.descending, term.nulls_first)
-        }).collect::<Vec<_>>();
+        let terms = query
+            .order_terms()
+            .map(|term| {
+                let index = columns.iter().position(|key| key == &term.column);
+                (index, term.descending, term.nulls_first)
+            })
+            .collect::<Vec<_>>();
         let compare = |a: &Group, b: &Group| {
             for &(index, desc, nulls_first) in &terms {
                 let comparison = if let Some(index) = index {
@@ -215,7 +255,8 @@ pub(super) fn execute<W: Write>(
         // Keep only OFFSET + LIMIT positions when the requested page is
         // smaller than the group set. Stable position ties preserve the
         // original full-sort ordering without an O(G log G) sort.
-        if let Some(end) = query.limit
+        if let Some(end) = query
+            .limit
             .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit))
             .filter(|&end| end < groups.len())
         {
@@ -224,11 +265,15 @@ pub(super) fn execute<W: Write>(
             groups.sort_by(compare);
         }
     }
-    let output_types = columns.iter()
-        .map(|column| types[column].as_str()).collect::<Vec<_>>();
+    let output_types = columns
+        .iter()
+        .map(|column| types[column].as_str())
+        .collect::<Vec<_>>();
     let write_group = |group: &Group, output: &mut W| -> Result<(), ExecutionError> {
         for (index, cell) in group.keys.iter().enumerate() {
-            if index > 0 { write!(output, "\t")?; }
+            if index > 0 {
+                write!(output, "\t")?;
+            }
             typed::write_typed_value(output, cell, output_types[index])?;
         }
         writeln!(output, "\t{}", group.cardinality())?;
@@ -239,7 +284,8 @@ pub(super) fn execute<W: Write>(
             write_group(&groups[index], output)?;
         }
     } else {
-        for group in groups.iter()
+        for group in groups
+            .iter()
             .skip(query.offset.unwrap_or(0))
             .take(query.limit.unwrap_or(usize::MAX))
         {
@@ -265,18 +311,26 @@ mod bounded_payload_tests {
         }
         assert_eq!(group.cardinality(), 5);
         assert_eq!(
-            group.byte_values.iter().map(|word| word.count_ones() as usize).sum::<usize>(),
+            group
+                .byte_values
+                .iter()
+                .map(|word| word.count_ones() as usize)
+                .sum::<usize>(),
             group.cardinality()
         );
-        group.values.insert(Key::Numeric(super::super::NumberKey::Unsigned(100)), ());
+        group
+            .values
+            .insert(Key::Numeric(super::super::NumberKey::Unsigned(100)), ());
         group.distinct_count += 1;
         assert_eq!(group.cardinality(), 6);
     }
 
     #[test]
     fn fixed_group_budget_accounts_for_bitmap_and_hash_entry() {
-        assert!(fixed_group_bytes(0).unwrap() >=
-            std::mem::size_of::<Group>() + std::mem::size_of::<(Vec<Key>, usize)>());
+        assert!(
+            fixed_group_bytes(0).unwrap()
+                >= std::mem::size_of::<Group>() + std::mem::size_of::<(Vec<Key>, usize)>()
+        );
         assert_eq!(fixed_group_bytes(usize::MAX).is_err(), true);
         let mut charged = 0;
         charge_bytes(&mut charged, fixed_group_bytes(1).unwrap()).unwrap();
@@ -303,42 +357,73 @@ mod grouped_distinct_bounded_topk_tests {
     fn bounded_pages_match_stable_full_sort_for_multiple_order_terms() {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-grouped-distinct-page-{}-{}",
-            std::process::id(), line!(),
+            std::process::id(),
+            line!(),
         ));
         let _ = std::fs::remove_dir_all(&root);
         let columns = [
-            Column { name: "a".into(), data_type: "String".into() },
-            Column { name: "b".into(), data_type: "UInt8".into() },
-            Column { name: "v".into(), data_type: "UInt8".into() },
+            Column {
+                name: "a".into(),
+                data_type: "String".into(),
+            },
+            Column {
+                name: "b".into(),
+                data_type: "UInt8".into(),
+            },
+            Column {
+                name: "v".into(),
+                data_type: "UInt8".into(),
+            },
         ];
         let rows = [
-            ("a", 1, 1), ("a", 1, 2), ("a", 2, 1),
-            ("b", 1, 1), ("b", 1, 2), ("b", 1, 3),
-            ("b", 2, 1), ("c", 2, 2), ("c", 2, 3),
-        ].into_iter().map(|(a, b, v)| {
-            vec![Some(a.to_owned()), Some(b.to_string()), Some(v.to_string())]
-        }).collect::<Vec<_>>();
+            ("a", 1, 1),
+            ("a", 1, 2),
+            ("a", 2, 1),
+            ("b", 1, 1),
+            ("b", 1, 2),
+            ("b", 1, 3),
+            ("b", 2, 1),
+            ("c", 2, 2),
+            ("c", 2, 3),
+        ]
+        .into_iter()
+        .map(|(a, b, v)| vec![Some(a.to_owned()), Some(b.to_string()), Some(v.to_string())])
+        .collect::<Vec<_>>();
         write_wide_part(&root, &columns, &rows).unwrap();
 
-        for order in ["count DESC", "count DESC, a DESC, b DESC", "a ASC, count DESC"] {
-            let base = format!(
-                "SELECT a, b, COUNT(DISTINCT v) FROM part GROUP BY a, b ORDER BY {order}"
-            );
+        for order in [
+            "count DESC",
+            "count DESC, a DESC, b DESC",
+            "a ASC, count DESC",
+        ] {
+            let base =
+                format!("SELECT a, b, COUNT(DISTINCT v) FROM part GROUP BY a, b ORDER BY {order}");
             let mut full = Vec::new();
-            execute(&crate::parse_select(&base).unwrap(),
-                &root, &["a".into(), "b".into()], "v", &mut full).unwrap();
+            execute(
+                &crate::parse_select(&base).unwrap(),
+                &root,
+                &["a".into(), "b".into()],
+                "v",
+                &mut full,
+            )
+            .unwrap();
             let full = String::from_utf8(full).unwrap();
             let all = full.lines().skip(1).collect::<Vec<_>>();
             for (offset, limit) in [(0, 1), (1, 2), (2, 1), (3, 2)] {
-                let query = crate::parse_select(&format!(
-                    "{base} LIMIT {limit} OFFSET {offset}"
-                )).unwrap();
+                let query =
+                    crate::parse_select(&format!("{base} LIMIT {limit} OFFSET {offset}")).unwrap();
                 let mut page = Vec::new();
                 execute(&query, &root, &["a".into(), "b".into()], "v", &mut page).unwrap();
                 let page = String::from_utf8(page).unwrap();
-                assert_eq!(page.lines().skip(1).collect::<Vec<_>>(),
-                    all.iter().skip(offset).take(limit).copied().collect::<Vec<_>>(),
-                    "{order}: OFFSET {offset} LIMIT {limit}");
+                assert_eq!(
+                    page.lines().skip(1).collect::<Vec<_>>(),
+                    all.iter()
+                        .skip(offset)
+                        .take(limit)
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    "{order}: OFFSET {offset} LIMIT {limit}"
+                );
             }
         }
         std::fs::remove_dir_all(root).unwrap();
@@ -359,20 +444,30 @@ mod single_probe_distinct_tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let schema = [
-            Column { name: "category".into(), data_type: "String".into() },
-            Column { name: "amount".into(), data_type: "UInt64".into() },
+            Column {
+                name: "category".into(),
+                data_type: "String".into(),
+            },
+            Column {
+                name: "amount".into(),
+                data_type: "UInt64".into(),
+            },
         ];
         let rows = [
-            ("a", 1), ("a", 1), ("a", 2), ("a", 2),
-            ("b", 1), ("b", 1), ("b", 3),
+            ("a", 1),
+            ("a", 1),
+            ("a", 2),
+            ("a", 2),
+            ("b", 1),
+            ("b", 1),
+            ("b", 3),
         ]
         .into_iter()
-        .map(|(category, amount)| {
-            vec![Some(category.into()), Some(amount.to_string())]
-        })
+        .map(|(category, amount)| vec![Some(category.into()), Some(amount.to_string())])
         .collect::<Vec<_>>();
         write_wide_part(&root, &schema, &rows).unwrap();
-        let sql = "SELECT category, COUNT(DISTINCT amount) FROM part GROUP BY category ORDER BY category";
+        let sql =
+            "SELECT category, COUNT(DISTINCT amount) FROM part GROUP BY category ORDER BY category";
         let query = crate::parse_select(sql).unwrap();
         let mut output = Vec::new();
         execute(&query, &root, &["category".into()], "amount", &mut output).unwrap();

@@ -95,7 +95,9 @@ pub(super) fn parse_after_open(
             require_separator(parser, "makeDate requires year, month and day")?;
             let day = super::text_scalar::integer_arg(parser, depth + 1)?;
             if !parser.take(Token::RParen) {
-                return Err(ParseError("makeDate requires exactly three arguments".into()));
+                return Err(ParseError(
+                    "makeDate requires exactly three arguments".into(),
+                ));
             }
             match (year, month, day) {
                 (Some(year), Some(month), Some(day)) => {
@@ -115,7 +117,7 @@ pub(super) fn parse_after_open(
                 }
                 _ => Ok(ConstantValue::Null),
             }
-        },
+        }
         "MAKEDATETIME" => {
             let mut values = [None; 6];
             for (index, slot) in values.iter_mut().enumerate() {
@@ -125,7 +127,9 @@ pub(super) fn parse_after_open(
                 *slot = super::text_scalar::integer_arg(parser, depth + 1)?;
             }
             if !parser.take(Token::RParen) {
-                return Err(ParseError("makeDateTime requires exactly six arguments".into()));
+                return Err(ParseError(
+                    "makeDateTime requires exactly six arguments".into(),
+                ));
             }
             if values.iter().any(Option::is_none) {
                 return Ok(ConstantValue::Null);
@@ -133,8 +137,8 @@ pub(super) fn parse_after_open(
             let [year, month, day, hour, minute, second] = values.map(Option::unwrap);
             let month = u32::try_from(month)
                 .map_err(|_| ParseError("invalid makeDateTime month".into()))?;
-            let day = u32::try_from(day)
-                .map_err(|_| ParseError("invalid makeDateTime day".into()))?;
+            let day =
+                u32::try_from(day).map_err(|_| ParseError("invalid makeDateTime day".into()))?;
             if !(MIN_YEAR..=MAX_YEAR).contains(&year)
                 || !(1..=12).contains(&month)
                 || day == 0
@@ -146,9 +150,11 @@ pub(super) fn parse_after_open(
                 return Err(ParseError("invalid makeDateTime UTC fields".into()));
             }
             let seconds = days_from_civil(year, month, day) * DAY_SECONDS
-                + hour * 3_600 + minute * 60 + second;
+                + hour * 3_600
+                + minute * 60
+                + second;
             Ok(ConstantValue::Text(Temporal::render(seconds, true)?))
-        },
+        }
         "TOSTARTOFHALFHOUR" => unary_date(parser, depth, |value| {
             Ok(ConstantValue::Text(Temporal::render(
                 value.seconds.div_euclid(1_800) * 1_800,
@@ -164,8 +170,8 @@ pub(super) fn parse_after_open(
                 let (week_year, week) = if days < first_sunday {
                     let previous_year = year - 1;
                     let prev_jan_one = days_from_civil(previous_year, 1, 1);
-                    let first_prev_sunday = prev_jan_one
-                        + (7 - (prev_jan_one + 4).rem_euclid(7)).rem_euclid(7);
+                    let first_prev_sunday =
+                        prev_jan_one + (7 - (prev_jan_one + 4).rem_euclid(7)).rem_euclid(7);
                     (previous_year, (jan_one - 1 - first_prev_sunday) / 7 + 1)
                 } else {
                     (year, (days - first_sunday) / 7 + 1)
@@ -213,7 +219,9 @@ pub(super) fn parse_after_open(
         }),
         "TODAYSINMONTH" => unary_date(parser, depth, |value| {
             let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
-            Ok(ConstantValue::Integer(i64::from(days_in_month(year, month))))
+            Ok(ConstantValue::Integer(i64::from(days_in_month(
+                year, month,
+            ))))
         }),
         "DAYSINMONTH" => unary_date(parser, depth, |value| {
             Ok({
@@ -222,7 +230,10 @@ pub(super) fn parse_after_open(
             })
         }),
         "TIMESLOT" => unary_date(parser, depth, |value| {
-            Ok(ConstantValue::Text(Temporal::render(value.seconds.div_euclid(1_800) * 1_800, true)?))
+            Ok(ConstantValue::Text(Temporal::render(
+                value.seconds.div_euclid(1_800) * 1_800,
+                true,
+            )?))
         }),
         "TORELATIVEYEARNUM" => unary_date(parser, depth, |value| {
             Ok(ConstantValue::Integer({
@@ -243,10 +254,14 @@ pub(super) fn parse_after_open(
             }))
         }),
         "TORELATIVEWEEKNUM" => unary_date(parser, depth, |value| {
-            Ok(ConstantValue::Integer((value.seconds.div_euclid(DAY_SECONDS) + 4).div_euclid(7)))
+            Ok(ConstantValue::Integer(
+                (value.seconds.div_euclid(DAY_SECONDS) + 4).div_euclid(7),
+            ))
         }),
         "TORELATIVEDAYNUM" => unary_date(parser, depth, |value| {
-            Ok(ConstantValue::Integer(value.seconds.div_euclid(DAY_SECONDS)))
+            Ok(ConstantValue::Integer(
+                value.seconds.div_euclid(DAY_SECONDS),
+            ))
         }),
         "TORELATIVEHOURNUM" => unary_date(parser, depth, |value| {
             Ok(ConstantValue::Integer(value.seconds.div_euclid(3_600)))
@@ -258,7 +273,9 @@ pub(super) fn parse_after_open(
             Ok(ConstantValue::Integer(value.seconds))
         }),
         "TOHOUR" => unary_date(parser, depth, |value| {
-            Ok(ConstantValue::Integer(value.seconds.rem_euclid(DAY_SECONDS) / 3_600))
+            Ok(ConstantValue::Integer(
+                value.seconds.rem_euclid(DAY_SECONDS) / 3_600,
+            ))
         }),
         "TOMINUTE" => unary_date(parser, depth, |value| {
             Ok(ConstantValue::Integer(value.seconds.rem_euclid(3_600) / 60))
@@ -303,48 +320,70 @@ pub(super) fn parse_after_open(
                 Some(0)
             };
             if !parser.take(Token::RParen) {
-                return Err(ParseError("toStartOfWeek requires a date and optional mode".into()));
+                return Err(ParseError(
+                    "toStartOfWeek requires a date and optional mode".into(),
+                ));
             }
             match (source, mode) {
                 (Some(source), Some(mode)) => {
                     if !(0..=9).contains(&mode) {
-                        return Err(ParseError("toStartOfWeek mode must be between 0 and 9".into()));
+                        return Err(ParseError(
+                            "toStartOfWeek mode must be between 0 and 9".into(),
+                        ));
                     }
                     let value = Temporal::parse(&source)?;
                     let days = value.seconds.div_euclid(DAY_SECONDS);
                     let first_weekday_offset = if mode % 2 == 0 { 4 } else { 3 };
                     let first = days - (days + first_weekday_offset).rem_euclid(7);
-                    Ok(ConstantValue::Text(Temporal::render(first * DAY_SECONDS, false)?))
+                    Ok(ConstantValue::Text(Temporal::render(
+                        first * DAY_SECONDS,
+                        false,
+                    )?))
                 }
                 _ => Ok(ConstantValue::Null),
             }
-        },
+        }
         "TOMONDAY" => unary_date(parser, depth, |value| {
             let days = value.seconds.div_euclid(DAY_SECONDS);
             let monday = days - (days + 3).rem_euclid(7);
-            Ok(ConstantValue::Text(Temporal::render(monday * DAY_SECONDS, false)?))
+            Ok(ConstantValue::Text(Temporal::render(
+                monday * DAY_SECONDS,
+                false,
+            )?))
         }),
         "TOSTARTOFMONTH" => unary_date(parser, depth, |value| {
             let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             let days = days_from_civil(year, month, 1);
-            Ok(ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?))
+            Ok(ConstantValue::Text(Temporal::render(
+                days * DAY_SECONDS,
+                false,
+            )?))
         }),
         "TOSTARTOFQUARTER" => unary_date(parser, depth, |value| {
             let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             let quarter_month = (month - 1) / 3 * 3 + 1;
             let days = days_from_civil(year, quarter_month, 1);
-            Ok(ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?))
+            Ok(ConstantValue::Text(Temporal::render(
+                days * DAY_SECONDS,
+                false,
+            )?))
         }),
         "TOSTARTOFYEAR" => unary_date(parser, depth, |value| {
             let (year, _, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             let days = days_from_civil(year, 1, 1);
-            Ok(ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?))
+            Ok(ConstantValue::Text(Temporal::render(
+                days * DAY_SECONDS,
+                false,
+            )?))
         }),
         "TOLASTDAYOFMONTH" => unary_date(parser, depth, |value| {
             let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             let last = days_in_month(year, month);
             let days = days_from_civil(year, month, last);
-            Ok(ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?))
+            Ok(ConstantValue::Text(Temporal::render(
+                days * DAY_SECONDS,
+                false,
+            )?))
         }),
         "TODAYOFMONTH" => unary_date(parser, depth, |value| {
             let (_, _, day) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
@@ -363,17 +402,16 @@ pub(super) fn parse_after_open(
             let (Some(input), Some(mode)) = (input, mode) else {
                 return Ok(ConstantValue::Null);
             };
-            let day = (Temporal::parse(&input)?.seconds.div_euclid(DAY_SECONDS) + 3)
-                .rem_euclid(7);
+            let day = (Temporal::parse(&input)?.seconds.div_euclid(DAY_SECONDS) + 3).rem_euclid(7);
             let result = match mode {
-                0 => day + 1,                       // Monday 1..7
-                1 => day,                           // Monday 0..6
-                2 => (day + 1).rem_euclid(7),       // Sunday 0..6
-                3 => (day + 1).rem_euclid(7) + 1,   // Sunday 1..7
+                0 => day + 1,                     // Monday 1..7
+                1 => day,                         // Monday 0..6
+                2 => (day + 1).rem_euclid(7),     // Sunday 0..6
+                3 => (day + 1).rem_euclid(7) + 1, // Sunday 1..7
                 _ => return Err(ParseError("toDayOfWeek mode must be 0..3".into())),
             };
             Ok(ConstantValue::Integer(result))
-        },
+        }
         "TODAYOFYEAR" => unary_date(parser, depth, |value| {
             let days = value.seconds.div_euclid(DAY_SECONDS);
             let (year, _, _) = civil_from_days(days);
@@ -439,16 +477,10 @@ pub(super) fn parse_after_open(
             let end_days = end.seconds.div_euclid(DAY_SECONDS);
             let difference = match unit.to_ascii_lowercase().as_str() {
                 "second" | "seconds" | "s" => end.seconds - start.seconds,
-                "minute" | "minutes" => {
-                    end.seconds.div_euclid(60) - start.seconds.div_euclid(60)
-                }
-                "hour" | "hours" => {
-                    end.seconds.div_euclid(3_600) - start.seconds.div_euclid(3_600)
-                }
+                "minute" | "minutes" => end.seconds.div_euclid(60) - start.seconds.div_euclid(60),
+                "hour" | "hours" => end.seconds.div_euclid(3_600) - start.seconds.div_euclid(3_600),
                 "day" | "days" | "d" => end_days - start_days,
-                "week" | "weeks" => {
-                    (end_days + 3).div_euclid(7) - (start_days + 3).div_euclid(7)
-                }
+                "week" | "weeks" => (end_days + 3).div_euclid(7) - (start_days + 3).div_euclid(7),
                 "month" | "months" => {
                     let (sy, sm, _) = civil_from_days(start_days);
                     let (ey, em, _) = civil_from_days(end_days);
@@ -457,8 +489,7 @@ pub(super) fn parse_after_open(
                 "quarter" | "quarters" => {
                     let (sy, sm, _) = civil_from_days(start_days);
                     let (ey, em, _) = civil_from_days(end_days);
-                    ey * 4 + i64::from((em - 1) / 3)
-                        - sy * 4 - i64::from((sm - 1) / 3)
+                    ey * 4 + i64::from((em - 1) / 3) - sy * 4 - i64::from((sm - 1) / 3)
                 }
                 "year" | "years" => {
                     let (sy, _, _) = civil_from_days(start_days);
@@ -468,13 +499,22 @@ pub(super) fn parse_after_open(
                 _ => return Err(ParseError("unsupported dateDiff unit".into())),
             };
             Ok(ConstantValue::Integer(difference))
-        },
+        }
         "MONTHNAME" => unary_date(parser, depth, |value| {
             let (_, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             const MONTHS: &[&str; 12] = &[
-                "January", "February", "March", "April",
-                "May", "June", "July", "August",
-                "September", "October", "November", "December",
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
             ];
             Ok(ConstantValue::Text(MONTHS[(month - 1) as usize].to_owned()))
         }),
@@ -502,7 +542,9 @@ pub(super) fn parse_after_open(
         "FROMDAYSSINCEYEARZERO32" => {
             let days = super::text_scalar::integer_arg(parser, depth + 1)?;
             if !parser.take(Token::RParen) {
-                return Err(ParseError("fromDaysSinceYearZero32 requires one argument".into()));
+                return Err(ParseError(
+                    "fromDaysSinceYearZero32 requires one argument".into(),
+                ));
             }
             match days {
                 None => Ok(ConstantValue::Null),
@@ -515,11 +557,13 @@ pub(super) fn parse_after_open(
                     Ok(ConstantValue::Text(Temporal::render(seconds, false)?))
                 }
             }
-        },
+        }
         "FROMDAYSSINCEYEARZERO" | "FROM_DAYS" => {
             let days = super::text_scalar::integer_arg(parser, depth + 1)?;
             if !parser.take(Token::RParen) {
-                return Err(ParseError("fromDaysSinceYearZero requires one argument".into()));
+                return Err(ParseError(
+                    "fromDaysSinceYearZero requires one argument".into(),
+                ));
             }
             match days {
                 None => Ok(ConstantValue::Null),
@@ -532,7 +576,7 @@ pub(super) fn parse_after_open(
                     Ok(ConstantValue::Text(Temporal::render(seconds, false)?))
                 }
             }
-        },
+        }
         "TODAYSSINCEYEARZERO" | "TO_DAYS" => unary_date(parser, depth, |value| {
             let unix_days = value.seconds.div_euclid(DAY_SECONDS);
             Ok(ConstantValue::Integer(unix_days + 719_528))
@@ -576,9 +620,8 @@ impl Temporal {
         }
         // Separators and ASCII digits were validated above. Decode each pair
         // directly instead of calling the generic integer parser repeatedly.
-        let pair = |index: usize| {
-            i64::from(data[index] - b'0') * 10 + i64::from(data[index + 1] - b'0')
-        };
+        let pair =
+            |index: usize| i64::from(data[index] - b'0') * 10 + i64::from(data[index + 1] - b'0');
         let year = pair(0) * 100 + pair(2);
         let month = pair(5) as u32;
         let day = pair(8) as u32;
@@ -648,8 +691,7 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let year_in_era = adjusted_year - era * 400;
     let shifted_month = i64::from(month) + if month > 2 { -3 } else { 9 };
     let day_of_year = (153 * shifted_month + 2) / 5 + i64::from(day) - 1;
-    let day_in_era =
-        year_in_era * 365 + year_in_era / 4 - year_in_era / 100 + day_of_year;
+    let day_in_era = year_in_era * 365 + year_in_era / 4 - year_in_era / 100 + day_of_year;
     era * 146_097 + day_in_era - 719_468
 }
 
@@ -657,12 +699,10 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let shifted_days = days + 719_468;
     let era = shifted_days.div_euclid(146_097);
     let day_in_era = shifted_days - era * 146_097;
-    let year_in_era = (day_in_era - day_in_era / 1_460 + day_in_era / 36_524
-        - day_in_era / 146_096)
-        / 365;
+    let year_in_era =
+        (day_in_era - day_in_era / 1_460 + day_in_era / 36_524 - day_in_era / 146_096) / 365;
     let year = year_in_era + era * 400;
-    let day_of_year =
-        day_in_era - (365 * year_in_era + year_in_era / 4 - year_in_era / 100);
+    let day_of_year = day_in_era - (365 * year_in_era + year_in_era / 4 - year_in_era / 100);
     let shifted_month = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
     let month = shifted_month + if shifted_month < 10 { 3 } else { -9 };
@@ -694,8 +734,8 @@ fn offset_seconds(
         i128::from(amount)
     };
     let seconds = i128::from(value.seconds) + signed_amount * i128::from(unit_seconds);
-    let seconds = i64::try_from(seconds)
-        .map_err(|_| ParseError("date arithmetic overflows Int64".into()))?;
+    let seconds =
+        i64::try_from(seconds).map_err(|_| ParseError("date arithmetic overflows Int64".into()))?;
     Ok(ConstantValue::Text(Temporal::render(
         seconds,
         value.has_time || needs_time,
@@ -734,7 +774,10 @@ fn offset_months(
     let target_day = day.min(days_in_month(target_year, target_month));
     let target_days = days_from_civil(target_year, target_month, target_day);
     let seconds = target_days * DAY_SECONDS + value.seconds.rem_euclid(DAY_SECONDS);
-    Ok(ConstantValue::Text(Temporal::render(seconds, value.has_time)?))
+    Ok(ConstantValue::Text(Temporal::render(
+        seconds,
+        value.has_time,
+    )?))
 }
 
 fn unary_date(
@@ -798,15 +841,30 @@ mod utc_compat_tests {
     #[test]
     fn extracts_minute_second_and_converts_utc_date_constants() {
         for (sql, expected) in [
-            ("SELECT toMinute('2024-02-29 23:59:08')", ConstantValue::Integer(59)),
-            ("SELECT toSecond('2024-02-29 23:59:08')", ConstantValue::Integer(8)),
-            ("SELECT toDate('2024-02-29 23:59:08')", ConstantValue::Text("2024-02-29".into())),
-            ("SELECT toDateTime('2024-02-29')", ConstantValue::Text("2024-02-29 00:00:00".into())),
+            (
+                "SELECT toMinute('2024-02-29 23:59:08')",
+                ConstantValue::Integer(59),
+            ),
+            (
+                "SELECT toSecond('2024-02-29 23:59:08')",
+                ConstantValue::Integer(8),
+            ),
+            (
+                "SELECT toDate('2024-02-29 23:59:08')",
+                ConstantValue::Text("2024-02-29".into()),
+            ),
+            (
+                "SELECT toDateTime('2024-02-29')",
+                ConstantValue::Text("2024-02-29 00:00:00".into()),
+            ),
         ] {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for function in ["toMinute", "toSecond", "toDate", "toDateTime"] {
-            assert_eq!(value(&format!("SELECT {function}(NULL)")), ConstantValue::Null);
+            assert_eq!(
+                value(&format!("SELECT {function}(NULL)")),
+                ConstantValue::Null
+            );
             assert!(crate::parse_select(&format!("SELECT {function}('not-a-date')")).is_err());
             assert!(crate::parse_select(&format!("SELECT {function}('2024-01-01', 1)")).is_err());
         }
@@ -815,8 +873,10 @@ mod utc_compat_tests {
     #[test]
     fn parses_ascii_temporal_digits_at_calendar_boundaries() {
         let value = Temporal::parse("2024-02-29 23:59:58").unwrap();
-        assert_eq!(Temporal::render(value.seconds, true).unwrap(),
-            "2024-02-29 23:59:58");
+        assert_eq!(
+            Temporal::render(value.seconds, true).unwrap(),
+            "2024-02-29 23:59:58"
+        );
         assert!(Temporal::parse("2024-02-30").is_err());
         assert!(Temporal::parse("2024-02-29 24:00:00").is_err());
     }
@@ -826,7 +886,10 @@ mod utc_compat_tests {
         for (sql, expected) in [
             ("SELECT subtractDays('2024-03-01', 1)", "2024-02-29"),
             ("SELECT subtractDays('2024-01-01', -1)", "2024-01-02"),
-            ("SELECT subtractDays('2024-03-01 01:30:00', 1)", "2024-02-29 01:30:00"),
+            (
+                "SELECT subtractDays('2024-03-01 01:30:00', 1)",
+                "2024-02-29 01:30:00",
+            ),
         ] {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
@@ -881,9 +944,15 @@ mod utc_compat_tests {
     #[test]
     fn add_hours_handles_utc_and_bounds() {
         for (sql, expected) in [
-            ("SELECT addHours('2024-02-29 23:30:00', 1)", "2024-03-01 00:30:00"),
+            (
+                "SELECT addHours('2024-02-29 23:30:00', 1)",
+                "2024-03-01 00:30:00",
+            ),
             ("SELECT addHours('2024-02-29', 1)", "2024-02-29 01:00:00"),
-            ("SELECT addHours('2024-02-29 23:30:00', -1)", "2024-02-29 22:30:00"),
+            (
+                "SELECT addHours('2024-02-29 23:30:00', -1)",
+                "2024-02-29 22:30:00",
+            ),
         ] {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
@@ -901,9 +970,15 @@ mod utc_compat_tests {
     #[test]
     fn add_minutes_handles_utc_and_bounds() {
         for (sql, expected) in [
-            ("SELECT addMinutes('2024-02-29 23:59:30', 1)", "2024-03-01 00:00:30"),
+            (
+                "SELECT addMinutes('2024-02-29 23:59:30', 1)",
+                "2024-03-01 00:00:30",
+            ),
             ("SELECT addMinutes('2024-02-29', 1)", "2024-02-29 00:01:00"),
-            ("SELECT addMinutes('2024-02-29 23:59:30', -1)", "2024-02-29 23:58:30"),
+            (
+                "SELECT addMinutes('2024-02-29 23:59:30', -1)",
+                "2024-02-29 23:58:30",
+            ),
         ] {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
@@ -921,9 +996,15 @@ mod utc_compat_tests {
     #[test]
     fn add_seconds_handles_utc_and_bounds() {
         for (sql, expected) in [
-            ("SELECT addSeconds('2024-02-29 23:59:59', 1)", "2024-03-01 00:00:00"),
+            (
+                "SELECT addSeconds('2024-02-29 23:59:59', 1)",
+                "2024-03-01 00:00:00",
+            ),
             ("SELECT addSeconds('2024-02-29', 1)", "2024-02-29 00:00:01"),
-            ("SELECT addSeconds('2024-02-29 23:59:59', -1)", "2024-02-29 23:59:58"),
+            (
+                "SELECT addSeconds('2024-02-29 23:59:59', -1)",
+                "2024-02-29 23:59:58",
+            ),
         ] {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
@@ -941,13 +1022,25 @@ mod utc_compat_tests {
     #[test]
     fn subtract_seconds_handles_utc_and_bounds() {
         for (sql, expected) in [
-            ("SELECT subtractSeconds('2024-03-01 00:00:00', 1)", "2024-02-29 23:59:59"),
-            ("SELECT subtractSeconds('2024-02-29', 1)", "2024-02-28 23:59:59"),
-            ("SELECT subtractSeconds('2024-03-01 00:00:00', -1)", "2024-03-01 00:00:01"),
+            (
+                "SELECT subtractSeconds('2024-03-01 00:00:00', 1)",
+                "2024-02-29 23:59:59",
+            ),
+            (
+                "SELECT subtractSeconds('2024-02-29', 1)",
+                "2024-02-28 23:59:59",
+            ),
+            (
+                "SELECT subtractSeconds('2024-03-01 00:00:00', -1)",
+                "2024-03-01 00:00:01",
+            ),
         ] {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
-        assert_eq!(value("SELECT subtractSeconds(NULL, 1)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT subtractSeconds(NULL, 1)"),
+            ConstantValue::Null
+        );
         for sql in [
             "SELECT subtractSeconds()",
             "SELECT subtractSeconds('2023-02-29', 1)",
@@ -962,13 +1055,19 @@ mod utc_compat_tests {
     fn add_years_clamps_month_ends_safely() {
         for (sql, expected) in [
             ("SELECT addYears('2024-02-29', 1)", "2025-02-28"),
-            ("SELECT addYears('2024-01-31 12:30:05', 1)", "2025-01-31 12:30:05"),
+            (
+                "SELECT addYears('2024-01-31 12:30:05', 1)",
+                "2025-01-31 12:30:05",
+            ),
             ("SELECT addYears('2023-02-28', 1)", "2024-02-28"),
         ] {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
         assert_eq!(value("SELECT addYears(NULL, 1)"), ConstantValue::Null);
-        assert_eq!(value("SELECT addYears('2024-02-29', NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT addYears('2024-02-29', NULL)"),
+            ConstantValue::Null
+        );
         for sql in [
             "SELECT addYears()",
             "SELECT addYears('2023-02-29', 1)",
@@ -988,7 +1087,10 @@ mod utc_compat_tests {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
         assert_eq!(value("SELECT subtractYears(NULL, 1)"), ConstantValue::Null);
-        assert_eq!(value("SELECT subtractYears('2024-02-29', NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT subtractYears('2024-02-29', NULL)"),
+            ConstantValue::Null
+        );
         for sql in [
             "SELECT subtractYears()",
             "SELECT subtractYears('2023-02-29', 1)",
@@ -1008,7 +1110,10 @@ mod utc_compat_tests {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
         assert_eq!(value("SELECT addQuarters(NULL, 1)"), ConstantValue::Null);
-        assert_eq!(value("SELECT addQuarters('2024-02-29', NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT addQuarters('2024-02-29', NULL)"),
+            ConstantValue::Null
+        );
         for sql in [
             "SELECT addQuarters()",
             "SELECT addQuarters('2023-02-29', 1)",
@@ -1027,8 +1132,14 @@ mod utc_compat_tests {
         ] {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
-        assert_eq!(value("SELECT subtractQuarters(NULL, 1)"), ConstantValue::Null);
-        assert_eq!(value("SELECT subtractQuarters('2024-02-29', NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT subtractQuarters(NULL, 1)"),
+            ConstantValue::Null
+        );
+        assert_eq!(
+            value("SELECT subtractQuarters('2024-02-29', NULL)"),
+            ConstantValue::Null
+        );
         for sql in [
             "SELECT subtractQuarters()",
             "SELECT subtractQuarters('2023-02-29', 1)",
@@ -1042,7 +1153,10 @@ mod utc_compat_tests {
     #[test]
     fn start_day_preserves_calendar_boundaries() {
         for (sql, expected) in [
-            ("SELECT toStartOfDay('2024-02-29 12:34:56')", "2024-02-29 00:00:00"),
+            (
+                "SELECT toStartOfDay('2024-02-29 12:34:56')",
+                "2024-02-29 00:00:00",
+            ),
             ("SELECT toStartOfDay('2024-02-29')", "2024-02-29 00:00:00"),
         ] {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
@@ -1060,9 +1174,15 @@ mod utc_compat_tests {
     #[test]
     fn start_hour_preserves_calendar_boundaries() {
         for (sql, expected) in [
-            ("SELECT toStartOfHour('2024-02-29 12:34:56')", "2024-02-29 12:00:00"),
+            (
+                "SELECT toStartOfHour('2024-02-29 12:34:56')",
+                "2024-02-29 12:00:00",
+            ),
             ("SELECT toStartOfHour('2024-02-29')", "2024-02-29 00:00:00"),
-            ("SELECT toStartOfHour('2024-03-01 00:00:59')", "2024-03-01 00:00:00"),
+            (
+                "SELECT toStartOfHour('2024-03-01 00:00:59')",
+                "2024-03-01 00:00:00",
+            ),
         ] {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
@@ -1086,7 +1206,10 @@ mod utc_compat_tests {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
         assert_eq!(value("SELECT toStartOfWeek(NULL)"), ConstantValue::Null);
-        assert_eq!(value("SELECT toStartOfWeek('2024-03-06', 1)"), ConstantValue::Text("2024-03-04".into()));
+        assert_eq!(
+            value("SELECT toStartOfWeek('2024-03-06', 1)"),
+            ConstantValue::Text("2024-03-04".into())
+        );
         for sql in [
             "SELECT toStartOfWeek()",
             "SELECT toStartOfWeek('2023-02-29')",
@@ -1216,11 +1339,11 @@ mod utc_compat_tests {
             assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
         }
         assert_eq!(value("SELECT toDayOfWeek(NULL)"), ConstantValue::Null);
-        assert_eq!(value("SELECT toDayOfWeek('2024-01-01', 1)"), ConstantValue::Integer(0));
-        for sql in [
-            "SELECT toDayOfWeek()",
-            "SELECT toDayOfWeek('2023-02-29')",
-        ] {
+        assert_eq!(
+            value("SELECT toDayOfWeek('2024-01-01', 1)"),
+            ConstantValue::Integer(0)
+        );
+        for sql in ["SELECT toDayOfWeek()", "SELECT toDayOfWeek('2023-02-29')"] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
     }
@@ -1321,9 +1444,15 @@ mod utc_compat_tests {
     #[test]
     fn to_yyyymmddhhmmss_matches_utc_calendar_examples() {
         for (sql, expected) in [
-            ("SELECT toYYYYMMDDhhmmss('2024-02-29 23:59:59')", 20240229235959),
+            (
+                "SELECT toYYYYMMDDhhmmss('2024-02-29 23:59:59')",
+                20240229235959,
+            ),
             ("SELECT toYYYYMMDDhhmmss('2024-02-29')", 20240229000000),
-            ("SELECT toYYYYMMDDhhmmss('2299-12-31 23:59:59')", 22991231235959),
+            (
+                "SELECT toYYYYMMDDhhmmss('2299-12-31 23:59:59')",
+                22991231235959,
+            ),
         ] {
             assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
         }
@@ -1378,14 +1507,26 @@ mod utc_compat_tests {
     #[test]
     fn time_diff_matches_utc_calendar_examples() {
         for (sql, expected) in [
-            ("SELECT timeDiff('2024-02-29 23:59:59', '2024-03-01 00:00:00')", 1),
-            ("SELECT timeDiff('2024-03-01 00:00:00', '2024-02-29 23:59:59')", -1),
+            (
+                "SELECT timeDiff('2024-02-29 23:59:59', '2024-03-01 00:00:00')",
+                1,
+            ),
+            (
+                "SELECT timeDiff('2024-03-01 00:00:00', '2024-02-29 23:59:59')",
+                -1,
+            ),
             ("SELECT timeDiff('2024-02-28', '2024-03-01')", 172800),
         ] {
             assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
         }
-        assert_eq!(value("SELECT timeDiff(NULL, '2024-01-01')"), ConstantValue::Null);
-        assert_eq!(value("SELECT timeDiff('2024-01-01', NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT timeDiff(NULL, '2024-01-01')"),
+            ConstantValue::Null
+        );
+        assert_eq!(
+            value("SELECT timeDiff('2024-01-01', NULL)"),
+            ConstantValue::Null
+        );
         for sql in [
             "SELECT timeDiff()",
             "SELECT timeDiff('2023-02-29', '2024-01-01')",
@@ -1399,15 +1540,27 @@ mod utc_compat_tests {
 
 #[cfg(test)]
 mod clickhouse_start_of_half_hour_tests {
-    use crate::{parse_select, ConstantValue, Projection};
+    use crate::{ConstantValue, Projection, parse_select};
 
     #[test]
     fn rounds_utc_timestamps_down_to_half_hour() {
         for (sql, expected) in [
-            ("SELECT toStartOfHalfHour('2024-01-01 12:29:59')", "2024-01-01 12:00:00"),
-            ("SELECT toStartOfHalfHour('2024-01-01 12:30:00')", "2024-01-01 12:30:00"),
-            ("SELECT toStartOfHalfHour('2024-01-01 23:59:59')", "2024-01-01 23:30:00"),
-            ("SELECT toStartOfHalfHour('2024-02-29')", "2024-02-29 00:00:00"),
+            (
+                "SELECT toStartOfHalfHour('2024-01-01 12:29:59')",
+                "2024-01-01 12:00:00",
+            ),
+            (
+                "SELECT toStartOfHalfHour('2024-01-01 12:30:00')",
+                "2024-01-01 12:30:00",
+            ),
+            (
+                "SELECT toStartOfHalfHour('2024-01-01 23:59:59')",
+                "2024-01-01 23:30:00",
+            ),
+            (
+                "SELECT toStartOfHalfHour('2024-02-29')",
+                "2024-02-29 00:00:00",
+            ),
         ] {
             assert!(
                 matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
@@ -1426,7 +1579,7 @@ mod clickhouse_start_of_half_hour_tests {
 
 #[cfg(test)]
 mod day_of_week_mode_tests {
-    use crate::{parse_select, ConstantValue, Projection};
+    use crate::{ConstantValue, Projection, parse_select};
 
     #[test]
     fn monday_and_sunday_modes_match_calendar_weekdays() {
@@ -1439,17 +1592,22 @@ mod day_of_week_mode_tests {
             ("SELECT toDayOfWeek('2023-04-23', 2)", 0),
             ("SELECT toDayOfWeek('2023-04-23', 3)", 1),
         ] {
-            assert!(matches!(parse_select(sql).unwrap().projection,
+            assert!(
+                matches!(parse_select(sql).unwrap().projection,
                 Projection::Constants(ref values) if values.len() == 1
-                    && values[0].value == ConstantValue::Integer(expected)), "{sql}");
+                    && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}"
+            );
         }
     }
 
     #[test]
     fn invalid_modes_and_extra_arguments_fail() {
-        for sql in ["SELECT toDayOfWeek('2024-01-01', -1)",
+        for sql in [
+            "SELECT toDayOfWeek('2024-01-01', -1)",
             "SELECT toDayOfWeek('2024-01-01', 4)",
-            "SELECT toDayOfWeek('2024-01-01', 0, 'UTC')"] {
+            "SELECT toDayOfWeek('2024-01-01', 0, 'UTC')",
+        ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
@@ -1457,20 +1615,35 @@ mod day_of_week_mode_tests {
 
 #[cfg(test)]
 mod to_days_in_month_tests {
-    use crate::{parse_select, ConstantValue, Projection};
+    use crate::{ConstantValue, Projection, parse_select};
 
     #[test]
     fn returns_gregorian_month_lengths_and_preserves_null() {
         for (sql, expected) in [
-            ("SELECT toDaysInMonth('2023-02-01')", ConstantValue::Integer(28)),
-            ("SELECT toDaysInMonth('2024-02-29')", ConstantValue::Integer(29)),
-            ("SELECT toDaysInMonth('2024-04-15')", ConstantValue::Integer(30)),
-            ("SELECT toDaysInMonth('2024-12-31')", ConstantValue::Integer(31)),
+            (
+                "SELECT toDaysInMonth('2023-02-01')",
+                ConstantValue::Integer(28),
+            ),
+            (
+                "SELECT toDaysInMonth('2024-02-29')",
+                ConstantValue::Integer(29),
+            ),
+            (
+                "SELECT toDaysInMonth('2024-04-15')",
+                ConstantValue::Integer(30),
+            ),
+            (
+                "SELECT toDaysInMonth('2024-12-31')",
+                ConstantValue::Integer(31),
+            ),
             ("SELECT toDaysInMonth(NULL)", ConstantValue::Null),
         ] {
-            assert!(matches!(parse_select(sql).unwrap().projection,
+            assert!(
+                matches!(parse_select(sql).unwrap().projection,
                 Projection::Constants(ref values) if values.len() == 1
-                    && values[0].value == expected), "{sql}");
+                    && values[0].value == expected),
+                "{sql}"
+            );
         }
         assert!(parse_select("SELECT toDaysInMonth('2024-01-01', 1)").is_err());
     }
@@ -1478,13 +1651,19 @@ mod to_days_in_month_tests {
 
 #[cfg(test)]
 mod make_date_constant_tests {
-    use crate::{parse_select, ConstantValue, Projection};
+    use crate::{ConstantValue, Projection, parse_select};
 
     #[test]
     fn renders_valid_leap_year_and_null_dates() {
         for (sql, expected) in [
-            ("SELECT makeDate(2024, 2, 29)", ConstantValue::Text("2024-02-29".into())),
-            ("SELECT makeDate(1900, 1, 1)", ConstantValue::Text("1900-01-01".into())),
+            (
+                "SELECT makeDate(2024, 2, 29)",
+                ConstantValue::Text("2024-02-29".into()),
+            ),
+            (
+                "SELECT makeDate(1900, 1, 1)",
+                ConstantValue::Text("1900-01-01".into()),
+            ),
             ("SELECT makeDate(NULL, 1, 1)", ConstantValue::Null),
         ] {
             assert!(
@@ -1500,9 +1679,14 @@ mod make_date_constant_tests {
 
     #[test]
     fn refuses_invalid_calendar_fields_and_arity() {
-        for sql in ["SELECT makeDate(2023, 2, 29)", "SELECT makeDate(2024, 13, 1)",
-            "SELECT makeDate(2024, 1, 0)", "SELECT makeDate(1899, 1, 1)",
-            "SELECT makeDate(2024, 1)", "SELECT makeDate(2024, 1, 1, 2)"] {
+        for sql in [
+            "SELECT makeDate(2023, 2, 29)",
+            "SELECT makeDate(2024, 13, 1)",
+            "SELECT makeDate(2024, 1, 0)",
+            "SELECT makeDate(1899, 1, 1)",
+            "SELECT makeDate(2024, 1)",
+            "SELECT makeDate(2024, 1, 1, 2)",
+        ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
@@ -1510,7 +1694,7 @@ mod make_date_constant_tests {
 
 #[cfg(test)]
 mod make_datetime_constant_tests {
-    use crate::{parse_select, ConstantValue, Projection};
+    use crate::{ConstantValue, Projection, parse_select};
 
     #[test]
     fn renders_utc_datetime_components_and_null() {
@@ -1523,7 +1707,10 @@ mod make_datetime_constant_tests {
                 "SELECT makeDateTime(1900, 1, 1, 0, 0, 0)",
                 ConstantValue::Text("1900-01-01 00:00:00".into()),
             ),
-            ("SELECT makeDateTime(2024, NULL, 1, 0, 0, 0)", ConstantValue::Null),
+            (
+                "SELECT makeDateTime(2024, NULL, 1, 0, 0, 0)",
+                ConstantValue::Null,
+            ),
         ] {
             assert!(
                 matches!(

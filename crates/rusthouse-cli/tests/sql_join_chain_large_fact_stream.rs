@@ -4,7 +4,8 @@ use std::process::Command;
 #[test]
 fn chained_inner_join_streams_facts_larger_than_the_materialization_limit() {
     let db = std::env::temp_dir().join(format!(
-        "rusthouse-chain-stream-large-fact-{}", std::process::id()
+        "rusthouse-chain-stream-large-fact-{}",
+        std::process::id()
     ));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))

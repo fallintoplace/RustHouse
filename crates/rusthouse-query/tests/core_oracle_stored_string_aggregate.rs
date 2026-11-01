@@ -28,8 +28,12 @@ fn grouped_string_keys_merge_all_immutable_part_contributions() {
             .iter()
             .map(|(dept, amount)| vec![Some((*dept).into()), Some((*amount).into())])
             .collect::<Vec<_>>();
-        write_wide_part(&root.join(format!("all_{index}_{index}_0")), &columns, &rows)
-            .unwrap();
+        write_wide_part(
+            &root.join(format!("all_{index}_{index}_0")),
+            &columns,
+            &rows,
+        )
+        .unwrap();
     }
     let sql = "SELECT dept, sum(amount) FROM part GROUP BY dept ORDER BY dept";
     let mut output = Vec::new();

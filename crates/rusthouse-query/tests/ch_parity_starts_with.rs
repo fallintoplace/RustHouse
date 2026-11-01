@@ -11,7 +11,10 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn clickhouse_constant_function() {
     for (sql, expected) in [
-        ("SELECT startsWith('café', 'caf')", ConstantValue::Integer(1)),
+        (
+            "SELECT startsWith('café', 'caf')",
+            ConstantValue::Integer(1),
+        ),
         ("SELECT startsWith('abc', 'z')", ConstantValue::Integer(0)),
         ("SELECT startsWith(NULL, 'a')", ConstantValue::Null),
     ] {

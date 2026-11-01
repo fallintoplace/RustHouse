@@ -39,19 +39,34 @@ fn decode_numeric_streams(
     workers: usize,
 ) -> Result<Vec<NumericColumn>, PartError> {
     if workers <= 1 || streams.len() < 2 {
-        return streams.iter_mut().map(|stream| decode_numeric_stream(stream, index)).collect();
+        return streams
+            .iter_mut()
+            .map(|stream| decode_numeric_stream(stream, index))
+            .collect();
     }
     let width = streams.len().div_ceil(workers);
     let pieces = std::thread::scope(|scope| {
-        let handles = streams.chunks_mut(width)
-            .map(|chunk| scope.spawn(move || {
-                chunk.iter_mut()
-                    .map(|stream| decode_numeric_stream(stream, index))
-                    .collect::<Result<Vec<_>, PartError>>()
-            })).collect::<Vec<_>>();
-        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
-            Err(PartError::InvalidScan("numeric granule decoder panicked".into()))
-        })).collect::<Vec<_>>()
+        let handles = streams
+            .chunks_mut(width)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter_mut()
+                        .map(|stream| decode_numeric_stream(stream, index))
+                        .collect::<Result<Vec<_>, PartError>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(PartError::InvalidScan(
+                        "numeric granule decoder panicked".into(),
+                    ))
+                })
+            })
+            .collect::<Vec<_>>()
     });
     let mut columns = Vec::with_capacity(streams.len());
     for piece in pieces {
@@ -82,7 +97,9 @@ impl NumericPartReader {
         let schema = if columns.len() > 4 {
             let mut index = std::collections::HashMap::with_capacity(metadata.columns.len());
             for column in &metadata.columns {
-                index.entry(column.name.as_str()).or_insert(column.data_type.as_str());
+                index
+                    .entry(column.name.as_str())
+                    .or_insert(column.data_type.as_str());
             }
             Some(index)
         } else {
@@ -93,10 +110,13 @@ impl NumericPartReader {
             let data_type = if let Some(schema) = &schema {
                 schema.get(name.as_str()).copied()
             } else {
-                metadata.columns.iter()
+                metadata
+                    .columns
+                    .iter()
                     .find(|column| column.name == *name)
                     .map(|column| column.data_type.as_str())
-            }.ok_or_else(|| PartError::InvalidScan(format!("unknown column: {name}")))?;
+            }
+            .ok_or_else(|| PartError::InvalidScan(format!("unknown column: {name}")))?;
             if !name
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
@@ -198,7 +218,9 @@ impl NumericPartReader {
     /// The index may equal mark_count() to seek to the end of the part.
     pub fn seek_to_mark(&mut self, index: usize) -> Result<(), PartError> {
         if self.failed {
-            return Err(PartError::InvalidScan("numeric scan stopped after decoder failure".into()));
+            return Err(PartError::InvalidScan(
+                "numeric scan stopped after decoder failure".into(),
+            ));
         }
         if index > self.marks {
             return Err(PartError::InvalidGranuleIndex {
@@ -239,7 +261,9 @@ impl NumericPartReader {
 
     pub fn next_batch(&mut self) -> Result<Option<Vec<NumericColumn>>, PartError> {
         if self.failed {
-            return Err(PartError::InvalidScan("numeric scan stopped after decoder failure".into()));
+            return Err(PartError::InvalidScan(
+                "numeric scan stopped after decoder failure".into(),
+            ));
         }
         if self.next_mark == self.marks {
             return Ok(None);
@@ -247,7 +271,9 @@ impl NumericPartReader {
         let index = self.next_mark;
         // Legacy marks have no adaptive row count and must remain readable.
         // Only an explicit terminal zero-row mark is an end sentinel.
-        let row_count = self.streams.first()
+        let row_count = self
+            .streams
+            .first()
             .and_then(|stream| stream.marks[index].rows);
         if row_count == Some(0) {
             self.next_mark = self.marks;
@@ -255,10 +281,10 @@ impl NumericPartReader {
         }
         // Small or legacy marks remain serial: worker setup is worthwhile only
         // for large adaptive analytical projections.
-        let workers = if row_count.is_some_and(|rows| rows >= 4096)
-            && self.streams.len() >= 8
-        {
-            std::thread::available_parallelism().map_or(1, |n| n.get()).min(4)
+        let workers = if row_count.is_some_and(|rows| rows >= 4096) && self.streams.len() >= 8 {
+            std::thread::available_parallelism()
+                .map_or(1, |n| n.get())
+                .min(4)
         } else {
             1
         };
@@ -370,10 +396,13 @@ mod tests {
         let invalid = NumericPartReader::open(&dir, &["price".into(), "missing".into()]);
         assert!(matches!(invalid, Err(PartError::InvalidScan(_))));
         let mut reader = NumericPartReader::open(&dir, &["id".into(), "price".into()]).unwrap();
-        assert_eq!(reader.next_batch().unwrap().unwrap(), vec![
-            NumericColumn::Int32(vec![1, 2]),
-            NumericColumn::UInt16(vec![10, 20]),
-        ]);
+        assert_eq!(
+            reader.next_batch().unwrap().unwrap(),
+            vec![
+                NumericColumn::Int32(vec![1, 2]),
+                NumericColumn::UInt16(vec![10, 20]),
+            ]
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -566,7 +595,10 @@ mod tests {
 
         assert!(matches!(
             NumericPartReader::open(&dir, &["id".into()]),
-            Err(PartError::InvalidMarkOffset { reason: "nonterminal mark must advance", .. })
+            Err(PartError::InvalidMarkOffset {
+                reason: "nonterminal mark must advance",
+                ..
+            })
         ));
         fs::remove_dir_all(dir).unwrap();
     }
@@ -633,7 +665,8 @@ mod parallel_numeric_open_tests {
     #[test]
     fn wide_numeric_projection_matches_all_column_mark_layouts() {
         let part = std::env::temp_dir().join(format!(
-            "rusthouse-numeric-wide-open-{}", std::process::id()
+            "rusthouse-numeric-wide-open-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&part);
         let columns = (0..10)
@@ -643,10 +676,17 @@ mod parallel_numeric_open_tests {
             })
             .collect::<Vec<_>>();
         let data = (0..2)
-            .map(|row| (0..10).map(|index| Some((index + row * 200).to_string())).collect::<Vec<_>>())
+            .map(|row| {
+                (0..10)
+                    .map(|index| Some((index + row * 200).to_string()))
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
         write_wide_part(&part, &columns, &data).unwrap();
-        let names = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+        let names = columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>();
         let mut reader = NumericPartReader::open(&part, &names).unwrap();
         let batch = reader.next_batch().unwrap().unwrap();
         assert_eq!(batch.len(), 10);
@@ -665,15 +705,23 @@ mod parallel_numeric_decode_tests {
     #[test]
     fn bounded_parallel_numeric_decompress_preserves_all_column_values() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-parallel-numeric-decode-{}", std::process::id()
+            "rusthouse-parallel-numeric-decode-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
-        let schema = (0..12).map(|n| Column {
-            name: format!("measure{n}"), data_type: "UInt64".into(),
-        }).collect::<Vec<_>>();
-        let rows = (0..1024).map(|row| (0..12)
-            .map(|column| Some((row * 100 + column).to_string()))
-            .collect::<Vec<_>>()).collect::<Vec<_>>();
+        let schema = (0..12)
+            .map(|n| Column {
+                name: format!("measure{n}"),
+                data_type: "UInt64".into(),
+            })
+            .collect::<Vec<_>>();
+        let rows = (0..1024)
+            .map(|row| {
+                (0..12)
+                    .map(|column| Some((row * 100 + column).to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         write_wide_part(&root, &schema, &rows).unwrap();
         let projection = schema.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
         let mut serial = NumericPartReader::open(&root, &projection).unwrap();
@@ -697,24 +745,29 @@ mod narrow_numeric_schema_lookup_tests {
     fn narrow_and_wide_projections_resolve_columns_in_requested_order() {
         let part = std::env::temp_dir().join(format!(
             "rusthouse-narrow-projection-{}-{:?}",
-            std::process::id(), std::thread::current().id()
+            std::process::id(),
+            std::thread::current().id()
         ));
         let _ = fs::remove_dir_all(&part);
-        let schema = (0..32usize).map(|index| Column {
-            name: format!("measure_{index:02}"),
-            data_type: "UInt64".into(),
-        }).collect::<Vec<_>>();
-        let rows = (0..3usize).map(|row| (0..32)
-            .map(|column| Some((row * 100 + column).to_string()))
-            .collect::<Vec<_>>()).collect::<Vec<_>>();
+        let schema = (0..32usize)
+            .map(|index| Column {
+                name: format!("measure_{index:02}"),
+                data_type: "UInt64".into(),
+            })
+            .collect::<Vec<_>>();
+        let rows = (0..3usize)
+            .map(|row| {
+                (0..32)
+                    .map(|column| Some((row * 100 + column).to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         write_wide_part(&part, &schema, &rows).unwrap();
-        for projection in [
-            vec![31usize],
-            vec![7, 3, 31, 0],
-            vec![7, 3, 31, 0, 8],
-        ] {
-            let names = projection.iter()
-                .map(|&index| schema[index].name.clone()).collect::<Vec<_>>();
+        for projection in [vec![31usize], vec![7, 3, 31, 0], vec![7, 3, 31, 0, 8]] {
+            let names = projection
+                .iter()
+                .map(|&index| schema[index].name.clone())
+                .collect::<Vec<_>>();
             let mut reader = NumericPartReader::open(&part, &names).unwrap();
             let batch = reader.next_batch().unwrap().unwrap();
             for (position, &index) in projection.iter().enumerate() {

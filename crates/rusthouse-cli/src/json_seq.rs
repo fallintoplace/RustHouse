@@ -122,7 +122,9 @@ mod small_record_frame_tests {
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]

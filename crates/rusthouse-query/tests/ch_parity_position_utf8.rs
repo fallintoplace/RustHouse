@@ -11,8 +11,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn clickhouse_constant_function() {
     for (sql, expected) in [
-        ("SELECT positionUTF8('Motörhead', 'r')", ConstantValue::Integer(5)),
-        ("SELECT positionUTF8('éabc', 'missing')", ConstantValue::Integer(0)),
+        (
+            "SELECT positionUTF8('Motörhead', 'r')",
+            ConstantValue::Integer(5),
+        ),
+        (
+            "SELECT positionUTF8('éabc', 'missing')",
+            ConstantValue::Integer(0),
+        ),
         ("SELECT positionUTF8(NULL, 'a')", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");

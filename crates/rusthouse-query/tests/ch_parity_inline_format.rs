@@ -1,11 +1,19 @@
-use rusthouse_query::{split_clickhouse_format, parse_select};
+use rusthouse_query::{parse_select, split_clickhouse_format};
 
 #[test]
 fn extracts_terminal_format_after_a_select() {
     for (sql, expected_sql, expected_format) in [
         ("SELECT 1 FORMAT CSV", "SELECT 1", "CSV"),
-        ("SELECT number FROM numbers(3) FORMAT TabSeparated;", "SELECT number FROM numbers(3)", "TabSeparated"),
-        ("SELECT 'FORMAT CSV' AS label FORMAT JSONStringsEachRow", "SELECT 'FORMAT CSV' AS label", "JSONStringsEachRow"),
+        (
+            "SELECT number FROM numbers(3) FORMAT TabSeparated;",
+            "SELECT number FROM numbers(3)",
+            "TabSeparated",
+        ),
+        (
+            "SELECT 'FORMAT CSV' AS label FORMAT JSONStringsEachRow",
+            "SELECT 'FORMAT CSV' AS label",
+            "JSONStringsEachRow",
+        ),
     ] {
         let (statement, name) = split_clickhouse_format(sql).unwrap();
         assert_eq!((statement, name), (expected_sql, Some(expected_format)));

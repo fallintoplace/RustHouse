@@ -6,7 +6,10 @@ fn join_count_does_not_need_wide_nullable_build_payloads() {
     let db = std::env::temp_dir().join(format!("rusthouse-count-pruned-{}", std::process::id()));
     let sql = |query: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
-            .args(["sql", query, "--database"]).arg(&db).output().unwrap()
+            .args(["sql", query, "--database"])
+            .arg(&db)
+            .output()
+            .unwrap()
     };
     for stmt in [
         "CREATE TABLE fact (id UInt64)",

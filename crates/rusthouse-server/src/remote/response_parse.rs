@@ -32,8 +32,7 @@ pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         || value.chars().any(|ch| {
-            (ch.is_control() && ch != '\t')
-                || (ch.is_whitespace() && ch != ' ' && ch != '\t')
+            (ch.is_control() && ch != '\t') || (ch.is_whitespace() && ch != ' ' && ch != '\t')
         })
     {
         return Err("invalid peer header".into());
@@ -127,7 +126,10 @@ fn response_head(raw: &[u8]) -> Result<Option<ResponseHead<'_>>, String> {
     // the 8 KiB header cap is enforced. The terminator must fit in this
     // bounded prefix, even when body bytes were already buffered.
     let head_prefix = &raw[..raw.len().min(MAX_HEADER_BYTES)];
-    let Some(head_end) = head_prefix.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+    let Some(head_end) = head_prefix
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+    else {
         if raw.len() >= MAX_HEADER_BYTES {
             return Err("peer headers exceed 8 KiB".into());
         }
@@ -306,12 +308,19 @@ mod bounded_response_header_scan_tests {
         let mut malicious = vec![b'a'; MAX_HEADER_BYTES + 1_000_000];
         malicious.extend_from_slice(b"\r\n\r\n");
         assert!(response_head(&malicious).is_err());
-        assert_eq!(response_head(&vec![b'a'; MAX_HEADER_BYTES - 1]).unwrap().is_none(), true);
+        assert_eq!(
+            response_head(&vec![b'a'; MAX_HEADER_BYTES - 1])
+                .unwrap()
+                .is_none(),
+            true
+        );
     }
 
     #[test]
     fn complete_valid_response_with_large_body_is_still_detected() {
-        let mut wire = b"HTTP/1.1 200 OK\r\nContent-Length: 200000\r\nContent-Type: text/plain\r\n\r\n".to_vec();
+        let mut wire =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 200000\r\nContent-Type: text/plain\r\n\r\n"
+                .to_vec();
         wire.extend(std::iter::repeat_n(b'x', 200_000));
         assert_eq!(expected_wire_length(&wire).unwrap(), Some(wire.len()));
         assert_eq!(parse_response_owned(wire).unwrap().body.len(), 200_000);
@@ -327,8 +336,14 @@ mod borrowed_peer_head_tests {
         let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 3\r\n\r\nabc";
         let parsed = response_head(wire).unwrap().unwrap();
         let label = b"text/plain; charset=utf-8";
-        let start = wire.windows(label.len()).position(|span| span == label).unwrap();
-        assert_eq!(parsed.content_type.as_bytes().as_ptr(), wire[start..].as_ptr());
+        let start = wire
+            .windows(label.len())
+            .position(|span| span == label)
+            .unwrap();
+        assert_eq!(
+            parsed.content_type.as_bytes().as_ptr(),
+            wire[start..].as_ptr()
+        );
         assert_eq!(expected_wire_length(wire).unwrap(), Some(wire.len()));
         let owned = parse_response_owned(wire.to_vec()).unwrap();
         assert_eq!(owned.content_type, "text/plain; charset=utf-8");

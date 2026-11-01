@@ -36,7 +36,9 @@ fn write_long_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Resul
     buffer[0] = b'"';
     let mut remaining = field;
     while !remaining.is_empty() {
-        let plain_len = remaining.iter().position(|&byte| byte == b'"')
+        let plain_len = remaining
+            .iter()
+            .position(|&byte| byte == b'"')
             .unwrap_or(remaining.len());
         let mut plain = &remaining[..plain_len];
         while !plain.is_empty() {
@@ -173,16 +175,24 @@ mod tests {
 
     #[test]
     fn four_kibibyte_plain_csv_field_uses_one_write() {
-        struct Counting { calls: usize, bytes: Vec<u8> }
+        struct Counting {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
         impl Write for Counting {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 self.calls += 1;
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
-        let mut sink = Counting { calls: 0, bytes: Vec::new() };
+        let mut sink = Counting {
+            calls: 0,
+            bytes: Vec::new(),
+        };
         let value = vec![b'x'; 4094];
         write_quoted_csv_field(&mut sink, &value).unwrap();
         assert_eq!(sink.calls, 1);
@@ -204,10 +214,15 @@ mod tests {
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         for length in [257usize, 1024, 2048] {
-            let mut writer = Counting { calls: 0, bytes: Vec::new() };
+            let mut writer = Counting {
+                calls: 0,
+                bytes: Vec::new(),
+            };
             write_quoted_csv_field(&mut writer, &vec![b'x'; length]).unwrap();
             assert_eq!(writer.calls, 1);
             assert_eq!(writer.bytes.len(), length + 2);
@@ -392,13 +407,16 @@ mod sparse_quoted_field_tests {
             vec![0xff; 32 * 1024],
             b"\"\"".to_vec(),
             vec![b'z'; 32 * 1024 + 1],
-        ].concat();
+        ]
+        .concat();
         let mut output = Vec::new();
         write_quoted_csv_field(&mut output, &input).unwrap();
         let mut expected = vec![b'"'];
         for &byte in &input {
             expected.push(byte);
-            if byte == b'"' { expected.push(b'"'); }
+            if byte == b'"' {
+                expected.push(b'"');
+            }
         }
         expected.push(b'"');
         assert_eq!(output, expected);
@@ -406,17 +424,25 @@ mod sparse_quoted_field_tests {
 
     #[test]
     fn sparse_quoted_fields_keep_write_calls_bounded() {
-        struct Counted { calls: usize, bytes: Vec<u8> }
+        struct Counted {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
         impl Write for Counted {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 self.calls += 1;
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         let input = [vec![b'a'; 100_000], b"\"".to_vec(), vec![b'b'; 100_000]].concat();
-        let mut output = Counted { calls: 0, bytes: Vec::new() };
+        let mut output = Counted {
+            calls: 0,
+            bytes: Vec::new(),
+        };
         write_quoted_csv_field(&mut output, &input).unwrap();
         assert_eq!(output.bytes.len(), input.len() + 3);
         assert!(output.calls <= 51, "unexpected writes: {}", output.calls);

@@ -67,13 +67,15 @@ fn map_peers_bounded_impl<T: Send + Sync>(
     });
     slots
         .into_iter()
-        .map(|slot| slot.into_inner().unwrap_or_else(|| {
-            Err(if fail_fast && cancelled.load(Ordering::Acquire) {
-                "peer query cancelled after another shard failed".into()
-            } else {
-                "peer query panicked".into()
+        .map(|slot| {
+            slot.into_inner().unwrap_or_else(|| {
+                Err(if fail_fast && cancelled.load(Ordering::Acquire) {
+                    "peer query cancelled after another shard failed".into()
+                } else {
+                    "peer query panicked".into()
+                })
             })
-        }))
+        })
         .collect()
 }
 
@@ -147,8 +149,12 @@ mod fail_fast_fanout_tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert_eq!(results.len(), 32);
         assert_eq!(results[0], Err("first shard unavailable".into()));
-        assert!(results[1..].iter().all(|result| result
-            == &Err("peer query cancelled after another shard failed".into())));
+        assert!(
+            results[1..]
+                .iter()
+                .all(|result| result
+                    == &Err("peer query cancelled after another shard failed".into()))
+        );
     }
 
     #[test]

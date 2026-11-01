@@ -82,10 +82,10 @@ fn marks_file_unchanged(before: &std::fs::Metadata, after: &std::fs::Metadata) -
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return before.dev() == after.dev()
+        before.dev() == after.dev()
             && before.ino() == after.ino()
             && before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec();
+            && before.ctime_nsec() == after.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
@@ -140,23 +140,27 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
         let amount = remaining.min(buffer.len());
         if let Err(source) = file.read_exact(&mut buffer[..amount]) {
             if source.kind() == io::ErrorKind::UnexpectedEof {
-                return Err(marks_io_error(path, io::Error::new(
-                    io::ErrorKind::InvalidData, "marks file changed during read",
-                )));
+                return Err(marks_io_error(
+                    path,
+                    io::Error::new(io::ErrorKind::InvalidData, "marks file changed during read"),
+                ));
             }
             return Err(marks_io_error(path, source));
         }
-        marks.extend(buffer[..amount].chunks_exact(record_size)
-            .map(|record| parse_mark_record(record, format)));
+        marks.extend(
+            buffer[..amount]
+                .chunks_exact(record_size)
+                .map(|record| parse_mark_record(record, format)),
+        );
         remaining -= amount;
     }
     // Keep the open descriptor alive and check the path again. A same-size
     // replacement or in-place rewrite must not be silently trusted.
-    let finished = file.metadata().map_err(|source| marks_io_error(path, source))?;
+    let finished = file
+        .metadata()
+        .map_err(|source| marks_io_error(path, source))?;
     let current = std::fs::symlink_metadata(path).map_err(|source| marks_io_error(path, source))?;
-    if !marks_file_unchanged(&opened, &finished)
-        || !marks_file_unchanged(&opened, &current)
-    {
+    if !marks_file_unchanged(&opened, &finished) || !marks_file_unchanged(&opened, &current) {
         return Err(marks_io_error(
             path,
             io::Error::new(io::ErrorKind::InvalidData, "marks file changed during read"),
@@ -564,7 +568,8 @@ mod raw_mark_identity_tests {
     #[test]
     fn raw_mark_reader_accepts_regular_files_only() {
         let dir = std::env::temp_dir().join(format!(
-            "rusthouse-raw-mark-identity-{}", std::process::id()
+            "rusthouse-raw-mark-identity-{}",
+            std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -583,7 +588,10 @@ mod raw_marks_size_stability_tests {
 
     #[test]
     fn rejects_truncated_raw_mark_records() {
-        let path = std::env::temp_dir().join(format!("rusthouse-raw-mark-size-{}.mrk2", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-raw-mark-size-{}.mrk2",
+            std::process::id()
+        ));
         fs::write(&path, [0u8; 23]).unwrap();
         assert!(read_wide_marks(&path).is_err());
         fs::write(&path, [0u8; 24]).unwrap();
@@ -612,7 +620,8 @@ mod immutable_raw_marks_tests {
         let before = std::fs::metadata(&original).unwrap();
         assert!(marks_file_unchanged(&before, &before));
         assert!(!marks_file_unchanged(
-            &before, &std::fs::metadata(&replacement).unwrap(),
+            &before,
+            &std::fs::metadata(&replacement).unwrap(),
         ));
         std::thread::sleep(std::time::Duration::from_millis(20));
         let mut permissions = before.permissions();
@@ -636,9 +645,14 @@ mod bounded_plain_mark_reader_tests {
     fn records_across_24_kib_reads_preserve_fixed_and_adaptive_offsets() {
         let serial = NEXT.fetch_add(1, Ordering::Relaxed);
         for format in [WideMarkFormat::Fixed, WideMarkFormat::Adaptive] {
-            let extension = if format == WideMarkFormat::Fixed { "mrk" } else { "mrk2" };
+            let extension = if format == WideMarkFormat::Fixed {
+                "mrk"
+            } else {
+                "mrk2"
+            };
             let path = std::env::temp_dir().join(format!(
-                "rusthouse-mark-batch-{}-{serial}.{extension}", std::process::id()
+                "rusthouse-mark-batch-{}-{serial}.{extension}",
+                std::process::id()
             ));
             let mut encoded = Vec::new();
             for index in 0..2053u64 {
@@ -656,8 +670,10 @@ mod bounded_plain_mark_reader_tests {
                 let mark = &parsed.marks[index];
                 assert_eq!(mark.compressed_offset, index as u64 * 128);
                 assert_eq!(mark.decompressed_offset, index as u64 * 7);
-                assert_eq!(mark.rows, (format == WideMarkFormat::Adaptive)
-                    .then_some(index as u64 % 7 + 1));
+                assert_eq!(
+                    mark.rows,
+                    (format == WideMarkFormat::Adaptive).then_some(index as u64 % 7 + 1)
+                );
             }
         }
     }
@@ -680,7 +696,8 @@ mod plain_marks_open_stability_tests {
         let before = std::fs::symlink_metadata(&path).unwrap();
         let file = std::fs::File::open(&path).unwrap();
         assert!(marks_file_unchanged(&before, &file.metadata().unwrap()));
-        file.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
         assert!(!marks_file_unchanged(&before, &file.metadata().unwrap()));
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -695,7 +712,9 @@ mod plain_marks_size_preflight_tests {
         for (extension, record_size) in [("mrk", 16usize), ("mrk2", 24usize)] {
             let path = std::env::temp_dir().join(format!(
                 "rusthouse-plain-marks-preflight-{}-{:?}.{}",
-                std::process::id(), std::thread::current().id(), extension
+                std::process::id(),
+                std::thread::current().id(),
+                extension
             ));
             let file = File::create(&path).unwrap();
             file.set_len(1_048_577).unwrap();
@@ -728,11 +747,13 @@ mod recycled_compressed_marks_tests {
 
     #[test]
     fn recycled_frames_preserve_marks_across_multiple_incomplete_records() {
-        let expected = (0..4u64).map(|index| WideMark {
-            compressed_offset: index * 128,
-            decompressed_offset: 0,
-            rows: Some(index + 1),
-        }).collect::<Vec<_>>();
+        let expected = (0..4u64)
+            .map(|index| WideMark {
+                compressed_offset: index * 128,
+                decompressed_offset: 0,
+                rows: Some(index + 1),
+            })
+            .collect::<Vec<_>>();
         let mut plain = Vec::new();
         for mark in &expected {
             plain.extend_from_slice(&mark.compressed_offset.to_le_bytes());
@@ -745,7 +766,12 @@ mod recycled_compressed_marks_tests {
                 encoded.extend_from_slice(&frame(bytes));
             }
             let reader = CompressedBlockReader::new(Cursor::new(encoded), "marks.cmrk2").unwrap();
-            let actual = read_compressed_wide_marks(reader, Path::new("marks.cmrk2"), WideMarkFormat::Adaptive).unwrap();
+            let actual = read_compressed_wide_marks(
+                reader,
+                Path::new("marks.cmrk2"),
+                WideMarkFormat::Adaptive,
+            )
+            .unwrap();
             assert_eq!(actual, expected, "chunk width {chunk_width}");
         }
     }

@@ -133,7 +133,11 @@ fn publish_new_generation(staging: &Path, destination: &Path) -> io::Result<()> 
     let target = path_cstring(destination)?;
     let code = unsafe {
         renameat2(
-            AT_FDCWD, source.as_ptr(), AT_FDCWD, target.as_ptr(), RENAME_NOREPLACE,
+            AT_FDCWD,
+            source.as_ptr(),
+            AT_FDCWD,
+            target.as_ptr(),
+            RENAME_NOREPLACE,
         )
     };
     if code == -1 {
@@ -147,7 +151,10 @@ fn publish_new_generation(staging: &Path, destination: &Path) -> io::Result<()> 
 #[cfg(not(target_os = "linux"))]
 fn publish_new_generation(staging: &Path, destination: &Path) -> io::Result<()> {
     match fs::symlink_metadata(destination) {
-        Ok(_) => Err(io::Error::new(io::ErrorKind::AlreadyExists, "snapshot generation exists")),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "snapshot generation exists",
+        )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => fs::rename(staging, destination),
         Err(error) => Err(error),
     }
@@ -283,8 +290,7 @@ fn stage_existing_part(source: &Path, staging: &Path) -> Result<(), String> {
     verify_wide_part(source).map_err(|error| error.to_string())?;
     let name = source.file_name().ok_or("invalid stored part filename")?;
     let destination = staging.join(name);
-    fs::create_dir(&destination)
-        .map_err(|error| format!("cannot stage existing part: {error}"))?;
+    fs::create_dir(&destination).map_err(|error| format!("cannot stage existing part: {error}"))?;
     for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let kind = entry.file_type().map_err(|error| error.to_string())?;
@@ -309,8 +315,8 @@ fn stage_existing_parts_with_workers(
         }
         return Ok(());
     }
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let next = AtomicUsize::new(0);
     // Workers claim parts in input order. Record the earliest failing index
     // rather than returning whichever concurrent worker happens to finish first.
@@ -332,7 +338,8 @@ fn stage_existing_parts_with_workers(
                         if let Err(error) = stage_existing_part(&existing[index], staging) {
                             // Success never takes the lock. Preserve serial
                             // error ordering even when a later part fails first.
-                            let mut first = first_error.lock()
+                            let mut first = first_error
+                                .lock()
                                 .map_err(|_| "immutable staging error state poisoned")?;
                             if first.as_ref().is_none_or(|(previous, _)| index < *previous) {
                                 *first = Some((index, error));
@@ -346,11 +353,14 @@ fn stage_existing_parts_with_workers(
             handles.push(handle);
         }
         for handle in handles {
-            handle.join().map_err(|_| "immutable part staging worker panicked".to_string())??;
+            handle
+                .join()
+                .map_err(|_| "immutable part staging worker panicked".to_string())??;
         }
         Ok(())
     })?;
-    if let Some((_, error)) = first_error.into_inner()
+    if let Some((_, error)) = first_error
+        .into_inner()
         .map_err(|_| "immutable staging error state poisoned".to_string())?
     {
         return Err(error);
@@ -358,10 +368,7 @@ fn stage_existing_parts_with_workers(
     Ok(())
 }
 
-fn stage_existing_parts(
-    existing: &[std::path::PathBuf],
-    staging: &Path,
-) -> Result<(), String> {
+fn stage_existing_parts(existing: &[std::path::PathBuf], staging: &Path) -> Result<(), String> {
     let workers = std::thread::available_parallelism()
         .map_or(1, |available| available.get())
         .min(4);
@@ -434,7 +441,9 @@ fn estimate_streamed_row(
         *size = cell
             .as_ref()
             .map_or(16, |value| value.len().saturating_add(16));
-        total = total.checked_add(*size).ok_or("COPY record size overflow")?;
+        total = total
+            .checked_add(*size)
+            .ok_or("COPY record size overflow")?;
         oversized_column |= *size > MAX_STREAMED_COLUMN_BYTES;
     }
     Ok((total, oversized_column))
@@ -506,15 +515,18 @@ pub(super) fn append_parts_stream(
             if row.len() != cols.len() {
                 return Err("COPY row width does not match table schema".into());
             }
-            let (row_bytes, oversized_column) =
-                estimate_streamed_row(&row, &mut row_size_scratch)?;
+            let (row_bytes, oversized_column) = estimate_streamed_row(&row, &mut row_size_scratch)?;
             if row_bytes > MAX_STREAMED_PART_BYTES || oversized_column {
                 return Err("COPY row exceeds streaming part budget".into());
             }
-            let column_overflow = row_size_scratch.iter().zip(&column_bytes).any(|(&size, &used)| {
-                used.checked_add(size)
-                    .is_none_or(|total| total > MAX_STREAMED_COLUMN_BYTES)
-            });
+            let column_overflow =
+                row_size_scratch
+                    .iter()
+                    .zip(&column_bytes)
+                    .any(|(&size, &used)| {
+                        used.checked_add(size)
+                            .is_none_or(|total| total > MAX_STREAMED_COLUMN_BYTES)
+                    });
             if !buffer.is_empty()
                 && (buffer.len() >= STREAMED_PART_ROWS
                     || buffered_bytes
@@ -528,9 +540,7 @@ pub(super) fn append_parts_stream(
                 .checked_add(row_bytes)
                 .ok_or("COPY batch size overflow")?;
             for (&size, used) in row_size_scratch.iter().zip(&mut column_bytes) {
-                *used = used
-                    .checked_add(size)
-                    .ok_or("COPY column size overflow")?;
+                *used = used.checked_add(size).ok_or("COPY column size overflow")?;
             }
             buffer.push(row);
             count = count.checked_add(1).ok_or("COPY row count overflow")?;
@@ -747,7 +757,12 @@ mod streaming_budget_single_pass_tests {
 
     #[test]
     fn million_row_estimation_reuses_one_scratch_allocation() {
-        let row = vec![Some("100000".into()), Some("EU".into()), None, Some("42".into())];
+        let row = vec![
+            Some("100000".into()),
+            Some("EU".into()),
+            None,
+            Some("42".into()),
+        ];
         let mut scratch = vec![0; row.len()];
         let pointer = scratch.as_ptr();
         let mut total = 0u64;
@@ -769,11 +784,15 @@ mod parallel_snapshot_staging_tests {
     #[test]
     fn wide_snapshot_parts_are_verified_and_hard_linked_with_bounded_workers() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-part-staging-workers-{}", std::process::id()
+            "rusthouse-part-staging-workers-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        let schema = [Column { name: "value".into(), data_type: "UInt64".into() }];
+        let schema = [Column {
+            name: "value".into(),
+            data_type: "UInt64".into(),
+        }];
         let mut sources = Vec::new();
         for index in 0..24 {
             let path = root.join(format!("all_{index}_{index}_0"));
@@ -795,7 +814,8 @@ mod parallel_snapshot_staging_tests {
     #[test]
     fn concurrent_staging_returns_the_earliest_part_failure() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-staging-failure-order-{}", std::process::id()
+            "rusthouse-staging-failure-order-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -832,7 +852,10 @@ mod no_replace_generation_tests {
         fs::write(destination.join("sentinel"), b"do not overwrite").unwrap();
         assert!(publish_new_generation(&staging, &destination).is_err());
         assert!(staging.is_dir());
-        assert_eq!(fs::read(destination.join("sentinel")).unwrap(), b"do not overwrite");
+        assert_eq!(
+            fs::read(destination.join("sentinel")).unwrap(),
+            b"do not overwrite"
+        );
 
         fs::remove_dir_all(&destination).unwrap();
         publish_new_generation(&staging, &destination).unwrap();

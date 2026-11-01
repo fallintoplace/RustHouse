@@ -57,7 +57,9 @@ fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseErro
             return Ok(format);
         }
     }
-    Err(ParseError("COPY format must be CSV, TSV, SSV or JSONEachRow".into()))
+    Err(ParseError(
+        "COPY format must be CSV, TSV, SSV or JSONEachRow".into(),
+    ))
 }
 
 fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
@@ -96,7 +98,9 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
             options.header = parse_copy_header(parser)?;
         }
         if options.format == CopyFormat::JsonEachRow && options.header {
-            return Err(ParseError("JSONEachRow cannot use a CSV-style HEADER".into()));
+            return Err(ParseError(
+                "JSONEachRow cannot use a CSV-style HEADER".into(),
+            ));
         }
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after COPY options".into()));

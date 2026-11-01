@@ -18,12 +18,10 @@ fn physical_group_cross_parts() {
     ));
     fs::create_dir(&root).unwrap();
 
-    let schema = [
-        Column {
-            name: "region".into(),
-            data_type: "String".into(),
-        },
-    ];
+    let schema = [Column {
+        name: "region".into(),
+        data_type: "String".into(),
+    }];
     let parts: Vec<Vec<Vec<Option<String>>>> = vec![
         vec![
             vec![Some("EU".into())],

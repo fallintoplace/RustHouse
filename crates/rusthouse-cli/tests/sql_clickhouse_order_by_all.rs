@@ -12,8 +12,16 @@ fn order_by_all_sorts_multiple_persisted_columns_and_grouped_counts() {
             .output()
             .unwrap()
     };
-    assert!(sql("CREATE TABLE items (a UInt64, b UInt64)").status.success());
-    assert!(sql("INSERT INTO items VALUES (1, 2), (2, 0), (1, 3), (1, 2)").status.success());
+    assert!(
+        sql("CREATE TABLE items (a UInt64, b UInt64)")
+            .status
+            .success()
+    );
+    assert!(
+        sql("INSERT INTO items VALUES (1, 2), (2, 0), (1, 3), (1, 2)")
+            .status
+            .success()
+    );
     let sorted = sql("SELECT a, b FROM items ORDER BY ALL");
     assert!(sorted.status.success(), "{sorted:?}");
     assert_eq!(sorted.stdout, b"a\tb\n1\t2\n1\t2\n1\t3\n2\t0\n");

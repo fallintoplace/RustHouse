@@ -1,24 +1,31 @@
 //! Conditional counts and weighted revenue expressions.
-use rusthouse_query::{execute,parse_select};
-use rusthouse_storage::{Column,write_wide_part};
+use rusthouse_query::{execute, parse_select};
+use rusthouse_storage::{Column, write_wide_part};
 use std::fs;
 #[test]
 fn numeric_aggregate_comparisons_work_with_arithmetic_and_nulls() {
-    let dir=std::env::temp_dir().join(format!("rusthouse-conditional-kpi-{}",std::process::id()));
-    let schema=[
-        Column{name:"amount".into(),data_type:"Nullable(UInt64)".into()},
-        Column{name:"target".into(),data_type:"UInt64".into()},
+    let dir =
+        std::env::temp_dir().join(format!("rusthouse-conditional-kpi-{}", std::process::id()));
+    let schema = [
+        Column {
+            name: "amount".into(),
+            data_type: "Nullable(UInt64)".into(),
+        },
+        Column {
+            name: "target".into(),
+            data_type: "UInt64".into(),
+        },
     ];
-    let rows=[
-        vec![Some("5".into()),Some("10".into())],
-        vec![Some("10".into()),Some("10".into())],
-        vec![Some("20".into()),Some("10".into())],
-        vec![None,Some("10".into())],
+    let rows = [
+        vec![Some("5".into()), Some("10".into())],
+        vec![Some("10".into()), Some("10".into())],
+        vec![Some("20".into()), Some("10".into())],
+        vec![None, Some("10".into())],
     ];
-    write_wide_part(&dir,&schema,&rows).unwrap();
-    let run=|sql:&str| {
-        let mut result=Vec::new();
-        execute(&parse_select(sql).unwrap(),Some(&dir),&mut result).unwrap();
+    write_wide_part(&dir, &schema, &rows).unwrap();
+    let run = |sql: &str| {
+        let mut result = Vec::new();
+        execute(&parse_select(sql).unwrap(), Some(&dir), &mut result).unwrap();
         String::from_utf8(result).unwrap()
     };
     assert_eq!(

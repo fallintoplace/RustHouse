@@ -47,7 +47,10 @@ impl fmt::Display for DecimalReadError {
             Self::InvalidType(value) => write!(f, "unsupported Decimal type: {value}"),
             Self::Numeric(source) => write!(f, "unable to read Decimal values: {source}"),
             Self::ValueExceedsPrecision { row, precision } => {
-                write!(f, "Decimal value at row {row} exceeds precision {precision}")
+                write!(
+                    f,
+                    "Decimal value at row {row} exceeds precision {precision}"
+                )
             }
         }
     }
@@ -229,7 +232,10 @@ mod tests {
         );
         assert!(matches!(
             read_decimal_column(&mut i128::MIN.to_le_bytes().as_slice(), "Decimal128(9)", 1),
-            Err(DecimalReadError::ValueExceedsPrecision { row: 0, precision: 38 })
+            Err(DecimalReadError::ValueExceedsPrecision {
+                row: 0,
+                precision: 38
+            })
         ));
     }
 
@@ -335,11 +341,19 @@ mod precision_validation_tests {
             .into_iter()
             .flat_map(i32::to_le_bytes)
             .collect::<Vec<_>>();
-        assert_eq!(read_decimal_column(&mut good.as_slice(), "Decimal(2,0)", 3).unwrap().len(), 3);
+        assert_eq!(
+            read_decimal_column(&mut good.as_slice(), "Decimal(2,0)", 3)
+                .unwrap()
+                .len(),
+            3
+        );
         for invalid in [100i32, -100i32] {
             assert!(matches!(
                 read_decimal_column(&mut invalid.to_le_bytes().as_slice(), "Decimal(2,0)", 1),
-                Err(DecimalReadError::ValueExceedsPrecision { row: 0, precision: 2 })
+                Err(DecimalReadError::ValueExceedsPrecision {
+                    row: 0,
+                    precision: 2
+                })
             ));
         }
     }
@@ -347,11 +361,16 @@ mod precision_validation_tests {
     #[test]
     fn validates_large_decimal_128_values() {
         let valid = 10i128.pow(19) - 1;
-        assert!(read_decimal_column(&mut valid.to_le_bytes().as_slice(), "Decimal(19,0)", 1).is_ok());
+        assert!(
+            read_decimal_column(&mut valid.to_le_bytes().as_slice(), "Decimal(19,0)", 1).is_ok()
+        );
         let invalid = 10i128.pow(19);
         assert!(matches!(
             read_decimal_column(&mut invalid.to_le_bytes().as_slice(), "Decimal(19,0)", 1),
-            Err(DecimalReadError::ValueExceedsPrecision { row: 0, precision: 19 })
+            Err(DecimalReadError::ValueExceedsPrecision {
+                row: 0,
+                precision: 19
+            })
         ));
     }
 }
@@ -368,7 +387,10 @@ mod ascii_decimal_type_parameters_tests {
         for invalid in ["", "+1", "-1", "1 ", "1.0", "256", "999999999999"] {
             assert_eq!(parse_decimal_type_number(invalid), None, "{invalid:?}");
         }
-        assert_eq!(parse_decimal_type("Decimal(38, 18)"), Some((38, 18, "Int128")));
+        assert_eq!(
+            parse_decimal_type("Decimal(38, 18)"),
+            Some((38, 18, "Int128"))
+        );
         assert!(parse_decimal_type("Decimal(256, 1)").is_none());
     }
 }

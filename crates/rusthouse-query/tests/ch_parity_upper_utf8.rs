@@ -11,7 +11,10 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn matches_clickhouse_constant_semantics() {
     for (sql, expected) in [
-        ("SELECT upperUTF8('école')", ConstantValue::Text("ÉCOLE".into())),
+        (
+            "SELECT upperUTF8('école')",
+            ConstantValue::Text("ÉCOLE".into()),
+        ),
         ("SELECT upperUTF8('z')", ConstantValue::Text("Z".into())),
         ("SELECT upperUTF8(NULL)", ConstantValue::Null),
     ] {

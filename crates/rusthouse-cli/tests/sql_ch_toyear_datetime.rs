@@ -13,15 +13,26 @@ fn toyear_accepts_date_datetime_and_utc_boundary_offsets() {
             .args(["sql", query])
             .output()
             .unwrap();
-        assert!(result.status.success(), "{query}: {}", String::from_utf8_lossy(&result.stderr));
-        assert_eq!(result.stdout, format!("year\n{year}\n").as_bytes(), "{query}");
+        assert!(
+            result.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            result.stdout,
+            format!("year\n{year}\n").as_bytes(),
+            "{query}"
+        );
     }
 }
 
 #[test]
 fn toyear_rejects_invalid_dates() {
     for sql in ["SELECT toYear('2024-02-30')", "SELECT toYear('invalid')"] {
-        let result = Command::new(env!("CARGO_BIN_EXE_rusthouse")).args(["sql", sql]).output().unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+            .args(["sql", sql])
+            .output()
+            .unwrap();
         assert!(!result.status.success(), "{sql}");
     }
 }

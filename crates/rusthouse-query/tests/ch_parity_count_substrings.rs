@@ -11,8 +11,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn clickhouse_constant_function() {
     for (sql, expected) in [
-        ("SELECT countSubstrings('aaaa', 'aa')", ConstantValue::Integer(2)),
-        ("SELECT countSubstrings('abc', 'z')", ConstantValue::Integer(0)),
+        (
+            "SELECT countSubstrings('aaaa', 'aa')",
+            ConstantValue::Integer(2),
+        ),
+        (
+            "SELECT countSubstrings('abc', 'z')",
+            ConstantValue::Integer(0),
+        ),
         ("SELECT countSubstrings(NULL, 'a')", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");

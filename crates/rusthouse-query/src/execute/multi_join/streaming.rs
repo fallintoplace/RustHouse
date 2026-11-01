@@ -138,9 +138,7 @@ pub(super) fn execute<W: Write>(
     let null_filter = query
         .where_null
         .as_ref()
-        .map(|(column, not_null)| {
-            column_index(relations, column).map(|index| (index, *not_null))
-        })
+        .map(|(column, not_null)| column_index(relations, column).map(|index| (index, *not_null)))
         .transpose()?;
     let spec = OutputSpec {
         selected: &selected,
@@ -229,10 +227,7 @@ pub(super) fn execute<W: Write>(
                     Entry::Occupied(mut entry) if !step.any => {
                         // Count a duplicate index and conservative Vec growth
                         // overhead. ANY only needs its first matching index.
-                        charge_hash_build(
-                            &mut retained,
-                            std::mem::size_of::<usize>() * 2,
-                        )?;
+                        charge_hash_build(&mut retained, std::mem::size_of::<usize>() * 2)?;
                         entry.get_mut().push(index);
                     }
                     Entry::Occupied(_) => {}
@@ -250,7 +245,8 @@ pub(super) fn execute<W: Write>(
     if stages.iter().any(|stage| stage.rows.is_empty()) {
         return Ok(());
     }
-    let mut scratch_keys = stages.iter()
+    let mut scratch_keys = stages
+        .iter()
         .map(|stage| Vec::with_capacity(stage.left_keys.len()))
         .collect::<Vec<Vec<typed::Key>>>();
     // Reuse the same dependency projection for the fact scan.
@@ -274,7 +270,15 @@ pub(super) fn execute<W: Write>(
             for (position, &column) in projected.iter().enumerate() {
                 row[column] = typed::cell(&batch[position], index);
             }
-            visit(0, &mut row, &stages, &mut scratch_keys, &spec, &mut state, output)?;
+            visit(
+                0,
+                &mut row,
+                &stages,
+                &mut scratch_keys,
+                &spec,
+                &mut state,
+                output,
+            )?;
             if spec.limit.is_some_and(|limit| state.emitted >= limit) {
                 return Ok(());
             }

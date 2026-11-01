@@ -3,8 +3,10 @@ use std::process::Command;
 
 #[test]
 fn nullable_sixteen_bit_distinct_uses_exact_bitmap_with_filters() {
-    let db =
-        std::env::temp_dir().join(format!("rusthouse-nullable-u16-distinct-{}", std::process::id()));
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-nullable-u16-distinct-{}",
+        std::process::id()
+    ));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])

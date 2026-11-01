@@ -12,8 +12,10 @@ fn native_probe_keys_match_materialized_build_keys() {
     ];
     let mut key = Vec::new();
     assert!(batch_key_into(&batch, 0, &[0, 1], &mut key));
-    let row = [typed::Cell::Numeric(Number::Signed(-12)),
-               typed::Cell::Numeric(Number::Unsigned(7))];
+    let row = [
+        typed::Cell::Numeric(Number::Signed(-12)),
+        typed::Cell::Numeric(Number::Unsigned(7)),
+    ];
     assert_eq!(key, row_key(&row, &[0, 1]).unwrap());
     assert!(!batch_key_into(&batch, 1, &[0, 1], &mut key));
     assert!(key.is_empty());

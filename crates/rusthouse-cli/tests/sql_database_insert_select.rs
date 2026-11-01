@@ -89,14 +89,19 @@ fn generated_rows_and_empty_inserts_use_existing_publish_path() {
     assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
 
     // The old 100,000-row ceiling is gone. The whole insert commits atomically.
-    ok("INSERT INTO target (id) SELECT number FROM numbers(100001)", &db);
+    ok(
+        "INSERT INTO target (id) SELECT number FROM numbers(100001)",
+        &db,
+    );
     assert_eq!(fs::read_to_string(&pointer).unwrap(), "g2\n");
     assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n150004\n");
-    assert!(
-        !fs::read_dir(&db)
+    assert!(!fs::read_dir(&db).unwrap().any(|entry| {
+        entry
             .unwrap()
-            .any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with(".rusthouse-insert-select-"))
-    );
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".rusthouse-insert-select-")
+    }));
     fs::remove_dir_all(db).unwrap();
 }
 

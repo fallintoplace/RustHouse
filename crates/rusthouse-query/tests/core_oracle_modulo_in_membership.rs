@@ -15,12 +15,8 @@ fn modulo_matches_enumerated_membership_on_generated_numbers() {
         .collect::<Vec<_>>()
         .join(", ");
     for rows in [1, 7, 30, 100] {
-        let modulo = format!(
-            "SELECT count(*) FROM numbers({rows}) WHERE number % 3 = 1"
-        );
-        let members = format!(
-            "SELECT count(*) FROM numbers({rows}) WHERE number IN ({values})"
-        );
+        let modulo = format!("SELECT count(*) FROM numbers({rows}) WHERE number % 3 = 1");
+        let members = format!("SELECT count(*) FROM numbers({rows}) WHERE number IN ({values})");
         assert_eq!(run(&modulo), run(&members), "rows={rows}");
     }
 }

@@ -162,10 +162,10 @@ fn raw_index_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return before.dev() == after.dev()
+        before.dev() == after.dev()
             && before.ino() == after.ino()
             && before.ctime() == after.ctime()
-            && before.ctime_nsec() == after.ctime_nsec();
+            && before.ctime_nsec() == after.ctime_nsec()
     }
     #[cfg(not(unix))]
     true
@@ -187,7 +187,8 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
     }
     // The checked file size is known. Avoid repeated growth for large raw indexes.
     let mut data = Vec::with_capacity(size as usize);
-    (&file).take(MAX_INDEX_BYTES as u64 + 1)
+    (&file)
+        .take(MAX_INDEX_BYTES as u64 + 1)
         .read_to_end(&mut data)
         .map_err(|source| io_error(path, source))?;
     if data.len() > MAX_INDEX_BYTES {
@@ -197,9 +198,7 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
     // Check the open inode and its pathname after the read, not just before.
     let finished = file.metadata().map_err(|source| io_error(path, source))?;
     let current = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
-    if !raw_index_unchanged(&opened, &finished)
-        || !raw_index_unchanged(&opened, &current)
-    {
+    if !raw_index_unchanged(&opened, &finished) || !raw_index_unchanged(&opened, &current) {
         return Err(invalid(path, "primary index changed during read"));
     }
     Ok(data)
@@ -650,10 +649,8 @@ mod raw_index_link_tests {
 
     #[test]
     fn rejects_symlinked_primary_index_files() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-raw-primary-link-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-raw-primary-link-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let real = root.join("real.idx");
@@ -672,7 +669,8 @@ mod primary_index_size_boundary_tests {
 
     #[test]
     fn raw_indexes_remain_bounded_and_exact() {
-        let path = std::env::temp_dir().join(format!("rusthouse-raw-index-size-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("rusthouse-raw-index-size-{}", std::process::id()));
         let _ = fs::remove_file(&path);
         fs::write(&path, [42u8; 48]).unwrap();
         assert_eq!(read_raw(&path).unwrap(), vec![42; 48]);
@@ -701,7 +699,9 @@ mod raw_index_immutability_tests {
     #[test]
     fn detects_same_sized_path_replacement_and_in_place_rewrite() {
         let dir = std::env::temp_dir().join(format!(
-            "rusthouse-index-immutability-{}-{}", std::process::id(), line!(),
+            "rusthouse-index-immutability-{}-{}",
+            std::process::id(),
+            line!(),
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -744,9 +744,11 @@ mod recycled_primary_index_decoder_tests {
     fn compressed_primary_index_reads_many_boundary_split_tuples() {
         let path = std::env::temp_dir().join(format!(
             "rusthouse-primary-index-recycled-{}-{}.cidx",
-            std::process::id(), NEXT_FILE.fetch_add(1, Ordering::Relaxed),
+            std::process::id(),
+            NEXT_FILE.fetch_add(1, Ordering::Relaxed),
         ));
-        let raw = (0..1024u64).flat_map(|value| value.to_le_bytes())
+        let raw = (0..1024u64)
+            .flat_map(|value| value.to_le_bytes())
             .collect::<Vec<_>>();
         let mut compressed = Vec::new();
         for part in raw.chunks(7) {
@@ -756,7 +758,10 @@ mod recycled_primary_index_decoder_tests {
         let decoded = read_fixed_primary_index(&path, &[8]).unwrap();
         assert_eq!(decoded.len(), 1024);
         for index in [0, 1, 63, 511, 1023] {
-            assert_eq!(u64::from_le_bytes(decoded.field(index, 0).unwrap().try_into().unwrap()), index as u64);
+            assert_eq!(
+                u64::from_le_bytes(decoded.field(index, 0).unwrap().try_into().unwrap()),
+                index as u64
+            );
         }
         fs::remove_file(&path).unwrap();
     }
