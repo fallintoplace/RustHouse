@@ -6,6 +6,15 @@ from sql_compat_audit import audit, parse_lines, read_queries
 
 
 class AuditTests(unittest.TestCase):
+    def test_hash_comments_do_not_create_executable_separators(self):
+        from sql_compat_audit import _has_separator, parse_lines
+        self.assertFalse(_has_separator("SELECT 1 # comment with ; semicolons"))
+        self.assertTrue(_has_separator("SELECT 1; # real separator"))
+        self.assertEqual(
+            parse_lines("# ignored line\nSELECT 1 # comment with ;\nSELECT 2;"),
+            [(2, "SELECT 1 # comment with"), (3, "SELECT 2")],
+        )
+
     def test_accepts_one_select_per_line(self):
         self.assertEqual(parse_lines("-- note\nSELECT 1;\nSELECT count(*) FROM numbers(3)\n"),
                          [(2, "SELECT 1"), (3, "SELECT count(*) FROM numbers(3)")])
