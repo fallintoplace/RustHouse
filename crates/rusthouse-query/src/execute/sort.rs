@@ -222,7 +222,7 @@ fn merge_runs(
         if let Some(next) = read_sorted_row_reusing(
             &mut streams[*index], descending, directions, &mut scratch[*index]
         )? {
-            if row.cmp(&next) == Ordering::Greater {
+            if (*row).cmp(&next) == Ordering::Greater {
                 return Err(invalid("external sort run is not sorted"));
             }
             *row = next;

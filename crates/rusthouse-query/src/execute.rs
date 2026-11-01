@@ -136,7 +136,7 @@ impl fmt::Display for Number {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum NumberKey {
     Unsigned(u128),
     Signed(i128),
