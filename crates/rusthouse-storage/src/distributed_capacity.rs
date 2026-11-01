@@ -734,6 +734,22 @@ pub fn plan_capacity_optimal_objects(
         return Err("capacity-optimal transfer exceeds 24 objects");
     }
     let available = capacity.available()?;
+    // The common case fits every transfer. Avoid enumerating 2^12 subsets
+    // per side, sorting, and binary searching when the optimum is obvious.
+    if object_sizes
+        .iter()
+        .try_fold(0u64, |total, &size| total.checked_add(size))
+        .is_some_and(|total| total <= available)
+    {
+        return Ok((0..object_sizes.len()).collect());
+    }
+    // Zero capacity can still schedule all zero-sized objects. Keep the
+    // count-maximizing tie breaker without enumerating any subsets.
+    if available == 0 {
+        return Ok((0..object_sizes.len())
+            .filter(|&index| object_sizes[index] == 0)
+            .collect());
+    }
     // Each half has at most 12 items, limiting enumeration to 4096 states.
     #[derive(Clone, Copy)]
     struct Subset {
@@ -889,6 +905,29 @@ mod exact_capacity_transfer_subset_tests {
                 assert_eq!(selected, best, "count={count}, budget={budget}");
             }
         }
+    }
+
+    #[test]
+    fn full_capacity_and_zero_byte_fast_paths_match_exact_object_priority() {
+        let all_fit = (1..=24u64).collect::<Vec<_>>();
+        let expected = (0..24usize).collect::<Vec<_>>();
+        assert_eq!(
+            plan_capacity_optimal_objects(capacity(300), &all_fit).unwrap(),
+            expected
+        );
+        assert_eq!(
+            plan_capacity_optimal_objects(capacity(0), &[0, 7, 0, 4, 0]).unwrap(),
+            [0, 2, 4]
+        );
+        // Checked total overflow must fall back to the exact subset search.
+        assert_eq!(
+            plan_capacity_optimal_objects(capacity(u64::MAX), &[u64::MAX, 1]).unwrap(),
+            [0]
+        );
+        assert_eq!(
+            plan_capacity_optimal_objects(capacity(0), &[0; 24]).unwrap(),
+            expected
+        );
     }
 
     #[test]
