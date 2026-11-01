@@ -498,14 +498,15 @@ pub fn rank_quorum_snapshot_replicas(
     if replicas.len() > members.len() {
         return Err("too many replica snapshot observations");
     }
-    let mut seen = 0u16;
+    // A quorum may contain 64 nodes. A u16 mask overflows at member 16.
+    let mut seen = 0u64;
     let mut acknowledgements = Vec::with_capacity(replicas.len());
     for replica in replicas {
         let index = members
             .iter()
             .position(|&member| member == replica.node.as_str())
             .ok_or("snapshot from unknown replica")?;
-        let bit = 1u16 << index;
+        let bit = 1u64 << index;
         if seen & bit != 0 {
             return Err("duplicate replica snapshot observation");
         }
@@ -982,6 +983,39 @@ mod stack_read_replica_order_tests {
         let mut invalid = statuses;
         invalid[63].epoch = 0;
         assert!(rank_read_replicas(&invalid).is_err());
+    }
+}
+
+#[cfg(test)]
+mod wide_quorum_replica_observation_tests {
+    use super::*;
+    use crate::distributed_lineage::SnapshotVersion;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    #[test]
+    fn observes_all_64_nodes_without_bit_shift_overflow_or_aliases() {
+        let owned = (0..64).map(|index| format!("node{index}")).collect::<Vec<_>>();
+        let members = owned.iter().map(String::as_str).collect::<Vec<_>>();
+        let snapshot = SnapshotVersion { epoch: 7, generation: 42, fingerprint: 73 };
+        let replicas = owned.iter().map(|node| ReplicaSnapshotStatus {
+            node: node.clone(), snapshot, healthy: true,
+        }).collect::<Vec<_>>();
+        let policy = QuorumPolicy::new(64, 33, 33).unwrap();
+        let (selected, nodes) = rank_quorum_snapshot_replicas(&members, policy, &replicas).unwrap();
+        assert_eq!(selected, snapshot);
+        assert_eq!(nodes.len(), 64);
+        let mut expected = owned.clone();
+        expected.sort_unstable();
+        assert_eq!(nodes, expected);
+
+        let observed = replicas.iter().skip(16).take(33).cloned().collect::<Vec<_>>();
+        let (selected, nodes) = rank_quorum_snapshot_replicas(&members, policy, &observed).unwrap();
+        assert_eq!(selected, snapshot);
+        assert_eq!(nodes.len(), 33);
+
+        let mut duplicate = observed;
+        duplicate.push(duplicate[16].clone());
+        assert!(rank_quorum_snapshot_replicas(&members, policy, &duplicate).is_err());
     }
 }
 
