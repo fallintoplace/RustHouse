@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,7 @@ from convert_dbgen import convert_table
 
 
 class DbgenUniqueTemporaryFileTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "requires POSIX symlink support")
     def test_never_follows_a_preexisting_fixed_temp_symlink(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
