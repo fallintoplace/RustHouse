@@ -815,7 +815,7 @@ mod compressed_primary_index_identity_tests {
     }
 
     #[test]
-    fn metadata_change_detector_rejects_same_size_in_place_overwrite() {
+    fn metadata_change_detector_rejects_changed_file_length() {
         let path = temporary_path();
         fs::write(&path, b"checkpoint_000000").unwrap();
         let before = fs::metadata(&path).unwrap();
