@@ -35,9 +35,11 @@ def emit(stream, rows, *, seed=0, batch_rows=8192):
         # Modular addition is enough to preserve the exact affine UInt64 sequence.
         pending = []
         for _ in range(min(batch_rows, rows - start)):
-            pending.append(f"{value}\n")
+            pending.append(value)
             value = (value + MULTIPLIER) & MASK
-        stream.write("".join(pending))
+        # Builtin integer conversion avoids a Python formatted-string
+        # allocation per row; keep the same bounded per-batch output.
+        stream.write("\n".join(map(str, pending)) + "\n")
 
 
 def generate(output, rows, *, seed=0, batch_rows=8192):

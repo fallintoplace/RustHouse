@@ -9,6 +9,7 @@ import json
 import math
 import os
 import platform
+import re
 import statistics
 import subprocess
 import sys
@@ -40,7 +41,7 @@ def write_fixture(path, rows, *, batch_rows=8192):
         raise ValueError("fixture rows must be in 1..1000000000")
     if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("fixture batch_rows must be in 1..1000000")
-    with path.open("w", encoding="ascii", buffering=1024 * 1024) as output:
+    with path.open("w", encoding="ascii", newline="\n", buffering=1024 * 1024) as output:
         for start in range(0, rows, batch_rows):
             output.write("".join(f"{value}\n" for value in range(start, min(start + batch_rows, rows))))
 
@@ -50,7 +51,9 @@ def invoke(binary, database, sql, *, timeout, no_header=False):
     if no_header:
         command.extend(["--format", "tsv-no-header"])
     extra = {}
-    if os.name == "posix":
+    # RLIMIT_FSIZE applies to all child file writes, including COPY data
+    # files. Only cap read-only query processes, never ingestion or DDL.
+    if os.name == "posix" and sql.lstrip().upper().startswith("SELECT "):
         import resource
 
         def cap_spooled_output():
@@ -98,6 +101,11 @@ def scan(binary, database, sql, expected, runs, warmups, timeout):
     }
 
 
+def doctor_verified_rows(output, rows):
+    expected = rb"OK events: " + str(rows).encode("ascii") + rb" rows, [1-9][0-9]* parts"
+    return any(re.fullmatch(expected, line) for line in output.splitlines())
+
+
 def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None, fixture_batch_rows=8192):
     if type(rows) is not int or not 1 <= rows <= 1_000_000_000:
         raise ValueError("rows must be in 1..1000000000")
@@ -130,8 +138,7 @@ def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None, fixture_ba
             observed = summary.read(8193)
             errors.seek(max(0, errors.tell() - 600))
             diagnostic = errors.read(600)
-        expected_summary = f"OK events: {rows} rows, ".encode("utf-8")
-        if inspection.returncode or expected_summary not in observed:
+        if inspection.returncode or not doctor_verified_rows(observed, rows):
             raise ValueError(
                 f"physical snapshot verification failed: {observed[:8192]!r} {diagnostic!r}"
             )
