@@ -14,19 +14,28 @@ pub struct ScrubReport {
 
 impl ScrubReport {
     fn record_part(&mut self, files: usize, bytes: u64, blocks: u64) -> Result<(), PartError> {
-        self.checked_files = self
+        // Validate every counter before mutating the report. Late overflow
+        // must not leave the file/byte totals updated without their part.
+        let checked_files = self
             .checked_files
             .checked_add(files)
             .ok_or_else(|| PartError::InvalidScan("scrub file count overflow".into()))?;
-        self.checked_bytes = self
+        let checked_bytes = self
             .checked_bytes
             .checked_add(bytes)
             .ok_or_else(|| PartError::InvalidScan("scrub byte count overflow".into()))?;
-        self.blocks = self
+        let blocks = self
             .blocks
             .checked_add(blocks)
             .ok_or_else(|| PartError::InvalidScan("scrub block count overflow".into()))?;
-        self.parts += 1;
+        let parts = self
+            .parts
+            .checked_add(1)
+            .ok_or_else(|| PartError::InvalidScan("scrub part count overflow".into()))?;
+        self.checked_files = checked_files;
+        self.checked_bytes = checked_bytes;
+        self.blocks = blocks;
+        self.parts = parts;
         Ok(())
     }
 }
@@ -683,5 +692,36 @@ mod indexed_scrub_cursor_tests {
         ] {
             assert!(scrub_cursor_index(&parts, invalid).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod atomic_scrub_report_accounting_tests {
+    use super::*;
+
+    #[test]
+    fn overflow_in_any_counter_leaves_report_unchanged() {
+        let initial = ScrubReport {
+            parts: 1,
+            checked_files: 2,
+            checked_bytes: 3,
+            blocks: 4,
+        };
+        for (files, bytes, blocks, report) in [
+            (2, 3, 4, ScrubReport { checked_files: usize::MAX, ..initial.clone() }),
+            (2, 3, 4, ScrubReport { checked_bytes: u64::MAX, ..initial.clone() }),
+            (2, 3, 4, ScrubReport { blocks: u64::MAX, ..initial.clone() }),
+            (2, 3, 4, ScrubReport { parts: usize::MAX, ..initial.clone() }),
+        ] {
+            let mut current = report.clone();
+            assert!(current.record_part(files, bytes, blocks).is_err());
+            assert_eq!(current, report);
+        }
+        let mut valid = initial;
+        valid.record_part(2, 3, 4).unwrap();
+        assert_eq!(valid.parts, 2);
+        assert_eq!(valid.checked_files, 4);
+        assert_eq!(valid.checked_bytes, 6);
+        assert_eq!(valid.blocks, 8);
     }
 }
