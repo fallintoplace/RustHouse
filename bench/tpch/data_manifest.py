@@ -14,7 +14,10 @@ MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 def inspect_table(path, table):
     path = Path(path)
-    before = path.lstat()
+    try:
+        before = path.lstat()
+    except FileNotFoundError as error:
+        raise ValueError(f"{table}: converted TSV does not exist: {path}") from error
     if not stat.S_ISREG(before.st_mode):
         raise ValueError(f"{table}: converted TSV must be a regular, non-symlinked file: {path}")
     expected = "\t".join(names(table)).encode("utf-8")
