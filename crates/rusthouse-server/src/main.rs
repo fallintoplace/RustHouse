@@ -1294,14 +1294,14 @@ mod interrupted_response_write_tests {
     #[test]
     fn interrupted_and_partial_writes_preserve_every_response_byte() {
         let mut writer = InterruptThenPartial { bytes: Vec::new(), calls: 0 };
-        let mut input = b"HTTP/1.1 200 OK\\r\\n\\r\\nhello".as_slice();
+        let mut input = b"HTTP/1.1 200 OK\r\n\r\nhello".as_slice();
         assert_eq!(write_response_chunk(&mut writer, input).unwrap(), None);
         while !input.is_empty() {
             if let Some(count) = write_response_chunk(&mut writer, input).unwrap() {
                 input = &input[count..];
             }
         }
-        assert_eq!(writer.bytes, b"HTTP/1.1 200 OK\\r\\n\\r\\nhello");
+        assert_eq!(writer.bytes, b"HTTP/1.1 200 OK\r\n\r\nhello");
         assert!(writer.calls > 2);
     }
 
