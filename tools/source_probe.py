@@ -66,7 +66,7 @@ def scan_rows(base, table, timeout):
                       method="POST")
     with NO_REDIRECT_OPENER.open(request, timeout=timeout) as response:
         body = response.read(129)
-    if len(body) > 128 or not re.fullmatch(rb"rows_checked\n[0-9]{1,20}\n", body):
+    if len(body) > 128 or not re.fullmatch(rb"rows_checked\n(?:0|[1-9][0-9]{0,19})\n", body):
         raise ValueError("readiness scan returned invalid SQL count output")
     count = int(body.splitlines()[1])
     if count > (1 << 64) - 1:

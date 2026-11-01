@@ -522,20 +522,19 @@ pub fn execute_multi_join<W: Write>(
         )?;
         let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::new();
         let mut hash_bytes = 0usize;
+        let mut build_key = Vec::with_capacity(right_keys.len());
         for (index, row) in right_rows.iter().enumerate() {
-            if let Some(key) = row_key(row, &right_keys) {
-                use std::collections::hash_map::Entry;
-                match hash.entry(key) {
-                    Entry::Occupied(mut entry) => {
-                        // Duplicate key index lists may grow independently of the rows.
-                        charge_hash_bytes(&mut hash_bytes, std::mem::size_of::<usize>() * 2)?;
-                        entry.get_mut().push(index);
-                    }
-                    Entry::Vacant(entry) => {
-                        charge_hash_bytes(&mut hash_bytes, hash_key_bytes(entry.key())?)?;
-                        entry.insert(Bucket::One(index));
-                    }
-                }
+            if !row_key_into(row, &right_keys, &mut build_key) {
+                continue;
+            }
+            // Lookup does not own the key. Skewed dimensions allocate only
+            // for distinct hash entries instead of every duplicate row.
+            if let Some(bucket) = hash.get_mut(build_key.as_slice()) {
+                charge_hash_bytes(&mut hash_bytes, std::mem::size_of::<usize>() * 2)?;
+                bucket.push(index);
+            } else {
+                charge_hash_bytes(&mut hash_bytes, hash_key_bytes(&build_key)?)?;
+                hash.insert(build_key.clone(), Bucket::One(index));
             }
         }
         // COUNT(*) over a validated all-INNER chain needs only the final
@@ -544,9 +543,10 @@ pub fn execute_multi_join<W: Write>(
             && step_index == query.steps.len()
         {
             let mut count = 0u64;
+            let mut count_key = Vec::with_capacity(left_keys.len());
             for row in &rows {
-                if let Some(key) = row_key(row, &left_keys) {
-                    if let Some(matches) = hash.get(&key) {
+                if row_key_into(row, &left_keys, &mut count_key) {
+                    if let Some(matches) = hash.get(count_key.as_slice()) {
                         // The final COUNT fast path must apply the same
                         // IS NULL / IS NOT NULL filter as materialized joins.
                         // With ANY, inspect only the first matched dimension
@@ -704,3 +704,50 @@ mod bucket_tests;
 #[cfg(test)]
 #[path = "multi_join/chained_join_reusable_probe_tests.rs"]
 mod chained_join_reusable_probe_tests;
+
+#[cfg(test)]
+mod reusable_chain_keys_tests {
+    use super::*;
+
+    #[test]
+    fn reused_text_keys_agree_with_fresh_materialized_keys() {
+        let rows = (0..200usize).map(|index| {
+            if index % 17 == 0 {
+                vec![typed::Cell::Null]
+            } else {
+                vec![typed::Cell::Text(format!("key-{}", index % 5).into_bytes())]
+            }
+        }).collect::<Vec<_>>();
+        let mut fresh = HashMap::<Vec<typed::Key>, Bucket>::new();
+        let mut reused = HashMap::<Vec<typed::Key>, Bucket>::new();
+        let mut scratch = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            if let Some(key) = row_key(row, &[0]) {
+                match fresh.get_mut(key.as_slice()) {
+                    Some(bucket) => bucket.push(index),
+                    None => { fresh.insert(key, Bucket::One(index)); }
+                }
+            }
+            if row_key_into(row, &[0], &mut scratch) {
+                match reused.get_mut(scratch.as_slice()) {
+                    Some(bucket) => bucket.push(index),
+                    None => { reused.insert(scratch.clone(), Bucket::One(index)); }
+                }
+            }
+        }
+        assert_eq!(fresh.len(), 5);
+        assert_eq!(reused.len(), 5);
+        for (key, expected) in &fresh {
+            let actual = reused.get(key.as_slice()).unwrap();
+            assert_eq!(actual.iter().copied().collect::<Vec<_>>(),
+                       expected.iter().copied().collect::<Vec<_>>());
+        }
+        let mut count = 0;
+        for row in &rows {
+            if row_key_into(row, &[0], &mut scratch) {
+                count += reused.get(scratch.as_slice()).unwrap().iter().len();
+            }
+        }
+        assert!(count > rows.len(), "duplicates increase ALL JOIN count");
+    }
+}

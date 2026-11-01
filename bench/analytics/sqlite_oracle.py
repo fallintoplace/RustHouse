@@ -163,12 +163,25 @@ def assert_matches(output, expected_rows, unordered=False):
         assert_ordered_rows(actual, expected_rows)
 
 
+# SQLite read-only connections can still ATTACH and create new databases.
+# Authorize only the operations needed by SELECT expressions and CTEs.
+_READ_ACTIONS = frozenset((
+    sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ,
+    sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE,
+))
+
+
+def _readonly_authorizer(action, _arg1, _arg2, _database, _source):
+    return sqlite3.SQLITE_OK if action in _READ_ACTIONS else sqlite3.SQLITE_DENY
+
+
 def sqlite_query(path, sql):
     path = Path(path)
     if path.is_symlink():
         raise ValueError("SQLite reference must not be a symlink")
     database_uri = path.resolve().as_uri() + "?mode=ro"
     with closing(sqlite3.connect(database_uri, uri=True)) as connection:
+        connection.set_authorizer(_readonly_authorizer)
         rows = connection.execute(sql).fetchmany(100_001)
         if len(rows) > 100_000:
             raise ValueError("SQLite reference exceeds 100000 rows")

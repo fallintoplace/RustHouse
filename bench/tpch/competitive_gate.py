@@ -14,6 +14,19 @@ from pathlib import Path
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 
 
+def _unique_json_fields(pairs):
+    fields = {}
+    for key, value in pairs:
+        if key in fields:
+            raise ValueError(f"duplicate competitive TPC-H JSON field: {key}")
+        fields[key] = value
+    return fields
+
+
+def _reject_nonstandard_json(token):
+    raise ValueError(f"nonstandard competitive TPC-H JSON number: {token}")
+
+
 def load_report(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -22,7 +35,8 @@ def load_report(path):
         payload = source.read(MAX_REPORT_BYTES + 1)
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("benchmark report exceeds 2 MiB")
-    return json.loads(payload)
+    return json.loads(payload, object_pairs_hook=_unique_json_fields,
+                      parse_constant=_reject_nonstandard_json)
 
 HEX256 = re.compile(r"[0-9a-f]{64}\Z")
 

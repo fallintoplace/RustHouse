@@ -114,6 +114,34 @@ class CorrectnessSoakTests(unittest.TestCase):
                 soak("rusthouse", "db", statement, "nonexistent-reference.tsv",
                      execute=lambda: self.fail("must not run unsafe SQL"))
 
+    def test_allows_semicolons_in_sql_literals_and_comments(self):
+        with tempfile.TemporaryDirectory() as folder:
+            expected = Path(folder) / "reference.tsv"
+            expected.write_bytes(b"result")
+            digest = hashlib.sha256(b"result").hexdigest()
+            for statement in (
+                "SELECT ';' AS delimiter",
+                "SELECT 1 /* ; harmless comment */",
+                "SELECT '-- ;' AS marker",
+                "SELECT 1 -- ; line comment",
+            ):
+                with self.subTest(statement=statement):
+                    response = soak("rusthouse", "db", statement, expected,
+                                    runs=1, warmups=0,
+                                    execute=lambda: (digest, 6, 0.1))
+                    self.assertTrue(response["verified"])
+
+    def test_rejects_unsafe_sql_after_comment_aware_scan(self):
+        for statement in (
+            "SELECT 1; SELECT 2",
+            "SELECT 'unclosed",
+            "SELECT 1 /* unterminated",
+            "SELECT 1; -- followed by comment",
+        ):
+            with self.subTest(statement=statement), self.assertRaisesRegex(ValueError, "read-only SELECT"):
+                soak("rusthouse", "db", statement, "missing.tsv",
+                     runs=1, execute=lambda: self.fail("must not run unsafe SQL"))
+
     def test_reference_replacement_between_stat_and_open_is_rejected(self):
         import os
         from unittest.mock import patch
