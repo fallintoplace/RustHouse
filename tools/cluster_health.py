@@ -2,6 +2,7 @@
 """Check RustHouse peer reachability from /cluster/health (not data freshness)."""
 import argparse
 import json
+import ipaddress
 import math
 import sys
 from urllib.parse import urlsplit
@@ -34,6 +35,29 @@ def _unique_object_pairs(pairs):
     return result
 
 
+def valid_peer_address(value):
+    """Match the coordinator's canonical numeric IPv4 peer address rules."""
+    if not isinstance(value, str) or value.count(":") != 1:
+        return False
+    host, port = value.split(":")
+    if not 1 <= len(port) <= 5 or not port.isascii() or not port.isdecimal():
+        return False
+    number = int(port)
+    if not 1 <= number <= 65535:
+        return False
+    try:
+        address = ipaddress.IPv4Address(host)
+    except ipaddress.AddressValueError:
+        return False
+    if value != f"{address}:{number}":
+        return False
+    first, second, _, _ = address.packed
+    return (str(address) == "127.0.0.1" or first == 10 or
+            (first == 172 and 16 <= second <= 31) or
+            (first == 192 and second == 168) or
+            (first == 100 and 64 <= second <= 127))
+
+
 def validate(payload, *, min_healthy=None, expected_peers=None):
     if not isinstance(payload, dict):
         raise ValueError("expected JSON object")
@@ -46,7 +70,7 @@ def validate(payload, *, min_healthy=None, expected_peers=None):
     seen = set()
     for peer in peers:
         if (not isinstance(peer, dict) or not isinstance(peer.get("address"), str) or
-                not peer["address"].strip() or type(peer.get("healthy")) is not bool):
+                not valid_peer_address(peer["address"]) or type(peer.get("healthy")) is not bool):
             raise ValueError("invalid peer detail")
         if peer["address"] in seen:
             raise ValueError("duplicate peer address")
@@ -56,7 +80,7 @@ def validate(payload, *, min_healthy=None, expected_peers=None):
         raise ValueError("peer count inconsistent with details")
     if expected_peers is not None:
         if (not isinstance(expected_peers, (list, tuple)) or not expected_peers or
-                any(not isinstance(peer, str) or not peer.strip() for peer in expected_peers) or
+                any(not valid_peer_address(peer) for peer in expected_peers) or
                 len(set(expected_peers)) != len(expected_peers) or
                 set(expected_peers) != seen):
             raise ValueError("unexpected cluster membership")
