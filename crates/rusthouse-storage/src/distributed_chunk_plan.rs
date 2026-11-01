@@ -331,6 +331,25 @@ pub fn plan_missing_runs_from_resume(
     max_batch_chunks: usize,
     max_run_bytes: u64,
 ) -> Result<Vec<ChunkRun>, &'static str> {
+    plan_missing_runs_from_resume_after(
+        total_bytes, chunk_bytes, max_chunks, progress, 0, byte_budget,
+        max_batch_chunks, max_run_bytes,
+    )
+}
+
+/// Plan coalesced I/O after an inclusive resume cursor. Repeated small
+/// transfer pages can now start at their last checkpoint instead of
+/// enumerating every already completed chunk from the beginning.
+pub fn plan_missing_runs_from_resume_after(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    progress: &crate::distributed_resume_map::ResumeMap,
+    start_index: usize,
+    byte_budget: u64,
+    max_batch_chunks: usize,
+    max_run_bytes: u64,
+) -> Result<Vec<ChunkRun>, &'static str> {
     if max_run_bytes == 0 || max_batch_chunks > 65_536 {
         return Err("invalid coalesced chunk limits");
     }
@@ -338,10 +357,13 @@ pub fn plan_missing_runs_from_resume(
     if progress.len() != chunk_count {
         return Err("resume checkpoint does not match transfer layout");
     }
+    if start_index > chunk_count {
+        return Err("resume cursor exceeds transfer layout");
+    }
     let mut runs: Vec<ChunkRun> = Vec::new();
     let mut scheduled = 0usize;
     let mut remaining = byte_budget;
-    for index in progress.remaining_indices() {
+    for index in progress.remaining_indices_from(start_index) {
         if scheduled == max_batch_chunks || remaining == 0 {
             break;
         }
@@ -852,5 +874,61 @@ mod paged_resume_planner_tests {
                 bytes, 5, 65_536, &map, chunks + 1, 0, 0
             ).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod resumable_coalesced_run_cursor_tests {
+    use super::*;
+    use crate::distributed_resume_map::ResumeMap;
+
+    #[test]
+    fn cursor_pages_match_individual_chunk_planner_for_sparse_resume_maps() {
+        for total_bytes in [0u64, 1, 13, 1025, 65535] {
+            let count = total_bytes.div_ceil(7) as usize;
+            let mut progress = ResumeMap::new(count).unwrap();
+            for index in (0..count).step_by(3) {
+                progress.mark_complete(index).unwrap();
+            }
+            for cursor in [0, count / 3, count / 2, count] {
+                for budget in [0u64, 1, 6, 7, 14, 63, 128] {
+                    let chunks = plan_missing_chunks_from_resume_after(
+                        total_bytes, 7, 65_536, &progress, cursor, budget, 9
+                    ).unwrap();
+                    let expected = coalesce_indexed_chunks(&chunks, 21).unwrap();
+                    let actual = plan_missing_runs_from_resume_after(
+                        total_bytes, 7, 65_536, &progress, cursor, budget, 9, 21
+                    ).unwrap();
+                    assert_eq!(actual, expected, "bytes={total_bytes} cursor={cursor} budget={budget}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn very_late_cursor_retains_exact_run_indices_and_validation() {
+        let count = 65_536;
+        let mut progress = ResumeMap::new(count).unwrap();
+        for index in 0..count - 3 {
+            progress.mark_complete(index).unwrap();
+        }
+        let runs = plan_missing_runs_from_resume_after(
+            count as u64 * 16, 16, count, &progress, count - 3, 48, 3, 48
+        ).unwrap();
+        assert_eq!(runs, vec![ChunkRun {
+            first_index: count - 3,
+            chunk_count: 3,
+            offset: (count - 3) as u64 * 16,
+            length: 48,
+        }]);
+        assert_eq!(
+            plan_missing_runs_from_resume_after(
+                count as u64 * 16, 16, count, &progress, count, 48, 3, 48
+            ).unwrap(),
+            Vec::<ChunkRun>::new()
+        );
+        assert!(plan_missing_runs_from_resume_after(
+            count as u64 * 16, 16, count, &progress, count + 1, 0, 0, 48
+        ).is_err());
     }
 }
