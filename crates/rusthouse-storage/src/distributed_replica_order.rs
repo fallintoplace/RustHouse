@@ -526,3 +526,123 @@ mod inline_replica_ranking_tests {
         }
     }
 }
+
+
+/// Prefer an independent failure zone for each early read fallback.
+///
+/// The first candidate remains the freshest healthy replica. A subsequent
+/// candidate from a new zone is preferred over secondaries in zones already
+/// visited, even when it advertises a slightly older allowed generation.
+/// This is a read-routing hint, not a consistency guarantee.
+pub fn rank_zone_diverse_read_replicas_at_least(
+    replicas: &[ReplicaStatus],
+    zones: &[(&str, &str)],
+    minimum_epoch: u64,
+    minimum_generation: u64,
+) -> Result<Vec<String>, &'static str> {
+    // Strictly validate all metadata, including unhealthy nodes, before
+    // using any zone for a read failover decision.
+    let ranked = rank_read_replicas_at_least(
+        replicas, minimum_epoch, minimum_generation,
+    )?;
+    if zones.len() != replicas.len() {
+        return Err("replica zone membership count mismatch");
+    }
+    for (index, &(node, zone)) in zones.iter().enumerate() {
+        if !valid_node(node)
+            || zone.is_empty()
+            || zone.len() > 64
+            || !zone.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+            })
+            || zones[..index].iter().any(|&(prior, _)| prior == node)
+            || !replicas.iter().any(|replica| replica.node == node)
+        {
+            return Err("invalid or duplicate replica zone metadata");
+        }
+    }
+    // At most 64 replicas can be configured. First choose the most recent
+    // eligible replica from every zone, then add in-zone fallbacks in their
+    // existing deterministic freshness order.
+    let mut seen_zones = std::collections::HashSet::<&str>::new();
+    let mut diverse = Vec::with_capacity(ranked.len());
+    let mut fallback = Vec::new();
+    for node in ranked {
+        let zone = zones.iter()
+            .find(|&&(candidate, _)| candidate == node)
+            .map(|&(_, zone)| zone)
+            .expect("validated one-to-one zone inventory");
+        if seen_zones.insert(zone) {
+            diverse.push(node);
+        } else {
+            fallback.push(node);
+        }
+    }
+    diverse.extend(fallback);
+    Ok(diverse)
+}
+
+#[cfg(test)]
+mod zone_diverse_read_ranking_tests {
+    use super::*;
+
+    fn replica(node: &str, generation: u64, healthy: bool) -> ReplicaStatus {
+        ReplicaStatus { node: node.into(), epoch: 3, generation, healthy }
+    }
+
+    #[test]
+    fn spreads_fallbacks_over_zones_without_crossing_the_snapshot_floor() {
+        let replicas = [
+            replica("a", 20, true), replica("b", 19, true),
+            replica("c", 18, true), replica("d", 17, true),
+            replica("e", 16, false), replica("f", 9, true),
+        ];
+        let zones = [
+            ("a", "east"), ("b", "east"), ("c", "west"),
+            ("d", "south"), ("e", "north"), ("f", "spare"),
+        ];
+        assert_eq!(
+            rank_zone_diverse_read_replicas_at_least(&replicas, &zones, 3, 15).unwrap(),
+            ["a", "c", "d", "b"],
+        );
+        let mut reversed = replicas.to_vec();
+        reversed.reverse();
+        let mut reverse_zones = zones.to_vec();
+        reverse_zones.reverse();
+        assert_eq!(
+            rank_zone_diverse_read_replicas_at_least(&reversed, &reverse_zones, 3, 15).unwrap(),
+            ["a", "c", "d", "b"],
+        );
+    }
+
+    #[test]
+    fn rejects_missing_duplicate_and_invalid_zone_labels() {
+        let replicas = [replica("a", 2, true), replica("b", 2, true)];
+        for zones in [
+            vec![("a", "east")],
+            vec![("a", "east"), ("a", "west")],
+            vec![("a", "east"), ("unknown", "west")],
+            vec![("a", "east"), ("b", "../west")],
+            vec![("a", "east"), ("b", "")],
+        ] {
+            assert!(rank_zone_diverse_read_replicas_at_least(
+                &replicas, &zones, 3, 1,
+            ).is_err());
+        }
+        assert!(rank_zone_diverse_read_replicas_at_least(
+            &replicas, &[("a", "east"), ("b", "west")], 0, 1,
+        ).is_err());
+    }
+
+    #[test]
+    fn all_healthy_candidates_in_one_zone_preserve_default_rank() {
+        let replicas = [
+            replica("a", 10, true), replica("b", 12, true), replica("c", 11, true),
+        ];
+        let zones = [("a", "same"), ("b", "same"), ("c", "same")];
+        assert_eq!(
+            rank_zone_diverse_read_replicas_at_least(&replicas, &zones, 3, 1).unwrap(),
+            rank_read_replicas_at_least(&replicas, 3, 1).unwrap(),
+        );
+    }
+}
