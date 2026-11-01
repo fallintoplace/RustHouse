@@ -61,6 +61,21 @@ class SqliteOracleTests(unittest.TestCase):
                     checker([["1"], ["2"]], [(1,)])
                 checker([["1"]], [(1,)])
 
+    def test_integer_oracle_rejects_noncanonical_wire_values(self):
+        for malformed in (" 7", "7 ", " 7 ", "+7", "07", r"\x37"):
+            with self.subTest(value=malformed):
+                self.assertFalse(cell_equal(malformed, 7))
+                for unordered in (False, True):
+                    with self.subTest(unordered=unordered), self.assertRaises(ValueError):
+                        assert_matches((malformed + "\n").encode(), [(7,)],
+                                       unordered=unordered)
+        for canonical in ("0", "-7", "9007199254740993"):
+            expected = int(canonical)
+            self.assertTrue(cell_equal(canonical, expected))
+            for unordered in (False, True):
+                assert_matches((canonical + "\n").encode(), [(expected,)],
+                               unordered=unordered)
+
     def test_ties_compare_as_a_multiset(self):
         with self.assertRaisesRegex(ValueError, "row 1"):
             assert_matches(b"B\t2\nA\t1\n", [("A", 1), ("B", 2)])

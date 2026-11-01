@@ -56,19 +56,16 @@ def decode_tsv_value(raw):
 def cell_equal(actual, expected, rel_tol=1e-12, abs_tol=1e-12):
     if expected is None:
         return actual == r"\N"
+    # Numeric TSV cells are plain decimal text. Decoding escapes or stripping
+    # whitespace could hide malformed output from the correctness oracle.
+    if isinstance(expected, (bool, int)):
+        return actual == str(int(expected))
     try:
         actual = decode_tsv_value(actual)
     except (UnicodeError, ValueError, AttributeError):
         return False
     if actual is None:
         return False
-    if isinstance(expected, bool):
-        expected = int(expected)
-    if isinstance(expected, int):
-        try:
-            return int(actual) == expected and actual.strip() == str(int(actual))
-        except ValueError:
-            return False
     if isinstance(expected, float):
         try:
             value = float(actual)
@@ -119,11 +116,9 @@ def assert_unordered_rows(actual, expected_rows):
             for row in actual:
                 converted = []
                 for value in row:
-                    decoded = decode_tsv_value(value)
-                    if decoded is None:
-                        raise ValueError("NULL is not a numeric result")
-                    number = int(decoded)
-                    if decoded.strip() != str(number):
+                    # Compare the wire value, not an unescaped/trimmed copy.
+                    number = int(value)
+                    if value != str(number):
                         raise ValueError("invalid integer result")
                     converted.append(number)
                 actual_counts[tuple(converted)] += 1
