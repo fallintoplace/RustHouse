@@ -90,17 +90,9 @@ pub use nullable_arrays::{
     NullableArrayReadError, NullableNumericArrayColumn, read_nullable_numeric_array_column,
 };
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
-pub use primary_index::{
-    candidate_narrow_signed_mark_range, candidate_narrow_signed_mark_ranges,
-    candidate_narrow_unsigned_mark_range, candidate_narrow_unsigned_mark_ranges,
-};
 pub use part_scan::NumericPartReader;
 pub use part_verify::{PartVerification, verify_wide_part};
 pub use part_write::{PartCompression, write_wide_part, write_wide_part_with_compression};
-pub use primary_index::{
-    candidate_i128_mark_range, candidate_i128_mark_ranges, candidate_u128_mark_range,
-    candidate_u128_mark_ranges,
-};
 pub use primary_index::{
     FixedPrimaryIndex, candidate_i64_mark_range, candidate_i64_mark_ranges,
     candidate_u64_mark_range, candidate_u64_mark_ranges, read_fixed_primary_index,
@@ -108,6 +100,14 @@ pub use primary_index::{
 pub use primary_index::{
     candidate_i64_pair_mark_range, candidate_i64_pair_mark_ranges, candidate_u64_pair_mark_range,
     candidate_u64_pair_mark_ranges,
+};
+pub use primary_index::{
+    candidate_i128_mark_range, candidate_i128_mark_ranges, candidate_u128_mark_range,
+    candidate_u128_mark_ranges,
+};
+pub use primary_index::{
+    candidate_narrow_signed_mark_range, candidate_narrow_signed_mark_ranges,
+    candidate_narrow_unsigned_mark_range, candidate_narrow_unsigned_mark_ranges,
 };
 pub use query_source::{
     NumericQueryReader, inspect_query_source, query_parts, query_parts_with_metadata,
