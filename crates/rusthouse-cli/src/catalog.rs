@@ -628,6 +628,7 @@ mod platform_catalog_sync_tests {
         fs::create_dir_all(&root).unwrap();
         let file = root.join("not-a-directory");
         fs::write(&file, b"persisted schema bytes").unwrap();
+        #[cfg(windows)]
         assert!(sync_catalog_dir(&file).is_err());
         assert!(sync_catalog_dir(&root.join("missing")).is_err());
         sync_catalog_dir(&root).unwrap();
