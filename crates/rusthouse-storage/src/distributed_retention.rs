@@ -143,6 +143,21 @@ pub fn retention_candidates_with_pins(
             .filter(|generation| !pinned.contains(generation))
             .collect());
     }
+    // Reader/replica pin sets are often supplied in chronological order.
+    // Merge them with the already sorted candidate list in linear time,
+    // with no temporary HashSet even for thousands of generations.
+    if pinned.windows(2).all(|pair| pair[0] < pair[1]) {
+        if pinned.iter().any(|&pin| !known_generation(&known, pin)) {
+            return Err("duplicate or unknown pinned generation");
+        }
+        let mut cursor = 0usize;
+        return Ok(candidates.into_iter().filter(|generation| {
+            while pinned.get(cursor).is_some_and(|&pin| pin < *generation) {
+                cursor += 1;
+            }
+            pinned.get(cursor) != Some(generation)
+        }).collect());
+    }
     let mut pins = std::collections::HashSet::with_capacity(pinned.len());
     for &generation in pinned {
         if !pins.insert(generation) || !known_generation(&known, generation) {
@@ -262,11 +277,17 @@ pub fn retention_candidates_with_byte_budget(
     {
         return Err("duplicate, missing, or invalid generation");
     }
-    // Validate every pin even if no generation can be reclaimed.
-    let mut pin_set = (pinned.len() > 4)
+    // Validate every pin even if no generation can be reclaimed. Strictly
+    // sorted pins can be merged with oldest-first retention candidates,
+    // avoiding a HashSet while still rejecting duplicates and unknown IDs.
+    let sorted_pins = pinned.len() > 4
+        && pinned.windows(2).all(|pair| pair[0] < pair[1]);
+    let mut pin_set = (pinned.len() > 4 && !sorted_pins)
         .then(|| std::collections::HashSet::with_capacity(pinned.len()));
     for (index, &generation) in pinned.iter().enumerate() {
-        let duplicate = if let Some(seen) = pin_set.as_mut() {
+        let duplicate = if sorted_pins {
+            false
+        } else if let Some(seen) = pin_set.as_mut() {
             !seen.insert(generation)
         } else {
             pinned[..index].contains(&generation)
@@ -278,13 +299,22 @@ pub fn retention_candidates_with_byte_budget(
     let candidates = ordered.len().saturating_sub(keep_latest);
     let mut selected = Vec::new();
     let mut total = 0u64;
+    let mut pin_cursor = 0usize;
     for &(generation, bytes) in ordered.iter().take(candidates) {
-        if generation == active
-            || (pin_set.as_ref().map_or_else(
+        if sorted_pins {
+            while pinned.get(pin_cursor).is_some_and(|&pin| pin < generation) {
+                pin_cursor += 1;
+            }
+        }
+        let is_pinned = if sorted_pins {
+            pinned.get(pin_cursor) == Some(&generation)
+        } else {
+            pin_set.as_ref().map_or_else(
                 || pinned.contains(&generation),
                 |pins| pins.contains(&generation),
-            ))
-        {
+            )
+        };
+        if generation == active || is_pinned {
             continue;
         }
         if bytes <= byte_budget - total {
@@ -869,5 +899,55 @@ mod sorted_replica_aware_inventory_tests {
         assert!(retention_candidates_with_replica_floors_and_budget(
             &sorted, 10_000, 3, &[77, 77], &[9000], 0
         ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod ordered_replica_pin_merge_tests {
+    use super::*;
+
+    #[test]
+    fn sorted_and_shuffled_pins_produce_the_same_retention_plans() {
+        let generations = (1..=4096u64).rev().collect::<Vec<_>>();
+        let sizes = generations.iter().map(|&id| (id, (id * 23) % 991))
+            .collect::<Vec<_>>();
+        for pins in [
+            vec![2, 3, 11, 1024, 2048],
+            vec![1, 128, 256, 512, 1024, 2048, 4095],
+            (1..=4096).filter(|i| i % 5 == 0).collect::<Vec<_>>(),
+        ] {
+            let mut reversed = pins.clone();
+            reversed.reverse();
+            for keep in [1usize, 128, 4096] {
+                assert_eq!(
+                    retention_candidates_with_pins(&generations, 4096, keep, &pins).unwrap(),
+                    retention_candidates_with_pins(&generations, 4096, keep, &reversed).unwrap(),
+                );
+                for budget in [0u64, 200, 10_000, u64::MAX] {
+                    assert_eq!(
+                        retention_candidates_with_byte_budget(
+                            &sizes, 4096, keep, &pins, budget,
+                        ).unwrap(),
+                        retention_candidates_with_byte_budget(
+                            &sizes, 4096, keep, &reversed, budget,
+                        ).unwrap(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sorted_pin_fast_path_never_accepts_unknown_or_duplicate_ids() {
+        let generations = (1..=32u64).collect::<Vec<_>>();
+        let sizes = generations.iter().map(|&id| (id, 1u64)).collect::<Vec<_>>();
+        for pins in [vec![1, 2, 2, 3, 4, 5], vec![1, 2, 3, 4, 100]] {
+            assert!(retention_candidates_with_pins(
+                &generations, 32, 2, &pins,
+            ).is_err());
+            assert!(retention_candidates_with_byte_budget(
+                &sizes, 32, 2, &pins, 100,
+            ).is_err());
+        }
     }
 }

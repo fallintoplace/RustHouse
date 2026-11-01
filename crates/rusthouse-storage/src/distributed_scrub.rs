@@ -440,3 +440,145 @@ mod resolved_scrub_preflight_tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+
+/// A completed page of read-only immutable-part verification.
+///
+/// Keep generation unchanged when passing its cursor to the next page.
+/// An untrusted caller must not interpret the cursor as proof of consistency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PagedScrubReport {
+    pub generation: std::path::PathBuf,
+    pub verified: ScrubReport,
+    /// Exclusive cursor; None means every part in the snapshot was checked.
+    pub next_after_part: Option<String>,
+}
+
+/// Verify at most 256 frozen active parts per invocation, with a strict
+/// lexicographic cursor and an optional pinned-generation requirement.
+///
+/// Stop writers before scrubbing. A page is not a transaction, and no
+/// generation or cursor may authorize repair or data deletion.
+pub fn scrub_snapshot_page(
+    root: &Path,
+    pinned_generation: Option<&Path>,
+    after_part: Option<&str>,
+    max_page_parts: usize,
+) -> Result<PagedScrubReport, PartError> {
+    if max_page_parts == 0 || max_page_parts > 256 {
+        return Err(PartError::InvalidScan("invalid snapshot scrub page size".into()));
+    }
+    let active = resolve_active_snapshot(root)?;
+    if pinned_generation.is_some_and(|expected| expected != active) {
+        return Err(PartError::InvalidScan(
+            "snapshot scrub continuation changed active generation".into(),
+        ));
+    }
+    let mut parts = query_parts(&active)?;
+    if parts.len() > 16_384 {
+        return Err(PartError::InvalidScan("replica scrub exceeds part limit".into()));
+    }
+    parts.sort_unstable_by(|left, right| left.file_name().cmp(&right.file_name()));
+    let start = if let Some(after) = after_part {
+        if after.is_empty() || after.contains('/') || after.contains('\\') {
+            return Err(PartError::InvalidScan("invalid snapshot scrub cursor".into()));
+        }
+        let last = parts.iter()
+            .position(|part| part.file_name().is_some_and(|name| name == after))
+            .ok_or_else(|| PartError::InvalidScan(
+                "snapshot scrub cursor was not found in active generation".into(),
+            ))?;
+        last + 1
+    } else {
+        0
+    };
+    let end = start.saturating_add(max_page_parts).min(parts.len());
+    let mut report = ScrubReport::default();
+    for part in &parts[start..end] {
+        let checked = scrub_part(part)?;
+        report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
+    }
+    require_unchanged_snapshot(root, &active)?;
+    let next_after_part = if end < parts.len() {
+        Some(parts[end - 1].file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| PartError::InvalidScan("non-UTF8 part scrub cursor".into()))?
+            .to_owned())
+    } else {
+        None
+    };
+    Ok(PagedScrubReport {
+        generation: active, verified: report, next_after_part,
+    })
+}
+
+#[cfg(test)]
+mod pinned_snapshot_scrub_pages_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    fn test_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "rusthouse-scrub-page-{}-{}", std::process::id(), line!(),
+        ))
+    }
+
+    #[test]
+    fn paged_scrub_agrees_with_complete_report_without_rechecking_parts() {
+        let root = test_root();
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..5 {
+            write_wide_part(&root.join(format!("all_{index}_{index}_0")),
+                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[vec![Some(index.to_string())]],
+            ).unwrap();
+        }
+        let complete = scrub_snapshot(&root, 5).unwrap();
+        let mut generation = None;
+        let mut cursor: Option<String> = None;
+        let mut observed = ScrubReport::default();
+        for expected_parts in [2, 2, 1] {
+            let page = scrub_snapshot_page(
+                &root, generation.as_deref(), cursor.as_deref(), 2,
+            ).unwrap();
+            assert_eq!(page.verified.parts, expected_parts);
+            observed.parts += page.verified.parts;
+            observed.checked_files += page.verified.checked_files;
+            observed.checked_bytes += page.verified.checked_bytes;
+            observed.blocks += page.verified.blocks;
+            generation = Some(page.generation);
+            cursor = page.next_after_part;
+        }
+        assert_eq!(cursor, None);
+        assert_eq!(observed, complete);
+        assert!(scrub_snapshot_page(&root, generation.as_deref(),
+            Some("missing_part"), 1).is_err());
+        assert!(scrub_snapshot_page(&root, None, None, 0).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refusing_switched_generations_prevents_stale_cursor_success() {
+        let root = test_root().with_extension("switch");
+        let _ = fs::remove_dir_all(&root);
+        let old = root.join(".rusthouse-versions/g1");
+        let new = root.join(".rusthouse-versions/g2");
+        fs::create_dir_all(&old).unwrap();
+        fs::create_dir_all(&new).unwrap();
+        for path in [&old, &new] {
+            write_wide_part(&path.join("all_0_0_0"),
+                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[vec![Some("7".into())]],
+            ).unwrap();
+        }
+        fs::write(root.join(".rusthouse-active"), "g1\n").unwrap();
+        let first = scrub_snapshot_page(&root, None, None, 1).unwrap();
+        fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
+        assert!(scrub_snapshot_page(
+            &root, Some(&first.generation), None, 1,
+        ).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
