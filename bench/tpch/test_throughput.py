@@ -29,6 +29,44 @@ class ThroughputTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "16 MiB"):
                 read_reference(path)
 
+    def test_reference_swap_between_preflight_and_open_is_rejected(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "q01.tsv"
+            substitute = Path(root) / "substitute.tsv"
+            path.write_bytes(b"correct\\n")
+            substitute.write_bytes(b"wrong\\n")
+            real_open = os.open
+
+            def swap(filename, flags):
+                path.unlink()
+                substitute.rename(path)
+                return real_open(filename, flags)
+
+            with patch("throughput.os.open", side_effect=swap):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    read_reference(path)
+
+    def test_workers_share_frozen_verification_references(self):
+        references = {1: b"1\\n"}
+
+        def change_caller_mapping(_sql):
+            references[1] = b"different\\n"
+            return b"1\\n"
+
+        report = run_throughput(
+            [(1, "SELECT 1")], change_caller_mapping,
+            clients=2, rounds=4, references=references,
+            require_verified=True,
+        )
+        self.assertTrue(report["all_executions_verified"])
+        self.assertEqual(report["verified_executions"], 4)
+        self.assertEqual(references[1], b"different\\n")
+
     def test_verified_concurrent_results(self):
         report = run_throughput(
             [(1, "SELECT 1"), (2, "SELECT 2")],

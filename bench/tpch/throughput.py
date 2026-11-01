@@ -6,6 +6,8 @@ This is a stress workload. It is not the official TPC-H Throughput Test.
 import argparse
 import concurrent.futures
 import math
+import os
+import stat
 import subprocess
 import time
 import sys
@@ -20,10 +22,25 @@ MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
 def read_reference(path):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("throughput reference must be a regular, non-symlinked file")
-    with path.open("rb") as source:
+
+    def identity(metadata):
+        return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened):
+            raise ValueError("throughput reference changed while opening")
         payload = source.read(MAX_REFERENCE_BYTES + 1)
+        if identity(opened) != identity(os.fstat(source.fileno())):
+            raise ValueError("throughput reference changed while reading")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError("throughput reference changed while reading")
     if len(payload) > MAX_REFERENCE_BYTES:
         raise ValueError("TPC-H throughput reference exceeds 16 MiB")
     return payload
@@ -43,6 +60,9 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None,
         raise ValueError("throughput references must map integer IDs to bytes")
     if sum(len(golden) for golden in references.values()) > 64 * 1024 * 1024:
         raise ValueError("throughput references exceed 64 MiB total")
+    # Each worker must compare against the same expected bytes. Callers may
+    # reuse or mutate their input mapping while the thread pool is running.
+    references = dict(references)
     if require_verified and any(number not in references for number, _ in queries):
         raise ValueError("verified throughput requires a reference for every query")
     # Explicitly cap the planned jobs to avoid runaway CI load.
