@@ -21,6 +21,51 @@ impl UuidValue {
         }
         Self { bytes }
     }
+
+    /// Serialize canonical UUID bytes into ClickHouse's two little-endian
+    /// UInt64 halves. This is the inverse of physical UUID decoding.
+    pub fn to_disk_bytes(self) -> [u8; 16] {
+        let mut disk = self.bytes;
+        for half in disk.chunks_exact_mut(8) {
+            half.reverse();
+        }
+        disk
+    }
+
+    /// Accept exactly 36 ASCII UUID characters with hyphens at 8-4-4-4-12.
+    pub fn parse_canonical(text: &str) -> Option<Self> {
+        let raw = text.as_bytes();
+        if raw.len() != 36 {
+            return None;
+        }
+        let mut bytes = [0u8; 16];
+        let mut cursor = 0usize;
+        for (index, slot) in bytes.iter_mut().enumerate() {
+            if matches!(index, 4 | 6 | 8 | 10) {
+                if raw.get(cursor) != Some(&b'-') {
+                    return None;
+                }
+                cursor += 1;
+            }
+            let digit = |byte: u8| match byte {
+                b'0'..=b'9' => Some(byte - b'0'),
+                b'a'..=b'f' => Some(byte - b'a' + 10),
+                b'A'..=b'F' => Some(byte - b'A' + 10),
+                _ => None,
+            };
+            *slot = (digit(*raw.get(cursor)?)? << 4) | digit(*raw.get(cursor + 1)?)?;
+            cursor += 2;
+        }
+        Some(Self { bytes })
+    }
+}
+
+impl std::str::FromStr for UuidValue {
+    type Err = &'static str;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Self::parse_canonical(text).ok_or("invalid canonical UUID")
+    }
 }
 
 impl fmt::Display for UuidValue {
@@ -190,5 +235,55 @@ mod tests {
             decoded[0].to_string(),
             "61f0c404-5cb3-11e7-907b-a6006ad3dba0"
         );
+    }
+}
+
+#[cfg(test)]
+mod uuid_round_trip_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn canonical_parse_is_inverse_of_disk_serialization() {
+        let expected = "61f0c404-5cb3-11e7-907b-a6006ad3dba0";
+        let parsed = UuidValue::from_str(expected).unwrap();
+        assert_eq!(parsed.to_string(), expected);
+        assert_eq!(parsed.to_disk_bytes(), [
+            0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61,
+            0xa0, 0xdb, 0xd3, 0x6a, 0x00, 0xa6, 0x7b, 0x90,
+        ]);
+        assert_eq!(
+            UuidValue::decode_uuid_disk_bytes(parsed.to_disk_bytes()),
+            parsed
+        );
+        assert_eq!(
+            UuidValue::from_str(&expected.to_ascii_uppercase()).unwrap(),
+            parsed
+        );
+
+        for seed in 0..256u32 {
+            let disk = std::array::from_fn(|i| {
+                (seed.wrapping_mul(73).wrapping_add(i as u32 * 31) % 256) as u8
+            });
+            let original = UuidValue::decode_uuid_disk_bytes(disk);
+            let reparsed = UuidValue::from_str(&original.to_string()).unwrap();
+            assert_eq!(reparsed, original);
+            assert_eq!(reparsed.to_disk_bytes(), disk);
+        }
+    }
+
+    #[test]
+    fn noncanonical_hyphens_lengths_and_hex_are_rejected() {
+        for input in [
+            "", "00000000000000000000000000000000",
+            "61f0c4045cb3-11e7-907b-a6006ad3dba0",
+            "61f0c404-5cb3_11e7-907b-a6006ad3dba0",
+            "61f0c404-5cb3-11e7-907b-a6006ad3dbaG",
+            "61f0c404-5cb3-11e7-907b-a6006ad3dba0 ",
+            "61f0c404-5cb3-11e7-907b-a6006ad3dba0\n",
+            "61f0c404-5cb3-11e7-907b-a6006ad3dbé0",
+        ] {
+            assert!(UuidValue::from_str(input).is_err(), "{input}");
+        }
     }
 }
