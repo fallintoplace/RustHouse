@@ -94,6 +94,17 @@ class AuditTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_lines("SELECT 1; DROP TABLE events;")
 
+    def test_direct_audit_calls_cannot_bypass_select_validation(self):
+        run = Mock()
+        for sql in ("DROP TABLE events", "SELECT 1; DELETE FROM events",
+                    "SELECT 1\nDROP TABLE events", "SELECT 'unterminated"):
+            with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "SELECT"):
+                audit("rusthouse", [(1, sql)], run)
+        run.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "invalid SQL audit entry"):
+            audit("rusthouse", [(True, "SELECT 1")], run)
+        run.assert_not_called()
+
     def test_fail_fast_stops_after_first_parser_error(self):
         run = Mock()
         run.return_value.returncode = 1
