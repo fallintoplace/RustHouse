@@ -38,6 +38,56 @@ class NoiseReportTests(unittest.TestCase):
                               '"timings_seconds": [1.0, 2.0]}]}', encoding="utf-8")
             self.assertEqual(load_report(source)["results"][0]["query"], 1)
 
+    def test_rejects_report_swapped_before_open(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from noise_report import load_report
+
+        with tempfile.TemporaryDirectory() as root:
+            original = Path(root) / "noise.json"
+            replacement = Path(root) / "replacement.json"
+            original.write_text('{"results":[]}', encoding="utf-8")
+            replacement.write_text('{"results":[1]}', encoding="utf-8")
+            real_open = os.open
+
+            def swap(path, flags):
+                original.unlink()
+                replacement.rename(original)
+                return real_open(path, flags)
+
+            with patch("noise_report.os.open", side_effect=swap):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    load_report(original)
+
+    def test_rejects_overflowed_json_float(self):
+        import tempfile
+        from pathlib import Path
+        from noise_report import load_report
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "noise.json"
+            path.write_text('{"results":[{"query":1,"seconds":1e400}]}',
+                            encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "nonfinite"):
+                load_report(path)
+
+    def test_atomic_output_survives_failed_report_validation(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from noise_report import main
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "noise.json"
+            output = Path(root) / "noise-result.json"
+            output.write_text("previous result", encoding="utf-8")
+            path.write_text(json.dumps({"results":[]}), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                main(["--input", str(path), "--output", str(output)])
+            self.assertEqual(output.read_text(), "previous result")
+
     def test_marks_repeatable_verified_samples_as_stable(self):
         result = assess_query({"query": 6, "status": "passed",
                                "timings_seconds": [1, 1, 1, 1, 1]})
