@@ -5,6 +5,7 @@ Metadata describes rows on disk, but a COUNT(*) may use metadata-only paths.
 import argparse
 import json
 import math
+import re
 import os
 import subprocess
 import tempfile
@@ -94,7 +95,8 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
     columns = data.get("columns")
     if (not isinstance(columns, list) or not 1 <= len(columns) <= 128 or any(
         not isinstance(column, dict)
-        or not isinstance(column.get("name"), str) or not column["name"]
+        or not isinstance(column.get("name"), str)
+        or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", column["name"])
         or not isinstance(column.get("type"), str) or not column["type"]
         for column in columns
     )):
