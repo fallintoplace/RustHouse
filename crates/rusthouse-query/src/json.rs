@@ -6,6 +6,12 @@ const MAX_JSON_DEPTH: usize = 32;
 const MAX_JSON_NODES: usize = 65_536;
 
 #[derive(Debug)]
+pub(crate) enum JsonPathSegment<'a> {
+    Key(&'a str),
+    Index(usize),
+}
+
+#[derive(Debug)]
 pub(crate) struct JsonValue<'a> {
     raw: &'a str,
     kind: JsonKind<'a>,
@@ -61,6 +67,23 @@ impl<'a> JsonValue<'a> {
             JsonKind::Object(fields) => fields.len(),
             _ => 0,
         }
+    }
+
+    /// JSONPath keys and indexes are not interchangeable across containers.
+    pub(crate) fn at_json_path(&self, path: &[JsonPathSegment<'_>]) -> Option<&JsonValue<'a>> {
+        let mut node = self;
+        for segment in path {
+            node = match (segment, &node.kind) {
+                (JsonPathSegment::Key(key), JsonKind::Object(fields)) => fields
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name == key)
+                    .map(|(_, value)| value)?,
+                (JsonPathSegment::Index(index), JsonKind::Array(items)) => items.get(*index)?,
+                _ => return None,
+            };
+        }
+        Some(node)
     }
 
     pub(crate) fn at_path(&self, path: &str) -> Option<&JsonValue<'a>> {
