@@ -220,6 +220,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "MODULOORNULL"
                 | "FIRSTLINE"
                 | "TOPLEVELDOMAIN"
+                | "COMPARESUBSTRINGS"
                 | "EDITDISTANCE"
                 | "EDITDISTANCEUTF8"
                 | "FORMATREADABLESIZE"
@@ -1174,6 +1175,47 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     )
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "COMPARESUBSTRINGS" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "compareSubstrings requires two strings")?;
+            let right = text_arg(parser, depth + 1)?;
+            let (left_offset, right_offset, length) = if parser.take(Token::Comma) {
+                let left_offset = integer_arg(parser, depth + 1)?;
+                require(parser, Token::Comma, "compareSubstrings requires two offsets")?;
+                let right_offset = integer_arg(parser, depth + 1)?;
+                require(parser, Token::Comma, "compareSubstrings requires a byte count")?;
+                let length = integer_arg(parser, depth + 1)?;
+                (left_offset, right_offset, length)
+            } else {
+                (Some(0), Some(0), Some(i64::MAX))
+            };
+            require(
+                parser,
+                Token::RParen,
+                "compareSubstrings requires two or five arguments",
+            )?;
+            match (left, right, left_offset, right_offset, length) {
+                (Some(left), Some(right), Some(left_offset), Some(right_offset), Some(length)) => {
+                    if left_offset < 0 || right_offset < 0 || length < 0 {
+                        return Err(ParseError(
+                            "compareSubstrings requires nonnegative offsets and byte count".into(),
+                        ));
+                    }
+                    let left_offset = usize::try_from(left_offset).unwrap_or(usize::MAX);
+                    let right_offset = usize::try_from(right_offset).unwrap_or(usize::MAX);
+                    let length = usize::try_from(length).unwrap_or(usize::MAX);
+                    let left = left.as_bytes().get(left_offset..).unwrap_or(&[]);
+                    let right = right.as_bytes().get(right_offset..).unwrap_or(&[]);
+                    let result = left.iter().take(length).cmp(right.iter().take(length));
+                    ConstantValue::Integer(match result {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    })
+                }
+                _ => ConstantValue::Null,
             }
         }
         "EDITDISTANCE" => {
@@ -6062,6 +6104,38 @@ mod utf8_prefix_suffix_inplace_tests {
         }
         let input = format!("{}🙂Z", "a".repeat(10_000));
         assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_compare_substrings_parity_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compares_byte_ranges_and_short_tails() {
+        for (sql, expected) in [
+            ("SELECT compareSubstrings('Saxony', 'Anglo-Saxon', 0, 6, 5)", 0),
+            ("SELECT compareSubstrings('abc', 'abd')", -1),
+            ("SELECT compareSubstrings('abd', 'abc')", 1),
+            ("SELECT compareSubstrings('abc', 'abc')", 0),
+            ("SELECT compareSubstrings('abc', 'abc', 2, 2, 0)", 0),
+            ("SELECT compareSubstrings('abc', 'abc', 99, 99, 7)", 0),
+            ("SELECT compareSubstrings('ab', 'abc', 0, 0, 5)", -1),
+            ("SELECT compareSubstrings('é', 'é', 1, 1, 1)", 0),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT compareSubstrings(NULL, 'abc')"), ConstantValue::Null);
+        assert!(parse_select("SELECT compareSubstrings('abc')").is_err());
+        assert!(parse_select("SELECT compareSubstrings('abc', 'def', 1)").is_err());
+        assert!(parse_select("SELECT compareSubstrings('abc', 'def', -1, 0, 2)").is_err());
     }
 }
 
