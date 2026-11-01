@@ -91,9 +91,26 @@ fn stored_file_state_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> i
     }
 }
 
+// A stored-byte checksum is only meaningful if the source cannot change
+// between its verified metadata and the last hashed byte.
+#[cfg(windows)]
+fn open_stored_hash_file(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_stored_hash_file(path: &Path) -> io::Result<fs::File> {
+    fs::File::open(path)
+}
+
 fn hash_stored_file(path: &Path, expected_size: u64) -> Result<u128, PartError> {
     const BLOCK_BYTES: usize = 2048;
-    let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
+    let mut file = open_stored_hash_file(path).map_err(|source| io_error(path, source))?;
     #[cfg(unix)]
     ensure_opened_file_identity(path, &file)?;
     let opened = file.metadata().map_err(|source| io_error(path, source))?;
@@ -703,5 +720,34 @@ mod stored_hash_change_time_tests {
         assert_eq!(before.modified().unwrap(), after.modified().unwrap());
         assert!(!stored_file_state_unchanged(&before, &after).unwrap());
         fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_stored_hash_sharing_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn immutable_hash_source_allows_readers_but_blocks_mutation() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-hash-sharing-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("frozen.bin");
+        fs::write(&path, b"immutable").unwrap();
+        let first = open_stored_hash_file(&path).unwrap();
+        let second = open_stored_hash_file(&path).unwrap();
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        assert!(fs::rename(&path, dir.join("replacement.bin")).is_err());
+        drop(first);
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        drop(second);
+        fs::OpenOptions::new().write(true).open(&path).unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 }
