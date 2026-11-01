@@ -103,6 +103,50 @@ pub fn candidate_i64_mark_ranges(
     )
 }
 
+/// Plan conservative lexicographic granules for two UInt64 primary-key fields.
+/// The second key can reset when the first key changes; validating either
+/// column independently would incorrectly disable composite index pruning.
+pub fn candidate_u64_pair_mark_range(
+    index: &FixedPrimaryIndex,
+    first: usize,
+    second: usize,
+    lower: Bound<(u64, u64)>,
+    upper: Bound<(u64, u64)>,
+) -> Option<Range<usize>> {
+    candidate_mark_range(index.len(), |mark| u64_pair_mark_key(index, mark, first, second), lower, upper)
+}
+
+/// Plan conservative lexicographic granules for two signed Int64 key fields.
+pub fn candidate_i64_pair_mark_range(
+    index: &FixedPrimaryIndex,
+    first: usize,
+    second: usize,
+    lower: Bound<(i64, i64)>,
+    upper: Bound<(i64, i64)>,
+) -> Option<Range<usize>> {
+    candidate_mark_range(index.len(), |mark| i64_pair_mark_key(index, mark, first, second), lower, upper)
+}
+
+/// Union disjunctive lexicographic UInt64 tuple intervals.
+pub fn candidate_u64_pair_mark_ranges(
+    index: &FixedPrimaryIndex,
+    first: usize,
+    second: usize,
+    intervals: &[(Bound<(u64, u64)>, Bound<(u64, u64)>)],
+) -> Option<Vec<Range<usize>>> {
+    candidate_mark_ranges(index.len(), |mark| u64_pair_mark_key(index, mark, first, second), intervals)
+}
+
+/// Union disjunctive lexicographic Int64 tuple intervals.
+pub fn candidate_i64_pair_mark_ranges(
+    index: &FixedPrimaryIndex,
+    first: usize,
+    second: usize,
+    intervals: &[(Bound<(i64, i64)>, Bound<(i64, i64)>)],
+) -> Option<Vec<Range<usize>>> {
+    candidate_mark_ranges(index.len(), |mark| i64_pair_mark_key(index, mark, first, second), intervals)
+}
+
 pub fn read_fixed_primary_index(
     path: impl AsRef<Path>,
     field_widths: &[usize],
@@ -764,5 +808,53 @@ mod recycled_primary_index_decoder_tests {
             );
         }
         fs::remove_file(&path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod composite_mark_pruning_tests {
+    use super::*;
+
+    fn unsigned_index(pairs: &[(u64, u64)]) -> FixedPrimaryIndex {
+        let data = pairs.iter().flat_map(|&(a, b)| [a.to_le_bytes(), b.to_le_bytes()].concat()).collect();
+        FixedPrimaryIndex { data, field_offsets: vec![0, 8, 16], row_width: 16 }
+    }
+
+    #[test]
+    fn lexicographic_order_handles_secondary_key_resets() {
+        let index = unsigned_index(&[(1,0), (1,10), (1,20), (2,0), (2,5), (3,0)]);
+        assert_eq!(candidate_u64_pair_mark_range(&index, 0, 1,
+            Bound::Included((1,11)), Bound::Included((2,0))), Some(1..4));
+        assert_eq!(candidate_u64_pair_mark_ranges(&index, 0, 1, &[
+            (Bound::Included((1,0)), Bound::Included((1,0))),
+            (Bound::Included((3,0)), Bound::Included((3,0))),
+        ]), Some(vec![0..1, 4..6]));
+        assert_eq!(candidate_u64_pair_mark_range(&index, 0, 2,
+            Bound::Included((0,0)), Bound::Included((1,0))), None);
+    }
+
+    #[test]
+    fn signed_tuple_order_preserves_negative_components() {
+        let mut data = Vec::new();
+        for (a,b) in [(-2i64, 99i64), (-2,100), (-1,-1), (-1,0), (0,-5)] {
+            data.extend_from_slice(&a.to_le_bytes());
+            data.extend_from_slice(&b.to_le_bytes());
+        }
+        let index = FixedPrimaryIndex { data, field_offsets: vec![0,8,16], row_width:16 };
+        assert_eq!(candidate_i64_pair_mark_range(&index, 0, 1,
+            Bound::Included((-1,-1)), Bound::Included((-1,0))), Some(1..4));
+        assert_eq!(candidate_i64_pair_mark_ranges(&index, 0, 1, &[
+            (Bound::Included((-2,99)), Bound::Included((-2,100))),
+            (Bound::Included((0,-5)), Bound::Included((0,-5))),
+        ]), Some(vec![0..2, 3..5]));
+    }
+
+    #[test]
+    fn malformed_composite_order_fails_closed() {
+        let invalid = unsigned_index(&[(1,10), (1,5)]);
+        assert_eq!(candidate_u64_pair_mark_range(&invalid,0,1,
+            Bound::Included((1,5)), Bound::Included((1,10))), None);
+        assert_eq!(candidate_u64_pair_mark_ranges(&invalid,0,1,
+            &[(Bound::Included((1,5)), Bound::Included((1,10))]), None);
     }
 }
