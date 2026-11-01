@@ -210,6 +210,24 @@ fn block(data: &[u8], compression: PartCompression) -> Result<Vec<u8>, PartError
     Ok(result)
 }
 
+// Keep every column stream within its 8 MiB limit while collecting
+// granules. Waiting until all granules are materialized can retain hundreds
+// of oversized batches before the final stream budget check.
+fn retain_bounded_granule(
+    granules: &mut Vec<Vec<u8>>,
+    used: &mut usize,
+    data: Vec<u8>,
+) -> Result<(), PartError> {
+    // Empty variable-length granules contribute a physical pad byte.
+    let next = used
+        .checked_add(data.len().max(1))
+        .filter(|&bytes| bytes <= MAX_STREAM_BYTES)
+        .ok_or_else(|| invalid("part column exceeds 8 MiB"))?;
+    *used = next;
+    granules.push(data);
+    Ok(())
+}
+
 fn validate_part_columns(columns: &[Column]) -> Result<(), PartError> {
     // Match the catalog and scan limits for all public wide-part writer callers.
     if columns.is_empty() || columns.len() > 128 {
@@ -315,6 +333,7 @@ pub fn write_wide_part_with_compression(
                     if let Some(inner) = numeric_array_inner_type(&col.data_type) {
                         let mut data_granules = Vec::with_capacity(granule_count);
                         let mut size_granules = Vec::with_capacity(granule_count);
+                        let (mut data_bytes, mut size_bytes) = (0, 0);
                         for granule in rows.chunks(GRANULE_ROWS) {
                             let mut data = Vec::new();
                             let mut sizes = Vec::with_capacity(granule.len() * size_of::<u64>());
@@ -326,8 +345,8 @@ pub fn write_wide_part_with_compression(
                                     &mut sizes,
                                 )?;
                             }
-                            data_granules.push(data);
-                            size_granules.push(sizes);
+                            retain_bounded_granule(&mut data_granules, &mut data_bytes, data)?;
+                            retain_bounded_granule(&mut size_granules, &mut size_bytes, sizes)?;
                         }
                         streams.push((col.name.clone(), data_granules));
                         streams.push((format!("{}.size0", col.name), size_granules));
@@ -337,6 +356,7 @@ pub fn write_wide_part_with_compression(
                         let mut key_granules = Vec::with_capacity(granule_count);
                         let mut value_granules = Vec::with_capacity(granule_count);
                         let mut size_granules = Vec::with_capacity(granule_count);
+                        let (mut key_bytes, mut value_bytes, mut size_bytes) = (0, 0, 0);
                         for granule in rows.chunks(GRANULE_ROWS) {
                             let mut keys = Vec::new();
                             let mut values = Vec::new();
@@ -350,9 +370,9 @@ pub fn write_wide_part_with_compression(
                                     &mut sizes,
                                 )?;
                             }
-                            key_granules.push(keys);
-                            value_granules.push(values);
-                            size_granules.push(sizes);
+                            retain_bounded_granule(&mut key_granules, &mut key_bytes, keys)?;
+                            retain_bounded_granule(&mut value_granules, &mut value_bytes, values)?;
+                            retain_bounded_granule(&mut size_granules, &mut size_bytes, sizes)?;
                         }
                         streams.push((format!("{}.keys", col.name), key_granules));
                         streams.push((format!("{}.values", col.name), value_granules));
@@ -361,6 +381,7 @@ pub fn write_wide_part_with_compression(
                     }
                     let mut data_granules = Vec::with_capacity(granule_count);
                     let mut null_granules = Vec::with_capacity(granule_count);
+                    let (mut data_bytes, mut null_bytes) = (0, 0);
                     for granule in rows.chunks(GRANULE_ROWS) {
                         // A fixed-width column's final granule size is known
                         // before encoding. Reserve it once instead of growing at
@@ -376,9 +397,9 @@ pub fn write_wide_part_with_compression(
                                 nulls.push(u8::from(null));
                             }
                         }
-                        data_granules.push(data);
+                        retain_bounded_granule(&mut data_granules, &mut data_bytes, data)?;
                         if nullable {
-                            null_granules.push(nulls);
+                            retain_bounded_granule(&mut null_granules, &mut null_bytes, nulls)?;
                         }
                     }
                     streams.push((col.name.clone(), data_granules));
@@ -1167,5 +1188,30 @@ mod stack_writable_schema_tests {
         let mut wrong_type = names;
         wrong_type[93].data_type = "UnsupportedType".into();
         assert!(validate_part_columns(&wrong_type).is_err());
+    }
+}
+
+#[cfg(test)]
+mod retained_granule_budget_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_a_stream_at_the_cap_without_retaining_the_overflow_granule() {
+        let mut granules = Vec::new();
+        let mut used = MAX_STREAM_BYTES - 1;
+        retain_bounded_granule(&mut granules, &mut used, vec![42]).unwrap();
+        assert_eq!(used, MAX_STREAM_BYTES);
+        assert!(retain_bounded_granule(&mut granules, &mut used, vec![43]).is_err());
+        assert_eq!(used, MAX_STREAM_BYTES);
+        assert_eq!(granules, vec![vec![42]]);
+    }
+
+    #[test]
+    fn empty_granules_consume_their_on_disk_padding_byte() {
+        let mut granules = Vec::new();
+        let mut used = 0;
+        retain_bounded_granule(&mut granules, &mut used, Vec::new()).unwrap();
+        assert_eq!(used, 1);
+        assert_eq!(granules.len(), 1);
     }
 }
