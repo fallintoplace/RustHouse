@@ -54,6 +54,19 @@ class SharedWorkloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "64 MiB"):
                 cli_sql("rusthouse", "db", "SELECT 1", 5)
 
+    def test_posix_child_has_an_online_file_size_cap(self):
+        import os
+        if os.name != "posix":
+            self.skipTest("POSIX file-size limits required")
+
+        def execute(command, **kwargs):
+            self.assertTrue(callable(kwargs.get("preexec_fn")))
+            kwargs["stdout"].write(b"ok\\n")
+            return subprocess.CompletedProcess(command, 0)
+
+        with mock.patch("bench.common.subprocess.run", side_effect=execute):
+            self.assertEqual(cli_sql("rusthouse", "db", "SELECT 1", 5), b"ok\\n")
+
     def test_cli_caps_large_stderr_in_memory(self):
         def noisy_sql(command, **kwargs):
             kwargs["stderr"].write(b"error " + b"x" * 100_000)

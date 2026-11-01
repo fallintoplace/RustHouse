@@ -314,12 +314,12 @@ fn checked_update_offset(
     if signed {
         let current = current.parse::<i128>()
             .map_err(|_| "invalid signed UPDATE column value")?;
-        let delta = i128::try_from(delta)
-            .map_err(|_| "UPDATE offset exceeds Int128")?;
+        // A full UInt128 offset can still produce a valid signed result
+        // when applied to a negative value. Do not narrow before arithmetic.
         let result = if subtract {
-            current.checked_sub(delta)
+            current.checked_sub_unsigned(delta)
         } else {
-            current.checked_add(delta)
+            current.checked_add_unsigned(delta)
         };
         result.map(|value| value.to_string())
             .ok_or_else(|| "signed UPDATE arithmetic overflow".into())
@@ -375,9 +375,6 @@ pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
                         return Err(format!(
                             "UPDATE integer offset requires an integer column: {name}"
                         ));
-                    }
-                    if signed && i128::try_from(*delta).is_err() {
-                        return Err("UPDATE offset exceeds Int128".into());
                     }
                     Ok(PreparedUpdate::Offset {
                         index, delta: *delta, subtract: *subtract, signed,
@@ -790,5 +787,33 @@ mod checked_update_arithmetic_tests {
         assert!(checked_update_offset("not-an-integer", 2, true, true).is_err());
         assert!(checked_update_offset("1.5", 2, false, true).is_err());
         assert!(checked_update_offset("1", u128::MAX, false, true).is_err());
+    }
+}
+
+#[cfg(test)]
+mod full_width_signed_update_offset_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_unsigned_offsets_that_cancel_negative_int128_values() {
+        assert_eq!(
+            checked_update_offset(&i128::MIN.to_string(), u128::MAX, false, true).unwrap(),
+            i128::MAX.to_string(),
+        );
+        assert_eq!(
+            checked_update_offset(&i128::MAX.to_string(), u128::MAX, true, true).unwrap(),
+            i128::MIN.to_string(),
+        );
+        assert_eq!(
+            checked_update_offset("0", 1u128 << 127, true, true).unwrap(),
+            i128::MIN.to_string(),
+        );
+    }
+
+    #[test]
+    fn full_width_signed_offsets_still_fail_on_real_overflow() {
+        assert!(checked_update_offset("0", 1u128 << 127, false, true).is_err());
+        assert!(checked_update_offset("-1", u128::MAX, true, true).is_err());
+        assert!(checked_update_offset(&i128::MAX.to_string(), 1, false, true).is_err());
     }
 }

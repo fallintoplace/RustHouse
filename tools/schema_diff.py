@@ -6,7 +6,7 @@ import math
 import re
 import sys
 from urllib.parse import quote, urlsplit
-from urllib.request import HTTPRedirectHandler, build_opener
+from urllib.request import HTTPRedirectHandler, build_opener, ProxyHandler
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -16,7 +16,12 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-NO_REDIRECT_OPENER = build_opener(NoRedirect())
+NO_REDIRECT_OPENER = build_opener(ProxyHandler({}), NoRedirect())
+
+
+def _reject_nonfinite_json(value):
+    # Python's json.loads accepts NaN and Infinity unless explicitly blocked.
+    raise ValueError(f"nonfinite JSON constant: {value}")
 
 
 def _unique_object_pairs(pairs):
@@ -50,6 +55,8 @@ def columns(payload):
     for col in result:
         if not isinstance(col, dict) or not isinstance(col.get("name"), str) or not isinstance(col.get("type"), str):
             raise ValueError("malformed column")
+        if not col["name"]:
+            raise ValueError("empty schema column name")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", col["name"]):
             raise ValueError("invalid schema column identifier")
         if not col["type"].strip() or col["name"] in seen:
@@ -77,7 +84,8 @@ def fetch(base, table, timeout=5):
         body = response.read(1_048_577)
     if len(body) > 1_048_576:
         raise ValueError("schema response too large")
-    return columns(json.loads(body, object_pairs_hook=_unique_object_pairs))
+    return columns(json.loads(body, object_pairs_hook=_unique_object_pairs,
+                              parse_constant=_reject_nonfinite_json))
 
 
 def main():

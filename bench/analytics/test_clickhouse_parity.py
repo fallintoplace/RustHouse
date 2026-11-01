@@ -13,6 +13,27 @@ from bench.analytics.clickhouse_parity import (
 from bench.analytics.suite_runner import ACCOUNTS_ROWS, COLUMNS, fact_row, make_fixture
 
 
+class FixtureTsvDecodeTests(unittest.TestCase):
+    def test_unescaped_fields_bypass_bytewise_decoder(self):
+        from bench.analytics.clickhouse_parity import _decode_fixture_field
+
+        for field, expected in [
+            (b"", ""),
+            (b"abc123", "abc123"),
+            ("café 🎉".encode("utf-8"), "café 🎉"),
+            (b"plain" * 10000, "plain" * 10000),
+            (br"a\\tb", "a\\tb"),
+            (br"a\tb", "a\tb"),
+            (br"\\N", r"\N"),
+        ]:
+            self.assertEqual(_decode_fixture_field(field), expected)
+        with self.assertRaises(UnicodeDecodeError):
+            _decode_fixture_field(b"\\xff")
+        for invalid in (br"\q", b"\\", br"\xZZ"):
+            with self.assertRaises(ValueError):
+                _decode_fixture_field(invalid)
+
+
 class ClickHouseDifferentialTests(unittest.TestCase):
     def test_rejects_invalid_paired_controls_before_any_query(self):
         from bench.analytics.clickhouse_parity import paired_query, run_parity
@@ -107,6 +128,32 @@ class ClickHouseDifferentialTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             assert_clickhouse_json_parity(actual.replace(b'"NA"', b'"EU"'),
                                          expected, unordered=True)
+
+    def test_unordered_mixed_integer_rows_scale_and_preserve_multiplicity(self):
+        def encode(rows):
+            return ("".join(json.dumps(row, separators=(",", ":")) + "\n"
+                            for row in rows)).encode("utf-8")
+
+        expected = [
+            {"region": f"r-{index % 19}", "n": (1 << 63) + index % 31,
+             "ok": index % 2 == 0, "coupon": None if index % 3 else "promo"}
+            for index in range(3072)
+        ]
+        actual = [
+            {key: (str(int(value)) if type(value) in (int, bool) else value)
+             for key, value in row.items()}
+            for row in reversed(expected)
+        ]
+        self.assertEqual(assert_clickhouse_json_parity(
+            encode(actual), encode(expected), unordered=True
+        ), len(expected))
+
+        corrupted = list(actual)
+        corrupted[-1] = {**corrupted[-1], "n": "0"}
+        with self.assertRaisesRegex(ValueError, "multiset"):
+            assert_clickhouse_json_parity(
+                encode(corrupted), encode(expected), unordered=True
+            )
 
     def test_json_oracle_respects_columns_and_boolean_values(self):
         actual = b'{"ok":"1","value":"7"}\n'
@@ -234,6 +281,31 @@ class ClickHouseDifferentialTests(unittest.TestCase):
         wrong = encode(list(reference_rows[:-1]) + [{"region": "unexpected", "coupon": "promo"}])
         with self.assertRaisesRegex(ValueError, "multiset"):
             assert_clickhouse_json_parity(wrong, reference, unordered=True)
+
+    def test_clickhouse_reference_output_is_capped_in_child_on_posix(self):
+        import os
+
+        def check(command, **kwargs):
+            if os.name == "posix":
+                self.assertTrue(callable(kwargs.get("preexec_fn")))
+            else:
+                self.assertNotIn("preexec_fn", kwargs)
+            return mock.Mock(returncode=0)
+
+        with mock.patch("bench.analytics.clickhouse_parity.subprocess.run",
+                        side_effect=check):
+            self.assertEqual(cli_clickhouse("client", "localhost", 9000, "SELECT 1", 10), b"")
+
+    def test_child_output_limit_errors_are_not_reported_as_sql_failures(self):
+        def oversized(command, **kwargs):
+            kwargs["stdout"].write(b"x" * 4_000_000)
+            kwargs["stderr"].write(b"File size limit exceeded")
+            return mock.Mock(returncode=-25)
+
+        with mock.patch("bench.analytics.clickhouse_parity.subprocess.run",
+                        side_effect=oversized):
+            with self.assertRaisesRegex(ValueError, "4 MB"):
+                cli_clickhouse("client", "localhost", 9000, "SELECT 1", 10)
 
     def test_clickhouse_large_stderr_is_spooled(self):
         def fail(command, **kwargs):

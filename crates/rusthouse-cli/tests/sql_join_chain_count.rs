@@ -15,11 +15,11 @@ fn count_over_join_chains_handles_duplicates_outer_rows_and_pagination() {
     };
     for statement in [
         "CREATE TABLE orders (id UInt64, customer_id Nullable(UInt64))",
-        "CREATE TABLE customers (id UInt64, region_id UInt64)",
-        "CREATE TABLE regions (id UInt64, label String)",
+        "CREATE TABLE customers (id UInt64, region_id UInt64, status Nullable(String))",
+        "CREATE TABLE regions (id UInt64, label Nullable(String))",
         "INSERT INTO orders VALUES (1, 10), (2, 10), (3, 20), (4, NULL)",
-        "INSERT INTO customers VALUES (10, 1), (10, 2), (20, 3)",
-        "INSERT INTO regions VALUES (1, 'Europe'), (2, 'Asia'), (3, 'America')",
+        "INSERT INTO customers VALUES (10, 1, 'active'), (10, 2, NULL), (20, 3, 'active')",
+        "INSERT INTO regions VALUES (1, 'Europe'), (2, 'Asia'), (3, NULL)",
     ] {
         let output = sql(statement);
         assert!(output.status.success(), "{statement}: {output:?}");
@@ -35,7 +35,31 @@ fn count_over_join_chains_handles_duplicates_outer_rows_and_pagination() {
         ),
         (
             "SELECT COUNT(*) FROM orders o LEFT JOIN customers c ON o.customer_id = c.id LEFT JOIN regions r ON c.region_id = r.id WHERE r.label IS NULL",
+            b"count\n2\n",
+        ),
+        (
+            "SELECT COUNT(*) FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id WHERE c.status IS NULL",
+            b"count\n2\n",
+        ),
+        (
+            "SELECT COUNT(*) FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id WHERE c.status IS NOT NULL",
+            b"count\n3\n",
+        ),
+        (
+            "SELECT COUNT(*) FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id WHERE r.label IS NULL",
             b"count\n1\n",
+        ),
+        (
+            "SELECT COUNT(*) FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id WHERE r.label IS NOT NULL",
+            b"count\n4\n",
+        ),
+        (
+            "SELECT COUNT(*) FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id WHERE o.customer_id IS NULL",
+            b"count\n0\n",
+        ),
+        (
+            "SELECT COUNT(*) FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id WHERE o.customer_id IS NOT NULL",
+            b"count\n5\n",
         ),
         (
             "SELECT COUNT(*) FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id LIMIT 0",

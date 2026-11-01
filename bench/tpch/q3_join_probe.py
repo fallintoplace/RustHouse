@@ -13,6 +13,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json
 from run import benchmark_one, summarize_coverage
 
+MAX_REFERENCE_LINE_CHARS = 1024 * 1024
+
+
+def bounded_reference_lines(stream):
+    while True:
+        line = stream.readline(MAX_REFERENCE_LINE_CHARS + 1)
+        if not line:
+            return
+        if len(line) > MAX_REFERENCE_LINE_CHARS:
+            raise ValueError("Q3 reference record exceeds 1 MiB")
+        yield line
+
+
 MAX_ROWS = 16384
 SQL = ("SELECT o.o_orderkey, c.c_custkey FROM orders o "
        "JOIN customer c ON o.o_custkey = c.c_custkey "
@@ -20,8 +33,11 @@ SQL = ("SELECT o.o_orderkey, c.c_custkey FROM orders o "
 
 
 def read_table(path, key):
-    with Path(path).open(encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Q3 reference must be a regular, non-symlinked file")
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(bounded_reference_lines(handle), delimiter="\t")
         fields = reader.fieldnames or []
         required = ("o_orderkey", "o_custkey") if key == "o_orderkey" else (key,)
         if len(fields) != len(set(fields)) or any(name not in fields for name in required):

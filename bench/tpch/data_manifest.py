@@ -3,6 +3,8 @@
 import argparse
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 
 from schema import TABLES, names, explain_scaling
@@ -12,13 +14,26 @@ MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 def inspect_table(path, table):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    try:
+        before = path.lstat()
+    except FileNotFoundError as error:
+        raise ValueError(f"{table}: converted TSV does not exist: {path}") from error
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError(f"{table}: converted TSV must be a regular, non-symlinked file: {path}")
     expected = "\t".join(names(table)).encode("utf-8")
     digest = hashlib.sha256()
     rows = 0
     expected_columns = len(TABLES[table])
-    with path.open("rb") as source:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino, before.st_size,
+                    before.st_mtime_ns, before.st_ctime_ns) !=
+                   (opened.st_dev, opened.st_ino, opened.st_size,
+                    opened.st_mtime_ns, opened.st_ctime_ns)):
+            raise ValueError(f"{table}: TSV source changed before opening")
         header = source.readline(len(expected) + 3)
         if header not in (expected + b"\n", expected + b"\r\n"):
             raise ValueError(f"{table}: unexpected TSV header")
@@ -32,12 +47,22 @@ def inspect_table(path, table):
                 raise ValueError(f"{table}: malformed or truncated TSV record")
             digest.update(record)
             rows += 1
+        finished = os.fstat(source.fileno())
+        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
+                finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
+            raise ValueError(f"{table}: TSV source changed during hashing")
+    after = path.lstat()
+    if (before.st_dev, before.st_ino, before.st_size,
+            before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_dev, after.st_ino, after.st_size,
+            after.st_mtime_ns, after.st_ctime_ns):
+        raise ValueError(f"{table}: TSV source changed while hashing")
     if rows == 0:
         raise ValueError(f"{table}: no data rows")
     return {
         "name": table,
         "rows": rows,
-        "bytes": path.stat().st_size,
+        "bytes": before.st_size,
         "sha256": digest.hexdigest(),
         "columns": [{"name": name, "type": kind, "scale": scale}
                     for name, kind, scale in TABLES[table]],

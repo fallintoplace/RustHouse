@@ -18,11 +18,19 @@ fn streamed_inner_joins_filter_typed_fact_and_dimension_columns() {
         "CREATE TABLE dims (id UInt64, label String)",
         "INSERT INTO facts SELECT number FROM numbers(40000)",
         "INSERT INTO dims VALUES (39998, 'EU'), (39999, 'US')",
+        "CREATE TABLE projected_facts (id UInt64, amount UInt64)",
+        "CREATE TABLE projected_dims (id UInt64, label String)",
+        "INSERT INTO projected_facts VALUES (1, 100), (2, 200)",
+        "INSERT INTO projected_dims VALUES (1, 'A'), (2, 'B')",
     ] {
         let actual = sql(statement);
         assert!(actual.status.success(), "{statement}: {actual:?}");
     }
     for (statement, expected) in [
+        (
+            "SELECT f.id, f.amount, d.label FROM projected_facts f JOIN projected_dims d ON f.id = d.id WHERE d.label = 'B'",
+            b"f.id\tf.amount\td.label\n2\t200\tB\n".as_slice(),
+        ),
         (
             "SELECT f.id, d.label FROM facts f JOIN dims d ON f.id = d.id WHERE f.id >= 39999 LIMIT 2",
             b"f.id\td.label\n39999\tUS\n".as_slice(),

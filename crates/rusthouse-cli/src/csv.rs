@@ -83,7 +83,10 @@ impl<W: Write> CsvWriter<W> {
 }
 
 fn requires_csv_quoting(value: &[u8]) -> bool {
-    value == b"\\N"
+    // COPY CSV treats an unquoted empty field as NULL. An actual empty
+    // String must be quoted so SELECT FORMAT CSV can round-trip through COPY.
+    value.is_empty()
+        || value == b"\\N"
         || value
             .iter()
             .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\r' | b'\n'))
@@ -282,6 +285,14 @@ mod decoded_csv_regressions {
             csv.output,
             b"value\r\n\"line\nnext\"\r\n\"col\tval\"\r\n\\N\r\n\"\\N\"\r\n"
         );
+    }
+
+    #[test]
+    fn quoted_empty_csv_field_is_not_confused_with_null_on_import() {
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"value\n\n\\N\n\\\\N\n")
+            .unwrap();
+        assert_eq!(csv.output, b"value\r\n\"\"\r\n\\N\r\n\"\\N\"\r\n");
     }
 
     #[test]

@@ -39,8 +39,43 @@ fn is_empty_json_container_pair(open: u8, close: u8) -> bool {
     matches!((open, close), (b'{', b'}') | (b'[', b']'))
 }
 
+fn validate_pretty_depth(row: &[u8]) -> io::Result<()> {
+    let mut inside_string = false;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    for &byte in row {
+        if inside_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                inside_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => inside_string = true,
+            b'{' | b'[' => {
+                if depth >= MAX_PRETTY_JSON_DEPTH {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "pretty JSON nesting exceeds 256 levels",
+                    ));
+                }
+                depth += 1;
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Pretty-print a validated JSON row, preserving punctuation inside strings.
 pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
+    // Fail before writing a prefix that would leave the destination invalid.
+    validate_pretty_depth(row)?;
     let mut inside_json_string = false;
     let mut previous_byte_was_escape = false;
     let mut depth = 0usize;
@@ -318,5 +353,27 @@ mod long_pretty_json_key_batch_tests {
             rendered,
             format!("{{\n    \"{key}\": 1\n  }}").as_bytes()
         );
+    }
+}
+
+#[cfg(test)]
+mod atomic_pretty_depth_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_depth_never_leaves_partial_json_in_sink() {
+        let row = format!("{}0{}", "[".repeat(257), "]".repeat(257));
+        let mut output = Vec::new();
+        let error = write_pretty_json_row(&mut output, row.as_bytes()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn quoted_brackets_and_escaped_quotes_do_not_count_as_depth() {
+        let row = format!("{}\"[]{{}}\\\"[]\"{}", "[".repeat(256), "]".repeat(256));
+        let mut output = Vec::new();
+        write_pretty_json_row(&mut output, row.as_bytes()).unwrap();
+        assert!(output.starts_with(b"[\n"));
     }
 }

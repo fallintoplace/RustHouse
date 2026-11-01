@@ -38,8 +38,11 @@ def write_fixture(directory, probe_rows, build_rows, hot_percent):
         raise ValueError("hotspot fixture root must not be a symlink")
     directory.mkdir(parents=True, exist_ok=True)
     for name in ("facts.tsv", "dimensions.tsv"):
-        if (directory / name).is_symlink():
+        target = directory / name
+        if target.is_symlink():
             raise ValueError(f"refusing symlinked hotspot fixture: {name}")
+        if target.exists():
+            raise FileExistsError(f"refusing to overwrite hotspot fixture: {name}")
     expected = Counter()
     with (directory / "facts.tsv").open("w", encoding="utf-8") as facts:
         facts.write("id\tamount\n")
