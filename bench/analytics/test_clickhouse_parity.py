@@ -56,11 +56,11 @@ class ClickHouseDifferentialTests(unittest.TestCase):
 
     def test_parity_accepts_floating_rounding_nulls_and_exact_big_integers(self):
         expected = b"9007199254740993\t1.3333333333333333\t\\N\n"
-        actual = b"9007199254740993\t1.3333333333333335\tNULL\n"
+        actual = b"9007199254740993\t1.3333333333333335\t\\N\n"
         self.assertEqual(assert_clickhouse_parity(actual, expected), 1)
         with self.assertRaises(ValueError):
             assert_clickhouse_parity(
-                b"9007199254740992\t1.3333333333333333\tNULL\n", expected
+                b"9007199254740992\t1.3333333333333333\t\\N\n", expected
             )
 
     def test_unordered_results_preserve_duplicate_multiplicity(self):

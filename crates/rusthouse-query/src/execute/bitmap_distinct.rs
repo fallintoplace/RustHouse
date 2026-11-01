@@ -732,7 +732,9 @@ mod singleton_dense_union_tests {
     #[test]
     fn threshold_union_builds_the_exact_dense_bitmap() {
         let mut current = Block::Single(4_095);
-        let incoming = Block::Sparse((0..4_095).collect());
+        let mut keys = SparseKeys::new(0);
+        keys.extend(1..4_095);
+        let incoming = Block::Sparse(keys);
         assert_eq!(BitmapDistinct32::merge_block(&mut current, &incoming), 4_095);
         let Block::Dense(bits) = current else { panic!("expected dense union"); };
         assert_eq!(bits.iter().map(|word| word.count_ones() as usize).sum::<usize>(), 4_096);

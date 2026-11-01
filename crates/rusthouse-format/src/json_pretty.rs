@@ -20,7 +20,7 @@ fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
         bytes
     };
     let spaces = (depth + 1) * 2;
-    if spaces + 1 <= CACHED_INDENT.len() {
+    if spaces < CACHED_INDENT.len() {
         output.write_all(&CACHED_INDENT[..spaces + 1])
     } else {
         output.write_all(b"\n")?;

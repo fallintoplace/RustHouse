@@ -976,7 +976,7 @@ mod compressed_stream_identity_tests {
 }
 
 #[cfg(test)]
-mod compressed_stream_identity_tests {
+mod compressed_stream_state_tests {
     use super::*;
 
     #[test]

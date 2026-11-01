@@ -810,7 +810,8 @@ mod medium_array_mark_tests {
     #[test]
     fn medium_marks_reject_truncation_and_overflow_before_reading_values() {
         for rows in [65usize, 1024] {
-            let mut short = vec![0u8; rows * 8 - 1].as_slice();
+            let short_bytes = vec![0u8; rows * 8 - 1];
+            let mut short = short_bytes.as_slice();
             assert!(matches!(
                 read_array_offsets(&mut short, rows, ArrayOffsetsEncoding::Sizes),
                 Err(ArrayReadError::Offsets(error)) if error.kind() == io::ErrorKind::UnexpectedEof

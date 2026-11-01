@@ -92,6 +92,8 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
         raise ValueError("snapshot report has invalid rows or parts")
     if max_parts is not None and parts > max_parts:
         raise ValueError(f"snapshot parts {parts} above max_parts {max_parts}")
+    if rows < min_rows:
+        raise ValueError(f"physical rows {rows} below required {min_rows}")
     columns = data.get("columns")
     if (not isinstance(columns, list) or not 1 <= len(columns) <= 128 or any(
         not isinstance(column, dict)
@@ -103,8 +105,6 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
         raise ValueError("snapshot report has invalid columns")
     if len({column["name"] for column in columns}) != len(columns):
         raise ValueError("snapshot report has duplicate columns")
-    if rows < min_rows:
-        raise ValueError(f"physical rows {rows} below required {min_rows}")
     return {"workload": "physical-snapshot-gate", "physical_rows": rows,
             "parts": parts, "columns": data["columns"], "minimum_rows": min_rows,
             "maximum_parts": max_parts,

@@ -822,7 +822,7 @@ mod parallel_immutable_buffer_checksum_tests {
         for len in [0, 1, 7, 8, 31, 127, 128, 4096, 65_535, 65_536,
                     16 * 1024 * 1024 - 1, 16 * 1024 * 1024,
                     16 * 1024 * 1024 + 7] {
-            let bytes = (0..len).map(|i| (i.wrapping_mul(199) % 251) as u8)
+            let bytes = (0usize..len).map(|i| (i.wrapping_mul(199) % 251) as u8)
                 .collect::<Vec<_>>();
             assert_eq!(crc32c_parallel(&bytes), crc32c(&bytes), "len={len}");
         }

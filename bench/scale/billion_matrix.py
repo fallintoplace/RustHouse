@@ -14,6 +14,7 @@ import os
 import platform
 import re
 import statistics
+import stat
 import subprocess
 import tempfile
 import time

@@ -729,7 +729,8 @@ mod sized_string_mark_buffer_tests {
     #[test]
     fn rejects_truncated_size_streams_at_each_threshold() {
         for rows in [1, 65, 1025, 8193] {
-            let mut sizes = vec![0u8; rows * 8 - 1].as_slice();
+            let size_bytes = vec![0u8; rows * 8 - 1];
+            let mut sizes = size_bytes.as_slice();
             let mut data = std::io::empty();
             assert!(matches!(
                 read_sized_strings(&mut sizes, &mut data, rows),

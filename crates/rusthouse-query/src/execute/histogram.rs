@@ -462,7 +462,7 @@ mod tests {
             count: 1,
         }).collect::<Vec<_>>();
         let mut sink = Counted { writes: 0, max: 0, bytes: Vec::new() };
-        output_bins(&query, &mut sink, "number", 10_000, &bins).unwrap();
+        output_bins(&query, &mut sink, "number", 10_000, bins).unwrap();
         assert!(sink.writes < 10, "one write per bin regressed: {}", sink.writes);
         assert!(sink.max < 65_600, "output batch grew without bound");
         let opening = sink.bytes.iter().position(|&byte| byte == b'[').unwrap();
