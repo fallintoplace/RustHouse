@@ -1,22 +1,6 @@
 //! DELETE FROM named_table [WHERE ...] using the existing SELECT predicate grammar.
 use crate::{ParseError, Projection, Select, Source, Token, parse_select_tokens, tokenize};
 
-fn keyword<'a>(input: &'a str, expected: &str) -> Option<&'a str> {
-    let input = input.trim_start();
-    let prefix = input.get(..expected.len())?;
-    if !prefix.eq_ignore_ascii_case(expected) {
-        return None;
-    }
-    let rest = input.get(expected.len()..)?;
-    if rest.chars().next().is_some_and(|ch| !ch.is_whitespace())
-        && !rest.starts_with("/*")
-        && !rest.starts_with("--")
-    {
-        return None;
-    }
-    Some(rest.trim_start())
-}
-
 fn valid_delete_scope(select: &Select) -> bool {
     matches!(select.source, Some(Source::Table(_)))
         && select.projection == Projection::All
@@ -29,12 +13,12 @@ fn valid_delete_scope(select: &Select) -> bool {
 
 /// Supported only for persistent local tables. No ordering or LIMIT is accepted.
 pub fn parse_delete(sql: &str) -> Result<Option<Select>, ParseError> {
-    if keyword(sql, "DELETE").is_none() {
-        return Ok(None);
-    }
     // Work on the original tokens so a valid 65536-byte DELETE is not rejected
     // just because the SELECT projection is two bytes longer.
     let mut select_tokens = tokenize(sql)?;
+    if !matches!(select_tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("DELETE")) {
+        return Ok(None);
+    }
     if !matches!(select_tokens.get(1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("FROM")) {
         return Err(ParseError("DELETE requires FROM table".into()));
     }
@@ -115,3 +99,24 @@ mod delete_adjacent_comment_tests {
         assert!(parse_delete("DELETE/*comment*/events").is_err());
         assert!(parse_delete("DELETEX FROM events").unwrap().is_none());
     }
+
+#[cfg(test)]
+mod leading_delete_comment_tests {
+    use super::*;
+
+    #[test]
+    fn delete_accepts_all_lexer_supported_leading_comments() {
+        for prefix in ["/* explanation */ ", "-- line comment\n", "# comment\r\n", "/* outer /* inner */ end */\n"] {
+            let sql = format!("{prefix}DELETE FROM events WHERE id = 42");
+            let result = parse_delete(&sql).unwrap().unwrap();
+            assert_eq!(result.source, Some(Source::Table("events".into())));
+            assert_eq!(result.projection, Projection::All);
+        }
+    }
+
+    #[test]
+    fn non_delete_statements_remain_unrecognized() {
+        assert!(parse_delete("/* comment */ SELECT * FROM events").unwrap().is_none());
+        assert!(parse_delete("-- comment only").unwrap().is_none());
+    }
+}
