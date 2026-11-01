@@ -152,6 +152,68 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
     Ok(text)
 }
 
+/// A validated change to an explicit cluster membership configuration.
+/// These are planning records only and do not mutate running replicas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MembershipChange {
+    Added(Member),
+    Removed(Member),
+    Reconfigured { before: Member, after: Member },
+}
+
+/// Compare two membership snapshots in canonical node-name order.
+/// Treat zone or weight changes as reconfigurations, and do not report a
+/// change merely because the manifest listed the same nodes differently.
+/// Only changed members are cloned into the output.
+pub fn membership_changes(
+    before: &[Member],
+    after: &[Member],
+) -> Result<Vec<MembershipChange>, &'static str> {
+    validate_membership(before)?;
+    validate_membership(after)?;
+    let mut old = before.iter().collect::<Vec<_>>();
+    let mut new = after.iter().collect::<Vec<_>>();
+    old.sort_unstable_by(|left, right| left.node.cmp(&right.node));
+    new.sort_unstable_by(|left, right| left.node.cmp(&right.node));
+
+    let mut changes = Vec::new();
+    let (mut left, mut right) = (0usize, 0usize);
+    while left < old.len() || right < new.len() {
+        match (old.get(left), new.get(right)) {
+            (Some(a), Some(b)) => match a.node.cmp(&b.node) {
+                std::cmp::Ordering::Less => {
+                    changes.push(MembershipChange::Removed((**a).clone()));
+                    left += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    changes.push(MembershipChange::Added((**b).clone()));
+                    right += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if a.zone != b.zone || a.weight != b.weight {
+                        changes.push(MembershipChange::Reconfigured {
+                            before: (**a).clone(),
+                            after: (**b).clone(),
+                        });
+                    }
+                    left += 1;
+                    right += 1;
+                }
+            },
+            (Some(a), None) => {
+                changes.push(MembershipChange::Removed((**a).clone()));
+                left += 1;
+            }
+            (None, Some(b)) => {
+                changes.push(MembershipChange::Added((**b).clone()));
+                right += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    Ok(changes)
+}
+
 /// Capacity and node count advertised for one failure domain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZoneCapacity {
@@ -475,5 +537,52 @@ mod small_zone_capacity_regressions {
         let mut members = membership(3);
         members[2].node = members[0].node.clone();
         assert!(membership_capacity_by_zone(&members).is_err());
+    }
+}
+
+#[cfg(test)]
+mod membership_reconciliation_tests {
+    use super::*;
+
+    #[test]
+    fn detects_add_remove_and_reconfiguration_in_canonical_order() {
+        let before = parse_membership("c zone0 1\nb zone1 2\na zone1 3\n").unwrap();
+        let after = parse_membership("d zone3 1\na zone1 3\nb zone2 2\n").unwrap();
+        let changes = membership_changes(&before, &after).unwrap();
+        assert_eq!(changes, vec![
+            MembershipChange::Reconfigured {
+                before: before[1].clone(),
+                after: after[2].clone(),
+            },
+            MembershipChange::Removed(before[0].clone()),
+            MembershipChange::Added(after[0].clone()),
+        ]);
+        let mut reordered = before.clone();
+        reordered.reverse();
+        assert!(membership_changes(&before, &reordered).unwrap().is_empty());
+    }
+
+    #[test]
+    fn large_manifest_only_clones_changed_members() {
+        let before = (0..64).map(|index| Member {
+            node: format!("node_{index:03}"),
+            zone: format!("zone_{}", index % 4),
+            weight: 1,
+        }).collect::<Vec<_>>();
+        let mut after = before.clone();
+        after.reverse();
+        assert!(membership_changes(&before, &after).unwrap().is_empty());
+        after[0].weight = 1000;
+        after[63].zone = "new_zone".into();
+        let changes = membership_changes(&before, &after).unwrap();
+        assert_eq!(changes.len(), 2);
+        assert!(matches!(changes[0], MembershipChange::Reconfigured { .. }));
+        assert!(matches!(changes[1], MembershipChange::Reconfigured { .. }));
+        let mut duplicate = before.clone();
+        duplicate[1].node = duplicate[0].node.clone();
+        assert!(membership_changes(&duplicate, &after).is_err());
+        let mut invalid = after.clone();
+        invalid[3].weight = 0;
+        assert!(membership_changes(&before, &invalid).is_err());
     }
 }
