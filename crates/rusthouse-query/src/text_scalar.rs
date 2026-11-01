@@ -174,6 +174,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "STARTS_WITH"
                 | "STARTSWITH"
                 | "HASTOKEN"
+                | "HASTOKENORNULL"
                 | "TOMONTHNUMSINCEEPOCH"
                 | "CONTAINS"
                 | "STRIP_PREFIX"
@@ -3619,7 +3620,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "HASTOKEN" => {
+        "HASTOKEN" | "HASTOKENORNULL" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "hasToken requires a token")?;
             let token = text_arg(parser, depth + 1)?;
@@ -3631,6 +3632,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             .bytes()
                             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
                     {
+                        if name == "HASTOKENORNULL" {
+                            return Ok(ConstantValue::Null);
+                        }
                         return Err(ParseError("hasToken requires a single ASCII token".into()));
                     }
                     let found = input
@@ -5933,5 +5937,44 @@ mod utf8_prefix_suffix_inplace_tests {
         }
         let input = format!("{}🙂Z", "a".repeat(10_000));
         assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_has_token_or_null_parity_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matches_tokens_and_returns_null_for_invalid_needles() {
+        assert_eq!(
+            value("SELECT hasTokenOrNull('hello, clickhouse!', 'clickhouse')"),
+            ConstantValue::Integer(1),
+        );
+        assert_eq!(
+            value("SELECT hasTokenOrNull('hello, clickhouse!', 'click')"),
+            ConstantValue::Integer(0),
+        );
+        assert_eq!(
+            value("SELECT hasTokenOrNull('foo_bar', 'foo_bar')"),
+            ConstantValue::Integer(1),
+        );
+        for query in [
+            "SELECT hasTokenOrNull('abc', '!!!')",
+            "SELECT hasTokenOrNull('abc', 'a b')",
+            "SELECT hasTokenOrNull('abc', '')",
+            "SELECT hasTokenOrNull(NULL, 'abc')",
+            "SELECT hasTokenOrNull('abc', NULL)",
+        ] {
+            assert_eq!(value(query), ConstantValue::Null, "{query}");
+        }
+        assert!(parse_select("SELECT hasTokenOrNull('a')").is_err());
+        assert!(parse_select("SELECT hasToken('a', '!!!')").is_err());
     }
 }
