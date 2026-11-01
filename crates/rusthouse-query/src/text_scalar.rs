@@ -4618,7 +4618,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     })();
                     match decoded {
                         Ok(value) => value,
-                        Err(_) if matches!(name.as_str(), "TRYBASE64DECODE" | "TRYBASE64URLDECODE") => ConstantValue::Text(String::new()),
+                        Err(_)
+                            if matches!(
+                                name.as_str(),
+                                "TRYBASE64DECODE" | "TRYBASE64URLDECODE"
+                            ) =>
+                        {
+                            ConstantValue::Text(String::new())
+                        }
                         Err(error) => return Err(error),
                     }
                 }
