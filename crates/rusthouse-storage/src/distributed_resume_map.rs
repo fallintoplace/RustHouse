@@ -1628,8 +1628,8 @@ mod atomic_chunk_run_progress_tests {
         ChunkRun {
             first_index: first,
             chunk_count: count,
-            offset: first as u64 * 7,
-            length: count as u64 * 7,
+            offset: (first as u64).saturating_mul(7),
+            length: (count as u64).saturating_mul(7),
         }
     }
 
