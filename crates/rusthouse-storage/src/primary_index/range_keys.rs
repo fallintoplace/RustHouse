@@ -81,11 +81,35 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
             std::iter::once(0..len).collect()
         });
     }
-    if !mark_keys_sorted(len, &key_at) {
-        return None;
-    }
+    // Large IN / OR predicates repeatedly search the same decoded mark
+    // keys. Materialize a bounded index just once for many disjuncts, while
+    // retaining allocation-free binary searches for small predicate sets.
+    const CACHE_INTERVAL_THRESHOLD: usize = 32;
+    const MAX_CACHED_MARKS: usize = 65_536;
+    let cached = if intervals.len() >= CACHE_INTERVAL_THRESHOLD && len <= MAX_CACHED_MARKS {
+        let mut keys = Vec::with_capacity(len);
+        let mut previous = None;
+        for mark in 0..len {
+            let key = key_at(mark)?;
+            if previous.is_some_and(|last| last > key) {
+                return None;
+            }
+            previous = Some(key);
+            keys.push(key);
+        }
+        Some(keys)
+    } else {
+        if !mark_keys_sorted(len, &key_at) {
+            return None;
+        }
+        None
+    };
+    let cached_key = |mark| match &cached {
+        Some(keys) => Some(keys[mark]),
+        None => key_at(mark),
+    };
     if let [(lower, upper)] = intervals {
-        let range = candidate_mark_range_sorted(len, &key_at, *lower, *upper);
+        let range = candidate_mark_range_sorted(len, &cached_key, *lower, *upper);
         return Some(if range.is_empty() {
             Vec::new()
         } else {
@@ -94,7 +118,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     }
     let mut ranges: Vec<_> = intervals
         .iter()
-        .map(|(lower, upper)| candidate_mark_range_sorted(len, &key_at, *lower, *upper))
+        .map(|(lower, upper)| candidate_mark_range_sorted(len, &cached_key, *lower, *upper))
         .filter(|range| !range.is_empty())
         .collect();
     // IN and OR ranges are often already ordered. Skip the n log n sort
@@ -262,5 +286,71 @@ mod in_place_interval_union_tests {
             .unwrap(),
             vec![99..100]
         );
+    }
+}
+
+#[cfg(test)]
+mod cached_disjunct_mark_keys_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn large_in_sets_decode_each_mark_only_once() {
+        let intervals = (0..1024u64)
+            .map(|i| (Bound::Included(i * 7), Bound::Included(i * 7 + 3)))
+            .collect::<Vec<_>>();
+        let called = Cell::new(0usize);
+        let result = candidate_mark_ranges(
+            8192,
+            |mark| {
+                called.set(called.get() + 1);
+                Some(mark as u64)
+            },
+            &intervals,
+        )
+        .unwrap();
+        assert_eq!(called.get(), 8192);
+        let reference = candidate_mark_ranges(
+            8192,
+            |mark| Some(mark as u64),
+            &intervals[..31],
+        )
+        .unwrap();
+        assert_eq!(
+            result[..31],
+            reference[..31],
+            "nonoverlapping early ranges retain their predecessor marks"
+        );
+    }
+
+    #[test]
+    fn invalid_or_missing_keys_cannot_be_pruned_after_caching() {
+        let intervals = vec![(Bound::Included(4u64), Bound::Included(7u64)); 32];
+        assert!(candidate_mark_ranges(128, |mark| {
+            (mark != 74).then_some(mark as u64)
+        }, &intervals).is_none());
+        assert!(candidate_mark_ranges(128, |mark| {
+            Some(if mark == 74 { 0u64 } else { mark as u64 })
+        }, &intervals).is_none());
+    }
+
+    #[test]
+    fn cached_and_uncached_interval_plans_match_for_duplicates_and_reversed_order() {
+        let intervals = (0..128u64).map(|i| {
+            let start = (i * 117) % 1024;
+            (Bound::Included(start), Bound::Excluded(start + i % 17 + 1))
+        }).collect::<Vec<_>>();
+        let result = candidate_mark_ranges(1024, |mark| Some((mark / 2) as u64), &intervals).unwrap();
+        let mut oracle = vec![false; 1024];
+        for &(lower, upper) in &intervals {
+            for mark in candidate_mark_range(1024, |mark| Some((mark / 2) as u64), lower, upper).unwrap() {
+                oracle[mark] = true;
+            }
+        }
+        let mut selected = vec![false; 1024];
+        for range in result {
+            for mark in range { selected[mark] = true; }
+        }
+        assert_eq!(selected, oracle);
     }
 }
