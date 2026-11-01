@@ -36,6 +36,8 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
             if (Path(directory) / name).is_symlink():
                 raise ValueError("snapshot contains a symlink")
         for name in files:
+            if count >= max_files:
+                raise ValueError("snapshot exceeds max_files")
             path = Path(directory) / name
             before = path.lstat()
             if not stat.S_ISREG(before.st_mode):
@@ -65,8 +67,6 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
             aggregate.update(digest.digest())
             count += 1
             total_bytes += before.st_size
-            if count > max_files:
-                raise ValueError("snapshot exceeds max_files")
     if count == 0:
         raise ValueError("snapshot has no files")
     actual = aggregate.hexdigest()
