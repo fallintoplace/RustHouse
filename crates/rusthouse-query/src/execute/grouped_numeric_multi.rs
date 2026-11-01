@@ -80,6 +80,50 @@ fn reserve_group(
     Ok(())
 }
 
+// Keep 8-bit groups in direct slots, but only allocate the large 16-bit
+// table when observed cardinality makes the sparse lookup more expensive.
+// Most GROUP BY scans with UInt16 keys visit a tiny part of that domain.
+enum GroupSlots {
+    Byte([usize; 256]),
+    WideSparse(HashMap<u16, usize>),
+    WideDense(Vec<usize>),
+}
+
+impl GroupSlots {
+    fn for_type(kind: &str) -> Option<Self> {
+        match kind {
+            "UInt8" | "Int8" => Some(Self::Byte([usize::MAX; 256])),
+            "UInt16" | "Int16" => Some(Self::WideSparse(HashMap::new())),
+            _ => None,
+        }
+    }
+
+    fn get(&self, key: usize) -> Option<usize> {
+        match self {
+            Self::Byte(slots) => (slots[key] != usize::MAX).then_some(slots[key]),
+            Self::WideSparse(map) => map.get(&(key as u16)).copied(),
+            Self::WideDense(slots) => (slots[key] != usize::MAX).then_some(slots[key]),
+        }
+    }
+
+    fn insert(&mut self, key: usize, index: usize) {
+        match self {
+            Self::Byte(slots) => slots[key] = index,
+            Self::WideDense(slots) => slots[key] = index,
+            Self::WideSparse(map) => {
+                map.insert(key as u16, index);
+                if map.len() >= 2048 {
+                    let mut slots = vec![usize::MAX; 65_536];
+                    for (&value, &group) in map.iter() {
+                        slots[usize::from(value)] = group;
+                    }
+                    *self = Self::WideDense(slots);
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -175,12 +219,8 @@ pub(super) fn execute<W: Write>(
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
     let mut retained_group_bytes = 0usize;
     let mut retained_median_bytes = 0usize;
-    // Direct slots avoid repeated hashing on compact grouping columns.
-    let mut dense_slots = match group_type.as_str() {
-        "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
-        "UInt16" | "Int16" => Some(vec![usize::MAX; 65_536]),
-        _ => None,
-    };
+    // Small groups keep an inexpensive map until direct indexing pays off.
+    let mut dense_slots = GroupSlots::for_type(group_type);
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
     let mut by_uuid = HashMap::<[u8; 16], usize>::new();
@@ -209,13 +249,11 @@ pub(super) fn execute<W: Write>(
                         ));
                     }
                 };
-                let slot = &mut slots[key];
-                if *slot != usize::MAX {
-                    *slot
+                if let Some(index) = slots.get(key) {
+                    index
                 } else {
                     reserve_group(&mut retained_group_bytes, items.len(), 0)?;
                     let index = groups.len();
-                    *slot = index;
                     groups.push((
                         typed::cell(&batch[group_index], row),
                         items
@@ -223,6 +261,7 @@ pub(super) fn execute<W: Write>(
                             .map(|(function, _)| AggregateState::new(*function))
                             .collect(),
                     ));
+                    slots.insert(key, index);
                     index
                 }
             } else {
@@ -571,5 +610,49 @@ mod cached_multimetric_median_sort_tests {
             typed::compare_order_cells(&cached[left], &cached[right], false, None)
         });
         assert_eq!(order, [1, 2, 0]);
+    }
+}
+
+#[cfg(test)]
+mod lazy_u16_multi_aggregate_index_tests {
+    use super::*;
+
+    #[test]
+    fn byte_domain_keeps_compact_direct_lookup() {
+        for kind in ["UInt8", "Int8"] {
+            let mut slots = GroupSlots::for_type(kind).unwrap();
+            assert!(matches!(slots, GroupSlots::Byte(_)));
+            for key in 0..256 {
+                assert_eq!(slots.get(key), None);
+                slots.insert(key, 255 - key);
+                assert_eq!(slots.get(key), Some(255 - key));
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_u16_groups_promote_and_preserve_signed_keys_and_indexes() {
+        for kind in ["UInt16", "Int16"] {
+            let mut slots = GroupSlots::for_type(kind).unwrap();
+            assert!(matches!(slots, GroupSlots::WideSparse(_)));
+            for key in 0..2047 {
+                assert_eq!(slots.get(key), None);
+                slots.insert(key, key + 17);
+            }
+            assert!(matches!(slots, GroupSlots::WideSparse(_)));
+            slots.insert(65_535, 99_999);
+            assert!(matches!(slots, GroupSlots::WideDense(_)));
+            assert_eq!(slots.get(65_535), Some(99_999));
+            assert_eq!(slots.get(2047), None);
+            for key in 0..2047 {
+                assert_eq!(slots.get(key), Some(key + 17));
+            }
+            for key in 2047..65_535 {
+                slots.insert(key, key + 17);
+            }
+            for key in 0..65_535 {
+                assert_eq!(slots.get(key), Some(key + 17));
+            }
+        }
     }
 }
