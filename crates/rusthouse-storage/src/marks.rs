@@ -103,21 +103,13 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
     let opened = file
         .metadata()
         .map_err(|source| marks_io_error(path, source))?;
-    if !opened.file_type().is_file() || opened.len() != entry.len() {
+    // The same-length path could have been rewritten in place between stat
+    // and open. Check the baseline timestamps, not only its inode and length.
+    if !marks_file_unchanged(&entry, &opened) {
         return Err(marks_io_error(
             path,
             io::Error::new(io::ErrorKind::InvalidData, "marks file changed before open"),
         ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if entry.dev() != opened.dev() || entry.ino() != opened.ino() {
-            return Err(marks_io_error(
-                path,
-                io::Error::new(io::ErrorKind::InvalidData, "marks file inode changed"),
-            ));
-        }
     }
     let size = opened.len();
     if size > MAX_MARKS_BYTES as u64 {
@@ -662,5 +654,28 @@ mod bounded_plain_mark_reader_tests {
                     .then_some(index as u64 % 7 + 1));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod plain_marks_open_stability_tests {
+    use super::*;
+
+    #[test]
+    fn same_length_rewritten_marks_fail_the_open_metadata_guard() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-marks-open-stability-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("marks.mrk2");
+        std::fs::write(&path, [0u8; 24]).unwrap();
+        let before = std::fs::symlink_metadata(&path).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        assert!(marks_file_unchanged(&before, &file.metadata().unwrap()));
+        file.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        assert!(!marks_file_unchanged(&before, &file.metadata().unwrap()));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
