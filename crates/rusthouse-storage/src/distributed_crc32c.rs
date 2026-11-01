@@ -211,24 +211,17 @@ impl Crc32cShift {
         if right_len == 0 {
             return Self { operator };
         }
-        let mut one_bit = [0u32; 32];
-        one_bit[0] = POLYNOMIAL;
-        let mut row = 1u32;
-        for slot in one_bit.iter_mut().skip(1) {
-            *slot = row;
-            row <<= 1;
-        }
-        // Squaring the one-bit operator three times gives eight zero bits.
-        let mut power = gf2_matrix_square(&gf2_matrix_square(&gf2_matrix_square(&one_bit)));
+        // Repeated fixed-size transfers should not square 32x32 matrices
+        // again for every new length. The same powers serve arbitrary CRC
+        // combinations and are initialized exactly once per process.
+        let powers = crc32c_byte_shifts();
+        let mut bit = 0;
         while right_len != 0 {
             if right_len & 1 != 0 {
-                // Compose power after the existing operator.
-                operator = std::array::from_fn(|bit| gf2_matrix_times(&power, operator[bit]));
+                operator = std::array::from_fn(|row| gf2_matrix_times(&powers[bit], operator[row]));
             }
+            bit += 1;
             right_len >>= 1;
-            if right_len != 0 {
-                power = gf2_matrix_square(&power);
-            }
         }
         Self { operator }
     }
@@ -307,7 +300,16 @@ static CRC32C_BYTE_SHIFTS: OnceLock<[[u32; 32]; 64]> = OnceLock::new();
 fn crc32c_byte_shifts() -> &'static [[u32; 32]; 64] {
     CRC32C_BYTE_SHIFTS.get_or_init(|| {
         let mut powers = [[0u32; 32]; 64];
-        powers[0] = Crc32cShift::new(1).operator;
+        // Build the first zero-byte operator directly. Calling
+        // Crc32cShift::new here would recursively initialize this cache.
+        let mut one_bit = [0u32; 32];
+        one_bit[0] = POLYNOMIAL;
+        let mut row = 1u32;
+        for slot in one_bit.iter_mut().skip(1) {
+            *slot = row;
+            row <<= 1;
+        }
+        powers[0] = gf2_matrix_square(&gf2_matrix_square(&gf2_matrix_square(&one_bit)));
         for bit in 1..powers.len() {
             powers[bit] = gf2_matrix_square(&powers[bit - 1]);
         }
@@ -987,5 +989,65 @@ mod checked_crc_chunk_reduction_tests {
                 .kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+}
+
+#[cfg(test)]
+mod crc_shift_cached_matrix_reference_tests {
+    use super::*;
+
+    // Independent implementation of the original squaring algorithm.
+    fn iterative_reference(mut length: u64) -> [u32; 32] {
+        let mut identity = std::array::from_fn(|bit| 1u32 << bit);
+        if length == 0 {
+            return identity;
+        }
+        let mut one_bit = [0u32; 32];
+        one_bit[0] = POLYNOMIAL;
+        let mut row = 1u32;
+        for slot in one_bit.iter_mut().skip(1) {
+            *slot = row;
+            row <<= 1;
+        }
+        let mut power = gf2_matrix_square(&gf2_matrix_square(&gf2_matrix_square(&one_bit)));
+        while length != 0 {
+            if length & 1 != 0 {
+                identity = std::array::from_fn(|bit| gf2_matrix_times(&power, identity[bit]));
+            }
+            length >>= 1;
+            if length != 0 {
+                power = gf2_matrix_square(&power);
+            }
+        }
+        identity
+    }
+
+    #[test]
+    fn cached_matrix_composition_matches_independent_iterated_squaring() {
+        for length in [0, 1, 2, 7, 8, 63, 64, 4096, 65_535, 1 << 32, u64::MAX] {
+            assert_eq!(Crc32cShift::new(length).operator, iterative_reference(length));
+        }
+        for bit in 0..64 {
+            assert_eq!(
+                Crc32cShift::new(1u64 << bit).operator,
+                iterative_reference(1u64 << bit)
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_shift_construction_is_deterministic() {
+        std::thread::scope(|scope| {
+            let threads = (0..8).map(|worker| {
+                scope.spawn(move || {
+                    let len = (1u64 << (worker + 32)) | 65_537;
+                    Crc32cShift::new(len).operator
+                })
+            }).collect::<Vec<_>>();
+            for (worker, thread) in threads.into_iter().enumerate() {
+                let len = (1u64 << (worker + 32)) | 65_537;
+                assert_eq!(thread.join().unwrap(), iterative_reference(len));
+            }
+        });
     }
 }
