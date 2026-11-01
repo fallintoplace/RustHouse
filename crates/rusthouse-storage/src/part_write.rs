@@ -8,7 +8,6 @@ use self::encoding::*;
 use crate::{Column, FileChecksum, PartError, UncompressedChecksum};
 use ch_cityhash102::cityhash128;
 use naive_cityhash::{U128, cityhash128_with_seed};
-use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
@@ -216,8 +215,10 @@ fn validate_part_columns(columns: &[Column]) -> Result<(), PartError> {
     if columns.is_empty() || columns.len() > 128 {
         return Err(invalid("wide-part schema must contain 1..128 columns"));
     }
-    let mut names = HashSet::new();
-    for col in columns {
+    // The writable schema has at most 128 columns. Keep borrowed names
+    // in bounded stack storage instead of allocating a hash table per part.
+    let mut names = [""; 128];
+    for (index, col) in columns.iter().enumerate() {
         if col.name.is_empty()
             || col.name.len() > 128
             || !matches!(
@@ -228,7 +229,6 @@ fn validate_part_columns(columns: &[Column]) -> Result<(), PartError> {
                 .name
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            || !names.insert(col.name.as_str())
         {
             return Err(invalid(format!("invalid part column name: {}", col.name)));
         }
@@ -238,8 +238,13 @@ fn validate_part_columns(columns: &[Column]) -> Result<(), PartError> {
                 col.data_type
             )));
         }
+        names[index] = col.name.as_str();
     }
-
+    let names = &mut names[..columns.len()];
+    names.sort_unstable();
+    if let Some(duplicate) = names.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err(invalid(format!("invalid part column name: {}", duplicate[0])));
+    }
     Ok(())
 }
 
@@ -1132,5 +1137,32 @@ mod append_compressed_block_tests {
             }
             assert_eq!(&output[..3], &[7, 8, 9]);
         }
+    }
+}
+
+#[cfg(test)]
+mod stack_writable_schema_tests {
+    use super::*;
+
+    #[test]
+    fn fully_populated_columns_reject_duplicates_without_hashing() {
+        let names = (0..128usize)
+            .map(|index| Column {
+                name: format!("column_{index:03}"),
+                data_type: "UInt64".into(),
+            })
+            .collect::<Vec<_>>();
+        assert!(validate_part_columns(&names).is_ok());
+        let mut reversed = names.clone();
+        reversed.reverse();
+        assert!(validate_part_columns(&reversed).is_ok());
+        for duplicate_at in [0usize, 64, 127] {
+            let mut invalid = names.clone();
+            invalid[duplicate_at].name = names[(duplicate_at + 1) % 128].name.clone();
+            assert!(validate_part_columns(&invalid).is_err());
+        }
+        let mut wrong_type = names;
+        wrong_type[93].data_type = "UnsupportedType".into();
+        assert!(validate_part_columns(&wrong_type).is_err());
     }
 }
