@@ -238,7 +238,7 @@ mod repeated_long_join_key_tests {
                 typed::Key::Text(bytes) => {
                     assert_eq!(bytes.as_ptr(), pointer);
                     assert_eq!(bytes.capacity(), capacity);
-                    assert_eq!(bytes.as_slice(), original);
+                    assert_eq!(bytes.as_slice(), original.as_slice());
                 }
                 _ => panic!("expected text key"),
             }
