@@ -1427,7 +1427,10 @@ mod intersecting_chunk_range_tests {
         assert_eq!(chunks_intersecting_range(10, 4, 3, 7, 3).unwrap(), 1..3);
         assert_eq!(chunks_intersecting_range(10, 4, 3, 10, 0).unwrap(), 2..2);
         assert_eq!(chunks_intersecting_range(0, 4, 3, 0, 0).unwrap(), 0..0);
-        assert_eq!(chunks_intersecting_range(u64::MAX, u64::MAX, 1, u64::MAX - 1, 1).unwrap(), 0..1);
+        assert_eq!(
+            chunks_intersecting_range(u64::MAX, u64::MAX, 1, u64::MAX - 1, 1).unwrap(),
+            0..1
+        );
         assert!(chunks_intersecting_range(10, 4, 3, 10, 1).is_err());
         assert!(chunks_intersecting_range(10, 4, 3, 9, u64::MAX).is_err());
         assert!(chunks_intersecting_range(10, 0, 3, 0, 0).is_err());
