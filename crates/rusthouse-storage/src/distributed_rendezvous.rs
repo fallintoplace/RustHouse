@@ -380,17 +380,39 @@ pub fn zone_aware_replicas_for(
         left.total_cmp(right)
             .then_with(|| members[*left_index].node.cmp(&members[*right_index].node))
     });
-    // Small replica groups normally have a few zones. Remember their
-    // indices on the stack, avoiding a separate hash table per placement.
-    // Large memberships retain hash-based O(n) membership checks.
-    let mut hashed_zones = (members.len() > 8).then(HashSet::new);
+    // Membership has at most 64 records. Assign compact zone IDs once from
+    // borrowed, stack-sorted names. The weighted pass can then test one bit
+    // per member instead of allocating and hashing a zone-name set.
+    // Preserve the simpler direct comparisons for very small clusters.
+    let mut zone_ids = [0usize; MAX_PLACEMENT_NODES];
+    let mut seen_zones = [false; MAX_PLACEMENT_NODES];
+    if members.len() > 8 {
+        let mut ordered = [("", 0usize); MAX_PLACEMENT_NODES];
+        for (slot, (index, member)) in ordered.iter_mut().zip(members.iter().enumerate()) {
+            *slot = (member.zone.as_str(), index);
+        }
+        let ordered = &mut ordered[..members.len()];
+        ordered.sort_unstable_by(|left, right| left.0.cmp(right.0));
+        let mut last_zone = None;
+        let mut distinct = 0usize;
+        for &(zone, index) in ordered.iter() {
+            if last_zone != Some(zone) {
+                last_zone = Some(zone);
+                distinct += 1;
+            }
+            zone_ids[index] = distinct - 1;
+        }
+    }
     let mut stack_zones = [0usize; 8];
     let mut stack_zone_count = 0usize;
     let mut selected = Vec::with_capacity(replicas);
     let mut first_pass = [false; MAX_PLACEMENT_NODES];
     for (position, &(_, index)) in ranked.iter().enumerate() {
-        let first_in_zone = if let Some(zones) = hashed_zones.as_mut() {
-            zones.insert(members[index].zone.as_str())
+        let first_in_zone = if members.len() > 8 {
+            let slot = &mut seen_zones[zone_ids[index]];
+            let first = !*slot;
+            *slot = true;
+            first
         } else if stack_zones[..stack_zone_count]
             .iter()
             .any(|&prior| members[prior].zone == members[index].zone)
@@ -1697,6 +1719,60 @@ mod stack_placement_validation_tests {
             let mut invalid = nodes;
             invalid[count - 1] = "../invalid".into();
             assert!(replicas_for("analytics", &invalid, 1).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod stack_zone_first_rank_tests {
+    use super::*;
+    use crate::distributed_membership::Member;
+
+    #[test]
+    fn stack_zone_ids_match_independent_weighted_zone_first_order() {
+        for zone_count in [1, 3, 17, 64] {
+            let mut members = (0..64usize)
+                .map(|index| Member {
+                    node: format!("replica_{index:02}"),
+                    zone: format!("zone_{:02}", (index * 17) % zone_count),
+                    weight: (1 + index * 13) as u16,
+                })
+                .collect::<Vec<_>>();
+            for reversed in [false, true] {
+                if reversed {
+                    members.reverse();
+                }
+                let nodes = members
+                    .iter()
+                    .map(|node| (node.node.as_str(), node.weight))
+                    .collect::<Vec<_>>();
+                for shard in ["events", "logs", "shard_2048"] {
+                    let weighted = weighted_replicas_for(shard, &nodes, 64).unwrap();
+                    let mut seen = HashSet::new();
+                    let mut first = Vec::new();
+                    let mut remaining = Vec::new();
+                    for name in weighted {
+                        let zone = &members
+                            .iter()
+                            .find(|member| member.node == name)
+                            .unwrap()
+                            .zone;
+                        if seen.insert(zone.as_str()) {
+                            first.push(name);
+                        } else {
+                            remaining.push(name);
+                        }
+                    }
+                    first.extend(remaining);
+                    for replicas in [3, 4, 16, 32, 64] {
+                        assert_eq!(
+                            zone_aware_replicas_for(shard, &members, replicas).unwrap(),
+                            first[..replicas],
+                            "zones={zone_count} reversed={reversed} replicas={replicas}"
+                        );
+                    }
+                }
+            }
         }
     }
 }
