@@ -4,8 +4,8 @@ use crate::catalog;
 mod rewrite;
 use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source, Update, UpdateValue};
 use rusthouse_storage::{
-    Column, DatabaseLock, acquire_database_lock,
-    query_parts_with_metadata, resolve_active_snapshot, verify_wide_part, write_wide_part,
+    Column, DatabaseLock, acquire_database_lock, query_parts_with_metadata,
+    resolve_active_snapshot, verify_wide_part, write_wide_part,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
