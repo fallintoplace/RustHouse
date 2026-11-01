@@ -372,7 +372,7 @@ pub fn observe_joint_quorum(
         }
         let sorted = &index[..unique];
         for &member in acknowledgements {
-            let position = sorted.binary_search_by(|entry| entry.0.cmp(member))
+            let position = sorted.binary_search_by(|entry| entry.0.cmp(&member))
                 .map_err(|_| "acknowledgement from unknown replica")?;
             previous_mask |= sorted[position].1;
             next_mask |= sorted[position].2;
