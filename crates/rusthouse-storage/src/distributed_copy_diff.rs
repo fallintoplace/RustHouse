@@ -924,7 +924,8 @@ mod sorted_replica_reconciliation_tests {
         conflict[7].crc32c ^= 1;
         assert!(plan_replica_copies(&source, &conflict).is_err());
         let mut duplicate = source.clone();
-        duplicate.insert(3, duplicate[3].clone());
+        let repeated = duplicate[3].clone();
+        duplicate.insert(3, repeated);
         assert!(plan_replica_copies(&duplicate, &[]).is_err());
         let mut unsafe_key = source.clone();
         unsafe_key[9].key = "cluster/../bad".into();
