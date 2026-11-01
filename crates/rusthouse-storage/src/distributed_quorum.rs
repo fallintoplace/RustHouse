@@ -910,8 +910,8 @@ pub fn plan_joint_write_acknowledgements(
     Ok(candidates
         .iter()
         .enumerate()
-        .filter(|&(index, &candidate)| (selected & (1u32 << index) != 0))
-        .map(|(index, &candidate)| candidate.to_owned())
+        .filter(|&(index, _)| selected & (1u32 << index) != 0)
+        .map(|(_, &candidate)| candidate.to_owned())
         .collect())
 }
 

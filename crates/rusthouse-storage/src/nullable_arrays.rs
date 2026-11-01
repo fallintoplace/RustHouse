@@ -5,6 +5,10 @@ use crate::{
 use std::error::Error;
 use std::fmt;
 use std::io::Read;
+#[cfg(test)]
+use std::io;
+#[cfg(test)]
+use crate::read_numeric_column;
 use std::ops::Range;
 
 /// A batch of Array(Nullable(T)) values, where T is a supported numeric type.

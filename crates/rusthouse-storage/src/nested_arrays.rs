@@ -5,6 +5,8 @@ use crate::{
 use std::error::Error;
 use std::fmt;
 use std::io::Read;
+#[cfg(test)]
+use std::io;
 use std::ops::Range;
 
 /// Flattened Array(Array(T)) with two levels of offsets.
