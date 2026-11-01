@@ -129,6 +129,7 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         raise ValueError("manifest exceeds RustHouse's 16384-shard limit")
     # Preflight every shard before making the first nontransactional write.
     paths = []
+    snapshots = []
     seen_names = set()
     for entry in shards:
         if not isinstance(entry, dict):
@@ -143,7 +144,12 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"missing or unsafe shard: {name}")
         verify_shard(path, entry)
+        current = path.lstat()
+        if not stat.S_ISREG(current.st_mode):
+            raise ValueError(f"shard changed after verification: {name}")
         paths.append(path)
+        snapshots.append((current.st_dev, current.st_ino, current.st_size,
+                          current.st_mtime_ns, current.st_ctime_ns))
     total_rows = sum(e["rows"] for e in shards)
     # JSON true and 1.0 compare equal to integer 1 in Python; require exact
     # integer metadata before trusting manifest-wide totals.
@@ -160,8 +166,13 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
                 "rows_reported_by_manifest": total_rows,
                 "results": []}
     completed = []
-    for entry, path in zip(shards, paths):
+    for entry, path, snapshot in zip(shards, paths, snapshots):
         name = entry["path"]
+        current = path.lstat()
+        actual = (current.st_dev, current.st_ino, current.st_size,
+                  current.st_mtime_ns, current.st_ctime_ns)
+        if not stat.S_ISREG(current.st_mode) or actual != snapshot:
+            raise ValueError(f"shard changed after preflight: {name}")
         cmd = [str(binary), "sql", copy_sql(table, path), "--database", str(database)]
         started = time.perf_counter()
         returncode, diagnostic = execute_copy(cmd, timeout, execute)
