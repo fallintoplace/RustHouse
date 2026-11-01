@@ -6,12 +6,14 @@ calculate a TPC-H Power, Throughput, or QphH score.
 """
 import argparse
 import math
+import os
+import stat
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import cli_sql, emit_json
+from common import cli_sql, emit_json, file_change_time_ns
 from run import benchmark_one, summarize_coverage, query_fingerprint
 
 MAX_REFERENCE_BYTES = 64 * 1024 * 1024
@@ -19,14 +21,36 @@ MAX_QUERY_FILE_BYTES = 64 * 1024
 TPCH_QUERY_COUNT = 22
 
 
-def clean_sql(path):
+def _read_stable_file(path, limit, label, limit_label):
+    """Pin a regular input inode while reading bounded SQL or reference bytes."""
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("TPC-H SQL input must be a regular, non-symlinked file")
-    with path.open("rb") as source:
-        payload = source.read(MAX_QUERY_FILE_BYTES + 1)
-    if len(payload) > MAX_QUERY_FILE_BYTES:
-        raise ValueError("TPC-H SQL source exceeds 64 KiB")
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"{label} must be regular and non-symlinked")
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, file_change_time_ns(info))
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened):
+            raise ValueError(f"{label} changed while opening")
+        payload = source.read(limit + 1)
+        if identity(opened) != identity(os.fstat(source.fileno())):
+            raise ValueError(f"{label} changed during reading")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError(f"{label} changed during reading")
+    if len(payload) > limit:
+        raise ValueError(f"{label} exceeds {limit_label}")
+    return payload
+
+
+def clean_sql(path):
+    payload = _read_stable_file(path, MAX_QUERY_FILE_BYTES,
+                                "TPC-H SQL source", "64 KiB")
     lines = payload.decode("utf-8").splitlines()
     # Only discard provenance comments before the SQL statement. A line starting
     # with '--' inside a multi-line quoted literal is query data, not a comment.
@@ -37,7 +61,6 @@ def clean_sql(path):
         start += 1
     text = "\n".join(lines[start:]).strip()
     return text.rstrip(";").strip()
-
 
 def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
              timeout=120, execute=None, jobs=1):
@@ -94,10 +117,9 @@ def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
             try:
                 if ref.is_symlink() or ref.stat().st_size > MAX_REFERENCE_BYTES:
                     raise ValueError("unsafe or oversized reference file")
-                with ref.open("rb") as stream:
-                    reference = stream.read(MAX_REFERENCE_BYTES + 1)
-                if len(reference) > MAX_REFERENCE_BYTES:
-                    raise ValueError("reference file grew beyond byte limit")
+                reference = _read_stable_file(
+                    ref, MAX_REFERENCE_BYTES, "reference file", "64 MiB"
+                )
             except (OSError, ValueError) as error:
                 return {"query": number, "status": "reference_error",
                         "timings_seconds": [], "latency": None,
