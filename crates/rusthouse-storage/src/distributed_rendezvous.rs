@@ -334,16 +334,34 @@ pub fn capacity_aware_replicas_for(
     if replicas == 0 || replicas > members.len() || capacities.len() != members.len() {
         return Err("invalid capacity-aware replica configuration");
     }
-    let mut by_node = std::collections::HashMap::with_capacity(capacities.len());
-    for &(node, capacity) in capacities {
-        if by_node.insert(node, capacity).is_some() {
-            return Err("duplicate replica capacity entry");
+    // Small replica memberships are the common case. Validate duplicate
+    // capacity keys directly instead of allocating a map on every placement.
+    let by_node = if capacities.len() <= 8 {
+        for (index, &(node, _)) in capacities.iter().enumerate() {
+            if capacities[..index].iter().any(|&(previous, _)| previous == node) {
+                return Err("duplicate replica capacity entry");
+            }
         }
-    }
+        None
+    } else {
+        let mut index = std::collections::HashMap::with_capacity(capacities.len());
+        for &(node, capacity) in capacities {
+            if index.insert(node, capacity).is_some() {
+                return Err("duplicate replica capacity entry");
+            }
+        }
+        Some(index)
+    };
     let mut eligible = Vec::with_capacity(members.len());
     for member in members {
-        let capacity = by_node.get(member.node.as_str())
-            .ok_or("missing replica capacity")?;
+        let capacity = if let Some(index) = &by_node {
+            index.get(member.node.as_str())
+        } else {
+            capacities.iter()
+                .find(|&&(node, _)| node == member.node.as_str())
+                .map(|(_, capacity)| capacity)
+        }
+        .ok_or("missing replica capacity")?;
         if capacity.available()? >= object_bytes {
             eligible.push(member.clone());
         }
@@ -1005,6 +1023,43 @@ mod hash_threshold_rebalance_tests {
                     previous.iter().filter(|node| !desired.contains(node)).cloned().collect::<Vec<_>>()
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod capacity_lookup_boundary_tests {
+    use super::*;
+    use crate::distributed_capacity::Capacity;
+    use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn eligible_subset_and_order_match_both_lookup_paths() {
+        for size in [2usize, 4, 8, 9, 16, 64] {
+            let manifest = (0..size)
+                .map(|i| format!("node_{i:02} zone_{} {}\n", i % 5, i % 7 + 1))
+                .collect::<String>();
+            let members = parse_membership(&manifest).unwrap();
+            let capacities = members.iter().rev()
+                .map(|member| (member.node.as_str(), Capacity {
+                    total: 100,
+                    used: if member.node == format!("node_{:02}", size - 1) { 100 } else { 0 },
+                    reserved: 0,
+                }))
+                .collect::<Vec<_>>();
+            let expected = &members[..size - 1];
+            for replicas in [1usize, 2].into_iter().filter(|n| *n <= expected.len()) {
+                for shard in 0..8 {
+                    let shard = format!("capacity_boundary_{shard}");
+                    let selected = capacity_aware_replicas_for(
+                        &shard, &members, &capacities, 1, replicas
+                    ).unwrap();
+                    assert_eq!(selected, zone_aware_replicas_for(&shard, expected, replicas).unwrap());
+                }
+            }
+            let mut duplicate = capacities.clone();
+            duplicate[0].0 = duplicate[1].0;
+            assert!(capacity_aware_replicas_for("shard", &members, &duplicate, 1, 1).is_err());
         }
     }
 }
