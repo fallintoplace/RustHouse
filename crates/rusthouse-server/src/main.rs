@@ -4,7 +4,7 @@ use rusthouse_server::health;
 use rusthouse_server::{
     Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
 };
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -224,6 +224,24 @@ fn accepts_rusthouse_lz4(header: &str) -> bool {
     accepted
 }
 
+/// Advance only through the header terminator. A buffered read may already
+/// contain request-body bytes, which must remain available to the body reader.
+fn append_header_chunk(head: &mut Vec<u8>, bytes: &[u8]) -> Result<(usize, bool), Response> {
+    for (index, &byte) in bytes.iter().enumerate() {
+        head.push(byte);
+        if head.len() > MAX_HEADER_BYTES {
+            return Err(Response::text(
+                "413 Payload Too Large",
+                "HTTP headers too large\n",
+            ));
+        }
+        if head.ends_with(b"\r\n\r\n") {
+            return Ok((index + 1, true));
+        }
+    }
+    Ok((bytes.len(), false))
+}
+
 fn read_request_with_deadline(
     stream: &mut TcpStream,
     deadline: Duration,
@@ -231,23 +249,30 @@ fn read_request_with_deadline(
     let started = Instant::now();
     let mut input = BufReader::new(stream);
     let mut head = Vec::new();
-    // Read only until the headers end, without consuming the beginning of the body.
-    while !head.ends_with(b"\r\n\r\n") {
+    // Refresh the socket timeout per buffered network read instead of per
+    // header byte. Byte-by-byte read_exact previously called setsockopt once
+    // for every byte, even for an already-buffered 8 KiB request header.
+    loop {
         let remaining = request_remaining(started, deadline)?;
         input
             .get_mut()
             .set_read_timeout(Some(remaining))
             .map_err(|error| request_read_error(error, "cannot set request read timeout\n"))?;
-        let mut byte = [0u8];
-        input
-            .read_exact(&mut byte)
-            .map_err(|error| request_read_error(error, "incomplete HTTP request headers\n"))?;
-        head.push(byte[0]);
-        if head.len() > MAX_HEADER_BYTES {
-            return Err(Response::text(
-                "413 Payload Too Large",
-                "HTTP headers too large\n",
-            ));
+        let (consumed, complete) = {
+            let available = input.fill_buf().map_err(|error| {
+                request_read_error(error, "incomplete HTTP request headers\n")
+            })?;
+            if available.is_empty() {
+                return Err(Response::text(
+                    "400 Bad Request",
+                    "incomplete HTTP request headers\n",
+                ));
+            }
+            append_header_chunk(&mut head, available)?
+        };
+        input.consume(consumed);
+        if complete {
+            break;
         }
     }
     let header_text = std::str::from_utf8(&head)
@@ -644,6 +669,39 @@ mod ipv6_bind_policy_tests {
         }
         assert!(!permitted_listener_bind("10.1.2.3".parse().unwrap(), false));
         assert!(permitted_listener_bind("10.1.2.3".parse().unwrap(), true));
+    }
+}
+
+#[cfg(test)]
+mod buffered_header_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_body_after_header_terminator_on_any_buffer_boundary() {
+        let request = b"POST / HTTP/1.1\r\nHost: localhost:8123\r\nContent-Length: 4\r\n\r\nBODY";
+        let terminator = request.windows(4).position(|bytes| bytes == b"\r\n\r\n").unwrap() + 4;
+        for split in 1..request.len() {
+            let mut header = Vec::new();
+            let (first, complete) = append_header_chunk(&mut header, &request[..split]).unwrap();
+            if complete {
+                assert_eq!(first, terminator);
+                assert_eq!(header.len(), terminator);
+            } else {
+                assert_eq!(first, split);
+                let (second, complete) = append_header_chunk(&mut header, &request[split..]).unwrap();
+                assert!(complete);
+                assert_eq!(split + second, terminator);
+                assert_eq!(header.len(), terminator);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_header_budget_overflow_before_advancing_into_body() {
+        let mut head = Vec::new();
+        let oversized = vec![b'x'; MAX_HEADER_BYTES + 1];
+        assert!(append_header_chunk(&mut head, &oversized).is_err());
+        assert_eq!(head.len(), MAX_HEADER_BYTES + 1);
     }
 }
 
