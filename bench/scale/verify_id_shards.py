@@ -35,16 +35,19 @@ def verify_file(path, start, rows, step=1):
     with os.fdopen(descriptor, "rb") as source:
         opened = os.fstat(source.fileno())
         if (not stat.S_ISREG(opened.st_mode)
-                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+                or (before.st_dev, before.st_ino, before.st_size,
+                    before.st_mtime_ns, before.st_ctime_ns) !=
+                    (opened.st_dev, opened.st_ino, opened.st_size,
+                     opened.st_mtime_ns, opened.st_ctime_ns)):
             raise ValueError("shard changed before verification")
         # Read exact bounded blocks rather than one readline and digest update
         # per UInt64 ID. An oversized/malformed line also fails without an
         # unbounded readline allocation.
         for offset in range(0, rows, 4096):
             count = min(4096, rows - offset)
-            expected = "".join(
-                f"{start + (offset + index) * step}\n" for index in range(count)
-            ).encode("ascii")
+            first = start + offset * step
+            stop = first + count * step
+            expected = ("\n".join(map(str, range(first, stop, step))) + "\n").encode("ascii")
             actual = source.read(len(expected))
             if actual != expected:
                 raise ValueError(
@@ -53,18 +56,48 @@ def verify_file(path, start, rows, step=1):
             digest.update(actual)
         if source.read(1):
             raise ValueError(f"{path}: contains additional rows")
+        finished = os.fstat(source.fileno())
+        if (opened.st_dev, opened.st_ino, opened.st_size,
+                opened.st_mtime_ns, opened.st_ctime_ns) != (
+                finished.st_dev, finished.st_ino, finished.st_size,
+                finished.st_mtime_ns, finished.st_ctime_ns):
+            raise ValueError(f"{path}: shard changed during verification")
+    after = path.lstat()
+    if (before.st_dev, before.st_ino, before.st_size,
+            before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_dev, after.st_ino, after.st_size,
+            after.st_mtime_ns, after.st_ctime_ns):
+        raise ValueError(f"{path}: shard changed during verification")
     return digest.hexdigest()
+
+
+def _manifest_identity(metadata):
+    return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns)
 
 
 def verify(manifest_path):
     manifest_path = Path(manifest_path)
-    if manifest_path.is_symlink():
-        raise ValueError("refusing symlinked shard manifest")
-    with manifest_path.open("rb") as stream:
+    before = manifest_path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("refusing non-regular or symlinked shard manifest")
+    canonical_path = manifest_path.resolve(strict=True)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(manifest_path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or _manifest_identity(opened) != _manifest_identity(before)):
+            raise ValueError("shard manifest changed before opening")
         payload = stream.read(MAX_MANIFEST_BYTES + 1)
-    if len(payload) > MAX_MANIFEST_BYTES:
-        raise ValueError("shard manifest exceeds 8 MiB")
-    manifest_path = manifest_path.resolve()
+        if len(payload) > MAX_MANIFEST_BYTES:
+            raise ValueError("shard manifest exceeds 8 MiB")
+        if _manifest_identity(opened) != _manifest_identity(os.fstat(stream.fileno())):
+            raise ValueError("shard manifest changed during reading")
+    if (_manifest_identity(before) != _manifest_identity(manifest_path.lstat())
+            or manifest_path.resolve(strict=True) != canonical_path):
+        raise ValueError("shard manifest changed during reading")
+    manifest_path = canonical_path
     def unique_fields(pairs):
         result = {}
         for name, value in pairs:
@@ -73,10 +106,15 @@ def verify(manifest_path):
             result[name] = value
         return result
 
-    manifest = json.loads(payload, object_pairs_hook=unique_fields)
+    def reject_nonstandard_number(token):
+        raise ValueError(f"nonstandard shard manifest JSON number: {token}")
+
+    manifest = json.loads(payload, object_pairs_hook=unique_fields,
+                          parse_constant=reject_nonstandard_number)
     if not isinstance(manifest, dict):
         raise ValueError("shard manifest must be a JSON object")
-    if manifest.get("schema_version") != 1:
+    # bool == 1 in Python, but a JSON boolean is not a schema version.
+    if type(manifest.get("schema_version")) is not int or manifest["schema_version"] != 1:
         raise ValueError("unsupported shard manifest version")
     start = require_uint(manifest.get("start"), "start", zero=True)
     rows = require_uint(manifest.get("rows"), "rows")

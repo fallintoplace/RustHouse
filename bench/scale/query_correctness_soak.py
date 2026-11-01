@@ -8,12 +8,16 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
+import stat
 import statistics
 import subprocess
 import tempfile
 import time
 from pathlib import Path
+
+from .query_digest import _has_sql_separator
 
 
 def percentile(samples, percentile):
@@ -26,26 +30,55 @@ def percentile(samples, percentile):
     return sorted(samples)[math.ceil(len(samples) * percentile / 100) - 1]
 
 
-def digest_file(source):
+MAX_SOAK_OUTPUT_BYTES = 100 * 1024 * 1024
+
+
+def digest_file(source, *, max_bytes=None):
+    if max_bytes is None:
+        max_bytes = MAX_SOAK_OUTPUT_BYTES
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
     digest = hashlib.sha256()
     length = 0
     while True:
-        data = source.read(64 * 1024)
+        # Consume at most one extra byte to detect an oversized stream.
+        data = source.read(min(64 * 1024, max_bytes - length + 1))
         if not data:
             break
-        digest.update(data)
         length += len(data)
+        if length > max_bytes:
+            raise ValueError("soak output exceeds configured byte limit")
+        digest.update(data)
     return digest.hexdigest(), length
 
 
-def run_sql(binary, database, statement, timeout):
+def run_sql(binary, database, statement, timeout, max_output_bytes=None):
+    if max_output_bytes is not None and (
+            type(max_output_bytes) is not int or max_output_bytes < 0):
+        raise ValueError("max_output_bytes must be nonnegative")
+    cap_bytes = (MAX_SOAK_OUTPUT_BYTES if max_output_bytes is None
+                 else min(MAX_SOAK_OUTPUT_BYTES, max_output_bytes))
     with tempfile.TemporaryFile() as sink, tempfile.TemporaryFile() as errors:
         started = time.perf_counter()
+        extra = {}
+        if os.name == "posix":
+            import resource
+            def cap_spooled_output():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                limit = (cap_bytes + 1 if hard == resource.RLIM_INFINITY
+                         else min(cap_bytes + 1, hard))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+            extra["preexec_fn"] = cap_spooled_output
         process = subprocess.run(
             [str(binary), "sql", statement, "--database", str(database)],
-            stdout=sink, stderr=errors, timeout=timeout, check=False,
+            stdout=sink, stderr=errors, timeout=timeout, check=False, **extra,
         )
         elapsed = time.perf_counter() - started
+        sink.seek(0, 2)
+        if sink.tell() > cap_bytes:
+            if max_output_bytes is not None:
+                raise ValueError("query output exceeds the reference byte length")
+            raise ValueError("soak output exceeds configured byte limit")
         if process.returncode:
             errors.seek(0, 2)
             errors.seek(max(0, errors.tell() - 500))
@@ -53,6 +86,30 @@ def run_sql(binary, database, statement, timeout):
         sink.seek(0)
         digest, length = digest_file(sink)
         return digest, length, elapsed
+
+
+def _file_state(meta):
+    return (meta.st_dev, meta.st_ino, meta.st_size, meta.st_mtime_ns,
+            meta.st_ctime_ns)
+
+
+def read_reference(path):
+    """Hash the same regular reference inode before and after reading it."""
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("expected output must be a regular non-symlinked file")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or _file_state(before) != _file_state(opened):
+            raise ValueError("expected output changed before opening")
+        reference, size = digest_file(source)
+        if _file_state(opened) != _file_state(os.fstat(source.fileno())):
+            raise ValueError("expected output changed during hashing")
+    if _file_state(before) != _file_state(path.lstat()):
+        raise ValueError("expected output changed during hashing")
+    return reference, size
 
 
 def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
@@ -66,14 +123,11 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
             or len(sql.encode("utf-8")) > 65_536):
         raise ValueError("soak requires a bounded read-only SELECT")
     statement = sql.strip().removesuffix(";").rstrip()
-    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
+    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or _has_sql_separator(statement):
         raise ValueError("soak requires one read-only SELECT")
     expected_file = Path(expected_file)
-    if expected_file.is_symlink() or not expected_file.is_file():
-        raise ValueError("expected output must be a regular non-symlinked file")
-    with expected_file.open("rb") as source:
-        reference, size = digest_file(source)
-    execute = execute or (lambda: run_sql(binary, database, sql, timeout))
+    reference, size = read_reference(expected_file)
+    execute = execute or (lambda: run_sql(binary, database, sql, timeout, max_output_bytes=size))
     samples = []
     for attempt in range(runs + warmups):
         actual, bytes_written, seconds = execute()

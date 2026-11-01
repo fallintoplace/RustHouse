@@ -19,25 +19,33 @@ def permuted(index, seed=0):
     return (index * MULTIPLIER + seed) & MASK
 
 
-def emit(stream, rows, *, seed=0, batch_rows=8192):
+def _validate_controls(rows, seed, batch_rows):
     if type(rows) is not int or not 1 <= rows <= MASK + 1:
         raise ValueError("rows must fit in UInt64 domain")
     if type(seed) is not int or not 0 <= seed <= MASK:
         raise ValueError("seed must be UInt64")
     if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("batch_rows must be in 1..1000000")
+
+
+def emit(stream, rows, *, seed=0, batch_rows=8192):
+    _validate_controls(rows, seed, batch_rows)
     value = seed
     for start in range(0, rows, batch_rows):
         # Modular addition is enough to preserve the exact affine UInt64 sequence.
         pending = []
         for _ in range(min(batch_rows, rows - start)):
-            pending.append(f"{value}\n")
+            pending.append(value)
             value = (value + MULTIPLIER) & MASK
-        stream.write("".join(pending))
+        # Builtin integer conversion avoids a Python formatted-string
+        # allocation per row; keep the same bounded per-batch output.
+        stream.write("\n".join(map(str, pending)) + "\n")
 
 
 def generate(output, rows, *, seed=0, batch_rows=8192):
     output = Path(output)
+    # Reject invalid requests before creating an output directory.
+    _validate_controls(rows, seed, batch_rows)
     if output.exists() or output.is_symlink():
         raise FileExistsError(f"output already exists: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)

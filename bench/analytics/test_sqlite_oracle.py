@@ -93,6 +93,22 @@ class SqliteOracleTests(unittest.TestCase):
                 sqlite_query(alias, "SELECT x FROM t")
             self.assertEqual(sqlite_query(path, "SELECT x FROM t"), [])
 
+    def test_sqlite_oracle_cannot_attach_or_create_external_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "reference.sqlite"
+            external = Path(root) / "unexpected.sqlite"
+            with closing(sqlite3.connect(path)) as db, db:
+                db.execute("CREATE TABLE t(x INTEGER)")
+                db.execute("INSERT INTO t VALUES (42)")
+            self.assertEqual(sqlite_query(path, "WITH q AS (SELECT x FROM t) SELECT sum(x) FROM q"), [(42,)])
+            with self.assertRaisesRegex(sqlite3.DatabaseError, "authorized"):
+                sqlite_query(path, f"ATTACH DATABASE '{external}' AS unexpected")
+            self.assertFalse(external.exists())
+            with self.assertRaisesRegex(sqlite3.DatabaseError, "authorized"):
+                sqlite_query(path, "PRAGMA journal_mode")
+            with self.assertRaises(sqlite3.DatabaseError):
+                sqlite_query(path, "CREATE TEMP TABLE injected(x INTEGER)")
+
     def test_sqlite_query(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "db.sqlite"

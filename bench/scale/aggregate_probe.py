@@ -6,6 +6,7 @@ column contains each integer in [0, rows) exactly once.
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import tempfile
@@ -38,9 +39,23 @@ def verify(binary, part, rows, *, timeout=600, execute=None,
         expected_bytes = f"{expected}\n".encode()
         started = time.perf_counter()
         if execute is None:
+            extra = {}
+            if os.name == "posix":
+                import resource
+
+                def cap_spooled_output():
+                    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                    limit = 1024 * 1024 + 1
+                    if soft != resource.RLIM_INFINITY:
+                        limit = min(limit, soft)
+                    if hard != resource.RLIM_INFINITY:
+                        limit = min(limit, hard)
+                    resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+
+                extra["preexec_fn"] = cap_spooled_output
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
                 completed = subprocess.run(command, stdout=output, stderr=errors,
-                                           check=False, timeout=timeout)
+                                           check=False, timeout=timeout, **extra)
                 if completed.returncode:
                     errors.seek(0, 2)
                     errors.seek(max(0, errors.tell() - 500))

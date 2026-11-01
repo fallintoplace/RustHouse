@@ -150,7 +150,7 @@ fn write_tracked_file(
     part: &Path,
     name: &str,
     bytes: &[u8],
-    uncompressed: Option<&[u8]>,
+    uncompressed: Option<UncompressedChecksum>,
     files: &mut Vec<FileChecksum>,
 ) -> Result<(), PartError> {
     write_file(&part.join(name), bytes)?;
@@ -158,15 +158,12 @@ fn write_tracked_file(
         name: name.to_owned(),
         size: bytes.len() as u64,
         hash: checksum_hash(bytes),
-        uncompressed: uncompressed.map(|data| UncompressedChecksum {
-            size: data.len() as u64,
-            hash: checksum_hash(data),
-        }),
+        uncompressed,
     });
     Ok(())
 }
 
-fn block(data: &[u8], compression: PartCompression) -> Result<Vec<u8>, PartError> {
+fn append_block(result: &mut Vec<u8>, data: &[u8], compression: PartCompression) -> Result<(), PartError> {
     let length = u32::try_from(data.len()).map_err(|_| invalid("part column is too large"))?;
     // Keep tiny and incompressible blocks in the ClickHouse NONE format.
     let compressed = if data.len() >= 128 {
@@ -191,14 +188,22 @@ fn block(data: &[u8], compression: PartCompression) -> Result<Vec<u8>, PartError
         u32::try_from(payload.len()).map_err(|_| invalid("part column is too large"))?;
     // Reserve the checksum prefix and write the checked header and payload
     // directly into the final buffer, avoiding a second allocation and copy.
-    let mut result = Vec::with_capacity(16 + 9 + payload.len());
-    result.resize(16, 0);
+    let start = result.len();
+    result.reserve(16 + 9 + payload.len());
+    result.resize(start + 16, 0);
     result.push(method);
     result.extend_from_slice(&(compressed_size + 9).to_le_bytes());
     result.extend_from_slice(&length.to_le_bytes());
     result.extend_from_slice(payload);
-    let checksum = u128::from(cityhash128(&result[16..])).to_le_bytes();
-    result[..16].copy_from_slice(&checksum);
+    let checksum = u128::from(cityhash128(&result[start + 16..])).to_le_bytes();
+    result[start..start + 16].copy_from_slice(&checksum);
+    Ok(())
+}
+
+#[cfg(test)]
+fn block(data: &[u8], compression: PartCompression) -> Result<Vec<u8>, PartError> {
+    let mut result = Vec::new();
+    append_block(&mut result, data, compression)?;
     Ok(result)
 }
 
@@ -377,7 +382,10 @@ pub fn write_wide_part_with_compression(
                     }).filter(|&size| size <= MAX_STREAM_BYTES)
                         .ok_or_else(|| invalid("part column exceeds 8 MiB"))?;
                     let mut encoded = Vec::new();
-                    let mut uncompressed = Vec::with_capacity(uncompressed_size);
+                    // Hash the decoded stream across granules without retaining a
+                    // second full-width copy of the encoded column.
+                    let mut decoded_bytes = 0usize;
+                    let mut decoded_checksum = StreamingChecksum::new();
                     let mut marks = Vec::with_capacity(24 * granules.len());
                     // Pack adjacent marks into larger compressed blocks, while each
                     // mark retains its exact intra-block decompressed byte offset.
@@ -386,13 +394,13 @@ pub fn write_wide_part_with_compression(
                     for (index, data) in granules.iter().enumerate() {
                         // Empty Array and Map streams retain an unexposed pad byte.
                         let data: &[u8] = if data.is_empty() { &[0] } else { data };
-                        if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
+                        if data.len() > MAX_STREAM_BYTES - decoded_bytes {
                             return Err(invalid("part column exceeds 8 MiB"));
                         }
                         if !pending.is_empty()
                             && data.len() > PACKED_BLOCK_BYTES.saturating_sub(pending.len())
                         {
-                            encoded.extend_from_slice(&block(&pending, compression)?);
+                            append_block(&mut encoded, &pending, compression)?;
                             pending.clear();
                         }
                         marks.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
@@ -400,16 +408,20 @@ pub fn write_wide_part_with_compression(
                         let row_count = (rows.len() - index * GRANULE_ROWS).min(GRANULE_ROWS);
                         marks.extend_from_slice(&(row_count as u64).to_le_bytes());
                         pending.extend_from_slice(data);
-                        uncompressed.extend_from_slice(data);
+                        decoded_bytes += data.len();
+                        decoded_checksum.update(data);
                     }
                     if !pending.is_empty() {
-                        encoded.extend_from_slice(&block(&pending, compression)?);
+                        append_block(&mut encoded, &pending, compression)?;
                     }
                     write_tracked_file(
                         part,
                         &format!("{name}.bin"),
                         &encoded,
-                        Some(&uncompressed),
+                        Some(UncompressedChecksum {
+                            size: decoded_bytes as u64,
+                            hash: decoded_checksum.finish(),
+                        }),
                         &mut files,
                     )?;
                     write_tracked_file(part, &format!("{name}.mrk2"), &marks, None, &mut files)?;
@@ -1084,5 +1096,27 @@ mod writer_schema_bounds_tests {
         }).collect::<Vec<_>>();
         assert!(validate_part_columns(&columns).is_err());
         assert!(validate_part_columns(&columns[..128]).is_ok());
+    }
+}
+
+
+#[cfg(test)]
+mod append_compressed_block_tests {
+    use super::*;
+
+    #[test]
+    fn appended_blocks_preserve_standalone_wire_format() {
+        let repeated = vec![0x41; 64 * 1024];
+        let irregular = (0..(16 * 1024)).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+        for codec in [PartCompression::Lz4, PartCompression::Zstd] {
+            let mut output = vec![7u8, 8u8, 9u8];
+            for input in [&repeated[..], &irregular[..], &[1u8, 2, 3][..]] {
+                let before = output.len();
+                let encoded = block(input, codec).unwrap();
+                append_block(&mut output, input, codec).unwrap();
+                assert_eq!(&output[before..], encoded.as_slice());
+            }
+            assert_eq!(&output[..3], &[7, 8, 9]);
+        }
     }
 }

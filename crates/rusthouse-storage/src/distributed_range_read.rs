@@ -85,6 +85,18 @@ fn read_at(file: &mut File, offset: u64, length: usize) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+// A handful of out-of-order mark ranges can be proven disjoint with
+// stack-only pair checks. Avoid sorting an index vector for these requests.
+fn small_scattered_disjoint(ranges: &[(u64, usize)]) -> bool {
+    ranges.len() <= 8 && ranges.iter().enumerate().all(|(index, &(start, length))| {
+        length == 0 || ranges[..index].iter().all(|&(other_start, other_length)| {
+            other_length == 0
+                || start > other_start + other_length as u64
+                || other_start > start + length as u64
+        })
+    })
+}
+
 /// Read an exact byte range from a frozen regular file, rejecting short reads.
 pub fn read_object_range(
     path: &Path,
@@ -142,7 +154,7 @@ pub fn read_object_ranges(
             previous_end = Some(offset + length as u64); // bounds checked above
             ordered
         });
-    if strictly_disjoint {
+    if strictly_disjoint || small_scattered_disjoint(ranges) {
         let result = ranges.iter()
             .map(|&(offset, length)| read_at(&mut file, offset, length))
             .collect::<io::Result<Vec<_>>>()?;
@@ -204,6 +216,18 @@ pub fn read_object_ranges_checked(
 ) -> io::Result<Vec<Vec<u8>>> {
     if ranges.len() > MAX_RANGES {
         return Err(io::Error::other("too many object ranges"));
+    }
+    if let [(offset, length, expected_crc32c)] = ranges {
+        // A single verified chunk needs no intermediate span vector. The
+        // ordinary range reader enforces the same byte and file limits.
+        let chunk = read_object_range(path, *offset, *length, max_total_bytes)?;
+        if crate::distributed_crc32c::crc32c(&chunk) != *expected_crc32c {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "replica object range checksum mismatch",
+            ));
+        }
+        return Ok(vec![chunk]);
     }
     let spans = ranges.iter().map(|&(offset, length, _)| (offset, length))
         .collect::<Vec<_>>();
@@ -652,5 +676,71 @@ mod positioned_scrub_regression_tests {
             io::ErrorKind::InvalidData
         );
         fs::remove_file(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod single_checked_range_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn single_checked_reads_preserve_bounds_empty_ranges_and_crc_contract() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-checked-single-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        let bytes = (0u32..256).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+        fs::write(&path, &bytes).unwrap();
+        let checksum = crate::distributed_crc32c::crc32c;
+        let correct = (17, 64, checksum(&bytes[17..81]));
+        assert_eq!(
+            read_object_ranges_checked(&path, &[correct], 64).unwrap(),
+            vec![bytes[17..81].to_vec()]
+        );
+        assert_eq!(
+            read_object_ranges_checked(&path, &[(bytes.len() as u64, 0, checksum(b""))], 0)
+                .unwrap(),
+            vec![Vec::<u8>::new()]
+        );
+        let bad = (17, 64, correct.2 ^ 1);
+        assert_eq!(
+            read_object_ranges_checked(&path, &[bad], 64).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(read_object_ranges_checked(&path, &[correct], 63).is_err());
+        assert!(read_object_ranges_checked(&path, &[(250, 7, 0)], 64).is_err());
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod small_scattered_disjoint_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_scattered_disjoint_requests_on_the_direct_read_path() {
+        assert!(small_scattered_disjoint(&[
+            (15, 3), (0, 2), (8, 4), (21, 0)
+        ]));
+        assert!(!small_scattered_disjoint(&[(15, 3), (17, 3)]));
+        assert!(!small_scattered_disjoint(&[(10, 2), (12, 3)]));
+        assert!(!small_scattered_disjoint(&[(0, 1); 9]));
+    }
+
+    #[test]
+    fn reads_out_of_order_small_ranges_in_original_order() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-scattered-range-{}-{}", std::process::id(), line!()
+        ));
+        std::fs::write(&path, b"abcdefghijklmnopqrstuvwxyz").unwrap();
+        let spans = [(20, 3), (0, 3), (10, 2), (6, 0)];
+        let actual = read_object_ranges(&path, &spans, 8).unwrap();
+        assert_eq!(
+            actual,
+            vec![b"uvw".to_vec(), b"abc".to_vec(), b"kl".to_vec(), Vec::new()]
+        );
+        let overlapping = read_object_ranges(&path, &[(4, 4), (6, 4)], 8).unwrap();
+        assert_eq!(overlapping, vec![b"efgh".to_vec(), b"ghij".to_vec()]);
+        std::fs::remove_file(path).unwrap();
     }
 }
