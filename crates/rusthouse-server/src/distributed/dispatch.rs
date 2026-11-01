@@ -33,6 +33,12 @@ fn map_peers_bounded_impl<T: Send + Sync>(
     fail_fast: bool,
     work: impl Fn(Peer) -> Result<T, String> + Sync,
 ) -> Vec<Result<T, String>> {
+    // The common one-peer case does not need a new scoped OS thread.
+    // Keep the same panic isolation and error slot semantics as workers.
+    if let [peer] = peers {
+        return vec![std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(*peer)))
+            .unwrap_or_else(|_| Err("peer query panicked".into()))];
+    }
     let cursor = AtomicUsize::new(0);
     let cancelled = AtomicBool::new(false);
     let slots: Vec<OnceLock<Result<T, String>>> =
@@ -172,5 +178,30 @@ mod fail_fast_fanout_tests {
             results.into_iter().collect::<Result<Vec<_>, _>>().unwrap(),
             peers.iter().map(|peer| peer.port()).collect::<Vec<_>>(),
         );
+    }
+}
+
+#[cfg(test)]
+mod inline_single_peer_tests {
+    use super::*;
+
+    #[test]
+    fn a_single_peer_runs_inline_even_with_many_workers_allowed() {
+        let caller = std::thread::current().id();
+        let peer = Peer::parse("127.0.0.1:45679").unwrap();
+        let result = map_peers_bounded_failfast(&[peer], 8, |peer| {
+            assert_eq!(std::thread::current().id(), caller);
+            Ok(peer.port())
+        });
+        assert_eq!(result, vec![Ok(45679)]);
+    }
+
+    #[test]
+    fn inline_peer_panic_is_reported_without_unwinding_the_request() {
+        let peer = Peer::parse("127.0.0.1:45679").unwrap();
+        let result = map_peers_bounded(&[peer], 8, |_| -> Result<u16, String> {
+            panic!("simulated peer failure");
+        });
+        assert_eq!(result, vec![Err("peer query panicked".into())]);
     }
 }
