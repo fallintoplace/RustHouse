@@ -85,16 +85,50 @@ pub fn crc32c_parallel(bytes: &[u8]) -> u32 {
     if workers <= 1 {
         return crc32c(bytes);
     }
+    crc32c_parallel_with_workers(bytes, workers, None)
+}
+
+// A thread limit can be exhausted while dispatching a large checksum job.
+// Finish the remaining bytes on the calling thread and preserve the original
+// chunk-combination order, rather than panicking or rereading completed work.
+fn crc32c_parallel_with_workers(
+    bytes: &[u8],
+    workers: usize,
+    fail_spawn_at: Option<usize>,
+) -> u32 {
+    if workers <= 1 || bytes.is_empty() {
+        return crc32c(bytes);
+    }
     let chunk_size = bytes.len().div_ceil(workers);
     std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(workers);
-        for chunk in bytes.chunks(chunk_size) {
-            handles.push((chunk.len() as u64, scope.spawn(move || crc32c(chunk))));
+        let mut handles = Vec::with_capacity(workers.min(bytes.len()));
+        let mut dispatched_bytes = 0usize;
+        for (index, chunk) in bytes.chunks(chunk_size).enumerate() {
+            let spawned = if fail_spawn_at == Some(index) {
+                Err(std::io::Error::other("injected CRC32C worker spawn failure"))
+            } else {
+                std::thread::Builder::new().spawn_scoped(scope, move || crc32c(chunk))
+            };
+            match spawned {
+                Ok(handle) => {
+                    handles.push((chunk.len() as u64, handle));
+                    dispatched_bytes += chunk.len();
+                }
+                Err(_) => break,
+            }
         }
+
+        // Complete the unclaimed suffix while earlier workers hash their
+        // assigned ranges. This avoids hashing those ranges a second time.
+        let suffix = &bytes[dispatched_bytes..];
+        let inline = (!suffix.is_empty()).then(|| (suffix.len() as u64, crc32c(suffix)));
         let mut combined = crc32c(b"");
         for (len, handle) in handles {
             let checksum = handle.join().expect("CRC32C worker is infallible");
             combined = crc32c_combine(combined, checksum, len);
+        }
+        if let Some((length, checksum)) = inline {
+            combined = crc32c_combine(combined, checksum, length);
         }
         combined
     })
@@ -987,5 +1021,35 @@ mod checked_crc_chunk_reduction_tests {
                 .kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+}
+
+#[cfg(test)]
+mod checksum_spawn_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn worker_spawn_failures_preserve_the_exact_checksum() {
+        let payload = (0..(256 * 1024 + 17))
+            .map(|index| (index * 19 % 251) as u8)
+            .collect::<Vec<_>>();
+        let expected = crc32c(&payload);
+        for workers in [2, 3, 4] {
+            for failed_index in 0..=workers {
+                assert_eq!(
+                    crc32c_parallel_with_workers(&payload, workers, Some(failed_index)),
+                    expected,
+                    "workers={workers}, failed_index={failed_index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_and_tiny_buffers_keep_sequential_semantics() {
+        for size in [0usize, 1, 2, 3, 7, 15] {
+            let bytes = vec![0xAB; size];
+            assert_eq!(crc32c_parallel_with_workers(&bytes, 4, Some(1)), crc32c(&bytes));
+        }
     }
 }
