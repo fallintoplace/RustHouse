@@ -235,6 +235,31 @@ class ClickHouseDifferentialTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "multiset"):
             assert_clickhouse_json_parity(wrong, reference, unordered=True)
 
+    def test_clickhouse_reference_output_is_capped_in_child_on_posix(self):
+        import os
+
+        def check(command, **kwargs):
+            if os.name == "posix":
+                self.assertTrue(callable(kwargs.get("preexec_fn")))
+            else:
+                self.assertNotIn("preexec_fn", kwargs)
+            return mock.Mock(returncode=0)
+
+        with mock.patch("bench.analytics.clickhouse_parity.subprocess.run",
+                        side_effect=check):
+            self.assertEqual(cli_clickhouse("client", "localhost", 9000, "SELECT 1", 10), b"")
+
+    def test_child_output_limit_errors_are_not_reported_as_sql_failures(self):
+        def oversized(command, **kwargs):
+            kwargs["stdout"].write(b"x" * 4_000_000)
+            kwargs["stderr"].write(b"File size limit exceeded")
+            return mock.Mock(returncode=-25)
+
+        with mock.patch("bench.analytics.clickhouse_parity.subprocess.run",
+                        side_effect=oversized):
+            with self.assertRaisesRegex(ValueError, "4 MB"):
+                cli_clickhouse("client", "localhost", 9000, "SELECT 1", 10)
+
     def test_clickhouse_large_stderr_is_spooled(self):
         def fail(command, **kwargs):
             self.assertNotEqual(kwargs["stderr"], subprocess.PIPE)
