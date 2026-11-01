@@ -217,8 +217,13 @@ fn write_entry(output: &mut impl Write, entry: &SortEntry) -> Result<(), Executi
 
 fn read_entry(input: &mut impl Read) -> Result<Option<SortEntry>, ExecutionError> {
     let mut header = [0u8; 12];
-    if input.read(&mut header[..1])? == 0 {
-        return Ok(None);
+    // A one-byte read is not guaranteed to complete without interruption.
+    // read_exact retries Interrupted and still distinguishes clean EOF from
+    // truncated records by requiring the remainder of the frame header.
+    match input.read_exact(&mut header[..1]) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(error.into()),
     }
     input.read_exact(&mut header[1..])?;
     let ordinal: [u8; 8] = header[..8].try_into().expect("typed sort ordinal width");
@@ -972,5 +977,60 @@ mod typed_spill_order_validation_tests {
             })
             .unwrap();
         assert_eq!(seen, 1);
+    }
+}
+
+#[cfg(test)]
+mod typed_spill_interrupted_io_tests {
+    use super::*;
+
+    struct InterruptFirstRead<'a> {
+        source: &'a [u8],
+        interrupted: bool,
+        calls: usize,
+    }
+
+    impl std::io::Read for InterruptFirstRead<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            self.calls += 1;
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            std::io::Read::read(&mut self.source, output)
+        }
+    }
+
+    #[test]
+    fn retries_interrupted_first_byte_and_decodes_the_complete_entry() {
+        let input = SortEntry {
+            ordinal: 42,
+            row: Row {
+                values: vec![Cell::Numeric(Number::Signed(-17)), Cell::Text(b"payload".to_vec())],
+                sort_keys: vec![Cell::Numeric(Number::Unsigned(123))],
+            },
+        };
+        let mut encoded = Vec::new();
+        write_entry(&mut encoded, &input).unwrap();
+        let mut reader = InterruptFirstRead { source: &encoded, interrupted: false, calls: 0 };
+        let actual = read_entry(&mut reader).unwrap().unwrap();
+        assert_eq!(actual.ordinal, input.ordinal);
+        assert_eq!(actual.row.values.len(), 2);
+        assert_eq!(actual.row.sort_keys.len(), 1);
+        assert!(reader.calls > 2);
+        assert!(read_entry(&mut reader).unwrap().is_none());
+    }
+
+    #[test]
+    fn incomplete_headers_still_fail_instead_of_becoming_clean_eof() {
+        let mut encoded = Vec::new();
+        write_entry(&mut encoded, &SortEntry {
+            ordinal: 1,
+            row: Row { values: vec![Cell::Null], sort_keys: Vec::new() },
+        }).unwrap();
+        for length in 1..12 {
+            assert!(read_entry(&mut &encoded[..length]).is_err(), "length={length}");
+        }
+        assert!(read_entry(&mut &[][..]).unwrap().is_none());
     }
 }
