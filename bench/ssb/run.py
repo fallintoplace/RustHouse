@@ -2,6 +2,8 @@
 """Run a reference-checked, bounded star-schema join end to end."""
 import argparse
 import math
+import os
+import stat
 import sqlite3
 from contextlib import closing
 import subprocess
@@ -43,14 +45,30 @@ MAX_SQL_SCRIPT_BYTES = 64 * 1024
 
 def read_fixture_sql(path):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("SSB fixture SQL must be a regular non-symlinked file")
-    with path.open("rb") as source:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (not stat.S_ISREG(opened.st_mode) or
+                (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("SSB fixture SQL changed while opening")
         raw = source.read(MAX_SQL_SCRIPT_BYTES + 1)
+        finished = os.fstat(source.fileno())
+        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
+                finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
+            raise ValueError("SSB fixture SQL changed during read")
+    after = path.lstat()
+    if ((before.st_dev, before.st_ino, before.st_size,
+         before.st_mtime_ns, before.st_ctime_ns) !=
+            (after.st_dev, after.st_ino, after.st_size,
+             after.st_mtime_ns, after.st_ctime_ns)):
+        raise ValueError("SSB fixture SQL changed during read")
     if len(raw) > MAX_SQL_SCRIPT_BYTES:
         raise ValueError("SSB fixture SQL exceeds 64 KiB")
     return raw.decode("utf-8").strip().rstrip(";")
-
 
 
 def benchmark(binary, rows=2000, seed=42, runs=3, warmups=1,

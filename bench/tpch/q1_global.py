@@ -8,6 +8,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json
 from run import benchmark_one, summarize_coverage
 
+MAX_REFERENCE_LINE_CHARS = 1024 * 1024
+
+
+def bounded_reference_lines(stream):
+    while True:
+        line = stream.readline(MAX_REFERENCE_LINE_CHARS + 1)
+        if not line:
+            return
+        if len(line) > MAX_REFERENCE_LINE_CHARS:
+            raise ValueError("Q1 reference record exceeds 1 MiB")
+        yield line
+
+
 SQL = ("SELECT COUNT(*) AS count_order, SUM(l_quantity) AS sum_qty, "
        "SUM(l_extendedprice) AS sum_base_price FROM lineitem "
        "WHERE l_shipdate <= '1998-09-02'")
@@ -15,8 +28,11 @@ SQL = ("SELECT COUNT(*) AS count_order, SUM(l_quantity) AS sum_qty, "
 
 def oracle(path):
     count = quantity = price = 0
-    with Path(path).open(encoding="utf-8", newline="") as source:
-        reader = csv.DictReader(source, delimiter="\t")
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Q1 reference must be a regular, non-symlinked file")
+    with path.open(encoding="utf-8", newline="") as source:
+        reader = csv.DictReader(bounded_reference_lines(source), delimiter="\t")
         fields = reader.fieldnames or []
         required = ("l_shipdate", "l_quantity", "l_extendedprice")
         if len(fields) != len(set(fields)) or any(name not in fields for name in required):

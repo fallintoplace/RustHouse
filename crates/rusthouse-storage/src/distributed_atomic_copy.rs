@@ -143,6 +143,13 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
     copy_immutable_file_impl(source, destination, max_bytes, None)
 }
 
+// Once the destination hard link has been published, staging cleanup is
+// best effort. A failed unlink cannot roll the committed object back.
+fn finish_copy_publication(staging: &Path, published: io::Result<u64>) -> io::Result<u64> {
+    let _ = fs::remove_file(staging);
+    published
+}
+
 fn copy_immutable_file_impl(
     source: &Path,
     destination: &Path,
@@ -194,17 +201,7 @@ fn copy_immutable_file_impl(
         fs::hard_link(&staging, destination)?;
         Ok(total)
     });
-    let cleanup = fs::remove_file(&staging);
-    let total = match published {
-        Ok(total) => {
-            cleanup?;
-            total
-        }
-        Err(error) => {
-            let _ = cleanup;
-            return Err(error);
-        }
-    };
+    let total = finish_copy_publication(&staging, published)?;
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
     Ok(total)
@@ -556,5 +553,26 @@ mod small_replica_copy_stack_buffer_tests {
         assert_eq!(output.metadata().unwrap().len(), 4);
         drop(output);
         fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod committed_copy_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_staging_unlink_cannot_turn_a_committed_copy_into_an_error() {
+        // Removing a directory with remove_file always fails. This simulates
+        // cleanup failure without relying on filesystem permissions.
+        let staging = std::env::temp_dir();
+        assert_eq!(finish_copy_publication(&staging, Ok(97)).unwrap(), 97);
+        assert!(staging.is_dir());
+    }
+
+    #[test]
+    fn copy_failure_remains_a_failure_even_when_cleanup_also_fails() {
+        let staging = std::env::temp_dir();
+        let failed = finish_copy_publication(&staging, Err(io::Error::other("copy rejected")));
+        assert_eq!(failed.unwrap_err().to_string(), "copy rejected");
     }
 }

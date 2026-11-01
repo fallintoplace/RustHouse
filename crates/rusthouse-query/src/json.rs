@@ -330,12 +330,20 @@ pub fn parse_json_each_row_fields(text: &str) -> Result<Vec<(String, Option<Stri
     // every String into the duplicate-key set, then moved the originals to
     // the result, causing one extra allocation per column on every row.
     {
-        let mut seen = std::collections::HashSet::with_capacity(fields.len());
-        for (key, _) in &fields {
+        // Short JSONEachRow records are common. Check borrowed field names
+        // directly instead of creating a per-record hash table.
+        let mut seen = (fields.len() > 8)
+            .then(|| std::collections::HashSet::with_capacity(fields.len()));
+        for (index, (key, _)) in fields.iter().enumerate() {
             if key.is_empty() || key.len() > 128 {
                 return Err("JSONEachRow field names must be between 1 and 128 bytes".into());
             }
-            if !seen.insert(key.as_str()) {
+            let duplicate = if let Some(seen) = seen.as_mut() {
+                !seen.insert(key.as_str())
+            } else {
+                fields[..index].iter().any(|(previous, _)| previous == key)
+            };
+            if duplicate {
                 return Err(format!("duplicate JSONEachRow field: {key}"));
             }
         }
@@ -502,5 +510,39 @@ mod json_node_budget_tests {
         let too_many = format!("{{\"items\":[{}]}}", vec!["null"; MAX_JSON_NODES - 1].join(","));
         assert_eq!(parse_json(&too_many).unwrap_err(), "JSON contains too many values");
         assert_eq!(parse_json("null").unwrap().type_name(), "Null");
+    }
+}
+
+#[cfg(test)]
+mod short_json_each_row_key_tests {
+    use super::*;
+
+    #[test]
+    fn small_and_large_field_sets_preserve_all_values() {
+        for count in [0, 1, 2, 8, 9, 128] {
+            let json = format!("{{{}}}", (0..count)
+                .map(|index| format!("\"k{index}\":{index}"))
+                .collect::<Vec<_>>().join(","));
+            let fields = parse_json_each_row_fields(&json).unwrap();
+            assert_eq!(fields.len(), count);
+            for (index, (key, value)) in fields.iter().enumerate() {
+                assert_eq!(key, &format!("k{index}"));
+                let expected = index.to_string();
+                assert_eq!(value.as_deref(), Some(expected.as_str()));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_and_invalid_names_at_both_paths() {
+        for count in [8, 9] {
+            let mut fields = (0..count - 1)
+                .map(|index| format!("\"k{index}\":0"))
+                .collect::<Vec<_>>();
+            fields.push("\"k0\":1".into());
+            assert!(parse_json_each_row_fields(&format!("{{{}}}", fields.join(","))).is_err());
+        }
+        assert!(parse_json_each_row_fields(r#"{"":1}"#).is_err());
+        assert!(parse_json_each_row_fields(&format!("{{\"{}\":1}}", "x".repeat(129))).is_err());
     }
 }

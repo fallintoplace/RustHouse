@@ -54,8 +54,11 @@ def generate(directory, rows=10000, seed=42):
         raise ValueError("fixture root must not be a symlink")
     directory.mkdir(parents=True, exist_ok=True)
     for name in ("hits.tsv", "hits.sqlite", "create.sql", "copy.sql"):
-        if (directory / name).is_symlink():
+        target = directory / name
+        if target.is_symlink():
             raise ValueError(f"refusing symlinked fixture output: {name}")
+        if target.exists():
+            raise FileExistsError(f"refusing to overwrite analytics fixture: {name}")
     names = [name for name, _, _ in FIELDS]
     tsv = directory / "hits.tsv"
     db = directory / "hits.sqlite"

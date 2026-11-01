@@ -57,6 +57,19 @@ class IngestBenchmarkTests(unittest.TestCase):
                 runner.verify(Path("binary"), Path("db"), 3, 2, 0, 100000000,
                               100000000, 5)
 
+    def test_copy_escapes_quote_in_temporary_source_path(self):
+        source = Path("/tmp/rusthouse-O'Brien/measurements.txt")
+        self.assertEqual(
+            runner.copy_sql(source, "TSV"),
+            "COPY measurements FROM '/tmp/rusthouse-O''Brien/measurements.txt' WITH (FORMAT TSV)",
+        )
+        self.assertEqual(
+            runner.copy_sql(source, "SSV"),
+            "COPY measurements FROM '/tmp/rusthouse-O''Brien/measurements.txt' WITH (FORMAT SSV)",
+        )
+        with self.assertRaisesRegex(ValueError, "format"):
+            runner.copy_sql(source, "TSV); DROP TABLE measurements")
+
     def test_semicolon_input_uses_the_same_oracle(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "readings.ssv"

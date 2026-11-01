@@ -64,6 +64,31 @@ class ConcurrentReadersTests(unittest.TestCase):
                              SimpleNamespace(returncode=0, stdout=b";\n", stderr=b""))
         self.assertTrue(report["all_verified"])
 
+    def test_comment_semicolons_do_not_create_extra_statements(self):
+        from bench.scale.concurrent_readers import _has_separator
+        for statement in (
+            "SELECT 1 /* hidden ; */",
+            "SELECT /* outer /* inner ; */ tail ; */ 1",
+            "SELECT 1 -- ignored ;\r\n + 2",
+            "SELECT 1 # ignored ;\n + 2",
+            "SELECT `table;name`",
+            "SELECT 'literal;inside' AS name",
+        ):
+            self.assertFalse(_has_separator(statement), statement)
+        for statement in (
+            "SELECT 1 /* comment */ ; DELETE FROM data",
+            "SELECT 1 /* unclosed ;",
+            "SELECT 1 /* " * 33 + " */" * 33,
+            "SELECT 1 # comment\n; SELECT 2",
+        ):
+            self.assertTrue(_has_separator(statement), statement)
+        report = run_readers(
+            "rusthouse", "part", "SELECT 1 /* ; */", b"1\n",
+            clients=1, rounds=1, execute=lambda *_a, **_k:
+            SimpleNamespace(returncode=0, stdout=b"1\n", stderr=b""),
+        )
+        self.assertTrue(report["all_verified"])
+
     def test_rejects_nonstring_sql_without_launching_workers(self):
         for sql in (None, 42, b"SELECT 1", ["SELECT 1"]):
             with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "SQL must"):
@@ -88,6 +113,30 @@ class ConcurrentReadersTests(unittest.TestCase):
                              clients=1, rounds=1, execute=execute)
         self.assertIsNone(failed["p95_query_seconds"])
         self.assertIsNone(failed["p99_query_seconds"])
+
+    def test_rejects_reference_replaced_between_stat_and_open(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from bench.scale.concurrent_readers import read_reference
+
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory) / "expected.tsv"
+            replacement = Path(directory) / "replacement.tsv"
+            corpus.write_bytes(b"1\n")
+            replacement.write_bytes(b"2\n")
+            real_open = os.open
+
+            def swap(path, flags):
+                corpus.unlink()
+                replacement.rename(corpus)
+                return real_open(path, flags)
+
+            with patch("bench.scale.concurrent_readers.os.open", side_effect=swap):
+                with self.assertRaisesRegex(ValueError, "changed before opening"):
+                    read_reference(corpus)
+
 
 if __name__ == "__main__":
     unittest.main()
