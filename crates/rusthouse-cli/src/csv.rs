@@ -4,11 +4,13 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_FIELD_BYTES: usize = 1024 * 1024;
+const MAX_CSV_ROW_BYTES: usize = 16 * 1024 * 1024;
 
 /// Convert RustHouse's numeric tab-separated output into RFC 4180-style CSV.
 pub struct CsvWriter<W: Write> {
     output: W,
     field: Vec<u8>,
+    encoded: Vec<u8>,
     pending_cr: bool,
     columns: Option<usize>,
     fields_in_row: usize,
@@ -19,6 +21,7 @@ impl<W: Write> CsvWriter<W> {
         Self {
             output,
             field: Vec::new(),
+            encoded: Vec::new(),
             pending_cr: false,
             columns: None,
             fields_in_row: 0,
@@ -70,15 +73,26 @@ impl<W: Write> CsvWriter<W> {
             ));
         }
         self.finish_field(b"\r\n")?;
+        // Never publish part of a malformed row. A later field can still
+        // fail TSV escape decoding or the header-width check above.
+        self.output.write_all(&self.encoded)?;
+        self.encoded.clear();
         self.columns = Some(width);
         self.fields_in_row = 0;
         Ok(())
     }
 
     fn finish_field(&mut self, separator: &[u8]) -> io::Result<()> {
-        write_csv_field(&mut self.output, &self.field)?;
+        write_csv_field(&mut self.encoded, &self.field)?;
         self.field.clear();
-        self.output.write_all(separator)
+        if self.encoded.len().saturating_add(separator.len()) > MAX_CSV_ROW_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CSV row exceeds 16 MiB",
+            ));
+        }
+        self.encoded.extend_from_slice(separator);
+        Ok(())
     }
 }
 
@@ -205,11 +219,21 @@ mod tests {
         let mut extra = CsvWriter::new(Vec::new());
         extra.write_all(b"id\tname\n1\tAlice\twrong\n").unwrap_err();
         assert_eq!(extra.columns, Some(2));
+        assert_eq!(extra.output, b"id,name\r\n");
 
         let mut split = CsvWriter::new(Vec::new());
         split.write_all(b"id\tname\r").unwrap();
         split.write_all(b"\n1\tAlice\r\n").unwrap();
         assert_eq!(split.output, b"id,name\r\n1,Alice\r\n");
+    }
+
+    #[test]
+    fn invalid_late_tsv_escape_does_not_publish_partial_csv_row() {
+        let mut writer = CsvWriter::new(Vec::new());
+        writer
+            .write_all(b"id\tname\n1\tvalid\n2\tinvalid\\q\n")
+            .unwrap_err();
+        assert_eq!(writer.output, b"id,name\r\n1,valid\r\n");
     }
 
     #[test]
