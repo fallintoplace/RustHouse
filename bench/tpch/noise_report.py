@@ -3,7 +3,10 @@
 import argparse
 import json
 import math
+import os
+import stat
 import statistics
+import tempfile
 from pathlib import Path
 
 MAX_REPORT_BYTES = 2 * 1024 * 1024
@@ -22,16 +25,39 @@ def _reject_nonfinite_json(value):
     raise ValueError(f"nonfinite noise report JSON value: {value}")
 
 
+def _finite_json_float(text):
+    parsed = float(text)
+    if not math.isfinite(parsed):
+        raise ValueError("nonfinite noise report JSON value")
+    return parsed
+
+
 def load_report(path):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("report must be a regular, non-symlinked file")
-    with path.open("rb") as source:
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(opened) != identity(before):
+            raise ValueError("noise report changed while opening")
         payload = source.read(MAX_REPORT_BYTES + 1)
+        if identity(opened) != identity(os.fstat(source.fileno())):
+            raise ValueError("noise report changed while reading")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError("noise report changed while reading")
     if len(payload) > MAX_REPORT_BYTES:
         raise ValueError("benchmark report exceeds 2 MiB")
     return json.loads(payload, object_pairs_hook=_unique_json_fields,
-                      parse_constant=_reject_nonfinite_json)
+                      parse_constant=_reject_nonfinite_json,
+                      parse_float=_finite_json_float)
 
 
 def assess_query(result, min_samples=5, max_cv_percent=10.0):
@@ -95,8 +121,23 @@ def main(argv=None):
         parser.exit(1, f"noise analysis failed: {error}\n")
     rendered = json.dumps(report, indent=2) + "\n"
     if args.output:
+        if args.output.resolve() == args.input.resolve():
+            parser.error("noise output must not replace its input")
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(rendered, encoding="utf-8")
+        pending = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=args.output.parent,
+                prefix=f".{args.output.name}.", suffix=".tmp", delete=False,
+            ) as stream:
+                pending = Path(stream.name)
+                stream.write(rendered)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(pending, args.output)
+        finally:
+            if pending is not None:
+                pending.unlink(missing_ok=True)
     print(rendered, end="")
     return int(args.gate and any(q["state"] != "stable" for q in report["queries"]))
 
