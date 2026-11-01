@@ -867,6 +867,31 @@ pub fn plan_joint_write_acknowledgements(
         .collect::<Vec<_>>();
     candidates.sort_unstable();
     candidates.dedup();
+    // A membership that already has write quorum imposes no further
+    // constraint. The lexicographically earliest remaining members from the
+    // other membership are the exact minimum, without a two-dimensional DP.
+    if previous_missing == 0 || next_missing == 0 {
+        let (missing, members) = if previous_missing == 0 {
+            (next_missing, next_members)
+        } else {
+            (previous_missing, previous_members)
+        };
+        return Ok(candidates
+            .into_iter()
+            .filter(|candidate| members.contains(candidate))
+            .take(missing)
+            .map(str::to_owned)
+            .collect());
+    }
+    // One common unacknowledged member can supply the final vote in both
+    // memberships. Prefer the smallest common name for the exact tie break.
+    if previous_missing == 1 && next_missing == 1 {
+        if let Some(&shared) = candidates.iter().find(|&&name| {
+            previous_members.contains(&name) && next_members.contains(&name)
+        }) {
+            return Ok(vec![shared.to_owned()]);
+        }
+    }
     // Policies permit at most 16 members on either side. A 32-bit mask
     // represents the complete candidate set without heap-backed DP paths.
     debug_assert!(candidates.len() <= 32);
@@ -936,6 +961,28 @@ mod optimal_joint_write_ack_tests {
             plan_joint_write_acknowledgements(policy, &old, policy, &new, &["a", "b", "c", "d"],)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn already_satisfied_membership_requires_only_missing_votes_from_other_side() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let previous = ["a", "b", "c"];
+        let next = ["b", "c", "d"];
+        assert_eq!(
+            plan_joint_write_acknowledgements(policy, &previous, policy, &next, &["a", "b"])
+                .unwrap(),
+            ["c"]
+        );
+        assert_eq!(
+            plan_joint_write_acknowledgements(policy, &previous, policy, &next, &["b", "d"])
+                .unwrap(),
+            ["a"]
+        );
+        assert_eq!(
+            plan_joint_write_acknowledgements(policy, &previous, policy, &next, &["a", "d"])
+                .unwrap(),
+            ["b"]
         );
     }
 
