@@ -50,6 +50,30 @@ class DoctorReportTests(unittest.TestCase):
         self.assertLessEqual(len(result["stderr"]), 32_768)
         self.assertTrue(result["truncated"])
 
+    def test_subprocess_cannot_fill_temp_files_before_report_truncation(self):
+        import os
+        import sys
+        import tempfile
+        from pathlib import Path
+        from doctor_report import MAX_CHILD_OUTPUT_BYTES, run
+
+        if os.name != "posix":
+            self.skipTest("RLIMIT_FSIZE is available on POSIX")
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "noisy-doctor"
+            binary.write_text(
+                "#!" + sys.executable + "\n"
+                "import os\n"
+                "for _ in range(256):\n"
+                "    os.write(1, b'x' * 65536)\n"
+            )
+            binary.chmod(0o700)
+            outcome = run(binary, directory, full_hashes=False, timeout=10)
+        self.assertFalse(outcome["ok"])
+        self.assertTrue(outcome["truncated"])
+        self.assertEqual(len(outcome["stdout"]), 32_768)
+        self.assertLess(MAX_CHILD_OUTPUT_BYTES, 256 * 65536)
+
     def test_custom_doctor_timeout_is_forwarded(self):
         from unittest.mock import patch
         from doctor_report import run
