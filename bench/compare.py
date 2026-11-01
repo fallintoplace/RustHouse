@@ -8,6 +8,7 @@ import json
 import math
 import os
 import stat
+import tempfile
 from pathlib import Path
 
 
@@ -209,9 +210,27 @@ def main(argv=None):
         )
     except (OSError, ValueError) as error:
         parser.exit(1, f"benchmark comparison failed: {error}\n")
-    content = json.dumps(result, indent=2) + "\n"
+    content = json.dumps(result, indent=2, allow_nan=False) + "\n"
     if args.output:
-        args.output.write_text(content, encoding="utf-8")
+        pending = None
+        try:
+            if args.output.resolve() in (args.baseline.resolve(), args.candidate.resolve()):
+                raise ValueError("comparison output must not overwrite its inputs")
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=args.output.parent,
+                prefix=f".{args.output.name}.", suffix=".tmp", delete=False,
+            ) as output:
+                pending = Path(output.name)
+                output.write(content)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(pending, args.output)
+        except (OSError, ValueError) as error:
+            parser.exit(1, f"benchmark comparison output failed: {error}\n")
+        finally:
+            if pending is not None:
+                pending.unlink(missing_ok=True)
     print(content, end="")
     return int(args.fail_on_regressions and result["regression_count"] > 0)
 

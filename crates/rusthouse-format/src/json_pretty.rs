@@ -158,6 +158,15 @@ fn write_pretty_json_row_into<W: Write>(output: &mut W, row: &[u8]) -> io::Resul
             }
             continue;
         }
+        // Large numeric, boolean and null values contain no formatting
+        // punctuation. Skip their whole span instead of matching every byte
+        // through the JSON indentation state machine.
+        let Some(distance) = row[index..].iter().position(|&byte| {
+            matches!(byte, b'"' | b'{' | b'[' | b'}' | b']' | b',' | b':')
+        }) else {
+            break;
+        };
+        index += distance;
         let byte = row[index];
         match byte {
             b'"' => inside_json_string = true,
@@ -516,5 +525,33 @@ mod large_json_string_span_tests {
         let mut actual = Vec::new();
         write_pretty_json_row(&mut actual, input.as_bytes()).unwrap();
         assert_eq!(actual, expected.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod bulk_scalar_span_tests {
+    use super::*;
+
+    #[test]
+    fn skips_large_scalar_runs_without_changing_pretty_output() {
+        let large_number = "1234567890".repeat(10_000);
+        let row = format!("{{\"n\":{large_number},\"ok\":true,\"empty\":null}}");
+        let mut formatted = Vec::new();
+        write_pretty_json_row(&mut formatted, row.as_bytes()).unwrap();
+        assert_eq!(
+            formatted,
+            format!("{{\n    \"n\": {large_number},\n    \"ok\": true,\n    \"empty\": null\n  }}").as_bytes()
+        );
+    }
+
+    #[test]
+    fn quoted_punctuation_survives_bulk_scalar_skipping() {
+        let row = br#"{"name":"a,b:{[]}","data":[0,-12345,2.75e-4,false,null]}"#;
+        let mut formatted = Vec::new();
+        write_pretty_json_row(&mut formatted, row).unwrap();
+        assert_eq!(
+            formatted,
+            b"{\n    \"name\": \"a,b:{[]}\",\n    \"data\": [\n      0,\n      -12345,\n      2.75e-4,\n      false,\n      null\n    ]\n  }"
+        );
     }
 }

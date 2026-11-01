@@ -55,6 +55,52 @@ class AnalyticsSuiteTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "non-symlinked"):
                 load_workload(alias)
 
+    def test_rejects_workload_replaced_after_preflight(self):
+        import os
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "workload.json"
+            swapped = Path(root) / "swapped.json"
+            path.write_text('{"name":"one","queries":[{"name":"q","sql":"SELECT 1"}]}')
+            swapped.write_text('{"name":"two","queries":[{"name":"q","sql":"SELECT 2"}]}')
+            original_open = os.open
+
+            def change_after_preflight(filename, flags):
+                path.unlink()
+                swapped.rename(path)
+                return original_open(filename, flags)
+
+            with patch("bench.analytics.suite_runner.os.open",
+                       side_effect=change_after_preflight):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    load_workload(path)
+
+    def test_rejects_workload_changed_during_read(self):
+        import os
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "workload.json"
+            replacement = Path(root) / "replacement.json"
+            path.write_text('{"name":"one","queries":[{"name":"q","sql":"SELECT 1"}]}')
+            replacement.write_text('{"name":"two","queries":[{"name":"q","sql":"SELECT 2"}]}')
+            original_fstat = os.fstat
+            count = 0
+
+            def swap_on_final_check(fd):
+                nonlocal count
+                count += 1
+                if count == 2:
+                    path.unlink()
+                    replacement.rename(path)
+                return original_fstat(fd)
+
+            with patch("bench.analytics.suite_runner.os.fstat",
+                       side_effect=swap_on_final_check):
+                with self.assertRaisesRegex(ValueError, "changed while reading"):
+                    load_workload(path)
+
     def test_duplicate_workload_json_fields_are_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "workload.json"
