@@ -24,6 +24,14 @@ def _reject_nonfinite_json(value):
     raise ValueError(f"nonfinite JSON constant: {value}")
 
 
+def _finite_json_float(value):
+    # A legal JSON exponent such as 1e9999 also becomes infinity in Python.
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"nonfinite JSON number: {value}")
+    return number
+
+
 def _unique_object_pairs(pairs):
     result = {}
     for key, value in pairs:
@@ -85,7 +93,7 @@ def fetch(base, table, timeout=5):
     if len(body) > 1_048_576:
         raise ValueError("schema response too large")
     return columns(json.loads(body, object_pairs_hook=_unique_object_pairs,
-                              parse_constant=_reject_nonfinite_json))
+                              parse_constant=_reject_nonfinite_json, parse_float=_finite_json_float))
 
 
 def main():
