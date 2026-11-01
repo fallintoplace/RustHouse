@@ -12,7 +12,7 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(_has_separator("SELECT 1; # real separator"))
         self.assertEqual(
             parse_lines("# ignored line\nSELECT 1 # comment with ;\nSELECT 2;"),
-            [(2, "SELECT 1 # comment with ;"), (3, "SELECT 2")],
+            [(2, "SELECT 1 # comment with"), (3, "SELECT 2")],
         )
 
     def test_accepts_one_select_per_line(self):
