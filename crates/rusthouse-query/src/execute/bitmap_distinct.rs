@@ -201,6 +201,8 @@ impl BitmapDistinct32 {
                 (Some(Block::Dense(_)), _) => {}
             }
         }
+        // Validate the completed plan instead of transient counts that
+        // depend on the arbitrary iteration order of prefix hash tables.
         if sparse_keys > MAX_SPARSE_KEYS {
             return Err(ExecutionError::Invalid(
                 "COUNT(DISTINCT) exceeded its sparse-key memory budget".into(),
@@ -309,6 +311,37 @@ impl BitmapDistinct32 {
             }
         }
         additions
+    }
+}
+
+#[cfg(test)]
+mod order_independent_bitmap_merge_budget_tests {
+    use super::*;
+
+    #[test]
+    fn delayed_dense_conversion_frees_sparse_budget_before_validation() {
+        let mut left = BitmapDistinct32::new();
+        for prefix in 0..32u32 {
+            for suffix in 0..(DENSE_THRESHOLD as u32 - 1) {
+                left.insert((prefix << 16) | suffix).unwrap();
+            }
+        }
+        for suffix in 0..32u32 {
+            left.insert((32 << 16) | suffix).unwrap();
+        }
+        assert_eq!(left.sparse_keys, MAX_SPARSE_KEYS);
+        let before = left.len();
+
+        let mut right = BitmapDistinct32::new();
+        right.insert((DENSE_THRESHOLD as u32) - 1).unwrap();
+        right.insert(33 << 16).unwrap();
+
+        left.merge_from(&right).unwrap();
+        assert_eq!(left.len(), before + 2);
+        assert_eq!(left.sparse_keys, MAX_SPARSE_KEYS - DENSE_THRESHOLD + 2);
+        assert_eq!(left.dense_blocks, 1);
+        left.insert(34 << 16).unwrap();
+        assert_eq!(left.len(), before + 3);
     }
 }
 
