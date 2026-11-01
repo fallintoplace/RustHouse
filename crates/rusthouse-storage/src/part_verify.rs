@@ -45,12 +45,52 @@ fn same_verification_generation(before: &fs::Metadata, after: &fs::Metadata) -> 
     }
 }
 
+/// Pin the complete set of files before the slow validation scan. Checking
+/// one stream immediately after reading it is not sufficient: that stream
+/// could be replaced while a later stream is still being decoded.
+fn pin_verification_files(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> Result<Vec<(PathBuf, fs::Metadata)>, PartError> {
+    let mut pinned = Vec::new();
+    for path in paths {
+        let metadata = fs::symlink_metadata(&path).map_err(|source| io_error(&path, source))?;
+        if !metadata.file_type().is_file() {
+            return Err(invalid(
+                &path,
+                "wide verification source is not a regular file",
+            ));
+        }
+        pinned.push((path, metadata));
+    }
+    Ok(pinned)
+}
+
+fn verify_pinned_files(pinned: &[(PathBuf, fs::Metadata)]) -> Result<(), PartError> {
+    for (path, original) in pinned {
+        let current = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+        if !same_verification_generation(original, &current) {
+            return Err(invalid(path, "wide part changed during verification"));
+        }
+    }
+    Ok(())
+}
+
 pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, PartError> {
     let path = path.as_ref();
     let metadata = inspect_part(path)?;
     let (data_files, mut mark_files) = collect_wide_file_pairs(path)?;
 
     validate_stream_pairs(path, metadata.rows, &data_files, &mark_files)?;
+
+    // Pin count, schema, every data stream and every marks stream before
+    // validating the first column. This also protects early-verified files
+    // against replacements while processing later columns.
+    let pinned = pin_verification_files(
+        [path.join("count.txt"), path.join("columns.txt")]
+            .into_iter()
+            .chain(data_files.iter().cloned())
+            .chain(mark_files.values().cloned()),
+    )?;
 
     let mut report = PartVerification {
         streams: 0,
@@ -63,26 +103,24 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         let marks_path = mark_files
             .remove(&data)
             .ok_or_else(|| invalid(&data, "missing wide mark file during verification"))?;
-        let data_generation =
-            fs::symlink_metadata(&data).map_err(|source| io_error(&data, source))?;
-        let marks_generation =
-            fs::symlink_metadata(&marks_path).map_err(|source| io_error(&marks_path, source))?;
+        let data_generation = fs::symlink_metadata(&data)
+            .map_err(|source| io_error(&data, source))?;
+        let marks_generation = fs::symlink_metadata(&marks_path)
+            .map_err(|source| io_error(&marks_path, source))?;
         let marks = read_wide_marks(&marks_path)?;
         validate_adaptive_stream(&data, &marks, metadata.rows, &mut layout)?;
         validate_wide_marks(&marks, CompressedBlockReader::open(&data)?)?;
 
         let decoded_size = account_decoded_blocks(&data, &mut report)?;
-        let data_after = fs::symlink_metadata(&data).map_err(|source| io_error(&data, source))?;
+        let data_after = fs::symlink_metadata(&data)
+            .map_err(|source| io_error(&data, source))?;
         if !same_verification_generation(&data_generation, &data_after) {
             return Err(invalid(&data, "wide stream changed during verification"));
         }
-        let marks_after =
-            fs::symlink_metadata(&marks_path).map_err(|source| io_error(&marks_path, source))?;
+        let marks_after = fs::symlink_metadata(&marks_path)
+            .map_err(|source| io_error(&marks_path, source))?;
         if !same_verification_generation(&marks_generation, &marks_after) {
-            return Err(invalid(
-                &marks_path,
-                "wide marks changed during verification",
-            ));
+            return Err(invalid(&marks_path, "wide marks changed during verification"));
         }
         if let Some(expected) = expected_fixed_stream_bytes(&data, &metadata)? {
             if decoded_size != expected {
@@ -98,6 +136,16 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
             .ok_or_else(|| invalid(&data, "mark count overflows"))?;
         report.streams += 1;
     }
+    // Re-reading the small metadata also catches changes between inspect_part
+    // and the initial pin, when file contents differ but still parse correctly.
+    let current = inspect_part(path)?;
+    if current.rows != metadata.rows || current.columns != metadata.columns {
+        return Err(invalid(
+                path,
+                "wide part metadata changed during verification",
+            ));
+    }
+    verify_pinned_files(&pinned)?;
     Ok(report)
 }
 
@@ -121,14 +169,10 @@ fn fixed_stream_width(kind: &str) -> Option<u64> {
         "UInt128" | "Int128" | "UUID" | "IPv6" => Some(16),
         "UInt256" | "Int256" => Some(32),
         _ if kind.starts_with("DateTime64(")
-            && kind
-                .strip_prefix("DateTime64(")
+            && kind.strip_prefix("DateTime64(")
                 .and_then(|precision| precision.strip_suffix(')'))
                 .and_then(|precision| precision.parse::<u8>().ok())
-                .is_some_and(|precision| precision <= 9) =>
-        {
-            Some(8)
-        }
+                .is_some_and(|precision| precision <= 9) => Some(8),
         _ => kind
             .strip_prefix("FixedString(")
             .and_then(|width| width.strip_suffix(')'))
@@ -290,16 +334,13 @@ mod tests {
                 checked_plain_block(&vec![0; bytes_per_row]),
             )
             .unwrap();
-            assert!(
-                matches!(
-                    verify_wide_part(&dir),
-                    Err(PartError::InvalidPart {
-                        reason: "fixed-width stream byte count differs from count.txt",
-                        ..
-                    })
-                ),
-                "{kind}"
-            );
+            assert!(matches!(
+                verify_wide_part(&dir),
+                Err(PartError::InvalidPart {
+                    reason: "fixed-width stream byte count differs from count.txt",
+                    ..
+                })
+            ), "{kind}");
         }
         fs::remove_dir_all(dir).unwrap();
     }
@@ -360,33 +401,22 @@ mod tests {
             fs::write(
                 dir.join("columns.txt"),
                 format!("columns format version: 1\n1 columns:\n`id` {kind}\n"),
-            )
-            .unwrap();
+            ).unwrap();
             if kind.starts_with("Nullable(") {
                 fs::write(dir.join("id.null.bin"), checked_plain_block(&[0, 1])).unwrap();
                 fs::copy(dir.join("id.mrk2"), dir.join("id.null.mrk2")).unwrap();
             }
-            fs::write(
-                dir.join("id.bin"),
-                checked_plain_block(&vec![0; bytes_per_row * 2]),
-            )
-            .unwrap();
+            fs::write(dir.join("id.bin"),
+                checked_plain_block(&vec![0; bytes_per_row * 2])).unwrap();
             assert!(verify_wide_part(&dir).is_ok(), "{kind}");
-            fs::write(
-                dir.join("id.bin"),
-                checked_plain_block(&vec![0; bytes_per_row]),
-            )
-            .unwrap();
-            assert!(
-                matches!(
-                    verify_wide_part(&dir),
-                    Err(PartError::InvalidPart {
-                        reason: "fixed-width stream byte count differs from count.txt",
-                        ..
-                    })
-                ),
-                "{kind}"
-            );
+            fs::write(dir.join("id.bin"),
+                checked_plain_block(&vec![0; bytes_per_row])).unwrap();
+            assert!(matches!(verify_wide_part(&dir),
+                Err(PartError::InvalidPart {
+                    reason: "fixed-width stream byte count differs from count.txt",
+                    ..
+                })
+            ), "{kind}");
         }
         fs::remove_dir_all(dir).unwrap();
     }
@@ -523,6 +553,7 @@ mod tests {
     }
 }
 
+
 #[cfg(test)]
 mod stable_generation_verification_tests {
     use super::*;
@@ -530,8 +561,7 @@ mod stable_generation_verification_tests {
     #[test]
     fn rejects_in_place_length_change_and_replaced_inodes() {
         let root = std::env::temp_dir().join(format!(
-            "rusthouse-wide-part-generation-{}",
-            std::process::id()
+            "rusthouse-wide-part-generation-{}", std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -543,13 +573,11 @@ mod stable_generation_verification_tests {
         assert!(same_verification_generation(&original, &original));
         fs::write(&first, b"longer").unwrap();
         assert!(!same_verification_generation(
-            &original,
-            &fs::symlink_metadata(&first).unwrap(),
+            &original, &fs::symlink_metadata(&first).unwrap(),
         ));
         #[cfg(unix)]
         assert!(!same_verification_generation(
-            &original,
-            &fs::symlink_metadata(&second).unwrap(),
+            &original, &fs::symlink_metadata(&second).unwrap(),
         ));
         fs::remove_dir_all(root).unwrap();
     }
@@ -558,8 +586,9 @@ mod stable_generation_verification_tests {
     #[test]
     fn refuses_symlink_substitution_with_the_same_target_contents() {
         use std::os::unix::fs::symlink;
-        let root =
-            std::env::temp_dir().join(format!("rusthouse-wide-part-links-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-wide-part-links-{}", std::process::id()
+        ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let target = root.join("target");
@@ -569,6 +598,74 @@ mod stable_generation_verification_tests {
         let before = fs::symlink_metadata(&target).unwrap();
         let after = fs::symlink_metadata(&link).unwrap();
         assert!(!same_verification_generation(&before, &after));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod complete_wide_generation_pin_tests {
+    use super::*;
+
+    fn test_root(suffix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "rusthouse-full-wide-generation-{}-{}-{suffix}",
+            std::process::id(),
+            line!(),
+        ))
+    }
+
+    #[test]
+    fn detects_an_early_stream_mutated_after_its_local_validation() {
+        let root = test_root("early");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.bin");
+        let second = root.join("second.bin");
+        fs::write(&first, b"first").unwrap();
+        fs::write(&second, b"second").unwrap();
+        let pinned = pin_verification_files([first.clone(), second.clone()]).unwrap();
+        verify_pinned_files(&pinned).unwrap();
+
+        // Simulate validating the first column, then processing a later
+        // column while the first immutable stream gets rewritten.
+        fs::write(&first, b"first was replaced").unwrap();
+        assert!(verify_pinned_files(&pinned).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_sized_inode_replacement_is_rejected_at_final_validation() {
+        let root = test_root("inode");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.bin");
+        let replacement = root.join("replacement.bin");
+        fs::write(&first, b"stable").unwrap();
+        fs::write(&replacement, b"stable").unwrap();
+        let pinned = pin_verification_files([first.clone()]).unwrap();
+        fs::rename(replacement, &first).unwrap();
+        assert!(verify_pinned_files(&pinned).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_changed_to_symlink_is_not_a_valid_immutable_generation() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("symlink");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first.bin");
+        let alternate = root.join("alternate.bin");
+        fs::write(&first, b"stable").unwrap();
+        fs::write(&alternate, b"stable").unwrap();
+        let pinned = pin_verification_files([first.clone()]).unwrap();
+        fs::remove_file(&first).unwrap();
+        symlink(&alternate, &first).unwrap();
+        assert!(verify_pinned_files(&pinned).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
