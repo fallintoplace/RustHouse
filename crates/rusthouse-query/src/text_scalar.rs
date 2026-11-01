@@ -4170,33 +4170,31 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let count = integer_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "expected ')' after RIGHT arguments")?;
             match (input, count) {
-                (Some(value), Some(count)) => {
-                    if count < 0 {
-                        return Err(ParseError("RIGHT count must be nonnegative".into()));
-                    }
-                    let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    if count >= value.len() {
-                        ConstantValue::Text(value)
+                (Some(mut value), Some(count)) => {
+                    let length = if name == "RIGHT" {
+                        value.len()
                     } else {
-                        let start = if name == "RIGHT" {
-                            // RIGHT counts bytes; RIGHTUTF8 counts characters.
-                            value.len() - count
-                        } else if count == 0 {
-                            value.len()
-                        } else {
-                            value
-                                .char_indices()
-                                .rev()
-                                .nth(count - 1)
-                                .map_or(0, |(offset, _)| offset)
-                        };
-                        if !value.is_char_boundary(start) {
-                            return Err(ParseError("RIGHT byte count splits UTF-8 text".into()));
-                        }
-                        let mut result = value;
-                        result.replace_range(..start, "");
-                        ConstantValue::Text(result)
+                        value.chars().count()
+                    };
+                    let count = if count < 0 {
+                        length.saturating_sub(
+                            usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX),
+                        )
+                    } else {
+                        usize::try_from(count).unwrap_or(usize::MAX).min(length)
+                    };
+                    let start = if name == "RIGHT" {
+                        value.len() - count
+                    } else if count == 0 {
+                        value.len()
+                    } else {
+                        value.char_indices().rev().nth(count - 1).map_or(0, |(offset, _)| offset)
+                    };
+                    if !value.is_char_boundary(start) {
+                        return Err(ParseError("RIGHT byte count splits UTF-8 text".into()));
                     }
+                    value.replace_range(..start, "");
+                    ConstantValue::Text(value)
                 }
                 _ => ConstantValue::Null,
             }
