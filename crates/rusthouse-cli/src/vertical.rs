@@ -163,6 +163,9 @@ impl<W: Write> VerticalWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
+        if self.line.last() == Some(&b'\r') {
+            self.line.pop();
+        }
         let Some(headers) = self.headers.as_ref() else {
             std::str::from_utf8(&self.line).map_err(|_| {
                 io::Error::new(
@@ -203,6 +206,12 @@ impl<W: Write> Write for VerticalWriter<W> {
                 &chunk[..chunk.len() - 1]
             } else {
                 chunk
+            };
+            // The raw CR before LF belongs to the record boundary.
+            let fragment = if has_newline && self.line.is_empty() {
+                fragment.strip_suffix(b"\r").unwrap_or(fragment)
+            } else {
+                fragment
             };
             if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
                 return Err(io::Error::new(
@@ -505,5 +514,20 @@ mod batched_terminal_escape_tests {
         write_terminal_safe(&mut output, "café 漢字".as_bytes()).unwrap();
         assert_eq!(output.calls, 1);
         assert_eq!(output.data, "café 漢字".as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod crlf_vertical_record_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn strips_crlf_headers_and_rows_without_losing_escaped_control_values() {
+        let mut writer = VerticalWriter::new(Vec::new());
+        writer.write_all(b"value\r\nx\\ry\r\n").unwrap();
+        writer.write_all(b"last\r").unwrap();
+        writer.write_all(b"\n").unwrap();
+        assert_eq!(writer.output, b"Row 1:\n  value: x\\x0Dy\n\nRow 2:\n  value: last\n\n");
     }
 }
