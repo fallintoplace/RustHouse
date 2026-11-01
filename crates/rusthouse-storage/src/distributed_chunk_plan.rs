@@ -397,6 +397,70 @@ pub fn plan_missing_chunks_from_resume_after(
     Ok(selected)
 }
 
+/// A lossless bounded transfer page over an authenticated resume bitmap.
+/// The continuation index is inclusive and never advances past a missing chunk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingChunkPage {
+    pub chunks: Vec<IndexedChunk>,
+    pub next_start_index: Option<usize>,
+}
+
+/// Page incomplete transfer chunks without silently skipping an earlier chunk
+/// that cannot fit the remaining byte budget.
+///
+/// Existing greedy planners may skip unaffordable chunks to fill each batch.
+/// This version preserves strict ordered continuity for consumers advancing
+/// their resume cursor after each batch. A blocked first chunk is an error.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_missing_chunk_page_from_resume(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    progress: &crate::distributed_resume_map::ResumeMap,
+    start_index: usize,
+    byte_budget: u64,
+    max_batch_chunks: usize,
+) -> Result<MissingChunkPage, &'static str> {
+    if max_batch_chunks == 0 || max_batch_chunks > 65_536 {
+        return Err("invalid lossless transfer page limit");
+    }
+    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    if progress.len() != count {
+        return Err("resume checkpoint does not match transfer layout");
+    }
+    if start_index > count {
+        return Err("resume cursor exceeds transfer layout");
+    }
+    let mut remaining = byte_budget;
+    let mut chunks = Vec::new();
+    let mut has_more = false;
+    for index in progress.remaining_indices_from(start_index) {
+        if chunks.len() == max_batch_chunks {
+            has_more = true;
+            break;
+        }
+        let chunk = indexed_chunk_at(total_bytes, chunk_bytes, index);
+        if chunk.chunk.length > remaining {
+            if chunks.is_empty() {
+                return Err("next missing transfer chunk exceeds byte budget");
+            }
+            has_more = true;
+            break;
+        }
+        remaining -= chunk.chunk.length;
+        chunks.push(chunk);
+    }
+    let next_start_index = if has_more {
+        Some(chunks.last().expect("nonempty incomplete page").index + 1)
+    } else {
+        None
+    };
+    Ok(MissingChunkPage {
+        chunks,
+        next_start_index,
+    })
+}
+
 /// Schedule coalesced transfer I/O directly from a packed completion map.
 ///
 /// Unlike planning individual missing chunks and merging them afterwards,
@@ -1363,5 +1427,74 @@ mod fair_replica_transfer_tests {
             .is_err()
         );
         assert!(plan_fair_replica_transfers(&[source], 1, 65_537).is_err());
+    }
+}
+
+#[cfg(test)]
+mod lossless_missing_chunk_page_tests {
+    use super::*;
+    use crate::distributed_resume_map::ResumeMap;
+
+    #[test]
+    fn every_missing_chunk_survives_sequential_byte_limited_pages() {
+        let map = ResumeMap::new(5).unwrap();
+        let mut start = 0usize;
+        let mut planned = Vec::new();
+        for _ in 0..6 {
+            let page = plan_missing_chunk_page_from_resume(
+                29, 7, 65_536, &map, start, 8, 3,
+            ).unwrap();
+            planned.extend(page.chunks.iter().map(|chunk| chunk.index));
+            match page.next_start_index {
+                Some(next) => {
+                    assert!(next > start);
+                    start = next;
+                }
+                None => break,
+            }
+        }
+        assert_eq!(planned, [0, 1, 2, 3, 4]);
+        let mut completed = map;
+        completed.mark_complete_range(0, 3).unwrap();
+        let page = plan_missing_chunk_page_from_resume(
+            29, 7, 65_536, &completed, 0, 8, 3,
+        ).unwrap();
+        assert_eq!(
+            page.chunks.iter().map(|chunk| chunk.index).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert!(page.next_start_index.is_none());
+    }
+
+    #[test]
+    fn unaffordable_first_chunk_cannot_advance_past_it() {
+        let map = ResumeMap::new(3).unwrap();
+        assert!(plan_missing_chunk_page_from_resume(
+            15, 7, 65_536, &map, 0, 6, 9,
+        ).is_err());
+        let final_page = plan_missing_chunk_page_from_resume(
+            15, 7, 65_536, &map, 2, 6, 9,
+        ).unwrap();
+        assert_eq!(final_page.chunks[0].index, 2);
+        assert!(final_page.next_start_index.is_none());
+    }
+
+    #[test]
+    fn rejects_mismatched_checkpoints_and_invalid_cursors() {
+        let empty = ResumeMap::new(0).unwrap();
+        let page = plan_missing_chunk_page_from_resume(
+            0, 7, 65_536, &empty, 0, 0, 1,
+        ).unwrap();
+        assert!(page.chunks.is_empty());
+        assert!(page.next_start_index.is_none());
+        assert!(plan_missing_chunk_page_from_resume(
+            8, 7, 65_536, &empty, 0, 7, 1,
+        ).is_err());
+        assert!(plan_missing_chunk_page_from_resume(
+            0, 7, 65_536, &empty, 1, 7, 1,
+        ).is_err());
+        assert!(plan_missing_chunk_page_from_resume(
+            0, 7, 65_536, &empty, 0, 7, 0,
+        ).is_err());
     }
 }
