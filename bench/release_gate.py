@@ -3,7 +3,6 @@
 import argparse
 import json
 import math
-from statistics import median
 import sys
 from pathlib import Path
 
@@ -109,6 +108,14 @@ def verify(report, required, expected_revision=None, *, min_runs=1):
     return len(seen)
 
 
+def safe_median(samples):
+    ordered = sorted(samples)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return ordered[middle - 1] + (ordered[middle] - ordered[middle - 1]) / 2
+
+
 def verify_latency_baseline(candidate, baseline, required, max_slowdown=1.25):
     """Reject median latency regressions after both reports pass correctness checks."""
     if (type(max_slowdown) not in (int, float) or
@@ -128,10 +135,10 @@ def verify_latency_baseline(candidate, baseline, required, max_slowdown=1.25):
         old = prior[number]
         old_samples = old.get("timings_seconds", old.get("seconds"))
         new_samples = row.get("timings_seconds", row.get("seconds"))
-        old_median = median(old_samples)
-        new_median = median(new_samples)
+        old_median = safe_median(old_samples)
+        new_median = safe_median(new_samples)
         if (old_median == 0 and new_median > 0) or (
-                old_median > 0 and new_median > old_median * max_slowdown):
+                old_median > 0 and new_median / old_median > max_slowdown):
             raise ValueError(f"query {number} exceeds median latency slowdown limit")
 
 
