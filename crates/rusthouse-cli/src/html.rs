@@ -21,6 +21,10 @@ impl<W: Write> HtmlWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
+        // CRLF is a record separator, not part of the final HTML cell.
+        if self.line.last() == Some(&b'\r') {
+            self.line.pop();
+        }
         render_complete_row(&mut self.output, &mut self.columns, &self.line)?;
         self.line.clear();
         Ok(())
@@ -238,6 +242,11 @@ impl<W: Write> Write for HtmlWriter<W> {
                 &chunk[..chunk.len() - 1]
             } else {
                 chunk
+            };
+            let fragment = if complete && self.line.is_empty() {
+                fragment.strip_suffix(b"\r").unwrap_or(fragment)
+            } else {
+                fragment
             };
             if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
                 return Err(io::Error::new(
@@ -612,5 +621,29 @@ mod html_escape_batching_tests {
         let mut mixed = Vec::new();
         write_cell(&mut mixed, "é<&🍕\nZ").unwrap();
         assert_eq!(mixed, "é&lt;&amp;🍕&#10;Z".as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod html_crlf_record_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn strips_crlf_without_erasing_escaped_control_characters() {
+        let mut writer = HtmlWriter::new(Vec::new());
+        writer.write_all(b"head\r\nA\\rB\r").unwrap();
+        writer.write_all(b"\n").unwrap();
+        let html = writer.finish().unwrap();
+        assert_eq!(html, b"<table>\n<thead><tr><th>head</th></tr></thead>\n<tbody>\n<tr><td>A&#13;B</td></tr>\n</tbody>\n</table>\n");
+    }
+
+    #[test]
+    fn contiguous_crlf_rows_do_not_add_control_entities() {
+        let mut writer = HtmlWriter::new(Vec::new());
+        writer.write_all(b"head\r\nplain\r\n").unwrap();
+        let html = writer.finish().unwrap();
+        assert!(html.windows(b"<td>plain</td>".len()).any(|span| span == b"<td>plain</td>"));
+        assert!(!html.windows(b"&#13;".len()).any(|span| span == b"&#13;"));
     }
 }
