@@ -89,5 +89,29 @@ class ConcurrentReadersTests(unittest.TestCase):
         self.assertIsNone(failed["p95_query_seconds"])
         self.assertIsNone(failed["p99_query_seconds"])
 
+    def test_rejects_reference_replaced_between_stat_and_open(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from bench.scale.concurrent_readers import read_reference
+
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory) / "expected.tsv"
+            replacement = Path(directory) / "replacement.tsv"
+            corpus.write_bytes(b"1\n")
+            replacement.write_bytes(b"2\n")
+            real_open = os.open
+
+            def swap(path, flags):
+                corpus.unlink()
+                replacement.rename(corpus)
+                return real_open(path, flags)
+
+            with patch("bench.scale.concurrent_readers.os.open", side_effect=swap):
+                with self.assertRaisesRegex(ValueError, "changed before opening"):
+                    read_reference(corpus)
+
+
 if __name__ == "__main__":
     unittest.main()
