@@ -402,7 +402,7 @@ pub fn plan_repairs_for_replication_factor(
     byte_budget: u64,
     job_limit: usize,
 ) -> Result<Vec<RepairJob>, &'static str> {
-    if replication_factor == 0 || replication_factor > 16 {
+    if replication_factor == 0 || replication_factor > 64 {
         return Err("invalid replica count for repair planning");
     }
     if jobs
@@ -595,7 +595,7 @@ pub fn plan_targeted_repairs(
         };
         if !valid_shard(&job.shard)
             || !valid_node(&job.target)
-            || !(1..=16).contains(&job.missing_replicas)
+            || !(1..=64).contains(&job.missing_replicas)
             || !capacity.contains_key(job.target.as_str())
             || duplicate_pair
         {
@@ -1093,5 +1093,33 @@ mod inline_small_repair_queue_reference_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod wide_replication_repair_planning_tests {
+    use super::*;
+
+    #[test]
+    fn plans_a_full_64_target_repair_without_truncating_deficits() {
+        let destinations = (0..64).map(|i| format!("node{i}")).collect::<Vec<_>>();
+        let capacity = destinations.iter().map(|node| (node.as_str(), 1u64)).collect::<Vec<_>>();
+        let jobs = destinations.iter().map(|target| TargetedRepairJob {
+            shard: "under_replicated".into(),
+            target: target.clone(),
+            bytes: 1,
+            missing_replicas: 64,
+        }).collect::<Vec<_>>();
+        let planned = plan_targeted_repairs(&jobs, &capacity, 64, 64).unwrap();
+        assert_eq!(planned.len(), 64);
+        assert_eq!(planned.iter().map(|job| job.bytes).sum::<u64>(), 64);
+        assert!(planned.iter().all(|job| job.missing_replicas == 64));
+
+        let aggregate = [RepairJob { shard: "under_replicated".into(), bytes: 64, missing_replicas: 64 }];
+        assert_eq!(plan_repairs_for_replication_factor(&aggregate, 64, 64, 1).unwrap(), aggregate);
+        assert!(plan_repairs_for_replication_factor(&aggregate, 63, 64, 1).is_err());
+        let mut invalid = jobs;
+        invalid[0].missing_replicas = 65;
+        assert!(plan_targeted_repairs(&invalid, &capacity, 64, 64).is_err());
     }
 }
