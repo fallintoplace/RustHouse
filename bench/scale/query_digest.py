@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from bench.common import _leading_sql_keyword
 
 
 def _has_sql_separator(statement):
@@ -80,7 +81,7 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
     if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
         raise ValueError("SQL must be nonempty and at most 64 KiB")
     statement = sql.strip().removesuffix(";").rstrip()
-    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or _has_sql_separator(statement):
+    if _leading_sql_keyword(statement) != "SELECT" or _has_sql_separator(statement):
         raise ValueError("digest requires one read-only SELECT")
     execute = run or subprocess.run
     started = time.perf_counter()
