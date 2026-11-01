@@ -26,6 +26,14 @@ def _reject_nonfinite_json(value):
     raise ValueError(f"nonfinite JSON constant: {value}")
 
 
+def _finite_json_float(value):
+    # A legal JSON exponent such as 1e9999 also becomes infinity in Python.
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"nonfinite JSON number: {value}")
+    return number
+
+
 def _unique_object_pairs(pairs):
     result = {}
     for key, value in pairs:
@@ -115,7 +123,7 @@ def inspect(origin, timeout=5, min_healthy=None, expected_peers=None):
     if len(raw) > 1_048_576:
         raise ValueError("peer-health response too large")
     payload = json.loads(raw, object_pairs_hook=_unique_object_pairs,
-                         parse_constant=_reject_nonfinite_json)
+                         parse_constant=_reject_nonfinite_json, parse_float=_finite_json_float)
     healthy = validate(payload, min_healthy=min_healthy, expected_peers=expected_peers)
     return healthy and not unavailable, payload
 
