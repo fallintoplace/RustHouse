@@ -6,6 +6,15 @@ from sql_compat_audit import audit, parse_lines, read_queries
 
 
 class AuditTests(unittest.TestCase):
+    def test_hash_comments_do_not_create_executable_separators(self):
+        from sql_compat_audit import _has_separator, parse_lines
+        self.assertFalse(_has_separator("SELECT 1 # comment with ; semicolons"))
+        self.assertTrue(_has_separator("SELECT 1; # real separator"))
+        self.assertEqual(
+            parse_lines("# ignored line\nSELECT 1 # comment with ;\nSELECT 2;"),
+            [(2, "SELECT 1 # comment with"), (3, "SELECT 2")],
+        )
+
     def test_accepts_one_select_per_line(self):
         self.assertEqual(parse_lines("-- note\nSELECT 1;\nSELECT count(*) FROM numbers(3)\n"),
                          [(2, "SELECT 1"), (3, "SELECT count(*) FROM numbers(3)")])
@@ -85,6 +94,17 @@ class AuditTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_lines("SELECT 1; DROP TABLE events;")
 
+    def test_direct_audit_calls_cannot_bypass_select_validation(self):
+        run = Mock()
+        for sql in ("DROP TABLE events", "SELECT 1; DELETE FROM events",
+                    "SELECT 1\nDROP TABLE events", "SELECT 'unterminated"):
+            with self.subTest(sql=sql), self.assertRaisesRegex(ValueError, "SELECT"):
+                audit("rusthouse", [(1, sql)], run)
+        run.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "invalid SQL audit entry"):
+            audit("rusthouse", [(True, "SELECT 1")], run)
+        run.assert_not_called()
+
     def test_fail_fast_stops_after_first_parser_error(self):
         run = Mock()
         run.return_value.returncode = 1
@@ -132,6 +152,27 @@ class AuditTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "timeout"):
                 audit("rusthouse", [(1, "SELECT 1")], run, timeout=invalid)
 
+    def test_rejects_mutations_during_audit_corpus_read(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory) / "queries.sql"
+            corpus.write_text("SELECT 1\n")
+            actual_fstat = os.fstat
+            calls = 0
+
+            def changed_after_open(fd):
+                nonlocal calls
+                current = actual_fstat(fd)
+                calls += 1
+                if calls == 1:
+                    corpus.write_text("SELECT 1\nSELECT 2\n")
+                return current
+
+            with patch("sql_compat_audit.os.fstat", side_effect=changed_after_open):
+                with self.assertRaisesRegex(ValueError, "changed during read"):
+                    read_queries(corpus)
+
     def test_nested_block_comments_match_the_rust_lexer(self):
         sql = "SELECT 1 /* outer ; /* inner ; */ outer ; */"
         self.assertEqual(parse_lines(sql + ";"), [(1, sql)])
@@ -146,6 +187,7 @@ class AuditTests(unittest.TestCase):
                 ValueError, "one bounded SELECT"
             ):
                 parse_lines(invalid)
+
 
 if __name__ == "__main__":
     unittest.main()

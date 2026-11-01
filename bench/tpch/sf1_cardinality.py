@@ -33,7 +33,11 @@ def verify(binary, database, timeout=120, execute=None):
         raw = execute(f"SELECT count(*) FROM {table}")
         if not isinstance(raw, bytes):
             raise ValueError(f"{table}: count result must be bytes")
-        value = raw.decode("utf-8").strip()
+        value = raw.decode("utf-8")
+        if value.endswith("\r\n"):
+            value = value[:-2]
+        elif value.endswith("\n"):
+            value = value[:-1]
         if re.fullmatch(r"(0|[1-9][0-9]*)", value) is None:
             raise ValueError(f"{table}: invalid count result {value!r}")
         actual = int(value)

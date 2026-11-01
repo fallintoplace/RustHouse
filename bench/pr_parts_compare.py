@@ -28,6 +28,9 @@ def parse_benchmark(payload):
         name = record.get("workload")
         if name not in CASES or name in cases or None in record:
             raise ValueError("unexpected or duplicate persisted-parts workload")
+        if any(not isinstance(record[key], str) or not record[key].isascii()
+               for key in FIELDS[1:]):
+            raise ValueError(f"invalid timing for {name}: non-ASCII input")
         try:
             median, p90, throughput = (
                 float(record[key]) for key in FIELDS[1:]

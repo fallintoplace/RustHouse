@@ -11,16 +11,18 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SUITES = (
     "bench", "bench/analytics", "bench/clickbench", "bench/interop",
-    "bench/joins", "bench/latency", "bench/measurements", "bench/ssb",
+    "bench/joins", "bench/latency", "bench/measurements", "bench/scale", "bench/ssb",
     "bench/tpch", "tools",
 )
 BENCHMARK_SUITES = ("queries", "parts-sorted", "parts-shuffled", "grouped")
+MAX_SUITE_OUTPUT_BYTES = 4 * 1024 * 1024
 WORKLOADS = {
     "analytics": "bench/analytics/run.py",
     "analytics-suite": "bench/analytics/suite_runner.py",
@@ -124,11 +126,24 @@ def benchmark(suites, rows, samples, stations, output_dir, *, suite_timeout=3600
             print(f"\n[{suite}] {' '.join(command)}", flush=True)
             started = time.perf_counter()
             try:
-                completed = subprocess.run(
-                    command, cwd=ROOT, capture_output=True, text=True, check=False,
-                    timeout=suite_timeout,
-                )
-                returncode, stdout, stderr = completed.returncode, completed.stdout, completed.stderr
+                # Spool compiler and benchmark logs to files so a noisy child
+                # cannot grow the parent process's memory without a limit.
+                with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+                    completed = subprocess.run(
+                        command, cwd=ROOT, stdout=output, stderr=errors,
+                        check=False, timeout=suite_timeout,
+                    )
+                    output.seek(0)
+                    errors.seek(0)
+                    out_bytes = output.read(MAX_SUITE_OUTPUT_BYTES + 1)
+                    err_bytes = errors.read(MAX_SUITE_OUTPUT_BYTES + 1)
+                oversized = (len(out_bytes) > MAX_SUITE_OUTPUT_BYTES
+                             or len(err_bytes) > MAX_SUITE_OUTPUT_BYTES)
+                returncode = completed.returncode or int(oversized)
+                stdout = out_bytes[:MAX_SUITE_OUTPUT_BYTES].decode("utf-8", "replace")
+                stderr = err_bytes[:MAX_SUITE_OUTPUT_BYTES].decode("utf-8", "replace")
+                if oversized:
+                    stderr += "\nbenchmark output exceeds 4 MiB per stream\n"
             except subprocess.TimeoutExpired:
                 returncode, stdout, stderr = 124, "", (
                     f"benchmark suite timed out after {suite_timeout} seconds\n"

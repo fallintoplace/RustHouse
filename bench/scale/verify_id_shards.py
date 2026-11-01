@@ -71,15 +71,33 @@ def verify_file(path, start, rows, step=1):
     return digest.hexdigest()
 
 
+def _manifest_identity(metadata):
+    return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+
 def verify(manifest_path):
     manifest_path = Path(manifest_path)
-    if manifest_path.is_symlink():
-        raise ValueError("refusing symlinked shard manifest")
-    with manifest_path.open("rb") as stream:
+    before = manifest_path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("refusing non-regular or symlinked shard manifest")
+    canonical_path = manifest_path.resolve(strict=True)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(manifest_path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(opened.st_mode)
+                or _manifest_identity(opened) != _manifest_identity(before)):
+            raise ValueError("shard manifest changed before opening")
         payload = stream.read(MAX_MANIFEST_BYTES + 1)
-    if len(payload) > MAX_MANIFEST_BYTES:
-        raise ValueError("shard manifest exceeds 8 MiB")
-    manifest_path = manifest_path.resolve()
+        if len(payload) > MAX_MANIFEST_BYTES:
+            raise ValueError("shard manifest exceeds 8 MiB")
+        if _manifest_identity(opened) != _manifest_identity(os.fstat(stream.fileno())):
+            raise ValueError("shard manifest changed during reading")
+    if (_manifest_identity(before) != _manifest_identity(manifest_path.lstat())
+            or manifest_path.resolve(strict=True) != canonical_path):
+        raise ValueError("shard manifest changed during reading")
+    manifest_path = canonical_path
     def unique_fields(pairs):
         result = {}
         for name, value in pairs:
@@ -88,7 +106,11 @@ def verify(manifest_path):
             result[name] = value
         return result
 
-    manifest = json.loads(payload, object_pairs_hook=unique_fields)
+    def reject_nonstandard_number(token):
+        raise ValueError(f"nonstandard shard manifest JSON number: {token}")
+
+    manifest = json.loads(payload, object_pairs_hook=unique_fields,
+                          parse_constant=reject_nonstandard_number)
     if not isinstance(manifest, dict):
         raise ValueError("shard manifest must be a JSON object")
     # bool == 1 in Python, but a JSON boolean is not a schema version.
