@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from bench.scale.query_digest import _has_sql_separator
+from bench.common import _leading_sql_keyword
 
 
 def parse_rss(status):
@@ -43,7 +44,7 @@ def validate_select(sql):
     if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
         raise ValueError("resource profiler requires a bounded read-only SELECT")
     statement = sql.strip().removesuffix(";").rstrip()
-    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or _has_sql_separator(statement):
+    if _leading_sql_keyword(statement) != "SELECT" or _has_sql_separator(statement):
         raise ValueError("resource profiler requires one read-only SELECT")
 
 
