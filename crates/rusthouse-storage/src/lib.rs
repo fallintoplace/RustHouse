@@ -90,6 +90,10 @@ pub use nullable_arrays::{
     NullableArrayReadError, NullableNumericArrayColumn, read_nullable_numeric_array_column,
 };
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
+pub use primary_index::{
+    candidate_narrow_signed_mark_range, candidate_narrow_signed_mark_ranges,
+    candidate_narrow_unsigned_mark_range, candidate_narrow_unsigned_mark_ranges,
+};
 pub use part_scan::NumericPartReader;
 pub use part_verify::{PartVerification, verify_wide_part};
 pub use part_write::{PartCompression, write_wide_part, write_wide_part_with_compression};
