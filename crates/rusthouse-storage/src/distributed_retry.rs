@@ -237,3 +237,120 @@ mod subminimum_retry_budget_tests {
         );
     }
 }
+
+
+/// A planned retry at an absolute offset from the beginning of a poll.
+/// The scheduler does not send requests or claim retry safety.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaRetryEvent {
+    pub node: String,
+    pub attempt: u32,
+    pub due_after: Duration,
+}
+
+/// Merge deterministic per-node retry sequences into a time-ordered schedule.
+///
+/// The total deadline is shared, not spent separately by every node. All
+/// configured nodes use the same backoff limits but independent jitter seeds.
+/// Results are bounded to 64 nodes x 33 retry attempts.
+pub fn plan_replica_retry_timeline(
+    node_seeds: &[(&str, u64)],
+    attempts_per_node: u32,
+    base_ms: u64,
+    max_ms: u64,
+    deadline: Duration,
+) -> Result<Vec<ReplicaRetryEvent>, &'static str> {
+    if node_seeds.is_empty() || node_seeds.len() > 64 || attempts_per_node > 33 {
+        return Err("replica retry timeline exceeds limits");
+    }
+    // Validate even when the deadline or requested attempt count is zero.
+    retry_delay(0, base_ms, max_ms, 0)?;
+    for (index, &(node, _)) in node_seeds.iter().enumerate() {
+        if node.is_empty()
+            || node.len() > 64
+            || !node.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+            })
+            || node_seeds[..index].iter().any(|&(previous, _)| previous == node)
+        {
+            return Err("invalid or duplicate replica retry node");
+        }
+    }
+
+    let mut timeline = Vec::with_capacity(node_seeds.len() * attempts_per_node as usize);
+    for &(node, seed) in node_seeds {
+        let mut due_after = Duration::ZERO;
+        for attempt in 0..attempts_per_node {
+            let delay = retry_delay(attempt, base_ms, max_ms, seed)?;
+            let Some(next) = due_after.checked_add(delay) else {
+                // A deadline cannot be later than the largest Duration.
+                break;
+            };
+            if next > deadline {
+                break;
+            }
+            due_after = next;
+            timeline.push(ReplicaRetryEvent {
+                node: node.to_owned(), attempt, due_after,
+            });
+        }
+    }
+    timeline.sort_unstable_by(|a, b| {
+        a.due_after.cmp(&b.due_after)
+            .then_with(|| a.node.cmp(&b.node))
+            .then_with(|| a.attempt.cmp(&b.attempt))
+    });
+    Ok(timeline)
+}
+
+#[cfg(test)]
+mod replica_retry_timeline_tests {
+    use super::*;
+
+    #[test]
+    fn each_node_follows_exact_seeded_backoff_and_global_deadline() {
+        let nodes = [("west", 3), ("east", 99), ("south", u64::MAX)];
+        let deadline = Duration::from_secs(9);
+        let timeline = plan_replica_retry_timeline(
+            &nodes, 33, 100, 2000, deadline,
+        ).unwrap();
+        assert!(!timeline.is_empty());
+        assert!(timeline.iter().all(|event| event.due_after <= deadline));
+        assert!(timeline.windows(2).all(|pair| {
+            (pair[0].due_after, pair[0].node.as_str(), pair[0].attempt)
+                <= (pair[1].due_after, pair[1].node.as_str(), pair[1].attempt)
+        }));
+        for &(node, seed) in &nodes {
+            let actual = timeline.iter().filter(|event| event.node == node)
+                .collect::<Vec<_>>();
+            let expected = plan_retry_delays(33, 100, 2000, seed, deadline).unwrap();
+            let mut elapsed = Duration::ZERO;
+            assert_eq!(actual.len(), expected.len());
+            for (index, (event, delay)) in actual.iter().zip(expected).enumerate() {
+                elapsed += delay;
+                assert_eq!(event.attempt, index as u32);
+                assert_eq!(event.due_after, elapsed);
+            }
+        }
+        let mut reversed = nodes;
+        reversed.reverse();
+        assert_eq!(
+            timeline,
+            plan_replica_retry_timeline(&reversed, 33, 100, 2000, deadline).unwrap(),
+        );
+    }
+
+    #[test]
+    fn boundary_deadlines_and_invalid_configuration_are_strict() {
+        let nodes = [("a", 0)];
+        let first = retry_delay(0, 100, 1000, 0).unwrap();
+        assert!(plan_replica_retry_timeline(&nodes, 4, 100, 1000, Duration::ZERO)
+            .unwrap().is_empty());
+        assert_eq!(plan_replica_retry_timeline(&nodes, 4, 100, 1000, first)
+            .unwrap().len(), 1);
+        assert!(plan_replica_retry_timeline(&nodes, 34, 100, 1000, first).is_err());
+        assert!(plan_replica_retry_timeline(&nodes, 0, 0, 1000, first).is_err());
+        assert!(plan_replica_retry_timeline(&[("a", 0), ("a", 1)], 0, 100, 1000, first).is_err());
+        assert!(plan_replica_retry_timeline(&[("bad/name", 0)], 0, 100, 1000, first).is_err());
+    }
+}
