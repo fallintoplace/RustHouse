@@ -77,6 +77,17 @@ def read_queries(path):
                 (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
             raise ValueError("SQL audit corpus changed while opening")
         raw = handle.read(MAX_QUERY_FILE_BYTES + 1)
+        finished = os.fstat(handle.fileno())
+        # A stable inode at open time is not sufficient if its bytes change
+        # during the read. Never audit a mixture of corpus revisions.
+        state = lambda value: (
+            value.st_dev, value.st_ino, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns,
+        )
+        if state(opened) != state(finished):
+            raise ValueError("SQL audit corpus changed during read")
+    if state(before) != state(path.lstat()):
+        raise ValueError("SQL audit corpus changed during read")
     if len(raw) > MAX_QUERY_FILE_BYTES:
         raise ValueError("SQL audit corpus exceeds 1 MiB")
     return parse_lines(raw.decode("utf-8"))

@@ -141,5 +141,27 @@ class AuditTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "timeout"):
                 audit("rusthouse", [(1, "SELECT 1")], run, timeout=invalid)
 
+    def test_rejects_mutations_during_audit_corpus_read(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = Path(directory) / "queries.sql"
+            corpus.write_text("SELECT 1\n")
+            actual_fstat = os.fstat
+            calls = 0
+
+            def changed_after_open(fd):
+                nonlocal calls
+                current = actual_fstat(fd)
+                calls += 1
+                if calls == 1:
+                    corpus.write_text("SELECT 1\nSELECT 2\n")
+                return current
+
+            with patch("sql_compat_audit.os.fstat", side_effect=changed_after_open):
+                with self.assertRaisesRegex(ValueError, "changed during read"):
+                    read_queries(corpus)
+
+
 if __name__ == "__main__":
     unittest.main()
