@@ -3316,7 +3316,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         } else {
                             folded_input[offset..]
                                 .windows(folded_needle.len())
-                                .position(|window| window == folded_needle)
+                                .position(|window| window == folded_needle.as_slice())
                                 .map_or(0, |index| offset + index + 1)
                         }
                     } else if offset > input.len() {
