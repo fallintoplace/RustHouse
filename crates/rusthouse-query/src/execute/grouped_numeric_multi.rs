@@ -84,7 +84,7 @@ fn reserve_group(
 // table when observed cardinality makes the sparse lookup more expensive.
 // Most GROUP BY scans with UInt16 keys visit a tiny part of that domain.
 enum GroupSlots {
-    Byte([usize; 256]),
+    Byte(Box<[usize; 256]>),
     WideSparse(HashMap<u16, usize>),
     WideDense(Vec<usize>),
 }
@@ -92,7 +92,7 @@ enum GroupSlots {
 impl GroupSlots {
     fn for_type(kind: &str) -> Option<Self> {
         match kind {
-            "UInt8" | "Int8" => Some(Self::Byte([usize::MAX; 256])),
+            "UInt8" | "Int8" => Some(Self::Byte(Box::new([usize::MAX; 256]))),
             "UInt16" | "Int16" => Some(Self::WideSparse(HashMap::new())),
             _ => None,
         }

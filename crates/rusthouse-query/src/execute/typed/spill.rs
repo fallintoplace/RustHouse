@@ -1006,13 +1006,20 @@ mod typed_spill_interrupted_io_tests {
         let input = SortEntry {
             ordinal: 42,
             row: Row {
-                values: vec![Cell::Numeric(Number::Signed(-17)), Cell::Text(b"payload".to_vec())],
+                values: vec![
+                    Cell::Numeric(Number::Signed(-17)),
+                    Cell::Text(b"payload".to_vec()),
+                ],
                 sort_keys: vec![Cell::Numeric(Number::Unsigned(123))],
             },
         };
         let mut encoded = Vec::new();
         write_entry(&mut encoded, &input).unwrap();
-        let mut reader = InterruptFirstRead { source: &encoded, interrupted: false, calls: 0 };
+        let mut reader = InterruptFirstRead {
+            source: &encoded,
+            interrupted: false,
+            calls: 0,
+        };
         let actual = read_entry(&mut reader).unwrap().unwrap();
         assert_eq!(actual.ordinal, input.ordinal);
         assert_eq!(actual.row.values.len(), 2);
@@ -1024,12 +1031,22 @@ mod typed_spill_interrupted_io_tests {
     #[test]
     fn incomplete_headers_still_fail_instead_of_becoming_clean_eof() {
         let mut encoded = Vec::new();
-        write_entry(&mut encoded, &SortEntry {
-            ordinal: 1,
-            row: Row { values: vec![Cell::Null], sort_keys: Vec::new() },
-        }).unwrap();
+        write_entry(
+            &mut encoded,
+            &SortEntry {
+                ordinal: 1,
+                row: Row {
+                    values: vec![Cell::Null],
+                    sort_keys: Vec::new(),
+                },
+            },
+        )
+        .unwrap();
         for length in 1..12 {
-            assert!(read_entry(&mut &encoded[..length]).is_err(), "length={length}");
+            assert!(
+                read_entry(&mut &encoded[..length]).is_err(),
+                "length={length}"
+            );
         }
         assert!(read_entry(&mut &[][..]).unwrap().is_none());
     }

@@ -277,10 +277,7 @@ impl ResumeMap {
                 .first_index
                 .checked_add(run.chunk_count)
                 .ok_or("transfer run index overflow")?;
-            if run.chunk_count == 0
-                || run.first_index < previous_end
-                || end > self.chunks
-            {
+            if run.chunk_count == 0 || run.first_index < previous_end || end > self.chunks {
                 return Err("invalid or overlapping transfer run indexes");
             }
             previous_end = end;
@@ -1580,7 +1577,9 @@ mod checkpoint_difference_tests {
 
     #[test]
     fn paged_differences_match_bitwise_oracle_at_word_boundaries() {
-        for chunks in [0, 1, 7, 8, 9, 63, 64, 65, 127, 128, 129, 1023, 65_535, 65_536] {
+        for chunks in [
+            0, 1, 7, 8, 9, 63, 64, 65, 127, 128, 129, 1023, 65_535, 65_536,
+        ] {
             let mut left = ResumeMap::new(chunks).unwrap();
             let mut right = ResumeMap::new(chunks).unwrap();
             for index in 0..chunks {
@@ -1620,7 +1619,6 @@ mod checkpoint_difference_tests {
     }
 }
 
-
 #[cfg(test)]
 mod atomic_chunk_run_progress_tests {
     use super::*;
@@ -1630,8 +1628,8 @@ mod atomic_chunk_run_progress_tests {
         ChunkRun {
             first_index: first,
             chunk_count: count,
-            offset: first as u64 * 7,
-            length: count as u64 * 7,
+            offset: (first as u64).saturating_mul(7),
+            length: (count as u64).saturating_mul(7),
         }
     }
 
@@ -1647,11 +1645,16 @@ mod atomic_chunk_run_progress_tests {
             }
         }
         assert_eq!(batched, scalar);
-        assert_eq!(batched.encode_binary_checked(), scalar.encode_binary_checked());
+        assert_eq!(
+            batched.encode_binary_checked(),
+            scalar.encode_binary_checked()
+        );
         let invalidations = [run(4, 3), run(12, 24), run(1000, 24)];
         batched.invalidate_runs(&invalidations).unwrap();
         for range in &invalidations {
-            scalar.invalidate_range(range.first_index, range.first_index + range.chunk_count).unwrap();
+            scalar
+                .invalidate_range(range.first_index, range.first_index + range.chunk_count)
+                .unwrap();
         }
         assert_eq!(batched, scalar);
     }
@@ -1703,13 +1706,19 @@ mod unordered_atomic_batch_tests {
         let mut checkpoint = ResumeMap::new(130).unwrap();
         checkpoint.mark_complete_range(0, 70).unwrap();
         let original = checkpoint.clone();
-        for bad in [vec![100, 1, 100], vec![3, 129, 130], vec![129, 0, usize::MAX]] {
+        for bad in [
+            vec![100, 1, 100],
+            vec![3, 129, 130],
+            vec![129, 0, usize::MAX],
+        ] {
             assert!(checkpoint.mark_complete_unordered(&bad).is_err());
             assert_eq!(checkpoint, original);
             assert!(checkpoint.invalidate_unordered(&bad).is_err());
             assert_eq!(checkpoint, original);
         }
-        checkpoint.mark_complete_unordered(&[129, 128, 71, 70]).unwrap();
+        checkpoint
+            .mark_complete_unordered(&[129, 128, 71, 70])
+            .unwrap();
         assert_eq!(checkpoint.completed_count(), 74);
         checkpoint.invalidate_unordered(&[71, 129, 0]).unwrap();
         assert_eq!(checkpoint.completed_count(), 71);

@@ -1683,7 +1683,10 @@ mod stack_placement_validation_tests {
             let first = replicas_for("analytics", &nodes, count.min(3)).unwrap();
             let mut ascending = nodes.clone();
             ascending.reverse();
-            assert_eq!(first, replicas_for("analytics", &ascending, count.min(3)).unwrap());
+            assert_eq!(
+                first,
+                replicas_for("analytics", &ascending, count.min(3)).unwrap()
+            );
             assert_eq!(
                 replicas_for_many(&["analytics"], &nodes, count.min(3)).unwrap(),
                 vec![first]

@@ -121,7 +121,9 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
 }
 
 fn key_bytes<const WIDTH: usize>(
-    index: &FixedPrimaryIndex, mark: usize, field: usize,
+    index: &FixedPrimaryIndex,
+    mark: usize,
+    field: usize,
 ) -> Option<[u8; WIDTH]> {
     index.field(mark, field)?.try_into().ok()
 }

@@ -310,13 +310,17 @@ mod incomplete_health_results_tests {
         let cluster = Cluster::new(vec![
             Peer::parse("127.0.0.1:59001").unwrap(),
             Peer::parse("127.0.0.1:59002").unwrap(),
-        ]).unwrap();
+        ])
+        .unwrap();
         let missing = render_health_response(&cluster, &[true]);
         assert_eq!(missing.status, "503 Service Unavailable");
         assert_eq!(missing.body, b"{\"total\":2,\"healthy\":1,\"peers\":[{\"address\":\"127.0.0.1:59001\",\"healthy\":true},{\"address\":\"127.0.0.1:59002\",\"healthy\":false}]}\n");
         let extra = render_health_response(&cluster, &[true, true, true]);
         assert_eq!(extra.status, "503 Service Unavailable");
         assert_eq!(extra.body, b"{\"total\":2,\"healthy\":2,\"peers\":[{\"address\":\"127.0.0.1:59001\",\"healthy\":true},{\"address\":\"127.0.0.1:59002\",\"healthy\":true}]}\n");
-        assert_eq!(render_health_response(&cluster, &[true, true]).status, "200 OK");
+        assert_eq!(
+            render_health_response(&cluster, &[true, true]).status,
+            "200 OK"
+        );
     }
 }

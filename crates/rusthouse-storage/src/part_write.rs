@@ -243,7 +243,10 @@ fn validate_part_columns(columns: &[Column]) -> Result<(), PartError> {
     let names = &mut names[..columns.len()];
     names.sort_unstable();
     if let Some(duplicate) = names.windows(2).find(|pair| pair[0] == pair[1]) {
-        return Err(invalid(format!("invalid part column name: {}", duplicate[0])));
+        return Err(invalid(format!(
+            "invalid part column name: {}",
+            duplicate[0]
+        )));
     }
     Ok(())
 }

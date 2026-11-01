@@ -292,7 +292,10 @@ mod exponent_tests {
             assert_eq!(index, input.len());
         }
         let parsed = crate::parse_select("SELECT 1_000").unwrap();
-        assert!(matches!(parsed.projection, crate::Projection::Literal(1000)));
+        assert!(matches!(
+            parsed.projection,
+            crate::Projection::Literal(1000)
+        ));
         for bad in ["SELECT _123", "SELECT 1__2", "SELECT 10_"] {
             assert!(crate::parse_select(bad).is_err(), "{bad}");
         }

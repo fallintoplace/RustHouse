@@ -32,7 +32,10 @@ fn sync_catalog_dir(catalog: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(catalog)
         .map_err(|error| format!("cannot inspect catalog {}: {error}", catalog.display()))?;
     if !metadata.file_type().is_dir() {
-        return Err(format!("catalog {} is not a real directory", catalog.display()));
+        return Err(format!(
+            "catalog {} is not a real directory",
+            catalog.display()
+        ));
     }
     Ok(())
 }
@@ -623,7 +626,8 @@ mod platform_catalog_sync_tests {
     fn directory_sync_rejects_regular_files_and_missing_paths() {
         let root = std::env::temp_dir().join(format!(
             "rusthouse-catalog-sync-{}-{}",
-            std::process::id(), NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&root).unwrap();
         let file = root.join("not-a-directory");

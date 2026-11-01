@@ -91,8 +91,9 @@ impl GroupIndex16 {
     fn get(&self, key: u16) -> Option<usize> {
         match self {
             Self::Sparse(lookup) => lookup.get(&key).copied(),
-            Self::Dense(slots) => (slots[usize::from(key)] != usize::MAX)
-                .then_some(slots[usize::from(key)]),
+            Self::Dense(slots) => {
+                (slots[usize::from(key)] != usize::MAX).then_some(slots[usize::from(key)])
+            }
         }
     }
 
@@ -193,8 +194,8 @@ pub(super) fn execute<W: Write>(
     .then(|| [usize::MAX; 256]);
     // Allocate a dense 16-bit lookup only after sufficiently many distinct
     // groups materialize. Queries with few groups avoid the 512 KiB table.
-    let mut dense_groups = matches!(types[column].as_str(), "UInt16" | "Int16")
-        .then(GroupIndex16::new);
+    let mut dense_groups =
+        matches!(types[column].as_str(), "UInt16" | "Int16").then(GroupIndex16::new);
     let byte_distinct = matches!(
         typed::base_type(types[value_column].as_str()),
         "UInt8" | "Int8"

@@ -1119,11 +1119,25 @@ mod wide_quorum_lineage_tests {
     fn newest_and_highest_observations_accept_member_indexes_16_through_63() {
         let names = (0..64).map(|i| format!("node{i}")).collect::<Vec<_>>();
         let members = names.iter().map(String::as_str).collect::<Vec<_>>();
-        let snapshot = SnapshotVersion { epoch: 5, generation: 91, fingerprint: 125 };
-        let observations = members.iter().copied().map(|node| (node, snapshot)).collect::<Vec<_>>();
+        let snapshot = SnapshotVersion {
+            epoch: 5,
+            generation: 91,
+            fingerprint: 125,
+        };
+        let observations = members
+            .iter()
+            .copied()
+            .map(|node| (node, snapshot))
+            .collect::<Vec<_>>();
         let policy = QuorumPolicy::new(64, 33, 33).unwrap();
-        assert_eq!(newest_quorum_observed_snapshot(policy, &members, &observations).unwrap(), Some(snapshot));
-        assert_eq!(highest_quorum_observed_snapshot(policy, &members, &observations).unwrap(), Some(snapshot));
+        assert_eq!(
+            newest_quorum_observed_snapshot(policy, &members, &observations).unwrap(),
+            Some(snapshot)
+        );
+        assert_eq!(
+            highest_quorum_observed_snapshot(policy, &members, &observations).unwrap(),
+            Some(snapshot)
+        );
         let mut duplicate = observations[..33].to_vec();
         duplicate.push(observations[32]);
         assert!(newest_quorum_observed_snapshot(policy, &members, &duplicate).is_err());

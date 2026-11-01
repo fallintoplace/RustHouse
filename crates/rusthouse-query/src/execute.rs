@@ -194,7 +194,10 @@ impl DistinctKey {
             for (slot, &number) in values.iter_mut().zip(numbers) {
                 *slot = NumberKey::from(number);
             }
-            Self::Inline { len: numbers.len() as u8, values }
+            Self::Inline {
+                len: numbers.len() as u8,
+                values,
+            }
         } else {
             Self::Heap(numbers.iter().copied().map(NumberKey::from).collect())
         }
@@ -214,7 +217,8 @@ fn remember_distinct(
     values: &[Number],
 ) -> Result<bool, ExecutionError> {
     let key = DistinctKey::from_numbers(values);
-    let added = key.retained_payload_bytes()
+    let added = key
+        .retained_payload_bytes()
         .and_then(|payload| payload.checked_add(std::mem::size_of::<DistinctKey>() + 32))
         .ok_or_else(|| ExecutionError::Invalid("DISTINCT retained size overflow".into()))?;
     let next = retained_bytes
@@ -1380,8 +1384,16 @@ fn execute_into<W: Write>(
             } else {
                 let distinct_values = if let Some(seen) = distinct.as_mut() {
                     distinct_values_buffer.clear();
-                    distinct_values_buffer.extend(projected_indices.iter().map(|index| number_at(&batch[*index], row)));
-                    if !remember_distinct(seen, &mut distinct_retained_bytes, &distinct_values_buffer)? {
+                    distinct_values_buffer.extend(
+                        projected_indices
+                            .iter()
+                            .map(|index| number_at(&batch[*index], row)),
+                    );
+                    if !remember_distinct(
+                        seen,
+                        &mut distinct_retained_bytes,
+                        &distinct_values_buffer,
+                    )? {
                         continue;
                     }
                     Some(distinct_values_buffer.as_slice())
@@ -2778,7 +2790,9 @@ mod inline_distinct_key_equivalence_tests {
         for width in 0..=8usize {
             let mut seen = HashSet::new();
             let mut bytes = 0;
-            let values = (0..width).map(|i| Number::Unsigned(i as u128)).collect::<Vec<_>>();
+            let values = (0..width)
+                .map(|i| Number::Unsigned(i as u128))
+                .collect::<Vec<_>>();
             assert!(remember_distinct(&mut seen, &mut bytes, &values).unwrap());
             assert!(!remember_distinct(&mut seen, &mut bytes, &values).unwrap());
             if width > 0 {
@@ -2787,9 +2801,15 @@ mod inline_distinct_key_equivalence_tests {
                 assert!(remember_distinct(&mut seen, &mut bytes, &different).unwrap());
             }
             if width <= 4 {
-                assert!(matches!(DistinctKey::from_numbers(&values), DistinctKey::Inline { .. }));
+                assert!(matches!(
+                    DistinctKey::from_numbers(&values),
+                    DistinctKey::Inline { .. }
+                ));
             } else {
-                assert!(matches!(DistinctKey::from_numbers(&values), DistinctKey::Heap(_)));
+                assert!(matches!(
+                    DistinctKey::from_numbers(&values),
+                    DistinctKey::Heap(_)
+                ));
             }
         }
     }
@@ -2801,6 +2821,13 @@ mod inline_distinct_key_equivalence_tests {
         assert!(remember_distinct(&mut seen, &mut bytes, &[Number::Float(-0.0)]).unwrap());
         assert!(!remember_distinct(&mut seen, &mut bytes, &[Number::Float(0.0)]).unwrap());
         assert!(remember_distinct(&mut seen, &mut bytes, &[Number::Float(f64::NAN)]).unwrap());
-        assert!(!remember_distinct(&mut seen, &mut bytes, &[Number::Float(f64::from_bits(0x7ff8000000000001))]).unwrap());
+        assert!(
+            !remember_distinct(
+                &mut seen,
+                &mut bytes,
+                &[Number::Float(f64::from_bits(0x7ff8000000000001))]
+            )
+            .unwrap()
+        );
     }
 }

@@ -17,7 +17,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from bench.common import file_change_time_ns
+from bench.common import _leading_sql_keyword, file_change_time_ns
 
 from .query_digest import _has_sql_separator
 

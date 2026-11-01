@@ -15,6 +15,8 @@ from pathlib import Path
 
 def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
                 expected_sha256=None, max_total_bytes=None, max_dirs=1_000_000):
+    if type(max_dirs) is not int or not 1 <= max_dirs <= 10_000_000:
+        raise ValueError("max_dirs must be in 1..10000000")
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected an offline snapshot directory")
@@ -27,8 +29,6 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
             not isinstance(expected_sha256, str)
             or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
         raise ValueError("expected_sha256 must be lowercase SHA256 hex")
-    if type(max_dirs) is not int or not 1 <= max_dirs <= 10_000_000:
-        raise ValueError("max_dirs must be in 1..10000000")
     aggregate = hashlib.sha256()
     count = 0
     total_bytes = 0

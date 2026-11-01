@@ -70,15 +70,21 @@ fn validate_pretty_depth(row: &[u8]) -> io::Result<()> {
             }
             b'}' | b']' => {
                 if depth == 0 || !is_empty_json_container_pair(containers[depth - 1], byte) {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "unbalanced pretty JSON delimiter"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unbalanced pretty JSON delimiter",
+                    ));
                 }
                 depth -= 1;
-            },
+            }
             _ => {}
         }
     }
     if depth != 0 || inside_string {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "unterminated pretty JSON container or string"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unterminated pretty JSON container or string",
+        ));
     }
     Ok(())
 }
@@ -613,9 +619,8 @@ mod atomic_pretty_json_validation_tests {
             assert!(write_pretty_json_row(&mut rendered, malformed).is_err());
             assert!(rendered.is_empty(), "rejected JSON must not emit a prefix");
         }
-        let mut nested = Vec::new();
-        for _ in 0..256 { nested.push(b'['); }
-        for _ in 0..256 { nested.push(b']'); }
+        let mut nested = vec![b'['; 256];
+        nested.extend(std::iter::repeat_n(b']', 256));
         let mut rendered = Vec::new();
         write_pretty_json_row(&mut rendered, &nested).unwrap();
         assert!(rendered.starts_with(b"["));

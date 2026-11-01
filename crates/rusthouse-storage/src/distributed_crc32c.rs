@@ -971,17 +971,20 @@ mod checked_crc_chunk_reduction_tests {
         );
         assert_eq!(
             crc32c_combine_chunks(&[(3, crc32c(b"abc"))], 2)
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidInput
         );
         assert_eq!(
             crc32c_combine_chunks(&[(u64::MAX, 5), (1, 7)], u64::MAX)
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidInput
         );
         assert_eq!(
             crc32c_combine_chunks(&vec![(0, 0); 65_537], 0)
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidInput
         );
     }

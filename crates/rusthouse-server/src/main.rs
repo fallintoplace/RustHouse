@@ -441,8 +441,7 @@ fn write_with_deadline(
             })?;
         stream.set_write_timeout(Some(remaining))?;
         // Limit each syscall to 64 KiB and recalculate the budget after it.
-        let Some(written) =
-            write_response_chunk(stream, &bytes[..bytes.len().min(64 * 1024)])?
+        let Some(written) = write_response_chunk(stream, &bytes[..bytes.len().min(64 * 1024)])?
         else {
             continue;
         };
@@ -1290,7 +1289,10 @@ mod interrupted_response_write_tests {
 
     #[test]
     fn interrupted_and_partial_writes_preserve_every_response_byte() {
-        let mut writer = InterruptThenPartial { bytes: Vec::new(), calls: 0 };
+        let mut writer = InterruptThenPartial {
+            bytes: Vec::new(),
+            calls: 0,
+        };
         let mut input = b"HTTP/1.1 200 OK\r\n\r\nhello".as_slice();
         assert_eq!(write_response_chunk(&mut writer, input).unwrap(), None);
         while !input.is_empty() {
@@ -1305,7 +1307,9 @@ mod interrupted_response_write_tests {
     #[test]
     fn zero_length_write_is_not_retried_forever() {
         assert_eq!(
-            write_response_chunk(&mut io::sink(), b"").unwrap_err().kind(),
+            write_response_chunk(&mut io::sink(), b"")
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::WriteZero,
         );
     }
