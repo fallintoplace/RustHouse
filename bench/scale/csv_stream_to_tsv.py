@@ -57,6 +57,7 @@ def convert(source, destination, *, header=False, empty_as_null=False,
     pending = destination.with_name(
         "." + destination.name + f".{os.getpid()}.{secrets.token_hex(8)}.pending")
     pending_created = False
+    published = False
     try:
         if destination.exists():
             raise ValueError("refusing to overwrite an existing output")
@@ -108,6 +109,7 @@ def convert(source, destination, *, header=False, empty_as_null=False,
         if destination.exists():
             raise ValueError("refusing to overwrite an existing output")
         os.link(pending, destination)
+        published = True
         if os.name == "posix":
             # Publishing a hard link needs a parent-directory fsync to survive
             # a crash, even when the TSV payload has already been fsynced.
@@ -116,6 +118,10 @@ def convert(source, destination, *, header=False, empty_as_null=False,
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+    except Exception:
+        if published:
+            destination.unlink(missing_ok=True)
+        raise
     finally:
         if pending_created:
             pending.unlink(missing_ok=True)
