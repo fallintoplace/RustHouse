@@ -121,6 +121,36 @@ class ResumableShardsTests(unittest.TestCase):
             self.assertEqual(list(outside.iterdir()), [])
 
 
+    def test_ctime_change_during_read_is_rejected(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            from bench.scale.resumable_id_shards import validate_existing
+            path = Path(root) / "reused.tsv"
+            path.write_bytes(b"0\n1\n")
+            real_fstat = os.fstat
+            calls = 0
+
+            def changed_ctime(fd):
+                nonlocal calls
+                current = real_fstat(fd)
+                calls += 1
+                if calls != 2:
+                    return current
+                return SimpleNamespace(
+                    st_mode=current.st_mode, st_dev=current.st_dev,
+                    st_ino=current.st_ino, st_size=current.st_size,
+                    st_mtime_ns=current.st_mtime_ns,
+                    st_ctime_ns=current.st_ctime_ns + 1,
+                )
+
+            with patch("bench.scale.resumable_id_shards.os.fstat", side_effect=changed_ctime):
+                with self.assertRaisesRegex(ValueError, "changed while reading"):
+                    validate_existing(path, 0, 2)
+            self.assertEqual(calls, 2)
+
     def test_reuse_verification_detects_corruption_across_batch_boundary(self):
         with tempfile.TemporaryDirectory() as root:
             first = create(root, 100, 8193, 8193)

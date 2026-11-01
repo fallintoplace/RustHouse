@@ -31,13 +31,16 @@ pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
         || !name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        || value
-            .bytes()
-            .any(|byte| byte.is_ascii_control() && byte != b'\t')
+        || value.chars().any(|ch| {
+            (ch.is_control() && ch != '\t')
+                || (ch.is_whitespace() && ch != ' ' && ch != '\t')
+        })
     {
         return Err("invalid peer header".into());
     }
-    Ok((name, value.trim()))
+    // HTTP optional whitespace is SP / HTAB only. Unicode trim() would
+    // silently turn non-HTTP whitespace into a valid numeric header value.
+    Ok((name, value.trim_matches(|ch| ch == ' ' || ch == '\t')))
 }
 
 pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
@@ -336,6 +339,31 @@ mod borrowed_peer_head_tests {
     fn uncompleted_header_rejects_duplicate_content_type() {
         let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n";
         assert!(expected_wire_length(wire).is_err());
+    }
+}
+
+#[cfg(test)]
+mod strict_peer_header_ows_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unicode_whitespace_instead_of_normalizing_it() {
+        for value in [
+            "Content-Length:\u{00a0}4",
+            "Content-Length:4\u{2003}",
+            "Content-Type:application\u{2028}json",
+            "Content-Type:\u{0085}text/plain",
+        ] {
+            assert!(parse_peer_header(value).is_err(), "{value:?}");
+        }
+        assert_eq!(
+            parse_peer_header("Content-Length: \t 42 \t").unwrap(),
+            ("Content-Length", "42"),
+        );
+        assert_eq!(
+            parse_peer_header("X-Trace: a\tb").unwrap(),
+            ("X-Trace", "a\tb"),
+        );
     }
 }
 

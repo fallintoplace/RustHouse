@@ -67,7 +67,17 @@ fn contains_bytes_horspool(haystack: &[u8], needle: &[u8], shifts: &[usize; 256]
     let last = needle.len() - 1;
     let mut start = 0;
     while start <= haystack.len() - needle.len() {
-        if haystack[start..start + needle.len()] == *needle {
+        // Compare from the end, which is where the Horspool shift byte
+        // lives. On a long repeated-prefix near miss (aaaa...ab against
+        // aaaa...), a forward slice comparison rereads nearly the entire
+        // needle at every position. Right-to-left rejects in one byte.
+        let mut remaining = needle.len();
+        while remaining > 0
+            && haystack[start + remaining - 1] == needle[remaining - 1]
+        {
+            remaining -= 1;
+        }
+        if remaining == 0 {
             return true;
         }
         // The table is ASCII-folded so it can also serve ILIKE. A folded
@@ -780,5 +790,18 @@ mod binary_horspool_like_tests {
         assert!(like_matches(format!("xx{needle}yy").as_bytes(), &pattern, false));
         assert!(!like_matches(b"xxaabbccddeeffgghhyy", &pattern, false));
         assert!(like_matches(b"xxaabbccddeeffgghhyy", &pattern, true));
+    }
+
+    #[test]
+    fn long_repeated_prefix_near_misses_remain_linear_with_binary_rows() {
+        let needle = format!("{}b", "a".repeat(127));
+        let pattern = compile_like(&format!("%{needle}%")).unwrap();
+        let mut input = vec![b'a'; 256 * 1024];
+        input.extend_from_slice(&[0xff, 0x80]);
+        assert!(!like_matches(&input, &pattern, false));
+        input.extend_from_slice(needle.as_bytes());
+        assert!(like_matches(&input, &pattern, false));
+        input.pop();
+        assert!(!like_matches(&input, &pattern, false));
     }
 }

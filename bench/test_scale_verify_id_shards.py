@@ -9,6 +9,35 @@ from bench.scale.verify_id_shards import verify, verify_file
 
 
 class VerifyShardsTests(unittest.TestCase):
+    def test_manifest_replacement_before_open_is_rejected(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "manifest.json"
+            replacement = Path(folder) / "replacement.json"
+            path.write_text('{"schema_version": 1}')
+            replacement.write_text('{"schema_version": 2}')
+            real_open = os.open
+
+            def swapped(candidate, flags):
+                if Path(candidate) == path:
+                    os.replace(replacement, path)
+                return real_open(candidate, flags)
+
+            with patch("bench.scale.verify_id_shards.os.open", side_effect=swapped):
+                with self.assertRaisesRegex(ValueError, "changed before opening"):
+                    verify(path)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows CI may disallow symlinks")
+    def test_manifest_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            original = Path(folder) / "original.json"
+            alias = Path(folder) / "manifest.json"
+            original.write_text('{"schema_version": 1}')
+            alias.symlink_to(original)
+            with self.assertRaisesRegex(ValueError, "symlinked"):
+                verify(alias)
+
     def test_direct_verification_rejects_invalid_ranges_before_file_open(self):
         missing = Path("missing-shard.tsv")
         for args in ((0, 0, 1), (-1, 1, 1), (True, 1, 1),
@@ -88,6 +117,35 @@ class VerifyShardsTests(unittest.TestCase):
             alias.symlink_to(source)
             with self.assertRaisesRegex(ValueError, "non-symlinked"):
                 verify_file(alias, 0, 2)
+
+    def test_ctime_change_during_read_is_rejected(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "checked.tsv"
+            path.write_bytes(b"0\n1\n")
+            real_fstat = os.fstat
+            calls = 0
+
+            def changed_ctime(fd):
+                nonlocal calls
+                current = real_fstat(fd)
+                calls += 1
+                if calls != 2:
+                    return current
+                return SimpleNamespace(
+                    st_mode=current.st_mode, st_dev=current.st_dev,
+                    st_ino=current.st_ino, st_size=current.st_size,
+                    st_mtime_ns=current.st_mtime_ns,
+                    st_ctime_ns=current.st_ctime_ns + 1,
+                )
+
+            with patch("bench.scale.verify_id_shards.os.fstat", side_effect=changed_ctime):
+                with self.assertRaisesRegex(ValueError, "changed during verification"):
+                    verify_file(path, 0, 2)
+            self.assertEqual(calls, 2)
 
     def test_detects_extra_rows(self):
         with tempfile.TemporaryDirectory() as temp:
