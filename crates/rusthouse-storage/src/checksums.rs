@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 const HEADER: &[u8] = b"checksums format version: ";
 const MAX_CHECKSUMS_BYTES: u64 = 64 * 1024 * 1024;
+// A single part must not declare more files than an entire replica inventory.
+const MAX_MANIFEST_FILES: usize = 131_072;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UncompressedChecksum {
@@ -176,6 +178,9 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
     let mut reader = BinaryReader::new(bytes, path);
     let count = usize::try_from(reader.varuint()?)
         .map_err(|_| invalid(path, "file count exceeds address space"))?;
+    if count > MAX_MANIFEST_FILES {
+        return Err(invalid(path, "manifest file count exceeds limit"));
+    }
     if count > reader.remaining() / 20 {
         return Err(invalid(path, "file count exceeds remaining data"));
     }
@@ -717,5 +722,26 @@ mod checksums_initial_open_stability_tests {
             &file.metadata().unwrap()
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod manifest_file_count_budget_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_oversized_manifest_count_before_allocating_entries() {
+        let mut content = b"checksums format version: 3\n".to_vec();
+        let mut count = (MAX_MANIFEST_FILES + 1) as u64;
+        while count >= 128 {
+            content.push((count as u8 & 0x7f) | 0x80);
+            count >>= 7;
+        }
+        content.push(count as u8);
+        // Supply enough bytes to satisfy the existing minimum entry-size
+        // check; the explicit object-count budget must reject first.
+        content.resize(content.len() + (MAX_MANIFEST_FILES + 1) * 20, 0);
+        let error = parse_checksums(&content, Path::new("checksums.txt")).unwrap_err();
+        assert!(matches!(error, PartError::InvalidChecksums { reason: "manifest file count exceeds limit", .. }));
     }
 }
