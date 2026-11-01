@@ -56,6 +56,18 @@ fn open_verified_object(path: &Path) -> io::Result<(File, fs::Metadata)> {
     if !meta.file_type().is_file() {
         return Err(io::Error::other("object is not a regular file"));
     }
+    // Keep immutable objects pinned against in-place writes and replacement
+    // on Windows for the entire verified range read.
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)?
+    };
+    #[cfg(not(windows))]
     let file = File::open(path)?;
     let opened = file.metadata()?;
     // Checking only length and inode misses in-place overwrites between
@@ -1270,5 +1282,34 @@ mod checked_duplicate_crc_cache_tests {
             Err(ref error) if error.kind() == io::ErrorKind::InvalidData
         ));
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_immutable_object_handle_tests {
+    use super::*;
+
+    #[test]
+    fn denies_writes_and_replacement_while_a_range_handle_is_open() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-immutable-range-win-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("part.bin");
+        fs::write(&path, [42u8; 128]).unwrap();
+
+        let (file, baseline) = open_verified_object(&path).unwrap();
+        assert!(fs::OpenOptions::new().write(true).open(&path).is_err());
+        assert!(fs::remove_file(&path).is_err());
+        let mut bytes = [0u8; 16];
+        let mut reading = file.try_clone().unwrap();
+        read_at_into(&mut reading, 32, &mut bytes).unwrap();
+        assert_eq!(bytes, [42u8; 16]);
+        verify_object_after_read(&path, &file, &baseline).unwrap();
+        drop(file);
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 }
