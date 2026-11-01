@@ -1365,3 +1365,72 @@ mod fair_replica_transfer_tests {
         assert!(plan_fair_replica_transfers(&[source], 1, 65_537).is_err());
     }
 }
+
+/// Map a half-open changed byte span to every transfer chunk it touches.
+///
+/// The returned range contains chunk indexes, not byte offsets. An empty
+/// byte span never invalidates an already verified chunk, even when it is
+/// positioned exactly at EOF. The caller must still verify object identity.
+pub fn chunks_intersecting_range(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    offset: u64,
+    length: u64,
+) -> Result<std::ops::Range<usize>, &'static str> {
+    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    let end = offset.checked_add(length).ok_or("changed object range overflow")?;
+    if offset > total_bytes || end > total_bytes {
+        return Err("changed object range exceeds transfer layout");
+    }
+    if length == 0 {
+        let cursor = (offset / chunk_bytes).min(count as u64) as usize;
+        return Ok(cursor..cursor);
+    }
+    let first = (offset / chunk_bytes) as usize;
+    let last = ((end - 1) / chunk_bytes + 1) as usize;
+    Ok(first..last)
+}
+
+#[cfg(test)]
+mod intersecting_chunk_range_tests {
+    use super::*;
+
+    #[test]
+    fn matches_bruteforce_byte_intersection_for_every_small_layout() {
+        for total in 0..=32u64 {
+            for width in 1..=12u64 {
+                let planned = plan_chunks(total, width, 65_536).unwrap();
+                for offset in 0..=total {
+                    for length in 0..=total - offset {
+                        let indexes = chunks_intersecting_range(
+                            total, width, 65_536, offset, length,
+                        ).unwrap();
+                        let expected = planned.iter().enumerate()
+                            .filter(|(_, chunk)| {
+                                length != 0
+                                    && chunk.offset < offset + length
+                                    && offset < chunk.offset + chunk.length
+                            })
+                            .map(|(index, _)| index)
+                            .collect::<Vec<_>>();
+                        assert_eq!(indexes.clone().collect::<Vec<_>>(), expected,
+                            "total={total}, width={width}, offset={offset}, length={length}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn handles_last_partial_chunk_and_checked_integer_boundaries() {
+        assert_eq!(chunks_intersecting_range(10, 4, 3, 7, 3).unwrap(), 1..3);
+        assert_eq!(chunks_intersecting_range(10, 4, 3, 10, 0).unwrap(), 2..2);
+        assert_eq!(chunks_intersecting_range(0, 4, 3, 0, 0).unwrap(), 0..0);
+        assert_eq!(chunks_intersecting_range(u64::MAX, u64::MAX, 1, u64::MAX - 1, 1).unwrap(), 0..1);
+        assert!(chunks_intersecting_range(10, 4, 3, 10, 1).is_err());
+        assert!(chunks_intersecting_range(10, 4, 3, 9, u64::MAX).is_err());
+        assert!(chunks_intersecting_range(10, 0, 3, 0, 0).is_err());
+        assert!(chunks_intersecting_range(10, 4, 2, 0, 0).is_err());
+    }
+}
