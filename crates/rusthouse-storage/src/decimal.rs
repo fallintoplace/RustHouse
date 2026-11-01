@@ -1,7 +1,7 @@
 use crate::{NumericColumn, NumericReadError, read_numeric_column};
 use std::error::Error;
 use std::fmt;
-use std::io::Read;
+use std::io::{self, Read, Write};
 
 /// Decimal values are stored as signed integers scaled by 10^scale.
 /// No floating-point conversion is performed.
@@ -91,6 +91,69 @@ pub fn read_decimal_column<R: Read>(
         scale,
         unscaled,
     })
+}
+
+/// Encode unscaled signed Decimal values without a whole-column buffer.
+///
+/// Validate precision and destination width across the complete batch
+/// before writing any bytes. The scale belongs to the physical type;
+/// callers supply integer values that are already scaled accordingly.
+pub fn write_decimal_values<W: Write>(
+    output: &mut W,
+    data_type: &str,
+    values: &[i128],
+) -> io::Result<()> {
+    let (precision, _scale, storage) = parse_decimal_type(data_type)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid Decimal type"))?;
+    let width = match storage {
+        "Int32" => 4,
+        "Int64" => 8,
+        "Int128" => 16,
+        _ => return Err(io::Error::other("unsupported Decimal storage width")),
+    };
+    let bytes = values.len().checked_mul(width).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "Decimal batch byte size overflow")
+    })?;
+    if bytes > crate::fixed_width::MAX_BATCH_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Decimal batch exceeds 64 MiB",
+        ));
+    }
+    let limit = 10i128.pow(u32::from(precision));
+    if values.iter().any(|&value| value <= -limit || value >= limit) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Decimal value exceeds declared precision",
+        ));
+    }
+
+    let mut buffer = [0u8; 16 * 1024];
+    for chunk in values.chunks(buffer.len() / width) {
+        match storage {
+            "Int32" => {
+                for (index, &value) in chunk.iter().enumerate() {
+                    buffer[index * 4..index * 4 + 4]
+                        .copy_from_slice(&(value as i32).to_le_bytes());
+                }
+            }
+            "Int64" => {
+                for (index, &value) in chunk.iter().enumerate() {
+                    buffer[index * 8..index * 8 + 8]
+                        .copy_from_slice(&(value as i64).to_le_bytes());
+                }
+            }
+            "Int128" => {
+                for (index, &value) in chunk.iter().enumerate() {
+                    buffer[index * 16..index * 16 + 16]
+                        .copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            _ => unreachable!("Decimal storage was validated"),
+        }
+        output.write_all(&buffer[..chunk.len() * width])?;
+    }
+    Ok(())
 }
 
 fn decimal_storage_type(precision: u8) -> &'static str {
@@ -392,5 +455,72 @@ mod ascii_decimal_type_parameters_tests {
             Some((38, 18, "Int128"))
         );
         assert!(parse_decimal_type("Decimal(256, 1)").is_none());
+    }
+}
+
+#[cfg(test)]
+mod physical_decimal_writer_tests {
+    use super::*;
+
+    struct PartialSink(Vec<u8>);
+
+    impl Write for PartialSink {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let count = bytes.len().min(11);
+            self.0.extend_from_slice(&bytes[..count]);
+            Ok(count)
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn signed_decimal_families_round_trip_across_multiple_blocks() {
+        for (declaration, value, width) in [
+            ("Decimal32(4)", -123456789i128, 4),
+            ("Decimal64(10)", 123456789012345678i128, 8),
+            ("Decimal128(20)", -123456789012345678901234567890i128, 16),
+        ] {
+            let values = vec![value; 4097];
+            let mut output = PartialSink(Vec::new());
+            write_decimal_values(&mut output, declaration, &values).unwrap();
+            assert_eq!(output.0.len(), values.len() * width);
+            let decoded = read_decimal_column(&mut output.0.as_slice(), declaration, values.len()).unwrap();
+            match decoded.unscaled_values() {
+                NumericColumn::Int32(inner) => assert!(inner.iter().all(|&v| i128::from(v) == value)),
+                NumericColumn::Int64(inner) => assert!(inner.iter().all(|&v| i128::from(v) == value)),
+                NumericColumn::Int128(inner) => assert!(inner.iter().all(|&v| v == value)),
+                _ => panic!("unexpected physical Decimal type"),
+            }
+        }
+    }
+
+    #[test]
+    fn precision_limits_fail_before_any_partial_column_output() {
+        for (declaration, valid, invalid) in [
+            ("Decimal32(3)", 999_999_999i128, 1_000_000_000),
+            ("Decimal64(4)", -999_999_999_999_999_999i128, 1_000_000_000_000_000_000),
+            ("Decimal128(0)", 10i128.pow(38) - 1, 10i128.pow(38)),
+        ] {
+            let mut output = Vec::new();
+            write_decimal_values(&mut output, declaration, &[valid]).unwrap();
+            output.clear();
+            assert_eq!(
+                write_decimal_values(&mut output, declaration, &[valid, invalid])
+                    .unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert!(output.is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_type_and_size_preflight_do_not_write() {
+        let mut output = Vec::new();
+        assert!(write_decimal_values(&mut output, "Decimal256(7)", &[1]).is_err());
+        assert!(write_decimal_values(&mut output, "Decimal32(10)", &[1]).is_err());
+        assert!(write_decimal_values(&mut output, "Decimal(0,0)", &[1]).is_err());
+        assert!(output.is_empty());
+        write_decimal_values(&mut output, "Decimal64(2)", &[]).unwrap();
+        assert!(output.is_empty());
     }
 }
