@@ -112,7 +112,17 @@ def copy_regular_file(source, destination):
                 (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)):
             raise ValueError("backup source changed while opening")
         with open(destination, "xb") as writer:
-            shutil.copyfileobj(reader, writer, 1024 * 1024)
+            # A concurrently growing source must not turn one verified file
+            # into an unbounded copy. Copy exactly the opened inode's size.
+            remaining = opened.st_size
+            while remaining:
+                block = reader.read(min(remaining, 1024 * 1024))
+                if not block:
+                    raise ValueError("backup source shrank during copying")
+                writer.write(block)
+                remaining -= len(block)
+            if reader.read(1):
+                raise ValueError("backup source grew during copying")
             # Windows requires a writable descriptor to flush copied data.
             # Sync before copying source permissions that may be read-only.
             writer.flush()
