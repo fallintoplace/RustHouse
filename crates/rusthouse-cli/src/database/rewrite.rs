@@ -83,10 +83,26 @@ fn column_value(column: &TypedColumn, row: usize) -> Result<Option<String>, Stri
     }
 }
 
+#[cfg(not(windows))]
 fn sync_directory(path: &Path) -> Result<(), String> {
     fs::File::open(path)
         .and_then(|dir| dir.sync_all())
         .map_err(|error| format!("cannot sync {}: {error}", path.display()))
+}
+
+#[cfg(windows)]
+fn sync_directory(path: &Path) -> Result<(), String> {
+    // Windows cannot flush directory handles using std::fs::File::sync_all.
+    // These failures previously prevented any snapshot rewrite from being
+    // published, even though its immutable part files had been synced.
+    // Preserve symlink/file rejection and atomic directory rename. The power-
+    // loss durability guarantee remains weaker than on POSIX with fsync.
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+    if !metadata.file_type().is_dir() {
+        return Err(format!("snapshot path {} is not a real directory", path.display()));
+    }
+    Ok(())
 }
 
 fn generations_dir(database: &Path, table: &str) -> Result<std::path::PathBuf, String> {
@@ -773,6 +789,28 @@ mod streaming_budget_single_pass_tests {
         }
         assert_eq!(pointer, scratch.as_ptr());
         assert_eq!(total, 100_000u64 * (22 + 18 + 16 + 18));
+    }
+}
+
+#[cfg(test)]
+mod platform_snapshot_sync_tests {
+    use super::*;
+
+    #[test]
+    fn validates_snapshot_directory_presence_on_every_platform() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-snapshot-sync-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        sync_directory(&root).unwrap();
+        assert!(sync_directory(&root.join("missing")).is_err());
+        #[cfg(windows)] {
+            let file = root.join("not-a-directory");
+            fs::write(&file, b"immutable metadata").unwrap();
+            assert!(sync_directory(&file).is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }
 
