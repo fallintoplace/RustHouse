@@ -248,7 +248,10 @@ mod uuid_round_trip_tests {
         let expected = "61f0c404-5cb3-11e7-907b-a6006ad3dba0";
         let parsed = UuidValue::from_str(expected).unwrap();
         assert_eq!(parsed.to_string(), expected);
-        assert_eq!(parsed.to_disk_bytes(), super::tests::EXAMPLE);
+        assert_eq!(parsed.to_disk_bytes(), [
+            0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61,
+            0xa0, 0xdb, 0xd3, 0x6a, 0x00, 0xa6, 0x7b, 0x90,
+        ]);
         assert_eq!(
             UuidValue::decode_uuid_disk_bytes(parsed.to_disk_bytes()),
             parsed
