@@ -58,7 +58,7 @@ class PartDensityTests(unittest.TestCase):
             part = Path(root) / "all_1_1_0"
             part.mkdir()
             for payload in ("١٢\n", "10\n\n", " 10\n", "01\n"):
-                (part / "count.txt").write_text(payload)
+                (part / "count.txt").write_bytes(payload.encode("utf-8"))
                 with self.assertRaisesRegex(ValueError, "invalid"):
                     part_density(root)
             (part / "count.txt").write_text(f"{2**64 - 1}\n")
@@ -81,6 +81,59 @@ class PartDensityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "oversized count"):
                 part_density(root)
 
+
+    def test_rejects_count_file_replaced_after_path_validation(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            part = root / "all_1_1_0"
+            part.mkdir()
+            count = part / "count.txt"
+            count.write_text("10\n")
+            replacement = part / "replacement.txt"
+            replacement.write_text("99\n")
+            real_open = os.open
+
+            def swap_before_open(path, flags, *args, **kwargs):
+                if Path(path) == count:
+                    count.unlink()
+                    replacement.rename(count)
+                return real_open(path, flags, *args, **kwargs)
+
+            with patch("bench.scale.part_density.os.open", side_effect=swap_before_open):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    part_density(root)
+
+    def test_ctime_change_during_read_is_rejected(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "part"
+            path.mkdir()
+            (path / "count.txt").write_bytes(b"12\n")
+            real_fstat = os.fstat
+            calls = 0
+
+            def changed_ctime(fd):
+                nonlocal calls
+                current = real_fstat(fd)
+                calls += 1
+                if calls != 2:
+                    return current
+                return SimpleNamespace(
+                    st_mode=current.st_mode, st_dev=current.st_dev,
+                    st_ino=current.st_ino, st_size=current.st_size,
+                    st_mtime_ns=current.st_mtime_ns,
+                    st_ctime_ns=current.st_ctime_ns + 1,
+                )
+
+            with patch("bench.scale.part_density.os.fstat", side_effect=changed_ctime):
+                with self.assertRaisesRegex(ValueError, "changed during read"):
+                    part_density(root)
+            self.assertEqual(calls, 2)
 
     def test_reports_exact_fractions_above_float_precision(self):
         with tempfile.TemporaryDirectory() as root:

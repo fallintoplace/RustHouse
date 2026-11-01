@@ -6,6 +6,7 @@ This is a subset, NOT a full 43-query official ClickBench score.
 """
 import argparse
 import math
+import re
 import sqlite3
 import subprocess
 import sys
@@ -26,12 +27,12 @@ def parse_ids(spec):
         raise ValueError("--only cannot be empty or nontext")
     ids = set()
     for fragment in spec.split(","):
+        fragment = fragment.strip()
+        if not re.fullmatch(r"[0-9]+(?:[ \t]*-[ \t]*[0-9]+)?", fragment):
+            raise ValueError("--only accepts ASCII numeric IDs and inclusive ranges")
         pair = fragment.split("-", 1)
-        try:
-            start = int(pair[0])
-            stop = int(pair[1]) if len(pair) == 2 else start
-        except ValueError as error:
-            raise ValueError("--only accepts numeric IDs and inclusive ranges") from error
+        start = int(pair[0])
+        stop = int(pair[1]) if len(pair) == 2 else start
         if not 1 <= start <= stop <= MAX_QUERY:
             raise ValueError(f"query IDs must be within 1..{MAX_QUERY}")
         ids.update(range(start, stop + 1))

@@ -72,13 +72,31 @@ def _read_bounded_report(path):
     return contents.decode("utf-8")
 
 
+def _unique_json_fields(pairs):
+    fields = {}
+    for key, value in pairs:
+        if key in fields:
+            raise ValueError(f"duplicate canonical TPC-H JSON field: {key}")
+        fields[key] = value
+    return fields
+
+
+def _reject_nonstandard_json(token):
+    raise ValueError(f"nonstandard canonical TPC-H JSON number: {token}")
+
+
+def parse_report(path):
+    return json.loads(_read_bounded_report(path), object_pairs_hook=_unique_json_fields,
+                      parse_constant=_reject_nonstandard_json)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        result = audit(json.loads(_read_bounded_report(args.report)))
+        result = audit(parse_report(args.report))
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
         parser.exit(1, f"TPC-H 22/22 correctness gate failed: {error}\n")
     rendered = json.dumps(result, indent=2) + "\n"

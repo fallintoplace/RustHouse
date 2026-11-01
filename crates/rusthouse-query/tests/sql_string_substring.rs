@@ -46,3 +46,19 @@ fn substring_rejects_invalid_positions_lengths_and_syntax() {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
+
+#[test]
+fn substring_counts_original_unicode_characters_with_nested_operations() {
+    assert_eq!(
+        value("SELECT SUBSTRING('é😀xyz', 2, 3)"),
+        ConstantValue::Text("😀xy".into())
+    );
+    assert_eq!(
+        value("SELECT SUBSTRING('é😀xyz', 3, 99)"),
+        ConstantValue::Text("xyz".into())
+    );
+    assert_eq!(
+        value("SELECT SUBSTRING('é😀xyz', 6)"),
+        ConstantValue::Text(String::new())
+    );
+}

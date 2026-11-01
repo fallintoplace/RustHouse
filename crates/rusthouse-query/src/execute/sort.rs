@@ -49,6 +49,7 @@ impl Drop for SortScratch {
     fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
 }
 
+#[cfg(test)]
 fn write_number(writer: &mut impl Write, number: Number) -> Result<(), ExecutionError> {
     let (tag, payload) = match number {
         Number::Unsigned(v) => (0u8, v.to_le_bytes()),
@@ -62,9 +63,7 @@ fn write_number(writer: &mut impl Write, number: Number) -> Result<(), Execution
     Ok(())
 }
 
-fn read_number(reader: &mut impl Read) -> Result<Number, ExecutionError> {
-    let mut encoded = [0u8; 17];
-    reader.read_exact(&mut encoded)?;
+fn decode_number_record(encoded: &[u8]) -> Result<Number, ExecutionError> {
     let payload: [u8; 16] = encoded[1..].try_into().expect("fixed numeric record");
     match encoded[0] {
         0 => Ok(Number::Unsigned(u128::from_le_bytes(payload))),
@@ -76,6 +75,13 @@ fn read_number(reader: &mut impl Read) -> Result<Number, ExecutionError> {
         },
         _ => Err(invalid("invalid external sort numeric tag")),
     }
+}
+
+#[cfg(test)]
+fn read_number(reader: &mut impl Read) -> Result<Number, ExecutionError> {
+    let mut encoded = [0u8; 17];
+    reader.read_exact(&mut encoded)?;
+    decode_number_record(&encoded)
 }
 
 /// Encode and write an entire sort record with one buffered write, preserving
@@ -121,10 +127,14 @@ fn write_sorted_row(writer: &mut impl Write, row: &SortedRow)
     write_sorted_row_reusing(writer, row, &mut Vec::new())
 }
 
-fn read_sorted_row(
+/// Read one external run row using a reusable wire buffer. A wide
+/// projection needs one bulk body read rather than one read per 17-byte
+/// key/value. Retain the existing EOF and malformed-width behavior.
+fn read_sorted_row_reusing(
     reader: &mut BufReader<File>,
     descending: bool,
     directions: &Arc<[bool]>,
+    scratch: &mut Vec<u8>,
 ) -> Result<Option<SortedRow>, ExecutionError> {
     let mut header = [0u8; 16];
     match reader.read_exact(&mut header[..1]) {
@@ -140,15 +150,35 @@ fn read_sorted_row(
     if extra != directions.len() || width > 128 {
         return Err(invalid("malformed external sort run width"));
     }
-    let key = read_number(reader)?;
+    let bytes = extra.checked_add(width).and_then(|n| n.checked_add(1))
+        .and_then(|n| n.checked_mul(17))
+        .ok_or_else(|| invalid("external sort run size overflow"))?;
+    scratch.resize(bytes, 0);
+    reader.read_exact(scratch)?;
+
+    let mut records = scratch.chunks_exact(17);
+    let key = decode_number_record(records.next().expect("primary sort key"))?;
     let mut extra_keys = Vec::with_capacity(extra);
-    for _ in 0..extra { extra_keys.push(read_number(reader)?); }
+    for record in records.by_ref().take(extra) {
+        extra_keys.push(decode_number_record(record)?);
+    }
     let mut values = Vec::with_capacity(width);
-    for _ in 0..width { values.push(read_number(reader)?); }
+    for record in records {
+        values.push(decode_number_record(record)?);
+    }
     Ok(Some(SortedRow {
         key, extra_keys, values, sequence,
         descending, extra_descending: directions.clone(),
     }))
+}
+
+#[cfg(test)]
+fn read_sorted_row(
+    reader: &mut BufReader<File>,
+    descending: bool,
+    directions: &Arc<[bool]>,
+) -> Result<Option<SortedRow>, ExecutionError> {
+    read_sorted_row_reusing(reader, descending, directions, &mut Vec::new())
 }
 
 fn merge_runs(
@@ -160,7 +190,8 @@ fn merge_runs(
     // The common one-run case is already ordered and needs no heap.
     if let [path] = inputs {
         let mut source = BufReader::with_capacity(64 * 1024, File::open(path)?);
-        while let Some(row) = read_sorted_row(&mut source, descending, directions)? {
+        let mut scratch = Vec::new();
+        while let Some(row) = read_sorted_row_reusing(&mut source, descending, directions, &mut scratch)? {
             if !output(&row)? { break; }
         }
         return Ok(());
@@ -169,8 +200,10 @@ fn merge_runs(
         .map(|source| source.map(|file| BufReader::with_capacity(64 * 1024, file)))
         .collect::<Result<Vec<_>, _>>()?;
     let mut heap = BinaryHeap::<Reverse<(SortedRow, usize)>>::new();
+    // Each stream keeps its own wire buffer across k-way merge probes.
+    let mut scratch = vec![Vec::new(); streams.len()];
     for (index, stream) in streams.iter_mut().enumerate() {
-        if let Some(row) = read_sorted_row(stream, descending, directions)? {
+        if let Some(row) = read_sorted_row_reusing(stream, descending, directions, &mut scratch[index])? {
             heap.push(Reverse((row, index)));
         }
     }
@@ -179,7 +212,9 @@ fn merge_runs(
     while let Some(mut top) = heap.peek_mut() {
         let Reverse((row, index)) = &mut *top;
         if !output(row)? { break; }
-        if let Some(next) = read_sorted_row(&mut streams[*index], descending, directions)? {
+        if let Some(next) = read_sorted_row_reusing(
+            &mut streams[*index], descending, directions, &mut scratch[*index]
+        )? {
             *row = next;
         } else {
             std::collections::binary_heap::PeekMut::pop(top);
@@ -726,6 +761,57 @@ mod numeric_spill_preflight_tests {
         rows.temp_bytes = MAX_TEMP_SORT_BYTES;
         rows.flush_run().unwrap();
         assert!(rows.scratch.is_none());
+    }
+}
+
+#[cfg(test)]
+mod batched_sort_read_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn buffered_multi_key_rows_match_existing_wire_writer() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-batched-sort-read-{}-{}.bin",
+            std::process::id(), NEXT.fetch_add(1, AtomicOrdering::Relaxed)
+        ));
+        let directions: Arc<[bool]> = Arc::from([true, false]);
+        let rows = [
+            SortedRow {
+                key: Number::Unsigned(u128::MAX),
+                extra_keys: vec![Number::Signed(i128::MIN), Number::Float(-0.0)],
+                values: vec![Number::Unsigned(42), Number::Signed(-17)],
+                sequence: 7, descending: true, extra_descending: directions.clone(),
+            },
+            SortedRow {
+                key: Number::Float(f64::INFINITY),
+                extra_keys: vec![Number::Signed(1024), Number::Float(2.5)],
+                values: vec![Number::Float(0.125), Number::Unsigned(0)],
+                sequence: 8, descending: true, extra_descending: directions.clone(),
+            },
+        ];
+        let mut encoded = Vec::new();
+        for row in &rows {
+            write_sorted_row(&mut encoded, row).unwrap();
+        }
+        std::fs::write(&path, encoded).unwrap();
+        let mut source = BufReader::with_capacity(64 * 1024, File::open(&path).unwrap());
+        let mut scratch = Vec::new();
+        for expected in &rows {
+            let actual = read_sorted_row_reusing(&mut source, true, &directions, &mut scratch)
+                .unwrap().unwrap();
+            assert_eq!(actual.sequence, expected.sequence);
+            assert_eq!(actual.key.to_string(), expected.key.to_string());
+            assert_eq!(actual.extra_keys.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                       expected.extra_keys.iter().map(ToString::to_string).collect::<Vec<_>>());
+            assert_eq!(actual.values.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                       expected.values.iter().map(ToString::to_string).collect::<Vec<_>>());
+            assert_eq!(scratch.len(), (1 + 2 + 2) * 17);
+        }
+        assert!(read_sorted_row_reusing(&mut source, true, &directions, &mut scratch)
+            .unwrap().is_none());
+        std::fs::remove_file(path).unwrap();
     }
 }
 

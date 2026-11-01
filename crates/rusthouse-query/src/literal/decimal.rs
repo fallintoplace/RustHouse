@@ -13,29 +13,30 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
         (digits, 0)
     };
     let (whole, original_fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    // Redundant fractional zeros should not consume scale or Int128 capacity.
+    // Redundant fractional and leading integer zeros are not significant digits.
+    // Validate the original mantissa first so "." and "-" remain invalid.
     let fraction = original_fraction.trim_end_matches('0');
-    let whole = if whole.is_empty() && fraction.is_empty() && !original_fraction.is_empty() {
-        "0"
-    } else {
-        whole
-    };
-    if (whole.is_empty() && fraction.is_empty())
+    if (whole.is_empty() && original_fraction.is_empty())
         || fraction.len() > 18
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
         || !fraction.bytes().all(|byte| byte.is_ascii_digit())
     {
         return Err(ParseError("invalid decimal constant".into()));
     }
-    let mut digits = String::with_capacity(whole.len() + fraction.len() + usize::from(negative));
-    if negative {
-        digits.push('-');
+    let whole = whole.trim_start_matches('0');
+    // A decimal mantissa does not need to be copied into a temporary
+    // String. Accumulate the whole and fractional ASCII digit slices
+    // directly, with checked signed arithmetic so Int128::MIN stays valid.
+    let mut signed = 0i128;
+    for digit in whole.bytes().chain(fraction.bytes()) {
+        let value = i128::from(digit - b'0');
+        signed = signed.checked_mul(10)
+            .and_then(|current| {
+                if negative { current.checked_sub(value) }
+                else { current.checked_add(value) }
+            })
+            .ok_or_else(|| ParseError("decimal constant exceeds Int128".into()))?;
     }
-    digits.push_str(whole);
-    digits.push_str(fraction);
-    let signed = digits
-        .parse::<i128>()
-        .map_err(|_| ParseError("decimal constant exceeds Int128".into()))?;
     // Zero remains exact under any finite decimal exponent. Avoid rejecting
     // it merely because a redundant power of ten exceeds Int128.
     if signed == 0 {
@@ -62,16 +63,25 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
 
 pub(super) fn format_decimal(value: i128, scale: usize) -> String {
     let absolute = value.unsigned_abs();
-    let divisor = 10_u128.pow(scale as u32);
+    // 10^39 exceeds u128; never compute that power for a display scale.
+    // The usual <=38 case retains the cheap integer division path.
     let mut formatted = if scale == 0 {
         absolute.to_string()
-    } else {
+    } else if scale <= 38 {
+        let divisor = 10_u128.pow(scale as u32);
         format!(
             "{}.{:0width$}",
             absolute / divisor,
             absolute % divisor,
             width = scale
         )
+    } else {
+        let digits = absolute.to_string();
+        let mut output = String::with_capacity(scale.saturating_add(2));
+        output.push_str("0.");
+        output.extend(std::iter::repeat_n('0', scale - digits.len()));
+        output.push_str(&digits);
+        output
     };
     if scale > 0 {
         while formatted.ends_with('0') {
@@ -116,5 +126,79 @@ mod tests {
         assert_eq!(fixed_decimal("1.230000000000000000000").unwrap(), (123, 2));
         assert_eq!(fixed_decimal("-0.001000000000000000000").unwrap(), (-1, 3));
         assert_eq!(fixed_decimal("1.23000000e-2").unwrap(), (123, 4));
+    }
+}
+
+#[cfg(test)]
+mod allocation_free_decimal_mantissa_tests {
+    use super::*;
+
+    #[test]
+    fn parses_int128_extremes_and_exponents_without_mantissa_buffer() {
+        for value in [i128::MIN, i128::MIN + 1, -100, -1, 0, 1, 100, i128::MAX - 1, i128::MAX] {
+            let repr = value.to_string();
+            assert_eq!(fixed_decimal(&repr).unwrap(), (value, 0));
+            assert_eq!(fixed_decimal(&format!("{repr}.0000")).unwrap(), (value, 0));
+        }
+        for repr in [
+            "170141183460469231731687303715884105728",
+            "-170141183460469231731687303715884105729",
+            "99999999999999999999999999999999999999999999",
+        ] {
+            assert!(fixed_decimal(repr).is_err(), "{repr}");
+        }
+        for (repr, expected) in [
+            ("-.125e2", (-125i128, 1usize)),
+            ("0.00123000e2", (123, 3)),
+            ("-1.0000000e-2", (-1, 2)),
+            ("+1.25", (125, 2)),
+        ] {
+            if repr.starts_with('+') {
+                assert!(fixed_decimal(repr).is_err());
+            } else {
+                assert_eq!(fixed_decimal(repr).unwrap(), expected, "{repr}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod wide_display_scale_tests {
+    use super::*;
+
+    #[test]
+    fn formatting_large_scales_does_not_overflow_u128() {
+        assert_eq!(format_decimal(1, 39), format!("0.{}1", "0".repeat(38)));
+        assert_eq!(format_decimal(-10, 40), format!("-0.{}1", "0".repeat(38)));
+        assert_eq!(format_decimal(0, 40), "0");
+        assert_eq!(format_decimal(i128::MIN, 39).split('.').next(), Some("-0"));
+        for scale in [0usize, 1, 18, 38] {
+            assert_eq!(format_decimal(100, scale).starts_with('-'), false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod leading_zero_decimal_tests {
+    use super::*;
+
+    #[test]
+    fn large_zero_prefix_does_not_overflow_a_valid_mantissa() {
+        let zeros = "0".repeat(10_000);
+        for (value, expected) in [
+            ("0", (0, 0)),
+            ("123", (123, 0)),
+            ("1.25", (125, 2)),
+        ] {
+            let prefixed = format!("{zeros}{value}");
+            assert_eq!(fixed_decimal(&prefixed).unwrap(), expected);
+            assert_eq!(fixed_decimal(&format!("-{prefixed}")).unwrap(),
+                (-expected.0, expected.1));
+        }
+        assert_eq!(fixed_decimal(&format!(".{zeros}")).unwrap(), (0, 0));
+        assert_eq!(fixed_decimal(&format!("{zeros}.00000e100")).unwrap(), (0, 0));
+        assert!(fixed_decimal(&format!("{zeros}x")).is_err());
+        assert!(fixed_decimal(".").is_err());
+        assert!(fixed_decimal("-.").is_err());
     }
 }

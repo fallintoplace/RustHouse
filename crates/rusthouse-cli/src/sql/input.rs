@@ -62,6 +62,20 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
     let mut index = 0;
     let mut quoted = false;
     while index < bytes.len() {
+        // Ordinary SQL spans need no delimiter parsing. Only quotes and
+        // escapes matter inside strings; unquoted spans also inspect comment
+        // and statement delimiters. The stop bytes are all ASCII boundaries.
+        let plain = bytes[index..].iter().position(|&byte| {
+            if quoted {
+                matches!(byte, b'\\' | b'\'')
+            } else {
+                matches!(byte, b'\'' | b'#' | b'-' | b'/' | b';')
+            }
+        }).unwrap_or(bytes.len() - index);
+        index += plain;
+        if index == bytes.len() {
+            break;
+        }
         if bytes[index] == b'\\' && quoted && matches!(bytes.get(index + 1), Some(b'\\' | b'\'')) {
             index += 2;
             continue;
@@ -79,8 +93,11 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             && (bytes[index] == b'#'
                 || (bytes[index] == b'-' && bytes.get(index + 1) == Some(&b'-')))
         {
-            current.push_str(&input[segment..index]);
-            current.push(' ');
+            current.push_str(input[segment..index].trim_start());
+            current.truncate(current.trim_end().len());
+            if !current.is_empty() {
+                current.push(' ');
+            }
             index += if bytes[index] == b'#' { 1 } else { 2 };
             while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
                 index += 1;
@@ -89,8 +106,11 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             continue;
         }
         if !quoted && bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
-            current.push_str(&input[segment..index]);
-            current.push(' ');
+            current.push_str(input[segment..index].trim_start());
+            current.truncate(current.trim_end().len());
+            if !current.is_empty() {
+                current.push(' ');
+            }
             index += 2;
             // ClickHouse block comments can be nested. Stop at the matching
             // close, not the first inner close, so embedded semicolons never
@@ -117,7 +137,7 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             let statement = if current.is_empty() {
                 input[segment..index].trim()
             } else {
-                current.push_str(&input[segment..index]);
+                current.push_str(input[segment..index].trim_start());
                 current.trim()
             };
             push_sql_statement(&mut statements, statement)?;
@@ -134,7 +154,7 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
     let statement = if current.is_empty() {
         input[segment..].trim()
     } else {
-        current.push_str(&input[segment..]);
+        current.push_str(input[segment..].trim_start());
         current.trim()
     };
     push_sql_statement(&mut statements, statement)?;
@@ -281,6 +301,10 @@ mod nested_sql_script_comment_tests {
             split_sql_script("SELECT 1 /* a /* b /* c */ d */ e */ + 2;").unwrap(),
             ["SELECT 1 + 2"],
         );
+        assert_eq!(
+            split_sql_script("SELECT/* first */  42 /* second */ + 1;").unwrap(),
+            ["SELECT 42 + 1"]
+        );
         assert!(split_sql_script("SELECT 1 /* outer /* inner */").is_err());
     }
 
@@ -296,5 +320,28 @@ mod nested_sql_script_comment_tests {
             split_sql_script("SELECT '/* literal; */'; SELECT 3;").unwrap(),
             ["SELECT '/* literal; */'", "SELECT 3"],
         );
+    }
+}
+
+#[cfg(test)]
+mod plain_script_span_tests {
+    use super::*;
+
+    #[test]
+    fn splits_long_utf8_statements_and_preserves_quoted_semicolons() {
+        let long = "éabc".repeat(8192);
+        let input = format!("SELECT '{long};x' AS value; /* outer /* inner ; */ done */ SELECT 42;");
+        assert_eq!(split_sql_script(&input).unwrap(), vec![
+            format!("SELECT '{long};x' AS value"),
+            "SELECT 42".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn rejects_unclosed_quoted_strings_and_comments_after_plain_spans() {
+        let prefix = "SELECT ".to_string() + &"a".repeat(16384);
+        assert!(split_sql_script(&format!("{prefix} 'unfinished")).is_err());
+        assert!(split_sql_script(&format!("{prefix} /* unfinished")).is_err());
+        assert_eq!(split_sql_script(&format!("{prefix};")).unwrap(), vec![prefix]);
     }
 }
