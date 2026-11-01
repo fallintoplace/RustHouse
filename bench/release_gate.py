@@ -19,6 +19,10 @@ def reject_duplicate_keys(pairs):
     return data
 
 
+def reject_nonstandard_json_number(token):
+    raise ValueError(f"nonstandard release manifest JSON number: {token}")
+
+
 def load_manifest(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -27,7 +31,8 @@ def load_manifest(path):
         payload = source.read(MAX_MANIFEST_BYTES + 1)
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("manifest exceeds 2 MiB")
-    return json.loads(payload, object_pairs_hook=reject_duplicate_keys)
+    return json.loads(payload, object_pairs_hook=reject_duplicate_keys,
+                      parse_constant=reject_nonstandard_json_number)
 
 
 
