@@ -14,10 +14,27 @@ fn schema_path(catalog: &Path, name: &str) -> PathBuf {
     catalog.join(format!("{name}.schema"))
 }
 
+#[cfg(not(windows))]
 fn sync_catalog_dir(catalog: &Path) -> Result<(), String> {
     fs::File::open(catalog)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("cannot sync catalog {}: {error}", catalog.display()))
+}
+
+#[cfg(windows)]
+fn sync_catalog_dir(catalog: &Path) -> Result<(), String> {
+    // Windows does not offer portable directory fsync through std::fs::File.
+    // Opening a directory for FlushFileBuffers returns access denied. Schema
+    // payloads are synced using their writable file handles before publishing
+    // hard links, and directory publication remains atomic on NTFS, but a
+    // Windows power loss cannot carry the same directory-durability guarantee
+    // as the POSIX fsync path. Still reject missing, renamed or linked folders.
+    let metadata = fs::symlink_metadata(catalog)
+        .map_err(|error| format!("cannot inspect catalog {}: {error}", catalog.display()))?;
+    if !metadata.file_type().is_dir() {
+        return Err(format!("catalog {} is not a real directory", catalog.display()));
+    }
+    Ok(())
 }
 
 pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
@@ -595,6 +612,26 @@ mod schema_short_read_tests {
             read_complete_schema(Cursor::new(full), "events", full.len() as u64).unwrap(),
             full
         );
+    }
+}
+
+#[cfg(test)]
+mod platform_catalog_sync_tests {
+    use super::*;
+
+    #[test]
+    fn directory_sync_rejects_regular_files_and_missing_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-catalog-sync-{}-{}",
+            std::process::id(), NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("not-a-directory");
+        fs::write(&file, b"persisted schema bytes").unwrap();
+        assert!(sync_catalog_dir(&file).is_err());
+        assert!(sync_catalog_dir(&root.join("missing")).is_err());
+        sync_catalog_dir(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 }
 
