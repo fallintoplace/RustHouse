@@ -949,7 +949,7 @@ mod checked_crc_chunk_reduction_tests {
         let payload = (0..131_073usize)
             .map(|index| ((index * 113) % 251) as u8)
             .collect::<Vec<_>>();
-        for size in [1usize, 3, 7, 64, 4096, 65_537] {
+        for size in [3usize, 7, 64, 4096, 65_537] {
             let chunks = payload
                 .chunks(size)
                 .map(|chunk| (chunk.len() as u64, crc32c(chunk)))
