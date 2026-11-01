@@ -10,7 +10,7 @@ def ceil_div(numerator, denominator):
 
 def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
          disk_budget_bytes=None, disk_copies=2, stored_bytes_per_row=None,
-         reserved_parts=0, disk_reserve_bytes=0):
+         reserved_parts=0, disk_reserve_bytes=0, max_part_bytes=None):
     if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive UInt64")
     if type(rows_per_part) is not int or not 1 <= rows_per_part <= 1_000_000:
@@ -30,12 +30,21 @@ def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
         raise ValueError("disk_reserve_bytes must be nonnegative")
     if type(disk_copies) is not int or not 1 <= disk_copies <= 8:
         raise ValueError("disk_copies must be in 1..8")
-    required_parts = ceil_div(rows, rows_per_part)
+    if max_part_bytes is not None and (
+            type(max_part_bytes) is not int or max_part_bytes < 1):
+        raise ValueError("max_part_bytes must be a positive integer")
+    stored_width = bytes_per_row if stored_bytes_per_row is None else stored_bytes_per_row
+    # A byte cap can make the requested row cap unreachable. Round down to
+    # complete rows before calculating the number of immutable parts.
+    effective_rows_per_part = (rows_per_part if max_part_bytes is None else
+                               min(rows_per_part, max_part_bytes // stored_width))
+    if effective_rows_per_part == 0:
+        raise ValueError("max_part_bytes cannot hold one stored row")
+    required_parts = ceil_div(rows, effective_rows_per_part)
     usable_parts = max_parts - reserved_parts
     minimum_rows = ceil_div(rows, usable_parts)
     estimated_bytes = rows * bytes_per_row
     part_fit = required_parts <= usable_parts
-    stored_width = bytes_per_row if stored_bytes_per_row is None else stored_bytes_per_row
     stored_bytes = rows * stored_width
     estimated_peak_bytes = stored_bytes * disk_copies
     required_disk_bytes = estimated_peak_bytes + disk_reserve_bytes
@@ -43,6 +52,8 @@ def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
     return {
         "workload": "rusthouse-billion-row-capacity-plan",
         "rows": rows, "rows_per_part": rows_per_part,
+        "effective_rows_per_part": effective_rows_per_part,
+        "max_part_bytes": max_part_bytes,
         "parts_required": required_parts, "parts_available": usable_parts,
         "parts_total_limit": max_parts, "parts_reserved": reserved_parts,
         "minimum_rows_per_part_to_fit": minimum_rows,
@@ -71,6 +82,8 @@ def main(argv=None):
     parser.add_argument("--disk-copies", type=int, default=2)
     parser.add_argument("--disk-budget-bytes", type=int)
     parser.add_argument("--disk-reserve-bytes", type=int, default=0)
+    parser.add_argument("--max-part-bytes", type=int,
+                        help="Optional maximum estimated stored bytes per immutable part")
     parser.add_argument("--output")
     args = parser.parse_args(argv)
     try:
@@ -80,7 +93,8 @@ def main(argv=None):
                       disk_copies=args.disk_copies,
                       stored_bytes_per_row=args.stored_bytes_per_row,
                       reserved_parts=args.reserve_parts,
-                      disk_reserve_bytes=args.disk_reserve_bytes)
+                      disk_reserve_bytes=args.disk_reserve_bytes,
+                      max_part_bytes=args.max_part_bytes)
     except ValueError as error:
         parser.exit(1, f"capacity plan failed: {error}\n")
     rendered = json.dumps(report, indent=2) + "\n"
