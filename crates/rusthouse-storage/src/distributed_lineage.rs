@@ -666,7 +666,7 @@ mod snapshot_supporter_selection_tests {
 
     #[test]
     fn reports_only_same_generation_supporters_in_membership_order() {
-        let policy = QuorumPolicy::new(5, 2, 3).unwrap();
+        let policy = QuorumPolicy::new(5, 3, 3).unwrap();
         let members = ["a", "b", "c", "d", "e"];
         let old = SnapshotVersion { epoch: 7, generation: 11, fingerprint: 101 };
         let new = SnapshotVersion { epoch: 7, generation: 12, fingerprint: 102 };

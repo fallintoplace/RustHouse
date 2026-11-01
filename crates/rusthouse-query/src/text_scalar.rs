@@ -3733,7 +3733,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if output_len > MAX_TEXT_BYTES {
                         return Err(ParseError("BASE64_ENCODE result is too large".into()));
                     }
-                    let alphabet: &[u8; 64] = if (name == "BASE64URLENCODE" || name == "TO_BASE64URL") {
+                    let alphabet: &[u8; 64] = if name == "BASE64URLENCODE" || name == "TO_BASE64URL" {
                         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
                     } else {
                         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -3760,7 +3760,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.push('=');
                         }
                     }
-                    if (name == "BASE64URLENCODE" || name == "TO_BASE64URL") {
+                    if name == "BASE64URLENCODE" || name == "TO_BASE64URL" {
                         while result.ends_with('=') {
                             result.pop();
                         }

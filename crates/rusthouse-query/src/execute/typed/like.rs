@@ -627,10 +627,11 @@ pub(super) fn like_matches_wildcards(
                 let Some(any) = last_any else {
                     return false;
                 };
-                let Some(next) = next_utf8_boundary(value, restart) else {
+                if restart == value.len() {
                     return false;
-                };
-                restart = next;
+                }
+                // '%' also consumes non-UTF-8 bytes in binary String rows.
+                restart = next_utf8_boundary(value, restart).unwrap_or(restart + 1);
                 row = restart;
                 pat = any + 1;
             }
