@@ -41,15 +41,26 @@ fn write_long_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Resul
             .position(|&byte| byte == b'"')
             .unwrap_or(remaining.len());
         let mut plain = &remaining[..plain_len];
-        while !plain.is_empty() {
-            if used == buffer.len() {
-                output.write_all(&buffer)?;
+        if plain.len() >= buffer.len() {
+            // Sparse quotes in a large field should not force every plain
+            // byte through the 4 KiB escape buffer. Flush the pending
+            // quote/prefix once, then forward the original slice directly.
+            if used != 0 {
+                output.write_all(&buffer[..used])?;
                 used = 0;
             }
-            let count = plain.len().min(buffer.len() - used);
-            buffer[used..used + count].copy_from_slice(&plain[..count]);
-            used += count;
-            plain = &plain[count..];
+            output.write_all(plain)?;
+        } else {
+            while !plain.is_empty() {
+                if used == buffer.len() {
+                    output.write_all(&buffer)?;
+                    used = 0;
+                }
+                let count = plain.len().min(buffer.len() - used);
+                buffer[used..used + count].copy_from_slice(&plain[..count]);
+                used += count;
+                plain = &plain[count..];
+            }
         }
         remaining = &remaining[plain_len..];
         if let Some((_, rest)) = remaining.split_first() {
@@ -539,5 +550,62 @@ mod vectored_csv_plain_field_tests {
             io::ErrorKind::WriteZero
         );
         assert!(output.data.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod direct_sparse_csv_span_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Output {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn long_spans_are_forwarded_directly_between_sparse_quotes() {
+        let field = [
+            vec![b'a'; 200_000],
+            b"\"".to_vec(),
+            vec![b'b'; 200_000],
+        ]
+        .concat();
+        let mut out = Output::default();
+        write_quoted_csv_field(&mut out, &field).unwrap();
+        assert!(out.writes <= 5, "unexpected writes: {}", out.writes);
+        assert_eq!(out.bytes.len(), field.len() + 3);
+        assert_eq!(out.bytes.first(), Some(&b'"'));
+        assert_eq!(out.bytes.last(), Some(&b'"'));
+        assert_eq!(&out.bytes[200_001..200_003], b"\"\"");
+    }
+
+    #[test]
+    fn near_buffer_boundaries_and_quote_heavy_cases_match_reference() {
+        for width in [4095, 4096, 4097, 8191, 16_384] {
+            let field = [vec![b'x'; width], b"\"".to_vec(), b"tail\"".to_vec()].concat();
+            let mut wanted = vec![b'"'];
+            for &byte in &field {
+                wanted.push(byte);
+                if byte == b'"' {
+                    wanted.push(b'"');
+                }
+            }
+            wanted.push(b'"');
+            let mut out = Vec::new();
+            write_quoted_csv_field(&mut out, &field).unwrap();
+            assert_eq!(out, wanted, "width={width}");
+        }
     }
 }
