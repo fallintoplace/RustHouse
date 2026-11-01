@@ -117,7 +117,11 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         raise ValueError("shard manifest changed during reading")
     if len(payload) > MAX_MANIFEST_BYTES:
         raise ValueError("shard manifest exceeds 8 MiB")
-    manifest = json.loads(payload, object_pairs_hook=unique_manifest_fields)
+    def reject_nonfinite(value):
+        raise ValueError(f"invalid shard manifest JSON constant: {value}")
+
+    manifest = json.loads(payload, object_pairs_hook=unique_manifest_fields,
+                          parse_constant=reject_nonfinite)
     if not isinstance(manifest, dict):
         raise ValueError("shard manifest must be a JSON object")
     if manifest.get("format") != "rusthouse-tsv-shards-v1" or manifest.get("header") is not False:
