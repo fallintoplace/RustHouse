@@ -50,28 +50,30 @@ pub fn newest_quorum_observed_snapshot(
     members: &[&str],
     observations: &[(&str, SnapshotVersion)],
 ) -> Result<Option<SnapshotVersion>, &'static str> {
-    if observations.len() > members.len() {
+    // Quorum policies contain at most sixteen replicas. Keep both the
+    // borrowed replica IDs and versions on the stack for repeated polls.
+    if observations.len() > members.len() || observations.len() > 16 {
         return Err("too many snapshot observations for membership");
     }
-    let mut acknowledging = Vec::with_capacity(observations.len());
-    for (index, &(node, _)) in observations.iter().enumerate() {
+    let mut acknowledging = [""; 16];
+    let mut versions = [SnapshotVersion { epoch: 0, generation: 0, fingerprint: 0 }; 16];
+    for (index, &(node, version)) in observations.iter().enumerate() {
         if observations[..index].iter().any(|(prior, _)| *prior == node) {
             return Err("duplicate snapshot observation");
         }
-        acknowledging.push(node);
+        acknowledging[index] = node;
+        versions[index] = version;
     }
-    // Also validate the policy and the full member set for an empty poll.
-    policy.observe(members, &acknowledging)?;
+    // Validate the full member set even for an empty poll.
+    policy.observe(members, &acknowledging[..observations.len()])?;
     if observations.is_empty() {
         return Ok(None);
     }
-    let versions = observations.iter().map(|&(_, version)| version)
-        .collect::<Vec<_>>();
-    // A disagreement about the epoch or the bytes at a generation fails
-    // closed, even if one candidate appears to have enough supporters.
-    newest_consistent_snapshot(&versions)?;
+    let versions = &versions[..observations.len()];
+    // Conflicting epochs or fingerprints must fail before any quorum is chosen.
+    newest_consistent_snapshot(versions)?;
     let mut newest = None;
-    for &version in &versions {
+    for &version in versions {
         let support = versions.iter().filter(|&&other| other == version).count();
         if support >= policy.reads
             && newest.is_none_or(|chosen: SnapshotVersion| {
@@ -576,5 +578,37 @@ mod consensus_sized_snapshot_selection_tests {
                 hash_reference(&wrong_epoch)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod stack_snapshot_observation_tests {
+    use super::*;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    #[test]
+    fn full_replica_poll_preserves_quorum_and_conflict_semantics() {
+        let names = (0..16).map(|n| format!("node_{n}")).collect::<Vec<_>>();
+        let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+        let policy = QuorumPolicy::new(16, 8, 9).unwrap();
+        let old = SnapshotVersion { epoch: 12, generation: 1, fingerprint: 33 };
+        let new = SnapshotVersion { epoch: 12, generation: 2, fingerprint: 44 };
+        let observations = members.iter().enumerate()
+            .map(|(index, &name)| (name, if index < 8 { old } else { new }))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            newest_quorum_observed_snapshot(policy, &members, &observations).unwrap(),
+            Some(new),
+        );
+        let mut conflicting = observations.clone();
+        conflicting[15].1.fingerprint += 1;
+        assert!(newest_quorum_observed_snapshot(policy, &members, &conflicting).is_err());
+        let mut duplicate = observations.clone();
+        duplicate[15].0 = duplicate[0].0;
+        assert!(newest_quorum_observed_snapshot(policy, &members, &duplicate).is_err());
+        assert_eq!(newest_quorum_observed_snapshot(policy, &members, &[]).unwrap(), None);
+        assert!(newest_quorum_observed_snapshot(
+            policy, &members, &[("foreign", old)]
+        ).is_err());
     }
 }
