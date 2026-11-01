@@ -289,7 +289,28 @@ pub fn plan_replica_retry_timeline(
     max_ms: u64,
     deadline: Duration,
 ) -> Result<Vec<ReplicaRetryEvent>, &'static str> {
-    if node_seeds.is_empty() || node_seeds.len() > 64 || attempts_per_node > 33 {
+    plan_replica_retry_timeline_from(
+        node_seeds, 0, attempts_per_node, base_ms, max_ms, deadline,
+    )
+}
+
+/// Continue a deterministic multi-node retry schedule from an absolute attempt.
+///
+/// Each node retains its original jitter seed and the first retry is due
+/// relative to this resumed poll. No network requests are performed.
+pub fn plan_replica_retry_timeline_from(
+    node_seeds: &[(&str, u64)],
+    first_attempt: u32,
+    attempts_per_node: u32,
+    base_ms: u64,
+    max_ms: u64,
+    deadline: Duration,
+) -> Result<Vec<ReplicaRetryEvent>, &'static str> {
+    if node_seeds.is_empty()
+        || node_seeds.len() > 64
+        || first_attempt > 33
+        || attempts_per_node > 33 - first_attempt
+    {
         return Err("replica retry timeline exceeds limits");
     }
     // Validate even when the deadline or requested attempt count is zero.
@@ -338,9 +359,9 @@ pub fn plan_replica_retry_timeline(
     let mut next_events = BinaryHeap::with_capacity(node_seeds.len());
     if attempts_per_node != 0 {
         for (index, &(node, seed)) in node_seeds.iter().enumerate() {
-            let due_after = retry_delay(0, base_ms, max_ms, seed)?;
+            let due_after = retry_delay(first_attempt, base_ms, max_ms, seed)?;
             if due_after <= deadline {
-                next_events.push(Reverse((due_after, node, 0u32, index)));
+                next_events.push(Reverse((due_after, node, first_attempt, index)));
             }
         }
     }
@@ -353,7 +374,7 @@ pub fn plan_replica_retry_timeline(
             due_after,
         });
         let next_attempt = attempt + 1;
-        if next_attempt == attempts_per_node {
+        if next_attempt == first_attempt + attempts_per_node {
             continue;
         }
         let delay = retry_delay(next_attempt, base_ms, max_ms, node_seeds[index].1)?;
@@ -568,5 +589,59 @@ mod stack_retry_validation_tests {
         assert!(plan_replica_retry_timeline(
             &[("bad/name", 1)], 0, 100, 1000, Duration::ZERO
         ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod resumed_multi_replica_timeline_tests {
+    use super::*;
+
+    #[test]
+    fn resumed_timeline_matches_absolute_single_node_backoff() {
+        let peers = [("a", 7u64), ("b", 100u64), ("c", u64::MAX)];
+        for first in [0, 1, 5, 16, 31, 32] {
+            let attempts = 33 - first;
+            let timeline = plan_replica_retry_timeline_from(
+                &peers, first, attempts, 10, 500, Duration::from_secs(60),
+            )
+            .unwrap();
+            for &(node, seed) in &peers {
+                let per_node = timeline
+                    .iter()
+                    .filter(|event| event.node == node)
+                    .collect::<Vec<_>>();
+                let mut elapsed = Duration::ZERO;
+                for (offset, event) in per_node.iter().enumerate() {
+                    let attempt = first + offset as u32;
+                    elapsed += retry_delay(attempt, 10, 500, seed).unwrap();
+                    assert_eq!(event.attempt, attempt);
+                    assert_eq!(event.due_after, elapsed);
+                }
+                assert_eq!(per_node.len(), attempts as usize);
+            }
+            assert!(timeline.windows(2).all(|pair| {
+                (pair[0].due_after, pair[0].node.as_str(), pair[0].attempt)
+                    <= (pair[1].due_after, pair[1].node.as_str(), pair[1].attempt)
+            }));
+        }
+    }
+
+    #[test]
+    fn default_schedule_and_resumed_zero_epoch_are_identical() {
+        let peers = [("west", 1), ("east", 42)];
+        let deadline = Duration::from_secs(4);
+        assert_eq!(
+            plan_replica_retry_timeline(&peers, 33, 25, 400, deadline),
+            plan_replica_retry_timeline_from(&peers, 0, 33, 25, 400, deadline)
+        );
+        assert!(plan_replica_retry_timeline_from(
+            &peers, 32, 2, 1, 5, Duration::from_secs(1)
+        ).is_err());
+        assert!(plan_replica_retry_timeline_from(
+            &peers, 34, 0, 1, 5, Duration::ZERO
+        ).is_err());
+        assert!(plan_replica_retry_timeline_from(
+            &peers, 33, 0, 1, 5, Duration::ZERO
+        ).unwrap().is_empty());
     }
 }
