@@ -23,7 +23,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-NO_REDIRECT_OPENER = urllib.request.build_opener(NoRedirect())
+NO_REDIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
 
 QUERIES = (
