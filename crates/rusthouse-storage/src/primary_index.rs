@@ -256,12 +256,15 @@ pub fn candidate_i64_pair_mark_range(
     )
 }
 
+/// A disjunctive interval of two unsigned primary-key fields.
+pub type U64PairInterval = (Bound<(u64, u64)>, Bound<(u64, u64)>);
+
 /// Union disjunctive lexicographic UInt64 tuple intervals.
 pub fn candidate_u64_pair_mark_ranges(
     index: &FixedPrimaryIndex,
     first: usize,
     second: usize,
-    intervals: &[(Bound<(u64, u64)>, Bound<(u64, u64)>)],
+    intervals: &[U64PairInterval],
 ) -> Option<Vec<Range<usize>>> {
     candidate_mark_ranges(
         index.len(),
@@ -270,12 +273,15 @@ pub fn candidate_u64_pair_mark_ranges(
     )
 }
 
+/// A disjunctive interval of two signed primary-key fields.
+pub type I64PairInterval = (Bound<(i64, i64)>, Bound<(i64, i64)>);
+
 /// Union disjunctive lexicographic Int64 tuple intervals.
 pub fn candidate_i64_pair_mark_ranges(
     index: &FixedPrimaryIndex,
     first: usize,
     second: usize,
-    intervals: &[(Bound<(i64, i64)>, Bound<(i64, i64)>)],
+    intervals: &[I64PairInterval],
 ) -> Option<Vec<Range<usize>>> {
     candidate_mark_ranges(
         index.len(),
@@ -1130,7 +1136,7 @@ mod wide_integer_pruning_tests {
                     (Bound::Included(1), Bound::Included(1)),
                 ]
             ),
-            Some(vec![0..3])
+            Some(std::iter::once(0..3).collect())
         );
         assert_eq!(
             candidate_u128_mark_range(
@@ -1330,14 +1336,14 @@ mod narrow_integer_pruning_tests {
         );
         for (values, width) in [
             (
-                vec![1u16, 256, 4096, u16::MAX]
+                [1u16, 256, 4096, u16::MAX]
                     .iter()
                     .flat_map(|v| v.to_le_bytes())
                     .collect(),
                 2,
             ),
             (
-                vec![1u32, 256, 4096, u32::MAX]
+                [1u32, 256, 4096, u32::MAX]
                     .iter()
                     .flat_map(|v| v.to_le_bytes())
                     .collect(),
@@ -1363,7 +1369,7 @@ mod narrow_integer_pruning_tests {
                         (Bound::Included(4096), Bound::Included(4096)),
                     ]
                 ),
-                Some(vec![0..3])
+                Some(std::iter::once(0..3).collect())
             );
         }
     }
@@ -1377,14 +1383,14 @@ mod narrow_integer_pruning_tests {
         );
         for (values, width) in [
             (
-                vec![i16::MIN, -10, 0, i16::MAX]
+                [i16::MIN, -10, 0, i16::MAX]
                     .iter()
                     .flat_map(|v| v.to_le_bytes())
                     .collect(),
                 2,
             ),
             (
-                vec![i32::MIN, -10, 0, i32::MAX]
+                [i32::MIN, -10, 0, i32::MAX]
                     .iter()
                     .flat_map(|v| v.to_le_bytes())
                     .collect(),
