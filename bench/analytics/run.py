@@ -15,7 +15,7 @@ from pathlib import Path
 from functools import lru_cache
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import cli_sql, emit_json, latency_summary
+from common import cli_sql, emit_json, file_change_time_ns, latency_summary
 
 
 DEFAULT_QUERIES = Path(__file__).with_name("queries.sql")
@@ -36,10 +36,25 @@ HTTP_OPENER = urllib.request.build_opener(NoRedirect())
 
 def load_queries(path):
     path = Path(path)
-    if path.is_symlink() or not path.is_file():
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("SQL workload must be a regular, non-symlinked file")
-    with path.open("rb") as source:
+
+    def identity(metadata):
+        return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                metadata.st_mtime_ns, file_change_time_ns(metadata))
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened):
+            raise ValueError("SQL workload changed while opening")
         payload = source.read(MAX_QUERY_FILE_BYTES + 1)
+        if identity(opened) != identity(os.fstat(source.fileno())):
+            raise ValueError("SQL workload changed while reading")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError("SQL workload changed while reading")
     if len(payload) > MAX_QUERY_FILE_BYTES:
         raise ValueError("analytics workload file exceeds 4 MiB")
     queries = []
