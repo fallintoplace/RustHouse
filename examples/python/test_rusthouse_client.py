@@ -87,6 +87,23 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RustHouseClient("http://10.0.0.1:8123")
 
+    def test_no_environment_proxy_handler_is_installed(self):
+        from urllib.request import ProxyHandler
+        import rusthouse_client
+
+        handlers = rusthouse_client.urlopen.__self__.handlers
+        proxy_handlers = [handler for handler in handlers
+                          if isinstance(handler, ProxyHandler)]
+        # Empty ProxyHandler disables ambient proxies without installing a handler.
+        self.assertEqual(proxy_handlers, [])
+
+    @patch("rusthouse_client.urlopen")
+    def test_explain_is_bounded_like_json_queries(self, open_url):
+        open_url.return_value = Reply(b"x" * (16 * 1024 * 1024 + 1))
+        with self.assertRaisesRegex(RustHouseError, "16 MiB"):
+            RustHouseClient().explain("SELECT 1")
+
+
 
 if __name__ == "__main__":
     unittest.main()

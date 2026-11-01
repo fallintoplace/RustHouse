@@ -10,7 +10,7 @@ import ipaddress
 import json
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -20,7 +20,8 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-urlopen = build_opener(NoRedirect()).open
+# Do not expose local unauthenticated traffic to environment HTTP proxies.
+urlopen = build_opener(ProxyHandler({}), NoRedirect()).open
 
 
 class RustHouseError(Exception):
@@ -68,7 +69,10 @@ class RustHouseClient:
         )
         try:
             with urlopen(request, timeout=self.timeout) as response:
-                return response.read(16 * 1024 * 1024 + 1)
+                body = response.read(16 * 1024 * 1024 + 1)
+                if len(body) > 16 * 1024 * 1024:
+                    raise RustHouseError("HTTP response exceeds 16 MiB client limit")
+                return body
         except HTTPError as exc:
             message = exc.read(4096).decode("utf-8", "replace")
             raise RustHouseHTTPError(exc.code, message) from exc
