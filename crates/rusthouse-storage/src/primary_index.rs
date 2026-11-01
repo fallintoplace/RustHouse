@@ -41,6 +41,69 @@ impl FixedPrimaryIndex {
 /// A mark stores the first key of a granule. The predecessor of the first
 /// matching mark can also contain matching rows, so range selection must
 /// retain it. Callers still apply the exact row predicate.
+/// Decode a narrow physical key without sign loss or host-endian assumptions.
+fn narrow_unsigned_mark_key(
+    index: &FixedPrimaryIndex, mark: usize, field: usize,
+) -> Option<u64> {
+    match index.field(mark, field)? {
+        [a] => Some(u64::from(*a)),
+        [a, b] => Some(u64::from(u16::from_le_bytes([*a, *b]))),
+        [a, b, c, d] => Some(u64::from(u32::from_le_bytes([*a, *b, *c, *d]))),
+        _ => None,
+    }
+}
+
+fn narrow_signed_mark_key(
+    index: &FixedPrimaryIndex, mark: usize, field: usize,
+) -> Option<i64> {
+    match index.field(mark, field)? {
+        [a] => Some(i64::from(i8::from_le_bytes([*a]))),
+        [a, b] => Some(i64::from(i16::from_le_bytes([*a, *b]))),
+        [a, b, c, d] => Some(i64::from(i32::from_le_bytes([*a, *b, *c, *d]))),
+        _ => None,
+    }
+}
+
+/// Conservatively select mark ranges for UInt8, UInt16, or UInt32 key fields.
+/// Bounds use u64 so callers can express values beyond the physical type's
+/// range without truncation or wraparound.
+pub fn candidate_narrow_unsigned_mark_range(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    lower: Bound<u64>,
+    upper: Bound<u64>,
+) -> Option<Range<usize>> {
+    candidate_mark_range(index.len(), |mark| narrow_unsigned_mark_key(index, mark, field), lower, upper)
+}
+
+/// Select mark ranges for signed Int8, Int16, or Int32 primary-key fields.
+pub fn candidate_narrow_signed_mark_range(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    lower: Bound<i64>,
+    upper: Bound<i64>,
+) -> Option<Range<usize>> {
+    candidate_mark_range(index.len(), |mark| narrow_signed_mark_key(index, mark, field), lower, upper)
+}
+
+/// Merge disjunctive intervals for UInt8/16/32 primary-key fields.
+pub fn candidate_narrow_unsigned_mark_ranges(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    intervals: &[(Bound<u64>, Bound<u64>)],
+) -> Option<Vec<Range<usize>>> {
+    candidate_mark_ranges(index.len(), |mark| narrow_unsigned_mark_key(index, mark, field), intervals)
+}
+
+/// Merge disjunctive intervals for Int8/16/32 primary-key fields.
+pub fn candidate_narrow_signed_mark_ranges(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    intervals: &[(Bound<i64>, Bound<i64>)],
+) -> Option<Vec<Range<usize>>> {
+    candidate_mark_ranges(index.len(), |mark| narrow_signed_mark_key(index, mark, field), intervals)
+}
+
 /// Returns a conservative mark range for an ascending UInt64 key.
 /// Invalid or unsorted bounded indexes return None. Fully unbounded scans
 /// return every granule without reading or validating individual keys.
@@ -101,46 +164,6 @@ pub fn candidate_i64_mark_ranges(
         |mark| i64_mark_key(index, mark, field),
         intervals,
     )
-}
-
-/// Conservatively select mark ranges for UInt8, UInt16, or UInt32 key fields.
-/// Bounds use u64 so callers can express values beyond the physical type's
-/// range without truncation or wraparound.
-pub fn candidate_narrow_unsigned_mark_range(
-    index: &FixedPrimaryIndex,
-    field: usize,
-    lower: Bound<u64>,
-    upper: Bound<u64>,
-) -> Option<Range<usize>> {
-    candidate_mark_range(index.len(), |mark| narrow_unsigned_mark_key(index, mark, field), lower, upper)
-}
-
-/// Select mark ranges for signed Int8, Int16, or Int32 primary-key fields.
-pub fn candidate_narrow_signed_mark_range(
-    index: &FixedPrimaryIndex,
-    field: usize,
-    lower: Bound<i64>,
-    upper: Bound<i64>,
-) -> Option<Range<usize>> {
-    candidate_mark_range(index.len(), |mark| narrow_signed_mark_key(index, mark, field), lower, upper)
-}
-
-/// Merge disjunctive intervals for UInt8/16/32 primary-key fields.
-pub fn candidate_narrow_unsigned_mark_ranges(
-    index: &FixedPrimaryIndex,
-    field: usize,
-    intervals: &[(Bound<u64>, Bound<u64>)],
-) -> Option<Vec<Range<usize>>> {
-    candidate_mark_ranges(index.len(), |mark| narrow_unsigned_mark_key(index, mark, field), intervals)
-}
-
-/// Merge disjunctive intervals for Int8/16/32 primary-key fields.
-pub fn candidate_narrow_signed_mark_ranges(
-    index: &FixedPrimaryIndex,
-    field: usize,
-    intervals: &[(Bound<i64>, Bound<i64>)],
-) -> Option<Vec<Range<usize>>> {
-    candidate_mark_ranges(index.len(), |mark| narrow_signed_mark_key(index, mark, field), intervals)
 }
 
 pub fn read_fixed_primary_index(
