@@ -88,7 +88,11 @@ def verify(manifest_path):
             result[name] = value
         return result
 
-    manifest = json.loads(payload, object_pairs_hook=unique_fields)
+    def reject_nonstandard_number(token):
+        raise ValueError(f"nonstandard shard manifest JSON number: {token}")
+
+    manifest = json.loads(payload, object_pairs_hook=unique_fields,
+                          parse_constant=reject_nonstandard_number)
     if not isinstance(manifest, dict):
         raise ValueError("shard manifest must be a JSON object")
     # bool == 1 in Python, but a JSON boolean is not a schema version.
