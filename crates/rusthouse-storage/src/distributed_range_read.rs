@@ -178,20 +178,22 @@ mod direct_batched_range_buffers_tests {
             (256, empty.as_mut_slice()),
         ];
         read_object_ranges_into(&path, &mut ranges, 34).unwrap();
-        assert_eq!(first, contents[100..117]);
-        assert_eq!(second, contents[3..10]);
-        assert_eq!(overlap, contents[105..115]);
+        assert_eq!(first.as_slice(), &contents[100..117]);
+        assert_eq!(second.as_slice(), &contents[3..10]);
+        assert_eq!(overlap.as_slice(), &contents[105..115]);
 
         let mut unchanged = [0xcc; 8];
         let mut ok = [0xaa; 2];
-        let mut invalid = [
-            (0, ok.as_mut_slice()),
-            (252, unchanged.as_mut_slice()),
-        ];
-        assert!(read_object_ranges_into(&path, &mut invalid, 10).is_err());
+        {
+            let mut invalid = [
+                (0, ok.as_mut_slice()),
+                (252, unchanged.as_mut_slice()),
+            ];
+            assert!(read_object_ranges_into(&path, &mut invalid, 10).is_err());
+            assert!(read_object_ranges_into(&path, &mut invalid, 9).is_err());
+        }
         assert_eq!(ok, [0xaa; 2]);
         assert_eq!(unchanged, [0xcc; 8]);
-        assert!(read_object_ranges_into(&path, &mut invalid, 9).is_err());
         fs::remove_file(path).unwrap();
     }
 
