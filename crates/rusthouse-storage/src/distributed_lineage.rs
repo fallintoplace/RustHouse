@@ -53,35 +53,42 @@ pub fn newest_quorum_observed_snapshot(
     if observations.len() > members.len() {
         return Err("too many snapshot observations for membership");
     }
-    let mut acknowledging = Vec::with_capacity(observations.len());
-    for (index, &(node, _)) in observations.iter().enumerate() {
-        if observations[..index].iter().any(|(prior, _)| *prior == node) {
+    // The policy permits at most 16 members. Validate their identities once,
+    // then accumulate observed generations and fingerprints in fixed storage.
+    policy.observe(members, &[])?;
+    let empty = SnapshotVersion { epoch: 0, generation: 0, fingerprint: 0 };
+    let mut groups = [(empty, 0usize); 16];
+    let mut groups_len = 0usize;
+    let mut seen = 0u16;
+    let mut epoch = None;
+    for &(node, version) in observations {
+        let member_index = members.iter().position(|&member| member == node)
+            .ok_or("acknowledgement from unknown replica")?;
+        let bit = 1u16 << member_index;
+        if seen & bit != 0 {
             return Err("duplicate snapshot observation");
         }
-        acknowledging.push(node);
-    }
-    // Also validate the policy and the full member set for an empty poll.
-    policy.observe(members, &acknowledging)?;
-    if observations.is_empty() {
-        return Ok(None);
-    }
-    let versions = observations.iter().map(|&(_, version)| version)
-        .collect::<Vec<_>>();
-    // A disagreement about the epoch or the bytes at a generation fails
-    // closed, even if one candidate appears to have enough supporters.
-    newest_consistent_snapshot(&versions)?;
-    let mut newest = None;
-    for &version in &versions {
-        let support = versions.iter().filter(|&&other| other == version).count();
-        if support >= policy.reads
-            && newest.is_none_or(|chosen: SnapshotVersion| {
-                version.generation > chosen.generation
-            })
+        seen |= bit;
+        if !valid_version(version) || epoch.is_some_and(|current| current != version.epoch) {
+            return Err("invalid or mismatched snapshot epoch");
+        }
+        epoch = Some(version.epoch);
+        if let Some(group) = groups[..groups_len].iter_mut()
+            .find(|group| group.0.generation == version.generation)
         {
-            newest = Some(version);
+            if group.0.fingerprint != version.fingerprint {
+                return Err("conflicting snapshot fingerprint");
+            }
+            group.1 += 1;
+        } else {
+            groups[groups_len] = (version, 1);
+            groups_len += 1;
         }
     }
-    Ok(newest)
+    Ok(groups[..groups_len].iter()
+        .filter(|group| group.1 >= policy.reads)
+        .max_by_key(|group| group.0.generation)
+        .map(|group| group.0))
 }
 
 #[cfg(test)]
@@ -576,5 +583,52 @@ mod consensus_sized_snapshot_selection_tests {
                 hash_reference(&wrong_epoch)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod stack_read_quorum_observation_tests {
+    use super::*;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    #[test]
+    fn many_generation_votes_keep_exact_read_quorum_support() {
+        for replicas in 1usize..=16 {
+            let reads = (replicas / 2) + 1;
+            let policy = QuorumPolicy::new(replicas, reads, reads).unwrap();
+            let names = (0..replicas).map(|i| format!("node{i}")).collect::<Vec<_>>();
+            let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+            for present in 0..=replicas {
+                let observations = members.iter().take(present).enumerate()
+                    .map(|(index, &node)| (node, SnapshotVersion {
+                        epoch: 3, generation: (index % 3 + 1) as u64,
+                        fingerprint: (index % 3 + 1) as u128 * 29,
+                    })).collect::<Vec<_>>();
+                let expected = (1..=3u64).rev().find(|&generation| {
+                    observations.iter().filter(|(_, version)| version.generation == generation)
+                        .count() >= reads
+                }).map(|generation| SnapshotVersion {
+                    epoch: 3, generation, fingerprint: u128::from(generation) * 29,
+                });
+                assert_eq!(
+                    newest_quorum_observed_snapshot(policy, &members, &observations).unwrap(),
+                    expected,
+                    "replicas={replicas}, present={present}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_conflicting_metadata_before_selecting_a_quorum() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let v = SnapshotVersion { epoch: 1, generation: 2, fingerprint: 7 };
+        assert!(newest_quorum_observed_snapshot(
+            policy, &["a", "b", "c"], &[("a", v), ("a", v)],
+        ).is_err());
+        assert!(newest_quorum_observed_snapshot(
+            policy, &["a", "b", "c"],
+            &[("a", v), ("b", SnapshotVersion { fingerprint: 8, ..v })],
+        ).is_err());
     }
 }
