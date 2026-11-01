@@ -4,7 +4,9 @@ use crate::{
     PartError, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_hashes,
     verify_wide_part,
 };
-use std::fs::{self, File};
+use std::fs;
+#[cfg(unix)]
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,7 +63,17 @@ fn sync_directory(path: &Path) -> Result<(), PartError> {
         .map_err(|error| io_error(path, error))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn sync_directory(path: &Path) -> Result<(), PartError> {
+    // Windows cannot fsync an ordinary directory, but the target must exist.
+    let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
+    if !metadata.file_type().is_dir() {
+        return Err(PartError::InvalidScan("snapshot sync target is not a directory".into()));
+    }
+    Ok(())
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn sync_directory(_path: &Path) -> Result<(), PartError> {
     Ok(())
 }
