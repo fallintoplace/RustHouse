@@ -131,7 +131,10 @@ fn parse_count(content: &str) -> Result<u64, PartError> {
         .strip_suffix("\r\n")
         .or_else(|| content.strip_suffix('\n'))
         .unwrap_or(content);
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+    if digits.is_empty()
+        || (digits.len() > 1 && digits.starts_with('0'))
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return Err(PartError::InvalidCount(content.to_owned()));
     }
     digits
@@ -386,5 +389,21 @@ mod immutable_metadata_baseline_tests {
         assert_eq!(baseline.modified().unwrap(), mutated.modified().unwrap());
         assert!(!metadata_unchanged(&baseline, &mutated));
         fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod canonical_part_count_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_ambiguous_decimal_row_count_spellings() {
+        for count in ["00", "042", "00042\n", "+42", " 42", "42\n\n"] {
+            assert!(parse_count(count).is_err(), "{count:?}");
+        }
+        assert_eq!(parse_count("0\n").unwrap(), 0);
+        assert_eq!(parse_count("42\r\n").unwrap(), 42);
+        assert_eq!(parse_count("18446744073709551615").unwrap(), u64::MAX);
+        assert!(parse_count("18446744073709551616").is_err());
     }
 }

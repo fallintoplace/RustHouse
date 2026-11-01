@@ -95,9 +95,17 @@ fn stream_bounded_copy(
     mut checksum: Option<&mut crate::distributed_crc32c::Crc32cState>,
 ) -> io::Result<u64> {
     let mut total = 0u64;
-    // Small files avoid allocating a large buffer; large copies reduce syscall count.
+    // Most replica metadata files fit in 4 KiB. Use stack storage for
+    // these copies and retain the 256 KiB heap buffer for large files.
     let buffer_bytes = expected_bytes.clamp(1, 256 * 1024) as usize;
-    let mut buffer = vec![0u8; buffer_bytes];
+    let mut inline = [0u8; 4096];
+    let mut allocated = Vec::new();
+    let buffer: &mut [u8] = if buffer_bytes <= inline.len() {
+        &mut inline[..buffer_bytes]
+    } else {
+        allocated.resize(buffer_bytes, 0);
+        &mut allocated
+    };
     loop {
         let available = max_bytes
             .saturating_sub(total)
@@ -133,6 +141,13 @@ fn stream_bounded_copy(
 /// Both paths must be on a trusted local filesystem. Existing objects are never replaced.
 pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) -> io::Result<u64> {
     copy_immutable_file_impl(source, destination, max_bytes, None)
+}
+
+// Once the destination hard link has been published, staging cleanup is
+// best effort. A failed unlink cannot roll the committed object back.
+fn finish_copy_publication(staging: &Path, published: io::Result<u64>) -> io::Result<u64> {
+    let _ = fs::remove_file(staging);
+    published
 }
 
 fn copy_immutable_file_impl(
@@ -186,17 +201,7 @@ fn copy_immutable_file_impl(
         fs::hard_link(&staging, destination)?;
         Ok(total)
     });
-    let cleanup = fs::remove_file(&staging);
-    let total = match published {
-        Ok(total) => {
-            cleanup?;
-            total
-        }
-        Err(error) => {
-            let _ = cleanup;
-            return Err(error);
-        }
-    };
+    let total = finish_copy_publication(&staging, published)?;
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
     Ok(total)
@@ -499,5 +504,75 @@ mod source_open_metadata_tests {
         assert_eq!(before.len(), after.len());
         assert!(!source_unchanged(&before, &after));
         fs::remove_file(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod small_replica_copy_stack_buffer_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn stack_and_heap_copy_boundaries_preserve_bytes_and_streamed_crc() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-small-copy-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        for size in [0usize, 1, 127, 4095, 4096, 4097, 262_144, 262_145] {
+            let payload = (0..size).map(|index| (index % 251) as u8).collect::<Vec<_>>();
+            let mut input = Cursor::new(payload.as_slice());
+            let target = directory.join(format!("target-{size}"));
+            let mut output = File::create(&target).unwrap();
+            let mut state = crate::distributed_crc32c::Crc32cState::new();
+            assert_eq!(
+                stream_bounded_copy(
+                    &mut input, &mut output, size as u64, size as u64,
+                    Some(&mut state),
+                ).unwrap(),
+                size as u64,
+            );
+            drop(output);
+            assert_eq!(fs::read(&target).unwrap(), payload);
+            assert_eq!(state.checksum(), crate::distributed_crc32c::crc32c(&payload));
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn small_copy_still_rejects_unexpected_extra_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-small-copy-extra-{}-{:?}",
+            std::process::id(), std::thread::current().id()
+        ));
+        let mut input = Cursor::new(b"12345".as_slice());
+        let mut output = File::create(&path).unwrap();
+        assert!(stream_bounded_copy(&mut input, &mut output, 4, 4, None).is_err());
+        assert_eq!(input.position(), 5);
+        assert_eq!(output.metadata().unwrap().len(), 4);
+        drop(output);
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod committed_copy_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_staging_unlink_cannot_turn_a_committed_copy_into_an_error() {
+        // Removing a directory with remove_file always fails. This simulates
+        // cleanup failure without relying on filesystem permissions.
+        let staging = std::env::temp_dir();
+        assert_eq!(finish_copy_publication(&staging, Ok(97)).unwrap(), 97);
+        assert!(staging.is_dir());
+    }
+
+    #[test]
+    fn copy_failure_remains_a_failure_even_when_cleanup_also_fails() {
+        let staging = std::env::temp_dir();
+        let failed = finish_copy_publication(&staging, Err(io::Error::other("copy rejected")));
+        assert_eq!(failed.unwrap_err().to_string(), "copy rejected");
     }
 }

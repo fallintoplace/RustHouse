@@ -14,6 +14,21 @@ class SourceProbeTests(unittest.TestCase):
         read.assert_not_called()
 
     @patch("source_probe.read_json")
+    def test_invalid_probe_options_fail_before_network(self, read):
+        origin = "http://127.0.0.1:8123"
+        cases = (
+            ("source", {"expected_source": "unknown"}),
+            ("expected_version", {"expected_source": "generated", "expected_version": ""}),
+            ("invalid table", {"expected_source": "database", "table": "x; DROP"}),
+            ("requires database", {"expected_source": "part", "table": "events"}),
+            ("requires --table", {"expected_source": "database", "verify_scan": True}),
+        )
+        for message, options in cases:
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
+                probe(origin, **options)
+        read.assert_not_called()
+
+    @patch("source_probe.read_json")
     def test_detects_source_mismatch(self, read):
         read.return_value = {"source": "generated", "read_only": True}
         with self.assertRaises(ValueError):
@@ -52,6 +67,22 @@ class SourceProbeTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "UInt64"):
             scan_rows("http://127.0.0.1:8123", "events", 3)
+
+    @patch("source_probe.NO_REDIRECT_OPENER")
+    def test_direct_scan_rejects_unsafe_origin_table_and_timeout(self, opener):
+        from source_probe import scan_rows
+        for origin, table, timeout in (
+            ("http://example.org:8123", "events", 3),
+            ("http://127.0.0.1:8123", "events;DROP TABLE users", 3),
+            ("http://127.0.0.1:8123", None, 3),
+            ("http://127.0.0.1:8123", "events", True),
+            ("http://127.0.0.1:8123", "events", float("nan")),
+            ("http://127.0.0.1:8123", "events", 301),
+        ):
+            with self.subTest(origin=origin, table=table, timeout=timeout):
+                with self.assertRaises(ValueError):
+                    scan_rows(origin, table, timeout)
+        opener.open.assert_not_called()
 
     @patch("source_probe.read_json")
     def test_expected_server_version_guards_deployments(self, read):

@@ -140,6 +140,18 @@ pub fn parse_datetime(text: &str) -> Option<u32> {
 
 fn format_calendar_day(days: i64) -> String {
     let (year, month, day) = from_days(days);
+    if (0..=9999).contains(&year) {
+        let year = year as u32;
+        let mut output = *b"0000-00-00";
+        output[0] = b'0' + (year / 1000) as u8;
+        output[1] = b'0' + ((year / 100) % 10) as u8;
+        output[2] = b'0' + ((year / 10) % 10) as u8;
+        output[3] = b'0' + (year % 10) as u8;
+        put_two_digits(&mut output, 5, month as u32);
+        put_two_digits(&mut output, 8, day as u32);
+        return String::from_utf8(output.to_vec())
+            .expect("calendar date formatting emits ASCII");
+    }
     format!("{year:04}-{month:02}-{day:02}")
 }
 
@@ -147,7 +159,7 @@ pub fn format_date(days: u16) -> String {
     format_calendar_day(i64::from(days))
 }
 
-fn put_two_digits(output: &mut [u8; 19], offset: usize, number: u32) {
+fn put_two_digits<const N: usize>(output: &mut [u8; N], offset: usize, number: u32) {
     output[offset] = b'0' + (number / 10) as u8;
     output[offset + 1] = b'0' + (number % 10) as u8;
 }
@@ -294,5 +306,25 @@ mod tests {
             parse_datetime("2024-02-29t13:30:00+01:00"),
             parse_datetime("2024-02-29T12:30:00Z")
         );
+    }
+}
+
+#[cfg(test)]
+mod fixed_calendar_day_format_tests {
+    use super::*;
+
+    #[test]
+    fn four_digit_years_match_generic_format_and_negative_years_keep_fallback() {
+        for date in ["1970-01-01", "2000-02-29", "2149-06-06", "0000-01-01"] {
+            let days = parse_calendar_day(date).unwrap();
+            let (year, month, day) = from_days(days);
+            assert_eq!(
+                format_calendar_day(days),
+                format!("{year:04}-{month:02}-{day:02}")
+            );
+        }
+        let earlier = to_days(-50, 1, 2);
+        assert_eq!(format_calendar_day(earlier), format!("{:04}-01-02", -50));
+        assert_eq!(format_datetime(0), "1970-01-01 00:00:00");
     }
 }

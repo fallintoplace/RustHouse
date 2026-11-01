@@ -105,6 +105,28 @@ pub(super) fn execute_typed_aggregate<W: Write>(
     // Only stringify the winning UUID, not every scanned UUID row.
     let mut ordered_uuid: Option<[u8; 16]> = None;
     while let Some(batch) = reader.next_batch()? {
+        // The unfiltered numeric case dominates analytical SUM/MIN/MAX
+        // scans. Dispatch once per batch, without row-level Cell creation,
+        // predicate branches, or repeated TypedColumn enum matches.
+        if no_filters && !ordered_text {
+            match &batch[projected_index] {
+                TypedColumn::Numeric(values) => {
+                    for row in 0..values.len() {
+                        state.update(super::number_at(values, row))?;
+                    }
+                    continue;
+                }
+                TypedColumn::NullableNumeric { values, nulls } => {
+                    for (row, &null) in nulls.iter().enumerate() {
+                        if null == 0 {
+                            state.update(super::number_at(values, row))?;
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
@@ -646,3 +668,28 @@ mod nullable_numeric_aggregate_bucket_tests;
 #[cfg(test)]
 #[path = "typed_aggregate/grouped_text_budget_tests.rs"]
 mod grouped_text_budget_tests;
+
+#[cfg(test)]
+mod direct_unfiltered_aggregate_scan_tests {
+    use super::*;
+    use rusthouse_storage::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn sums_large_nullable_batches_without_counting_nulls() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-aggregate-direct-scan-{}-{}", std::process::id(), line!(),
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let columns = [Column { name: "amount".into(), data_type: "Nullable(UInt64)".into() }];
+        let rows = (0..8192)
+            .map(|index| vec![if index % 4 == 0 { None } else { Some("3".to_string()) }])
+            .collect::<Vec<_>>();
+        write_wide_part(&dir, &columns, &rows).unwrap();
+        let query = crate::parse_select("SELECT sum(amount) FROM part").unwrap();
+        let mut output = Vec::new();
+        crate::execute(&query, Some(&dir), &mut output).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "sum(amount)\n18432\n");
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
