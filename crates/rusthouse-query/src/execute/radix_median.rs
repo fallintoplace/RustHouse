@@ -684,7 +684,6 @@ mod wide_digit_histogram_tests {
         assert_eq!(counts[0].iter().sum::<u64>(), 1);
         assert_eq!(counts[1].iter().sum::<u64>(), 2);
         assert_eq!(counts[0][0xffff], 1);
-        assert_eq!(counts[1][1], 1);
-        assert_eq!(counts[1][1], 1);
+        assert_eq!(counts[1][1], 2);
     }
 }
