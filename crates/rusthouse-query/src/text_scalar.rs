@@ -158,6 +158,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "TRANSLATE"
                 | "TRANSLATEUTF8"
                 | "POSITIONCASEINSENSITIVE"
+                | "POSITIONCASEINSENSITIVEUTF8"
                 | "STRPOS"
                 | "TOSTARTOFISOYEAR"
                 | "POSITIONUTF8"
@@ -3309,7 +3310,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 left
             }
         }
-        "POSITIONCASEINSENSITIVE" => {
+        "POSITIONCASEINSENSITIVE" | "POSITIONCASEINSENSITIVEUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(
                 parser,
@@ -3335,7 +3336,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         ));
                     }
                     let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
-                    let position = if offset > input.len() {
+                    let position = if name == "POSITIONCASEINSENSITIVEUTF8" {
+                        let folded_input: Vec<char> = input
+                            .chars()
+                            .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
+                            .collect();
+                        let folded_needle: Vec<char> = needle
+                            .chars()
+                            .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
+                            .collect();
+                        if offset > folded_input.len() {
+                            0
+                        } else if folded_needle.is_empty() {
+                            offset + 1
+                        } else {
+                            folded_input[offset..]
+                                .windows(folded_needle.len())
+                                .position(|window| window == folded_needle.as_slice())
+                                .map_or(0, |index| offset + index + 1)
+                        }
+                    } else if offset > input.len() {
                         0
                     } else if needle.is_empty() {
                         offset + 1
