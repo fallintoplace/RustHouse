@@ -206,6 +206,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "APPENDTRAILINGCHARIFABSENT"
                 | "ADDMONTHS"
                 | "RPAD"
+                | "RIGHTPAD"
                 | "NOTEMPTY"
                 | "SPACE"
                 | "INTDIVORNULL"
@@ -4466,7 +4467,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "RPAD" | "RIGHTPADUTF8" => {
+        "RPAD" | "RIGHTPAD" | "RIGHTPADUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "RPAD requires a width")?;
             let width = integer_arg(parser, depth + 1)?;
