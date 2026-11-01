@@ -497,3 +497,36 @@ mod reusable_tsv_decode_buffer_tests {
         assert_eq!(writer.output, committed);
     }
 }
+
+#[cfg(test)]
+mod jsonl_reusable_decode_tests {
+    use super::*;
+
+    #[test]
+    fn escaped_jsonl_values_reuse_decoder_allocation() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"column\nvalue\\tname\n").unwrap();
+        let initial_capacity = writer.decoded.capacity();
+        let initial_pointer = writer.decoded.as_ptr();
+        assert!(initial_capacity >= 10);
+        for _ in 0..100 {
+            writer.write_all(b"other\\tname\n").unwrap();
+        }
+        assert_eq!(writer.decoded.capacity(), initial_capacity);
+        assert_eq!(writer.decoded.as_ptr(), initial_pointer);
+        assert!(writer.output.starts_with(b"{\"column\":\"value\\tname\"}\n"));
+        assert_eq!(writer.output.iter().filter(|&&b| b == b'\n').count(), 101);
+    }
+
+    #[test]
+    fn invalid_late_escape_does_not_publish_partial_jsonl_rows() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"first\tsecond\n").unwrap();
+        writer.write_all(b"a\\tvalue\tb\\nvalue\n").unwrap();
+        let previous = writer.output.clone();
+        assert!(writer.write_all(b"a\\tvalue\tbad\\q\n").is_err());
+        assert_eq!(writer.output, previous);
+        writer.write_all(b"c\\tvalue\td\\nvalue\n").unwrap();
+        assert_eq!(writer.output.iter().filter(|&&b| b == b'\n').count(), 2);
+    }
+}
