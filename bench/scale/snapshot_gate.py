@@ -99,7 +99,7 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
         not isinstance(column, dict)
         or not isinstance(column.get("name"), str)
         or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", column["name"])
-        or not isinstance(column.get("type"), str) or not column["type"]
+        or not isinstance(column.get("type"), str) or not column["type"].strip()
         for column in columns
     )):
         raise ValueError("snapshot report has invalid columns")
