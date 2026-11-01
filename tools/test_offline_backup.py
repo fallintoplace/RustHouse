@@ -6,6 +6,33 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 class BackupTests(unittest.TestCase):
+
+    @unittest.skipUnless(
+        __import__("sys").platform.startswith("linux")
+        or __import__("sys").platform == "darwin"
+        or __import__("os").name == "nt",
+        "atomic directory publication is platform-specific",
+    )
+    def test_verified_backup_cannot_replace_concurrent_destination(self):
+        from offline_backup import publish_new_directory
+
+        with tempfile.TemporaryDirectory() as root:
+            parent = Path(root)
+            stage = parent / "staging"
+            destination = parent / "backup"
+            stage.mkdir()
+            (stage / "new").write_bytes(b"verified")
+            destination.mkdir()
+            # An empty directory must be protected too: plain POSIX rename
+            # would silently replace it after the preflight absence check.
+            with self.assertRaises(OSError):
+                publish_new_directory(stage, destination)
+            self.assertTrue(stage.exists())
+            self.assertTrue(destination.exists())
+            destination.rmdir()
+            publish_new_directory(stage, destination)
+            self.assertEqual((destination / "new").read_bytes(), b"verified")
+            self.assertFalse(stage.exists())
     def test_directory_walk_errors_abort_validation_and_sync(self):
         from offline_backup import sync_copied_tree, validate_tree
         def incomplete_walk(*_args, **kwargs):
