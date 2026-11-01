@@ -823,7 +823,7 @@ mod wide_integer_pruning_tests {
         assert_eq!(candidate_u128_mark_ranges(&index, 0, &[
             (Bound::Included(1u128 << 100), Bound::Included(1u128 << 100)),
             (Bound::Included(1), Bound::Included(1)),
-        ]), Some(vec![0..1, 1..3]));
+        ]), Some(vec![0..3]));
         assert_eq!(candidate_u128_mark_range(&index, 0,
             Bound::Included(u128::MAX), Bound::Included(u128::MAX)), Some(2..4));
         assert_eq!(candidate_u128_mark_range(&index, 1,
