@@ -294,16 +294,32 @@ pub fn plan_replica_retry_timeline(
     }
     // Validate even when the deadline or requested attempt count is zero.
     retry_delay(0, base_ms, max_ms, 0)?;
-    for (index, &(node, _)) in node_seeds.iter().enumerate() {
-        if node.is_empty()
-            || node.len() > 64
-            || !node
+    let valid_node = |node: &str| {
+        !node.is_empty()
+            && node.len() <= 64
+            && node
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            || node_seeds[..index]
-                .iter()
-                .any(|&(previous, _)| previous == node)
-        {
+    };
+    if node_seeds.len() <= 8 {
+        for (index, &(node, _)) in node_seeds.iter().enumerate() {
+            if !valid_node(node) || node_seeds[..index].iter().any(|&(prior, _)| prior == node) {
+                return Err("invalid or duplicate replica retry node");
+            }
+        }
+    } else {
+        // The maximum membership is 64. Validate and sort borrowed names on
+        // the stack instead of performing up to 2,016 repeated string scans.
+        let mut names = [""; 64];
+        for (index, &(node, _)) in node_seeds.iter().enumerate() {
+            if !valid_node(node) {
+                return Err("invalid or duplicate replica retry node");
+            }
+            names[index] = node;
+        }
+        let sorted = &mut names[..node_seeds.len()];
+        sorted.sort_unstable();
+        if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err("invalid or duplicate replica retry node");
         }
     }
@@ -324,7 +340,9 @@ pub fn plan_replica_retry_timeline(
         }
     }
 
-    let mut timeline = Vec::with_capacity(node_seeds.len() * attempts_per_node as usize);
+    // A zero or short deadline can exclude almost every retry. Reserve only
+    // the initially schedulable events and grow after they actually fire.
+    let mut timeline = Vec::with_capacity(next_events.len());
     while let Some(Reverse((due_after, node, attempt, index))) = next_events.pop() {
         timeline.push(ReplicaRetryEvent {
             node: node.to_owned(),
@@ -502,5 +520,45 @@ mod resumed_replica_retry_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod bounded_retry_timeline_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn a_zero_deadline_does_not_allocate_thousands_of_event_slots() {
+        let owned = (0..64)
+            .map(|index| format!("node_{index:02}"))
+            .collect::<Vec<_>>();
+        let nodes = owned
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.as_str(), index as u64))
+            .collect::<Vec<_>>();
+        let none =
+            plan_replica_retry_timeline(&nodes, 33, 100, 2000, Duration::ZERO).unwrap();
+        assert!(none.is_empty());
+        assert_eq!(none.capacity(), 0);
+
+        let full =
+            plan_replica_retry_timeline(&nodes, 33, 1, 2, Duration::MAX).unwrap();
+        assert_eq!(full.len(), 64 * 33);
+        assert!(full.windows(2).all(|pair| pair[0].due_after <= pair[1].due_after));
+    }
+
+    #[test]
+    fn stack_validation_rejects_late_duplicate_and_invalid_node_names() {
+        let owned = (0..64)
+            .map(|index| format!("node_{index:02}"))
+            .collect::<Vec<_>>();
+        let mut nodes = owned.iter().map(|name| (name.as_str(), 0u64)).collect::<Vec<_>>();
+        nodes[63].0 = nodes[0].0;
+        assert!(plan_replica_retry_timeline(&nodes, 0, 1, 10, Duration::ZERO).is_err());
+        nodes[63].0 = "invalid/node";
+        assert!(plan_replica_retry_timeline(&nodes, 0, 1, 10, Duration::ZERO).is_err());
+        nodes[63].0 = owned[63].as_str();
+        assert!(plan_replica_retry_timeline(&nodes, 0, 1, 10, Duration::ZERO).is_ok());
     }
 }
