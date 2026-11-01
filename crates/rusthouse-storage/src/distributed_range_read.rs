@@ -278,9 +278,8 @@ pub fn read_object_ranges_checked(
     // Coalesced reads already avoid duplicate I/O, but independently hashing
     // the returned copies can redo megabytes of CRC work for repeated spans.
     // Keep the small-request path allocation-free.
-    let mut cached = (ranges.len() >= 32).then(|| {
-        std::collections::HashMap::<(u64, usize), u32>::with_capacity(ranges.len())
-    });
+    let mut cached = (ranges.len() >= 32)
+        .then(|| std::collections::HashMap::<(u64, usize), u32>::with_capacity(ranges.len()));
     for (chunk, &(offset, length, expected_crc32c)) in chunks.iter().zip(ranges) {
         let actual = if let Some(cache) = &mut cached {
             *cache
