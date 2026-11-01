@@ -77,30 +77,28 @@ pub fn candidate_i64_mark_range(
     )
 }
 
-/// Plan and coalesce candidate granules for UInt64 IN and OR predicates.
-pub fn candidate_u64_mark_ranges(
+fn u64_pair_mark_key(
     index: &FixedPrimaryIndex,
-    field: usize,
-    intervals: &[(Bound<u64>, Bound<u64>)],
-) -> Option<Vec<Range<usize>>> {
-    candidate_mark_ranges(
-        index.len(),
-        |mark| u64_mark_key(index, mark, field),
-        intervals,
-    )
+    mark: usize,
+    first: usize,
+    second: usize,
+) -> Option<(u64, u64)> {
+    Some((
+        u64_mark_key(index, mark, first)?,
+        u64_mark_key(index, mark, second)?,
+    ))
 }
 
-/// Plan and coalesce candidate granules for signed Int64 predicates.
-pub fn candidate_i64_mark_ranges(
+fn i64_pair_mark_key(
     index: &FixedPrimaryIndex,
-    field: usize,
-    intervals: &[(Bound<i64>, Bound<i64>)],
-) -> Option<Vec<Range<usize>>> {
-    candidate_mark_ranges(
-        index.len(),
-        |mark| i64_mark_key(index, mark, field),
-        intervals,
-    )
+    mark: usize,
+    first: usize,
+    second: usize,
+) -> Option<(i64, i64)> {
+    Some((
+        i64_mark_key(index, mark, first)?,
+        i64_mark_key(index, mark, second)?,
+    ))
 }
 
 /// Plan conservative lexicographic granules for two UInt64 primary-key fields.
@@ -145,6 +143,32 @@ pub fn candidate_i64_pair_mark_ranges(
     intervals: &[(Bound<(i64, i64)>, Bound<(i64, i64)>)],
 ) -> Option<Vec<Range<usize>>> {
     candidate_mark_ranges(index.len(), |mark| i64_pair_mark_key(index, mark, first, second), intervals)
+}
+
+/// Plan and coalesce candidate granules for UInt64 IN and OR predicates.
+pub fn candidate_u64_mark_ranges(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    intervals: &[(Bound<u64>, Bound<u64>)],
+) -> Option<Vec<Range<usize>>> {
+    candidate_mark_ranges(
+        index.len(),
+        |mark| u64_mark_key(index, mark, field),
+        intervals,
+    )
+}
+
+/// Plan and coalesce candidate granules for signed Int64 predicates.
+pub fn candidate_i64_mark_ranges(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    intervals: &[(Bound<i64>, Bound<i64>)],
+) -> Option<Vec<Range<usize>>> {
+    candidate_mark_ranges(
+        index.len(),
+        |mark| i64_mark_key(index, mark, field),
+        intervals,
+    )
 }
 
 pub fn read_fixed_primary_index(
