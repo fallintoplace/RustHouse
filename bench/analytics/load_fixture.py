@@ -86,6 +86,13 @@ def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
     copy = read_fixture_sql(root / "copy.sql")
     if len(copy.encode("utf-8")) > 4096:
         raise ValueError("COPY SQL exceeds statement size limit")
+    expected_create = "CREATE TABLE hits (" + ", ".join(
+        f"{name} {kind}" for name, kind, _ in FIELDS
+    ) + ")"
+    escaped = tsv.resolve(strict=True).as_posix().replace("'", "''")
+    expected_copy = f"COPY hits FROM '{escaped}' WITH (FORMAT TSV, HEADER TRUE)"
+    if create != expected_create or copy != expected_copy:
+        raise ValueError("fixture SQL differs from trusted generated statements")
     execute(create)
     started = time.perf_counter()
     execute(copy)
