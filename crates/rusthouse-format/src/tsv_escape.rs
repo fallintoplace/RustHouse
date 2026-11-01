@@ -82,7 +82,16 @@ pub fn decode_tsv_field_into(field: &[u8], output: &mut Vec<u8>) -> io::Result<(
     let mut start = 0;
     loop {
         output.extend_from_slice(&field[start..index]);
-        output.push(decode_escape(field, &mut index)?);
+        let decoded = match decode_escape(field, &mut index) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                // A rejected field must never expose a partially decoded row.
+                // Keep the allocation for the next field, but clear its bytes.
+                output.clear();
+                return Err(error);
+            }
+        };
+        output.push(decoded);
         start = index;
         let Some(next_escape_offset) = field[index..].iter().position(|&byte| byte == b'\\') else {
             break;
@@ -219,5 +228,30 @@ mod zero_allocation_validation_tests {
         long.extend_from_slice(br"\t");
         long.extend_from_slice(&vec![b'y'; 128 * 1024]);
         validate_tsv_field(&long).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod atomic_tsv_field_decode_tests {
+    use super::*;
+
+    #[test]
+    fn late_bad_escape_does_not_leave_partial_reusable_field() {
+        let mut output = Vec::with_capacity(256);
+        decode_tsv_field_into(br"first\\tsecond", &mut output).unwrap();
+        let retained_capacity = output.capacity();
+        for invalid in [
+            &br"good\\ntext\\xG0"[..],
+            &br"good\\ntext\\"[..],
+            &br"good\\ntext\\y"[..],
+            &br"good\\ntext\\x2"[..],
+        ] {
+            assert!(decode_tsv_field_into(invalid, &mut output).is_err());
+            assert!(output.is_empty(), "a failed field leaked decoded bytes");
+            assert_eq!(output.capacity(), retained_capacity);
+        }
+        decode_tsv_field_into(br"valid\\x20again", &mut output).unwrap();
+        assert_eq!(output, b"valid again");
+        assert_eq!(output.capacity(), retained_capacity);
     }
 }
