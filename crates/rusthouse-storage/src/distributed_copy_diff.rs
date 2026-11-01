@@ -1481,7 +1481,13 @@ mod symmetric_replica_inventory_tests {
     #[test]
     fn sorted_two_cursor_diff_matches_hash_reference_for_mixed_inventories() {
         let left = (0..1_024u64)
-            .map(|index| item(&format!("cluster/shard/g1/part/key_{index:04}.bin"), index, index as u32))
+            .map(|index| {
+                item(
+                    &format!("cluster/shard/g1/part/key_{index:04}.bin"),
+                    index,
+                    index as u32,
+                )
+            })
             .collect::<Vec<_>>();
         let right = (0..1_024u64)
             .filter(|index| index % 7 != 0)
