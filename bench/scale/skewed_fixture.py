@@ -41,6 +41,7 @@ def generate(output, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
         raise FileExistsError("refusing to overwrite fixture")
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
+    published = False
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="ascii", newline="\n",
                                          dir=output.parent, delete=False) as stream:
@@ -50,12 +51,17 @@ def generate(output, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
             stream.flush()
             os.fsync(stream.fileno())
         os.link(temporary, output)
+        published = True
         if os.name == "posix":
             descriptor = os.open(output.parent, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+    except Exception:
+        if published:
+            output.unlink(missing_ok=True)
+        raise
     finally:
         if temporary:
             temporary.unlink(missing_ok=True)
