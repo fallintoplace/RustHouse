@@ -105,6 +105,19 @@ def read_queries(path):
     return parse_lines(raw.decode("utf-8"))
 
 
+MAX_CHILD_OUTPUT_BYTES = 8 * 1024 * 1024
+
+
+def _limit_child_output():
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    cap = MAX_CHILD_OUTPUT_BYTES if soft == resource.RLIM_INFINITY else min(MAX_CHILD_OUTPUT_BYTES, soft)
+    if hard != resource.RLIM_INFINITY:
+        cap = min(cap, hard)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (cap, hard))
+
+
 def audit(binary, queries, run=subprocess.run, fail_fast=False, timeout=10):
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("audit timeout must be positive and finite")
@@ -116,6 +129,7 @@ def audit(binary, queries, run=subprocess.run, fail_fast=False, timeout=10):
         if len(parsed) != 1:
             raise ValueError("one bounded SELECT is required per audit entry")
         safe_queries.append((line, parsed[0][1]))
+    extra = {"preexec_fn": _limit_child_output} if os.name == "posix" else {}
     results = []
     with tempfile.TemporaryDirectory(prefix="rusthouse-sql-audit-") as database:
         for line, query in safe_queries:
@@ -125,11 +139,19 @@ def audit(binary, queries, run=subprocess.run, fail_fast=False, timeout=10):
                     result = run(
                         [str(binary), "sql", query, "--database", database, "--explain"],
                         stdout=stdout, stderr=stderr, timeout=timeout, check=False,
+                        **extra,
                     )
                     status = result.returncode == 0
+                    stdout.seek(0, os.SEEK_END)
+                    stderr.seek(0, os.SEEK_END)
+                    exceeded_output_budget = (stdout.tell() >= MAX_CHILD_OUTPUT_BYTES or
+                                              stderr.tell() >= MAX_CHILD_OUTPUT_BYTES)
                     stderr.seek(0)
                     raw = stderr.read(500)
                     reason = "" if status else raw.decode("utf-8", "replace").strip()
+                    if exceeded_output_budget:
+                        status = False
+                        reason = "parser subprocess output exceeded 8 MiB"
                     # Preserve compatibility with injected test runners which
                     # return a stderr value instead of writing to the file.
                     if not status and not raw:
