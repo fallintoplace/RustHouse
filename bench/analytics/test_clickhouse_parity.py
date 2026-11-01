@@ -13,6 +13,27 @@ from bench.analytics.clickhouse_parity import (
 from bench.analytics.suite_runner import ACCOUNTS_ROWS, COLUMNS, fact_row, make_fixture
 
 
+class FixtureTsvDecodeTests(unittest.TestCase):
+    def test_unescaped_fields_bypass_bytewise_decoder(self):
+        from bench.analytics.clickhouse_parity import _decode_fixture_field
+
+        for field, expected in [
+            (b"", ""),
+            (b"abc123", "abc123"),
+            ("café 🎉".encode("utf-8"), "café 🎉"),
+            (b"plain" * 10000, "plain" * 10000),
+            (br"a\\tb", "a\\tb"),
+            (br"a\tb", "a\tb"),
+            (br"\\N", r"\N"),
+        ]:
+            self.assertEqual(_decode_fixture_field(field), expected)
+        with self.assertRaises(UnicodeDecodeError):
+            _decode_fixture_field(b"\\xff")
+        for invalid in (br"\q", b"\\", br"\xZZ"):
+            with self.assertRaises(ValueError):
+                _decode_fixture_field(invalid)
+
+
 class ClickHouseDifferentialTests(unittest.TestCase):
     def test_rejects_invalid_paired_controls_before_any_query(self):
         from bench.analytics.clickhouse_parity import paired_query, run_parity
