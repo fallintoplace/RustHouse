@@ -56,6 +56,7 @@ def generate(path, rows, *, start=0, step=1, batch_rows=8192, header=False, forc
     _validate_rows(rows, start, step, batch_rows, header)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
+    published_new = False
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="ascii", newline="\n", dir=path.parent,
@@ -69,12 +70,17 @@ def generate(path, rows, *, start=0, step=1, batch_rows=8192, header=False, forc
             os.replace(temporary, path)
         else:
             os.link(temporary, path)
+            published_new = True
         if os.name == "posix":
             descriptor = os.open(path.parent, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+    except Exception:
+        if published_new:
+            path.unlink(missing_ok=True)
+        raise
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
