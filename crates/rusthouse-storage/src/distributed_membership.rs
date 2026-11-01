@@ -631,7 +631,8 @@ mod stack_membership_index_tests {
             assert_eq!(format_membership(&members).unwrap(), records);
             let mut duplicates = members.clone();
             if size == 1 {
-                duplicates.push(duplicates[0].clone());
+                let repeated = duplicates[0].clone();
+        duplicates.push(repeated);
             } else {
                 duplicates[size - 1].node = duplicates[0].node.clone();
             }
