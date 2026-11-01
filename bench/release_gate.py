@@ -90,12 +90,17 @@ def parse_query_ids(spec):
 def validate_samples(samples, runs, number):
     if not isinstance(samples, list) or len(samples) != runs:
         raise ValueError(f"query {number} has incomplete timing samples")
-    if any(
-        type(value) not in (int, float)
-        or not math.isfinite(value)
-        or value < 0
-        for value in samples
-    ):
+    def valid_sample(value):
+        if type(value) not in (int, float) or value < 0:
+            return False
+        # Arbitrarily large JSON integers are legal inputs, but math.isfinite
+        # raises OverflowError when converting one to a C double.
+        try:
+            return math.isfinite(value)
+        except OverflowError:
+            return False
+
+    if not all(valid_sample(value) for value in samples):
         raise ValueError(f"query {number} has invalid timing samples")
 
 
