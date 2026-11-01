@@ -120,7 +120,9 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     Some(ranges)
 }
 
-fn key_bytes(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<[u8; 8]> {
+fn key_bytes<const WIDTH: usize>(
+    index: &FixedPrimaryIndex, mark: usize, field: usize,
+) -> Option<[u8; WIDTH]> {
     index.field(mark, field)?.try_into().ok()
 }
 
@@ -130,6 +132,14 @@ pub(super) fn u64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize)
 
 pub(super) fn i64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<i64> {
     Some(i64::from_le_bytes(key_bytes(index, mark, field)?))
+}
+
+pub(super) fn u128_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<u128> {
+    Some(u128::from_le_bytes(key_bytes(index, mark, field)?))
+}
+
+pub(super) fn i128_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<i128> {
+    Some(i128::from_le_bytes(key_bytes(index, mark, field)?))
 }
 
 #[cfg(test)]
