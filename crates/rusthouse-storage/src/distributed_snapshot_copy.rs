@@ -52,10 +52,18 @@ fn create_snapshot_staging_with(mut candidate: impl FnMut() -> PathBuf) -> io::R
     ))
 }
 
+// File contents are synced before publication. Windows cannot open a
+// directory with File::open, while Unix needs directory fsync for durability.
+#[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<(), PartError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| io_error(path, error))
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<(), PartError> {
+    Ok(())
 }
 
 fn ensure_destination_absent(destination: &Path) -> Result<(), PartError> {
@@ -939,5 +947,17 @@ mod reused_part_listing_regression_tests {
         assert_eq!(actual, preview);
         assert_eq!(inspect_query_source(&replica).unwrap().rows, expected_rows);
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_snapshot_directory_sync_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_directory_sync_does_not_reopen_directories_as_files() {
+        let path = std::env::temp_dir();
+        assert!(path.is_dir());
+        sync_directory(&path).unwrap();
     }
 }
