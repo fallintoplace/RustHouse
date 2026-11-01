@@ -98,6 +98,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "SUBSTRING"
                 | "SUBSTRINGUTF8"
                 | "HASSUBSEQUENCECASEINSENSITIVE"
+                | "HASSUBSEQUENCECASEINSENSITIVEUTF8"
                 | "OVERLAY"
                 | "FORMATREADABLEQUANTITY"
                 | "QUERYSTRING"
@@ -2793,6 +2794,35 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             .unwrap_or("")
                             .to_owned(),
                     )
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "HASSUBSEQUENCECASEINSENSITIVEUTF8" => {
+            let haystack = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "hasSubsequenceCaseInsensitiveUTF8 requires a needle",
+            )?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "hasSubsequenceCaseInsensitiveUTF8 requires two arguments",
+            )?;
+            match (haystack, needle) {
+                (Some(haystack), Some(needle)) => {
+                    let haystack = haystack.to_lowercase();
+                    let needle = needle.to_lowercase();
+                    let mut remaining = needle.chars();
+                    let mut next = remaining.next();
+                    for character in haystack.chars() {
+                        if next == Some(character) {
+                            next = remaining.next();
+                        }
+                    }
+                    ConstantValue::Integer(i64::from(next.is_none()))
                 }
                 _ => ConstantValue::Null,
             }
@@ -6124,6 +6154,35 @@ mod utf8_prefix_suffix_inplace_tests {
         }
         let input = format!("{}🙂Z", "a".repeat(10_000));
         assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_has_subsequence_case_insensitive_utf8_parity_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matches_case_insensitive_unicode_subsequences() {
+        for (sql, expected) in [
+            ("SELECT hasSubsequenceCaseInsensitiveUTF8('не прислоняться', 'не слонЯ')", 1),
+            ("SELECT hasSubsequenceCaseInsensitiveUTF8('Äpfel', 'äe')", 1),
+            ("SELECT hasSubsequenceCaseInsensitiveUTF8('ДОБРО', 'до')", 1),
+            ("SELECT hasSubsequenceCaseInsensitiveUTF8('AbCd', 'dc')", 0),
+            ("SELECT hasSubsequenceCaseInsensitiveUTF8('AbCd', '')", 1),
+            ("SELECT hasSubsequenceCaseInsensitiveUTF8('', 'a')", 0),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT hasSubsequenceCaseInsensitiveUTF8(NULL, 'a')"), ConstantValue::Null);
+        assert_eq!(value("SELECT hasSubsequenceCaseInsensitiveUTF8('a', NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT hasSubsequenceCaseInsensitiveUTF8('a')").is_err());
     }
 }
 
