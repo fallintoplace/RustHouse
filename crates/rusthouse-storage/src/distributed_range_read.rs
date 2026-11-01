@@ -301,6 +301,30 @@ pub fn verify_object_ranges_crc32c(
             return Err(io::Error::other("object checksum ranges exceed byte limit"));
         }
     }
+    // A large scrub request can repeat the same logical range many times.
+    // Count every request against the original budget, but hash each unique
+    // physical span only once. Conflicting expected checksums fail closed.
+    if ranges.len() >= 32 {
+        let mut by_span = std::collections::HashMap::with_capacity(ranges.len());
+        let mut unique = Vec::with_capacity(ranges.len());
+        for &(offset, length, expected) in ranges {
+            match by_span.insert((offset, length), expected) {
+                Some(previous) if previous != expected => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "conflicting checksums for the same object range",
+                    ));
+                }
+                Some(_) => {}
+                None => unique.push((offset, length, expected)),
+            }
+        }
+        if unique.len() != ranges.len() {
+            // The recursive call has strictly fewer spans, so no repeated
+            // deduplication work is required; all checks remain identical.
+            return verify_object_ranges_crc32c(path, &unique, max_total_bytes);
+        }
+    }
     let (mut file, before) = open_verified_object(path)?;
     for &(offset, length, _) in ranges {
         let end = offset
@@ -1002,5 +1026,45 @@ mod coalesced_scrub_crc_tests {
             io::ErrorKind::InvalidData
         );
         std::fs::remove_file(&path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod duplicate_crc_scrub_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_ranges_use_the_same_verification_and_reject_conflicts() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-duplicate-crc-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let bytes = (0..65_536usize)
+            .map(|index| (index * 71 % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&path, &bytes).unwrap();
+        let crc = crate::distributed_crc32c::crc32c(&bytes);
+        let mut ranges = vec![(0u64, bytes.len() as u64, crc); 1024];
+        verify_object_ranges_crc32c(&path, &ranges, 64 * 1024 * 1024).unwrap();
+
+        ranges[511].2 ^= 1;
+        assert_eq!(
+            verify_object_ranges_crc32c(&path, &ranges, 64 * 1024 * 1024)
+                .unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        ranges[511].2 = crc;
+        assert!(verify_object_ranges_crc32c(&path, &ranges, 1024).is_err());
+
+        let mut corrupted = bytes;
+        corrupted[1234] ^= 1;
+        fs::write(&path, &corrupted).unwrap();
+        assert_eq!(
+            verify_object_ranges_crc32c(&path, &ranges, 64 * 1024 * 1024)
+                .unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::remove_file(path).unwrap();
     }
 }
