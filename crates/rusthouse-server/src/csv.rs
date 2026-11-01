@@ -25,6 +25,10 @@ impl<W: Write> CsvWriter<W> {
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
+        // A CR immediately before the final LF ends the record.
+        if self.line.last() == Some(&b'\r') {
+            self.line.pop();
+        }
         encode_complete_row(
             &mut self.output,
             &mut self.encoded,
@@ -96,6 +100,11 @@ impl<W: Write> Write for CsvWriter<W> {
                 &chunk[..chunk.len() - 1]
             } else {
                 chunk
+            };
+            let data = if complete && self.line.is_empty() {
+                data.strip_suffix(b"\r").unwrap_or(data)
+            } else {
+                data
             };
             if data.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
                 return Err(io::Error::new(
@@ -340,5 +349,26 @@ mod empty_csv_roundtrip_tests {
         output.clear();
         write_csv_field_from_tsv(&mut output, b"\\N").unwrap();
         assert_eq!(output, b"\\N");
+    }
+}
+
+#[cfg(test)]
+mod crlf_csv_record_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn strips_physical_crlf_but_keeps_decoded_carriage_returns() {
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"field\r\nleft\\rright\r").unwrap();
+        csv.write_all(b"\n").unwrap();
+        assert_eq!(csv.output, b"field\r\n\"left\rright\"\r\n");
+    }
+
+    #[test]
+    fn retains_bare_carriage_returns_inside_fields() {
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"field\nx\ry\n").unwrap();
+        assert_eq!(csv.output, b"field\r\n\"x\ry\"\r\n");
     }
 }
