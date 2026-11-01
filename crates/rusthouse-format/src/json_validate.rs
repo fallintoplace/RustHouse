@@ -19,7 +19,7 @@ impl Parser<'_> {
         while self
             .input
             .get(self.offset)
-            .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+            .is_some_and(|byte| matches!(*byte, b' ' | b'\t' | b'\r' | b'\n'))
         {
             self.offset += 1;
         }
@@ -173,12 +173,13 @@ impl Parser<'_> {
 
 /// Accept exactly one complete UTF-8 JSON object, with bounded nesting.
 pub fn validate_json_object(row: &[u8]) -> io::Result<()> {
-    if !row.starts_with(b"{") || !row.ends_with(b"}") ||
-        std::str::from_utf8(row).is_err()
-    {
+    if !row.starts_with(b"{") || !row.ends_with(b"}") || std::str::from_utf8(row).is_err() {
         return Err(invalid());
     }
-    let mut parser = Parser { input: row, offset: 0 };
+    let mut parser = Parser {
+        input: row,
+        offset: 0,
+    };
     parser.object(1)?;
     if parser.offset != row.len() {
         return Err(invalid());
@@ -195,7 +196,7 @@ mod tests {
         for row in [
             br#"{}"#.as_slice(),
             br#"{"a":1,"b":[true,false,null,{"q":"\u00e9"}]}"#.as_slice(),
-            br#"{"negative":-1.5E+10,"zero":0,"unicode":"é"}"#.as_slice(),
+            r#"{"negative":-1.5E+10,"zero":0,"unicode":"é"}"#.as_bytes(),
             br#"{"escaped":"\\\/\"\b\f\n\r\t"}"#.as_slice(),
             br#"{"a": [1, 2, 3], "b": {"c": []}}"#.as_slice(),
         ] {
