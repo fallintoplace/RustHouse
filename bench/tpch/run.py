@@ -50,10 +50,15 @@ def load_queries(directory):
             payload = source.read(MAX_QUERY_FILE_BYTES + 1)
         if len(payload) > MAX_QUERY_FILE_BYTES:
             raise ValueError(f"query file exceeds 64 KiB: {path}")
-        sql = "\n".join(
-            line for line in payload.decode("utf-8").splitlines()
-            if not line.lstrip().startswith("--")
-        ).strip().rstrip(";").strip()
+        lines = payload.decode("utf-8").splitlines()
+        # Strip provenance comments only before the SQL statement starts.
+        # Inside a multiline quoted literal, "-- text" is query data.
+        start = 0
+        while start < len(lines) and (
+                not lines[start].strip()
+                or lines[start].lstrip().startswith("--")):
+            start += 1
+        sql = "\n".join(lines[start:]).strip().rstrip(";").strip()
         if not sql:
             raise ValueError(f"empty SQL query: {path}")
         queries.append((number, sql))

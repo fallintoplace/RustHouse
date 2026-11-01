@@ -46,6 +46,19 @@ class RunnerTests(unittest.TestCase):
                 load_queries(directory), [(2, "SELECT 2"), (10, "SELECT 10")]
             )
 
+    def test_multiline_sql_string_keeps_comment_like_lines(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "q01.sql"
+            path.write_text(
+                "-- provenance\n"
+                "SELECT 'first\n-- literal data\nlast' AS phrase;",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                load_queries(Path(root)),
+                [(1, "SELECT 'first\n-- literal data\nlast' AS phrase")],
+            )
+
     def test_query_discovery_accepts_uppercase_names(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
