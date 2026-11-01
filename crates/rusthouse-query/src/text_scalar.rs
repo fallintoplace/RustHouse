@@ -227,6 +227,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "ISIPV6LOOPBACK"
                 | "ISIPV6MULTICAST"
                 | "BASE32DECODE"
+                | "TRYBASE32DECODE"
                 | "FROM_BASE32"
                 | "BASE32ENCODE"
                 | "TO_BASE32"
@@ -3754,56 +3755,57 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "BASE32DECODE" | "FROM_BASE32" => {
+        "BASE32DECODE" | "FROM_BASE32" | "TRYBASE32DECODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "base32Decode requires one argument")?;
             match input {
                 Some(input) => {
-                    let bytes = input.as_bytes();
-                    let data_len = input.trim_end_matches('=').len();
-                    let padding = bytes.len() - data_len;
-                    let required_remainder = match padding {
-                        0 => 0,
-                        1 => 7,
-                        3 => 5,
-                        4 => 4,
-                        6 => 2,
-                        _ => {
-                            return Err(ParseError("invalid Base32 padding".into()));
-                        }
-                    };
-                    if bytes.len() % 8 != 0 || data_len % 8 != required_remainder {
-                        return Err(ParseError("invalid Base32 length".into()));
-                    }
-                    let mut decoded = Vec::with_capacity(data_len.saturating_mul(5) / 8);
-                    let mut bits = 0_u16;
-                    let mut available = 0_u8;
-                    for &byte in &bytes[..data_len] {
-                        let value = match byte {
-                            b'A'..=b'Z' => byte - b'A',
-                            b'2'..=b'7' => byte - b'2' + 26,
-                            _ => {
-                                return Err(ParseError("invalid Base32 alphabet".into()));
-                            }
+                    let decoded = (|| -> Result<String, ParseError> {
+                        let bytes = input.as_bytes();
+                        let data_len = input.trim_end_matches('=').len();
+                        let padding = bytes.len() - data_len;
+                        let required_remainder = match padding {
+                            0 => 0,
+                            1 => 7,
+                            3 => 5,
+                            4 => 4,
+                            6 => 2,
+                            _ => return Err(ParseError("invalid Base32 padding".into())),
                         };
-                        bits = (bits << 5) | u16::from(value);
-                        available += 5;
-                        if available >= 8 {
-                            available -= 8;
-                            decoded.push((bits >> available) as u8);
-                            bits &= (1_u16 << available) - 1;
+                        if bytes.len() % 8 != 0 || data_len % 8 != required_remainder {
+                            return Err(ParseError("invalid Base32 length".into()));
                         }
-                        if decoded.len() > MAX_TEXT_BYTES {
-                            return Err(ParseError("Base32 decoded result is too large".into()));
+                        let mut decoded = Vec::with_capacity(data_len.saturating_mul(5) / 8);
+                        let mut bits = 0_u16;
+                        let mut available = 0_u8;
+                        for &byte in &bytes[..data_len] {
+                            let value = match byte {
+                                b'A'..=b'Z' => byte - b'A',
+                                b'2'..=b'7' => byte - b'2' + 26,
+                                _ => return Err(ParseError("invalid Base32 alphabet".into())),
+                            };
+                            bits = (bits << 5) | u16::from(value);
+                            available += 5;
+                            if available >= 8 {
+                                available -= 8;
+                                decoded.push((bits >> available) as u8);
+                                bits &= (1_u16 << available) - 1;
+                            }
+                            if decoded.len() > MAX_TEXT_BYTES {
+                                return Err(ParseError("Base32 decoded result is too large".into()));
+                            }
                         }
-                    }
-                    if bits != 0 {
-                        return Err(ParseError("nonzero Base32 padding bits".into()));
-                    }
-                    ConstantValue::Text(
+                        if bits != 0 {
+                            return Err(ParseError("nonzero Base32 padding bits".into()));
+                        }
                         String::from_utf8(decoded)
-                            .map_err(|_| ParseError("Base32 decoded value must be UTF-8".into()))?,
-                    )
+                            .map_err(|_| ParseError("Base32 decoded value must be UTF-8".into()))
+                    })();
+                    match decoded {
+                        Ok(value) => ConstantValue::Text(value),
+                        Err(_) if name == "TRYBASE32DECODE" => ConstantValue::Text(String::new()),
+                        Err(error) => return Err(error),
+                    }
                 }
                 None => ConstantValue::Null,
             }
