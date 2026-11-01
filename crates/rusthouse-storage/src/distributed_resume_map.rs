@@ -266,15 +266,20 @@ impl ResumeMap {
     /// rescanning a nearly completed transfer for each continuation page.
     pub fn remaining_indices_from(&self, start: usize) -> impl Iterator<Item = usize> + '_ {
         let start = start.min(self.chunks);
-        self.completed
-            .iter()
+        let first_word = start / 64;
+        let full_words = self.chunks / 64;
+        // Jump to the cursor's machine word, then skip entire verified words.
+        // This is especially useful when paging dense transfer checkpoints.
+        let words = self.completed[first_word * 8..full_words * 8]
+            .chunks_exact(8)
             .enumerate()
-            .skip(start / 8)
-            .flat_map(move |(byte_index, &completed)| {
-                let base = byte_index * 8;
-                let mut missing = !completed & low_bit_mask((self.chunks - base).min(8));
+            .flat_map(move |(offset, bytes)| {
+                let base = (first_word + offset) * 64;
+                let mut missing = !u64::from_le_bytes(
+                    bytes.try_into().expect("exactly eight checkpoint bytes")
+                );
                 if base < start {
-                    missing &= u8::MAX << (start - base);
+                    missing &= u64::MAX << (start - base);
                 }
                 std::iter::from_fn(move || {
                     if missing == 0 {
@@ -284,7 +289,28 @@ impl ResumeMap {
                     missing &= missing - 1;
                     Some(base + bit)
                 })
-            })
+            });
+        let tail_base = full_words * 64;
+        let tail = self.completed[full_words * 8..]
+            .iter()
+            .enumerate()
+            .flat_map(move |(byte, &completed)| {
+                let base = tail_base + byte * 8;
+                let mut missing = !completed & low_bit_mask((self.chunks - base).min(8));
+                if base < start {
+                    let skipped = (start - base).min(8);
+                    missing &= u8::MAX.checked_shl(skipped as u32).unwrap_or(0);
+                }
+                std::iter::from_fn(move || {
+                    if missing == 0 {
+                        return None;
+                    }
+                    let bit = missing.trailing_zeros() as usize;
+                    missing &= missing - 1;
+                    Some(base + bit)
+                })
+            });
+        words.chain(tail)
     }
 
     pub fn remaining(&self) -> Vec<usize> {
@@ -1146,6 +1172,31 @@ mod checkpoint_cursor_tests {
                 let expected = full.iter().copied().filter(|&index| index >= start)
                     .collect::<Vec<_>>();
                 assert_eq!(map.remaining_indices_from(start).collect::<Vec<_>>(), expected);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod resume_cursor_word_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn word_cursor_matches_full_missing_set_for_every_partial_tail() {
+        for chunks in [0usize, 1, 7, 8, 63, 64, 65, 127, 128, 129, 1024, 65_536] {
+            let mut progress = ResumeMap::new(chunks).unwrap();
+            for index in 0..chunks {
+                if index % 11 != 0 && index % 97 != 0 {
+                    progress.mark_complete(index).unwrap();
+                }
+            }
+            let missing = progress.remaining();
+            for cursor in [0usize, 1, 7, 8, 63, 64, 65, 127, 128, 129, 1023, 1024, 65_535, 65_536] {
+                let expected = missing.iter().copied()
+                    .filter(|&index| index >= cursor).collect::<Vec<_>>();
+                let actual = progress.remaining_indices_from(cursor)
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected, "chunks={chunks}, cursor={cursor}");
             }
         }
     }
