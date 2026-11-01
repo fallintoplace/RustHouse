@@ -14,6 +14,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from bench.scale.query_digest import _has_sql_separator
+
 
 def parse_rss(status):
     peak = 0
@@ -37,6 +39,14 @@ def parse_io(payload):
     return {key: fields.get(key, 0) for key in ("read_bytes", "write_bytes")}
 
 
+def validate_select(sql):
+    if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
+        raise ValueError("resource profiler requires a bounded read-only SELECT")
+    statement = sql.strip().removesuffix(";").rstrip()
+    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or _has_sql_separator(statement):
+        raise ValueError("resource profiler requires one read-only SELECT")
+
+
 def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
             max_read_mib=None):
     if sys.platform != "linux":
@@ -53,11 +63,7 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
             type(max_read_mib) not in (int, float)
             or not math.isfinite(max_read_mib) or max_read_mib <= 0):
         raise ValueError("max physical read budget must be positive and finite")
-    if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
-        raise ValueError("resource profiler requires a bounded read-only SELECT")
-    statement = sql.strip().removesuffix(";").rstrip()
-    if not re.match(r"^SELECT\b", statement, re.IGNORECASE) or ";" in statement:
-        raise ValueError("resource profiler requires one read-only SELECT")
+    validate_select(sql)
     rss_budget_bytes = None if max_rss_mib is None else max_rss_mib * 1024 * 1024
     read_budget_bytes = None if max_read_mib is None else max_read_mib * 1024 * 1024
     started = time.perf_counter()
