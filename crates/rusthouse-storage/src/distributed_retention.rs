@@ -1000,14 +1000,15 @@ mod min_age_sorted_inventory_tests {
         );
         let mut duplicate = forward.clone();
         duplicate.push((4_096, 16_384));
-        assert!(retention_candidates_with_min_age(
-            &duplicate, 4_096, 2, &[], &[4_096], 16_384, 0
-        ).is_err());
+        assert!(
+            retention_candidates_with_min_age(&duplicate, 4_096, 2, &[], &[4_096], 16_384, 0)
+                .is_err()
+        );
         let mut future = forward;
         future[0].1 = 16_385;
-        assert!(retention_candidates_with_min_age(
-            &future, 4_096, 2, &[], &[4_096], 16_384, 0
-        ).is_err());
+        assert!(
+            retention_candidates_with_min_age(&future, 4_096, 2, &[], &[4_096], 16_384, 0).is_err()
+        );
     }
 }
 
@@ -1186,14 +1187,17 @@ mod linear_pin_membership_tests {
         let pins = generations.iter().copied().step_by(3).collect::<Vec<_>>();
         let mut unordered_pins = pins.clone();
         unordered_pins.reverse();
-        let expected = retention_candidates_with_pins(
-            &reversed, 16_384, 2, &unordered_pins,
-        ).unwrap();
+        let expected =
+            retention_candidates_with_pins(&reversed, 16_384, 2, &unordered_pins).unwrap();
         assert_eq!(
             retention_candidates_with_pins(&generations, 16_384, 2, &pins).unwrap(),
             expected
         );
-        assert!(expected.iter().all(|item| pins.binary_search(item).is_err()));
+        assert!(
+            expected
+                .iter()
+                .all(|item| pins.binary_search(item).is_err())
+        );
         assert!(!expected.contains(&16_384));
         assert!(!expected.contains(&16_383));
     }
