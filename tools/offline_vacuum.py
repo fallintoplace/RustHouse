@@ -85,19 +85,28 @@ def plan(database, keep=3):
     return candidates
 
 
+def _stable_lock_identity(path, fd):
+    opened = os.fstat(fd)
+    current = os.stat(path, follow_symlinks=False)
+    if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode)
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)):
+        raise ValueError("database lock path changed while acquiring flock")
+
+
 @contextmanager
 def exclusive_database_lock(database):
     if fcntl is None or not shutil.rmtree.avoids_symlink_attacks:
         raise ValueError("offline vacuum execute requires safe POSIX flock and rmtree")
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(Path(database) / ".rusthouse-write.lock", flags, 0o600)
+    lock = Path(database) / ".rusthouse-write.lock"
+    fd = os.open(lock, flags, 0o600)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("database lock is not a regular file")
+        _stable_lock_identity(lock, fd)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise ValueError("database is busy; stop all readers and writers") from exc
+        _stable_lock_identity(lock, fd)
         yield
     finally:
         os.close(fd)
