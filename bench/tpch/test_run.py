@@ -37,6 +37,56 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "provenance"):
                 require_canonical_corpus(path)
 
+    def test_query_loader_refuses_symlinked_sql(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            outside = folder / "external.sql"
+            outside.write_text("SELECT 1;")
+            (folder / "q01.sql").symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, "non-symlinked"):
+                load_queries(folder)
+
+    def test_query_loader_detects_inode_swap(self):
+        import os
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            query = folder / "q01.sql"
+            replacement = folder / "replacement.sql"
+            query.write_text("SELECT 1")
+            replacement.write_text("SELECT 2")
+            real_open = os.open
+
+            def replace_during_open(filename, flags):
+                if Path(filename) == query:
+                    query.unlink()
+                    replacement.rename(query)
+                return real_open(filename, flags)
+
+            with mock.patch("run.os.open", side_effect=replace_during_open):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    load_queries(folder)
+
+    def test_reference_loader_detects_inode_swap(self):
+        from run import read_reference
+        import os
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            golden = folder / "q01.tsv"
+            replacement = folder / "replacement.tsv"
+            golden.write_bytes(b"correct\n")
+            replacement.write_bytes(b"wrong\n")
+            real_open = os.open
+
+            def replace_during_open(filename, flags):
+                if Path(filename) == golden:
+                    golden.unlink()
+                    replacement.rename(golden)
+                return real_open(filename, flags)
+
+            with mock.patch("run.os.open", side_effect=replace_during_open):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    read_reference(golden)
+
     def test_query_discovery_is_numeric(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
