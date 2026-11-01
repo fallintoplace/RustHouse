@@ -10,7 +10,10 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn tries_url_safe_base64_decode_with_empty_on_error() {
     for (sql, expected) in [
-        ("SELECT tryBase64URLDecode('aHR0cHM6Ly9jbGlja2hvdXNlLmNvbQ')", "https://clickhouse.com"),
+        (
+            "SELECT tryBase64URLDecode('aHR0cHM6Ly9jbGlja2hvdXNlLmNvbQ')",
+            "https://clickhouse.com",
+        ),
         ("SELECT tryBase64URLDecode('SGVsbG8')", "Hello"),
         ("SELECT tryBase64URLDecode('')", ""),
         ("SELECT tryBase64URLDecode('?')", ""),
@@ -18,7 +21,10 @@ fn tries_url_safe_base64_decode_with_empty_on_error() {
     ] {
         assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
     }
-    assert_eq!(value("SELECT tryBase64URLDecode(NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT tryBase64URLDecode(NULL)"),
+        ConstantValue::Null
+    );
     assert!(parse_select("SELECT base64URLDecode('?')").is_err());
     assert!(parse_select("SELECT tryBase64URLDecode('x', 'y')").is_err());
 }
