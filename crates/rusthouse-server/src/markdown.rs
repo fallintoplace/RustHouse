@@ -1,4 +1,7 @@
+use rusthouse_format::decode_tsv_field_into;
+#[cfg(test)]
 use rusthouse_format::decode_tsv_field;
+#[cfg(test)]
 use std::borrow::Cow;
 use std::io::{self, Write};
 
@@ -8,6 +11,8 @@ fn finish_complete_line<W: Write>(
     output: &mut W,
     columns: &mut Option<usize>,
     line: &[u8],
+    encoded: &mut Vec<u8>,
+    decoded: &mut Vec<u8>,
 ) -> io::Result<()> {
     let width = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
     if columns.is_some_and(|expected| expected != width) {
@@ -16,7 +21,7 @@ fn finish_complete_line<W: Write>(
             "Markdown row does not match header column count",
         ));
     }
-    write_markdown_row(output, line, columns.is_some())?;
+    write_markdown_row_into(output, line, columns.is_some(), encoded, decoded)?;
     if columns.is_none() {
         write_header_separator(output, width)?;
         *columns = Some(width);
@@ -29,6 +34,8 @@ pub struct MarkdownWriter<W: Write> {
     output: W,
     line: Vec<u8>,
     columns: Option<usize>,
+    encoded: Vec<u8>,
+    decoded: Vec<u8>,
 }
 
 impl<W: Write> MarkdownWriter<W> {
@@ -37,6 +44,8 @@ impl<W: Write> MarkdownWriter<W> {
             output,
             line: Vec::new(),
             columns: None,
+            encoded: Vec::new(),
+            decoded: Vec::new(),
         }
     }
 
@@ -45,12 +54,13 @@ impl<W: Write> MarkdownWriter<W> {
         if self.line.last() == Some(&b'\r') {
             self.line.pop();
         }
-        finish_complete_line(&mut self.output, &mut self.columns, &self.line)?;
+        finish_complete_line(&mut self.output, &mut self.columns, &self.line, &mut self.encoded, &mut self.decoded)?;
         self.line.clear();
         Ok(())
     }
 }
 
+#[cfg(test)]
 fn decode_tsv_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_, [u8]>> {
     if data_row && field != b"\\N" && field.contains(&b'\\') {
         let decoded = decode_tsv_field(field)?;
@@ -82,9 +92,15 @@ fn write_framed_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     output.write_all(b" |")
 }
 
-fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
+fn write_markdown_row_into<W: Write>(
+    output: &mut W,
+    line: &[u8],
+    data_row: bool,
+    encoded: &mut Vec<u8>,
+    decoded: &mut Vec<u8>,
+) -> io::Result<()> {
     if !line.contains(&b'\\') {
-        // Validate before writing, so malformed UTF-8 never leaves a partial row.
+        // Retain the direct path for plain TSV rows.
         std::str::from_utf8(line).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
         })?;
@@ -94,20 +110,29 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
         }
         return output.write_all(b"\n");
     }
-    let fields = line
-        .split(|&byte| byte == b'\t')
-        .map(|field| decode_tsv_markdown_field(field, data_row))
-        .collect::<io::Result<Vec<_>>>()?;
-    for field in &fields {
-        std::str::from_utf8(field.as_ref()).map_err(|_| {
+    // Escape-bearing rows need validation of every field before committing
+    // any output. Stage the complete row and reuse both allocations.
+    encoded.clear();
+    encoded.push(b'|');
+    for field in line.split(|&byte| byte == b'\t') {
+        let value = if data_row && field != b"\\N" && field.contains(&b'\\') {
+            decode_tsv_field_into(field, decoded)?;
+            decoded.as_slice()
+        } else {
+            field
+        };
+        std::str::from_utf8(value).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
         })?;
+        write_framed_cell(encoded, value)?;
     }
-    output.write_all(b"|")?;
-    for field in fields {
-        write_framed_cell(output, field.as_ref())?;
-    }
-    output.write_all(b"\n")
+    encoded.push(b'\n');
+    output.write_all(encoded)
+}
+
+#[cfg(test)]
+fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
+    write_markdown_row_into(output, line, data_row, &mut Vec::new(), &mut Vec::new())
 }
 
 fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Result<()> {
@@ -188,7 +213,7 @@ impl<W: Write> Write for MarkdownWriter<W> {
                 ));
             }
             if complete && self.line.is_empty() {
-                finish_complete_line(&mut self.output, &mut self.columns, fragment)?;
+                finish_complete_line(&mut self.output, &mut self.columns, fragment, &mut self.encoded, &mut self.decoded)?;
                 continue;
             }
             self.line.extend_from_slice(fragment);
@@ -494,5 +519,42 @@ mod crlf_record_tests {
         writer.write_all(b"b\r").unwrap();
         writer.write_all(b"\n").unwrap();
         assert_eq!(writer.output, "| name |\n| --- |\n| alice |\n| bob |\n".as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod reusable_markdown_escaping_tests {
+    use super::*;
+
+    #[test]
+    fn escaped_cells_reuse_decode_and_output_buffers() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        writer.write_all(b"one\\tvalue\n").unwrap();
+        let decoded_ptr = writer.decoded.as_ptr();
+        let decoded_capacity = writer.decoded.capacity();
+        let encoded_ptr = writer.encoded.as_ptr();
+        let encoded_capacity = writer.encoded.capacity();
+        assert!(decoded_capacity >= 9);
+        for _ in 0..100 {
+            writer.write_all(b"two\\tvalue\n").unwrap();
+        }
+        assert_eq!(writer.decoded.as_ptr(), decoded_ptr);
+        assert_eq!(writer.decoded.capacity(), decoded_capacity);
+        assert_eq!(writer.encoded.as_ptr(), encoded_ptr);
+        assert_eq!(writer.encoded.capacity(), encoded_capacity);
+        assert!(writer.output.starts_with(b"| value |\n| --- |\n| one&#9;value |\n"));
+    }
+
+    #[test]
+    fn failed_late_markdown_escape_does_not_write_a_partial_row() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"left\tright\n").unwrap();
+        writer.write_all(b"first\\tvalue\tsecond\\nvalue\n").unwrap();
+        let previous = writer.output.clone();
+        assert!(writer.write_all(b"valid\\tfirst\tinvalid\\q\n").is_err());
+        assert_eq!(writer.output, previous);
+        writer.write_all(b"again\\tvalue\tlast\\nvalue\n").unwrap();
+        assert!(writer.output.ends_with(b"| again&#9;value | last&#10;value |\n"));
     }
 }
