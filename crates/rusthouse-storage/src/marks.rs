@@ -175,8 +175,10 @@ fn read_compressed_wide_marks<R: Read + Seek>(
     let mut fragment = [0u8; 24];
     let mut fragment_len = 0;
     let mut decoded_bytes = 0usize;
-
-    while let Some(block) = reader.next_decoded() {
+    // A compressed marks file can contain many frames. Reuse the previous
+    // decoded frame's capacity after its records have been consumed.
+    let mut decoded_scratch = Vec::new();
+    while let Some(block) = reader.next_decoded_reusing(decoded_scratch) {
         let data = block?.data;
         if data.len() > MAX_MARKS_BYTES - decoded_bytes {
             return Err(marks_too_large(path));
@@ -196,6 +198,7 @@ fn read_compressed_wide_marks<R: Read + Seek>(
             fragment_len += take;
             bytes = &bytes[take..];
             if fragment_len < record_size {
+                decoded_scratch = data;
                 continue;
             }
             marks.push(parse_mark_record(&fragment[..record_size], format));
@@ -210,6 +213,7 @@ fn read_compressed_wide_marks<R: Read + Seek>(
         let remainder = chunks.remainder();
         fragment[..remainder.len()].copy_from_slice(remainder);
         fragment_len = remainder.len();
+        decoded_scratch = data;
     }
 
     let size = decoded_bytes;
@@ -701,6 +705,48 @@ mod plain_marks_size_preflight_tests {
                 Err(PartError::InvalidMarksLength { size: 1_048_577, record_size: width, .. }) if width == record_size
             ));
             std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod recycled_compressed_marks_tests {
+    use super::*;
+    use ch_cityhash102::cityhash128;
+    use std::io::Cursor;
+
+    fn frame(payload: &[u8]) -> Vec<u8> {
+        let mut encoded = vec![0u8; 16];
+        encoded.push(0x02);
+        encoded.extend_from_slice(&(payload.len() as u32 + 9).to_le_bytes());
+        encoded.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(payload);
+        let hash = u128::from(cityhash128(&encoded[16..])).to_le_bytes();
+        encoded[..16].copy_from_slice(&hash);
+        encoded
+    }
+
+    #[test]
+    fn recycled_frames_preserve_marks_across_multiple_incomplete_records() {
+        let expected = (0..4u64).map(|index| WideMark {
+            compressed_offset: index * 128,
+            decompressed_offset: 0,
+            rows: Some(index + 1),
+        }).collect::<Vec<_>>();
+        let mut plain = Vec::new();
+        for mark in &expected {
+            plain.extend_from_slice(&mark.compressed_offset.to_le_bytes());
+            plain.extend_from_slice(&mark.decompressed_offset.to_le_bytes());
+            plain.extend_from_slice(&mark.rows.unwrap().to_le_bytes());
+        }
+        for chunk_width in [1, 3, 7, 23, 24, 25, 47, 64] {
+            let mut encoded = Vec::new();
+            for bytes in plain.chunks(chunk_width) {
+                encoded.extend_from_slice(&frame(bytes));
+            }
+            let reader = CompressedBlockReader::new(Cursor::new(encoded), "marks.cmrk2").unwrap();
+            let actual = read_compressed_wide_marks(reader, Path::new("marks.cmrk2"), WideMarkFormat::Adaptive).unwrap();
+            assert_eq!(actual, expected, "chunk width {chunk_width}");
         }
     }
 }
