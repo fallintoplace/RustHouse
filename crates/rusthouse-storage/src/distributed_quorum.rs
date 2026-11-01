@@ -1054,7 +1054,7 @@ pub fn zone_failure_quorum_curve(
     // borrowed zone names is cheaper than building a hash table.
     let mut zones = Vec::<(&str, usize)>::new();
     for member in members {
-        match zones.iter_mut().find(|(zone, _)| *zone == member.zone) {
+        match zones.iter_mut().find(|(zone, _)| *zone == member.zone.as_str()) {
             Some((_, count)) => *count += 1,
             None => zones.push((&member.zone, 1)),
         }
