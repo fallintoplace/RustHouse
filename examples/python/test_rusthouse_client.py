@@ -81,8 +81,8 @@ class ClientTests(unittest.TestCase):
         handlers = rusthouse_client.urlopen.__self__.handlers
         proxy_handlers = [handler for handler in handlers
                           if isinstance(handler, ProxyHandler)]
-        self.assertEqual(len(proxy_handlers), 1)
-        self.assertEqual(proxy_handlers[0].proxies, {})
+        # Empty ProxyHandler disables ambient proxies without installing a handler.
+        self.assertEqual(proxy_handlers, [])
 
     @patch("rusthouse_client.urlopen")
     def test_explain_is_bounded_like_json_queries(self, open_url):
