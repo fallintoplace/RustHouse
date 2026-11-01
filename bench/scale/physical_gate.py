@@ -17,6 +17,15 @@ from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
 QUERIES = ("count_even", "sum_even")
 
 
+def _finite_positive_timing(value):
+    if type(value) not in (int, float) or value <= 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
              max_p90_seconds=None, max_sample_spread_percent=None):
     if not isinstance(report, dict):
@@ -24,9 +33,7 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
     if type(min_rows) is not int or min_rows < 1:
         raise ValueError("min_rows must be a positive integer")
     for value in (max_median_seconds, max_p90_seconds):
-        if value is not None and (
-                type(value) not in (int, float)
-                or not math.isfinite(value) or value <= 0):
+        if value is not None and not _finite_positive_timing(value):
             raise ValueError("timing targets must be positive and finite")
     if max_sample_spread_percent is not None and (
             type(max_sample_spread_percent) not in (int, float)
@@ -51,15 +58,14 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
                 or result["expected"] != expected_value):
             raise ValueError(f"{query}: query or expected oracle mismatch")
         median, p90 = result.get("median_seconds"), result.get("p90_seconds")
-        if not all(type(t) in (float, int) and math.isfinite(t) and t > 0 for t in (median, p90)):
+        if not all(_finite_positive_timing(t) for t in (median, p90)):
             raise ValueError(f"{query}: invalid timings")
         if p90 < median:
             raise ValueError(f"{query}: p90 must not be below median")
         samples = result.get("samples_seconds")
         if samples is not None:
             if (not isinstance(samples, list) or not samples
-                    or any(type(t) not in (int, float) or not math.isfinite(t) or t <= 0
-                           for t in samples)):
+                    or any(not _finite_positive_timing(t) for t in samples)):
                 raise ValueError(f"{query}: invalid timing samples")
             if "runs" in report and (type(report["runs"]) is not int
                                      or len(samples) != report["runs"]):
@@ -68,7 +74,7 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
             ordered = sorted(samples)
             middle = len(ordered) // 2
             measured_median = (ordered[middle] if len(ordered) % 2
-                               else (ordered[middle - 1] + ordered[middle]) / 2)
+                               else ordered[middle - 1] + (ordered[middle] - ordered[middle - 1]) / 2)
             measured_p90 = ordered[math.ceil(0.9 * len(ordered)) - 1]
             if (not math.isclose(median, measured_median, rel_tol=1e-9, abs_tol=0.0)
                     or not math.isclose(p90, measured_p90, rel_tol=1e-9, abs_tol=0.0)):
