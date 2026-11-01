@@ -11,6 +11,47 @@ use std::path::Path;
 const MAX_INDEX_BYTES: usize = 256 * 1024 * 1024;
 const MAX_INDEX_FIELDS: usize = 4096;
 
+#[cfg(test)]
+mod compressed_primary_index_identity_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SERIAL: AtomicUsize = AtomicUsize::new(0);
+
+    fn temporary_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "rusthouse-primary-compressed-{}-{}.cidx",
+            std::process::id(), SERIAL.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compressed_primary_index_refuses_symlinked_source() {
+        use std::os::unix::fs::symlink;
+        let source = temporary_path();
+        let alias = source.with_extension("alias.cidx");
+        fs::write(&source, b"not a compressed index").unwrap();
+        symlink(&source, &alias).unwrap();
+        assert!(matches!(read_fixed_primary_index(&alias, &[8]),
+            Err(PartError::InvalidPrimaryIndex { .. })));
+        fs::remove_file(&alias).unwrap();
+        fs::remove_file(&source).unwrap();
+    }
+
+    #[test]
+    fn metadata_change_detector_rejects_changed_file_length() {
+        let path = temporary_path();
+        fs::write(&path, b"checkpoint_000000").unwrap();
+        let before = fs::metadata(&path).unwrap();
+        // A size change is always a detectable failure, even where a
+        // filesystem has coarse timestamp precision.
+        fs::write(&path, b"checkpoint_000000changed").unwrap();
+        let after = fs::metadata(&path).unwrap();
+        assert!(!raw_index_unchanged(&before, &after));
+        fs::remove_file(path).unwrap();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FixedPrimaryIndex {
     data: Vec<u8>,
@@ -205,19 +246,7 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
 }
 
 fn read_compressed(path: &Path) -> Result<Vec<u8>, PartError> {
-    // Validate the same immutable-file identity contract as raw .idx files.
-    // A verified compressed block alone cannot detect a clean, same-sized
-    // rewrite of the index between consecutive block reads.
-    let original = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
-    if !original.file_type().is_file() {
-        return Err(invalid(path, "primary index must be a regular file"));
-    }
-    let mut file = File::open(path).map_err(|source| io_error(path, source))?;
-    let opened = file.metadata().map_err(|source| io_error(path, source))?;
-    if !raw_index_unchanged(&original, &opened) {
-        return Err(invalid(path, "primary index changed before read"));
-    }
-    let mut blocks = CompressedBlockReader::new(&mut file, path)?;
+    let mut blocks = CompressedBlockReader::open(path)?;
     let mut data = Vec::new();
     let mut scratch = Vec::new();
     while let Some(block) = blocks.next_decoded_reusing(std::mem::take(&mut scratch)) {
@@ -227,14 +256,6 @@ fn read_compressed(path: &Path) -> Result<Vec<u8>, PartError> {
         }
         data.extend_from_slice(&block.data);
         scratch = block.data;
-    }
-    drop(blocks);
-    // Verify both the opened descriptor and the pathname after decoding, so
-    // an in-place edit or an atomic replacement invalidates the whole read.
-    let finished = file.metadata().map_err(|source| io_error(path, source))?;
-    let current = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
-    if !raw_index_unchanged(&opened, &finished) || !raw_index_unchanged(&opened, &current) {
-        return Err(invalid(path, "compressed primary index changed during read"));
     }
     Ok(data)
 }
@@ -784,46 +805,5 @@ mod recycled_primary_index_decoder_tests {
             );
         }
         fs::remove_file(&path).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod compressed_primary_index_identity_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static SERIAL: AtomicUsize = AtomicUsize::new(0);
-
-    fn temporary_path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "rusthouse-primary-compressed-{}-{}.cidx",
-            std::process::id(), SERIAL.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn compressed_primary_index_refuses_symlinked_source() {
-        use std::os::unix::fs::symlink;
-        let source = temporary_path();
-        let alias = source.with_extension("alias.cidx");
-        fs::write(&source, b"not a compressed index").unwrap();
-        symlink(&source, &alias).unwrap();
-        assert!(matches!(read_fixed_primary_index(&alias, &[8]),
-            Err(PartError::InvalidPrimaryIndex { .. })));
-        fs::remove_file(&alias).unwrap();
-        fs::remove_file(&source).unwrap();
-    }
-
-    #[test]
-    fn metadata_change_detector_rejects_changed_file_length() {
-        let path = temporary_path();
-        fs::write(&path, b"checkpoint_000000").unwrap();
-        let before = fs::metadata(&path).unwrap();
-        // A size change is always a detectable failure, even where a
-        // filesystem has coarse timestamp precision.
-        fs::write(&path, b"checkpoint_000000changed").unwrap();
-        let after = fs::metadata(&path).unwrap();
-        assert!(!raw_index_unchanged(&before, &after));
-        fs::remove_file(path).unwrap();
     }
 }
