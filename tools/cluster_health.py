@@ -76,6 +76,7 @@ def inspect(origin, timeout=5, min_healthy=None, expected_peers=None):
             or url.path not in ("", "/") or url.query or url.fragment
             or url.username or url.password):
         raise ValueError("only loopback HTTP origins are accepted")
+    unavailable = False
     try:
         with NO_REDIRECT_OPENER.open(origin.rstrip("/") + "/cluster/health", timeout=timeout) as response:
             raw = response.read(1_048_577)
@@ -83,6 +84,7 @@ def inspect(origin, timeout=5, min_healthy=None, expected_peers=None):
         try:
             if exc.code != 503:
                 raise
+            unavailable = True
             raw = exc.read(1_048_577)
         finally:
             exc.close()
@@ -90,7 +92,8 @@ def inspect(origin, timeout=5, min_healthy=None, expected_peers=None):
         raise ValueError("peer-health response too large")
     payload = json.loads(raw, object_pairs_hook=_unique_object_pairs,
                          parse_constant=_reject_nonfinite_json)
-    return validate(payload, min_healthy=min_healthy, expected_peers=expected_peers), payload
+    healthy = validate(payload, min_healthy=min_healthy, expected_peers=expected_peers)
+    return healthy and not unavailable, payload
 
 
 def main():
