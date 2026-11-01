@@ -21,6 +21,14 @@ class DbgenLoadTests(unittest.TestCase):
             self.assertEqual(calls, [])
 
 
+    def test_rejects_invalid_timeouts_before_inspecting_sources(self):
+        for timeout in (float("nan"), float("inf"), -1, 0, True, "120"):
+            with self.subTest(timeout=timeout):
+                with self.assertRaisesRegex(ValueError, "timeout"):
+                    load_tables("binary", "database", "/missing",
+                                ["region"], timeout=timeout)
+
+
     def test_import_selected_tables_and_verify_exact_counts(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root)

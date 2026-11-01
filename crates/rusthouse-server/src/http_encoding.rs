@@ -88,6 +88,11 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
         if bytes.len() <= 4094 {
             return write_plain_json_string::<4096, _>(writer, bytes);
         }
+        // Avoid three underlying writes for large unescaped values up to
+        // 8 KiB. Larger values keep the zero-copy streaming path.
+        if bytes.len() <= 8190 {
+            return write_plain_json_string::<8192, _>(writer, bytes);
+        }
         writer.write_all(b"\"")?;
         writer.write_all(bytes)?;
         return writer.write_all(b"\"");
@@ -285,5 +290,40 @@ mod sparse_json_escape_span_tests {
         let mut output = Vec::new();
         write_json_string(&mut output, &input).unwrap();
         assert_eq!(output, expected);
+    }
+}
+
+#[cfg(test)]
+mod larger_plain_json_write_tests {
+    use super::*;
+
+    struct CountingWriter {
+        calls: usize,
+        output: Vec<u8>,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, value: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.output.extend_from_slice(value);
+            Ok(value.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn large_plain_json_values_are_quoted_without_three_writes() {
+        for size in [4095, 5000, 8190, 8191, 20_000] {
+            let input = "é".repeat(size / 2) + if size % 2 == 0 { "" } else { "x" };
+            let mut counted = CountingWriter { calls: 0, output: Vec::new() };
+            write_json_string(&mut counted, &input).unwrap();
+            let mut expected = vec![b'"'];
+            expected.extend_from_slice(input.as_bytes());
+            expected.push(b'"');
+            assert_eq!(counted.output, expected);
+            assert_eq!(counted.calls, if size <= 8190 { 1 } else { 3 }, "{size}");
+        }
     }
 }

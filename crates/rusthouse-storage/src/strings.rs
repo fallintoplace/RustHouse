@@ -46,7 +46,9 @@ impl StringColumn {
         let mut column = Self::new(rows.len());
         column.data.reserve(total_bytes);
         for row in rows {
-            let end = checked_end(column.data.len(), row.len() as u64)?;
+            // The preceding checked sum validated every row and the total.
+            // No need to check the same byte bound again during flattening.
+            let end = column.data.len() + row.len();
             column.data.extend_from_slice(&row);
             column.offsets.push(end);
         }
@@ -650,5 +652,23 @@ mod buffered_varuint_bulk_tests {
         let mut reader = OneBuffer { remaining: &input, fills: 0 };
         assert!(matches!(read_varuint_buffered(&mut reader), Err(StringReadError::InvalidVarUInt)));
         assert!(reader.remaining.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod preflight_flattening_tests {
+    use super::*;
+
+    #[test]
+    fn prevalidated_rows_keep_exact_offsets_and_payloads() {
+        let rows = (0..8_192).map(|i| vec![b'x'; i % 11]).collect::<Vec<_>>();
+        let expected_bytes = rows.iter().map(Vec::len).sum::<usize>();
+        let column = StringColumn::from_rows(rows).unwrap();
+        assert_eq!(column.len(), 8_192);
+        assert_eq!(column.data.len(), expected_bytes);
+        assert_eq!(column.offsets.last(), Some(&expected_bytes));
+        for row in 0..8_192 {
+            assert_eq!(column.get(row).unwrap(), vec![b'x'; row % 11]);
+        }
     }
 }

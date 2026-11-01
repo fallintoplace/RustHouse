@@ -448,9 +448,34 @@ fn bounded_utf8_edit_distance(left: &str, right: &str) -> Result<i64, ParseError
     if left == right {
         return Ok(0);
     }
-    let left: Vec<char> = left.chars().collect();
-    let right: Vec<char> = right.chars().collect();
-    let (left, right) = trim_common_edges(&left, &right);
+    // Trim UTF-8 character boundaries before allocating char vectors.
+    // A tiny edit in long text should only materialize its changed region.
+    let mut left_start = 0;
+    let mut right_start = 0;
+    for ((left_index, left_char), (right_index, right_char)) in
+        left.char_indices().zip(right.char_indices())
+    {
+        if left_char != right_char {
+            break;
+        }
+        left_start = left_index + left_char.len_utf8();
+        right_start = right_index + right_char.len_utf8();
+    }
+    let left = &left[left_start..];
+    let right = &right[right_start..];
+    let mut left_end = left.len();
+    let mut right_end = right.len();
+    for ((left_index, left_char), (right_index, right_char)) in
+        left.char_indices().rev().zip(right.char_indices().rev())
+    {
+        if left_char != right_char {
+            break;
+        }
+        left_end = left_index;
+        right_end = right_index;
+    }
+    let left: Vec<char> = left[..left_end].chars().collect();
+    let right: Vec<char> = right[..right_end].chars().collect();
     if left.is_empty() {
         return Ok(right.len() as i64);
     }
@@ -847,10 +872,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         host_port
                             .split_once("]:")
                             .and_then(|(_, port)| port.parse::<u16>().ok())
-                    } else {
+                    } else if host_port.as_bytes().iter().filter(|&&byte| byte == b':').count() == 1 {
+                        // Bare IPv6 literals are not host:port authorities.
+                        // IPv6 URLs must use [address]:port to be unambiguous.
                         host_port
                             .rsplit_once(':')
                             .and_then(|(_, port)| port.parse::<u16>().ok())
+                    } else {
+                        None
                     };
                     ConstantValue::Integer(i64::from(number.unwrap_or(fallback)))
                 }
@@ -1557,7 +1586,12 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "LOWER requires one argument")?;
             match input {
                 Some(value) => {
-                    let result = value.to_ascii_lowercase();
+                    let mut result = value;
+                    if result.is_ascii() {
+                        result.make_ascii_lowercase();
+                    } else {
+                        result = result.to_lowercase();
+                    }
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("LOWER result is too large".into()));
                     }
@@ -1644,7 +1678,12 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "UPPER requires one argument")?;
             match input {
                 Some(value) => {
-                    let result = value.to_ascii_uppercase();
+                    let mut result = value;
+                    if result.is_ascii() {
+                        result.make_ascii_uppercase();
+                    } else {
+                        result = result.to_uppercase();
+                    }
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("UPPER result is too large".into()));
                     }
@@ -2534,14 +2573,15 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         Some(None) => return Ok(ConstantValue::Null),
                     };
-                    if name == "SUBSTRING" {
+                    if name == "SUBSTRING" && value.is_ascii() {
+                        // Keep the byte-slice fast path for ordinary ASCII text.
+                        // UTF-8 text uses character offsets to avoid slicing a
+                        // codepoint in half and incorrectly rejecting the query.
                         let end = start.saturating_add(count).min(value.len());
                         let result = if start >= value.len() {
                             ""
                         } else {
-                            value.get(start..end).ok_or_else(|| {
-                                ParseError("SUBSTRING byte boundaries must be UTF-8".into())
-                            })?
+                            &value[start..end]
                         };
                         ConstantValue::Text(result.to_owned())
                     } else {
@@ -3525,20 +3565,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("LEFT count must be nonnegative".into()));
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    if name == "LEFT" {
-                        let end = count.min(value.len());
-                        let result = value.get(..end).ok_or_else(|| {
-                            ParseError("LEFT byte boundary must be valid UTF-8".into())
-                        })?;
-                        ConstantValue::Text(result.to_owned())
-                    } else if count >= value.len() {
+                    if count >= value.len() {
                         ConstantValue::Text(value)
                     } else if value.as_bytes()[..count].is_ascii() {
                         let mut result = value;
                         result.truncate(count);
                         ConstantValue::Text(result)
                     } else {
-                        ConstantValue::Text(value.chars().take(count).collect())
+                        // Keep the owned SQL constant and trim at a UTF-8
+                        // boundary. Collecting characters allocates again.
+                        let mut result = value;
+                        let end = result.char_indices().nth(count)
+                            .map_or(result.len(), |(offset, _)| offset);
+                        result.truncate(end);
+                        ConstantValue::Text(result)
                     }
                 }
                 _ => ConstantValue::Null,
@@ -3797,13 +3837,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("RIGHT count must be nonnegative".into()));
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
-                    if name == "RIGHT" {
-                        let start = value.len().saturating_sub(count);
-                        let result = value.get(start..).ok_or_else(|| {
-                            ParseError("RIGHT byte boundary must be valid UTF-8".into())
-                        })?;
-                        ConstantValue::Text(result.to_owned())
-                    } else if count >= value.len() {
+                    if count >= value.len() {
                         ConstantValue::Text(value)
                     } else {
                         let start = value.len() - count;
@@ -3812,8 +3846,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.replace_range(..start, "");
                             ConstantValue::Text(result)
                         } else {
-                            let skip = value.chars().count().saturating_sub(count);
-                            ConstantValue::Text(value.chars().skip(skip).collect())
+                            // Count from the end for short suffixes. Avoid a
+                            // full code-point count and an output allocation.
+                            let start = value.char_indices().rev().nth(count - 1)
+                                .map_or(0, |(offset, _)| offset);
+                            let mut result = value;
+                            result.replace_range(..start, "");
+                            ConstantValue::Text(result)
                         }
                     }
                 }
@@ -5256,5 +5295,99 @@ mod common_affix_edit_distance_tests {
         let right = "y".repeat(2048);
         assert!(bounded_edit_distance(left.as_bytes(), right.as_bytes()).is_err());
         assert!(bounded_utf8_edit_distance(&left, &right).is_err());
+    }
+}
+
+#[cfg(test)]
+mod utf8_edit_distance_pretrim_tests {
+    use super::bounded_utf8_edit_distance;
+
+    #[test]
+    fn common_multibyte_edges_are_trimmed_without_changing_distance() {
+        for (left, right, expected) in [
+            ("🎉éabc界", "🎉éaxc界", 1),
+            ("🎉éabc界", "🎉éab界", 1),
+            ("🎉éabc界", "🎉éabcd界", 1),
+            ("🙂🙂", "🙂", 1),
+            ("é", "e", 1),
+            ("e\u{301}", "é", 2),
+            ("hello", "world", 4),
+        ] {
+            assert_eq!(bounded_utf8_edit_distance(left, right).unwrap(), expected);
+            assert_eq!(bounded_utf8_edit_distance(right, left).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn long_identical_edges_leave_only_small_edits_to_allocate() {
+        let prefix = "🎉".repeat(100_000);
+        let suffix = "界".repeat(100_000);
+        let left = format!("{prefix}a{suffix}");
+        let right = format!("{prefix}b{suffix}");
+        assert_eq!(bounded_utf8_edit_distance(&left, &right).unwrap(), 1);
+    }
+}
+
+#[cfg(test)]
+mod port_ipv6_authority_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn port_requires_brackets_for_ipv6_authorities() {
+        for (sql, expected) in [
+            ("SELECT port('http://2001:db8::80/')", 0),
+            ("SELECT port('http://2001:db8::80/', 1234)", 1234),
+            ("SELECT port('http://[2001:db8::1]:8123/path')", 8123),
+            ("SELECT port('http://[2001:db8::1]/path', 2345)", 2345),
+            ("SELECT port('http://example.com:8123/path')", 8123),
+            ("SELECT port('example.com:80:90', 1234)", 1234),
+            ("SELECT port('http://user:pass@example.com:443/')", 443),
+            ("SELECT port('http://[::1]:0/')", 0),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod utf8_prefix_suffix_inplace_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    fn text(sql: &str) -> String {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => {
+                let ConstantValue::Text(value) = &columns[0].value else {
+                    panic!("expected text")
+                };
+                value.clone()
+            }
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn left_utf8_counts_codepoints_not_bytes() {
+        for (count, expected) in [(0, ""), (1, "é"), (2, "é🙂"), (3, "é🙂Z"), (9, "é🙂Z")] {
+            let sql = format!("SELECT leftUTF8('é🙂Z', {count})");
+            assert_eq!(text(&sql), expected);
+        }
+    }
+
+    #[test]
+    fn right_utf8_scans_only_the_suffix_and_preserves_unicode() {
+        for (count, expected) in [(0, ""), (1, "Z"), (2, "🙂Z"), (3, "é🙂Z"), (4, "aé🙂Z"), (9, "aé🙂Z")] {
+            let sql = format!("SELECT rightUTF8('aé🙂Z', {count})");
+            assert_eq!(text(&sql), expected);
+        }
+        let input = format!("{}🙂Z", "a".repeat(10_000));
+        assert_eq!(text(&format!("SELECT rightUTF8('{input}', 2)")), "🙂Z");
     }
 }

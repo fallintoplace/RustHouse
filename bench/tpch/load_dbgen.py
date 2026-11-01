@@ -6,6 +6,7 @@ non-transactional across tables, so a failed import must use a fresh database.
 """
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -55,8 +56,9 @@ def load_tables(binary, database, input_dir, selected=None, timeout=3600, execut
         raise ValueError("tables must be a nonempty unique selection")
     if any(table not in TABLES for table in selected):
         raise ValueError("unknown table in import selection")
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
+    if (type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
+        raise ValueError("timeout must be finite and positive")
     sources = {}
     for table in selected:
         raw_source = Path(input_dir) / (table + ".tsv")

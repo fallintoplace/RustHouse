@@ -28,6 +28,9 @@ fn scan<W: Write>(
     let width = left_names.len();
     let mut reader = TypedQueryReader::open(left_path, left_names)?;
     let mut key = Vec::with_capacity(left_keys.len());
+    // Cache each distinct left projection separately across all dimension
+    // matches for this fact row. One shared Cell corrupts multi-column output.
+    let mut left_cells = vec![None; width];
     let mut matched = 0u64;
     let mut written = 0usize;
     let max_matches = match limit {
@@ -56,6 +59,9 @@ fn scan<W: Write>(
             let Some(matches) = hash.get(key.as_slice()) else {
                 continue;
             };
+            if emit {
+                left_cells.fill(None);
+            }
             for &right_index in matches.iter().take(if any { 1 } else { usize::MAX }) {
                 // Dimension predicates must stay after ANY match selection.
                 // Filtering build rows first would change first-match semantics.
@@ -83,9 +89,10 @@ fn scan<W: Write>(
                         if position > 0 {
                             output.write_all(b"\t")?;
                         }
-                        let mut left_cell = None;
                         let value: &typed::Cell = if *index < width {
-                            left_cell.get_or_insert_with(|| typed::cell(&batch[*index], row_index))
+                            left_cells[*index].get_or_insert_with(|| {
+                                typed::cell(&batch[*index], row_index)
+                            })
                         } else {
                             &right_rows[right_index][*index - width]
                         };
