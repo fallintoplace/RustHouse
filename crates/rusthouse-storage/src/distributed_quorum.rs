@@ -333,34 +333,49 @@ pub fn observe_joint_quorum(
         // Large retry batches often repeat the same acknowledgement. Resolve
         // a replica ID to its old/new bit positions only once, while sharing
         // nodes count as one vote in each membership configuration.
-        let mut positions = HashMap::<&str, (u16, u16)>::with_capacity(
-            previous_members.len() + next_members.len(),
-        );
+        // A policy has at most sixteen members on each side. Build the
+        // combined old/new ID index on the stack, then binary-search up to
+        // 256 acknowledgements without allocating a hash table.
+        let mut entries = [("", 0u16, 0u16); 32];
+        let mut len = 0usize;
         for (index, &member) in previous_members.iter().enumerate() {
             if !valid_member(member) {
                 return Err("invalid or duplicate quorum member");
             }
-            let entry = positions.entry(member).or_default();
-            if entry.0 != 0 {
-                return Err("invalid or duplicate quorum member");
-            }
-            entry.0 = 1u16 << index;
+            entries[len] = (member, 1u16 << index, 0);
+            len += 1;
         }
         for (index, &member) in next_members.iter().enumerate() {
             if !valid_member(member) {
                 return Err("invalid or duplicate quorum member");
             }
-            let entry = positions.entry(member).or_default();
-            if entry.1 != 0 {
-                return Err("invalid or duplicate quorum member");
-            }
-            entry.1 = 1u16 << index;
+            entries[len] = (member, 0, 1u16 << index);
+            len += 1;
         }
+        entries[..len].sort_unstable_by(|left, right| left.0.cmp(right.0));
+        let mut index = [("", 0u16, 0u16); 32];
+        let mut unique = 0usize;
+        for (member, old, new) in entries[..len].iter().copied() {
+            if unique > 0 && index[unique - 1].0 == member {
+                let previous = &mut index[unique - 1];
+                // Duplicates across configurations are legal; duplicates
+                // within the same configuration must still be rejected.
+                if (old != 0 && previous.1 != 0) || (new != 0 && previous.2 != 0) {
+                    return Err("invalid or duplicate quorum member");
+                }
+                previous.1 |= old;
+                previous.2 |= new;
+            } else {
+                index[unique] = (member, old, new);
+                unique += 1;
+            }
+        }
+        let sorted = &index[..unique];
         for &member in acknowledgements {
-            let &(old, new) = positions.get(member)
-                .ok_or("acknowledgement from unknown replica")?;
-            previous_mask |= old;
-            next_mask |= new;
+            let position = sorted.binary_search_by(|entry| entry.0.cmp(member))
+                .map_err(|_| "acknowledgement from unknown replica")?;
+            previous_mask |= sorted[position].1;
+            next_mask |= sorted[position].2;
         }
     } else {
         // Small batches avoid a temporary map entirely.
@@ -565,5 +580,46 @@ mod stack_quorum_index_tests {
             duplicates[replicas - 1] = duplicates[0];
             assert!(policy.observe(&duplicates, &members).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod stack_joint_quorum_index_tests {
+    use super::*;
+
+    #[test]
+    fn many_repeated_votes_match_independent_old_and_new_observations() {
+        let previous = QuorumPolicy::new(16, 8, 9).unwrap();
+        let next = QuorumPolicy::new(16, 8, 9).unwrap();
+        let old = (0..16).map(|i| format!("old{i}")).collect::<Vec<_>>();
+        let new = (8..24).map(|i| format!("old{i}")).collect::<Vec<_>>();
+        let old_names = old.iter().map(String::as_str).collect::<Vec<_>>();
+        let new_names = new.iter().map(String::as_str).collect::<Vec<_>>();
+        let votes = (0..240).map(|i| {
+            if i % 2 == 0 { old_names[(i / 2) % 16] }
+            else { new_names[(i / 2) % 16] }
+        }).collect::<Vec<_>>();
+        let observed = observe_joint_quorum(previous, &old_names, next, &new_names, &votes).unwrap();
+        let old_votes = votes.iter().copied()
+            .filter(|v| old_names.contains(v)).collect::<Vec<_>>();
+        let new_votes = votes.iter().copied()
+            .filter(|v| new_names.contains(v)).collect::<Vec<_>>();
+        assert_eq!(observed.previous, previous.observe(&old_names, &old_votes).unwrap());
+        assert_eq!(observed.next, next.observe(&new_names, &new_votes).unwrap());
+        assert!(observed.can_write);
+        assert!(observed.can_read);
+    }
+
+    #[test]
+    fn indexed_validation_rejects_duplicate_members_and_unknown_votes() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let votes = vec!["a"; 33];
+        assert!(observe_joint_quorum(
+            policy, &["a", "a", "b"], policy, &["a", "b", "c"], &votes,
+        ).is_err());
+        assert!(observe_joint_quorum(
+            policy, &["a", "b", "c"], policy, &["a", "b", "c"],
+            &vec!["unknown"; 33],
+        ).is_err());
     }
 }
