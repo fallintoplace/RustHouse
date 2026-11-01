@@ -58,7 +58,7 @@ class PartDensityTests(unittest.TestCase):
             part = Path(root) / "all_1_1_0"
             part.mkdir()
             for payload in ("١٢\n", "10\n\n", " 10\n", "01\n"):
-                (part / "count.txt").write_text(payload)
+                (part / "count.txt").write_bytes(payload.encode("utf-8"))
                 with self.assertRaisesRegex(ValueError, "invalid"):
                     part_density(root)
             (part / "count.txt").write_text(f"{2**64 - 1}\n")

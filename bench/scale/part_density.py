@@ -42,10 +42,8 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536,
         with os.fdopen(fd, "rb") as source:
             opened = os.fstat(source.fileno())
             if (not stat.S_ISREG(opened.st_mode) or
-                    (before.st_dev, before.st_ino, before.st_size,
-                     before.st_mtime_ns, before.st_ctime_ns) !=
-                    (opened.st_dev, opened.st_ino, opened.st_size,
-                     opened.st_mtime_ns, opened.st_ctime_ns)):
+                    (before.st_dev, before.st_ino) !=
+                    (opened.st_dev, opened.st_ino)):
                 raise ValueError(f"count.txt changed while opening: {child.name}")
             payload = source.read(23)
             finished = os.fstat(source.fileno())
@@ -62,7 +60,10 @@ def part_density(root, *, small_part_rows=8192, target_part_rows=65536,
             raise ValueError(f"count.txt changed during read: {child.name}")
         if len(payload) > 22:
             raise ValueError(f"invalid oversized count.txt in {child.name}")
-        raw = payload.decode("ascii")
+        try:
+            raw = payload.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise ValueError(f"invalid non-ASCII count.txt in {child.name}") from error
         digits = raw.removesuffix("\n").removesuffix("\r")
         if (not digits or not digits.isascii() or not digits.isdecimal()
                 or (len(digits) > 1 and digits.startswith("0"))):
