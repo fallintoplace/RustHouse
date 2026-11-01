@@ -47,6 +47,21 @@ def validate_select(sql):
         raise ValueError("resource profiler requires one read-only SELECT")
 
 
+
+def _budget_bytes(value, name):
+    if value is None:
+        return None
+    if type(value) not in (int, float) or value <= 0:
+        raise ValueError(f"{name} budget must be positive and finite")
+    try:
+        size = value * 1024 * 1024
+        if not math.isfinite(size):
+            raise ValueError(f"{name} budget must be positive and finite")
+    except OverflowError as error:
+        raise ValueError(f"{name} budget must be positive and finite") from error
+    return size
+
+
 def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
             max_read_mib=None):
     if sys.platform != "linux":
@@ -55,17 +70,9 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25,
             or timeout <= 0 or type(sample_ms) is not int
             or not 1 <= sample_ms <= 1000):
         raise ValueError("invalid timeout or sample interval")
-    if max_rss_mib is not None and (
-            type(max_rss_mib) not in (int, float)
-            or not math.isfinite(max_rss_mib) or max_rss_mib <= 0):
-        raise ValueError("max RSS budget must be positive")
-    if max_read_mib is not None and (
-            type(max_read_mib) not in (int, float)
-            or not math.isfinite(max_read_mib) or max_read_mib <= 0):
-        raise ValueError("max physical read budget must be positive and finite")
+    rss_budget_bytes = _budget_bytes(max_rss_mib, "max RSS")
+    read_budget_bytes = _budget_bytes(max_read_mib, "max physical read")
     validate_select(sql)
-    rss_budget_bytes = None if max_rss_mib is None else max_rss_mib * 1024 * 1024
-    read_budget_bytes = None if max_read_mib is None else max_read_mib * 1024 * 1024
     started = time.perf_counter()
     stderr_file = tempfile.TemporaryFile(mode="w+b")
     try:
