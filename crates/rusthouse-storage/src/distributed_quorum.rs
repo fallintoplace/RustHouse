@@ -567,3 +567,160 @@ mod stack_quorum_index_tests {
         }
     }
 }
+
+
+/// Pick the smallest set of additional replica acknowledgements that would
+/// satisfy *both* write quorums during joint membership reconfiguration.
+///
+/// This is a planning helper, not a lease, acknowledgement, or consensus
+/// operation. Ties choose the lexicographically earliest set of replica IDs.
+/// A shared replica can satisfy one vote in each membership with one request.
+pub fn plan_joint_write_acknowledgements(
+    previous: QuorumPolicy,
+    previous_members: &[&str],
+    next: QuorumPolicy,
+    next_members: &[&str],
+    acknowledgements: &[&str],
+) -> Result<Vec<String>, &'static str> {
+    let observed = observe_joint_quorum(
+        previous, previous_members, next, next_members, acknowledgements,
+    )?;
+    let previous_missing = previous.writes.saturating_sub(observed.previous.distinct_acks);
+    let next_missing = next.writes.saturating_sub(observed.next.distinct_acks);
+    if previous_missing == 0 && next_missing == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut candidates = previous_members
+        .iter()
+        .chain(next_members)
+        .copied()
+        .filter(|member| !acknowledgements.contains(member))
+        .collect::<Vec<_>>();
+    candidates.sort_unstable();
+    candidates.dedup();
+    // Policies permit at most 16 members on either side. A 32-bit mask
+    // represents the complete candidate set without heap-backed DP paths.
+    debug_assert!(candidates.len() <= 32);
+    let width = next_missing + 1;
+    let mut best = vec![None::<u32>; (previous_missing + 1) * width];
+    best[0] = Some(0);
+    for (index, candidate) in candidates.iter().enumerate() {
+        let in_previous = usize::from(previous_members.contains(candidate));
+        let in_next = usize::from(next_members.contains(candidate));
+        for old in (0..=previous_missing).rev() {
+            for new in (0..=next_missing).rev() {
+                let Some(mask) = best[old * width + new] else {
+                    continue;
+                };
+                let updated_old = (old + in_previous).min(previous_missing);
+                let updated_new = (new + in_next).min(next_missing);
+                if updated_old == old && updated_new == new {
+                    continue;
+                }
+                let updated_mask = mask | (1u32 << index);
+                let slot = &mut best[updated_old * width + updated_new];
+                let replace = match *slot {
+                    None => true,
+                    Some(existing) if updated_mask.count_ones() < existing.count_ones() => true,
+                    Some(existing) if updated_mask.count_ones() == existing.count_ones() => {
+                        // Candidates are sorted. The set containing the first
+                        // differing candidate is the lexicographically first.
+                        let difference = updated_mask ^ existing;
+                        difference != 0 && updated_mask & (1u32 << difference.trailing_zeros()) != 0
+                    }
+                    _ => false,
+                };
+                if replace {
+                    *slot = Some(updated_mask);
+                }
+            }
+        }
+    }
+    let selected = best[previous_missing * width + next_missing]
+        .ok_or("joint write quorum cannot be reached")?;
+    Ok(candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &candidate)| {
+            (selected & (1u32 << index) != 0).then(|| candidate.to_owned())
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod optimal_joint_write_ack_tests {
+    use super::*;
+
+    #[test]
+    fn shared_replica_reaches_both_quorums_with_one_new_vote() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let old = ["a", "b", "c"];
+        let new = ["b", "c", "d"];
+        assert_eq!(
+            plan_joint_write_acknowledgements(policy, &old, policy, &new, &["a", "d"])
+                .unwrap(),
+            vec!["b"],
+        );
+        assert_eq!(
+            plan_joint_write_acknowledgements(policy, &old, policy, &new, &["b"])
+                .unwrap(),
+            vec!["c"],
+        );
+        assert!(plan_joint_write_acknowledgements(
+            policy, &old, policy, &new, &["a", "b", "c", "d"],
+        ).unwrap().is_empty());
+    }
+
+    #[test]
+    fn exhaustive_small_configurations_match_brute_force_minimum_and_ties() {
+        let names = ["a", "b", "c", "d"];
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        for old in [["a", "b", "c"], ["a", "b", "d"], ["b", "c", "d"]] {
+            for new in [["a", "b", "c"], ["a", "c", "d"], ["b", "c", "d"]] {
+                for acknowledged_mask in 0u32..16 {
+                    let acknowledged = names.iter().enumerate().filter_map(|(i, &name)| {
+                        (acknowledged_mask & (1 << i) != 0).then_some(name)
+                    }).collect::<Vec<_>>();
+                    let selected = plan_joint_write_acknowledgements(
+                        policy, &old, policy, &new, &acknowledged,
+                    ).unwrap();
+                    let mut expected: Option<Vec<&str>> = None;
+                    for subset in 0u32..16 {
+                        if subset & acknowledged_mask != 0 {
+                            continue;
+                        }
+                        let extra = names.iter().enumerate().filter_map(|(i, &name)| {
+                            (subset & (1 << i) != 0).then_some(name)
+                        }).collect::<Vec<_>>();
+                        let mut votes = acknowledged.clone();
+                        votes.extend(&extra);
+                        if !observe_joint_quorum(policy, &old, policy, &new, &votes)
+                            .unwrap().can_write {
+                            continue;
+                        }
+                        if expected.as_ref().is_none_or(|best| {
+                            extra.len() < best.len()
+                                || (extra.len() == best.len() && extra < *best)
+                        }) {
+                            expected = Some(extra);
+                        }
+                    }
+                    assert_eq!(selected, expected.unwrap().iter()
+                        .map(|name| (*name).to_owned()).collect::<Vec<_>>());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_configurations_and_unknown_acknowledgements_fail_closed() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        assert!(plan_joint_write_acknowledgements(
+            policy, &["a", "a", "c"], policy, &["b", "c", "d"], &[],
+        ).is_err());
+        assert!(plan_joint_write_acknowledgements(
+            policy, &["a", "b", "c"], policy, &["b", "c", "d"], &["x"],
+        ).is_err());
+    }
+}
