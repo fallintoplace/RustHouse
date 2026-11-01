@@ -8,6 +8,8 @@ import json
 import os
 import re
 import stat
+
+from bench.common import file_change_time_ns
 from pathlib import Path
 
 
@@ -63,12 +65,12 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
                 for block in iter(lambda: stream.read(block_size), b""):
                     digest.update(block)
                 finished = os.fstat(stream.fileno())
-                if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
-                        finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
+                if (opened.st_size, opened.st_mtime_ns, file_change_time_ns(opened)) != (
+                        finished.st_size, finished.st_mtime_ns, file_change_time_ns(finished)):
                     raise ValueError(f"snapshot file changed during hashing: {path}")
             after = path.lstat()
-            if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, file_change_time_ns(before))
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, file_change_time_ns(after))):
                 raise ValueError(f"snapshot file changed while hashing: {path}")
             rel = path.relative_to(root).as_posix()
             aggregate.update(rel.encode("utf-8"))
