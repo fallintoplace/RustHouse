@@ -134,6 +134,24 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
             "timing_scope": "fresh CLI query process; OS cache may be warm"}
 
 
+def verify_query_stability(binary, part, sql, *, repetitions=3, **kwargs):
+    """Detect result drift across independent SQL processes without buffering rows."""
+    if type(repetitions) is not int or not 2 <= repetitions <= 16:
+        raise ValueError("repetitions must be in 2..16")
+    baseline = query_digest(binary, part, sql, **kwargs)
+    timings = [baseline["seconds"]]
+    for attempt in range(2, repetitions + 1):
+        current = query_digest(binary, part, sql, **kwargs)
+        timings.append(current["seconds"])
+        if (current["sha256"] != baseline["sha256"]
+                or current["bytes"] != baseline["bytes"]):
+            raise ValueError(f"SQL output changed on stability repetition {attempt}")
+    return {**baseline, "stability_repetitions": repetitions,
+            "output_stability_verified": True,
+            "total_seconds": sum(timings),
+            "minimum_seconds": min(timings), "maximum_seconds": max(timings)}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -141,16 +159,22 @@ def main(argv=None):
     parser.add_argument("--sql", required=True)
     parser.add_argument("--expected-sha256")
     parser.add_argument("--expected-bytes", type=int)
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="Verify identical output over 2..16 independent SQL runs")
     parser.add_argument("--max-rows", type=int, default=10000)
     parser.add_argument("--max-output-bytes", type=int, default=100_000_000)
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = query_digest(args.binary, args.part, args.sql,
-                              expected_sha256=args.expected_sha256, expected_bytes=args.expected_bytes,
-                              max_rows=args.max_rows, max_output_bytes=args.max_output_bytes,
-                              timeout=args.timeout)
+        operation = query_digest if args.repeat == 1 else verify_query_stability
+        options = ({} if args.repeat == 1 else {"repetitions": args.repeat})
+        report = operation(args.binary, args.part, args.sql, **options,
+                           expected_sha256=args.expected_sha256,
+                           expected_bytes=args.expected_bytes,
+                           max_rows=args.max_rows,
+                           max_output_bytes=args.max_output_bytes,
+                           timeout=args.timeout)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
