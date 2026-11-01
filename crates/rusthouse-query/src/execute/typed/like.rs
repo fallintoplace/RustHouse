@@ -123,7 +123,7 @@ fn match_percent_segments(value: &str, pattern: &PercentSegments) -> bool {
     let mut end = pattern.literals.len();
     if !pattern.prefix_wildcard {
         let Some(prefix) = pattern.literals.first() else { return true; };
-        if !value.starts_with(prefix) {
+        if !value.starts_with(prefix.as_str()) {
             return false;
         }
         offset = prefix.len();
@@ -133,13 +133,13 @@ fn match_percent_segments(value: &str, pattern: &PercentSegments) -> bool {
         end = end.saturating_sub(1);
     }
     for segment in &pattern.literals[first..end] {
-        let Some(found) = value[offset..].find(segment) else { return false; };
+        let Some(found) = value[offset..].find(segment.as_str()) else { return false; };
         offset += found + segment.len();
     }
     if !pattern.suffix_wildcard {
         // The final literal must appear *after* every previously consumed
         // segment. Anchoring cannot reuse bytes from a prior segment.
-        pattern.literals.last().is_some_and(|last| value[offset..].ends_with(last))
+        pattern.literals.last().is_some_and(|last| value[offset..].ends_with(last.as_str()))
     } else {
         true
     }
