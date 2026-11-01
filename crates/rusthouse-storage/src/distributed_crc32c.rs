@@ -87,14 +87,21 @@ pub fn crc32c_parallel(bytes: &[u8]) -> u32 {
     }
     let chunk_size = bytes.len().div_ceil(workers);
     std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(workers);
+        let mut jobs = Vec::with_capacity(workers);
         for chunk in bytes.chunks(chunk_size) {
-            handles.push((chunk.len() as u64, scope.spawn(move || crc32c(chunk))));
+            // Thread creation can fail under process or container limits.
+            // Retain the borrowed chunk so the failed job can run inline.
+            let handle = std::thread::Builder::new()
+                .spawn_scoped(scope, move || crc32c(chunk));
+            jobs.push((chunk, handle));
         }
         let mut combined = crc32c(b"");
-        for (len, handle) in handles {
-            let checksum = handle.join().expect("CRC32C worker is infallible");
-            combined = crc32c_combine(combined, checksum, len);
+        for (chunk, handle) in jobs {
+            let checksum = match handle {
+                Ok(handle) => handle.join().expect("CRC32C worker is infallible"),
+                Err(_) => crc32c(chunk),
+            };
+            combined = crc32c_combine(combined, checksum, chunk.len() as u64);
         }
         combined
     })
