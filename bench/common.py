@@ -30,21 +30,10 @@ def _leading_sql_keyword(statement):
                 return ""
             remainder = remainder[end + 1:].lstrip()
         elif remainder.startswith("/*"):
-            # RustHouse SQL allows nested /* ... */ comments. Do not
-            # mistake the inner closer for the end of the leading comment.
-            depth, cursor = 1, 2
-            while depth and cursor < len(remainder):
-                if remainder.startswith("/*", cursor):
-                    depth += 1
-                    cursor += 2
-                elif remainder.startswith("*/", cursor):
-                    depth -= 1
-                    cursor += 2
-                else:
-                    cursor += 1
-            if depth:
+            end = remainder.find("*/", 2)
+            if end < 0:
                 return ""
-            remainder = remainder[cursor:].lstrip()
+            remainder = remainder[end + 2:].lstrip()
         else:
             break
     return remainder.split(maxsplit=1)[0].upper() if remainder else ""
