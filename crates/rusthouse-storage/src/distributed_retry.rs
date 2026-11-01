@@ -294,18 +294,39 @@ pub fn plan_replica_retry_timeline(
     }
     // Validate even when the deadline or requested attempt count is zero.
     retry_delay(0, base_ms, max_ms, 0)?;
+    // A retry fan-out has at most 64 nodes. Validate all identifiers before
+    // allocating an event heap. Larger fan-outs deduplicate borrowed names
+    // using a stack sort instead of O(N^2) repeated string comparisons.
+    let mut names = [""; 64];
     for (index, &(node, _)) in node_seeds.iter().enumerate() {
         if node.is_empty()
             || node.len() > 64
             || !node
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            || node_seeds[..index]
+        {
+            return Err("invalid or duplicate replica retry node");
+        }
+        if node_seeds.len() <= 8
+            && node_seeds[..index]
                 .iter()
                 .any(|&(previous, _)| previous == node)
         {
             return Err("invalid or duplicate replica retry node");
         }
+        names[index] = node;
+    }
+    if node_seeds.len() > 8 {
+        let ordered = &mut names[..node_seeds.len()];
+        ordered.sort_unstable();
+        if ordered.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err("invalid or duplicate replica retry node");
+        }
+    }
+    // Empty or impossible retry timelines still reject invalid membership
+    // and backoff limits above, without allocating any scheduling state.
+    if attempts_per_node == 0 || deadline < Duration::from_millis(base_ms.div_ceil(2)) {
+        return Ok(Vec::new());
     }
 
     // Every node's cumulative retry delays increase strictly. Merge these
@@ -502,5 +523,50 @@ mod resumed_replica_retry_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod stack_retry_validation_tests {
+    use super::*;
+
+    #[test]
+    fn maximum_fanout_preserves_sorted_retry_timeline_and_duplicate_rejection() {
+        let names = (0..64)
+            .map(|index| format!("replica_{index:02}"))
+            .collect::<Vec<_>>();
+        let members = names
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.as_str(), index as u64 + 7))
+            .collect::<Vec<_>>();
+        let schedule =
+            plan_replica_retry_timeline(&members, 3, 10, 100, Duration::from_secs(1)).unwrap();
+        assert_eq!(schedule.len(), 64 * 3);
+        assert!(schedule.windows(2).all(|pair| {
+            pair[0].due_after < pair[1].due_after
+                || (pair[0].due_after == pair[1].due_after
+                    && pair[0].node <= pair[1].node)
+        }));
+        let mut duplicate = members.clone();
+        duplicate[63].0 = duplicate[0].0;
+        assert!(plan_replica_retry_timeline(
+            &duplicate, 0, 10, 100, Duration::ZERO
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn too_short_deadlines_skip_heap_work_but_still_validate_inputs() {
+        let members = [("one", 1), ("two", 2)];
+        assert!(plan_replica_retry_timeline(
+            &members, 33, 100, 1000, Duration::from_millis(49)
+        ).unwrap().is_empty());
+        assert!(plan_replica_retry_timeline(
+            &members, 0, 0, 1000, Duration::ZERO
+        ).is_err());
+        assert!(plan_replica_retry_timeline(
+            &[("bad/name", 1)], 0, 100, 1000, Duration::ZERO
+        ).is_err());
     }
 }
