@@ -121,6 +121,95 @@ fn small_scattered_disjoint(ranges: &[(u64, usize)]) -> bool {
         })
 }
 
+/// Read a batch of immutable object ranges into caller-owned buffers.
+///
+/// All requests are validated before the first destination is modified.
+/// No per-range Vec is allocated, and one verified file handle is retained
+/// across every positioned read. On an I/O or identity error, destinations
+/// may be partially modified and must not be used.
+pub fn read_object_ranges_into(
+    path: &Path,
+    ranges: &mut [(u64, &mut [u8])],
+    max_total_bytes: usize,
+) -> io::Result<()> {
+    if ranges.len() > MAX_RANGES {
+        return Err(io::Error::other("too many object ranges"));
+    }
+    let mut total = 0usize;
+    for (_, destination) in ranges.iter() {
+        total = total
+            .checked_add(destination.len())
+            .ok_or_else(|| io::Error::other("object range size overflow"))?;
+        if total > max_total_bytes || total > ABSOLUTE_MAX_RANGE {
+            return Err(io::Error::other("object ranges exceed byte limit"));
+        }
+    }
+    let (mut file, baseline) = open_verified_object(path)?;
+    for (offset, destination) in ranges.iter() {
+        validate_range(*offset, destination.len(), baseline.len())?;
+    }
+    for (offset, destination) in ranges.iter_mut() {
+        read_at_into(&mut file, *offset, destination)?;
+    }
+    verify_object_after_read(path, &file, &baseline)
+}
+
+#[cfg(test)]
+mod direct_batched_range_buffers_tests {
+    use super::*;
+
+    #[test]
+    fn unordered_and_overlapping_ranges_fill_exact_caller_buffers() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-batch-range-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let contents = (0..=255u8).collect::<Vec<_>>();
+        fs::write(&path, &contents).unwrap();
+        let mut first = [0u8; 17];
+        let mut second = [0u8; 7];
+        let mut overlap = [0u8; 10];
+        let mut empty = [];
+        let mut ranges = [
+            (100u64, first.as_mut_slice()),
+            (3, second.as_mut_slice()),
+            (105, overlap.as_mut_slice()),
+            (256, empty.as_mut_slice()),
+        ];
+        read_object_ranges_into(&path, &mut ranges, 34).unwrap();
+        assert_eq!(first, contents[100..117]);
+        assert_eq!(second, contents[3..10]);
+        assert_eq!(overlap, contents[105..115]);
+
+        let mut unchanged = [0xcc; 8];
+        let mut ok = [0xaa; 2];
+        let mut invalid = [
+            (0, ok.as_mut_slice()),
+            (252, unchanged.as_mut_slice()),
+        ];
+        assert!(read_object_ranges_into(&path, &mut invalid, 10).is_err());
+        assert_eq!(ok, [0xaa; 2]);
+        assert_eq!(unchanged, [0xcc; 8]);
+        assert!(read_object_ranges_into(&path, &mut invalid, 9).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn zero_ranges_keep_identity_validation_and_size_limits() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-batch-empty-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::write(&path, [1u8, 2, 3]).unwrap();
+        let mut requests: [(u64, &mut [u8]); 0] = [];
+        read_object_ranges_into(&path, &mut requests, 0).unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(read_object_ranges_into(&path, &mut requests, 0).is_err());
+    }
+}
+
 /// Read an exact byte range from a frozen regular file, rejecting short reads.
 pub fn read_object_range(
     path: &Path,
