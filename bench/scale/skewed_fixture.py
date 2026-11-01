@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 
-def emit(stream, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
+def _validate_controls(rows, groups, hot_percent, batch_rows):
     if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive UInt64")
     if (type(groups) is not int or type(hot_percent) is not int
@@ -16,16 +16,27 @@ def emit(stream, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
         raise ValueError("invalid groups or hot_percent")
     if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("invalid batch_rows")
+
+def emit(stream, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
+    _validate_controls(rows, groups, hot_percent, batch_rows)
+    # Count only cold rows. Hashing the absolute index aliases most cold
+    # groups when the 100-row hot/cold period shares factors with groups.
+    cold_row = 0
     for start in range(0, rows, batch_rows):
         lines = []
         for index in range(start, min(rows, start + batch_rows)):
-            key = 0 if index % 100 < hot_percent else 1 + (index % groups)
+            if index % 100 < hot_percent:
+                key = 0
+            else:
+                key = 1 + cold_row % groups
+                cold_row += 1
             lines.append(f"{index}\t{key}\n")
         stream.write("".join(lines))
 
 
 def generate(output, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
     output = Path(output)
+    _validate_controls(rows, groups, hot_percent, batch_rows)
     if output.exists() or output.is_symlink():
         raise FileExistsError("refusing to overwrite fixture")
     output.parent.mkdir(parents=True, exist_ok=True)

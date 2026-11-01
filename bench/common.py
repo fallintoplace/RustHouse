@@ -11,13 +11,32 @@ from pathlib import Path
 MAX_SQL_STDOUT_BYTES = 64 * 1024 * 1024
 
 
+def _leading_sql_keyword(statement):
+    """Identify SELECT after leading comments without changing the SQL text."""
+    remainder = statement.lstrip()
+    while remainder:
+        if remainder.startswith(("--", "#")):
+            end = remainder.find("\n")
+            if end < 0:
+                return ""
+            remainder = remainder[end + 1:].lstrip()
+        elif remainder.startswith("/*"):
+            end = remainder.find("*/", 2)
+            if end < 0:
+                return ""
+            remainder = remainder[end + 2:].lstrip()
+        else:
+            break
+    return remainder.split(maxsplit=1)[0].upper() if remainder else ""
+
+
 def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-header"):
     """Execute SQL via the CLI and return exact output bytes for verification."""
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     # --format is a SELECT-only option. DDL, COPY, and INSERT reject it.
     command = [str(binary), "sql", statement, "--database", str(database)]
-    keyword = statement.split(maxsplit=1)[0].upper() if statement.strip() else ""
+    keyword = _leading_sql_keyword(statement)
     if keyword == "SELECT":
         if select_format not in ("tsv-no-header", "jsonl"):
             raise ValueError("unsupported verification SELECT format")
@@ -26,6 +45,19 @@ def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-heade
         raise ValueError("a verification format can be used only with SELECT")
     # Do not buffer an untrusted query result in subprocess.PIPE. Only a
     # bounded prefix is ever read back into the Python heap.
+    extra = {}
+    if os.name == "posix":
+        import resource
+
+        def limit_child_output():
+            _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+            cap = MAX_SQL_STDOUT_BYTES + 1
+            if hard != resource.RLIM_INFINITY:
+                cap = min(cap, hard)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (cap, hard))
+
+        extra["preexec_fn"] = limit_child_output
+
     with tempfile.TemporaryFile(mode="w+b") as output, tempfile.TemporaryFile(mode="w+b") as errors:
         completed = subprocess.run(
             command,
@@ -33,8 +65,12 @@ def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-heade
             stderr=errors,
             check=False,
             timeout=timeout,
+            **extra,
         )
         if completed.returncode:
+            output.seek(0, os.SEEK_END)
+            if output.tell() > MAX_SQL_STDOUT_BYTES:
+                raise ValueError("SQL query output exceeds 64 MiB")
             errors.seek(0)
             error = errors.read(2000).decode("utf-8", "replace")
             raise RuntimeError(f"exit {completed.returncode}: {error}")
@@ -61,7 +97,7 @@ def latency_summary(seconds):
     ordered = sorted(seconds)
     middle = len(ordered) // 2
     median = (ordered[middle] if len(ordered) % 2
-              else (ordered[middle - 1] + ordered[middle]) / 2)
+              else ordered[middle - 1] + (ordered[middle] - ordered[middle - 1]) / 2)
     return {
         "min_seconds": ordered[0],
         "median_seconds": median,

@@ -5,7 +5,6 @@ use crate::{
     Column, NumericColumn, NumericPartReader, PartError, PartMetadata, inspect_part,
     read_part_row_count,
 };
-use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -142,15 +141,20 @@ fn part_span(name: &str) -> Option<(String, u64, u64)> {
     }
 }
 
-fn validate_block_ranges(ranges: &mut HashMap<String, Vec<(u64, u64)>>) -> Result<(), PartError> {
-    for spans in ranges.values_mut() {
-        spans.sort_unstable();
-        for pair in spans.windows(2) {
-            if pair[0].1 >= pair[1].0 {
-                return Err(PartError::InvalidScan(
-                    "overlapping part block ranges: provide a frozen active-part snapshot".into(),
-                ));
-            }
+fn sort_and_validate_part_ranges(
+    parts: &mut [(String, u64, u64, PathBuf)],
+) -> Result<(), PartError> {
+    // Each partition's block ranges become adjacent after sorting. Validate
+    // overlaps in the same pass without copying partition names into a map
+    // and allocating a separate sortable range list per partition.
+    parts.sort_unstable_by(|left, right| {
+        (&left.0, left.1, left.2, &left.3).cmp(&(&right.0, right.1, right.2, &right.3))
+    });
+    for adjacent in parts.windows(2) {
+        if adjacent[0].0 == adjacent[1].0 && adjacent[0].2 >= adjacent[1].1 {
+            return Err(PartError::InvalidScan(
+                "overlapping part block ranges: provide a frozen active-part snapshot".into(),
+            ));
         }
     }
     Ok(())
@@ -172,13 +176,19 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
 
 fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<PathBuf>, PartError> {
     require_snapshot_directory(path, "snapshot source must be a real directory")?;
-    if entry_present(&path.join("count.txt"))? || entry_present(&path.join("columns.txt"))? {
+    let has_root_count = entry_present(&path.join("count.txt"))?;
+    let has_root_columns = entry_present(&path.join("columns.txt"))?;
+    if has_root_count != has_root_columns {
+        return Err(PartError::InvalidScan(format!(
+            "incomplete part metadata in {}", path.display()
+        )));
+    }
+    if has_root_count {
         return Ok(vec![path.to_owned()]);
     }
     // Keep parsed numeric block bounds for physical ordering, instead of
     // lexicographically placing part 10 before part 2.
     let mut parts = Vec::<(String, u64, u64, PathBuf)>::new();
-    let mut ranges: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
     let mut scanned_entries = 0usize;
     for entry in fs::read_dir(path).map_err(|e| io_error(path, e))? {
         scanned_entries += 1;
@@ -189,10 +199,17 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
         }
         let entry = entry.map_err(|e| io_error(path, e))?;
         let file_type = entry.file_type().map_err(|e| io_error(&entry.path(), e))?;
-        if !file_type.is_dir() {
-            continue; // Symlinks are deliberately not followed.
-        }
         let name = entry.file_name();
+        if !file_type.is_dir() {
+            // A named active part cannot silently disappear from the snapshot
+            // just because its directory was replaced by a file or symlink.
+            if name.to_str().is_some_and(|name| part_span(name).is_some()) {
+                return Err(PartError::InvalidScan(format!(
+                    "active part is not a real directory: {}", entry.path().display()
+                )));
+            }
+            continue; // Ordinary metadata files are not active parts.
+        }
         // Older local writers staged data inside the active parts directory.
         // Never expose those incomplete, unpublished parts to SQL reads.
         if name
@@ -227,7 +244,6 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
         let (partition, min, max) = part_span(name).ok_or_else(|| {
             PartError::InvalidScan(format!("not a standard active part name: {name}"))
         })?;
-        ranges.entry(partition.clone()).or_default().push((min, max));
         parts.push((partition, min, max, child));
         if parts.len() > MAX_TABLE_PARTS {
             return Err(PartError::InvalidScan(
@@ -240,10 +256,7 @@ fn query_parts_with_entry_limit(path: &Path, max_entries: usize) -> Result<Vec<P
             "no active wide MergeTree parts found in snapshot".into(),
         ));
     }
-    validate_block_ranges(&mut ranges)?;
-    parts.sort_unstable_by(|left, right| {
-        (&left.0, left.1, left.2, &left.3).cmp(&(&right.0, right.1, right.2, &right.3))
-    });
+    sort_and_validate_part_ranges(&mut parts)?;
     Ok(parts.into_iter().map(|(_, _, _, path)| path).collect())
 }
 
@@ -785,14 +798,22 @@ mod tests {
     }
     #[test]
     fn checks_overlapping_block_ranges_independently_of_directory_order() {
-        let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (3, 5)])]);
+        let mut ranges = vec![
+            ("all".to_owned(), 10, 12, PathBuf::from("all_10")),
+            ("all".to_owned(), 1, 3, PathBuf::from("all_1")),
+            ("all".to_owned(), 3, 5, PathBuf::from("all_3")),
+        ];
         assert!(matches!(
-            validate_block_ranges(&mut ranges),
+            sort_and_validate_part_ranges(&mut ranges),
             Err(PartError::InvalidScan(_))
         ));
 
-        let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (4, 5)])]);
-        validate_block_ranges(&mut ranges).unwrap();
+        ranges[1].1 = 4;
+        sort_and_validate_part_ranges(&mut ranges).unwrap();
+        assert_eq!(ranges.iter().map(|part| part.1).collect::<Vec<_>>(), [1, 4, 10]);
+
+        ranges.push(("west".to_owned(), 1, 20, PathBuf::from("west")));
+        sort_and_validate_part_ranges(&mut ranges).unwrap();
     }
 }
 
@@ -984,5 +1005,66 @@ mod active_pointer_stability_tests {
         assert_eq!(original.modified().unwrap(), altered.modified().unwrap());
         assert!(!pointer_unchanged(&original, &altered));
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod incomplete_single_part_tests {
+    use super::*;
+
+    #[test]
+    fn a_single_part_requires_both_metadata_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-single-part-metadata-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("count.txt"), b"1\n").unwrap();
+        assert!(query_parts(&root).is_err());
+        fs::write(root.join("columns.txt"), b"schema").unwrap();
+        assert_eq!(query_parts(&root).unwrap(), vec![root.clone()]);
+        fs::remove_file(root.join("count.txt")).unwrap();
+        assert!(query_parts(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod disguised_active_part_tests {
+    use super::*;
+
+    fn test_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-active-part-type-{}-{}-{:?}",
+            label,
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        fs::create_dir(&root).unwrap();
+        let good = root.join("all_0_0_0");
+        fs::create_dir(&good).unwrap();
+        fs::write(good.join("count.txt"), b"1\n").unwrap();
+        fs::write(good.join("columns.txt"), b"schema").unwrap();
+        root
+    }
+
+    #[test]
+    fn rejects_regular_file_disguised_as_active_part() {
+        let root = test_root("regular");
+        assert_eq!(query_parts(&root).unwrap().len(), 1);
+        fs::write(root.join("all_1_1_0"), b"not a directory").unwrap();
+        assert!(query_parts(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_disguised_as_active_part() {
+        use std::os::unix::fs::symlink;
+        let root = test_root("symlink");
+        symlink("all_0_0_0", root.join("all_1_1_0")).unwrap();
+        assert!(query_parts(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }

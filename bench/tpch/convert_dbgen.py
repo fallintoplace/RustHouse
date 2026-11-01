@@ -3,6 +3,8 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import datetime
+import tempfile
+import os
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -68,11 +70,14 @@ def convert_table(source, target, table):
     if source.resolve() == target.resolve():
         raise ValueError("source and target must differ")
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(target.name + ".tmp")
+    temp = None
     rows = 0
     try:
-        with source.open("rb") as reader, \
-                temp.open("w", encoding="utf-8", newline="\n") as writer:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="\n",
+                dir=target.parent, prefix=f".{target.name}.",
+                suffix=".tmp", delete=False) as writer, source.open("rb") as reader:
+            temp = Path(writer.name)
             writer.write("\t".join(names(table)) + "\n")
             number = 0
             while raw_line := reader.readline(MAX_LINE + 1):
@@ -95,9 +100,12 @@ def convert_table(source, target, table):
                     raise ValueError(f"{table} row {number}: {error}") from error
                 writer.write("\t".join(converted) + "\n")
                 rows += 1
+            writer.flush()
+            os.fsync(writer.fileno())
         temp.replace(target)
     finally:
-        temp.unlink(missing_ok=True)
+        if temp is not None:
+            temp.unlink(missing_ok=True)
     return rows
 
 

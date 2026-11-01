@@ -59,12 +59,56 @@ class OfflineVacuumTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "invalid generation inventory"):
                     plan(root, keep=2)
 
+    def test_pending_entries_consume_scan_budget(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            _parts, versions = self.fixture(root)
+            (versions / ".pending-incomplete").mkdir()
+            with patch("offline_vacuum.MAX_GENERATIONS", 5):
+                with self.assertRaisesRegex(ValueError, "invalid generation inventory"):
+                    plan(root, keep=2)
+
+    @unittest.skipUnless(os.name == "posix" and shutil.rmtree.avoids_symlink_attacks,
+                         "requires symlink-safe POSIX rmtree")
+    def test_deletion_budget_blocks_all_candidates_before_mutation(self):
+        with tempfile.TemporaryDirectory() as root:
+            _parts, versions = self.fixture(root)
+            (versions / "g1" / "payload.bin").write_bytes(b"x" * 10)
+            before = sorted(path.name for path in versions.iterdir())
+            with self.assertRaisesRegex(ValueError, "max_delete_bytes"):
+                vacuum(root, keep=2, execute=True, offline_confirmed=True,
+                       max_delete_bytes=9)
+            self.assertEqual(before, sorted(path.name for path in versions.iterdir()))
+            with self.assertRaisesRegex(ValueError, "max_delete_entries"):
+                vacuum(root, keep=2, execute=True, offline_confirmed=True,
+                       max_delete_entries=1)
+            self.assertEqual(before, sorted(path.name for path in versions.iterdir()))
+
     def test_execute_needs_explicit_offline_confirmation(self):
         with tempfile.TemporaryDirectory() as root:
             self.fixture(root)
             with self.assertRaisesRegex(ValueError, "offline-confirmed"):
                 vacuum(root, keep=2, execute=True)
             self.assertEqual(len(plan(root, keep=2)), 2)
+
+    @unittest.skipUnless(os.name == "posix" and shutil.rmtree.avoids_symlink_attacks,
+                         "requires symlink-safe POSIX rmtree")
+    def test_vacuum_aborts_when_lock_file_is_swapped_during_flock(self):
+        import fcntl
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            parts, versions = self.fixture(root)
+            lock = Path(root) / ".rusthouse-write.lock"
+            original_flock = fcntl.flock
+            def replace(fd, flags):
+                original_flock(fd, flags)
+                lock.unlink()
+                lock.write_bytes(b"new inode")
+            with patch("offline_vacuum.fcntl.flock", side_effect=replace):
+                with self.assertRaisesRegex(ValueError, "lock path changed"):
+                    vacuum(root, keep=2, execute=True, offline_confirmed=True)
+            self.assertEqual(sorted(entry.name for entry in versions.iterdir()),
+                             [f"g{number}" for number in range(1, 6)])
 
     @unittest.skipUnless(os.name == "posix" and shutil.rmtree.avoids_symlink_attacks,
                          "requires symlink-safe POSIX rmtree")
@@ -76,6 +120,21 @@ class OfflineVacuumTests(unittest.TestCase):
             self.assertEqual(sorted(e.name for e in versions.iterdir()), ["g2", "g4", "g5"])
             self.assertEqual(active_label(parts), "g2")
 
+
+    def test_pending_entries_must_be_real_directories(self):
+        with tempfile.TemporaryDirectory() as root:
+            _parts, versions = self.fixture(root)
+            pending = versions / ".pending-unsafe"
+            pending.write_text("not a directory")
+            with self.assertRaisesRegex(ValueError, "invalid pending"):
+                plan(root, keep=2)
+            pending.unlink()
+            pending.symlink_to(versions / "g5", target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "invalid pending"):
+                plan(root, keep=2)
+            pending.unlink()
+            pending.mkdir()
+            self.assertEqual(len(plan(root, keep=2)), 2)
 
 if __name__ == "__main__":
     unittest.main()

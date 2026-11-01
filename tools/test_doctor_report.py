@@ -15,6 +15,14 @@ class DoctorReportTests(unittest.TestCase):
         self.assertTrue(result["truncated"])
 
 
+    def test_utf8_multibyte_output_respects_byte_limit(self):
+        result = report(0, "界" * 20_000, "🦀" * 20_000, 0.1, True)
+        self.assertLessEqual(len(result["stdout"].encode("utf-8")), 32_768)
+        self.assertLessEqual(len(result["stderr"].encode("utf-8")), 32_768)
+        self.assertTrue(result["truncated"])
+        self.assertNotIn("\ufffd", result["stdout"])
+        self.assertNotIn("\ufffd", result["stderr"])
+
     def test_runner_spools_large_doctor_output(self):
         from unittest.mock import patch
         from doctor_report import run

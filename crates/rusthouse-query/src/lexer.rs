@@ -76,6 +76,15 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 index += 2;
                 let mut depth = 1usize;
                 while depth != 0 {
+                    // Ordinary comment bytes cannot change nesting. Find a
+                    // possible delimiter before checking the next pair.
+                    let Some(skipped) = bytes[index..]
+                        .iter()
+                        .position(|&byte| byte == b'/' || byte == b'*')
+                    else {
+                        return Err(ParseError("unterminated block comment".into()));
+                    };
+                    index += skipped;
                     if index + 1 >= bytes.len() {
                         return Err(ParseError("unterminated block comment".into()));
                     }
@@ -492,5 +501,33 @@ mod nested_block_comment_tests {
         assert!(tokenize(&accepted).is_ok());
         let oversized = format!("{}{}", "/*".repeat(33), "*/".repeat(33));
         assert!(tokenize(&oversized).is_err());
+    }
+}
+
+#[cfg(test)]
+mod bulk_comment_span_tests {
+    use super::*;
+
+    #[test]
+    fn long_nested_comments_preserve_tokens_and_delimiters() {
+        let sql = format!(
+            "SELECT /*{}/*{}*/{}*/ 42",
+            "x".repeat(24 * 1024),
+            "/y".repeat(4 * 1024),
+            "*z".repeat(4 * 1024)
+        );
+        assert_eq!(
+            tokenize(&sql).unwrap(),
+            vec![Token::Word("SELECT".into()), Token::Number("42".into())],
+        );
+    }
+
+    #[test]
+    fn missing_closing_delimiters_and_excessive_nesting_still_fail() {
+        for suffix in ["/*", "/* unfinished", "/* nested /* unfinished */"] {
+            assert!(tokenize(&format!("SELECT {suffix}")).is_err());
+        }
+        let deep = format!("SELECT {} 1 {}", "/*".repeat(33), "*/".repeat(33));
+        assert!(tokenize(&deep).is_err());
     }
 }

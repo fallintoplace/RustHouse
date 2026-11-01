@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Verify TSV reference rows using exact text or arbitrary-precision numbers."""
 import argparse
-from decimal import Decimal, DecimalException, InvalidOperation
+from decimal import (Decimal, DecimalException, InvalidOperation, localcontext,
+                     ROUND_DOWN, ROUND_UP, MAX_EMAX, MIN_EMIN)
 from pathlib import Path
 
 MAX_INPUT_BYTES = 16 * 1024 * 1024
@@ -43,12 +44,30 @@ def numeric_equal(left, right, tolerance=Decimal("0")):
     if not lhs.is_finite() or not rhs.is_finite():
         return False
     if tolerance == 0:
-        # Subtraction can underflow tiny, unequal values to zero.
+        # Exact decimal comparison avoids context rounding.
         return lhs == rhs
+    # Directed rounding gives lower and upper bounds on the absolute gap.
+    # Escalating precision avoids the default 28-digit context rounding a
+    # near-threshold mismatch into a false positive. Extreme exponent gaps
+    # do not require allocating enormous decimal coefficients.
     try:
-        return abs(lhs - rhs) <= tolerance
+        for precision in (28, 64, 128, 256, 512, 1024, 2048, 4096):
+            with localcontext() as context:
+                context.prec = precision
+                context.Emax = MAX_EMAX
+                context.Emin = MIN_EMIN
+                context.rounding = ROUND_DOWN
+                lower = abs(lhs - rhs)
+                context.rounding = ROUND_UP
+                upper = abs(lhs - rhs)
+                if upper <= tolerance:
+                    return True
+                if lower > tolerance:
+                    return False
+        # Never affirm equality while the exact boundary remains ambiguous.
+        return False
     except DecimalException:
-        # Exponents outside the active decimal context must not crash the oracle.
+        # Extreme decimal contexts must not crash the oracle.
         return False
 
 

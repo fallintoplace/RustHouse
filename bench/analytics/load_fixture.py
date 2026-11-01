@@ -9,7 +9,10 @@ import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json
-from fixture import FIELDS
+if __package__:
+    from .fixture import FIELDS
+else:
+    from fixture import FIELDS
 
 
 
@@ -22,7 +25,7 @@ def bounded_tsv_records(source):
         line = source.readline(MAX_TSV_RECORD_CHARS + 1)
         if not line:
             return
-        if len(line) > MAX_TSV_RECORD_CHARS or not line.endswith("\n"):
+        if len(line.encode("utf-8")) > MAX_TSV_RECORD_CHARS or not line.endswith("\n"):
             raise ValueError("hits TSV record exceeds 64 KiB or is truncated")
         yield line
 
@@ -86,6 +89,13 @@ def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
     copy = read_fixture_sql(root / "copy.sql")
     if len(copy.encode("utf-8")) > 4096:
         raise ValueError("COPY SQL exceeds statement size limit")
+    expected_create = "CREATE TABLE hits (" + ", ".join(
+        f"{name} {kind}" for name, kind, _ in FIELDS
+    ) + ")"
+    escaped = tsv.resolve(strict=True).as_posix().replace("'", "''")
+    expected_copy = f"COPY hits FROM '{escaped}' WITH (FORMAT TSV, HEADER TRUE)"
+    if create != expected_create or copy != expected_copy:
+        raise ValueError("fixture SQL differs from trusted generated statements")
     execute(create)
     started = time.perf_counter()
     execute(copy)

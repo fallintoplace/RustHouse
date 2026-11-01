@@ -43,6 +43,7 @@ pub struct Config {
     pub max_rows: usize,
 }
 
+#[derive(Debug)]
 pub struct Response {
     pub status: &'static str,
     pub content_type: &'static str,
