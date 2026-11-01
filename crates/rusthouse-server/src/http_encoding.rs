@@ -160,7 +160,7 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
         }
         let byte = remaining[0];
         remaining = &remaining[1..];
-        let mut unicode_escape = [0u8; 6];
+        let unicode_escape: [u8; 6];
         let encoded: &[u8] = match byte {
             b'"' => br#"\""#,
             b'\\' => br"\\",
