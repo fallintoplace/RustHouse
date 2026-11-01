@@ -28,6 +28,48 @@ class CompareRustBenchTests(unittest.TestCase):
                 _read_bounded_report(alias)
             self.assertEqual(_read_bounded_report(source), report())
 
+    def test_refuses_artifact_swapped_after_preflight(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from bench._pr_artifact_io import read_bounded_artifact
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "bench.txt"
+            alternate = Path(folder) / "alternative.txt"
+            path.write_text("baseline", encoding="utf-8")
+            alternate.write_text("replacement", encoding="utf-8")
+            real_open = os.open
+
+            def replace_before_open(filename, flags):
+                path.unlink()
+                alternate.rename(path)
+                return real_open(filename, flags)
+
+            with patch("bench._pr_artifact_io.os.open", side_effect=replace_before_open):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    read_bounded_artifact(path, 1024)
+
+    def test_atomic_summary_preserves_old_content_on_failure(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from bench._pr_artifact_io import write_summary_atomically
+
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "summary.md"
+            source = Path(folder) / "base.txt"
+            target.write_text("previous complete summary", encoding="utf-8")
+            source.write_text("input", encoding="utf-8")
+            with patch("bench._pr_artifact_io.os.replace", side_effect=OSError("full disk")):
+                with self.assertRaises(OSError):
+                    write_summary_atomically(target, "replacement", source)
+            self.assertEqual(target.read_text(), "previous complete summary")
+            self.assertFalse(list(Path(folder).glob(".summary.md.*.tmp")))
+            with self.assertRaisesRegex(ValueError, "must not replace"):
+                write_summary_atomically(source, "bad", source)
+
     def test_reports_improvements_and_sub_microsecond_measurements(self):
         result = compare_text(report(), report(topk=1.250))
         self.assertIn("| filtered top-K | 12.500000 | 1.250000 | -90.0% |", result)
