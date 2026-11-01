@@ -39,7 +39,7 @@ pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
     }
     // HTTP OWS is only SP or HTAB. str::trim() also removes Unicode
     // whitespace, silently canonicalizing invalid protocol values.
-    Ok((name, value.trim_matches([' ', '\t'])))
+    Ok((name, value.trim_matches(|byte| byte == ' ' || byte == '\t')))
 }
 
 pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
