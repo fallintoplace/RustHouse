@@ -62,10 +62,10 @@ class DoctorReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "noisy-doctor"
             binary.write_text(
-                "#!" + sys.executable + "\\n"
-                "import os\\n"
-                "for _ in range(256):\\n"
-                "    os.write(1, b'x' * 65536)\\n"
+                "#!" + sys.executable + "\n"
+                "import os\n"
+                "for _ in range(256):\n"
+                "    os.write(1, b'x' * 65536)\n"
             )
             binary.chmod(0o700)
             outcome = run(binary, directory, full_hashes=False, timeout=10)
