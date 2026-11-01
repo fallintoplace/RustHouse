@@ -3,11 +3,27 @@
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
+
+
+# Child stdout and stderr are spooled to regular files. Capping the final
+# JSON alone would allow a noisy or compromised doctor to exhaust the disk.
+MAX_CHILD_OUTPUT_BYTES = 8 * 1024 * 1024
+
+
+def _limit_child_output():
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    cap = min(soft, MAX_CHILD_OUTPUT_BYTES) if soft != resource.RLIM_INFINITY else MAX_CHILD_OUTPUT_BYTES
+    if hard != resource.RLIM_INFINITY:
+        cap = min(cap, hard)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (cap, hard))
 
 
 def _bounded_text(value):
@@ -42,7 +58,8 @@ def run(binary, database, full_hashes=True, timeout=600):
     try:
         with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
             result = subprocess.run(command, stdout=output, stderr=errors,
-                                    timeout=timeout, check=False)
+                                    timeout=timeout, check=False,
+                                    preexec_fn=_limit_child_output if os.name == "posix" else None)
             output.seek(0)
             out = output.read(32_769)
             errors.seek(0, 2)
