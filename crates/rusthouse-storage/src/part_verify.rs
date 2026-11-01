@@ -120,34 +120,36 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
     // Borrow paths throughout the scan. Retain the original directory
     // inventory so we can check for additions and removals at the end.
     for data in &data_files {
+        let data = data.as_path();
         let marks_path = mark_files
             .get(data)
-            .ok_or_else(|| invalid(data, "missing wide mark file during verification"))?;
+            .ok_or_else(|| invalid(data, "missing wide mark file during verification"))?
+            .as_path();
         let data_generation =
-            fs::symlink_metadata(&data).map_err(|source| io_error(&data, source))?;
+            fs::symlink_metadata(data).map_err(|source| io_error(data, source))?;
         let marks_generation =
-            fs::symlink_metadata(&marks_path).map_err(|source| io_error(&marks_path, source))?;
-        let marks = read_wide_marks(&marks_path)?;
-        validate_adaptive_stream(&data, &marks, metadata.rows, &mut layout)?;
-        validate_wide_marks(&marks, CompressedBlockReader::open(&data)?)?;
+            fs::symlink_metadata(marks_path).map_err(|source| io_error(marks_path, source))?;
+        let marks = read_wide_marks(marks_path)?;
+        validate_adaptive_stream(data, &marks, metadata.rows, &mut layout)?;
+        validate_wide_marks(&marks, CompressedBlockReader::open(data)?)?;
 
-        let decoded_size = account_decoded_blocks(&data, &mut report)?;
-        let data_after = fs::symlink_metadata(&data).map_err(|source| io_error(&data, source))?;
+        let decoded_size = account_decoded_blocks(data, &mut report)?;
+        let data_after = fs::symlink_metadata(data).map_err(|source| io_error(data, source))?;
         if !same_verification_generation(&data_generation, &data_after) {
-            return Err(invalid(&data, "wide stream changed during verification"));
+            return Err(invalid(data, "wide stream changed during verification"));
         }
         let marks_after =
-            fs::symlink_metadata(&marks_path).map_err(|source| io_error(&marks_path, source))?;
+            fs::symlink_metadata(marks_path).map_err(|source| io_error(marks_path, source))?;
         if !same_verification_generation(&marks_generation, &marks_after) {
             return Err(invalid(
-                &marks_path,
+                marks_path,
                 "wide marks changed during verification",
             ));
         }
-        if let Some(expected) = expected_fixed_stream_bytes(&data, &metadata)? {
+        if let Some(expected) = expected_fixed_stream_bytes(data, &metadata)? {
             if decoded_size != expected {
                 return Err(invalid(
-                    &data,
+                    data,
                     "fixed-width stream byte count differs from count.txt",
                 ));
             }
@@ -155,7 +157,7 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         report.marks = report
             .marks
             .checked_add(marks.marks.len())
-            .ok_or_else(|| invalid(&data, "mark count overflows"))?;
+            .ok_or_else(|| invalid(data, "mark count overflows"))?;
         report.streams += 1;
     }
     // Re-reading the small metadata also catches changes between inspect_part
