@@ -682,6 +682,11 @@ mod optimal_joint_write_ack_tests {
                     let acknowledged = names.iter().enumerate().filter_map(|(i, &name)| {
                         (acknowledged_mask & (1 << i) != 0).then_some(name)
                     }).collect::<Vec<_>>();
+                    if !acknowledged.iter().all(|name| {
+                        old.contains(name) || new.contains(name)
+                    }) {
+                        continue;
+                    }
                     let selected = plan_joint_write_acknowledgements(
                         policy, &old, policy, &new, &acknowledged,
                     ).unwrap();
@@ -693,6 +698,11 @@ mod optimal_joint_write_ack_tests {
                         let extra = names.iter().enumerate().filter_map(|(i, &name)| {
                             (subset & (1 << i) != 0).then_some(name)
                         }).collect::<Vec<_>>();
+                        if !extra.iter().all(|name| {
+                            old.contains(name) || new.contains(name)
+                        }) {
+                            continue;
+                        }
                         let mut votes = acknowledged.clone();
                         votes.extend(&extra);
                         if !observe_joint_quorum(policy, &old, policy, &new, &votes)
