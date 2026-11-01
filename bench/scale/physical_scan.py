@@ -9,6 +9,7 @@ import json
 import math
 import os
 import platform
+import re
 import statistics
 import subprocess
 import sys
@@ -98,6 +99,11 @@ def scan(binary, database, sql, expected, runs, warmups, timeout):
     }
 
 
+def doctor_verified_rows(output, rows):
+    expected = rb"OK events: " + str(rows).encode("ascii") + rb" rows, [1-9][0-9]* parts"
+    return any(re.fullmatch(expected, line) for line in output.splitlines())
+
+
 def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None, fixture_batch_rows=8192):
     if type(rows) is not int or not 1 <= rows <= 1_000_000_000:
         raise ValueError("rows must be in 1..1000000000")
@@ -130,8 +136,7 @@ def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None, fixture_ba
             observed = summary.read(8193)
             errors.seek(max(0, errors.tell() - 600))
             diagnostic = errors.read(600)
-        expected_summary = f"OK events: {rows} rows, ".encode("utf-8")
-        if inspection.returncode or expected_summary not in observed:
+        if inspection.returncode or not doctor_verified_rows(observed, rows):
             raise ValueError(
                 f"physical snapshot verification failed: {observed[:8192]!r} {diagnostic!r}"
             )
