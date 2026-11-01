@@ -331,6 +331,25 @@ pub fn plan_missing_runs_from_resume(
     max_batch_chunks: usize,
     max_run_bytes: u64,
 ) -> Result<Vec<ChunkRun>, &'static str> {
+    plan_missing_runs_from_resume_after(
+        total_bytes, chunk_bytes, max_chunks, progress, 0,
+        byte_budget, max_batch_chunks, max_run_bytes,
+    )
+}
+
+/// Resume coalesced I/O planning at an inclusive chunk cursor without
+/// rescanning earlier completed checkpoint bits or materializing all chunks.
+/// Validate the complete checkpoint layout before selecting any work.
+pub fn plan_missing_runs_from_resume_after(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    progress: &crate::distributed_resume_map::ResumeMap,
+    start_index: usize,
+    byte_budget: u64,
+    max_batch_chunks: usize,
+    max_run_bytes: u64,
+) -> Result<Vec<ChunkRun>, &'static str> {
     if max_run_bytes == 0 || max_batch_chunks > 65_536 {
         return Err("invalid coalesced chunk limits");
     }
@@ -338,10 +357,13 @@ pub fn plan_missing_runs_from_resume(
     if progress.len() != chunk_count {
         return Err("resume checkpoint does not match transfer layout");
     }
+    if start_index > chunk_count {
+        return Err("resume cursor exceeds transfer layout");
+    }
     let mut runs: Vec<ChunkRun> = Vec::new();
     let mut scheduled = 0usize;
     let mut remaining = byte_budget;
-    for index in progress.remaining_indices() {
+    for index in progress.remaining_indices_from(start_index) {
         if scheduled == max_batch_chunks || remaining == 0 {
             break;
         }
@@ -852,5 +874,188 @@ mod paged_resume_planner_tests {
                 bytes, 5, 65_536, &map, chunks + 1, 0, 0
             ).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod paged_coalesced_resume_reference_tests {
+    use super::*;
+    use crate::distributed_resume_map::ResumeMap;
+
+    #[test]
+    fn paged_run_planning_matches_materialize_then_coalesce() {
+        for total_bytes in [0u64, 1, 7, 8, 9, 63, 64, 65, 127, 128, 129, 2049] {
+            let count = total_bytes.div_ceil(7) as usize;
+            let mut progress = ResumeMap::new(count).unwrap();
+            for index in 0..count {
+                if index % 5 == 0 || index % 13 == 0 {
+                    progress.mark_complete(index).unwrap();
+                }
+            }
+            for cursor in 0..=count {
+                for budget in [0, 1, 6, 7, 10, 21, 300] {
+                    for limit in [0, 1, 2, 5, 32] {
+                        for max_run in [1, 7, 14, 100] {
+                            let expected = plan_missing_chunks_from_resume_after(
+                                total_bytes, 7, 65_536, &progress, cursor, budget, limit
+                            ).and_then(|chunks| coalesce_indexed_chunks(&chunks, max_run));
+                            let actual = plan_missing_runs_from_resume_after(
+                                total_bytes, 7, 65_536, &progress, cursor, budget, limit, max_run
+                            );
+                            assert_eq!(actual, expected,
+                                "bytes={total_bytes} cursor={cursor} budget={budget} limit={limit} max_run={max_run}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_cursors_even_for_empty_or_zero_budget_pages() {
+        let progress = ResumeMap::new(2).unwrap();
+        assert!(plan_missing_runs_from_resume_after(8, 4, 2, &progress, 3, 0, 0, 8).is_err());
+        assert!(plan_missing_runs_from_resume_after(8, 4, 2, &progress, 2, 0, 0, 0).is_err());
+        assert!(plan_missing_runs_from_resume_after(10, 4, 3, &progress, 0, 0, 0, 8).is_err());
+        assert!(plan_missing_runs_from_resume_after(8, 4, 2, &progress, 2, 8, 4, 8)
+            .unwrap().is_empty());
+    }
+}
+
+
+/// One validated immutable object and its verified transfer checkpoint.
+pub struct FairTransferSource<'a> {
+    pub key: &'a crate::distributed_object_key::ObjectKey,
+    pub total_bytes: u64,
+    pub chunk_bytes: u64,
+    pub checkpoint: &'a crate::distributed_resume_map::ResumeMap,
+}
+
+/// Work is addressed by the original request position, never by a copied key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FairTransferChunk {
+    pub source_index: usize,
+    pub indexed: IndexedChunk,
+}
+
+/// Interleave missing chunks from up to 64 immutable objects under one budget.
+///
+/// Layouts and identities are checked even when no bytes can be scheduled.
+/// Skipped oversized chunks cannot consume the budget or starve smaller
+/// objects. Returned work never marks its checkpoint complete.
+pub fn plan_fair_replica_transfers(
+    sources: &[FairTransferSource<'_>],
+    byte_budget: u64,
+    max_batch_chunks: usize,
+) -> Result<Vec<FairTransferChunk>, &'static str> {
+    if sources.is_empty() || sources.len() > 64 || max_batch_chunks > 65_536 {
+        return Err("invalid fair transfer batch limits");
+    }
+    for (index, source) in sources.iter().enumerate() {
+        let chunks = checked_chunk_count(source.total_bytes, source.chunk_bytes, 65_536)?;
+        if source.checkpoint.len() != chunks {
+            return Err("transfer checkpoint does not match object layout");
+        }
+        if sources[..index].iter().any(|earlier| earlier.key == source.key) {
+            return Err("duplicate immutable object transfer");
+        }
+    }
+    if byte_budget == 0 || max_batch_chunks == 0 {
+        return Ok(Vec::new());
+    }
+    let mut iterators = sources.iter()
+        .map(|source| source.checkpoint.remaining_indices())
+        .collect::<Vec<_>>();
+    let mut remaining = byte_budget;
+    let mut output = Vec::with_capacity(max_batch_chunks.min(sources.len() * 4));
+    loop {
+        let mut progress = false;
+        for (source_index, source) in sources.iter().enumerate() {
+            // A large chunk may be unaffordable while a shorter final chunk
+            // remains schedulable. Consume its cursor rather than retrying
+            // the same unaffordable work on every subsequent fair round.
+            while let Some(index) = iterators[source_index].next() {
+                let indexed = indexed_chunk_at(source.total_bytes, source.chunk_bytes, index);
+                if indexed.chunk.length <= remaining {
+                    remaining -= indexed.chunk.length;
+                    output.push(FairTransferChunk { source_index, indexed });
+                    progress = true;
+                    break;
+                }
+            }
+            if output.len() == max_batch_chunks || remaining == 0 {
+                return Ok(output);
+            }
+        }
+        if !progress {
+            return Ok(output);
+        }
+    }
+}
+
+#[cfg(test)]
+mod fair_replica_transfer_tests {
+    use super::*;
+    use crate::distributed_object_key::ObjectKey;
+    use crate::distributed_resume_map::ResumeMap;
+
+    fn key(name: &str) -> ObjectKey {
+        ObjectKey::new("cluster", "shard", 1, "part", name).unwrap()
+    }
+
+    #[test]
+    fn alternates_objects_and_respects_the_shared_byte_budget() {
+        let keys = [key("a.bin"), key("b.bin")];
+        let first = ResumeMap::new(6).unwrap();
+        let mut second = ResumeMap::new(6).unwrap();
+        second.mark_complete_indices(&[0, 2]).unwrap();
+        let sources = [
+            FairTransferSource { key: &keys[0], total_bytes: 6, chunk_bytes: 1, checkpoint: &first },
+            FairTransferSource { key: &keys[1], total_bytes: 6, chunk_bytes: 1, checkpoint: &second },
+        ];
+        let selected = plan_fair_replica_transfers(&sources, 6, 6).unwrap();
+        let pairs = selected.iter().map(|item| (item.source_index, item.indexed.index))
+            .collect::<Vec<_>>();
+        assert_eq!(pairs, [(0, 0), (1, 1), (0, 1), (1, 3), (0, 2), (1, 4)]);
+        assert_eq!(selected.iter().map(|item| item.indexed.chunk.length).sum::<u64>(), 6);
+        assert_eq!(first.completed_count(), 0);
+        assert_eq!(second.completed_count(), 2);
+    }
+
+    #[test]
+    fn short_tail_is_not_starved_by_full_unaffordable_chunks() {
+        let keys = [key("large.bin"), key("tail.bin")];
+        let full = ResumeMap::new(3).unwrap();
+        let tail = ResumeMap::new(3).unwrap();
+        let sources = [
+            FairTransferSource { key: &keys[0], total_bytes: 24, chunk_bytes: 8, checkpoint: &full },
+            FairTransferSource { key: &keys[1], total_bytes: 17, chunk_bytes: 8, checkpoint: &tail },
+        ];
+        assert_eq!(
+            plan_fair_replica_transfers(&sources, 1, 8).unwrap(),
+            [FairTransferChunk {
+                source_index: 1,
+                indexed: IndexedChunk { index: 2, chunk: Chunk { offset: 16, length: 1 } },
+            }],
+        );
+    }
+
+    #[test]
+    fn rejects_bad_layouts_and_duplicate_objects_even_with_zero_budget() {
+        let id = key("one.bin");
+        let valid = ResumeMap::new(2).unwrap();
+        let bad = ResumeMap::new(1).unwrap();
+        let source = FairTransferSource {
+            key: &id, total_bytes: 8, chunk_bytes: 4, checkpoint: &valid,
+        };
+        let duplicate = [
+            FairTransferSource { ..source },
+            FairTransferSource { ..source },
+        ];
+        assert!(plan_fair_replica_transfers(&duplicate, 0, 0).is_err());
+        assert!(plan_fair_replica_transfers(&[
+            FairTransferSource { checkpoint: &bad, ..source },
+        ], 0, 0).is_err());
+        assert!(plan_fair_replica_transfers(&[source], 1, 65_537).is_err());
     }
 }
