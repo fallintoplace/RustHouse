@@ -624,8 +624,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         && aggregate.is_some()
         && (!matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))
             || kind != JoinType::Inner
-            || steps.iter().any(|step| step.kind != JoinType::Inner)
-            || where_null.is_some())
+            || steps.iter().any(|step| step.kind != JoinType::Inner))
     {
         return Err(ParseError(
             "chained JOIN COUNT requires all INNER joins and no post-join NULL filter".into(),
