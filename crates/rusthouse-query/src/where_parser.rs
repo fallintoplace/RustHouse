@@ -5,7 +5,9 @@ use crate::lexer::Token;
 use crate::{Operator, ParseError, Parser, Predicate};
 
 type Branches = Vec<Vec<Predicate>>;
-const MAX_CONDITIONS: usize = 16;
+// Canonical TPC-H Q19 contains three OR arms with about nine conditions each.
+// Retain the independent branch and expanded-predicate limits below.
+const MAX_CONDITIONS: usize = 32;
 const MAX_BRANCHES: usize = 64;
 const MAX_EXPANDED_CONDITIONS: usize = 256;
 const MAX_DEPTH: usize = 16;
@@ -764,5 +766,45 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_q19_predicate_budget_tests {
+    use crate::{execute, parse_select};
+
+    #[test]
+    fn q19_sized_three_arm_predicates_are_supported() {
+        let clauses = [(0, 4), (6, 10), (12, 16)]
+            .map(|(lower, upper)| {
+                format!(
+                    "(number >= {lower} AND number <= {upper} \
+                     AND number BETWEEN {lower} AND {upper} \
+                     AND number IN ({lower}, {upper}) \
+                     AND number % 2 = 0 AND number >= 0 \
+                     AND number < 20 AND number <> 19)"
+                )
+            })
+            .join(" OR ");
+        let query = parse_select(&format!(
+            "SELECT number FROM numbers(20) WHERE {clauses} ORDER BY number"
+        ))
+        .unwrap();
+        assert_eq!(query.or_predicates.len(), 2);
+        let mut output = Vec::new();
+        execute(&query, None, &mut output).unwrap();
+        assert_eq!(output, b"number\\n0\\n4\\n6\\n10\\n12\\n16\\n");
+    }
+
+    #[test]
+    fn predicates_remain_bounded_after_q19_increase() {
+        let conditions = (0..33)
+            .map(|n| format!("number >= {n}"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        assert!(parse_select(&format!(
+            "SELECT number FROM numbers(35) WHERE {conditions}"
+        ))
+        .is_err());
     }
 }
