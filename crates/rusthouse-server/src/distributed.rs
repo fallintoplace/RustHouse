@@ -1544,6 +1544,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
                 || is_safe_sum(&select)
+                || is_safe_sum_squares(&select)
                 || is_safe_extremum(&select) =>
         {
             select
@@ -1566,7 +1567,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     };
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
-    let sum_query = is_safe_sum(&select);
+    let sum_query = is_safe_sum(&select) || is_safe_sum_squares(&select);
     let uniq_query = is_safe_uniq(&select);
     let shard_sql = if sorted_query {
         match sorted_scan_sql(sql, &select) {
@@ -1633,7 +1634,10 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::Aggregate {
-                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
+                function: AggregateFunction::Sum
+                    | AggregateFunction::SumSquares
+                    | AggregateFunction::Min
+                    | AggregateFunction::Max,
                 column,
             },
         ) => Some((table.as_str(), column.as_str())),
@@ -3230,6 +3234,45 @@ mod logical_distinct_tsv_equivalence_tests {
         assert_eq!(
             merge_distinct_tsv(&[(16, b"v\nvalid\n\\q\n".to_vec())], 1, 0, Some(1)),
             Err(MergeError::InvalidResponse),
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_sum_squares_tests {
+    use super::*;
+
+    #[test]
+    fn supports_exact_integer_sum_squares_without_global_clauses() {
+        for sql in [
+            "SELECT sumSquares(amount) FROM events",
+            "SELECT sumSquares(amount) FROM events WHERE id > 3",
+        ] {
+            assert!(is_safe_sum_squares(&parse_select(sql).unwrap()));
+        }
+        for sql in [
+            "SELECT sumSquares(amount) FROM events LIMIT 1",
+            "SELECT sumSquares(amount) FROM numbers(10)",
+            "SELECT sumSquares(amount) FROM events OFFSET 1",
+        ] {
+            assert!(parse_select(sql).map_or(true, |query| !is_safe_sum_squares(&query)));
+        }
+    }
+
+    #[test]
+    fn combines_shard_partial_squares_without_rounding_or_null_identity() {
+        let values = [
+            (10, b"sumSquares(amount)\n9\n".to_vec()),
+            (10, b"sumSquares(amount)\nNULL\n".to_vec()),
+            (10, b"sumSquares(amount)\n16\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_integer_sums(&values, "Nullable(Int64)").unwrap(),
+            b"sumSquares(amount)\n25\n"
+        );
+        assert_eq!(
+            merge_integer_sums(&values[1..2], "Int64").unwrap(),
+            b"sumSquares(amount)\nNULL\n"
         );
     }
 }
