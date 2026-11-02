@@ -3189,20 +3189,60 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             }
         }
         "TRIM" => {
-            let input = text_arg(parser, depth + 1)?;
-            let characters = if parser.take(Token::Comma) {
-                Some(text_arg(parser, depth + 1)?)
+            // Standard TRIM([LEADING|TRAILING|BOTH] [chars] FROM text)
+            // coexists with the original TRIM(text[, chars]).
+            let direction = if parser.keyword("LEADING") {
+                Some("leading")
+            } else if parser.keyword("TRAILING") {
+                Some("trailing")
+            } else if parser.keyword("BOTH") {
+                Some("both")
             } else {
                 None
+            };
+            let (input, characters, direction) = if let Some(direction) = direction {
+                let characters = if parser.keyword("FROM") {
+                    None
+                } else {
+                    let characters = text_arg(parser, depth + 1)?;
+                    if !parser.keyword("FROM") {
+                        return Err(ParseError("TRIM requires FROM".into()));
+                    }
+                    Some(characters)
+                };
+                (text_arg(parser, depth + 1)?, characters, direction)
+            } else {
+                let first = text_arg(parser, depth + 1)?;
+                if parser.keyword("FROM") {
+                    (text_arg(parser, depth + 1)?, Some(first), "both")
+                } else {
+                    let characters = if parser.take(Token::Comma) {
+                        Some(text_arg(parser, depth + 1)?)
+                    } else {
+                        None
+                    };
+                    (first, characters, "both")
+                }
             };
             require(parser, Token::RParen, "expected ')' after TRIM arguments")?;
             match (input, characters) {
                 (Some(value), None) => {
-                    ConstantValue::Text(value.trim_matches(' ').to_owned())
+                    let trimmed = match direction {
+                        "leading" => value.trim_start_matches(' '),
+                        "trailing" => value.trim_end_matches(' '),
+                        _ => value.trim_matches(' '),
+                    };
+                    ConstantValue::Text(trimmed.to_owned())
                 }
-                (Some(value), Some(Some(characters))) => ConstantValue::Text(
-                    value.trim_matches(|ch| characters.contains(ch)).to_owned(),
-                ),
+                (Some(value), Some(Some(characters))) => {
+                    let predicate = |ch| characters.contains(ch);
+                    let trimmed = match direction {
+                        "leading" => value.trim_start_matches(predicate),
+                        "trailing" => value.trim_end_matches(predicate),
+                        _ => value.trim_matches(predicate),
+                    };
+                    ConstantValue::Text(trimmed.to_owned())
+                }
                 _ => ConstantValue::Null,
             }
         }
