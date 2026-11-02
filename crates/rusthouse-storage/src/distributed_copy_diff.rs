@@ -61,6 +61,39 @@ fn valid_key(key: &str) -> bool {
     !segment_start && !previous_dot && !windows_device_segment(&key[segment_offset..])
 }
 
+
+// A case-sensitive source may carry two distinct keys that map to the same
+// filename on a case-insensitive replica. Check aliases across both
+// inventories, including keys that only differ between peers. Lowercase-only
+// inventories retain the allocation-free fast path.
+fn reject_portable_key_aliases(
+    source: &[ObjectMetadata],
+    destination: &[ObjectMetadata],
+) -> Result<(), &'static str> {
+    // Enforce the inventory cap before hashing or allocating for untrusted
+    // caller-provided inventories.
+    if source.len() > 65_536 || destination.len() > 65_536 {
+        return Err("replica inventory too large");
+    }
+    if !source
+        .iter()
+        .chain(destination)
+        .any(|object| object.key.bytes().any(|byte| byte.is_ascii_uppercase()))
+    {
+        return Ok(());
+    }
+    let mut seen = HashMap::<String, &str>::with_capacity(source.len() + destination.len());
+    for object in source.iter().chain(destination) {
+        let folded = object.key.to_ascii_lowercase();
+        if let Some(previous) = seen.insert(folded, object.key.as_str()) {
+            if previous != object.key {
+                return Err("case-insensitive replica object key collision");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn index(objects: &[ObjectMetadata]) -> Result<HashMap<&str, &ObjectMetadata>, &'static str> {
     if objects.len() > 65_536 {
         return Err("replica inventory too large");
@@ -111,6 +144,7 @@ pub fn plan_replica_copies(
     source: &[ObjectMetadata],
     destination: &[ObjectMetadata],
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
+    reject_portable_key_aliases(source, destination)?;
     if source.len() <= 8 && destination.len() <= 8 {
         validate_tiny_inventory(source)?;
         validate_tiny_inventory(destination)?;
@@ -219,6 +253,7 @@ impl<'a> ReplicaCopyPlanner<'a> {
         if source.len() > 65_536 || destination.len() > 65_536 {
             return Err("replica inventory too large");
         }
+        reject_portable_key_aliases(source, destination)?;
         let sorted =
             |objects: &[ObjectMetadata]| objects.windows(2).all(|pair| pair[0].key < pair[1].key);
         if sorted(source) && sorted(destination) {
@@ -389,6 +424,7 @@ pub fn plan_replica_copy_batch_after(
     if max_objects > 65_536 {
         return Err("replica copy batch exceeds object limit");
     }
+    reject_portable_key_aliases(source, destination)?;
     if source.len() <= 8 && destination.len() <= 8 {
         // Apply the same strict inventory and immutable conflict validation,
         // including when the continuation cursor leaves no eligible objects.
@@ -1428,6 +1464,7 @@ pub fn compare_replica_inventories(
     if left.len() > 65_536 || right.len() > 65_536 {
         return Err("replica inventory too large");
     }
+    reject_portable_key_aliases(left, right)?;
     // Inventory snapshots arrive in sorted key order. A borrowed merge
     // emits exactly the same canonical diagnostics without building two hash
     // maps, cloning equal objects, or sorting three result vectors.
@@ -1781,5 +1818,56 @@ mod bounded_replica_copy_output_allocation_tests {
         assert_eq!(page.next_after, None);
         let batch = planner.batch_after(None, 1024, 1024).unwrap();
         assert_eq!(batch, page.copies);
+    }
+}
+
+#[cfg(test)]
+mod portable_case_collision_tests {
+    use super::*;
+
+    fn object(key: &str) -> ObjectMetadata {
+        ObjectMetadata {
+            key: key.to_owned(),
+            bytes: 13,
+            crc32c: 0x1234,
+        }
+    }
+
+    #[test]
+    fn rejects_case_aliases_within_one_replica_and_across_replicas() {
+        let left = [object("region/shard/g1/part/FOO.bin")];
+        let right = [object("region/shard/g1/part/foo.bin")];
+        assert!(plan_replica_copies(&left, &right).is_err());
+        assert!(plan_replica_copy_batch_after(&left, &right, None, 100, 1).is_err());
+        assert!(ReplicaCopyPlanner::new(&left, &right).is_err());
+        assert!(compare_replica_inventories(&left, &right).is_err());
+
+        let two = [object("region/shard/g1/part/FOO.bin"), object("region/shard/g1/part/foo.bin")];
+        assert!(plan_replica_copies(&two, &[]).is_err());
+        assert!(ReplicaCopyPlanner::new(&two, &[]).is_err());
+    }
+
+    #[test]
+    fn rejects_aliases_in_large_sorted_and_unsorted_inventories() {
+        let mut source = (0..128)
+            .map(|id| object(&format!("cluster/shard/g1/part/key{id:04}.bin")))
+            .collect::<Vec<_>>();
+        let mut destination = source.clone();
+        source.push(object("cluster/shard/g1/part/Mixed.bin"));
+        destination.push(object("cluster/shard/g1/part/mixed.bin"));
+        assert!(plan_replica_copies(&source, &destination).is_err());
+        assert!(ReplicaCopyPlanner::new(&source, &destination).is_err());
+        source.reverse();
+        destination.reverse();
+        assert!(plan_replica_copy_batch_after(&source, &destination, None, 1000, 2).is_err());
+        assert!(compare_replica_inventories(&source, &destination).is_err());
+    }
+
+    #[test]
+    fn accepts_identical_mixed_case_names_on_both_sides() {
+        let same = [object("Prod/Shard/g1/Part/Data.BIN")];
+        assert!(plan_replica_copies(&same, &same).unwrap().is_empty());
+        assert!(ReplicaCopyPlanner::new(&same, &same).unwrap().is_empty());
+        assert_eq!(compare_replica_inventories(&same, &same).unwrap(), ReplicaInventoryDifference::default());
     }
 }
