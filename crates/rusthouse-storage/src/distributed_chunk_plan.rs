@@ -123,6 +123,33 @@ pub fn coalesce_indexed_chunks(
     Ok(runs)
 }
 
+/// Validate sparse indexed chunks against their canonical transfer layout
+/// before combining them into network I/O runs.
+///
+/// The ordinary coalescer checks ordering and overlap. This stricter entry
+/// point also proves that each index refers to its exact planned byte range,
+/// including the shorter final chunk, and rejects forged resume metadata.
+pub fn coalesce_canonical_indexed_chunks(
+    chunks: &[IndexedChunk],
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    max_run_bytes: u64,
+) -> Result<Vec<ChunkRun>, &'static str> {
+    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    if chunks.len() > count {
+        return Err("too many indexed transfer chunks");
+    }
+    for chunk in chunks {
+        if chunk.index >= count
+            || chunk.chunk != chunk_at_index(total_bytes, chunk_bytes, chunk.index)
+        {
+            return Err("indexed chunk differs from canonical transfer layout");
+        }
+    }
+    coalesce_indexed_chunks(chunks, max_run_bytes)
+}
+
 #[cfg(test)]
 mod coalesced_chunk_runs_tests {
     use super::*;
@@ -173,6 +200,31 @@ mod coalesced_chunk_runs_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn canonical_coalescing_rejects_forged_resume_ranges() {
+        let sparse = [
+            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 7 } },
+            IndexedChunk { index: 2, chunk: Chunk { offset: 14, length: 6 } },
+        ];
+        let runs = coalesce_canonical_indexed_chunks(&sparse, 20, 7, 4, 20).unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].offset, 0);
+        assert_eq!(runs[1].offset, 14);
+
+        let mut forged = sparse;
+        forged[1].chunk.offset = 13;
+        assert!(coalesce_canonical_indexed_chunks(&forged, 20, 7, 4, 20).is_err());
+        forged = sparse;
+        forged[1].chunk.length = 7;
+        assert!(coalesce_canonical_indexed_chunks(&forged, 20, 7, 4, 20).is_err());
+        forged = sparse;
+        forged[1].index = 3;
+        assert!(coalesce_canonical_indexed_chunks(&forged, 20, 7, 4, 20).is_err());
+        assert!(coalesce_canonical_indexed_chunks(&sparse, 20, 0, 4, 20).is_err());
+        assert!(coalesce_canonical_indexed_chunks(&sparse, 20, 7, 2, 20).is_err());
+        assert!(coalesce_canonical_indexed_chunks(&[], 0, 7, 1, 20).unwrap().is_empty());
     }
 
     #[test]
