@@ -176,6 +176,124 @@ pub fn plan_replica_copies(
     Ok(changed.into_iter().cloned().collect())
 }
 
+/// Both sides of a validated, immutable replica inventory difference.
+///
+/// `destination_only` is diagnostic data, not a deletion plan. Retention
+/// and snapshot lineage must be checked separately before removing objects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaInventoryDelta {
+    pub copies: Vec<ObjectMetadata>,
+    pub destination_only: Vec<ObjectMetadata>,
+}
+
+/// Reconcile both directions in a single sorted merge.
+///
+/// Validate all keys and reject conflicting immutable content before
+/// returning either result. Borrowed metadata is sorted only for unordered
+/// inventories, and payloads are cloned only for differences.
+pub fn reconcile_replica_inventories(
+    source: &[ObjectMetadata],
+    destination: &[ObjectMetadata],
+) -> Result<ReplicaInventoryDelta, &'static str> {
+    if source.len() > 65_536 || destination.len() > 65_536 {
+        return Err("replica inventory too large");
+    }
+    fn sorted_refs(objects: &[ObjectMetadata]) -> Result<Vec<&ObjectMetadata>, &'static str> {
+        let mut ordered = objects.iter().collect::<Vec<_>>();
+        if !ordered.windows(2).all(|pair| pair[0].key < pair[1].key) {
+            ordered.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+        }
+        if ordered.iter().any(|object| !valid_key(&object.key))
+            || ordered.windows(2).any(|pair| pair[0].key == pair[1].key)
+        {
+            return Err("unsafe or duplicate replica object key");
+        }
+        Ok(ordered)
+    }
+    let src = sorted_refs(source)?;
+    let dst = sorted_refs(destination)?;
+    let (mut left, mut right) = (0usize, 0usize);
+    let mut result = ReplicaInventoryDelta {
+        copies: Vec::new(),
+        destination_only: Vec::new(),
+    };
+    while left < src.len() || right < dst.len() {
+        match (src.get(left), dst.get(right)) {
+            (Some(a), Some(b)) => match a.key.cmp(&b.key) {
+                std::cmp::Ordering::Less => {
+                    result.copies.push((**a).clone());
+                    left += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    result.destination_only.push((**b).clone());
+                    right += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if !a.same_contents(b) {
+                        return Err("replica copy conflicts with an existing immutable object");
+                    }
+                    left += 1;
+                    right += 1;
+                }
+            },
+            (Some(a), None) => {
+                result.copies.push((**a).clone());
+                left += 1;
+            }
+            (None, Some(b)) => {
+                result.destination_only.push((**b).clone());
+                right += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod bidirectional_replica_reconciliation_tests {
+    use super::*;
+
+    fn object(key: &str, bytes: u64) -> ObjectMetadata {
+        ObjectMetadata { key: key.into(), bytes, crc32c: bytes as u32 ^ 0x1234_5678 }
+    }
+
+    #[test]
+    fn both_directions_match_independent_copy_plans() {
+        for length in [0usize, 1, 8, 9, 257, 1025] {
+            let source = (0..length).filter(|i| i % 3 != 0)
+                .map(|i| object(&format!("src/{i:05}"), i as u64))
+                .collect::<Vec<_>>();
+            let destination = (0..length).filter(|i| i % 4 != 0)
+                .map(|i| object(&format!("src/{i:05}"), i as u64))
+                .collect::<Vec<_>>();
+            let expected_copies = plan_replica_copies(&source, &destination).unwrap();
+            let expected_orphans = plan_replica_copies(&destination, &source).unwrap();
+            for reverse_source in [false, true] {
+                for reverse_destination in [false, true] {
+                    let mut a = source.clone();
+                    let mut b = destination.clone();
+                    if reverse_source { a.reverse(); }
+                    if reverse_destination { b.reverse(); }
+                    let delta = reconcile_replica_inventories(&a, &b).unwrap();
+                    assert_eq!(delta.copies, expected_copies);
+                    assert_eq!(delta.destination_only, expected_orphans);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn conflicts_unsafe_keys_and_duplicates_reject_entire_result() {
+        let valid = object("part/data.bin", 10);
+        let different = object("part/data.bin", 11);
+        assert!(reconcile_replica_inventories(&[valid.clone()], &[different]).is_err());
+        assert!(reconcile_replica_inventories(&[valid.clone(), valid], &[]).is_err());
+        assert!(reconcile_replica_inventories(&[], &[object("../outside", 1)]).is_err());
+        assert!(reconcile_replica_inventories(&[], &[object("part/CON.txt", 1)]).is_err());
+    }
+}
+
 // Greedy ordering is by key, with oversized objects skipped. A small batch
 // can be found from a progressively expanded prefix without sorting the
 // entire inventory. Returning fewer than max_objects requires another page.
