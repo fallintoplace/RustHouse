@@ -4,6 +4,7 @@
 mod dispatch;
 mod query_policy;
 mod sorted_merge;
+mod multi_product;
 mod multi_sumsquares;
 mod multi_countif;
 mod multi_extrema;
@@ -2206,6 +2207,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_sorted_scan(&select)
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
+                || is_safe_grouped_multi_product(&select)
                 || is_safe_grouped_multi_sumsquares(&select)
                 || is_safe_grouped_multi_countif(&select)
                 || is_safe_grouped_multi_extremum(&select)
@@ -2239,6 +2241,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => None,
     };
     let grouped_count_query = is_safe_grouped_count(&select);
+    let grouped_multi_product_query = is_safe_grouped_multi_product(&select);
     let grouped_multi_sumsquares_query = is_safe_grouped_multi_sumsquares(&select);
     let grouped_multi_countif_query = is_safe_grouped_multi_countif(&select);
     let grouped_multi_extremum_query = is_safe_grouped_multi_extremum(&select);
@@ -2351,6 +2354,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 ..
             },
         ) => Some((table.as_str(), value_column.as_str())),
+        (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
+            if grouped_multi_product_query => Some((table.as_str(), items[0].1.as_str())),
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
             if grouped_multi_sumsquares_query => Some((table.as_str(), items[0].1.as_str())),
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
@@ -2609,6 +2614,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multi_product_query {
+        match (&select.projection, sum_type.as_deref()) {
+            (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
+                multi_product::merge_multi_key_product(
+                    &shards, columns, &items[0].1, kind, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedProduct),
         }
     } else if grouped_count_query {
         let limit = max_rows.min(250_000);

@@ -346,6 +346,26 @@ pub(super) fn is_safe_grouped_multi_sumsquares(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
+/// A single PRODUCT per tuple can be reduced associatively across shards.
+pub(super) fn is_safe_grouped_multi_product(select: &Select) -> bool {
+    matches!(&select.projection,
+        Projection::GroupedMultiAggregates { columns, items, aliases, filters }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && items[0].0 == AggregateFunction::Product
+            && aliases.iter().all(Option::is_none)
+            && filters.iter().all(Option::is_none))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
 pub(super) fn is_safe_grouped_count(select: &Select) -> bool {
     matches!(select.projection, Projection::GroupedCount { .. })
         && matches!(select.source, Some(Source::Table(_)))
