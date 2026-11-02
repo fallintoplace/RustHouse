@@ -86,7 +86,10 @@ pub fn plan_compaction_pairs(
     for pair in ordered.windows(2) {
         let left = &parts[pair[0]];
         let right = &parts[pair[1]];
-        if left.partition != right.partition || left.level != right.level {
+        if left.partition != right.partition
+            || left.level != right.level
+            || left.last_block.checked_add(1) != Some(right.first_block)
+        {
             continue;
         }
         let cost = left
@@ -194,6 +197,26 @@ mod tests {
         parts[1].partition = "p".into();
         parts[1].level = 1;
         assert!(plan_compaction_pairs(&parts, 10, 10, 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn does_not_span_missing_block_ranges_or_overflow_block_ids() {
+        let parts = [
+            part("a", "p", 1, 1),
+            part("b", "p", 3, 1),
+            part("c", "p", 4, 1),
+        ];
+        let planned = plan_compaction_pairs(&parts, 20, 20, 2).unwrap();
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].left, "b");
+        assert_eq!(planned[0].right, "c");
+
+        let high = [
+            part("high1", "p", u64::MAX - 1, 1),
+            part("high2", "p", u64::MAX, 1),
+        ];
+        let planned = plan_compaction_pairs(&high, 20, 20, 1).unwrap();
+        assert_eq!(planned[0].last_block, u64::MAX);
     }
 
     #[test]
