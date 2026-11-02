@@ -294,3 +294,178 @@ mod tests {
         assert_eq!(chunks.iter().map(|chunk| chunk.length).sum::<u64>(), 10_001);
     }
 }
+
+
+/// Exact in-memory reuse of source bytes or transfer of target bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChunkDeltaOperation {
+    Reuse {
+        source_offset: u64,
+        target_offset: u64,
+        length: u64,
+    },
+    Copy {
+        target_offset: u64,
+        length: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkDeltaPlan {
+    pub operations: Vec<ChunkDeltaOperation>,
+    pub bytes_reused: u64,
+    pub bytes_to_copy: u64,
+}
+
+fn chunk_lookup_hash(bytes: &[u8]) -> u64 {
+    // A fast lookup hint only. Reuse ALWAYS requires exact byte equality.
+    let mut state = 0xcbf2_9ce4_8422_2325u64;
+    for &byte in bytes {
+        state = (state ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
+    }
+    state
+}
+
+/// Plan exact reusable chunks when an immutable object changes.
+///
+/// Uses content-defined boundaries and lookup hashes to find candidates,
+/// then compares full bytes before reusing source offsets. Hash collisions
+/// can reduce performance but cannot lead to incorrectly reused data.
+/// Adjacent changed target chunks are coalesced into one transfer range.
+pub fn plan_verified_chunk_delta(
+    source: &[u8],
+    target: &[u8],
+    min_bytes: usize,
+    average_bytes: usize,
+    max_bytes: usize,
+) -> Result<ChunkDeltaPlan, &'static str> {
+    use std::collections::HashMap;
+
+    let old_chunks = plan_content_chunks(source, min_bytes, average_bytes, max_bytes)?;
+    let new_chunks = plan_content_chunks(target, min_bytes, average_bytes, max_bytes)?;
+    let mut candidates: HashMap<(u64, u64), Vec<u64>> =
+        HashMap::with_capacity(old_chunks.len());
+    for chunk in old_chunks {
+        let begin = chunk.offset as usize;
+        let end = (chunk.offset + chunk.length) as usize;
+        let key = (chunk.length, chunk_lookup_hash(&source[begin..end]));
+        candidates.entry(key).or_default().push(chunk.offset);
+    }
+
+    let mut operations = Vec::with_capacity(new_chunks.len());
+    let mut bytes_reused = 0u64;
+    let mut bytes_to_copy = 0u64;
+    for chunk in new_chunks {
+        let begin = chunk.offset as usize;
+        let end = (chunk.offset + chunk.length) as usize;
+        let bytes = &target[begin..end];
+        let key = (chunk.length, chunk_lookup_hash(bytes));
+        let old_offset = candidates.get(&key).and_then(|offsets| {
+            offsets.iter().copied().find(|&offset| {
+                let start = offset as usize;
+                let finish = start + bytes.len();
+                &source[start..finish] == bytes
+            })
+        });
+        if let Some(source_offset) = old_offset {
+            operations.push(ChunkDeltaOperation::Reuse {
+                source_offset,
+                target_offset: chunk.offset,
+                length: chunk.length,
+            });
+            bytes_reused += chunk.length;
+        } else {
+            bytes_to_copy += chunk.length;
+            if let Some(ChunkDeltaOperation::Copy {
+                target_offset,
+                length,
+            }) = operations.last_mut()
+            {
+                if *target_offset + *length == chunk.offset {
+                    *length += chunk.length;
+                    continue;
+                }
+            }
+            operations.push(ChunkDeltaOperation::Copy {
+                target_offset: chunk.offset,
+                length: chunk.length,
+            });
+        }
+    }
+    debug_assert_eq!(bytes_reused + bytes_to_copy, target.len() as u64);
+    Ok(ChunkDeltaPlan {
+        operations,
+        bytes_reused,
+        bytes_to_copy,
+    })
+}
+
+#[cfg(test)]
+mod chunk_delta_tests {
+    use super::*;
+
+    fn fixture() -> Vec<u8> {
+        let mut value = 123456789u32;
+        (0..50_000)
+            .map(|_| {
+                value = value.wrapping_mul(1664525).wrapping_add(1013904223);
+                (value >> 16) as u8
+            })
+            .collect()
+    }
+
+    fn reconstruct(source: &[u8], target: &[u8], plan: &ChunkDeltaPlan) -> Vec<u8> {
+        let mut output = vec![0; target.len()];
+        for operation in &plan.operations {
+            match *operation {
+                ChunkDeltaOperation::Reuse {
+                    source_offset,
+                    target_offset,
+                    length,
+                } => {
+                    let from = source_offset as usize;
+                    let to = target_offset as usize;
+                    output[to..to + length as usize]
+                        .copy_from_slice(&source[from..from + length as usize]);
+                }
+                ChunkDeltaOperation::Copy {
+                    target_offset,
+                    length,
+                } => {
+                    let to = target_offset as usize;
+                    output[to..to + length as usize]
+                        .copy_from_slice(&target[to..to + length as usize]);
+                }
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn insertion_and_local_edits_reuse_unchanged_regions() {
+        let source = fixture();
+        let mut target = b"inserted-prefix".to_vec();
+        target.extend_from_slice(&source);
+        target[20_000] ^= 1;
+        let plan = plan_verified_chunk_delta(&source, &target, 48, 128, 512).unwrap();
+        assert_eq!(reconstruct(&source, &target, &plan), target);
+        assert!(plan.bytes_reused > 20_000);
+        assert!(plan.bytes_to_copy < target.len() as u64);
+        assert_eq!(plan.bytes_reused + plan.bytes_to_copy, target.len() as u64);
+        assert_eq!(
+            plan,
+            plan_verified_chunk_delta(&source, &target, 48, 128, 512).unwrap()
+        );
+    }
+
+    #[test]
+    fn empty_and_invalid_configs_are_safe() {
+        let empty = plan_verified_chunk_delta(&[], &[], 48, 128, 512).unwrap();
+        assert!(empty.operations.is_empty());
+        let new = plan_verified_chunk_delta(&[], b"hello", 48, 128, 512).unwrap();
+        assert_eq!(new.bytes_to_copy, 5);
+        assert_eq!(new.bytes_reused, 0);
+        assert!(plan_verified_chunk_delta(b"abc", b"xyz", 0, 128, 512).is_err());
+        assert!(plan_verified_chunk_delta(b"abc", b"xyz", 48, 127, 512).is_err());
+    }
+}
