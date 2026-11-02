@@ -17,6 +17,7 @@ pub mod distributed_inventory;
 pub mod distributed_lineage;
 pub mod distributed_membership;
 pub mod distributed_object_key;
+pub mod distributed_parity;
 pub mod distributed_quorum;
 pub mod distributed_weighted_quorum;
 pub mod distributed_range_read;
