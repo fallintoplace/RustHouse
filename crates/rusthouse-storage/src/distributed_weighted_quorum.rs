@@ -19,6 +19,16 @@ pub struct WeightedQuorumObservation {
     pub can_write: bool,
 }
 
+/// Weight-quorum result with an additional observed failure-zone condition.
+/// This does not change the underlying quorum intersection guarantees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZoneQuorumObservation {
+    pub quorum: WeightedQuorumObservation,
+    pub zones_observed: usize,
+    pub can_read_across_zones: bool,
+    pub can_write_across_zones: bool,
+}
+
 fn total_weight(members: &[Member]) -> Result<u64, &'static str> {
     validate_membership(members)?;
     members.iter().try_fold(0u64, |sum, member| {
@@ -45,6 +55,44 @@ impl WeightedQuorumPolicy {
             return Err("unsafe weighted quorum policy");
         }
         Ok(Self { reads, writes })
+    }
+
+    /// Require acknowledgements from at least min_zones distinct failure zones.
+    ///
+    /// This is an optional observation policy. It does not by itself establish
+    /// consensus or failure-zone-safe reconfiguration.
+    pub fn observe_with_zone_requirement(
+        self,
+        members: &[Member],
+        acknowledgements: &[&str],
+        min_zones: usize,
+    ) -> Result<ZoneQuorumObservation, &'static str> {
+        use std::collections::HashSet;
+
+        let quorum = self.observe(members, acknowledgements)?;
+        let available_zones = members
+            .iter()
+            .map(|member| member.zone.as_str())
+            .collect::<HashSet<_>>();
+        if min_zones == 0 || min_zones > available_zones.len() {
+            return Err("invalid replica zone quorum requirement");
+        }
+        let mut observed = HashSet::new();
+        for &name in acknowledgements {
+            let member = members
+                .iter()
+                .find(|member| member.node == name)
+                .ok_or("acknowledgement from unknown replica")?;
+            observed.insert(member.zone.as_str());
+        }
+        let zones_observed = observed.len();
+        let enough_zones = zones_observed >= min_zones;
+        Ok(ZoneQuorumObservation {
+            quorum,
+            zones_observed,
+            can_read_across_zones: quorum.can_read && enough_zones,
+            can_write_across_zones: quorum.can_write && enough_zones,
+        })
     }
 
     /// Count each known member at most once, even if a transport retries an ACK.
@@ -115,6 +163,29 @@ mod tests {
         assert_eq!(write.acknowledged_weight, 6);
         assert!(write.can_read && write.can_write);
         assert!(!policy.observe(&members, &[]).unwrap().can_read);
+    }
+
+    #[test]
+    fn zone_requirement_prevents_single_failure_zone_success() {
+        let members = members();
+        let policy = WeightedQuorumPolicy::new(&members, 3, 5).unwrap();
+        let heavy = policy
+            .observe_with_zone_requirement(&members, &["a", "a"], 2)
+            .unwrap();
+        assert!(heavy.quorum.can_read);
+        assert!(!heavy.can_read_across_zones);
+        assert_eq!(heavy.zones_observed, 1);
+
+        let diverse = policy
+            .observe_with_zone_requirement(&members, &["a", "b", "a"], 2)
+            .unwrap();
+        assert_eq!(diverse.zones_observed, 2);
+        assert!(diverse.can_read_across_zones);
+        assert!(diverse.can_write_across_zones);
+
+        assert!(policy.observe_with_zone_requirement(&members, &[], 0).is_err());
+        assert!(policy.observe_with_zone_requirement(&members, &[], 4).is_err());
+        assert!(policy.observe_with_zone_requirement(&members, &["unknown"], 2).is_err());
     }
 
     #[test]
