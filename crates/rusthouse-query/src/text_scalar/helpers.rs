@@ -539,15 +539,29 @@ pub(super) fn base58_encode(input: &str) -> Result<String, ParseError> {
 }
 
 
+// Decode each Base58 symbol with one indexed lookup, not a 58-byte search.
+const BASE58_DIGITS: [u8; 256] = {
+    let mut table = [u8::MAX; 256];
+    let alphabet = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut index = 0;
+    while index < alphabet.len() {
+        table[alphabet[index] as usize] = index as u8;
+        index += 1;
+    }
+    table
+};
+
 pub(super) fn base58_decode(input: &str) -> Result<String, ParseError> {
-    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     if input.len() > 4096 {
         return Err(ParseError("base58Decode constant exceeds 4096 bytes".into()));
     }
     let mut decoded = Vec::<u8>::new();
     for symbol in input.bytes() {
-        let mut carry = ALPHABET.iter().position(|&value| value == symbol)
-            .ok_or_else(|| ParseError("base58Decode contains an invalid digit".into()))?;
+        let digit = BASE58_DIGITS[usize::from(symbol)];
+        if digit == u8::MAX {
+            return Err(ParseError("base58Decode contains an invalid digit".into()));
+        }
+        let mut carry = usize::from(digit);
         for byte in &mut decoded {
             carry += usize::from(*byte) * 58;
             *byte = (carry % 256) as u8;
@@ -640,4 +654,26 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
     }
     String::from_utf8(bytes)
         .map_err(|_| ParseError("unhex constant is not valid UTF-8".into()))
+}
+
+#[cfg(test)]
+mod base58_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn byte_lookup_matches_reference_for_every_input_byte() {
+        let alphabet = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        for byte in 0..=u8::MAX {
+            let expected = alphabet.iter().position(|&value| value == byte);
+            assert_eq!(
+                (BASE58_DIGITS[usize::from(byte)] != u8::MAX)
+                    .then_some(BASE58_DIGITS[usize::from(byte)] as usize),
+                expected
+            );
+        }
+        assert_eq!(base58_decode("111").unwrap().as_bytes(), &[0, 0, 0]);
+        assert_eq!(base58_decode("2").unwrap().as_bytes(), &[1]);
+        assert!(base58_decode("0").is_err());
+        assert!(base58_decode("é").is_err());
+    }
 }
