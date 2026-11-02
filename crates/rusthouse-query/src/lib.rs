@@ -1864,7 +1864,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     }
 
     let mut comma_offset = None;
-    let mut limit = if parser.keyword("LIMIT") {
+    // PostgreSQL LIMIT ALL is equivalent to omitting LIMIT.
+    let mut limit = if parser.keyword("LIMIT") && !parser.keyword("ALL") {
         let value = parser.number()?;
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ParseError("LIMIT must be a non-negative integer".into()));
@@ -2106,5 +2107,30 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod limit_all_compat_tests {
+    use super::{execute, parse_select};
+
+    #[test]
+    fn limit_all_is_the_same_as_no_row_limit() {
+        for (sql, plain) in [
+            ("SELECT number FROM numbers(4) LIMIT ALL", "SELECT number FROM numbers(4)"),
+            ("SELECT number FROM numbers(4) ORDER BY number DESC LIMIT ALL OFFSET 2",
+             "SELECT number FROM numbers(4) ORDER BY number DESC OFFSET 2"),
+        ] {
+            assert_eq!(parse_select(sql).unwrap(), parse_select(plain).unwrap());
+        }
+        let mut output = Vec::new();
+        let query = parse_select("SELECT number FROM numbers(4) LIMIT ALL").unwrap();
+        execute(&query, None, &mut output).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "number\n0\n1\n2\n3\n");
+    }
+
+    #[test]
+    fn limit_all_does_not_accept_a_comma_limit() {
+        assert!(parse_select("SELECT number FROM numbers(3) LIMIT ALL, 1").is_err());
     }
 }
