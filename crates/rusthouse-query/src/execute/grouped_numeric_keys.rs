@@ -391,7 +391,11 @@ pub(super) fn execute<W: Write>(
                     if *function == AggregateFunction::Median {
                         charge_median_value(&mut retained_median_bytes)?;
                     }
-                    state.update(value)?;
+                    if *function == AggregateFunction::Sum {
+                        state.update_sum(value)?;
+                    } else {
+                        state.update(value)?;
+                    }
                 }
             }
         }
