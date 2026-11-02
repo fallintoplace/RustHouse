@@ -204,6 +204,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "BASE64_ENCODE"
                 | "BASE64URLENCODE"
                 | "BASE64ENCODE"
+                | "BASE58ENCODE"
                 | "HASTOKENCASEINSENSITIVE"
                 | "ENDS_WITH"
                 | "ENDSWITHUTF8"
@@ -624,6 +625,40 @@ fn regexp_quote_meta(input: &str) -> Result<String, ParseError> {
         }
     }
     Ok(output)
+}
+
+
+fn base58_encode(input: &str) -> Result<String, ParseError> {
+    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    // Base conversion is quadratic. Keep constant evaluation CPU-bounded.
+    if input.len() > 4096 {
+        return Err(ParseError("base58Encode constant exceeds 4096 bytes".into()));
+    }
+    let mut digits = Vec::<u8>::new();
+    for &byte in input.as_bytes() {
+        let mut carry = usize::from(byte);
+        for digit in &mut digits {
+            carry += usize::from(*digit) * 256;
+            *digit = (carry % 58) as u8;
+            carry /= 58;
+        }
+        while carry != 0 {
+            digits.push((carry % 58) as u8);
+            carry /= 58;
+        }
+    }
+    let zeros = input.bytes().take_while(|&byte| byte == 0).count();
+    let length = zeros.checked_add(digits.len())
+        .ok_or_else(|| ParseError("base58Encode output is too large".into()))?;
+    if length > MAX_TEXT_BYTES {
+        return Err(ParseError("base58Encode output is too large".into()));
+    }
+    let mut encoded = String::with_capacity(length);
+    encoded.extend(std::iter::repeat_n('1', zeros));
+    for &digit in digits.iter().rev() {
+        encoded.push(char::from(ALPHABET[usize::from(digit)]));
+    }
+    Ok(encoded)
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
@@ -4498,6 +4533,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "BASE58ENCODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "base58Encode requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(base58_encode(&input)?),
+                None => ConstantValue::Null,
+            }
+        }
         "BASE64_ENCODE" | "BASE64ENCODE" | "BASE64URLENCODE" | "TO_BASE64" | "TO_BASE64URL" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
@@ -6854,5 +6897,40 @@ mod clickhouse_regexp_quote_meta_tests {
         assert_eq!(value("SELECT regexpQuoteMeta(NULL)"), ConstantValue::Null);
         assert!(parse_select("SELECT regexpQuoteMeta()").is_err());
         assert!(parse_select("SELECT regexpQuoteMeta('a', 'b')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_base58_encode_tests {
+    use super::*;
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encodes_bitcoin_alphabet_with_leading_zero_bytes() {
+        assert_eq!(base58_encode("").unwrap(), "");
+        assert_eq!(base58_encode("Hello").unwrap(), "9Ajdvzr");
+        assert_eq!(base58_encode("Encoded").unwrap(), "3dc8KtHrwM");
+        assert_eq!(base58_encode("\0\0A").unwrap(), "1128");
+        assert_eq!(base58_encode("\0\0").unwrap(), "11");
+    }
+
+    #[test]
+    fn handles_nullable_sql_constant_and_input_bound() {
+        assert_eq!(
+            value("SELECT base58Encode('Hello')"),
+            ConstantValue::Text("9Ajdvzr".into())
+        );
+        assert_eq!(value("SELECT base58Encode(NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT base58Encode()").is_err());
+        assert!(parse_select("SELECT base58Encode('a', 'b')").is_err());
+        assert!(base58_encode(&"a".repeat(4097)).is_err());
     }
 }
