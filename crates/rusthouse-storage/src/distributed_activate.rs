@@ -551,3 +551,152 @@ mod active_pointer_stack_decoder_tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+
+/// Read-only verification result for a possible follower generation promotion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationPreview {
+    pub current_generation: Option<u64>,
+    pub candidate_generation: u64,
+    pub copy_requirements: crate::distributed_snapshot_copy::SnapshotCopy,
+}
+
+/// Verify an offline candidate and its resource bounds without publishing it.
+///
+/// This checks snapshot parts and the current pointer at the time of preview.
+/// It is not an authorization to promote later: the caller must revalidate
+/// under the local exclusive database lock immediately before activation.
+pub fn preview_verified_generation_activation(
+    root: &Path,
+    generation: u64,
+    max_parts: usize,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<ActivationPreview, PartError> {
+    if generation == 0 {
+        return Err(PartError::InvalidScan("generation must be positive".into()));
+    }
+    let current_generation = read_active_generation(root)?;
+    if current_generation.is_some_and(|current| generation <= current) {
+        return Err(PartError::InvalidScan(
+            "candidate generation is not newer than active".into(),
+        ));
+    }
+    let candidate = root
+        .join(".rusthouse-versions")
+        .join(format!("g{generation}"));
+    let metadata =
+        fs::symlink_metadata(&candidate).map_err(|error| io_error(&candidate, error))?;
+    if !metadata.file_type().is_dir() {
+        return Err(PartError::InvalidScan(
+            "activation candidate is not a real directory".into(),
+        ));
+    }
+    let copy_requirements = crate::distributed_snapshot_copy::preview_frozen_snapshot(
+        &candidate,
+        max_parts,
+        max_files,
+        max_bytes,
+    )?;
+    if read_active_generation(root)? != current_generation {
+        return Err(PartError::InvalidScan(
+            "active generation changed during activation preflight".into(),
+        ));
+    }
+    Ok(ActivationPreview {
+        current_generation,
+        candidate_generation: generation,
+        copy_requirements,
+    })
+}
+
+/// Refuse an outdated follower promotion if the current generation differs.
+///
+/// The caller MUST hold the exclusive database write lock through this call.
+/// This check is not an atomic compare-and-swap against concurrent writers
+/// that ignore that lock, and it does not implement distributed consensus.
+pub fn activate_verified_generation_if_current(
+    root: &Path,
+    expected_current: Option<u64>,
+    next_generation: u64,
+) -> Result<(), PartError> {
+    if read_active_generation(root)? != expected_current {
+        return Err(PartError::InvalidScan(
+            "stale expected follower generation".into(),
+        ));
+    }
+    activate_verified_generation(root, next_generation)
+}
+
+#[cfg(test)]
+mod conditional_activation_preflight_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    fn create_generation(root: &Path, generation: u64, value: u64) -> std::path::PathBuf {
+        let dir = root
+            .join(".rusthouse-versions")
+            .join(format!("g{generation}"));
+        fs::create_dir_all(&dir).unwrap();
+        write_wide_part(
+            &dir.join("all_0_0_0"),
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[vec![Some(value.to_string())]],
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn previews_both_generations_and_rejects_stale_conditional_promotions() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-conditional-activation-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        create_generation(&root, 1, 10);
+        create_generation(&root, 2, 20);
+        let preview =
+            preview_verified_generation_activation(&root, 1, 2, 64, 1_000_000).unwrap();
+        assert_eq!(preview.current_generation, None);
+        assert_eq!(preview.candidate_generation, 1);
+        assert_eq!(preview.copy_requirements.parts, 1);
+        assert!(!root.join(".rusthouse-active").exists());
+        activate_verified_generation_if_current(&root, None, 1).unwrap();
+
+        let next =
+            preview_verified_generation_activation(&root, 2, 2, 64, 1_000_000).unwrap();
+        assert_eq!(next.current_generation, Some(1));
+        assert!(activate_verified_generation_if_current(&root, None, 2).is_err());
+        assert_eq!(read_active_generation(&root).unwrap(), Some(1));
+        activate_verified_generation_if_current(&root, Some(1), 2).unwrap();
+        assert_eq!(read_active_generation(&root).unwrap(), Some(2));
+        assert!(activate_verified_generation_if_current(&root, Some(1), 2).is_err());
+        assert!(preview_verified_generation_activation(&root, 1, 2, 64, 1_000_000).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupted_or_oversized_candidate_never_changes_active_pointer() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-activation-preflight-bounds-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let candidate = create_generation(&root, 1, 3);
+        assert!(preview_verified_generation_activation(&root, 1, 2, 0, 0).is_err());
+        assert!(preview_verified_generation_activation(&root, 0, 2, 64, 1_000_000).is_err());
+        fs::write(candidate.join("all_0_0_0/extra.bin"), b"unknown").unwrap();
+        fs::write(candidate.join("all_0_0_0/extra.mrk2"), b"bad-mark").unwrap();
+        assert!(
+            preview_verified_generation_activation(&root, 1, 2, 64, 1_000_000).is_err()
+        );
+        assert!(!root.join(".rusthouse-active").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
