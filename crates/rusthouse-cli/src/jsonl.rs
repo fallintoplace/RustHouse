@@ -164,7 +164,6 @@ fn write_json_value_with_buffer<W: Write>(
     }
 }
 
-#[cfg(test)]
 pub(super) fn write_json_value<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
     write_json_value_with_buffer(output, value, &mut Vec::new())
 }
