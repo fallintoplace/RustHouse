@@ -6,7 +6,11 @@ import math
 import re
 import sys
 from urllib.parse import quote
-from loopback_origin import require_loopback_http_origin
+# Work both as `python tools/schema_diff.py` and as `import tools.schema_diff`.
+if __package__:
+    from .loopback_origin import require_loopback_http_origin
+else:
+    from loopback_origin import require_loopback_http_origin
 from urllib.request import HTTPRedirectHandler, build_opener, ProxyHandler
 
 
