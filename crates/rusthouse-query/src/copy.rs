@@ -52,6 +52,8 @@ fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseErro
         ("TSV", CopyFormat::Tsv),
         ("SSV", CopyFormat::Ssv),
         ("JSONEACHROW", CopyFormat::JsonEachRow),
+        ("JSONL", CopyFormat::JsonEachRow),
+        ("NDJSON", CopyFormat::JsonEachRow),
     ] {
         if parser.keyword(keyword) {
             return Ok(format);
@@ -237,5 +239,26 @@ mod tests {
             parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)")
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod copy_json_lines_alias_tests {
+    use super::*;
+
+    #[test]
+    fn jsonl_and_ndjson_are_json_each_row_aliases() {
+        let native = parse_copy_from(
+            "COPY t FROM 'events.jsonl' WITH (FORMAT JSONEachRow)"
+        ).unwrap().unwrap();
+        for alias in ["JSONL", "NDJSON"] {
+            let parsed = parse_copy_from(&format!(
+                "COPY t FROM 'events.jsonl' WITH (FORMAT {alias})"
+            )).unwrap().unwrap();
+            assert_eq!(parsed, native);
+            assert!(parse_copy_from(&format!(
+                "COPY t FROM 'events.jsonl' WITH (FORMAT {alias}, HEADER TRUE)"
+            )).is_err());
+        }
     }
 }
