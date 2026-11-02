@@ -1716,6 +1716,112 @@ fn merge_grouped_distinct_pairs(
     Ok(output)
 }
 
+/// Complete exact grouped DISTINCT across multiple dimensions. Preserve
+/// first-seen logical tuple order and count each unique (tuple, value) once.
+fn merge_multi_grouped_distinct_pairs(
+    shards: &[(usize, Vec<u8>)],
+    columns: &[String],
+    value_column: &str,
+    max_rows: usize,
+) -> Result<Vec<u8>, MergeError> {
+    const MAX_GROUPS: usize = 100_000;
+    const MAX_PAIRS: usize = 200_000;
+    const MAX_KEY_BYTES: usize = 64 * 1024 * 1024;
+    if !(2..=8).contains(&columns.len()) {
+        return Err(MergeError::InvalidGroupedCount);
+    }
+    let prefix = columns.join("\t");
+    let incoming_header = format!("{prefix}\t{value_column}\n");
+    let mut positions = HashMap::<Vec<NormalizedGroupKey<'_>>, usize>::new();
+    let mut groups = Vec::<(&[u8], u64)>::new();
+    let mut seen = HashSet::<(usize, NormalizedGroupKey<'_>)>::new();
+    let mut retained_bytes = 0usize;
+    for (cap, body) in shards {
+        if *cap == 0 || !body.starts_with(incoming_header.as_bytes()) || !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidGroupedCount);
+        }
+        let rows = &body[incoming_header.len()..];
+        if rows.is_empty() {
+            continue;
+        }
+        let mut count = 0usize;
+        for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+            count = count
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if count >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            let fields = row.split(|&byte| byte == b'\t').collect::<Vec<_>>();
+            if fields.len() != columns.len() + 1 {
+                return Err(MergeError::InvalidGroupedCount);
+            }
+            let group = fields[..columns.len()]
+                .iter()
+                .map(|field| {
+                    normalized_group_key(field).map_err(|_| MergeError::InvalidGroupedCount)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let distinct = normalized_group_key(fields[columns.len()])
+                .map_err(|_| MergeError::InvalidGroupedCount)?;
+            let group_len = row
+                .len()
+                .checked_sub(fields[columns.len()].len() + 1)
+                .ok_or(MergeError::InvalidGroupedCount)?;
+            let id = if let Some(&found) = positions.get(&group) {
+                found
+            } else {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                retained_bytes = retained_bytes
+                    .checked_add(group_len)
+                    .filter(|&total| total <= MAX_KEY_BYTES)
+                    .ok_or(MergeError::CoordinatorLimit)?;
+                let id = groups.len();
+                positions.insert(group, id);
+                groups.push((&row[..group_len], 0));
+                id
+            };
+            if fields[columns.len()] == br"\N" {
+                continue;
+            }
+            if seen.insert((id, distinct)) {
+                if seen.len() > MAX_PAIRS {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                retained_bytes = retained_bytes
+                    .checked_add(fields[columns.len()].len())
+                    .filter(|&total| total <= MAX_KEY_BYTES)
+                    .ok_or(MergeError::CoordinatorLimit)?;
+                groups[id].1 = groups[id]
+                    .1
+                    .checked_add(1)
+                    .ok_or(MergeError::CountOverflow)?;
+            }
+        }
+    }
+    if groups.len() > max_rows {
+        return Err(MergeError::CoordinatorLimit);
+    }
+    let mut output = format!("{prefix}\tcountDistinct({value_column})\n").into_bytes();
+    for (key, count) in groups {
+        let digits = count.to_string();
+        if output
+            .len()
+            .checked_add(key.len() + digits.len() + 2)
+            .is_none_or(|size| size > MAX_RESPONSE_BYTES)
+        {
+            return Err(MergeError::CoordinatorLimit);
+        }
+        output.extend_from_slice(key);
+        output.push(b'\t');
+        output.extend_from_slice(digits.as_bytes());
+        output.push(b'\n');
+    }
+    Ok(output)
+}
+
 fn merge_grouped_integer_sums(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -2544,6 +2650,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             if is_safe_scan(&select)
                 || is_safe_count(&select)
                 || is_safe_distinct_scan(&select)
+                || is_safe_multi_grouped_distinct(&select)
                 || is_safe_grouped_distinct(&select)
                 || is_safe_count_distinct(&select)
                 || is_safe_uniq(&select)
@@ -2585,6 +2692,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         sorted_query.then(|| select.offset.unwrap_or(0) + select.limit.unwrap_or(0));
     let count_query = is_safe_count(&select) || is_safe_count_if(&select);
     let distinct_rows_query = is_safe_distinct_scan(&select);
+    let multi_grouped_distinct_query = is_safe_multi_grouped_distinct(&select);
     let grouped_distinct_query = is_safe_grouped_distinct(&select);
     let distinct_count_column = match &select.projection {
         Projection::CountDistinct { column } => Some(column.as_str()),
@@ -2613,6 +2721,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match sorted_scan_sql(sql, &select) {
             Some(query) => query,
             None => return Response::text("400 Bad Request", "unsupported distributed sort\n"),
+        }
+    } else if multi_grouped_distinct_query {
+        match multi_grouped_distinct_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported grouped DISTINCT\n"),
         }
     } else if grouped_distinct_query {
         match grouped_distinct_shard_sql(sql, &select) {
@@ -2874,6 +2987,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 merge_distinct_wide_integers(&shards, column, kind)
             }
             _ => merge_distinct_counts(&shards, column),
+        }
+    } else if multi_grouped_distinct_query {
+        match &select.projection {
+            Projection::GroupedMultiDistinctCount { columns, value_column } => {
+                merge_multi_grouped_distinct_pairs(
+                    &shards, columns, value_column, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedCount),
         }
     } else if grouped_distinct_query {
         match &select.projection {
@@ -5497,6 +5619,72 @@ mod distributed_grouped_distinct_count_tests {
                 &[(1, b"category\tlabel\na\tx\n".to_vec())], "category", "label", 10
             ),
             Err(MergeError::ShardRowLimit)
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_multi_key_distinct_tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_multi_grouped_distinct_without_changing_where_predicate() {
+        let sql = "SELECT region, category, count(DISTINCT label) FROM events WHERE id > 3 GROUP BY region, category";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_multi_grouped_distinct(&parsed));
+        assert_eq!(
+            multi_grouped_distinct_shard_sql(sql, &parsed).as_deref(),
+            Some("SELECT DISTINCT region, category, label FROM events WHERE id > 3"),
+        );
+    }
+
+    #[test]
+    fn merges_duplicate_pairs_but_retains_null_only_groups() {
+        let columns = vec!["region".into(), "category".into()];
+        let shards = [
+            (10, b"region\tcategory\tlabel\nwest\ta\tx\nwest\ta\ty\neast\tb\t\\N\n".to_vec()),
+            (10, b"region\tcategory\tlabel\nwest\ta\ty\nwest\ta\tz\neast\tb\t\\N\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_multi_grouped_distinct_pairs(&shards, &columns, "label", 10).unwrap(),
+            b"region\tcategory\tcountDistinct(label)\nwest\ta\t3\neast\tb\t0\n",
+        );
+    }
+
+    #[test]
+    fn encoded_string_keys_and_nulls_do_not_alias() {
+        let columns = vec!["a".into(), "b".into()];
+        let shards = [
+            (10, b"a\tb\tv\n\\N\tx\t1\n\\\\N\tx\t1\na\t\\x41\t2\n".to_vec()),
+            (10, b"a\tb\tv\n\\N\tx\t1\na\tA\t2\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_multi_grouped_distinct_pairs(&shards, &columns, "v", 10).unwrap(),
+            b"a\tb\tcountDistinct(v)\n\\N\tx\t1\n\\\\N\tx\t1\na\t\\x41\t1\n",
+        );
+    }
+
+    #[test]
+    fn corrupt_width_and_invalid_escape_fail_the_entire_query() {
+        let columns = vec!["a".into(), "b".into()];
+        for body in [
+            b"a\tb\tv\nA\t1\n".as_slice(),
+            b"a\tb\tv\nA\tB\tx\ty\n",
+            b"a\tb\tv\nA\tB\tbad\\q\n",
+        ] {
+            assert_eq!(
+                merge_multi_grouped_distinct_pairs(
+                    &[(10, body.to_vec())], &columns, "v", 10
+                ),
+                Err(MergeError::InvalidGroupedCount)
+            );
+        }
+        assert_eq!(
+            merge_multi_grouped_distinct_pairs(
+                &[(1, b"a\tb\tv\nA\tB\t1\n".to_vec())],
+                &columns, "v", 10,
+            ),
+            Err(MergeError::ShardRowLimit),
         );
     }
 }

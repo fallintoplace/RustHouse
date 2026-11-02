@@ -127,6 +127,48 @@ pub(super) fn is_safe_grouped_distinct(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
+/// A multi-key grouped DISTINCT must exchange raw unique tuples, not
+/// aggregate local per-group cardinalities which could overlap.
+pub(super) fn is_safe_multi_grouped_distinct(select: &Select) -> bool {
+    matches!(&select.projection,
+        Projection::GroupedMultiDistinctCount { columns, value_column }
+        if (2..=8).contains(&columns.len()) && !columns.contains(value_column))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+pub(super) fn multi_grouped_distinct_shard_sql(
+    sql: &str,
+    select: &Select,
+) -> Option<String> {
+    if !is_safe_multi_grouped_distinct(select) {
+        return None;
+    }
+    let Projection::GroupedMultiDistinctCount { columns, value_column } = &select.projection else {
+        return None;
+    };
+    let from = clause_offset(sql, b"FROM")?;
+    let group = clause_offset(&sql[from..], b"GROUP")? + from;
+    let rewritten = format!(
+        "SELECT DISTINCT {}, {value_column} {}",
+        columns.join(", "),
+        sql[from..group].trim_end()
+    );
+    let mut expected = select.clone();
+    let mut projected = columns.clone();
+    projected.push(value_column.clone());
+    expected.projection = Projection::Columns(projected);
+    expected.distinct = true;
+    verify_rewritten_select(rewritten, &expected)
+}
+
 /// Dispatch shard-local unique pairs, preserving the full WHERE predicate
 /// and verifying every AST field after rewriting.
 pub(super) fn grouped_distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
@@ -862,5 +904,6 @@ mod rewrite_sql_clause_scanner_tests {
         assert!(clause_offset("SELECT 'FROM' /* WHERE */", b"WHERE").is_none());
     }
 }
+
 
 
