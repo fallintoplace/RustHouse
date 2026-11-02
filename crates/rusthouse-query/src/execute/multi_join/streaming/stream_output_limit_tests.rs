@@ -17,6 +17,7 @@ fn streaming_inner_joins_can_emit_more_than_the_materialized_row_cap() {
     let selected = [(0, "fact.id".to_owned(), None)];
     let spec = OutputSpec {
         selected: &selected,
+        types: vec!["UInt64"],
         null_filter: None,
         offset: 0,
         limit: None,
@@ -58,6 +59,7 @@ fn streaming_inner_join_still_respects_explicit_limit() {
     let selected = [(0, "fact.id".to_owned(), None)];
     let spec = OutputSpec {
         selected: &selected,
+        types: vec!["UInt64"],
         null_filter: None,
         offset: 0,
         limit: Some(2),
