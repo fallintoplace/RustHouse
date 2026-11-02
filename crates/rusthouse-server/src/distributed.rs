@@ -113,6 +113,80 @@ fn validated_schema_kind<'a>(schema: &'a [u8], column: &str) -> Option<&'a str> 
     remaining.starts_with('}').then_some(kind)
 }
 
+/// Deduplicate 64/128-bit integers as fixed-width values instead of owned
+/// decimal TSV buffers. All peer schemas are checked before this reducer runs.
+fn merge_distinct_wide_integers(
+    shards: &[(usize, Vec<u8>)],
+    column: &str,
+    kind: &str,
+) -> Result<Vec<u8>, MergeError> {
+    const MAX_KEYS: usize = 100_000;
+    let header = format!("{column}\n");
+    let mut values = HashSet::<u128>::new();
+    let kind = kind
+        .strip_prefix("Nullable(")
+        .and_then(|name| name.strip_suffix(')'))
+        .unwrap_or(kind);
+    if !matches!(kind, "Int64" | "UInt64" | "Int128" | "UInt128") {
+        return Err(MergeError::InvalidDistinctCount);
+    }
+    for (cap, body) in shards {
+        if !body.starts_with(header.as_bytes()) || !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidDistinctCount);
+        }
+        let rows = &body[header.len()..];
+        if rows.is_empty() {
+            continue;
+        }
+        let mut count = 0usize;
+        for raw in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+            count = count
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if *cap == 0 || count >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            if raw == br"\N" {
+                continue;
+            }
+            let text = std::str::from_utf8(raw).map_err(|_| MergeError::InvalidDistinctCount)?;
+            // Canonical wire integers exclude whitespace, leading zeroes and
+            // signs on non-negative numbers. This also forbids ambiguous encodings.
+            let key = match kind {
+                "Int64" => text
+                    .parse::<i64>()
+                    .map(|number| number as u128)
+                    .map_err(|_| MergeError::InvalidDistinctCount)?,
+                "UInt64" => text
+                    .parse::<u64>()
+                    .map(u128::from)
+                    .map_err(|_| MergeError::InvalidDistinctCount)?,
+                "Int128" => text
+                    .parse::<i128>()
+                    .map(|number| number as u128)
+                    .map_err(|_| MergeError::InvalidDistinctCount)?,
+                _ => text
+                    .parse::<u128>()
+                    .map_err(|_| MergeError::InvalidDistinctCount)?,
+            };
+            let canonical = match kind {
+                "Int64" => (key as i64).to_string(),
+                "UInt64" => (key as u64).to_string(),
+                "Int128" => (key as i128).to_string(),
+                _ => key.to_string(),
+            };
+            if canonical != text {
+                return Err(MergeError::InvalidDistinctCount);
+            }
+            if values.len() >= MAX_KEYS && !values.contains(&key) {
+                return Err(MergeError::CoordinatorLimit);
+            }
+            values.insert(key);
+        }
+    }
+    Ok(format!("count(DISTINCT {column})\n{}\n", values.len()).into_bytes())
+}
+
 /// Exact global DISTINCT for the complete signed or unsigned 8/16-bit domain.
 ///
 /// Repeated values across shard-local DISTINCT scans are ordinary overlap, not
@@ -2521,6 +2595,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             ) => merge_distinct_bitmap16(&shards, column, kind),
             Some("Int32" | "Nullable(Int32)") => merge_distinct_bitmap32(&shards, column, true),
             Some("UInt32" | "Nullable(UInt32)") => merge_distinct_bitmap32(&shards, column, false),
+            Some(kind @ ("Int64" | "UInt64" | "Int128" | "UInt128"
+                | "Nullable(Int64)" | "Nullable(UInt64)"
+                | "Nullable(Int128)" | "Nullable(UInt128)")) => {
+                merge_distinct_wide_integers(&shards, column, kind)
+            }
             _ => merge_distinct_counts(&shards, column),
         }
     } else if uniq_query {
@@ -4862,6 +4941,84 @@ mod narrow_global_distinct_bitmap_tests {
         assert_eq!(
             merge_distinct_bitmap16(&[(10, b"id\n12\n".to_vec())], "id", "UInt32"),
             Err(MergeError::InvalidDistinctCount),
+        );
+    }
+}
+
+
+#[cfg(test)]
+mod global_wide_distinct_tests {
+    use super::*;
+
+    #[test]
+    fn combines_wide_integer_duplicates_and_nullable_rows() {
+        for (kind, rows, expected) in [
+            ("Int64", "-9223372036854775808\n0\n9223372036854775807\n", 3),
+            ("UInt64", "0\n18446744073709551615\n", 2),
+            (
+                "Nullable(Int128)",
+                "-170141183460469231731687303715884105728\n0\n170141183460469231731687303715884105727\n\\N\n",
+                3,
+            ),
+            (
+                "Nullable(UInt128)",
+                "0\n340282366920938463463374607431768211455\n\\N\n",
+                2,
+            ),
+        ] {
+            let wire = format!("id\n{rows}").into_bytes();
+            assert_eq!(
+                merge_distinct_wide_integers(&[(20, wire.clone()), (20, wire)], "id", kind)
+                    .unwrap(),
+                format!("count(DISTINCT id)\n{expected}\n").into_bytes(),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_bad_wide_integer_encodings_and_incorrect_widths() {
+        for (kind, value) in [
+            ("Int64", "9223372036854775808"),
+            ("UInt64", "-1"),
+            ("UInt64", "18446744073709551616"),
+            ("Int128", "170141183460469231731687303715884105728"),
+            ("UInt128", "340282366920938463463374607431768211456"),
+            ("Int64", "+1"),
+            ("Int64", "01"),
+            ("Int64", "-0"),
+            ("Int64", " 1"),
+        ] {
+            assert_eq!(
+                merge_distinct_wide_integers(
+                    &[(20, format!("id\n{value}\n").into_bytes())], "id", kind,
+                ),
+                Err(MergeError::InvalidDistinctCount),
+                "{kind} {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn honors_peer_row_caps_and_exact_one_hundred_thousand_key_budget() {
+        let values = (0..100_000u64)
+            .map(|value| format!("{value}\n"))
+            .collect::<String>();
+        let wire = format!("id\n{values}").into_bytes();
+        assert_eq!(
+            merge_distinct_wide_integers(
+                &[(100_002, wire.clone()), (100_002, wire.clone())], "id", "UInt64",
+            ).unwrap(),
+            b"count(DISTINCT id)\n100000\n"
+        );
+        assert_eq!(
+            merge_distinct_wide_integers(&[(100_000, wire)], "id", "UInt64"),
+            Err(MergeError::ShardRowLimit)
+        );
+        let additional = vec![(100_002, format!("id\n{values}").into_bytes()), (3, b"id\n100000\n".to_vec())];
+        assert_eq!(
+            merge_distinct_wide_integers(&additional, "id", "UInt64"),
+            Err(MergeError::CoordinatorLimit)
         );
     }
 }
