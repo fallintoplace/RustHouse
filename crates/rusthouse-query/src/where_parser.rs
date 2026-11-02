@@ -802,9 +802,11 @@ mod tpch_q19_predicate_budget_tests {
             .map(|n| format!("number >= {n}"))
             .collect::<Vec<_>>()
             .join(" AND ");
-        assert!(parse_select(&format!(
-            "SELECT number FROM numbers(35) WHERE {conditions}"
-        ))
-        .is_err());
+        assert!(
+            parse_select(&format!(
+                "SELECT number FROM numbers(35) WHERE {conditions}"
+            ))
+            .is_err()
+        );
     }
 }
