@@ -78,9 +78,8 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         index: 0,
     };
     if parser.keyword("DESCRIBE") || parser.keyword("DESC") {
-        if !parser.keyword("TABLE") {
-            return Err(ParseError("expected TABLE after DESCRIBE".into()));
-        }
+        // TABLE is optional in both DESCRIBE and DESC.
+        parser.keyword("TABLE");
         let name = identifier(&mut parser)?;
         finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::DescribeTable { name }));
@@ -611,7 +610,6 @@ mod show_columns_tests {
             "SHOW COLUMNS FROM",
             "SHOW COLUMNS FROM events EXTRA",
             "SHOW COLUMNS FROM events; DROP TABLE events",
-            "DESC events",
             "DESC TABLE",
             "DESC TABLE events ORDER BY name",
         ] {
