@@ -5,6 +5,7 @@ mod dispatch;
 mod query_policy;
 mod sorted_merge;
 mod text_merge;
+mod uuid_extrema;
 
 use self::query_policy::*;
 use self::sorted_merge::*;
@@ -625,6 +626,7 @@ fn read_shard(
     group_schema: Option<(&str, &str)>,
     table: &str,
     sorted_prefix_cap: Option<usize>,
+    allow_uuid_extremum: bool,
     used_bytes: &AtomicUsize,
 ) -> Result<ShardResponse, String> {
     let (cap, schema_response) = preflight_shard(peer, table)?;
@@ -636,6 +638,13 @@ fn read_shard(
         .map(|(_, column)| {
             if sorted_prefix_cap.is_some() {
                 shard_column_kind(&schema_response, column)
+            } else if allow_uuid_extremum {
+                let kind = shard_column_kind(&schema_response, column)?;
+                if integer_type(&kind) || matches!(kind.as_str(), "UUID" | "Nullable(UUID)") {
+                    Ok(kind)
+                } else {
+                    Err("distributed MIN/MAX only supports integer or UUID columns".into())
+                }
             } else {
                 shard_integer_kind(&schema_response, column)
             }
@@ -2314,6 +2323,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 group_schema,
                 table,
                 sorted_prefix,
+                extrema_function.is_some(),
                 &retained_input,
             )
         });
@@ -2410,7 +2420,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         sum_type
             .as_deref()
             .map_or(Err(MergeError::InvalidExtremum), |kind| {
-                merge_integer_extrema(&shards, kind, function)
+                if matches!(kind, "UUID" | "Nullable(UUID)") {
+                    uuid_extrema::merge_uuid_extrema(&shards, function)
+                } else {
+                    merge_integer_extrema(&shards, kind, function)
+                }
             })
     } else if grouped_extremum_query || grouped_product_query || grouped_bitwise_query {
         match (sum_type.as_deref(), group_schema, sum_schema, &select.projection) {
