@@ -131,6 +131,27 @@ impl TokenBucket {
         }
     }
 
+    /// Earliest timestamp when a full requested transfer can be granted.
+    ///
+    /// Returns an error if the burst is larger than capacity or the deadline
+    /// cannot be represented in u64 milliseconds. No bucket state is changed.
+    pub fn earliest_grant_ms(self, requested: u64) -> Result<u64, &'static str> {
+        if requested > self.capacity {
+            return Err("transfer exceeds replica token-bucket capacity");
+        }
+        if requested <= self.tokens {
+            return Ok(self.last_ms);
+        }
+        let missing_thousandths = u128::from(requested - self.tokens) * 1000
+            - u128::from(self.remainder);
+        let elapsed = missing_thousandths.div_ceil(u128::from(self.rate_bytes_per_second));
+        let elapsed = u64::try_from(elapsed)
+            .map_err(|_| "replica token-bucket grant deadline overflow")?;
+        self.last_ms
+            .checked_add(elapsed)
+            .ok_or("replica token-bucket grant deadline overflow")
+    }
+
     /// Reserve at most the requested number of bytes for a planned transfer.
     ///
     /// A zero-byte grant still advances the refill timestamp, and a
@@ -215,6 +236,31 @@ mod tests {
         let after = slow.refill(u64::MAX).unwrap();
         assert_eq!(after.available(), u64::MAX / 1000 + 1);
         assert_eq!(after.fractional_credit(), 614);
+    }
+
+    #[test]
+    fn exact_grant_deadline_matches_fractional_refill() {
+        let full = TokenBucket::new(20, 250, 1000).unwrap();
+        let empty = full.grant(1000, 20).unwrap().bucket;
+        assert_eq!(empty.earliest_grant_ms(0).unwrap(), 1000);
+        assert_eq!(empty.earliest_grant_ms(3).unwrap(), 1012);
+        assert_eq!(empty.earliest_grant_ms(20).unwrap(), 1080);
+        assert_eq!(empty.grant(1011, 3).unwrap().bytes, 2);
+        assert_eq!(empty.grant(1012, 3).unwrap().bytes, 3);
+        assert!(empty.earliest_grant_ms(21).is_err());
+
+        let fractional = TokenBucket::restore(10, 0, 1, 100, 999).unwrap();
+        assert_eq!(fractional.earliest_grant_ms(1).unwrap(), 101);
+        assert_eq!(fractional.grant(101, 1).unwrap().bytes, 1);
+        assert_eq!(fractional.available(), 0);
+    }
+
+    #[test]
+    fn unrepresentable_grant_deadline_fails_without_mutation() {
+        let bucket = TokenBucket::restore(10, 0, 1, u64::MAX - 1, 0).unwrap();
+        assert!(bucket.earliest_grant_ms(10).is_err());
+        assert_eq!(bucket.available(), 0);
+        assert_eq!(bucket.timestamp_ms(), u64::MAX - 1);
     }
 
     #[test]
