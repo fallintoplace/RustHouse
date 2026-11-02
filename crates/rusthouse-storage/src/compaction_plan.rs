@@ -272,7 +272,7 @@ mod tests {
         assert_eq!((&balanced[0].left[..], &balanced[0].right[..]), ("b", "c"));
 
         let limits = [
-            part("high", "p", 1, u64::MAX - 1),
+            part("high", "p", 1, u64::MAX),
             part("low", "p", 2, 1),
         ];
         assert!(plan_balanced_compaction_pairs(&limits, u64::MAX, u64::MAX, 1, u64::MAX).is_err());
