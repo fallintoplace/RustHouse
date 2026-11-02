@@ -1218,7 +1218,7 @@ pub fn plan_latency_aware_quorum_hedges(
     for node in eligible {
         let zone = zones
             .iter()
-            .find(|&&(name, _)| name == node)
+            .find(|&&(name, _)| name == node.as_str())
             .map(|&(_, zone)| zone)
             .expect("validated zone metadata");
         if visited_zones.insert(zone) {
