@@ -25,6 +25,7 @@ pub mod distributed_idempotency;
 pub mod distributed_inventory;
 pub mod distributed_lease_ledger;
 pub mod distributed_lineage;
+pub mod distributed_manifest_three_way;
 pub mod distributed_membership;
 pub mod distributed_merkle;
 pub mod distributed_merkle_absence;
