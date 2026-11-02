@@ -138,15 +138,33 @@ pub(super) fn execute<W: Write>(
         .first()
         .map(|(_, desc, nulls)| (*desc, *nulls))
         .unwrap_or((false, Some(false)));
-    rows.sort_by(|(left, _), (right, _)| typed::compare_order_cells(left, right, desc, nulls));
+    let compare = |(left, _): &(typed::Cell, u64), (right, _): &(typed::Cell, u64)| {
+        typed::compare_order_cells(left, right, desc, nulls)
+    };
+    // A paginated GROUP BY only needs its first OFFSET + LIMIT keys.
+    // Preserve the original stable tie order through sorted_group_positions.
+    let bounded = query
+        .limit
+        .and_then(|limit| query.offset.checked_add(limit))
+        .filter(|&end| end < rows.len())
+        .map(|end| super::super::sorted_group_positions(&rows, end, &compare));
     writeln!(output, "{group_name}\tcount")?;
-    for (group, count) in rows
-        .iter()
-        .skip(query.offset)
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
-        typed::write_typed_value(output, group, &group_type)?;
-        writeln!(output, "\t{count}")?;
+    if let Some(indices) = bounded {
+        for index in indices.into_iter().skip(query.offset) {
+            let (group, count) = &rows[index];
+            typed::write_typed_value(output, group, &group_type)?;
+            writeln!(output, "\t{count}")?;
+        }
+    } else {
+        rows.sort_by(compare);
+        for (group, count) in rows
+            .iter()
+            .skip(query.offset)
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            typed::write_typed_value(output, group, &group_type)?;
+            writeln!(output, "\t{count}")?;
+        }
     }
     Ok(())
 }
@@ -183,5 +201,34 @@ mod grouped_join_hash_build_tests {
                 .collect::<Vec<_>>(),
             vec![0],
         );
+    }
+}
+
+#[cfg(test)]
+mod bounded_grouped_join_page_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_group_page_matches_stable_full_sort() {
+        let rows = vec![
+            (typed::Cell::Numeric(Number::Unsigned(5)), 2),
+            (typed::Cell::Numeric(Number::Unsigned(8)), 4),
+            (typed::Cell::Numeric(Number::Unsigned(5)), 6),
+            (typed::Cell::Numeric(Number::Unsigned(1)), 1),
+            (typed::Cell::Numeric(Number::Unsigned(9)), 3),
+        ];
+        for descending in [false, true] {
+            let compare = |(a, _): &(typed::Cell, u64), (b, _): &(typed::Cell, u64)| {
+                typed::compare_order_cells(a, b, descending, Some(false))
+            };
+            let mut baseline = (0..rows.len()).collect::<Vec<_>>();
+            baseline.sort_by(|&a, &b| compare(&rows[a], &rows[b]));
+            for end in 1..rows.len() {
+                assert_eq!(
+                    super::super::sorted_group_positions(&rows, end, &compare),
+                    baseline[..end],
+                );
+            }
+        }
     }
 }
