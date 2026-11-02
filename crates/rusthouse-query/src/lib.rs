@@ -1522,7 +1522,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         }
                         Projection::GroupedMultiCount { columns }
                         | Projection::GroupedMultiAggregates { columns, .. }
-                        | Projection::GroupedMultiDistinctCount { columns, .. } => position
+                        | Projection::GroupedMultiDistinctCount { columns, .. }
+                        | Projection::Columns(columns) => position
                             .checked_sub(1)
                             .and_then(|index| columns.get(index))
                             .cloned()
@@ -1540,6 +1541,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
             }
             match &projection {
+                Projection::Columns(columns) if columns == &group_columns => {
+                    distinct = true;
+                }
                 Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
                 Projection::GroupedMultiAggregates { columns, .. }
                 | Projection::GroupedMultiDistinctCount { columns, .. }
@@ -2105,6 +2109,30 @@ mod tpch_interval_unit_tests {
                 Predicate::Comparison { operator: Operator::Le | Operator::Lt, value, .. }
                     if value == expected
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod group_plain_columns_tests {
+    use super::*;
+
+    #[test]
+    fn group_by_plain_columns_reuses_distinct_projection() {
+        let distinct = parse_select(
+            "SELECT DISTINCT number FROM numbers(5)"
+        ).unwrap();
+        for sql in [
+            "SELECT number FROM numbers(5) GROUP BY number",
+            "SELECT number FROM numbers(5) GROUP BY 1",
+        ] {
+            assert_eq!(parse_select(sql).unwrap(), distinct);
+        }
+        for sql in [
+            "SELECT number FROM numbers(5) GROUP BY 2",
+            "SELECT number FROM numbers(5) GROUP BY missing",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
 }
