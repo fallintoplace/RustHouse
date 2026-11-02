@@ -1457,15 +1457,14 @@ fn merge_grouped_distinct_pairs(
             if value == br"\N" {
                 continue;
             }
-            if !seen.contains(&(index, normalized_value)) {
-                if seen.len() >= MAX_PAIRS {
+            if seen.insert((index, normalized_value)) {
+                if seen.len() > MAX_PAIRS {
                     return Err(MergeError::CoordinatorLimit);
                 }
                 retained_bytes = retained_bytes
                     .checked_add(value.len())
                     .filter(|&bytes| bytes <= MAX_KEY_BYTES)
                     .ok_or(MergeError::CoordinatorLimit)?;
-                seen.insert((index, normalized_value));
                 groups[index].1 = groups[index]
                     .1
                     .checked_add(1)
