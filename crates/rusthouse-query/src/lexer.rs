@@ -68,6 +68,10 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
+            b'n' | b'N' if bytes.get(index + 1) == Some(&b'\'') => {
+                index += 1;
+                scan_string(sql, &mut index)?
+            },
             b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
@@ -535,5 +539,30 @@ mod bulk_comment_span_tests {
         }
         let deep = format!("SELECT {} 1 {}", "/*".repeat(33), "*/".repeat(33));
         assert!(tokenize(&deep).is_err());
+    }
+}
+
+#[cfg(test)]
+mod national_character_literal_tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_n_prefix_and_keeps_utf8_text() {
+        assert_eq!(
+            tokenize("SELECT N'café', n'it''s'").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("café".into()),
+                Token::Comma,
+                Token::String("it's".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unterminated_national_character_literals() {
+        for sql in ["SELECT N'broken", "SELECT n'broken"] {
+            assert!(tokenize(sql).is_err(), "{sql}");
+        }
     }
 }
