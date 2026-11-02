@@ -658,12 +658,12 @@ mod lazy_u16_multi_aggregate_index_tests {
     fn sparse_u16_groups_promote_and_preserve_signed_keys_and_indexes() {
         for kind in ["UInt16", "Int16"] {
             let mut slots = GroupSlots::for_type(kind).unwrap();
-            assert!(matches!(slots, GroupSlots::WideSparse(_)));
+            assert!(matches!(slots, GroupSlots::WideSparse { .. }));
             for key in 0..2047 {
                 assert_eq!(slots.get(key), None);
                 slots.insert(key, key + 17);
             }
-            assert!(matches!(slots, GroupSlots::WideSparse(_)));
+            assert!(matches!(slots, GroupSlots::WideSparse { .. }));
             slots.insert(65_535, 99_999);
             assert!(matches!(slots, GroupSlots::WideDense(_)));
             assert_eq!(slots.get(65_535), Some(99_999));
