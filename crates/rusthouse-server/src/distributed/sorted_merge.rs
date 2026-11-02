@@ -39,12 +39,32 @@ impl IntegerType {
             _ => return Err(MergeError::InvalidSortedScan),
         };
         Ok(if unsigned {
-            let max = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
-            if nullable { Self::NullableUnsigned { max } } else { Self::Unsigned { max } }
+            let max = if bits == 128 {
+                u128::MAX
+            } else {
+                (1u128 << bits) - 1
+            };
+            if nullable {
+                Self::NullableUnsigned { max }
+            } else {
+                Self::Unsigned { max }
+            }
         } else {
-            let min = if bits == 128 { i128::MIN } else { -(1i128 << (bits - 1)) };
-            let max = if bits == 128 { i128::MAX } else { (1i128 << (bits - 1)) - 1 };
-            if nullable { Self::NullableSigned { min, max } } else { Self::Signed { min, max } }
+            let min = if bits == 128 {
+                i128::MIN
+            } else {
+                -(1i128 << (bits - 1))
+            };
+            let max = if bits == 128 {
+                i128::MAX
+            } else {
+                (1i128 << (bits - 1)) - 1
+            };
+            if nullable {
+                Self::NullableSigned { min, max }
+            } else {
+                Self::Signed { min, max }
+            }
         })
     }
 }
@@ -148,15 +168,15 @@ fn sort_key_cmp(
 ) -> Ordering {
     match (left, right, nulls_first) {
         (IntegerKey::Null, IntegerKey::Null, _) => Ordering::Equal,
-        (IntegerKey::Null, _, Some(true)) | (_, IntegerKey::Null, Some(false)) => {
-            Ordering::Less
-        }
-        (IntegerKey::Null, _, Some(false)) | (_, IntegerKey::Null, Some(true)) => {
-            Ordering::Greater
-        }
+        (IntegerKey::Null, _, Some(true)) | (_, IntegerKey::Null, Some(false)) => Ordering::Less,
+        (IntegerKey::Null, _, Some(false)) | (_, IntegerKey::Null, Some(true)) => Ordering::Greater,
         _ => {
             let comparison = left.cmp(&right);
-            if descending { comparison.reverse() } else { comparison }
+            if descending {
+                comparison.reverse()
+            } else {
+                comparison
+            }
         }
     }
 }
@@ -311,7 +331,9 @@ pub(super) fn merge_sorted_integer_rows_page_with_nulls(
         let mut previous = None;
         let mut first = None;
         while let Some((key, next)) = next_row(data, cursor, kind, columns.len())? {
-            if previous.is_some_and(|prior| sort_key_cmp(prior, key, descending, nulls_first).is_gt()) {
+            if previous
+                .is_some_and(|prior| sort_key_cmp(prior, key, descending, nulls_first).is_gt())
+            {
                 return Err(MergeError::InvalidSortedScan);
             }
             if first.is_none() {
@@ -811,9 +833,16 @@ mod nullable_integer_topk_tests {
         ];
         assert_eq!(
             merge_sorted_integer_rows_page_with_nulls(
-                &shards, &["id", "name"], "Nullable(UInt64)", false,
-                Some(true), 0, 4, 4,
-            ).unwrap(),
+                &shards,
+                &["id", "name"],
+                "Nullable(UInt64)",
+                false,
+                Some(true),
+                0,
+                4,
+                4,
+            )
+            .unwrap(),
             b"id\tname\n\\N\ta\n\\N\tc\n1\td\n2\tb\n"
         );
         let desc = [
@@ -822,9 +851,16 @@ mod nullable_integer_topk_tests {
         ];
         assert_eq!(
             merge_sorted_integer_rows_page_with_nulls(
-                &desc, &["id", "name"], "Nullable(UInt64)", true,
-                Some(false), 0, 4, 4,
-            ).unwrap(),
+                &desc,
+                &["id", "name"],
+                "Nullable(UInt64)",
+                true,
+                Some(false),
+                0,
+                4,
+                4,
+            )
+            .unwrap(),
             b"id\tname\n2\tb\n1\td\n\\N\ta\n\\N\tc\n"
         );
     }
@@ -834,7 +870,14 @@ mod nullable_integer_topk_tests {
         let shards = [(10, b"id\n\\N\n".to_vec())];
         assert_eq!(
             merge_sorted_integer_rows_page_with_nulls(
-                &shards, &["id"], "UInt64", false, Some(true), 0, 1, 1,
+                &shards,
+                &["id"],
+                "UInt64",
+                false,
+                Some(true),
+                0,
+                1,
+                1,
             ),
             Err(MergeError::InvalidSortedScan)
         );
