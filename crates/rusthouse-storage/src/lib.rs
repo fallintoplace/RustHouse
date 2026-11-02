@@ -19,6 +19,7 @@ pub mod distributed_crc32c;
 pub mod distributed_failure_detector;
 pub mod distributed_fair_transfer;
 pub mod distributed_fencing;
+pub mod distributed_hedged_reads;
 pub mod distributed_hybrid_clock;
 pub mod distributed_inventory;
 pub mod distributed_lineage;
