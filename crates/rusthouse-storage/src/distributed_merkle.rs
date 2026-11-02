@@ -108,7 +108,65 @@ pub struct MerkleInventory {
     levels: Vec<Vec<Digest>>,
 }
 
+/// Inclusion path for a single canonical inventory object.
+/// The proof is about metadata equality, not the integrity of stored bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MerkleProof {
+    pub leaf_index: usize,
+    pub leaf_count: usize,
+    pub siblings: Vec<[u8; 32]>,
+}
+
 impl MerkleInventory {
+    /// Build an inclusion path for an existing inventory entry.
+    pub fn proof(&self, leaf_index: usize) -> Option<MerkleProof> {
+        if leaf_index >= self.objects.len() {
+            return None;
+        }
+        let empty_right = sha256(&[3]);
+        let mut index = leaf_index;
+        let mut siblings = Vec::with_capacity(self.levels.len() - 1);
+        for level in self.levels.iter().take(self.levels.len() - 1) {
+            siblings.push(*level.get(index ^ 1).unwrap_or(&empty_right));
+            index /= 2;
+        }
+        Some(MerkleProof {
+            leaf_index,
+            leaf_count: self.objects.len(),
+            siblings,
+        })
+    }
+
+    /// Verify an inclusion path and its exact tree shape against a trusted root.
+    ///
+    /// Do not treat the root or metadata checksum as proof of file contents.
+    pub fn verify_proof(root: Digest, object: &ObjectMetadata, proof: &MerkleProof) -> bool {
+        if proof.leaf_count == 0 || proof.leaf_index >= proof.leaf_count {
+            return false;
+        }
+        let mut index = proof.leaf_index;
+        let mut width = proof.leaf_count;
+        let mut digest = leaf_digest(object);
+        let empty_right = sha256(&[3]);
+        for &sibling in &proof.siblings {
+            if width <= 1 {
+                return false;
+            }
+            if index & 1 == 0 {
+                if index + 1 == width && sibling != empty_right {
+                    return false;
+                }
+                digest = parent_digest(digest, sibling);
+            } else {
+                digest = parent_digest(sibling, digest);
+            }
+            index /= 2;
+            width = width.div_ceil(2);
+        }
+        width == 1 && digest == root
+    }
+
+
     pub fn new(entries: &[ObjectMetadata]) -> Result<Self, &'static str> {
         // Reuse the existing canonical key grammar and duplicate detection.
         let objects = plan_replica_copies(entries, &[])?;
@@ -226,6 +284,46 @@ mod tests {
         assert_eq!(one.differing_positions(&empty), None);
         assert!(MerkleInventory::new(&[entry("../escape", 1, 1)]).is_err());
         assert!(MerkleInventory::new(&[entry("a", 1, 1), entry("a", 1, 2)]).is_err());
+    }
+
+    #[test]
+    fn inclusion_proofs_verify_every_leaf_and_detect_forgery() {
+        for count in [1usize, 2, 3, 5, 8, 17, 1025] {
+            let objects = (0..count)
+                .map(|index| entry(&format!("parts/{index:05}.bin"), index as u64, index as u32))
+                .collect::<Vec<_>>();
+            let inventory = MerkleInventory::new(&objects).unwrap();
+            assert!(inventory.proof(count).is_none());
+            for (index, object) in inventory.objects().iter().enumerate() {
+                let proof = inventory.proof(index).unwrap();
+                assert!(MerkleInventory::verify_proof(inventory.root(), object, &proof));
+
+                let mut changed_object = object.clone();
+                changed_object.crc32c ^= 1;
+                assert!(!MerkleInventory::verify_proof(
+                    inventory.root(), &changed_object, &proof
+                ));
+
+                let mut bad_count = proof.clone();
+                bad_count.leaf_count = 0;
+                assert!(!MerkleInventory::verify_proof(inventory.root(), object, &bad_count));
+
+                let mut extra = proof.clone();
+                extra.siblings.push([0; 32]);
+                assert!(!MerkleInventory::verify_proof(inventory.root(), object, &extra));
+            }
+        }
+    }
+
+    #[test]
+    fn odd_leaf_padding_is_canonical() {
+        let objects = [entry("a", 1, 1), entry("b", 2, 2), entry("c", 3, 3)];
+        let inventory = MerkleInventory::new(&objects).unwrap();
+        let mut proof = inventory.proof(2).unwrap();
+        proof.siblings[0] = [9; 32];
+        assert!(!MerkleInventory::verify_proof(
+            inventory.root(), &inventory.objects()[2], &proof
+        ));
     }
 
     #[test]
