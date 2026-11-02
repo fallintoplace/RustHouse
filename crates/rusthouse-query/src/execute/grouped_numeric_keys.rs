@@ -73,6 +73,20 @@ fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
     }
 }
 
+// A pair of non-nullable 8/16/32-bit dimensions fits in one u64.
+// Hashing this scalar avoids allocating and hashing a Vec<Key> per group.
+fn compact_numeric_group_key(column: &TypedColumn, row: usize) -> Option<u32> {
+    match column {
+        TypedColumn::Numeric(NumericColumn::UInt8(values)) => Some(u32::from(values[row])),
+        TypedColumn::Numeric(NumericColumn::Int8(values)) => Some(values[row] as u32),
+        TypedColumn::Numeric(NumericColumn::UInt16(values)) => Some(u32::from(values[row])),
+        TypedColumn::Numeric(NumericColumn::Int16(values)) => Some(values[row] as u32),
+        TypedColumn::Numeric(NumericColumn::UInt32(values)) => Some(values[row]),
+        TypedColumn::Numeric(NumericColumn::Int32(values)) => Some(values[row] as u32),
+        _ => None,
+    }
+}
+
 fn numeric_value_at(column: &TypedColumn, row: usize) -> Result<Option<Number>, ExecutionError> {
     // Avoid constructing a generic Cell for every aggregate value in
     // large GROUP BY scans. NULLs are filtered directly from the null map.
@@ -298,6 +312,15 @@ pub(super) fn execute<W: Write>(
             .iter()
             .all(|key| matches!(types.get(key).map(String::as_str), Some("UInt8" | "Int8"))))
     .then(|| vec![usize::MAX; 1 << 16]);
+    let mut compact_pairs = (dense_slots.is_none()
+        && columns.len() == 2
+        && columns.iter().all(|key| {
+            matches!(
+                types.get(key).map(String::as_str),
+                Some("UInt8" | "Int8" | "UInt16" | "Int16" | "UInt32" | "Int32")
+            )
+        }))
+    .then(HashMap::<u64, usize>::new);
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     // Reuse a probe buffer for existing groups instead of allocating a Vec
     // of Cells and a Vec of Keys for every matching input row.
@@ -338,6 +361,38 @@ pub(super) fn execute<W: Write>(
                             .collect(),
                     ));
                     *index
+                }
+            } else if let Some(pairs) = compact_pairs.as_mut() {
+                let first = compact_numeric_group_key(&batch[group_indices[0]], row)
+                    .expect("validated compact numeric GROUP BY dimension");
+                let second = compact_numeric_group_key(&batch[group_indices[1]], row)
+                    .expect("validated compact numeric GROUP BY dimension");
+                let pair = (u64::from(first) << 32) | u64::from(second);
+                if let Some(&index) = pairs.get(&pair) {
+                    index
+                } else {
+                    if groups.len() >= MAX_GROUPS {
+                        return Err(group_limit_error());
+                    }
+                    charge_group(
+                        &mut retained_group_bytes,
+                        group_indices.len(),
+                        items.len(),
+                        0,
+                    )?;
+                    let index = groups.len();
+                    pairs.insert(pair, index);
+                    groups.push((
+                        group_indices
+                            .iter()
+                            .map(|&column| typed::cell(&batch[column], row))
+                            .collect(),
+                        items
+                            .iter()
+                            .map(|(function, _)| AggregateState::new(*function))
+                            .collect(),
+                    ));
+                    index
                 }
             } else if has_text_key {
                 encoded_probe.clear();
@@ -803,5 +858,30 @@ mod byte_conditional_group_filters_tests {
                 assert_eq!(numeric_filter_enabled(column, row).unwrap(), flag);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod compact_pair_group_tests {
+    use super::*;
+
+    #[test]
+    fn pair_keys_are_collision_free_for_signed_and_unsigned_boundaries() {
+        let left = TypedColumn::Numeric(NumericColumn::Int32(vec![-1, 0, i32::MIN, i32::MAX]));
+        let right = TypedColumn::Numeric(NumericColumn::UInt16(vec![0, 0, u16::MAX, u16::MAX]));
+        let keys = (0..4)
+            .map(|row| {
+                (u64::from(compact_numeric_group_key(&left, row).unwrap()) << 32)
+                    | u64::from(compact_numeric_group_key(&right, row).unwrap())
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(keys.len(), 4);
+        let signed = TypedColumn::Numeric(NumericColumn::Int8(vec![-1, 1]));
+        assert_ne!(compact_numeric_group_key(&signed, 0), compact_numeric_group_key(&signed, 1));
+        let nullable = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt16(vec![1]),
+            nulls: vec![0],
+        };
+        assert_eq!(compact_numeric_group_key(&nullable, 0), None);
     }
 }
