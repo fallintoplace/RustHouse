@@ -5,6 +5,7 @@ use std::collections::BinaryHeap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum IntegerKey {
+    Null,
     Signed(i128),
     Unsigned(u128),
 }
@@ -13,10 +14,13 @@ enum IntegerKey {
 enum IntegerType {
     Signed { min: i128, max: i128 },
     Unsigned { max: u128 },
+    NullableSigned { min: i128, max: i128 },
+    NullableUnsigned { max: u128 },
 }
 
 impl IntegerType {
     fn from_schema(kind: &str) -> Result<Self, MergeError> {
+        let nullable = kind.starts_with("Nullable(") && kind.ends_with(')');
         let kind = kind
             .strip_prefix("Nullable(")
             .and_then(|inner| inner.strip_suffix(')'))
@@ -35,25 +39,31 @@ impl IntegerType {
             _ => return Err(MergeError::InvalidSortedScan),
         };
         Ok(if unsigned {
-            Self::Unsigned {
-                max: if bits == 128 {
-                    u128::MAX
-                } else {
-                    (1u128 << bits) - 1
-                },
+            let max = if bits == 128 {
+                u128::MAX
+            } else {
+                (1u128 << bits) - 1
+            };
+            if nullable {
+                Self::NullableUnsigned { max }
+            } else {
+                Self::Unsigned { max }
             }
         } else {
-            Self::Signed {
-                min: if bits == 128 {
-                    i128::MIN
-                } else {
-                    -(1i128 << (bits - 1))
-                },
-                max: if bits == 128 {
-                    i128::MAX
-                } else {
-                    (1i128 << (bits - 1)) - 1
-                },
+            let min = if bits == 128 {
+                i128::MIN
+            } else {
+                -(1i128 << (bits - 1))
+            };
+            let max = if bits == 128 {
+                i128::MAX
+            } else {
+                (1i128 << (bits - 1)) - 1
+            };
+            if nullable {
+                Self::NullableSigned { min, max }
+            } else {
+                Self::Signed { min, max }
             }
         })
     }
@@ -100,18 +110,28 @@ fn parse_signed_ascii(bytes: &[u8]) -> Option<i128> {
 }
 
 fn parse_integer_sort_key(bytes: &[u8], kind: IntegerType) -> Result<IntegerKey, MergeError> {
+    if bytes == br"\N" {
+        return if matches!(
+            kind,
+            IntegerType::NullableSigned { .. } | IntegerType::NullableUnsigned { .. }
+        ) {
+            Ok(IntegerKey::Null)
+        } else {
+            Err(MergeError::InvalidSortedScan)
+        };
+    }
     if bytes.starts_with(b"+") || (bytes.len() > 1 && bytes[0] == b'0') || bytes.starts_with(b"-0")
     {
         return Err(MergeError::InvalidSortedScan);
     }
     match kind {
-        IntegerType::Unsigned { max } => {
+        IntegerType::Unsigned { max } | IntegerType::NullableUnsigned { max } => {
             let number = parse_unsigned_ascii(bytes).ok_or(MergeError::InvalidSortedScan)?;
             (number <= max)
                 .then_some(IntegerKey::Unsigned(number))
                 .ok_or(MergeError::InvalidSortedScan)
         }
-        IntegerType::Signed { min, max } => {
+        IntegerType::Signed { min, max } | IntegerType::NullableSigned { min, max } => {
             let number = parse_signed_ascii(bytes).ok_or(MergeError::InvalidSortedScan)?;
             (min <= number && number <= max)
                 .then_some(IntegerKey::Signed(number))
@@ -127,6 +147,7 @@ struct Cursor {
     position: usize,
     next_position: usize,
     descending: bool,
+    nulls_first: Option<bool>,
 }
 impl Cursor {
     fn advance(self, key: IntegerKey, next_position: usize) -> Self {
@@ -139,10 +160,31 @@ impl Cursor {
     }
 }
 
+fn sort_key_cmp(
+    left: IntegerKey,
+    right: IntegerKey,
+    descending: bool,
+    nulls_first: Option<bool>,
+) -> Ordering {
+    match (left, right, nulls_first) {
+        (IntegerKey::Null, IntegerKey::Null, _) => Ordering::Equal,
+        (IntegerKey::Null, _, Some(true)) | (_, IntegerKey::Null, Some(false)) => Ordering::Less,
+        (IntegerKey::Null, _, Some(false)) | (_, IntegerKey::Null, Some(true)) => Ordering::Greater,
+        _ => {
+            let comparison = left.cmp(&right);
+            if descending {
+                comparison.reverse()
+            } else {
+                comparison
+            }
+        }
+    }
+}
+
 impl Ord for Cursor {
     fn cmp(&self, other: &Self) -> Ordering {
-        let cmp = self.key.cmp(&other.key);
-        (if self.descending { cmp } else { cmp.reverse() })
+        sort_key_cmp(self.key, other.key, self.descending, self.nulls_first)
+            .reverse()
             .then_with(|| other.shard.cmp(&self.shard))
             .then_with(|| other.position.cmp(&self.position))
     }
@@ -251,6 +293,21 @@ pub(super) fn merge_sorted_integer_rows_page(
     limit: usize,
     max_rows: usize,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_sorted_integer_rows_page_with_nulls(
+        shards, columns, kind, descending, None, offset, limit, max_rows,
+    )
+}
+
+pub(super) fn merge_sorted_integer_rows_page_with_nulls(
+    shards: &[(usize, Vec<u8>)],
+    columns: &[&str],
+    kind: &str,
+    descending: bool,
+    nulls_first: Option<bool>,
+    offset: usize,
+    limit: usize,
+    max_rows: usize,
+) -> Result<Vec<u8>, MergeError> {
     if !(1..=16).contains(&columns.len()) {
         return Err(MergeError::InvalidSortedScan);
     }
@@ -274,7 +331,9 @@ pub(super) fn merge_sorted_integer_rows_page(
         let mut previous = None;
         let mut first = None;
         while let Some((key, next)) = next_row(data, cursor, kind, columns.len())? {
-            if previous.is_some_and(|prior| if descending { prior < key } else { prior > key }) {
+            if previous
+                .is_some_and(|prior| sort_key_cmp(prior, key, descending, nulls_first).is_gt())
+            {
                 return Err(MergeError::InvalidSortedScan);
             }
             if first.is_none() {
@@ -298,6 +357,7 @@ pub(super) fn merge_sorted_integer_rows_page(
                 position: 0,
                 next_position,
                 descending,
+                nulls_first,
             });
         }
     }
@@ -758,5 +818,68 @@ mod validated_sorted_merge_fast_path_tests {
             );
         }
         assert_eq!(merged, expected);
+    }
+}
+
+#[cfg(test)]
+mod nullable_integer_topk_tests {
+    use super::*;
+
+    #[test]
+    fn globally_merges_nulls_first_and_last_with_stable_ties() {
+        let shards = [
+            (10, b"id\tname\n\\N\ta\n2\tb\n".to_vec()),
+            (10, b"id\tname\n\\N\tc\n1\td\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_sorted_integer_rows_page_with_nulls(
+                &shards,
+                &["id", "name"],
+                "Nullable(UInt64)",
+                false,
+                Some(true),
+                0,
+                4,
+                4,
+            )
+            .unwrap(),
+            b"id\tname\n\\N\ta\n\\N\tc\n1\td\n2\tb\n"
+        );
+        let desc = [
+            (10, b"id\tname\n2\tb\n\\N\ta\n".to_vec()),
+            (10, b"id\tname\n1\td\n\\N\tc\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_sorted_integer_rows_page_with_nulls(
+                &desc,
+                &["id", "name"],
+                "Nullable(UInt64)",
+                true,
+                Some(false),
+                0,
+                4,
+                4,
+            )
+            .unwrap(),
+            b"id\tname\n2\tb\n1\td\n\\N\ta\n\\N\tc\n"
+        );
+    }
+
+    #[test]
+    fn rejects_nulls_in_non_nullable_integer_keys() {
+        let shards = [(10, b"id\n\\N\n".to_vec())];
+        assert_eq!(
+            merge_sorted_integer_rows_page_with_nulls(
+                &shards,
+                &["id"],
+                "UInt64",
+                false,
+                Some(true),
+                0,
+                1,
+                1,
+            ),
+            Err(MergeError::InvalidSortedScan)
+        );
     }
 }

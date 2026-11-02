@@ -627,13 +627,6 @@ fn read_shard(
     let kind = sum_schema
         .map(|(_, column)| shard_integer_kind(&schema_response, column))
         .transpose()?;
-    if sorted_prefix_cap.is_some()
-        && kind
-            .as_deref()
-            .is_some_and(|kind| kind.starts_with("Nullable("))
-    {
-        return Err("distributed top-K requires non-nullable integer keys".into());
-    }
     let key_kind = group_schema
         .map(|(_, column)| {
             let kind = shard_column_kind(&schema_response, column)?;
@@ -1855,11 +1848,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .as_deref()
             .map_or(Err(MergeError::InvalidSortedScan), |kind| {
                 let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
-                merge_sorted_integer_rows_page(
+                merge_sorted_integer_rows_page_with_nulls(
                     &shards,
                     &names,
                     kind,
                     order.descending,
+                    order.nulls_first,
                     select.offset.unwrap_or(0),
                     select.limit.unwrap_or(0),
                     max_rows.min(250_000),

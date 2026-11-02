@@ -375,7 +375,6 @@ pub(super) fn is_safe_sorted_scan(select: &Select) -> bool {
         && select.alias.is_none()
         && select.having.is_none()
         && select.order_by_extra.is_empty()
-        && order.nulls_first.is_none()
         && (1..=16).contains(&columns.len())
         && columns[0] == order.column
         && select
