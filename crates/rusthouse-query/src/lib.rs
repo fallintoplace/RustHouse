@@ -800,7 +800,10 @@ fn grouped_count_has_next_metric(parser: &Parser) -> bool {
         return false;
     }
     cursor += 1;
-    if matches!(parser.tokens.get(cursor), Some(Token::Word(word)) if word.eq_ignore_ascii_case("AS")) {
+    if matches!(
+        parser.tokens.get(cursor),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("AS")
+    ) {
         cursor += 2;
     }
     parser.tokens.get(cursor) == Some(&Token::Comma)
