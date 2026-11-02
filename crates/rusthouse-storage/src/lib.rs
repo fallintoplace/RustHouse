@@ -11,6 +11,7 @@ pub mod distributed_atomic_copy;
 pub mod distributed_capacity;
 pub mod distributed_chunk_plan;
 pub mod distributed_copy_diff;
+pub mod distributed_content_chunks;
 pub mod distributed_crc32c;
 pub mod distributed_inventory;
 pub mod distributed_lineage;
