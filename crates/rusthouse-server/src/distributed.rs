@@ -1111,7 +1111,13 @@ fn merge_grouped_integer_sums_query(
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
     merge_grouped_integer_aggregate_query(
-        shards, max_rows, kind, key_column, value_column, AggregateFunction::Sum, global,
+        shards,
+        max_rows,
+        kind,
+        key_column,
+        value_column,
+        AggregateFunction::Sum,
+        global,
     )
 }
 
@@ -1798,7 +1804,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 merge_integer_extrema(&shards, kind, function)
             })
     } else if grouped_extremum_query {
-        match (sum_type.as_deref(), group_schema, sum_schema, &select.projection) {
+        match (
+            sum_type.as_deref(),
+            group_schema,
+            sum_schema,
+            &select.projection,
+        ) {
             (
                 Some(kind),
                 Some((_, key)),
@@ -3293,9 +3304,15 @@ mod distributed_grouped_extrema_tests {
         ];
         assert_eq!(
             merge_grouped_integer_aggregate_query(
-                &shards, 10, "Nullable(Int64)", "label", "amount",
-                AggregateFunction::Min, Some(&parsed),
-            ).unwrap(),
+                &shards,
+                10,
+                "Nullable(Int64)",
+                "label",
+                "amount",
+                AggregateFunction::Min,
+                Some(&parsed),
+            )
+            .unwrap(),
             b"label\tmin(amount)\na\t4\nb\t8\n"
         );
     }
@@ -3310,15 +3327,26 @@ mod distributed_grouped_extrema_tests {
         ];
         assert_eq!(
             merge_grouped_integer_aggregate_query(
-                &shards, 10, "Int64", "label", "amount",
-                AggregateFunction::Max, Some(&parsed),
-            ).unwrap(),
+                &shards,
+                10,
+                "Int64",
+                "label",
+                "amount",
+                AggregateFunction::Max,
+                Some(&parsed),
+            )
+            .unwrap(),
             b"label\tmax(amount)\na\t-3\n"
         );
         assert_eq!(
             merge_grouped_integer_aggregate_query(
                 &[(10, b"label\tsum(amount)\na\t4\n".to_vec())],
-                10, "Int64", "label", "amount", AggregateFunction::Max, Some(&parsed),
+                10,
+                "Int64",
+                "label",
+                "amount",
+                AggregateFunction::Max,
+                Some(&parsed),
             ),
             Err(MergeError::SchemaMismatch),
         );
