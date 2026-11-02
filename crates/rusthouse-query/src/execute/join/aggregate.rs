@@ -37,7 +37,9 @@ pub(super) fn execute_numeric<W: Write>(
     {
         return Err(invalid("JOIN numeric aggregate requires a numeric column"));
     }
-    let header = format!("{}({}.{})", function.name(), column.relation, column.name);
+    let header = query.aggregate_alias.clone().unwrap_or_else(|| {
+        format!("{}({}.{})", function.name(), column.relation, column.name)
+    });
     if query.limit == Some(0) || query.offset != 0 {
         writeln!(output, "{header}")?;
         return Ok(());
