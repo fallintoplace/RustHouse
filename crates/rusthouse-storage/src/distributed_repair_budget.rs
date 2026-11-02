@@ -1176,3 +1176,206 @@ mod ordered_repair_validation_tests {
         assert!(plan_repairs(&invalid, 9999, 10).is_err());
     }
 }
+
+
+/// Schedule targeted repairs under node, failure-zone and global byte budgets.
+///
+/// This computes an admission plan only. The coordinator must still reserve
+/// physical capacity and revalidate membership before issuing any transfers.
+pub fn plan_zone_budgeted_targeted_repairs(
+    jobs: &[TargetedRepairJob],
+    target_capacity: &[(&str, u64)],
+    target_zones: &[(&str, &str)],
+    zone_budgets: &[(&str, u64)],
+    global_budget: u64,
+    job_limit: usize,
+) -> Result<Vec<TargetedRepairJob>, &'static str> {
+    use std::collections::HashMap;
+
+    if job_limit > MAX_REPAIR_JOBS {
+        return Err("repair job count exceeds bound");
+    }
+    // Reuse the existing strict validation for shard consistency, target
+    // membership, repeated shard-target pairs and capacity bounds.
+    plan_targeted_repairs(jobs, target_capacity, global_budget, 0)?;
+    if target_zones.len() != target_capacity.len()
+        || zone_budgets.is_empty()
+        || zone_budgets.len() > 64
+    {
+        return Err("invalid repair zone inventory size");
+    }
+    let valid_zone = |zone: &str| {
+        !zone.is_empty()
+            && zone.len() <= 64
+            && zone
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    };
+    let mut remaining_by_zone = HashMap::with_capacity(zone_budgets.len());
+    for &(zone, budget) in zone_budgets {
+        if !valid_zone(zone) || remaining_by_zone.insert(zone, budget).is_some() {
+            return Err("invalid or duplicate repair zone budget");
+        }
+    }
+    let mut zone_for_target = HashMap::with_capacity(target_zones.len());
+    for &(node, zone) in target_zones {
+        if !target_capacity.iter().any(|&(target, _)| target == node)
+            || !remaining_by_zone.contains_key(zone)
+            || zone_for_target.insert(node, zone).is_some()
+        {
+            return Err("incomplete or duplicate repair zone mapping");
+        }
+    }
+    if zone_for_target.len() != target_capacity.len() {
+        return Err("incomplete repair zone mapping");
+    }
+    if job_limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut remaining_by_node = target_capacity
+        .iter()
+        .copied()
+        .collect::<HashMap<&str, u64>>();
+    let mut remaining_global = global_budget;
+    let mut scheduled_by_shard = HashMap::<&str, u8>::new();
+    let mut ordered = jobs.iter().collect::<Vec<_>>();
+    ordered.sort_unstable_by(|left, right| {
+        right
+            .missing_replicas
+            .cmp(&left.missing_replicas)
+            .then_with(|| left.bytes.cmp(&right.bytes))
+            .then_with(|| left.shard.cmp(&right.shard))
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    let mut selected = Vec::with_capacity(job_limit.min(jobs.len()));
+    for job in ordered {
+        if selected.len() == job_limit {
+            break;
+        }
+        let count = scheduled_by_shard.entry(job.shard.as_str()).or_default();
+        if *count >= job.missing_replicas || job.bytes > remaining_global {
+            continue;
+        }
+        let target_available = remaining_by_node[&job.target.as_str()];
+        let zone = zone_for_target[&job.target.as_str()];
+        let zone_available = remaining_by_zone[zone];
+        if job.bytes > target_available || job.bytes > zone_available {
+            continue;
+        }
+        *remaining_by_node
+            .get_mut(job.target.as_str())
+            .expect("validated repair target") -= job.bytes;
+        *remaining_by_zone
+            .get_mut(zone)
+            .expect("validated repair zone") -= job.bytes;
+        remaining_global -= job.bytes;
+        *count += 1;
+        selected.push(job.clone());
+    }
+    Ok(selected)
+}
+
+#[cfg(test)]
+mod zone_budgeted_targeted_repair_tests {
+    use super::*;
+
+    fn job(shard: &str, target: &str, bytes: u64, missing: u8) -> TargetedRepairJob {
+        TargetedRepairJob {
+            shard: shard.into(),
+            target: target.into(),
+            bytes,
+            missing_replicas: missing,
+        }
+    }
+
+    #[test]
+    fn preserves_failure_zone_budget_and_replication_deficit() {
+        let mut jobs = vec![
+            job("critical", "a", 8, 2),
+            job("critical", "b", 8, 2),
+            job("critical", "c", 8, 2),
+            job("small", "d", 5, 1),
+            job("small", "a", 5, 1),
+        ];
+        let capacity = [("a", 10), ("b", 10), ("c", 10), ("d", 10)];
+        let zones = [("a", "east"), ("b", "east"), ("c", "west"), ("d", "west")];
+        let budgets = [("east", 8), ("west", 10)];
+        let expected = [job("critical", "a", 8, 2), job("critical", "c", 8, 2)];
+        assert_eq!(
+            plan_zone_budgeted_targeted_repairs(
+                &jobs, &capacity, &zones, &budgets, 18, 4
+            )
+            .unwrap(),
+            expected
+        );
+        jobs.reverse();
+        assert_eq!(
+            plan_zone_budgeted_targeted_repairs(
+                &jobs, &capacity, &zones, &budgets, 18, 4
+            )
+            .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn validates_all_zone_metadata_even_for_an_empty_batch() {
+        let jobs = [job("s", "a", 5, 1)];
+        let capacity = [("a", 10), ("b", 10)];
+        let zones = [("a", "east"), ("b", "west")];
+        let budgets = [("east", 5), ("west", 5)];
+        assert!(
+            plan_zone_budgeted_targeted_repairs(
+                &jobs, &capacity, &zones, &budgets, 0, 0
+            )
+            .is_ok()
+        );
+        assert!(
+            plan_zone_budgeted_targeted_repairs(
+                &jobs, &capacity, &[("a", "east")], &budgets, 0, 0
+            )
+            .is_err()
+        );
+        assert!(
+            plan_zone_budgeted_targeted_repairs(
+                &jobs,
+                &capacity,
+                &[("a", "east"), ("a", "west")],
+                &budgets,
+                0,
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            plan_zone_budgeted_targeted_repairs(
+                &jobs, &capacity, &zones, &[("east", 5), ("east", 5)], 0, 0
+            )
+            .is_err()
+        );
+        assert!(
+            plan_zone_budgeted_targeted_repairs(
+                &jobs, &capacity, &zones, &[("east", 5)], 0, 0
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn global_and_per_zone_quotas_cannot_overflow() {
+        let jobs = [
+            job("one", "a", u64::MAX - 1, 1),
+            job("two", "b", u64::MAX - 1, 1),
+        ];
+        let result = plan_zone_budgeted_targeted_repairs(
+            &jobs,
+            &[("a", u64::MAX), ("b", u64::MAX)],
+            &[("a", "east"), ("b", "west")],
+            &[("east", u64::MAX), ("west", u64::MAX)],
+            u64::MAX,
+            2,
+        )
+        .unwrap();
+        assert_eq!(result, [jobs[0].clone()]);
+    }
+}
