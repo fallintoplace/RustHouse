@@ -946,6 +946,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         parser.tokens.get(parser.index),
         Some(Token::Word(word))
             if word.eq_ignore_ascii_case("NULL")
+                || word.eq_ignore_ascii_case("TRUE")
+                || word.eq_ignore_ascii_case("FALSE")
                 || (parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
                     && (scalar::is_function(word) || text_scalar::is_function(word)))
     ) {
@@ -991,6 +993,14 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
                     parser.index += 1;
                     ConstantValue::Null
+                }
+                Some(Token::Word(word)) if word.eq_ignore_ascii_case("TRUE") => {
+                    parser.index += 1;
+                    ConstantValue::Integer(1)
+                }
+                Some(Token::Word(word)) if word.eq_ignore_ascii_case("FALSE") => {
+                    parser.index += 1;
+                    ConstantValue::Integer(0)
                 }
                 _ => return Err(ParseError("expected a constant after comma".into())),
             };
@@ -2106,5 +2116,35 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+    
+#[cfg(test)]
+mod scalar_boolean_literal_tests {
+    use super::*;
+
+    #[test]
+    fn true_and_false_are_numeric_sql_constants() {
+        assert_eq!(parse_select("SELECT TRUE").unwrap().projection, Projection::Literal(1));
+        assert_eq!(parse_select("SELECT FALSE").unwrap().projection, Projection::Literal(0));
+        assert_eq!(
+            parse_select("SELECT TrUe AS yes, fAlSe AS no, NULL AS missing")
+                .unwrap()
+                .projection,
+            Projection::Constants(vec![
+                Constant {
+                    value: ConstantValue::Integer(1),
+                    alias: Some("yes".into()),
+                },
+                Constant {
+                    value: ConstantValue::Integer(0),
+                    alias: Some("no".into()),
+                },
+                Constant {
+                    value: ConstantValue::Null,
+                    alias: Some("missing".into()),
+                },
+            ])
+        );
     }
 }
