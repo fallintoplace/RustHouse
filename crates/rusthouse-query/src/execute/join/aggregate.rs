@@ -60,19 +60,14 @@ pub(super) fn execute_numeric<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash =
-        HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
-    for (row_index, row) in right_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, right_keys) {
-            if query.any {
-                hash.entry(key).or_insert(Bucket::One(row_index));
-            } else {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(row_index))
-                    .or_insert(Bucket::One(row_index));
-            }
-        }
-    }
+    // The shared builder reuses a probe key on duplicates and can partition
+    // large dimension builds without changing ANY's first-match behavior.
+    let hash = build_join_hash(
+        &right_rows,
+        right_keys,
+        query.any,
+        super::super::query_workers(4),
+    )?;
     let mut state = AggregateState::new(function);
     if !hash.is_empty() {
         probe_inner(
