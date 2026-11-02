@@ -122,7 +122,7 @@ pub(super) fn merge_sorted_text_rows_page(
     while let Some(head) = heap.pop() {
         let row = &all_rows[head.shard][head.index];
         if seen >= offset && returned < limit {
-            let bytes = &shards[head.shard].1[&row.range];
+            let bytes = &shards[head.shard].1[row.range.clone()];
             if returned >= max_rows
                 || result
                     .len()
