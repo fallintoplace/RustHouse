@@ -13,7 +13,7 @@ class OfflineVacuumTests(unittest.TestCase):
         versions = parts / ".rusthouse-versions"
         versions.mkdir(parents=True)
         (database / "events.schema").write_text("rusthouse-schema-v1\nid\tUInt64\n")
-        (parts / ".rusthouse-active").write_text(active + "\n")
+        (parts / ".rusthouse-active").write_bytes((active + "\n").encode("ascii"))
         for number in range(1, 6):
             (versions / f"g{number}").mkdir()
         return parts, versions
@@ -23,6 +23,7 @@ class OfflineVacuumTests(unittest.TestCase):
             parts, versions = self.fixture(root)
             candidates = plan(root, keep=2)
             self.assertEqual([p.name for _, _, p in candidates], ["g1", "g3"])
+            self.assertEqual((parts / ".rusthouse-active").read_bytes(), b"g2\n")
             self.assertEqual(active_label(parts), "g2")
             self.assertTrue(all((versions / f"g{i}").exists() for i in range(1, 6)))
 
@@ -30,7 +31,7 @@ class OfflineVacuumTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             parts, _ = self.fixture(root)
             for invalid in ("g0\n", "g01\n", "g6\n", "g2", "../g2\n"):
-                (parts / ".rusthouse-active").write_text(invalid)
+                (parts / ".rusthouse-active").write_bytes(invalid.encode("ascii"))
                 with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                     plan(root)
 
