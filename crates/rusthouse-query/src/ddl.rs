@@ -182,9 +182,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             return Ok(Some(Ddl::RenameColumn { table, from, to }));
         }
         if parser.keyword("MODIFY") {
-            if !parser.keyword("COLUMN") {
-                return Err(ParseError("expected COLUMN after MODIFY".into()));
-            }
+            parser.keyword("COLUMN");
             let name = identifier(&mut parser)?;
             let data_type = data_type(&mut parser, 0)?;
             finish_ddl(&mut parser)?;
@@ -641,5 +639,15 @@ mod show_columns_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod modify_without_column_parser_tests {
+    #[test]
+    fn modify_column_keyword_is_optional() {
+        let ddl = crate::ddl::parse_ddl("ALTER TABLE sample MODIFY size BIGINT").unwrap();
+        assert!(matches!(ddl, Some(crate::ddl::Ddl::ModifyColumn { table, column })
+            if table == "sample" && column.name == "size" && column.data_type == "Int64"));
     }
 }
