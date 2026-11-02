@@ -1517,6 +1517,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 if group_columns.len() >= 8 {
                     return Err(ParseError("GROUP BY supports at most 8 keys".into()));
                 }
+                let wrapped_key = parser.take(Token::LParen);
                 let column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
                     let position = parser
                         .number()?
@@ -1545,6 +1546,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 } else {
                     parser.word()?
                 };
+                if wrapped_key && !parser.take(Token::RParen) {
+                    return Err(ParseError("GROUP BY key requires closing ')'".into()));
+                }
                 group_columns.push(column);
                 if !parser.take(Token::Comma) {
                     break;
@@ -2134,5 +2138,22 @@ mod where_boolean_literal_tests {
                 parse_select(&numeric_sql).unwrap()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod parenthesized_group_by_tests {
+    use super::parse_select;
+
+    #[test]
+    fn wrapped_grouping_keys_keep_existing_group_semantics() {
+        let normal = "SELECT number, count(*) FROM numbers(10) GROUP BY number";
+        let wrapped = "SELECT number, count(*) FROM numbers(10) GROUP BY (number)";
+        let ordinal = "SELECT number, count(*) FROM numbers(10) GROUP BY (1)";
+        assert_eq!(parse_select(wrapped).unwrap(), parse_select(normal).unwrap());
+        assert_eq!(parse_select(ordinal).unwrap(), parse_select(normal).unwrap());
+        assert!(parse_select(
+            "SELECT number, count(*) FROM numbers(10) GROUP BY (number"
+        ).is_err());
     }
 }
