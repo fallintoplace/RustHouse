@@ -1192,6 +1192,9 @@ pub fn plan_zone_budgeted_targeted_repairs(
 ) -> Result<Vec<TargetedRepairJob>, &'static str> {
     use std::collections::HashMap;
 
+    if job_limit > MAX_REPAIR_JOBS {
+        return Err("repair job count exceeds bound");
+    }
     // Reuse the existing strict validation for shard consistency, target
     // membership, repeated shard-target pairs and capacity bounds.
     plan_targeted_repairs(jobs, target_capacity, global_budget, 0)?;
