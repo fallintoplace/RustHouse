@@ -333,11 +333,32 @@ fn parse_atom(
             negated: negate_in,
         });
     } else if parser.keyword("BETWEEN") {
+        let symmetric = parser.keyword("SYMMETRIC");
         let lower = parser.literal()?;
         if !parser.keyword("AND") {
             return Err(ParseError("BETWEEN requires AND".into()));
         }
         let upper = parser.literal()?;
+        if symmetric {
+            *conditions = conditions.checked_add(4).ok_or_else(bad_expansion)?;
+            if *conditions > MAX_CONDITIONS {
+                return Err(bad_expansion());
+            }
+            let pair = |low: &str, high: &str| vec![
+                Predicate::Comparison {
+                    column: column.clone(),
+                    operator: Operator::Ge,
+                    value: low.into(),
+                },
+                Predicate::Comparison {
+                    column: column.clone(),
+                    operator: Operator::Le,
+                    value: high.into(),
+                },
+            ];
+            let ranges = vec![pair(&lower, &upper), pair(&upper, &lower)];
+            return if negate_in { negate(ranges) } else { Ok(ranges) };
+        }
         if negate_in {
             predicates.push(Predicate::NotBetween {
                 column,
@@ -766,5 +787,26 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod between_symmetric_parser_tests {
+    use crate::{execute, parse_select};
+
+    #[test]
+    fn symmetric_range_accepts_reversed_bounds() {
+        let query = parse_select("SELECT number FROM numbers(5) WHERE number BETWEEN SYMMETRIC 3 AND 1 ORDER BY number").unwrap();
+        let mut out = Vec::new();
+        execute(&query, None, &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "number\n1\n2\n3\n");
+    }
+
+    #[test]
+    fn negated_symmetric_range_matches_the_complement() {
+        let query = parse_select("SELECT number FROM numbers(5) WHERE number NOT BETWEEN SYMMETRIC 3 AND 1 ORDER BY number").unwrap();
+        let mut out = Vec::new();
+        execute(&query, None, &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "number\n0\n4\n");
     }
 }
