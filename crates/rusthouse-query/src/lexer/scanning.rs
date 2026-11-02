@@ -211,6 +211,7 @@ pub(super) fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
         (b'<', Some(b'=')) => (Operator::Le, 2),
         (b'<', Some(b'>')) | (b'!', Some(b'=')) => (Operator::Ne, 2),
         (b'>', Some(b'=')) => (Operator::Ge, 2),
+        (b'=', Some(b'=')) => (Operator::Eq, 2),
         (b'=', _) => (Operator::Eq, 1),
         (b'<', _) => (Operator::Lt, 1),
         (b'>', _) => (Operator::Gt, 1),
@@ -442,5 +443,25 @@ mod clickhouse_control_escape_tests {
             Token::String("one\u{0007}two\u{000b}three\\_four".into())
         );
         assert_eq!(cursor, sql.len());
+    }
+}
+
+#[cfg(test)]
+mod doubled_equals_tests {
+    #[test]
+    fn accepts_clickhouse_double_equals_for_numeric_predicates() {
+        let ordinary = crate::parse_select(
+            "SELECT number FROM numbers(4) WHERE number = 2",
+        )
+        .unwrap();
+        let doubled = crate::parse_select(
+            "SELECT number FROM numbers(4) WHERE number == 2",
+        )
+        .unwrap();
+        assert_eq!(doubled, ordinary);
+        assert!(crate::parse_select(
+            "SELECT number FROM numbers(4) WHERE number === 2"
+        )
+        .is_err());
     }
 }
