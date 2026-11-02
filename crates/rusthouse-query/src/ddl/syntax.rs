@@ -15,9 +15,9 @@ pub(super) fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
 fn canonical_type(name: &str) -> Option<&'static str> {
     Some(match name.to_ascii_uppercase().as_str() {
         "TINYINT" => "Int8",
-        "SMALLINT" => "Int16",
-        "INTEGER" | "INT" => "Int32",
-        "BIGINT" => "Int64",
+        "SMALLINT" | "INT2" => "Int16",
+        "INTEGER" | "INT" | "INT4" => "Int32",
+        "BIGINT" | "INT8" => "Int64",
         "TEXT" | "VARCHAR" | "CHARACTER" => "String",
         "TIMESTAMP" => "DateTime",
         "REAL" | "FLOAT" => "Float32",
@@ -231,5 +231,25 @@ mod complex_type_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod postgres_integer_alias_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn int2_int4_int8_match_signed_integer_storage_types() {
+        let Some(Ddl::CreateTable { columns, .. }) =
+            parse_ddl("CREATE TABLE metrics (small INT2, normal INT4, large INT8)")
+                .unwrap()
+        else {
+            panic!("expected CREATE TABLE");
+        };
+        assert_eq!(
+            columns.into_iter().map(|column| column.data_type).collect::<Vec<_>>(),
+            ["Int16", "Int32", "Int64"]
+        );
+        assert!(parse_ddl("CREATE TABLE bad (value INT3)").is_err());
     }
 }
