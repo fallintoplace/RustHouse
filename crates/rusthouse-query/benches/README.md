@@ -31,3 +31,25 @@ force a cold cache or include fixture creation, SQL parsing, terminal rendering,
 HTTP overhead, or concurrency. These numbers are not ClickHouse or DuckDB
 comparisons. Cross-engine claims require identical data, query semantics,
 hardware, cache controls, and measured bytes read.
+
+## Passenger distance analytics
+
+Run the deterministic passenger-distance workload in release mode:
+
+```sh
+cargo bench -p rusthouse-query --bench passenger_distance --locked -- --rows 262144 --passenger-groups 4 --samples 11
+```
+
+The benchmark writes compressed wide parts with a UInt8 passenger count and
+nullable Float64 trip distances. It compares grouped AVG(distance), COUNT(*),
+and a fused AVG + COUNT(*) + COUNT(distance) projection. Some distances are NULL,
+so COUNT(*) and COUNT(distance) intentionally differ.
+
+SQL parsing and fixture generation are excluded from timing. Each query warms
+up three times. Every run checks the results against independently accumulated
+integer-tenths totals and row counts. The output reports median and p90 elapsed
+milliseconds and millions of logical rows per second. It includes repeated
+physical reads under normal OS caching, but not cold-cache controls.
+
+Use the same row count, sample count, hardware and cache conditions when
+comparing branches. These measurements are not cross-engine comparisons.
