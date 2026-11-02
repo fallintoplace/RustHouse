@@ -86,13 +86,11 @@ mod tests {
     #[test]
     fn full_signed_128_bit_range_across_shards_is_exact() {
         let shards = [
-            (10, format!("min(amount)\tmax(amount)\n{}\n", i128::MAX).replace("\n", "\t").into_bytes()),
             (10, format!("min(amount)\tmax(amount)\n{}\t{}\n", i128::MIN, i128::MIN).into_bytes()),
             (10, format!("min(amount)\tmax(amount)\n{}\t{}\n", i128::MAX, i128::MAX).into_bytes()),
         ];
-        let valid = &shards[1..];
         assert_eq!(
-            merge_global_range(valid, "amount", "Int128").unwrap(),
+            merge_global_range(&shards, "amount", "Int128").unwrap(),
             format!("range(amount)\n{}\n", u128::MAX).into_bytes()
         );
     }
