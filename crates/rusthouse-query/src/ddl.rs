@@ -181,6 +181,25 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             finish_ddl(&mut parser)?;
             return Ok(Some(Ddl::RenameColumn { table, from, to }));
         }
+        if parser.keyword("ALTER") {
+            if !parser.keyword("COLUMN") {
+                return Err(ParseError("expected COLUMN after ALTER".into()));
+            }
+            let name = identifier(&mut parser)?;
+            if !parser.keyword("TYPE")
+                && !(parser.keyword("SET")
+                    && parser.keyword("DATA")
+                    && parser.keyword("TYPE"))
+            {
+                return Err(ParseError("expected TYPE or SET DATA TYPE".into()));
+            }
+            let data_type = data_type(&mut parser, 0)?;
+            finish_ddl(&mut parser)?;
+            return Ok(Some(Ddl::ModifyColumn {
+                table,
+                column: ColumnDef { name, data_type },
+            }));
+        }
         if parser.keyword("MODIFY") {
             if !parser.keyword("COLUMN") {
                 return Err(ParseError("expected COLUMN after MODIFY".into()));
@@ -638,6 +657,39 @@ mod show_columns_tests {
             "SHOW COLUMNS FROM events; DROP TABLE events",
             "DESC TABLE",
             "DESC TABLE events ORDER BY name",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod standard_alter_column_type_tests {
+    use super::*;
+
+    #[test]
+    fn lowers_alter_column_type_to_existing_modify_operation() {
+        for sql in [
+            "ALTER TABLE events ALTER COLUMN score TYPE BIGINT",
+            "ALTER TABLE events ALTER COLUMN score SET DATA TYPE BIGINT",
+        ] {
+            assert_eq!(
+                parse_ddl(sql).unwrap(),
+                Some(Ddl::ModifyColumn {
+                    table: "events".into(),
+                    column: ColumnDef {
+                        name: "score".into(),
+                        data_type: "Int64".into(),
+                    },
+                })
+            );
+        }
+        for sql in [
+            "ALTER TABLE events ALTER score TYPE BIGINT",
+            "ALTER TABLE events ALTER COLUMN score DATA TYPE BIGINT",
+            "ALTER TABLE events ALTER COLUMN score TYPE",
+            "ALTER TABLE events ALTER COLUMN score TYPE BIGINT extra",
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
