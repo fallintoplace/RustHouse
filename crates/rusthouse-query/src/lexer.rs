@@ -35,6 +35,57 @@ pub(super) fn tokenize_insert(sql: &str) -> Result<Vec<Token>, ParseError> {
     tokenize_with_limit(sql, 1024 * 1024)
 }
 
+fn scan_unicode_escape_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
+    let bytes = sql.as_bytes();
+    let mut cursor = *index + 3;
+    let mut span_start = cursor;
+    let mut result = String::new();
+    loop {
+        let Some(&byte) = bytes.get(cursor) else {
+            return Err(ParseError("unterminated Unicode escape string".into()));
+        };
+        match byte {
+            b'\'' => {
+                result.push_str(&sql[span_start..cursor]);
+                if bytes.get(cursor + 1) == Some(&b'\'') {
+                    result.push('\'');
+                    cursor += 2;
+                    span_start = cursor;
+                } else {
+                    *index = cursor + 1;
+                    return Ok(Token::String(result));
+                }
+            }
+            b'\\' => {
+                result.push_str(&sql[span_start..cursor]);
+                if bytes.get(cursor + 1) == Some(&b'\\') {
+                    result.push('\\');
+                    cursor += 2;
+                } else {
+                    let long = bytes.get(cursor + 1) == Some(&b'+');
+                    let digits_start = cursor + if long { 2 } else { 1 };
+                    let digits_end = digits_start + if long { 6 } else { 4 };
+                    let digits = bytes
+                        .get(digits_start..digits_end)
+                        .and_then(|digits| std::str::from_utf8(digits).ok())
+                        .ok_or_else(|| ParseError("invalid Unicode escape digits".into()))?;
+                    if !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                        return Err(ParseError("invalid Unicode escape digits".into()));
+                    }
+                    let code = u32::from_str_radix(digits, 16)
+                        .map_err(|_| ParseError("invalid Unicode escape value".into()))?;
+                    let character = char::from_u32(code)
+                        .ok_or_else(|| ParseError("invalid Unicode scalar value".into()))?;
+                    result.push(character);
+                    cursor = digits_end;
+                }
+                span_start = cursor;
+            }
+            _ => cursor += 1,
+        }
+    }
+}
+
 fn skip_line_comment(bytes: &[u8], index: &mut usize) {
     let remaining = &bytes[*index..];
     *index += remaining
@@ -66,6 +117,11 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             b' ' | b'\t' | b'\r' | b'\n' | b'\x0b' | b'\x0c' => {
                 index += 1;
                 continue;
+            }
+            b'u' | b'U' if bytes.get(index + 1) == Some(&b'&')
+                && bytes.get(index + 2) == Some(&b'\'') =>
+            {
+                scan_unicode_escape_string(sql, &mut index)?
             }
             b'\'' => scan_string(sql, &mut index)?,
             b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
@@ -535,5 +591,36 @@ mod bulk_comment_span_tests {
         }
         let deep = format!("SELECT {} 1 {}", "/*".repeat(33), "*/".repeat(33));
         assert!(tokenize(&deep).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod unicode_escape_string_tests {
+    use super::*;
+
+    #[test]
+    fn unicode_escape_literal_decodes_bmp_and_six_digit_scalars() {
+        assert_eq!(
+            tokenize(r"SELECT U&'d\0061ta', u&'\+01F600'").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("data".into()),
+                Token::Comma,
+                Token::String("😀".into()),
+            ]
+        );
+        assert_eq!(
+            tokenize(r"SELECT U&'it''s \\ safe'").unwrap()[1],
+            Token::String("it's \\ safe".into())
+        );
+        for invalid in [
+            r"SELECT U&'\zzzz'",
+            r"SELECT U&'\D800'",
+            r"SELECT U&'\+110000'",
+            r"SELECT U&'unterminated",
+        ] {
+            assert!(tokenize(invalid).is_err(), "{invalid}");
+        }
     }
 }
