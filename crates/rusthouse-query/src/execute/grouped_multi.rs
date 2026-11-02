@@ -121,7 +121,8 @@ fn parallel_grouped_parts(
     no_filters: bool,
 ) -> Result<Option<GroupedRows>, ExecutionError> {
     let parts = rusthouse_storage::query_parts(part)?;
-    let workers = super::query_workers(4);
+    let lease = super::query_worker_lease(4);
+    let workers = lease.workers();
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }

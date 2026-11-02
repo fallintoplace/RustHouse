@@ -986,7 +986,8 @@ fn static_nonnullable_null_filter(
 /// The serial path is retained for small part counts and filtered queries.
 fn parallel_exact_u32_distinct(part: &Path, column: &str) -> Result<Option<u64>, ExecutionError> {
     let parts = rusthouse_storage::query_parts(part)?;
-    let workers = super::query_workers(4);
+    let lease = super::query_worker_lease(4);
+    let workers = lease.workers();
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
@@ -1158,7 +1159,8 @@ fn parallel_filtered_count(
     conditions: &[Vec<Condition>],
     count_column_index: Option<usize>,
 ) -> Result<Option<u64>, ExecutionError> {
-    let workers = super::query_workers(4);
+    let lease = super::query_worker_lease(4);
+    let workers = lease.workers();
     if workers < 2 {
         return Ok(None);
     }

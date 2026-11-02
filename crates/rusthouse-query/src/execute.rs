@@ -117,6 +117,81 @@ mod query_worker_tests {
     }
 }
 
+/// Reuse a shared process budget for scoped parallel query workers.
+/// A saturated budget falls back to one worker, rather than launching a
+/// fresh full-size worker set for each concurrent query.
+static QUERY_WORKERS_IN_USE: AtomicUsize = AtomicUsize::new(0);
+
+struct QueryWorkerLease {
+    workers: usize,
+    reserved: usize,
+}
+
+impl QueryWorkerLease {
+    fn workers(&self) -> usize {
+        self.workers
+    }
+}
+
+impl Drop for QueryWorkerLease {
+    fn drop(&mut self) {
+        if self.reserved > 0 {
+            QUERY_WORKERS_IN_USE.fetch_sub(self.reserved, AtomicOrdering::AcqRel);
+        }
+    }
+}
+
+fn claim_query_worker_slots(in_use: &AtomicUsize, limit: usize) -> usize {
+    let mut current = in_use.load(AtomicOrdering::Acquire);
+    loop {
+        let available = limit.saturating_sub(current);
+        if available == 0 {
+            return 0;
+        }
+        match in_use.compare_exchange_weak(
+            current,
+            current + available,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        ) {
+            Ok(_) => return available,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn query_worker_lease(default_limit: usize) -> QueryWorkerLease {
+    let limit = query_workers(default_limit);
+    let reserved = claim_query_worker_slots(&QUERY_WORKERS_IN_USE, limit);
+    QueryWorkerLease {
+        workers: reserved.max(1),
+        reserved,
+    }
+}
+
+#[cfg(test)]
+mod query_worker_budget_tests {
+    use super::*;
+
+    #[test]
+    fn never_reserves_more_than_the_process_budget() {
+        let used = AtomicUsize::new(0);
+        let claimed = claim_query_worker_slots(&used, 4);
+        assert_eq!(claimed, 4);
+        assert_eq!(claim_query_worker_slots(&used, 4), 0);
+        used.fetch_sub(claimed, AtomicOrdering::AcqRel);
+        assert_eq!(claim_query_worker_slots(&used, 2), 2);
+    }
+
+    #[test]
+    fn respects_existing_reservations() {
+        let used = AtomicUsize::new(3);
+        assert_eq!(claim_query_worker_slots(&used, 4), 1);
+        assert_eq!(used.load(AtomicOrdering::Acquire), 4);
+        assert_eq!(claim_query_worker_slots(&used, 1), 0);
+    }
+}
+
 // Charge each shared memory reservation atomically on all supported Rust versions.
 fn try_reserve_shared(budget: &AtomicUsize, amount: usize, limit: usize) -> bool {
     let mut current = budget.load(AtomicOrdering::Acquire);
@@ -589,7 +664,8 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
     }
     let parts = rusthouse_storage::query_parts(source)?;
     const MIN_PARALLEL_PARTS: usize = 32;
-    let workers = query_workers(4);
+    let lease = query_worker_lease(4);
+    let workers = lease.workers();
     if workers < 2 {
         return Ok(None);
     }
@@ -718,7 +794,8 @@ fn parallel_integer_minmax(
         return Ok(None);
     }
     let parts = rusthouse_storage::query_parts(source)?;
-    let workers = query_workers(4);
+    let lease = query_worker_lease(4);
+    let workers = lease.workers();
     if parts.len() < 32 || workers < 2 {
         return Ok(None);
     }
@@ -865,7 +942,8 @@ fn parallel_integer_sum(
         return Ok(None);
     }
     let parts = rusthouse_storage::query_parts(source)?;
-    let workers = query_workers(4);
+    let lease = query_worker_lease(4);
+    let workers = lease.workers();
     if workers < 2 || (parts.len() < 32 && parts.len() != 1) {
         return Ok(None);
     }

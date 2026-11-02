@@ -88,7 +88,8 @@ fn parallel_integer_grouped_count(
     use std::sync::atomic::AtomicUsize;
     const MAX_PARTIAL_KEYS: usize = 100_000;
     let parts = rusthouse_storage::query_parts(part)?;
-    let workers = super::query_workers(4);
+    let lease = super::query_worker_lease(4);
+    let workers = lease.workers();
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
@@ -1099,7 +1100,8 @@ fn parallel_exact_narrow_distinct(
     domain: usize,
 ) -> Result<Option<u64>, ExecutionError> {
     let parts = rusthouse_storage::query_parts(part)?;
-    let workers = super::query_workers(4);
+    let lease = super::query_worker_lease(4);
+    let workers = lease.workers();
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
