@@ -1023,14 +1023,11 @@ fn extrema_fits_declared_type(kind: &str, raw: &str) -> bool {
         _ => return false,
     };
     if unsigned {
-        raw.parse::<u128>().is_ok_and(|value| {
-            bits == 128 || value <= (1u128 << bits) - 1
-        })
+        raw.parse::<u128>()
+            .is_ok_and(|value| bits == 128 || value <= (1u128 << bits) - 1)
     } else {
         raw.parse::<i128>().is_ok_and(|value| {
-            bits == 128
-                || (value >= -(1i128 << (bits - 1))
-                    && value <= (1i128 << (bits - 1)) - 1)
+            bits == 128 || (value >= -(1i128 << (bits - 1)) && value <= (1i128 << (bits - 1)) - 1)
         })
     }
 }
@@ -3287,11 +3284,7 @@ mod distributed_extrema_width_validation_tests {
         ] {
             let body = format!("min(amount)\n{value}\n");
             assert_eq!(
-                merge_integer_extrema(
-                    &[(10, body.into_bytes())],
-                    kind,
-                    AggregateFunction::Min,
-                ),
+                merge_integer_extrema(&[(10, body.into_bytes())], kind, AggregateFunction::Min,),
                 Err(MergeError::InvalidExtremum),
                 "{kind}: {value}",
             );
@@ -3310,11 +3303,11 @@ mod distributed_extrema_width_validation_tests {
             ("UInt128", "340282366920938463463374607431768211455"),
         ] {
             let body = format!("max(amount)\n{value}\n");
-            assert!(merge_integer_extrema(
-                &[(10, body.into_bytes())],
-                kind,
-                AggregateFunction::Max,
-            ).is_ok(), "{kind}: {value}");
+            assert!(
+                merge_integer_extrema(&[(10, body.into_bytes())], kind, AggregateFunction::Max,)
+                    .is_ok(),
+                "{kind}: {value}"
+            );
         }
     }
 }
