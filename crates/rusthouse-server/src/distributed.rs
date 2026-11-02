@@ -29,11 +29,13 @@ enum MergeError {
     InvalidUniqState,
     InvalidGroupedCount,
     InvalidGroupedSum,
+    InvalidGroupedProduct,
     InvalidSortedScan,
     InvalidSum,
     InvalidExtremum,
     CountOverflow,
     SumOverflow,
+    ProductOverflow,
 }
 
 /// Ordinary counts sum across shards; DISTINCT needs global key de-duplication.
@@ -1110,7 +1112,39 @@ fn merge_grouped_integer_sums_query(
     value_column: &str,
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
-    let header = format!("{key_column}\tsum({value_column})\n");
+    merge_grouped_integer_reducer(
+        shards, max_rows, kind, key_column, value_column, AggregateFunction::Sum, global,
+    )
+}
+
+fn merge_grouped_integer_products_query(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    global: Option<&Select>,
+) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_integer_reducer(
+        shards, max_rows, kind, key_column, value_column, AggregateFunction::Product, global,
+    )
+    .map_err(|error| match error {
+        MergeError::InvalidGroupedSum => MergeError::InvalidGroupedProduct,
+        MergeError::SumOverflow => MergeError::ProductOverflow,
+        other => other,
+    })
+}
+
+fn merge_grouped_integer_reducer(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    function: AggregateFunction,
+    global: Option<&Select>,
+) -> Result<Vec<u8>, MergeError> {
+    let header = format!("{key_column}\t{}({value_column})\n", function.name());
     let unsigned = kind
         .strip_prefix("Nullable(")
         .unwrap_or(kind)
@@ -1175,24 +1209,34 @@ fn merge_grouped_integer_sums_query(
                     let number = number
                         .parse::<u128>()
                         .map_err(|_| MergeError::InvalidGroupedSum)?;
-                    groups[index].2 = Some(
-                        groups[index]
-                            .2
-                            .unwrap_or(0)
-                            .checked_add(number)
-                            .ok_or(MergeError::SumOverflow)?,
-                    );
+                    groups[index].2 = Some(match groups[index].2 {
+                        None => number,
+                        Some(prior) => match function {
+                            AggregateFunction::Sum => {
+                                prior.checked_add(number).ok_or(MergeError::SumOverflow)?
+                            }
+                            AggregateFunction::Product => {
+                                prior.checked_mul(number).ok_or(MergeError::ProductOverflow)?
+                            }
+                            _ => unreachable!("validated grouped aggregate"),
+                        },
+                    });
                 } else {
                     let number = number
                         .parse::<i128>()
                         .map_err(|_| MergeError::InvalidGroupedSum)?;
-                    groups[index].1 = Some(
-                        groups[index]
-                            .1
-                            .unwrap_or(0)
-                            .checked_add(number)
-                            .ok_or(MergeError::SumOverflow)?,
-                    );
+                    groups[index].1 = Some(match groups[index].1 {
+                        None => number,
+                        Some(prior) => match function {
+                            AggregateFunction::Sum => {
+                                prior.checked_add(number).ok_or(MergeError::SumOverflow)?
+                            }
+                            AggregateFunction::Product => {
+                                prior.checked_mul(number).ok_or(MergeError::ProductOverflow)?
+                            }
+                            _ => unreachable!("validated grouped aggregate"),
+                        },
+                    });
                 }
             }
         }
@@ -1543,6 +1587,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
+                || is_safe_grouped_product(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -1566,6 +1611,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     };
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
+    let grouped_product_query = is_safe_grouped_product(&select);
     let sum_query = is_safe_sum(&select);
     let uniq_query = is_safe_uniq(&select);
     let shard_sql = if sorted_query {
@@ -1590,7 +1636,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
         }
-    } else if grouped_sum_query {
+    } else if grouped_sum_query || grouped_product_query {
         match grouped_count_shard_sql(sql, &select) {
             Some(query) => query,
             None => return Response::text("400 Bad Request", "unsupported global grouped SUM\n"),
@@ -1640,7 +1686,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum,
+                function: AggregateFunction::Sum | AggregateFunction::Product,
                 value_column,
                 ..
             },
@@ -1654,7 +1700,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum,
+                function: AggregateFunction::Sum | AggregateFunction::Product,
                 column,
                 ..
             },
@@ -1771,6 +1817,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .map_or(Err(MergeError::InvalidExtremum), |kind| {
                 merge_integer_extrema(&shards, kind, function)
             })
+    } else if grouped_product_query {
+        match (sum_type.as_deref(), group_schema, sum_schema) {
+            (Some(kind), Some((_, key)), Some((_, value))) => {
+                merge_grouped_integer_products_query(
+                    &shards, max_rows.min(250_000), kind, key, value, Some(&select),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedProduct),
+        }
     } else if grouped_sum_query {
         match (sum_type.as_deref(), group_schema, sum_schema) {
             (Some(kind), Some((_, key)), Some((_, value))) => {
@@ -1875,6 +1930,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(MergeError::InvalidGroupedSum) => {
             Response::text("502 Bad Gateway", "malformed shard grouped SUM response\n")
         }
+        Err(MergeError::InvalidGroupedProduct) => {
+            Response::text("502 Bad Gateway", "malformed shard grouped PRODUCT response\n")
+        }
         Err(MergeError::InvalidSortedScan) => Response::text(
             "502 Bad Gateway",
             "malformed shard sorted integer response\n",
@@ -1884,6 +1942,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
         Err(MergeError::InvalidExtremum) => {
             Response::text("502 Bad Gateway", "malformed shard MIN/MAX response\n")
+        }
+        Err(MergeError::ProductOverflow) => {
+            Response::text("413 Payload Too Large", "distributed PRODUCT overflow\n")
         }
         Err(MergeError::SumOverflow) => {
             Response::text("413 Payload Too Large", "distributed SUM overflow\n")
@@ -3230,6 +3291,53 @@ mod logical_distinct_tsv_equivalence_tests {
         assert_eq!(
             merge_distinct_tsv(&[(16, b"v\nvalid\n\\q\n".to_vec())], 1, 0, Some(1)),
             Err(MergeError::InvalidResponse),
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_product_tests {
+    use super::*;
+
+    #[test]
+    fn reduces_integer_products_and_skips_empty_nullable_parts() {
+        let select = parse_select(
+            "SELECT region, product(amount) FROM events GROUP BY region",
+        ).unwrap();
+        assert!(is_safe_grouped_product(&select));
+        let shards = [
+            (10, b"region\tproduct(amount)\na\t3\nb\tNULL\n".to_vec()),
+            (10, b"region\tproduct(amount)\na\t4\nb\t2\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_products_query(
+                &shards, 10, "Nullable(Int64)", "region", "amount", Some(&select),
+            ).unwrap(),
+            b"region\tproduct(amount)\na\t12\nb\t2\n"
+        );
+    }
+
+    #[test]
+    fn rejects_overflow_and_non_product_response_headers() {
+        let select = parse_select(
+            "SELECT region, product(amount) FROM events GROUP BY region",
+        ).unwrap();
+        let shards = [
+            (10, b"region\tproduct(amount)\na\t340282366920938463463374607431768211455\n".to_vec()),
+            (10, b"region\tproduct(amount)\na\t2\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_products_query(
+                &shards, 10, "UInt128", "region", "amount", Some(&select),
+            ),
+            Err(MergeError::ProductOverflow),
+        );
+        assert_eq!(
+            merge_grouped_integer_products_query(
+                &[(10, b"region\tsum(amount)\na\t2\n".to_vec())],
+                10, "UInt64", "region", "amount", Some(&select),
+            ),
+            Err(MergeError::SchemaMismatch),
         );
     }
 }
