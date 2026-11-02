@@ -81,6 +81,7 @@ pub struct NumericPartReader {
     marks: usize,
     next_mark: usize,
     failed: bool,
+    decode_workers: usize,
 }
 
 impl NumericPartReader {
@@ -197,11 +198,19 @@ impl NumericPartReader {
         for (name, stream) in columns.iter().zip(&streams) {
             layout.validate(name, &stream.marks, metadata.rows)?;
         }
+        let decode_workers = if columns.len() >= 8 {
+            std::thread::available_parallelism()
+                .map_or(1, |count| count.get())
+                .min(4)
+        } else {
+            1
+        };
         Ok(Self {
             streams,
             rows: metadata.rows,
             marks: layout.mark_count(),
             next_mark: 0,
+            decode_workers,
             failed: false,
         })
     }
@@ -281,10 +290,8 @@ impl NumericPartReader {
         }
         // Small or legacy marks remain serial: worker setup is worthwhile only
         // for large adaptive analytical projections.
-        let workers = if row_count.is_some_and(|rows| rows >= 4096) && self.streams.len() >= 8 {
-            std::thread::available_parallelism()
-                .map_or(1, |n| n.get())
-                .min(4)
+        let workers = if row_count.is_some_and(|rows| rows >= 4096) {
+            self.decode_workers
         } else {
             1
         };

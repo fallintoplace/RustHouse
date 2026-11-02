@@ -50,12 +50,25 @@ pub fn replace_double_parity_source(
     for _ in 0..changed_index {
         factor = gf_mul(factor, 2);
     }
-    for offset in 0..old.len().max(new.len()) {
-        let before = old.get(offset).copied().unwrap_or(0);
-        let after = new.get(offset).copied().unwrap_or(0);
-        let delta = before ^ after;
-        parity.xor[offset] ^= delta;
-        parity.weighted[offset] ^= gf_mul(factor, delta);
+    let length = old.len().max(new.len());
+    if length < 1024 {
+        for offset in 0..length {
+            let before = old.get(offset).copied().unwrap_or(0);
+            let after = new.get(offset).copied().unwrap_or(0);
+            let delta = before ^ after;
+            parity.xor[offset] ^= delta;
+            parity.weighted[offset] ^= gf_mul(factor, delta);
+        }
+    } else {
+        // The changed source has one coefficient for all of its bytes.
+        let products: [u8; 256] = std::array::from_fn(|byte| gf_mul(factor, byte as u8));
+        for offset in 0..length {
+            let before = old.get(offset).copied().unwrap_or(0);
+            let after = new.get(offset).copied().unwrap_or(0);
+            let delta = before ^ after;
+            parity.xor[offset] ^= delta;
+            parity.weighted[offset] ^= products[usize::from(delta)];
+        }
     }
     Ok(())
 }
@@ -124,6 +137,20 @@ mod tests {
     }
 
     #[test]
+    fn long_updates_match_reencoding_across_all_byte_values() {
+        let old = (0..4096).map(|index| index as u8).collect::<Vec<_>>();
+        let other = (0..4096).map(|index| (index * 53) as u8).collect::<Vec<_>>();
+        let replacement = (0..3073).map(|index| (index * 29 + 17) as u8).collect::<Vec<_>>();
+        let initial = encode_double_parity(&[&old, &other]).unwrap();
+        let mut updated = initial.clone();
+        replace_double_parity_source(&mut updated, 2, 0, &old, &replacement).unwrap();
+        let mut expected = encode_double_parity(&[&replacement, &other]).unwrap();
+        expected.xor.resize(initial.xor.len(), 0);
+        expected.weighted.resize(initial.weighted.len(), 0);
+        assert_eq!(updated, expected);
+    }
+
+    #[test]
     fn rejects_invalid_updates_without_modifying_destination() {
         let source: [&[u8]; 2] = [b"abc", b"xyz"];
         let original = encode_double_parity(&source).unwrap();
@@ -139,5 +166,24 @@ mod tests {
         let mut malformed = original.clone();
         malformed.weighted.pop();
         assert!(replace_double_parity_source(&mut malformed, 2, 0, b"abc", b"x").is_err());
+    }
+}
+
+#[cfg(test)]
+mod large_delta_lookup_tests {
+    use super::*;
+    use crate::distributed_parity::encode_double_parity;
+
+    #[test]
+    fn cached_gf_products_match_full_parity_reencoding() {
+        let first = vec![0x55; 4096];
+        let second = vec![0xaa; 4096];
+        let old = (0..4096).map(|i| (i % 256) as u8).collect::<Vec<_>>();
+        let new = (0..4096).map(|i| ((i * 13 + 7) % 256) as u8).collect::<Vec<_>>();
+        let original = encode_double_parity(&[&first, &second, &old]).unwrap();
+        let mut updated = original;
+        replace_double_parity_source(&mut updated, 3, 2, &old, &new).unwrap();
+        let expected = encode_double_parity(&[&first, &second, &new]).unwrap();
+        assert_eq!(updated, expected);
     }
 }

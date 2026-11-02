@@ -4,6 +4,8 @@ use crate::distributed_ancestry::{SnapshotAncestry, SnapshotParent};
 use crate::distributed_lineage::SnapshotVersion;
 use std::collections::{HashMap, HashSet};
 
+const MAX_PINNED_HEADS: usize = 16_384;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReachabilityPlan {
     pub keep: Vec<SnapshotVersion>,
@@ -17,7 +19,7 @@ pub fn plan_snapshot_reachability(
     pinned_heads: &[SnapshotVersion],
 ) -> Result<ReachabilityPlan, &'static str> {
     SnapshotAncestry::new(records)?;
-    if pinned_heads.is_empty() || pinned_heads.len() > records.len() {
+    if pinned_heads.is_empty() || pinned_heads.len() > MAX_PINNED_HEADS {
         return Err("snapshot reachability needs bounded live heads");
     }
     let by_id: HashMap<(u64, u64), SnapshotParent> = records.iter()
@@ -84,6 +86,25 @@ mod tests {
         assert!(plan_snapshot_reachability(&nodes, &[v(2)]).is_err());
         assert!(plan_snapshot_reachability(
             &nodes, &[SnapshotVersion { fingerprint: 99, ..v(1) }]
+        ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod duplicate_live_head_tests {
+    use super::*;
+
+    #[test]
+    fn many_readers_may_pin_the_same_snapshot() {
+        let version = SnapshotVersion { epoch: 1, generation: 1, fingerprint: 19 };
+        let records = [SnapshotParent { snapshot: version, parent: None }];
+        let duplicate_pins = vec![version; 128];
+        let plan = plan_snapshot_reachability(&records, &duplicate_pins).unwrap();
+        assert_eq!(plan.keep, [version]);
+        assert!(plan.candidates.is_empty());
+        assert!(plan_snapshot_reachability(
+            &records,
+            &vec![version; MAX_PINNED_HEADS + 1],
         ).is_err());
     }
 }
