@@ -289,18 +289,13 @@ fn crc32_ieee(input: &[u8]) -> u32 {
 
 // Convert a bounded, unambiguous JSONPath subset to the existing dotted
 // object/array lookup used by the strict JSON parser.
-fn simple_json_path(path: &str) -> Result<Option<String>, ParseError> {
-    if path == "$" {
-        return Ok(None);
-    }
+fn simple_json_path(path: &str) -> Result<Vec<crate::json::JsonPathSegment<'_>>, ParseError> {
     if path.len() > 256 || !path.starts_with('$') {
-        return Err(ParseError(
-            "JSON_EXISTS requires a bounded root JSONPath".into(),
-        ));
+        return Err(ParseError("JSON_EXISTS requires a bounded root JSONPath".into()));
     }
     let bytes = path.as_bytes();
     let mut cursor = 1;
-    let mut components = String::new();
+    let mut components = Vec::new();
     while cursor < bytes.len() {
         match bytes[cursor] {
             b'.' => {
@@ -315,10 +310,7 @@ fn simple_json_path(path: &str) -> Result<Option<String>, ParseError> {
                 if start == cursor {
                     return Err(ParseError("unsupported JSON_EXISTS path".into()));
                 }
-                if !components.is_empty() {
-                    components.push('.');
-                }
-                components.push_str(&path[start..cursor]);
+                components.push(crate::json::JsonPathSegment::Key(&path[start..cursor]));
             }
             b'[' => {
                 cursor += 1;
@@ -329,19 +321,16 @@ fn simple_json_path(path: &str) -> Result<Option<String>, ParseError> {
                 if cursor == start || bytes.get(cursor) != Some(&b']') {
                     return Err(ParseError("unsupported JSON_EXISTS array index".into()));
                 }
-                if !components.is_empty() {
-                    components.push('.');
-                }
-                components.push_str(&path[start..cursor]);
+                let index = path[start..cursor]
+                    .parse::<usize>()
+                    .map_err(|_| ParseError("JSON_EXISTS array index exceeds usize".into()))?;
+                components.push(crate::json::JsonPathSegment::Index(index));
                 cursor += 1;
             }
             _ => return Err(ParseError("unsupported JSON_EXISTS path".into())),
         }
     }
-    if components.is_empty() {
-        return Err(ParseError("unsupported JSON_EXISTS path".into()));
-    }
-    Ok(Some(components))
+    Ok(components)
 }
 
 fn binary_string(bytes: &[u8]) -> Result<String, ParseError> {
@@ -4987,9 +4976,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let components = simple_json_path(&path)?;
                     let json = crate::json::parse_json(&input)
                         .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
-                    let found = components
-                        .as_deref()
-                        .is_none_or(|path| json.at_path(path).is_some());
+                    let found = json.at_json_path(&components).is_some();
                     ConstantValue::Integer(i64::from(found))
                 }
                 _ => ConstantValue::Null,
@@ -6572,5 +6559,28 @@ mod clickhouse_position_case_insensitive_utf8_parity_tests {
         assert!(parse_select("SELECT positionCaseInsensitiveUTF8('a')").is_err());
         assert!(parse_select("SELECT positionCaseInsensitiveUTF8('abc', 'a', -1)").is_err());
         assert!(parse_select("SELECT positionCaseInsensitiveUTF8('a', 'b', 1, 2)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod typed_json_exists_selector_tests {
+    use super::*;
+
+    #[test]
+    fn indexes_and_property_names_select_only_their_container_type() {
+        for (sql, expected) in [
+            (r#"SELECT JSON_EXISTS('{"0":42}', '$[0]')"#, 0),
+            (r#"SELECT JSON_EXISTS('[42]', '$.0')"#, 0),
+            (r#"SELECT JSON_EXISTS('{"a":{"0":42}}', '$.a[0]')"#, 0),
+            (r#"SELECT JSON_EXISTS('{"a":[{"z":0}]}', '$.a[0].z')"#, 1),
+            (r#"SELECT JSON_EXISTS('[{"z":0}]', '$[0].z')"#, 1),
+            (r#"SELECT JSON_EXISTS('{"a":4}', '$')"#, 1),
+        ] {
+            let projection = crate::parse_select(sql).unwrap().projection;
+            let crate::Projection::Constants(columns) = projection else {
+                panic!("expected constant projection");
+            };
+            assert_eq!(columns[0].value, crate::ConstantValue::Integer(expected), "{sql}");
+        }
     }
 }
