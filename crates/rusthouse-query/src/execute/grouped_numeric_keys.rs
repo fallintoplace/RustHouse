@@ -216,6 +216,9 @@ pub(super) fn execute<W: Write>(
 
     let mut names = columns.to_vec();
     for (function, column) in items {
+        if *function == AggregateFunction::Count && column == "*" {
+            continue;
+        }
         let kind = types.get(column).ok_or_else(|| {
             ExecutionError::Invalid(format!("unknown aggregate column: {column}"))
         })?;
@@ -291,7 +294,9 @@ pub(super) fn execute<W: Write>(
         .collect::<Vec<_>>();
     let item_indices = items
         .iter()
-        .map(|(_, column)| indices[column])
+        .map(|(function, column)| {
+            (*function != AggregateFunction::Count || column != "*").then(|| indices[column])
+        })
         .collect::<Vec<_>>();
     // Composite text GROUP BY otherwise clones every string key on each row.
     let has_text_key = columns
@@ -461,7 +466,7 @@ pub(super) fn execute<W: Write>(
                     index
                 }
             };
-            for (metric, ((function, _), (&index, state))) in items
+            for (metric, ((function, _), (column_index, state))) in items
                 .iter()
                 .zip(item_indices.iter().zip(groups[group].1.iter_mut()))
                 .enumerate()
@@ -472,11 +477,16 @@ pub(super) fn execute<W: Write>(
                     }
                 }
                 if *function == AggregateFunction::Count {
-                    if !typed::is_null_at(&batch[index], row) {
+                    if let Some(index) = *column_index {
+                        if !typed::is_null_at(&batch[index], row) {
+                            state.increment_count()?;
+                        }
+                    } else {
                         state.increment_count()?;
                     }
                     continue;
                 }
+                let index = column_index.expect("non-COUNT(*) metric has a column");
                 if let Some(value) = numeric_value_at(&batch[index], row)? {
                     if *function == AggregateFunction::Median {
                         charge_median_value(&mut retained_median_bytes)?;

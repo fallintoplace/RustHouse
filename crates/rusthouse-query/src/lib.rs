@@ -633,7 +633,13 @@ impl Parser {
         } = projection
         {
             if self.take(Token::LParen) {
-                let argument = self.word()?;
+                let argument = if self.take(Token::Star)
+                    || self.tokens.get(self.index) == Some(&Token::RParen)
+                {
+                    "*".to_string()
+                } else {
+                    self.word()?
+                };
                 if !self.take(Token::RParen) {
                     return Err(ParseError("expected ')' in ORDER BY aggregate".into()));
                 }
@@ -648,7 +654,13 @@ impl Parser {
         | Projection::GroupedMultiAggregates { items, .. } = projection
         {
             if self.take(Token::LParen) {
-                let argument = self.word()?;
+                let argument = if self.take(Token::Star)
+                    || self.tokens.get(self.index) == Some(&Token::RParen)
+                {
+                    "*".to_string()
+                } else {
+                    self.word()?
+                };
                 if !self.take(Token::RParen) {
                     return Err(ParseError("expected ')' in ORDER BY aggregate".into()));
                 }
@@ -783,6 +795,21 @@ pub fn split_clickhouse_format(sql: &str) -> Result<(&str, Option<&str>), ParseE
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     parse_select_tokens(tokenize(sql)?)
+}
+
+// COUNT(*) and COUNT() use a marker in grouped metric lists.
+// The executor counts rows without reading a synthetic data column.
+fn grouped_metric_column(
+    parser: &mut Parser,
+    function: AggregateFunction,
+) -> Result<String, ParseError> {
+    if function == AggregateFunction::Count
+        && (parser.take(Token::Star)
+            || parser.tokens.get(parser.index) == Some(&Token::RParen))
+    {
+        return Ok("*".into());
+    }
+    parser.word()
 }
 
 fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
@@ -1000,34 +1027,25 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         while parser.take(Token::Comma) {
             if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
-                && !matches!(
+                && matches!(
                     parser.tokens.get(parser.index + 2),
-                    Some(Token::Word(word)) if !word.eq_ignore_ascii_case("DISTINCT")
+                    Some(Token::Word(word)) if word.eq_ignore_ascii_case("DISTINCT")
                 )
             {
+                // Keep the specialized COUNT(DISTINCT column) projection.
+                if columns.len() > 8 {
+                    return Err(ParseError("GROUP BY supports at most 8 keys".into()));
+                }
                 parser.keyword("COUNT");
-                if !parser.take(Token::LParen) {
-                    return Err(ParseError("expected COUNT() or COUNT(*)".into()));
+                parser.take(Token::LParen);
+                parser.keyword("DISTINCT");
+                let value_column = parser.word()?;
+                if !parser.take(Token::RParen) {
+                    return Err(ParseError(
+                        "expected ')' after COUNT(DISTINCT column)".into(),
+                    ));
                 }
-                if parser.keyword("DISTINCT") {
-                    if columns.len() > 8 {
-                        return Err(ParseError("GROUP BY supports at most 8 keys".into()));
-                    }
-                    let value_column = parser.word()?;
-                    if !parser.take(Token::RParen) {
-                        return Err(ParseError(
-                            "expected ')' after COUNT(DISTINCT column)".into(),
-                        ));
-                    }
-                    grouped_distinct = Some(value_column);
-                } else {
-                    if !parser.take(Token::RParen)
-                        && !(parser.take(Token::Star) && parser.take(Token::RParen))
-                    {
-                        return Err(ParseError("expected COUNT() or COUNT(*)".into()));
-                    }
-                    grouped_count = true;
-                }
+                grouped_distinct = Some(value_column);
                 break;
             }
             if parser.tokens.get(parser.index + 1) == Some(&Token::LParen) {
@@ -1063,7 +1081,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             "SUMIF" | "AVGIF" | "MINIF" | "MAXIF"));
                     parser.index += 1;
                     parser.take(Token::LParen);
-                    let value_column = parser.word()?;
+                    let value_column = grouped_metric_column(&mut parser, function)?;
                     let filter = if conditional {
                         if !parser.take(Token::Comma) {
                             return Err(ParseError(
@@ -1125,7 +1143,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         if !parser.take(Token::LParen) {
                             return Err(ParseError("expected '(' after aggregate name".into()));
                         }
-                        let value_column = parser.word()?;
+                        let value_column = grouped_metric_column(&mut parser, function)?;
                         let filter = if conditional {
                             if !parser.take(Token::Comma) {
                                 return Err(ParseError(
@@ -1160,6 +1178,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         }
                     }
                     if items.len() == 1
+                        && items[0].0 == AggregateFunction::Count
+                        && items[0].1 == "*"
+                        && aliases[0].is_none()
+                    {
+                        // Preserve the existing COUNT(*) fast path.
+                        grouped_count = true;
+                    } else if items.len() == 1
                         && columns.len() == 1
                         && aliases[0].is_none()
                         && filters[0].is_none()
@@ -1626,7 +1651,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             // Only a projected metric can be filtered, so an alias never
             // selects a different or previously uncomputed aggregate.
             let selected = if parser.take(Token::LParen) {
-                let column = parser.word()?;
+                let column = if parser.take(Token::Star)
+                    || parser.tokens.get(parser.index) == Some(&Token::RParen)
+                {
+                    "*".to_string()
+                } else {
+                    parser.word()?
+                };
                 if !parser.take(Token::RParen) {
                     return Err(ParseError("expected ')' after HAVING metric".into()));
                 }
