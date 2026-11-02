@@ -9,13 +9,13 @@ fn value(sql: &str) -> ConstantValue {
 }
 
 #[test]
-fn concat_with_separator_propagates_null_without_changing_concat_ws() {
+fn concat_with_separator_and_alias_propagate_null() {
     for (query, expected) in [
         ("SELECT concatWithSeparator('-', 'a', 'b')", ConstantValue::Text("a-b".into())),
         ("SELECT concatWithSeparator('-', 'a', NULL)", ConstantValue::Null),
         ("SELECT concatWithSeparator('-', NULL, 'b')", ConstantValue::Null),
         ("SELECT concatWithSeparator(NULL, 'a', 'b')", ConstantValue::Null),
-        ("SELECT concat_ws('-', 'a', NULL, 'b')", ConstantValue::Text("a-b".into())),
+        ("SELECT concat_ws('-', 'a', NULL, 'b')", ConstantValue::Null),
     ] {
         assert_eq!(value(query), expected, "{query}");
     }
