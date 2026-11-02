@@ -446,6 +446,24 @@ where
     Ok(total)
 }
 
+/// Keep JOIN projection formatting tied to the underlying column types.
+fn join_output_types(
+    left_path: &Path,
+    right_path: &Path,
+    selected: &[(usize, String, Option<usize>)],
+) -> Result<Vec<String>, ExecutionError> {
+    let left = inspect_query_source(left_path)?;
+    let right = inspect_query_source(right_path)?;
+    let types = left.columns.iter().chain(&right.columns)
+        .map(|column| column.data_type.as_str())
+        .collect::<Vec<_>>();
+    selected.iter().map(|(index, _, _)| {
+        types.get(*index)
+            .map(|data_type| (*data_type).to_owned())
+            .ok_or_else(|| invalid("unknown JOIN projection type"))
+    }).collect()
+}
+
 fn execute_streaming_right_outer<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -461,6 +479,7 @@ fn execute_streaming_right_outer<W: Write>(
         right_keys,
         null_filter,
     } = columns;
+    let projection_types = join_output_types(left_path, right_path, selected)?;
     let left_meta = inspect_query_source(left_path)?;
     let keep = retained_build_columns(left_names, left_keys, selected, null_filter, 0);
     let left_rows = read_projected_build_rows_using_metadata(
@@ -552,7 +571,7 @@ fn execute_streaming_right_outer<W: Write>(
                     } else {
                         value
                     };
-                    typed::write_value(output, value)?;
+                    typed::write_typed_value(output, value, &projection_types[pos])?;
                 }
                 output.write_all(b"\n")?;
             }
@@ -590,6 +609,7 @@ fn execute_streaming_inner<W: Write>(
         right_keys,
         null_filter,
     } = columns;
+    let projection_types = join_output_types(left_path, right_path, selected)?;
     // The probe side is scanned in batches and never retained. Keep the
     // hash-build and matched-output limits, not an artificial probe-row cap.
     let right_meta = inspect_query_source(right_path)?;
@@ -678,7 +698,7 @@ fn execute_streaming_inner<W: Write>(
                     } else {
                         &right[*column - left_width]
                     };
-                    typed::write_value(&mut row_output, cell)?;
+                    typed::write_typed_value(&mut row_output, cell, &projection_types[index])?;
                 }
                 row_output.write_all(b"\n")?;
             }
@@ -824,6 +844,7 @@ fn execute_streaming_right<W: Write>(
         right_keys,
         null_filter,
     } = columns;
+    let projection_types = join_output_types(left_path, right_path, selected)?;
     let left_meta = inspect_query_source(left_path)?;
     let keep = retained_build_columns(left_names, left_keys, selected, null_filter, 0);
     let left_rows = read_projected_build_rows_using_metadata(
@@ -904,7 +925,7 @@ fn execute_streaming_right<W: Write>(
                     } else {
                         &right[*column - left_width]
                     };
-                    typed::write_value(output, value)?;
+                    typed::write_typed_value(output, value, &projection_types[index])?;
                 }
                 output.write_all(b"\n")?;
             }
@@ -984,6 +1005,7 @@ fn execute_streaming_ordered_inner<W: Write>(
         right_keys,
         null_filter,
     } = columns;
+    let projection_types = join_output_types(left_path, right_path, selected)?;
     let right_metadata = inspect_query_source(right_path)?;
     let mut keep = retained_build_columns(
         right_names,
@@ -1134,7 +1156,7 @@ fn execute_streaming_ordered_inner<W: Write>(
             if index != 0 {
                 output.write_all(b"\t")?;
             }
-            typed::write_value(output, value)?;
+            typed::write_typed_value(output, value, &projection_types[index])?;
         }
         output.write_all(b"\n")?;
     }
@@ -1770,6 +1792,7 @@ pub fn execute_join<W: Write>(
     }
     let header = selected_header(&selected);
     writeln!(output, "{header}")?;
+    let projection_types = join_output_types(left_path, right_path, &selected)?;
     for pair in pairs
         .iter()
         .skip(query.offset)
@@ -1785,7 +1808,7 @@ pub fn execute_join<W: Write>(
                     fallback.and_then(|index| cell_at(&left_rows, &right_rows, pair, index, width))
                 })
                 .unwrap_or(&null);
-            typed::write_value(output, value)?;
+            typed::write_typed_value(output, value, &projection_types[position])?;
         }
         output.write_all(b"\n")?;
     }
