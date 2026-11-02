@@ -42,21 +42,37 @@ fn upper_rejects_bad_arguments_and_from_clause() {
 }
 
 #[test]
-fn upper_folds_unicode_with_multichar_expansions() {
+fn upper_utf8_folds_unicode_with_multichar_expansions() {
     assert_eq!(
-        value("SELECT UPPER('straße élève')"),
+        value("SELECT UPPERUTF8('straße élève')"),
         ConstantValue::Text("STRASSE ÉLÈVE".into())
     );
 }
 
 #[test]
-fn upper_expands_german_sharp_s_and_preserves_accents() {
+fn upper_utf8_expands_german_sharp_s_and_preserves_accents() {
     assert_eq!(
-        value("SELECT UPPER('weiß élève')"),
+        value("SELECT UPPERUTF8('weiß élève')"),
         ConstantValue::Text("WEISS ÉLÈVE".into())
     );
     assert_eq!(
-        value("SELECT UPPER('é😀')"),
+        value("SELECT UPPERUTF8('é😀')"),
         ConstantValue::Text("É😀".into())
+    );
+}
+
+#[test]
+fn upper_preserves_non_ascii_bytes_and_upper_utf8_folds_unicode() {
+    assert_eq!(
+        value("SELECT UPPER('straße élève')"),
+        ConstantValue::Text("STRAßE éLèVE".into())
+    );
+    assert_eq!(
+        value("SELECT UCASE('weiß')"),
+        ConstantValue::Text("WEIß".into())
+    );
+    assert_eq!(
+        value("SELECT UPPERUTF8('straße élève')"),
+        ConstantValue::Text("STRASSE ÉLÈVE".into())
     );
 }
