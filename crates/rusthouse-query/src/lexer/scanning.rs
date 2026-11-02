@@ -39,6 +39,28 @@ fn scan_exponent(bytes: &[u8], index: &mut usize) -> Result<(), ParseError> {
     Ok(())
 }
 
+pub(super) fn scan_radix_number(
+    sql: &str,
+    index: &mut usize,
+    radix: u32,
+) -> Result<Token, ParseError> {
+    let bytes = sql.as_bytes();
+    let start = *index + 2;
+    *index = start;
+    while bytes
+        .get(*index)
+        .is_some_and(|&byte| (byte as char).to_digit(radix).is_some())
+    {
+        *index += 1;
+    }
+    if *index == start {
+        return Err(ParseError("numeric base prefix requires digits".into()));
+    }
+    let number = u64::from_str_radix(&sql[start..*index], radix)
+        .map_err(|_| ParseError("prefixed numeric literal exceeds UInt64".into()))?;
+    Ok(Token::Number(number.to_string()))
+}
+
 pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
     let start = *index;
