@@ -43,6 +43,29 @@ pub fn encode_xor_parity(sources: &[&[u8]]) -> Result<Vec<u8>, &'static str> {
     Ok(parity)
 }
 
+/// Verify a complete XOR parity stripe without allocating a second shard.
+///
+/// This detects mismatches against the supplied bytes, but it is not a
+/// cryptographic integrity check. Authenticate immutable objects separately.
+pub fn verify_xor_parity(sources: &[&[u8]], parity: &[u8]) -> Result<bool, &'static str> {
+    if !valid_stripe_count(sources.len())
+        || parity.len() > MAX_SHARD_BYTES
+        || sources.iter().map(|source| source.len()).max() != Some(parity.len())
+    {
+        return Err("invalid XOR parity stripe layout");
+    }
+    for (index, &expected) in parity.iter().enumerate() {
+        let mut actual = 0u8;
+        for source in sources {
+            actual ^= source.get(index).copied().unwrap_or(0);
+        }
+        if actual != expected {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Reconstruct exactly one absent shard using stored parity.
 ///
 /// The missing shard's original length must come from independently verified
@@ -126,6 +149,23 @@ mod tests {
         let mut destination = [0xff; 4];
         xor_parity_into(&[b"test", b"test"], &mut destination).unwrap();
         assert_eq!(destination, [0; 4]);
+    }
+
+
+    #[test]
+    fn complete_parity_verification_catches_corruption_without_recovery() {
+        let sources: [&[u8]; 3] = [b"a", b"bcd", b"e"];
+        let parity = encode_xor_parity(&sources).unwrap();
+        assert!(verify_xor_parity(&sources, &parity).unwrap());
+
+        let mut damaged = parity.clone();
+        damaged[1] ^= 0x80;
+        assert!(!verify_xor_parity(&sources, &damaged).unwrap());
+        assert!(verify_xor_parity(&sources, &parity[..2]).is_err());
+        assert!(verify_xor_parity(&sources[..1], &parity).is_err());
+
+        let empty: [&[u8]; 2] = [b"", b""];
+        assert!(verify_xor_parity(&empty, &[]).unwrap());
     }
 
     #[test]
