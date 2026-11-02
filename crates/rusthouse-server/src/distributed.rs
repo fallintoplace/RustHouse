@@ -1110,7 +1110,27 @@ fn merge_grouped_integer_sums_query(
     value_column: &str,
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
-    let header = format!("{key_column}\tsum({value_column})\n");
+    merge_grouped_integer_aggregate_query(
+        shards, max_rows, kind, key_column, value_column, AggregateFunction::Sum, global,
+    )
+}
+
+fn merge_grouped_integer_aggregate_query(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    function: AggregateFunction,
+    global: Option<&Select>,
+) -> Result<Vec<u8>, MergeError> {
+    if !matches!(
+        function,
+        AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+    ) {
+        return Err(MergeError::InvalidGroupedSum);
+    }
+    let header = format!("{key_column}\t{}({value_column})\n", function.name());
     let unsigned = kind
         .strip_prefix("Nullable(")
         .unwrap_or(kind)
@@ -1175,24 +1195,28 @@ fn merge_grouped_integer_sums_query(
                     let number = number
                         .parse::<u128>()
                         .map_err(|_| MergeError::InvalidGroupedSum)?;
-                    groups[index].2 = Some(
-                        groups[index]
-                            .2
-                            .unwrap_or(0)
-                            .checked_add(number)
-                            .ok_or(MergeError::SumOverflow)?,
-                    );
+                    groups[index].2 = Some(match (function, groups[index].2) {
+                        (_, None) => number,
+                        (AggregateFunction::Sum, Some(prior)) => {
+                            prior.checked_add(number).ok_or(MergeError::SumOverflow)?
+                        }
+                        (AggregateFunction::Min, Some(prior)) => prior.min(number),
+                        (AggregateFunction::Max, Some(prior)) => prior.max(number),
+                        _ => unreachable!("validated aggregate"),
+                    });
                 } else {
                     let number = number
                         .parse::<i128>()
                         .map_err(|_| MergeError::InvalidGroupedSum)?;
-                    groups[index].1 = Some(
-                        groups[index]
-                            .1
-                            .unwrap_or(0)
-                            .checked_add(number)
-                            .ok_or(MergeError::SumOverflow)?,
-                    );
+                    groups[index].1 = Some(match (function, groups[index].1) {
+                        (_, None) => number,
+                        (AggregateFunction::Sum, Some(prior)) => {
+                            prior.checked_add(number).ok_or(MergeError::SumOverflow)?
+                        }
+                        (AggregateFunction::Min, Some(prior)) => prior.min(number),
+                        (AggregateFunction::Max, Some(prior)) => prior.max(number),
+                        _ => unreachable!("validated aggregate"),
+                    });
                 }
             }
         }
@@ -1543,6 +1567,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
+                || is_safe_grouped_extremum(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -1566,6 +1591,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     };
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
+    let grouped_extremum_query = is_safe_grouped_extremum(&select);
     let sum_query = is_safe_sum(&select);
     let uniq_query = is_safe_uniq(&select);
     let shard_sql = if sorted_query {
@@ -1590,7 +1616,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
         }
-    } else if grouped_sum_query {
+    } else if grouped_sum_query || grouped_extremum_query {
         match grouped_count_shard_sql(sql, &select) {
             Some(query) => query,
             None => return Response::text("400 Bad Request", "unsupported global grouped SUM\n"),
@@ -1640,7 +1666,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
                 value_column,
                 ..
             },
@@ -1654,7 +1680,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
                 column,
                 ..
             },
@@ -1771,6 +1797,24 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .map_or(Err(MergeError::InvalidExtremum), |kind| {
                 merge_integer_extrema(&shards, kind, function)
             })
+    } else if grouped_extremum_query {
+        match (sum_type.as_deref(), group_schema, sum_schema, &select.projection) {
+            (
+                Some(kind),
+                Some((_, key)),
+                Some((_, value)),
+                Projection::GroupedAggregate { function, .. },
+            ) => merge_grouped_integer_aggregate_query(
+                &shards,
+                max_rows.min(250_000),
+                kind,
+                key,
+                value,
+                *function,
+                Some(&select),
+            ),
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
     } else if grouped_sum_query {
         match (sum_type.as_deref(), group_schema, sum_schema) {
             (Some(kind), Some((_, key)), Some((_, value))) => {
@@ -3230,6 +3274,53 @@ mod logical_distinct_tsv_equivalence_tests {
         assert_eq!(
             merge_distinct_tsv(&[(16, b"v\nvalid\n\\q\n".to_vec())], 1, 0, Some(1)),
             Err(MergeError::InvalidResponse),
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_extrema_tests {
+    use super::*;
+
+    #[test]
+    fn merges_nullable_groups_exactly_before_global_having() {
+        let sql = "SELECT label, min(amount) FROM events GROUP BY label HAVING min(amount) < 10";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_extremum(&parsed));
+        let shards = [
+            (10, b"label\tmin(amount)\na\t12\nb\tNULL\n".to_vec()),
+            (10, b"label\tmin(amount)\na\t4\nb\t8\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_aggregate_query(
+                &shards, 10, "Nullable(Int64)", "label", "amount",
+                AggregateFunction::Min, Some(&parsed),
+            ).unwrap(),
+            b"label\tmin(amount)\na\t4\nb\t8\n"
+        );
+    }
+
+    #[test]
+    fn computes_signed_max_and_rejects_corrupt_peer_headers() {
+        let sql = "SELECT label, max(amount) FROM events GROUP BY label";
+        let parsed = parse_select(sql).unwrap();
+        let shards = [
+            (10, b"label\tmax(amount)\na\t-20\n".to_vec()),
+            (10, b"label\tmax(amount)\na\t-3\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_aggregate_query(
+                &shards, 10, "Int64", "label", "amount",
+                AggregateFunction::Max, Some(&parsed),
+            ).unwrap(),
+            b"label\tmax(amount)\na\t-3\n"
+        );
+        assert_eq!(
+            merge_grouped_integer_aggregate_query(
+                &[(10, b"label\tsum(amount)\na\t4\n".to_vec())],
+                10, "Int64", "label", "amount", AggregateFunction::Max, Some(&parsed),
+            ),
+            Err(MergeError::SchemaMismatch),
         );
     }
 }
