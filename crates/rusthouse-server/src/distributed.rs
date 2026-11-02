@@ -1092,6 +1092,41 @@ fn normalized_group_key(raw: &[u8]) -> Result<NormalizedGroupKey<'_>, ()> {
     }
 }
 
+/// A signed shard SUM may temporarily exceed i128 and later cancel with
+/// another shard. Retain a fixed-size signed high limb rather than rejecting
+/// a representable final aggregate. At most 32 peers contribute to each group.
+#[derive(Clone, Copy)]
+struct WideSignedSum {
+    high: i64,
+    low: u128,
+}
+
+impl WideSignedSum {
+    fn new(value: i128) -> Self {
+        Self { high: if value < 0 { -1 } else { 0 }, low: value as u128 }
+    }
+
+    fn add(&mut self, value: i128) -> Result<(), MergeError> {
+        let (low, carry) = self.low.overflowing_add(value as u128);
+        let sign = if value < 0 { -1i64 } else { 0 };
+        self.high = self.high
+            .checked_add(sign)
+            .and_then(|high| high.checked_add(i64::from(carry)))
+            .ok_or(MergeError::SumOverflow)?;
+        self.low = low;
+        Ok(())
+    }
+
+    fn to_i128(self) -> Result<i128, MergeError> {
+        let signed = self.low as i128;
+        if self.high == if signed < 0 { -1 } else { 0 } {
+            Ok(signed)
+        } else {
+            Err(MergeError::SumOverflow)
+        }
+    }
+}
+
 fn merge_grouped_integer_sums(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -1116,7 +1151,7 @@ fn merge_grouped_integer_sums_query(
         .unwrap_or(kind)
         .starts_with("UInt");
     let mut positions = HashMap::<NormalizedGroupKey<'_>, usize>::new();
-    let mut groups = Vec::<(&[u8], Option<i128>, Option<u128>)>::new();
+    let mut groups = Vec::<(&[u8], Option<WideSignedSum>, Option<u128>)>::new();
     for (cap, body) in shards {
         if *cap == 0 || !body.ends_with(b"\n") {
             return Err(MergeError::InvalidGroupedSum);
@@ -1186,17 +1221,23 @@ fn merge_grouped_integer_sums_query(
                     let number = number
                         .parse::<i128>()
                         .map_err(|_| MergeError::InvalidGroupedSum)?;
-                    groups[index].1 = Some(
-                        groups[index]
-                            .1
-                            .unwrap_or(0)
-                            .checked_add(number)
-                            .ok_or(MergeError::SumOverflow)?,
-                    );
+                    if let Some(current) = &mut groups[index].1 {
+                        current.add(number)?;
+                    } else {
+                        groups[index].1 = Some(WideSignedSum::new(number));
+                    }
                 }
             }
         }
     }
+    // Convert to i128 only after all shards contribute. A true global
+    // overflow still fails, but intermediate cancellation is allowed.
+    let groups = groups
+        .into_iter()
+        .map(|(key, signed, unsigned)| {
+            Ok((key, signed.map(WideSignedSum::to_i128).transpose()?, unsigned))
+        })
+        .collect::<Result<Vec<_>, MergeError>>()?;
     // Reduce all shards before any global filtering, ranking, or paging.
     // Shard-local HAVING or LIMIT would produce incorrect aggregated results.
     let mut selected = (0..groups.len()).collect::<Vec<_>>();
@@ -3230,6 +3271,40 @@ mod logical_distinct_tsv_equivalence_tests {
         assert_eq!(
             merge_distinct_tsv(&[(16, b"v\nvalid\n\\q\n".to_vec())], 1, 0, Some(1)),
             Err(MergeError::InvalidResponse),
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_signed_cancellation_tests {
+    use super::*;
+
+    fn partial(value: &str) -> (usize, Vec<u8>) {
+        (10, format!("category\tsum(amount)\na\t{value}\n").into_bytes())
+    }
+
+    #[test]
+    fn permits_exact_signed_cancellation_across_shards() {
+        let max = i128::MAX.to_string();
+        let values = [partial(&max), partial("1"), partial("-1")];
+        assert_eq!(
+            merge_grouped_integer_sums(&values, 10, "Int128", "category", "amount").unwrap(),
+            format!("category\tsum(amount)\na\t{max}\n").into_bytes(),
+        );
+        let min = i128::MIN.to_string();
+        let values = [partial(&min), partial("-1"), partial("1")];
+        assert_eq!(
+            merge_grouped_integer_sums(&values, 10, "Int128", "category", "amount").unwrap(),
+            format!("category\tsum(amount)\na\t{min}\n").into_bytes(),
+        );
+    }
+
+    #[test]
+    fn rejects_true_global_signed_overflow_after_reducing_all_shards() {
+        let values = [partial(&i128::MAX.to_string()), partial("1")];
+        assert_eq!(
+            merge_grouped_integer_sums(&values, 10, "Int128", "category", "amount"),
+            Err(MergeError::SumOverflow),
         );
     }
 }
