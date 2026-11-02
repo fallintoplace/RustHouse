@@ -181,7 +181,7 @@ fn aggregate_function(name: &str) -> Option<Option<AggregateFunction>> {
         "STDDEVPOP" => Some(Some(AggregateFunction::StddevPop)),
         "STDDEVSAMP" => Some(Some(AggregateFunction::StddevSamp)),
         "MEDIAN" => Some(Some(AggregateFunction::Median)),
-        "ANY" => Some(Some(AggregateFunction::Any)),
+        "ANY" | "ANY_VALUE" => Some(Some(AggregateFunction::Any)),
         "ANYLAST" => Some(Some(AggregateFunction::AnyLast)),
         "GROUPBITAND" => Some(Some(AggregateFunction::GroupBitAnd)),
         "GROUPBITOR" => Some(Some(AggregateFunction::GroupBitOr)),
