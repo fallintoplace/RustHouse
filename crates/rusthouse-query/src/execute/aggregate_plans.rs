@@ -81,7 +81,9 @@ fn spill_unordered_groups<W: Write>(
 /// path can adapt to external spill instead of failing on worker memory.
 fn parallel_integer_grouped_count(
     part: &Path,
-    column: &str,
+    names: &[String],
+    comparisons: &[Vec<CompiledPredicate>],
+    no_filters: bool,
     kind: &str,
 ) -> Result<Option<GroupedCounts>, ExecutionError> {
     use std::collections::HashMap;
@@ -92,14 +94,12 @@ fn parallel_integer_grouped_count(
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
-    let names = [column.to_owned()];
     let chunk_size = parts.len().div_ceil(workers);
     let retained = AtomicUsize::new(0);
     let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
         let handles = parts
             .chunks(chunk_size)
             .map(|paths| {
-                let names = &names;
                 let retained = &retained;
                 std::thread::Builder::new()
                     .spawn_scoped(
@@ -136,31 +136,32 @@ fn parallel_integer_grouped_count(
                                         }
                                         Ok(true)
                                     };
-                                    match (index, kind) {
-                            (NumericColumn::UInt32(values), "UInt32") => {
-                                for &value in values {
-                                    if !visit(u64::from(value))? { return Ok(None); }
-                                }
-                            }
-                            (NumericColumn::Int32(values), "Int32") => {
-                                for &value in values {
-                                    if !visit(value as i64 as u64)? { return Ok(None); }
-                                }
-                            }
-                            (NumericColumn::UInt64(values), "UInt64") => {
-                                for &value in values {
-                                    if !visit(value)? { return Ok(None); }
-                                }
-                            }
-                            (NumericColumn::Int64(values), "Int64") => {
-                                for &value in values {
-                                    if !visit(value as u64)? { return Ok(None); }
-                                }
-                            }
-                            _ => return Err(ExecutionError::Invalid(
-                                "parallel integer grouping encountered unexpected column".into(),
-                            )),
-                        }
+                                    for row in 0..index.len() {
+                                        if !no_filters && !batch_matches(&batch, row, comparisons) {
+                                            continue;
+                                        }
+                                        let key = match (index, kind) {
+                                            (NumericColumn::UInt32(values), "UInt32") => {
+                                                u64::from(values[row])
+                                            }
+                                            (NumericColumn::Int32(values), "Int32") => {
+                                                values[row] as i64 as u64
+                                            }
+                                            (NumericColumn::UInt64(values), "UInt64") => values[row],
+                                            (NumericColumn::Int64(values), "Int64") => {
+                                                values[row] as u64
+                                            }
+                                            _ => {
+                                                return Err(ExecutionError::Invalid(
+                                                    "parallel integer grouping encountered unexpected column"
+                                                        .into(),
+                                                ));
+                                            }
+                                        };
+                                        if !visit(key)? {
+                                            return Ok(None);
+                                        }
+                                    }
                                 }
                             }
                             Ok(Some(counts))
@@ -410,10 +411,12 @@ pub(super) fn execute_grouped_part<W: Write>(
         }
         return groups.write(query, column, output);
     }
-    if no_filters && matches!(narrow, Some("UInt32" | "Int32" | "UInt64" | "Int64")) {
+    if matches!(narrow, Some("UInt32" | "Int32" | "UInt64" | "Int64")) {
         if let Some(result) = parallel_integer_grouped_count(
             part,
-            column,
+            &scan_columns,
+            &comparisons,
+            no_filters,
             narrow.expect("integer group kind was validated"),
         )? {
             return result.write(query, column, output);
