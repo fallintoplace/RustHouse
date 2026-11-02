@@ -154,6 +154,11 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         }
         let table = identifier(&mut parser)?;
         if parser.keyword("RENAME") {
+            if parser.keyword("TO") {
+                let to = identifier(&mut parser)?;
+                finish_ddl(&mut parser)?;
+                return Ok(Some(Ddl::RenameTable { from: table, to }));
+            }
             if !parser.keyword("COLUMN") {
                 return Err(ParseError("expected COLUMN after RENAME".into()));
             }
