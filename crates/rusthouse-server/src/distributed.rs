@@ -1840,24 +1840,24 @@ fn merge_grouped_integer_sums_query(
     value_column: &str,
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
-    let function = if global.is_some_and(|select| {
-        matches!(
-            select.projection,
-            Projection::GroupedAggregate {
-                function: AggregateFunction::SumSquares,
-                ..
-            }
-        )
-    }) {
-        "sumSquares"
-    } else {
-        "sum"
+    let function = match global.map(|select| &select.projection) {
+        Some(Projection::GroupedAggregate {
+            function: AggregateFunction::SumSquares,
+            ..
+        }) => "sumSquares",
+        Some(Projection::GroupedAggregate {
+            function: AggregateFunction::CountIf,
+            ..
+        }) => "countIf",
+        _ => "sum",
     };
     let header = format!("{key_column}\t{function}({value_column})\n");
-    let unsigned = kind
-        .strip_prefix("Nullable(")
-        .unwrap_or(kind)
-        .starts_with("UInt");
+    // COUNTIF returns unsigned row counts, even with signed input columns.
+    let unsigned = function == "countIf"
+        || kind
+            .strip_prefix("Nullable(")
+            .unwrap_or(kind)
+            .starts_with("UInt");
     let mut positions = HashMap::<NormalizedGroupKey<'_>, usize>::new();
     let mut groups = Vec::<(&[u8], Option<WideSignedSum>, Option<u128>)>::new();
     for (cap, body) in shards {
@@ -2836,6 +2836,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Projection::GroupedAggregate {
                 function: AggregateFunction::Sum
                     | AggregateFunction::SumSquares
+                    | AggregateFunction::CountIf
                     | AggregateFunction::Min
                     | AggregateFunction::Max
                     | AggregateFunction::Product
@@ -2871,6 +2872,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Projection::GroupedAggregate {
                 function: AggregateFunction::Sum
                     | AggregateFunction::SumSquares
+                    | AggregateFunction::CountIf
                     | AggregateFunction::Min
                     | AggregateFunction::Max
                     | AggregateFunction::Product
@@ -5685,6 +5687,73 @@ mod distributed_multi_key_distinct_tests {
                 &columns, "v", 10,
             ),
             Err(MergeError::ShardRowLimit),
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_countif_tests {
+    use super::*;
+
+    #[test]
+    fn reduces_signed_input_countif_as_unsigned_counts() {
+        let sql = "SELECT category, countIf(amount) FROM events GROUP BY category";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&parsed));
+        let shards = [
+            (10, b"category\tcountIf(amount)\na\t2\nb\t0\n".to_vec()),
+            (10, b"category\tcountIf(amount)\na\t3\nc\t1\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 10, "Int64", "category", "amount", Some(&parsed)
+            ).unwrap(),
+            b"category\tcountIf(amount)\na\t5\nb\t0\nc\t1\n"
+        );
+    }
+
+    #[test]
+    fn applies_having_after_global_reduction() {
+        let sql = "SELECT category, countIf(amount) FROM events GROUP BY category HAVING countIf(amount) > 3";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&parsed));
+        assert_eq!(
+            grouped_count_shard_sql(sql, &parsed).as_deref(),
+            Some("SELECT category, countIf(amount) FROM events GROUP BY category"),
+        );
+        let shards = [
+            (10, b"category\tcountIf(amount)\na\t2\nb\t1\n".to_vec()),
+            (10, b"category\tcountIf(amount)\na\t3\nb\t1\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 10, "UInt8", "category", "amount", Some(&parsed)
+            ).unwrap(),
+            b"category\tcountIf(amount)\na\t5\n"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_partial_counts_and_total_overflow() {
+        let parsed = parse_select(
+            "SELECT category, countIf(amount) FROM events GROUP BY category"
+        ).unwrap();
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &[(10, b"category\tcountIf(amount)\na\t-1\n".to_vec())],
+                10, "Int64", "category", "amount", Some(&parsed)
+            ),
+            Err(MergeError::InvalidGroupedSum),
+        );
+        let overflow = [
+            (10, format!("category\tcountIf(amount)\na\t{}\n", u128::MAX).into_bytes()),
+            (10, b"category\tcountIf(amount)\na\t1\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &overflow, 10, "UInt64", "category", "amount", Some(&parsed)
+            ),
+            Err(MergeError::SumOverflow),
         );
     }
 }

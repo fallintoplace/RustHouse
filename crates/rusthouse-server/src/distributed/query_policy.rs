@@ -627,7 +627,7 @@ pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
     matches!(
         select.projection,
         Projection::GroupedAggregate {
-            function: AggregateFunction::Sum | AggregateFunction::SumSquares,
+            function: AggregateFunction::Sum | AggregateFunction::SumSquares | AggregateFunction::CountIf,
             ..
         }
     )
@@ -904,6 +904,7 @@ mod rewrite_sql_clause_scanner_tests {
         assert!(clause_offset("SELECT 'FROM' /* WHERE */", b"WHERE").is_none());
     }
 }
+
 
 
 
