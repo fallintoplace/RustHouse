@@ -5,7 +5,16 @@ mod dispatch;
 mod query_policy;
 mod sorted_merge;
 mod avg_merge;
+mod range_merge;
+mod multi_count_column;
+mod multi_bitwise;
+mod multi_product;
+mod multi_sumsquares;
+mod multi_countif;
+mod multi_extrema;
+mod multi_sum;
 mod text_merge;
+mod uuid_extrema;
 
 use self::query_policy::*;
 use self::sorted_merge::*;
@@ -101,6 +110,69 @@ fn validated_schema_kind<'a>(schema: &'a [u8], column: &str) -> Option<&'a str> 
     let (_, tail) = schema.split_once(&needle)?;
     let (kind, remaining) = tail.split_once('"')?;
     remaining.starts_with('}').then_some(kind)
+}
+
+/// Exact global DISTINCT for the complete signed or unsigned 8/16-bit domain.
+///
+/// Repeated values across shard-local DISTINCT scans are ordinary overlap, not
+/// additional global keys. A fixed-size bitmap avoids hash allocations even
+/// when a peer emits tens of thousands of distinct values.
+fn merge_distinct_bitmap16(
+    shards: &[(usize, Vec<u8>)],
+    column: &str,
+    kind: &str,
+) -> Result<Vec<u8>, MergeError> {
+    let width = match kind {
+        "Int8" | "UInt8" | "Nullable(Int8)" | "Nullable(UInt8)" => 256,
+        "Int16" | "UInt16" | "Nullable(Int16)" | "Nullable(UInt16)" => 65_536,
+        _ => return Err(MergeError::InvalidDistinctCount),
+    };
+    let header = format!("{column}\n");
+    let mut words = vec![0u64; width / 64];
+    let mut distinct = 0u64;
+    for (cap, body) in shards {
+        if !body.starts_with(header.as_bytes()) || !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidDistinctCount);
+        }
+        let rows = &body[header.len()..];
+        if rows.is_empty() {
+            continue;
+        }
+        let mut count = 0usize;
+        for raw in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+            count = count
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if *cap == 0 || count >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            if raw == br"\N" {
+                continue;
+            }
+            let text = std::str::from_utf8(raw).map_err(|_| MergeError::InvalidDistinctCount)?;
+            let index = match kind {
+                "Int8" | "Nullable(Int8)" => text
+                    .parse::<i8>()
+                    .map_err(|_| MergeError::InvalidDistinctCount)? as u8 as usize,
+                "UInt8" | "Nullable(UInt8)" => text
+                    .parse::<u8>()
+                    .map_err(|_| MergeError::InvalidDistinctCount)? as usize,
+                "Int16" | "Nullable(Int16)" => text
+                    .parse::<i16>()
+                    .map_err(|_| MergeError::InvalidDistinctCount)? as u16 as usize,
+                _ => text
+                    .parse::<u16>()
+                    .map_err(|_| MergeError::InvalidDistinctCount)? as usize,
+            };
+            let mask = 1u64 << (index & 63);
+            let word = &mut words[index >> 6];
+            if *word & mask == 0 {
+                distinct += 1;
+                *word |= mask;
+            }
+        }
+    }
+    Ok(format!("count(DISTINCT {column})\n{distinct}\n").into_bytes())
 }
 
 /// Exact global 32-bit DISTINCT union, bounded to 256 MiB of bitmap payload.
@@ -626,6 +698,8 @@ fn read_shard(
     group_schema: Option<(&str, &str)>,
     table: &str,
     sorted_prefix_cap: Option<usize>,
+    allow_nonnumeric_count: bool,
+    allow_uuid_extremum: bool,
     used_bytes: &AtomicUsize,
 ) -> Result<ShardResponse, String> {
     let (cap, schema_response) = preflight_shard(peer, table)?;
@@ -635,8 +709,15 @@ fn read_shard(
     let schema = schema_signature(&schema_response)?;
     let kind = sum_schema
         .map(|(_, column)| {
-            if sorted_prefix_cap.is_some() {
+            if sorted_prefix_cap.is_some() || allow_nonnumeric_count {
                 shard_column_kind(&schema_response, column)
+            } else if allow_uuid_extremum {
+                let kind = shard_column_kind(&schema_response, column)?;
+                if integer_type(&kind) || matches!(kind.as_str(), "UUID" | "Nullable(UUID)") {
+                    Ok(kind)
+                } else {
+                    Err("distributed MIN/MAX only supports integer or UUID columns".into())
+                }
             } else {
                 shard_integer_kind(&schema_response, column)
             }
@@ -2131,6 +2212,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_sorted_scan(&select)
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
+                || is_safe_grouped_multi_count_column(&select)
+                || is_safe_grouped_multi_bitwise(&select)
+                || is_safe_grouped_multi_product(&select)
+                || is_safe_grouped_multi_sumsquares(&select)
+                || is_safe_grouped_multi_countif(&select)
+                || is_safe_grouped_multi_extremum(&select)
+                || is_safe_grouped_multi_sum(&select)
                 || is_safe_grouped_sum(&select)
                 || is_safe_grouped_extremum(&select)
                 || is_safe_grouped_product(&select)
@@ -2139,6 +2227,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_sum_squares(&select)
                 || is_safe_product(&select)
                 || is_safe_avg(&select)
+                || is_safe_range(&select)
                 || is_safe_bitwise(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -2161,6 +2250,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => None,
     };
     let grouped_count_query = is_safe_grouped_count(&select);
+    let grouped_multi_count_column_query = is_safe_grouped_multi_count_column(&select);
+    let grouped_multi_bitwise_query = is_safe_grouped_multi_bitwise(&select);
+    let grouped_multi_product_query = is_safe_grouped_multi_product(&select);
+    let grouped_multi_sumsquares_query = is_safe_grouped_multi_sumsquares(&select);
+    let grouped_multi_countif_query = is_safe_grouped_multi_countif(&select);
+    let grouped_multi_extremum_query = is_safe_grouped_multi_extremum(&select);
+    let grouped_multi_sum_query = is_safe_grouped_multi_sum(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let grouped_extremum_query = is_safe_grouped_extremum(&select);
     let grouped_product_query = is_safe_grouped_product(&select);
@@ -2168,6 +2264,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let sum_query = is_safe_sum(&select) || is_safe_sum_squares(&select);
     let product_query = is_safe_product(&select);
     let avg_query = is_safe_avg(&select);
+    let range_query = is_safe_range(&select);
     let uniq_query = is_safe_uniq(&select);
     let shard_sql = if sorted_query {
         match sorted_scan_sql(sql, &select) {
@@ -2207,6 +2304,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match avg_shard_sql(sql, &select) {
             Some(query) => query,
             None => return Response::text("400 Bad Request", "unsupported distributed AVG\n"),
+        }
+    } else if range_query {
+        match range_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported distributed RANGE\n"),
         }
     } else if uniq_query {
         match uniq_state_shard_sql(sql, &select) {
@@ -2252,6 +2354,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 function: AggregateFunction::Sum
                     | AggregateFunction::SumSquares
                     | AggregateFunction::Avg
+                    | AggregateFunction::Range
                     | AggregateFunction::Product
                     | AggregateFunction::Min
                     | AggregateFunction::Max
@@ -2276,6 +2379,20 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 ..
             },
         ) => Some((table.as_str(), value_column.as_str())),
+        (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
+            if grouped_multi_count_column_query => Some((table.as_str(), items[0].1.as_str())),
+        (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
+            if grouped_multi_bitwise_query => Some((table.as_str(), items[0].1.as_str())),
+        (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
+            if grouped_multi_product_query => Some((table.as_str(), items[0].1.as_str())),
+        (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
+            if grouped_multi_sumsquares_query => Some((table.as_str(), items[0].1.as_str())),
+        (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
+            if grouped_multi_countif_query => Some((table.as_str(), items[0].1.as_str())),
+        (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
+            if grouped_multi_extremum_query => Some((table.as_str(), items[0].1.as_str())),
+        (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
+            if grouped_multi_sum_query => Some((table.as_str(), items[0].1.as_str())),
         (Some(Source::Table(table)), Projection::Columns(columns)) if sorted_query => columns
             .first()
             .map(|column| (table.as_str(), column.as_str())),
@@ -2323,6 +2440,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 group_schema,
                 table,
                 sorted_prefix,
+                grouped_multi_count_column_query,
+                extrema_function.is_some(),
                 &retained_input,
             )
         });
@@ -2386,6 +2505,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .as_deref()
             .and_then(|schema| validated_schema_kind(schema, column));
         match kind {
+            Some(
+                kind @ ("Int8" | "UInt8" | "Int16" | "UInt16"
+                | "Nullable(Int8)" | "Nullable(UInt8)"
+                | "Nullable(Int16)" | "Nullable(UInt16)"),
+            ) => merge_distinct_bitmap16(&shards, column, kind),
             Some("Int32" | "Nullable(Int32)") => merge_distinct_bitmap32(&shards, column, true),
             Some("UInt32" | "Nullable(UInt32)") => merge_distinct_bitmap32(&shards, column, false),
             _ => merge_distinct_counts(&shards, column),
@@ -2410,6 +2534,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             }
             _ => Err(MergeError::InvalidSum),
         }
+    } else if range_query {
+        match (&select.projection, sum_type.as_deref()) {
+            (Projection::Aggregate { column, .. }, Some(kind)) => {
+                range_merge::merge_global_range(&shards, column, kind)
+            }
+            _ => Err(MergeError::InvalidExtremum),
+        }
     } else if product_query {
         sum_type
             .as_deref()
@@ -2426,7 +2557,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         sum_type
             .as_deref()
             .map_or(Err(MergeError::InvalidExtremum), |kind| {
-                merge_integer_extrema(&shards, kind, function)
+                if matches!(kind, "UUID" | "Nullable(UUID)") {
+                    uuid_extrema::merge_uuid_extrema(&shards, function)
+                } else {
+                    merge_integer_extrema(&shards, kind, function)
+                }
             })
     } else if grouped_extremum_query || grouped_product_query || grouped_bitwise_query {
         match (sum_type.as_deref(), group_schema, sum_schema, &select.projection) {
@@ -2488,6 +2623,69 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             }
             _ => Err(MergeError::InvalidGroupedSum),
         }
+    } else if grouped_multi_sum_query {
+        match (&select.projection, sum_type.as_deref()) {
+            (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
+                multi_sum::merge_multi_key_sums(
+                    &shards, columns, &items[0].1, kind, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multi_extremum_query {
+        match (&select.projection, sum_type.as_deref()) {
+            (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
+                multi_extrema::merge_multi_key_extrema(
+                    &shards, columns, &items[0].1, kind, items[0].0, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multi_countif_query {
+        match &select.projection {
+            Projection::GroupedMultiAggregates { columns, items, .. } => {
+                multi_countif::merge_multi_key_countif(
+                    &shards, columns, &items[0].1, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multi_sumsquares_query {
+        match (&select.projection, sum_type.as_deref()) {
+            (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
+                multi_sumsquares::merge_multi_key_sumsquares(
+                    &shards, columns, &items[0].1, kind, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multi_count_column_query {
+        match &select.projection {
+            Projection::GroupedMultiAggregates { columns, items, .. } => {
+                multi_count_column::merge_multi_key_count_column(
+                    &shards, columns, &items[0].1, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multi_bitwise_query {
+        match (&select.projection, sum_type.as_deref()) {
+            (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
+                multi_bitwise::merge_multi_key_bitwise(
+                    &shards, columns, &items[0].1, kind, items[0].0, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedBitwise),
+        }
+    } else if grouped_multi_product_query {
+        match (&select.projection, sum_type.as_deref()) {
+            (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
+                multi_product::merge_multi_key_product(
+                    &shards, columns, &items[0].1, kind, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedProduct),
+        }
     } else if grouped_count_query {
         let limit = max_rows.min(250_000);
         if select.having.is_some()
@@ -2508,11 +2706,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .as_deref()
             .map_or(Err(MergeError::InvalidSortedScan), |kind| {
                 let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
-                if kind == "String" {
-                    merge_sorted_text_rows_page(
+                if matches!(kind, "String" | "Nullable(String)") {
+                    merge_sorted_text_rows_page_with_nulls(
                         &shards,
                         &names,
+                        kind,
                         order.descending,
+                        order.nulls_first,
                         select.offset.unwrap_or(0),
                         select.limit.unwrap_or(0),
                         max_rows.min(250_000),
@@ -4579,6 +4779,73 @@ mod distributed_grouped_bitwise_tests {
                 None,
             ),
             Err(MergeError::SchemaMismatch),
+        );
+    }
+}
+
+#[cfg(test)]
+mod narrow_global_distinct_bitmap_tests {
+    use super::*;
+
+    #[test]
+    fn handles_all_signed_and_unsigned_boundaries_and_nulls() {
+        for (kind, values, expected) in [
+            ("Int8", "-128\n-1\n0\n127\n", 4),
+            ("UInt8", "0\n1\n255\n", 3),
+            ("Nullable(Int16)", "-32768\n-1\n32767\n\\N\n", 3),
+            ("Nullable(UInt16)", "0\n65535\n\\N\n", 2),
+        ] {
+            let wire = format!("value\n{values}").into_bytes();
+            assert_eq!(
+                merge_distinct_bitmap16(&[(10, wire.clone()), (10, wire)], "value", kind).unwrap(),
+                format!("count(DISTINCT value)\n{expected}\n").into_bytes(),
+                "{kind}",
+            );
+        }
+    }
+
+    #[test]
+    fn covers_all_sixteen_bit_values_without_linear_key_storage() {
+        let mut body = b"value\n".to_vec();
+        for value in 0..=u16::MAX {
+            body.extend_from_slice(format!("{value}\n").as_bytes());
+        }
+        assert_eq!(
+            merge_distinct_bitmap16(
+                &[(70_000, body.clone()), (70_000, body)],
+                "value",
+                "UInt16",
+            ).unwrap(),
+            b"count(DISTINCT value)\n65536\n"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_widths_malformed_values_and_capped_peers() {
+        for (kind, invalid) in [
+            ("UInt8", "256"),
+            ("Int8", "-129"),
+            ("UInt16", "65536"),
+            ("Int16", "32768"),
+            ("Int16", "not-an-integer"),
+        ] {
+            let wire = format!("id\n{invalid}\n").into_bytes();
+            assert_eq!(
+                merge_distinct_bitmap16(&[(10, wire)], "id", kind),
+                Err(MergeError::InvalidDistinctCount),
+            );
+        }
+        assert_eq!(
+            merge_distinct_bitmap16(&[(1, b"id\n12\n".to_vec())], "id", "UInt8"),
+            Err(MergeError::ShardRowLimit),
+        );
+        assert_eq!(
+            merge_distinct_bitmap16(&[(10, b"id\n\\N\n".to_vec())], "id", "UInt16").unwrap(),
+            b"count(DISTINCT id)\n0\n"
+        );
+        assert_eq!(
+            merge_distinct_bitmap16(&[(10, b"id\n12\n".to_vec())], "id", "UInt32"),
+            Err(MergeError::InvalidDistinctCount),
         );
     }
 }
