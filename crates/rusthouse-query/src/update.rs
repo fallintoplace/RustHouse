@@ -32,6 +32,14 @@ fn parse_update_assignment_value(
             parser.index += 1;
             Ok(UpdateValue::Literal(None))
         }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("TRUE") => {
+            parser.index += 1;
+            Ok(UpdateValue::Literal(Some("1".into())))
+        }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("FALSE") => {
+            parser.index += 1;
+            Ok(UpdateValue::Literal(Some("0".into())))
+        }
         Some(Token::Word(word)) if word == column => {
             parser.index += 1;
             let subtract = if parser.take(Token::Plus) {
@@ -294,5 +302,29 @@ mod checked_integer_update_parser_tests {
         ] {
             assert!(parse_update(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod update_boolean_literals_tests {
+    use super::*;
+
+    #[test]
+    fn update_accepts_boolean_assignment_values() {
+        let update = parse_update(
+            "UPDATE flags SET active = TRUE, disabled = fAlSe WHERE id = 3"
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            update.assignments,
+            vec![
+                ("active".into(), UpdateValue::Literal(Some("1".into()))),
+                ("disabled".into(), UpdateValue::Literal(Some("0".into()))),
+            ]
+        );
+        assert!(
+            parse_update("UPDATE flags SET active = TRUTH").is_err()
+        );
     }
 }
