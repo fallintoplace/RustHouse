@@ -35,9 +35,10 @@ mod advisory {
 #[cfg(windows)]
 mod windows_advisory {
     use std::ffi::c_void;
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::io;
     use std::os::windows::io::AsRawHandle;
+    use std::path::Path;
 
     // The kernel uses the same OVERLAPPED layout on 32- and 64-bit Windows.
     // Lock one byte of the persistent lock inode, never its data contents.
@@ -48,6 +49,68 @@ mod windows_advisory {
         offset: u32,
         offset_high: u32,
         event: *mut c_void,
+    }
+
+    // Rust 1.85 does not expose file-index and volume-serial metadata on
+    // stable Windows. Read the kernel file identity from the open handles.
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+
+    #[repr(C)]
+    struct HandleFileInformation {
+        attributes: u32,
+        created: FileTime,
+        accessed: FileTime,
+        modified: FileTime,
+        volume_serial: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(
+            handle: *mut c_void,
+            information: *mut HandleFileInformation,
+        ) -> i32;
+    }
+
+    fn identity(file: &File) -> io::Result<(u32, u64)> {
+        let mut information = std::mem::MaybeUninit::<HandleFileInformation>::uninit();
+        // SAFETY: the handle is alive and the kernel fills the full C
+        // structure on success. We read it only after success.
+        if unsafe {
+            GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr())
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let information = unsafe { information.assume_init() };
+        Ok((
+            information.volume_serial,
+            (u64::from(information.file_index_high) << 32)
+                | u64::from(information.file_index_low),
+        ))
+    }
+
+    pub(super) fn validate_identity(path: &Path, file: &File) -> io::Result<()> {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_file() || !file.metadata()?.is_file() {
+            return Err(io::Error::other("database lock is not a regular file"));
+        }
+        // Reopen the pathname to detect a replacement between open() and
+        // LockFileEx(). Locking a replaced inode could admit two writers.
+        let current = File::open(path)?;
+        if identity(file)? != identity(&current)? {
+            return Err(io::Error::other("database lock pathname was replaced"));
+        }
+        Ok(())
     }
 
     #[link(name = "kernel32")]
@@ -198,8 +261,12 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
             .truncate(false)
             .open(&path)
             .map_err(|error| format_database_lock_error("open", lock_kind, &path, error))?;
+        windows_advisory::validate_identity(&path, &file)
+            .map_err(|error| format_database_lock_error("validate", lock_kind, &path, error))?;
         windows_advisory::try_lock(&file, exclusive)
             .map_err(|error| format_database_lock_error("acquire", lock_kind, &path, error))?;
+        windows_advisory::validate_identity(&path, &file)
+            .map_err(|error| format_database_lock_error("validate", lock_kind, &path, error))?;
         file
     };
 
@@ -338,5 +405,34 @@ mod windows_advisory_lock_tests {
         let recovered = acquire_database_lock(&directory, true).unwrap();
         drop(recovered);
         fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_lock_identity_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn refuses_a_replaced_lock_inode() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-win-lock-identity-{}-{}",
+            std::process::id(),
+            NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join(".rusthouse-write.lock");
+        fs::write(&path, b"").unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        windows_advisory::validate_identity(&path, &file).unwrap();
+
+        let swapped = directory.join("previous-lock");
+        fs::rename(&path, &swapped).unwrap();
+        fs::write(&path, b"").unwrap();
+        assert!(windows_advisory::validate_identity(&path, &file).is_err());
+        drop(file);
+        fs::remove_dir_all(&directory).unwrap();
     }
 }
