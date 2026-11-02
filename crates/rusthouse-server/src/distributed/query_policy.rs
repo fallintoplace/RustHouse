@@ -111,6 +111,43 @@ pub(super) fn is_safe_distinct_scan(select: &Select) -> bool {
         && select.having.is_none()
 }
 
+/// Grouped DISTINCT needs raw distinct (group, value) pairs from each
+/// shard. Summing per-shard distinct counts would double-count overlaps.
+pub(super) fn is_safe_grouped_distinct(select: &Select) -> bool {
+    matches!(&select.projection, Projection::GroupedDistinctCount { column, value_column }
+        if column != value_column)
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// Dispatch shard-local unique pairs, preserving the full WHERE predicate
+/// and verifying every AST field after rewriting.
+pub(super) fn grouped_distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    if !is_safe_grouped_distinct(select) {
+        return None;
+    }
+    let Projection::GroupedDistinctCount { column, value_column } = &select.projection else {
+        return None;
+    };
+    let from = clause_offset(sql, b"FROM")?;
+    let group = clause_offset(&sql[from..], b"GROUP")? + from;
+    let rewritten = format!(
+        "SELECT DISTINCT {column}, {value_column} {}",
+        sql[from..group].trim_end()
+    );
+    let mut expected = select.clone();
+    expected.projection = Projection::Columns(vec![column.clone(), value_column.clone()]);
+    expected.distinct = true;
+    verify_rewritten_select(rewritten, &expected)
+}
+
 pub(super) fn is_safe_count(select: &Select) -> bool {
     is_safe_unpaged_projection(select, |projection| {
         matches!(
