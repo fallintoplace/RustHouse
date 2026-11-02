@@ -471,6 +471,12 @@ impl Parser {
                     } else {
                         amount
                     };
+                    if self.keyword("QUARTER") || self.keyword("QUARTERS") {
+                        let months = amount.checked_mul(3).ok_or_else(|| {
+                            ParseError("INTERVAL QUARTER count overflow".into())
+                        })?;
+                        return literal::add_date_months(&value, months);
+                    }
                     if self.keyword("YEAR") {
                         return literal::add_date_years(&value, amount);
                     }
@@ -2105,6 +2111,37 @@ mod tpch_interval_unit_tests {
                 Predicate::Comparison { operator: Operator::Le | Operator::Lt, value, .. }
                     if value == expected
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod interval_quarter_literal_tests {
+    use super::*;
+
+    #[test]
+    fn quarter_intervals_keep_calendar_month_end_handling() {
+        for (source, expected) in [
+            ("DATE '1994-01-31' + INTERVAL '1' QUARTER", "1994-04-30"),
+            ("DATE '1994-04-30' - INTERVAL 1 QUARTERS", "1994-01-30"),
+        ] {
+            let sql = format!("SELECT COUNT(*) FROM orders WHERE o_orderdate < {source}");
+            let selected = parse_select(&sql).unwrap();
+            assert!(matches!(
+                selected.predicates.as_slice(),
+                [Predicate::Comparison { value, .. }] if value == expected
+            ), "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_quarter_intervals_outside_supported_date_range() {
+        for source in [
+            "DATE '1970-01-01' - INTERVAL 1 QUARTER",
+            "DATE '1998-01-01' + INTERVAL 9223372036854775807 QUARTER",
+        ] {
+            let sql = format!("SELECT COUNT(*) FROM orders WHERE o_orderdate < {source}");
+            assert!(parse_select(&sql).is_err(), "{sql}");
         }
     }
 }
