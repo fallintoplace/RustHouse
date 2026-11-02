@@ -8,6 +8,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || matches!(
             name.to_ascii_uppercase().as_str(),
             "CRC32"
+                | "CRC32IEEE"
                 | "ISIPADDRESSINRANGE"
                 | "MACSTRINGTOOUI"
                 | "MACNUMTOSTRING"
@@ -279,6 +280,14 @@ const fn crc32_ieee_table() -> [u32; 256] {
 
 const CRC32_IEEE_TABLE: [u32; 256] = crc32_ieee_table();
 
+fn crc32_ieee_zero_seed(input: &[u8]) -> u32 {
+    let mut crc = 0u32;
+    for &byte in input {
+        crc = (crc >> 8) ^ CRC32_IEEE_TABLE[usize::from((crc as u8) ^ byte)];
+    }
+    crc
+}
+
 fn crc32_ieee(input: &[u8]) -> u32 {
     let mut crc = !0u32;
     for &byte in input {
@@ -549,6 +558,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         return super::date_scalar::parse_after_open(parser, &name, depth);
     }
     let value = match name.as_str() {
+        "CRC32IEEE" => {
+            let value = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "CRC32IEEE requires one argument")?;
+            match value {
+                Some(value) => ConstantValue::Integer(i64::from(crc32_ieee_zero_seed(value.as_bytes()))),
+                None => ConstantValue::Null,
+            }
+        }
         "CRC32" => {
             let value = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "CRC32 requires one argument")?;
