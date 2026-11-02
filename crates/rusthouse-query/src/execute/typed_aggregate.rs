@@ -220,16 +220,10 @@ pub(super) fn execute_typed_aggregate<W: Write>(
             return Ok(());
         }
         let rendered = state.render();
-        let rendered = match (function, selected.data_type.as_str()) {
-            (AggregateFunction::Min | AggregateFunction::Max, "Date") => rendered
-                .parse::<u16>()
-                .map(rusthouse_storage::format_date)
-                .unwrap_or(rendered),
-            (AggregateFunction::Min | AggregateFunction::Max, "DateTime") => rendered
-                .parse::<u32>()
-                .map(rusthouse_storage::format_datetime)
-                .unwrap_or(rendered),
-            _ => rendered,
+        let rendered = if matches!(function, AggregateFunction::Min | AggregateFunction::Max) {
+            typed::format_temporal_aggregate(rendered, &selected.data_type)
+        } else {
+            rendered
         };
         writeln!(output, "{rendered}")?;
     }

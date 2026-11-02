@@ -890,6 +890,26 @@ pub(super) fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), 
     Ok(())
 }
 
+/// Render an aggregate extremum using the source column's temporal type.
+/// The numeric aggregate state stores the underlying epoch days or seconds.
+pub(super) fn format_temporal_aggregate(value: String, data_type: &str) -> String {
+    match base_type(data_type) {
+        "Date" => value
+            .parse::<u16>()
+            .map(rusthouse_storage::format_date)
+            .unwrap_or(value),
+        "Date32" => value
+            .parse::<i32>()
+            .map(rusthouse_storage::format_date32)
+            .unwrap_or(value),
+        "DateTime" => value
+            .parse::<u32>()
+            .map(rusthouse_storage::format_datetime)
+            .unwrap_or(value),
+        _ => value,
+    }
+}
+
 pub(super) fn write_typed_value<W: Write>(
     output: &mut W,
     value: &Cell,
