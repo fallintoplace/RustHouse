@@ -152,6 +152,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "LEFTPADUTF8"
                 | "COUNTSUBSTRINGSCASEINSENSITIVE"
                 | "HEX_DECODE"
+                | "UNHEX"
                 | "UNBIN"
                 | "REPLACE"
                 | "REPLACEALL"
@@ -3017,6 +3018,35 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "UNHEX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "unhex requires one argument")?;
+            match input {
+                Some(input) => {
+                    if !input.is_ascii() {
+                        return Err(ParseError("unhex requires hexadecimal ASCII".into()));
+                    }
+                    let mut decoded = Vec::with_capacity(input.len().div_ceil(2));
+                    let mut offset = 0;
+                    if input.len() % 2 != 0 {
+                        let nibble = u8::from_str_radix(&input[..1], 16)
+                            .map_err(|_| ParseError("unhex requires hexadecimal digits".into()))?;
+                        decoded.push(nibble);
+                        offset = 1;
+                    }
+                    for pair in input[offset..].as_bytes().chunks_exact(2) {
+                        let pair = std::str::from_utf8(pair)
+                            .map_err(|_| ParseError("unhex requires hexadecimal ASCII".into()))?;
+                        let byte = u8::from_str_radix(pair, 16)
+                            .map_err(|_| ParseError("unhex requires hexadecimal digits".into()))?;
+                        decoded.push(byte);
+                    }
+                    ConstantValue::Text(String::from_utf8(decoded)
+                        .map_err(|_| ParseError("unhex result is not UTF-8".into()))?)
+                }
+                None => ConstantValue::Null,
             }
         }
         "UNBIN" => {
