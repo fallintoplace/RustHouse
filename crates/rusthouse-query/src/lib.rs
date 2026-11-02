@@ -1274,9 +1274,22 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         None
     };
 
+    let bare_alias = matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word))
+            if ![
+                "FROM", "WHERE", "PREWHERE", "GROUP", "HAVING", "ORDER",
+                "LIMIT", "OFFSET", "FETCH",
+            ]
+            .iter()
+            .any(|keyword| word.eq_ignore_ascii_case(keyword))
+    ) && matches!(
+        parser.tokens.get(parser.index + 1),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("FROM")
+    );
     let alias = if let Some(alias) = literal_alias {
         Some(alias)
-    } else if parser.keyword("AS") {
+    } else if parser.keyword("AS") || bare_alias {
         let single_result = matches!(
             &projection,
             Projection::Literal(_)
@@ -2106,5 +2119,36 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod bare_single_projection_alias_tests {
+    use super::*;
+
+    #[test]
+    fn bare_alias_matches_explicit_as() {
+        for (bare, explicit) in [
+            (
+                "SELECT number n FROM numbers(4)",
+                "SELECT number AS n FROM numbers(4)",
+            ),
+            (
+                "SELECT COUNT(*) total FROM numbers(4)",
+                "SELECT COUNT(*) AS total FROM numbers(4)",
+            ),
+            (
+                "SELECT SUM(number) total FROM numbers(4)",
+                "SELECT SUM(number) AS total FROM numbers(4)",
+            ),
+        ] {
+            assert_eq!(parse_select(bare).unwrap(), parse_select(explicit).unwrap());
+        }
+    }
+
+    #[test]
+    fn from_is_not_mistaken_for_a_bare_alias() {
+        assert!(parse_select("SELECT number FROM numbers(4)").is_ok());
+        assert!(parse_select("SELECT number FROM").is_err());
     }
 }
