@@ -78,7 +78,7 @@ mod tests {
         let second = window.reserve(4, 55).unwrap();
         assert_eq!(window.available_bytes(), 0);
         assert!(window.reserve(1, 1).is_err());
-        assert_eq!(window.acknowledge_verified(&[(second.sequence, 55)]).is_err(), true);
+        assert!(window.acknowledge_verified(&[(second.sequence, 55)]).is_err());
         assert_eq!(window.available_bytes(), 0);
         assert_eq!(window.acknowledge_verified(&[(first.sequence, 33)]).unwrap(), 6);
         assert_eq!(window.available_bytes(), 6);
