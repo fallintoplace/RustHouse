@@ -121,6 +121,9 @@ fn is_typed(data_type: &str) -> bool {
 }
 
 pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, ExecutionError> {
+    if query.predicates.iter().chain(query.or_predicates.iter().flatten()).any(|p| p.other_column().is_some()) {
+        return Ok(true);
+    }
     let metadata = inspect_query_source(path)?;
     let mut names = Vec::new();
     match &query.projection {
@@ -143,6 +146,9 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
             return Ok(true);
         }
         names.push(pred.column());
+        if let Some(other) = pred.other_column() {
+            names.push(other);
+        }
     }
     for order in query.order_terms() {
         names.push(query.order_source_column(&order.column));
@@ -287,6 +293,7 @@ enum LikePattern {
 
 enum Test {
     Compare(Operator, Cell),
+    ColumnCompare(Operator, usize),
     ByteCompare(Operator, i16),
     UuidCompare(Operator, [u8; 16]),
     In(Vec<Cell>, bool),
@@ -445,6 +452,7 @@ fn order_compiled_conditions(conditions: &mut [Condition]) {
         | Test::ShortInSet(..) => 1,
         Test::Compare(Operator::Modulo(_) | Operator::ModuloNe(_), _) => 4,
         Test::Compare(..) | Test::NotBetween(..) | Test::NumericBetween(..) | Test::UuidNotBetween(..) => 2,
+        Test::ColumnCompare(..) => 3,
         Test::In(values, _) if values.len() <= 4 => 2,
         Test::In(..)
         | Test::TextInSet(..)
@@ -471,6 +479,28 @@ pub(super) fn compile(
                 .get(name)
                 .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
             let test = match pred {
+                Predicate::ColumnComparison { operator, other, .. } => {
+                    let other_index = *indices.get(other).ok_or_else(|| {
+                        ExecutionError::Invalid(format!("unknown WHERE column: {other}"))
+                    })?;
+                    let other_type = types.get(other).ok_or_else(|| {
+                        ExecutionError::Invalid(format!("unknown WHERE column: {other}"))
+                    })?;
+                    let is_numeric = |kind: &str| matches!(
+                        base_type(kind),
+                        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+                            | "Float32" | "Float64" | "Date" | "Date32" | "DateTime"
+                    );
+                    if base_type(kind) != base_type(other_type)
+                        && !(is_numeric(kind) && is_numeric(other_type))
+                    {
+                        return Err(ExecutionError::Invalid(
+                            "WHERE column comparison requires compatible types".into()
+                        ));
+                    }
+                    Test::ColumnCompare(*operator, other_index)
+                }
                 Predicate::Comparison {
                     operator, value, ..
                 } if base_type(kind) == "UUID" => {
@@ -761,6 +791,11 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 }
                 Test::Compare(operator, target) => {
                     matches_comparison_at(column, row, target, *operator)
+                }
+                Test::ColumnCompare(operator, other) => {
+                    let left = cell(column, row);
+                    let right = cell(&batch[*other], row);
+                    matches_comparison(&left, &right, *operator)
                 }
                 Test::ByteCompare(operator, expected) => {
                     let value = match column {
@@ -1330,6 +1365,9 @@ pub(super) fn execute_typed<W: Write>(
         .chain(query.or_predicates.iter().flatten())
     {
         include(predicate.column());
+        if let Some(other) = predicate.other_column() {
+            include(other);
+        }
     }
     let sort = if matches!(query.projection, Projection::GroupedCount { .. }) {
         Vec::new()

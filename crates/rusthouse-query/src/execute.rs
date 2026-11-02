@@ -43,7 +43,7 @@ use self::aggregate_plans::*;
 use bitmap_distinct::BitmapDistinct32;
 use external_grouped::ExternalGroupCount64;
 
-use crate::{AggregateFunction, Projection, Select, Source};
+use crate::{AggregateFunction, Predicate, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericQueryReader, PartError, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
@@ -1199,6 +1199,23 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    let has_column_comparison = query.predicates.iter()
+        .chain(query.or_predicates.iter().flatten())
+        .any(|predicate| matches!(predicate, Predicate::ColumnComparison { .. }));
+    if has_column_comparison && matches!(
+        query.projection,
+        Projection::Histogram { .. }
+            | Projection::GroupedDistinctCount { .. }
+            | Projection::GroupedMultiDistinctCount { .. }
+            | Projection::GroupedMultiCount { .. }
+            | Projection::GroupedAggregates { .. }
+            | Projection::GroupedMultiAggregates { .. }
+            | Projection::StringLength { .. }
+    ) {
+        return Err(ExecutionError::Invalid(
+            "column-to-column filters are not yet supported by this aggregate plan".into()
+        ));
+    }
     if matches!(query.projection, Projection::Histogram { .. }) {
         return histogram::execute_part(query, part, output);
     }
@@ -1209,12 +1226,12 @@ fn execute_into<W: Write>(
     ) {
         return typed::execute_typed(query, part, output);
     }
-    if let Some(count) = parallel_filtered_count(query, part)? {
+    if let Some(count) = if has_column_comparison { None } else { parallel_filtered_count(query, part)? } {
         write_header(query, output, "count")?;
         writeln!(output, "{count}")?;
         return Ok(());
     }
-    if let Some(extremum) = parallel_integer_minmax(query, part)? {
+    if let Some(extremum) = if has_column_comparison { None } else { parallel_integer_minmax(query, part)? } {
         let Projection::Aggregate { function, column } = &query.projection else {
             unreachable!("parallel_integer_minmax accepts only aggregate projections");
         };
@@ -1226,7 +1243,7 @@ fn execute_into<W: Write>(
         }
         return Ok(());
     }
-    if let Some(sum) = parallel_integer_sum(query, part)? {
+    if let Some(sum) = if has_column_comparison { None } else { parallel_integer_sum(query, part)? } {
         let Projection::Aggregate { column, .. } = &query.projection else {
             unreachable!("parallel_integer_sum only accepts SUM projections");
         };

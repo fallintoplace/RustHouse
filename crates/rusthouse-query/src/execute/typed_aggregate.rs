@@ -56,6 +56,11 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         if !names.iter().any(|name| name == predicate.column()) {
             names.push(predicate.column().to_owned());
         }
+        if let Some(other) = predicate.other_column() {
+            if !names.iter().any(|name| name == other) {
+                names.push(other.to_owned());
+            }
+        }
     }
     let indices: HashMap<String, usize> = names
         .iter()
@@ -458,6 +463,11 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     {
         if !names.iter().any(|name| name == predicate.column()) {
             names.push(predicate.column().to_owned());
+        }
+        if let Some(other) = predicate.other_column() {
+            if !names.iter().any(|name| name == other) {
+                names.push(other.to_owned());
+            }
         }
     }
     let indices: HashMap<String, usize> = names

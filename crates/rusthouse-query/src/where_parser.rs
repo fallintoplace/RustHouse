@@ -111,6 +111,13 @@ fn inverse_comparison_operator(operator: &Operator) -> Operator {
 
 fn inverse(predicate: &Predicate) -> Branches {
     let opposite = match predicate {
+        Predicate::ColumnComparison { column, operator, other } => {
+            Predicate::ColumnComparison {
+                column: column.clone(),
+                operator: inverse_comparison_operator(operator),
+                other: other.clone(),
+            }
+        }
         Predicate::Comparison {
             column,
             operator,
@@ -397,10 +404,24 @@ fn parse_atom(
             }
             operator = inverse_comparison_operator(&operator);
         }
-        predicates.push(Predicate::Comparison {
-            column,
-            operator,
-            value: parser.literal()?,
+        // A bare identifier after a relational operator is another column,
+        // not a string literal. CAST and typed DATE/TIMESTAMP literals retain
+        // their existing parser paths.
+        let other = match parser.tokens.get(parser.index) {
+            Some(Token::Word(word)) if !matches!(
+                word.to_ascii_uppercase().as_str(),
+                "CAST" | "DATE" | "TIMESTAMP" | "NULL" | "TRUE" | "FALSE" | "INTERVAL"
+            ) => Some(parser.word()?),
+            Some(Token::QuotedWord(_)) => Some(parser.word()?),
+            _ => None,
+        };
+        predicates.push(if let Some(other) = other {
+            if matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
+                return Err(ParseError("column comparisons do not support modulo".into()));
+            }
+            Predicate::ColumnComparison { column, operator, other }
+        } else {
+            Predicate::Comparison { column, operator, value: parser.literal()? }
         });
     }
     *conditions = conditions
