@@ -940,7 +940,10 @@ fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> 
 /// NULL represents an empty shard rather than zero or a failed parse.
 fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>, MergeError> {
     let mut expected_header: Option<&[u8]> = None;
-    let mut signed_total = 0i128;
+    // Signed shard totals may cancel. Peer-order accumulation could overflow
+    // even when the exact global answer fits i128.
+    let mut positive_parts = Vec::new();
+    let mut negative_parts = Vec::new();
     let mut unsigned_total = 0u128;
     let mut seen = false;
     let unsigned = kind
@@ -982,11 +985,30 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
                 .ok_or(MergeError::SumOverflow)?;
         } else {
             let partial = digits.parse::<i128>().map_err(|_| MergeError::InvalidSum)?;
-            signed_total = signed_total
-                .checked_add(partial)
-                .ok_or(MergeError::SumOverflow)?;
+            if partial >= 0 {
+                positive_parts.push(partial);
+            } else {
+                negative_parts.push(partial);
+            }
         }
         seen = true;
+    }
+    // Alternate signs when possible. A partial sum outside i128 range is
+    // avoided if the final exact sum is representable, without a BigInt.
+    let mut signed_total = 0i128;
+    while !positive_parts.is_empty() || !negative_parts.is_empty() {
+        let next = if signed_total > 0 && !negative_parts.is_empty() {
+            negative_parts.pop().expect("nonempty")
+        } else if signed_total < 0 && !positive_parts.is_empty() {
+            positive_parts.pop().expect("nonempty")
+        } else if let Some(positive) = positive_parts.pop() {
+            positive
+        } else {
+            negative_parts.pop().expect("nonempty")
+        };
+        signed_total = signed_total
+            .checked_add(next)
+            .ok_or(MergeError::SumOverflow)?;
     }
     let header = expected_header.ok_or(MergeError::InvalidSum)?;
     let result = if !seen {
@@ -3230,6 +3252,54 @@ mod logical_distinct_tsv_equivalence_tests {
         assert_eq!(
             merge_distinct_tsv(&[(16, b"v\nvalid\n\\q\n".to_vec())], 1, 0, Some(1)),
             Err(MergeError::InvalidResponse),
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_signed_sum_cancellation_tests {
+    use super::*;
+
+    fn partial(value: &str) -> (usize, Vec<u8>) {
+        (10, format!("sum(amount)\n{value}\n").into_bytes())
+    }
+
+    #[test]
+    fn allows_signed_cancellation_even_when_peer_order_would_overflow() {
+        let max = i128::MAX.to_string();
+        let min = i128::MIN.to_string();
+        let positive = [
+            partial(&max),
+            partial("1"),
+            partial("-1"),
+        ];
+        assert_eq!(
+            merge_integer_sums(&positive, "Int128").unwrap(),
+            format!("sum(amount)\n{max}\n").into_bytes()
+        );
+        let negative = [
+            partial(&min),
+            partial("-1"),
+            partial("1"),
+        ];
+        assert_eq!(
+            merge_integer_sums(&negative, "Int128").unwrap(),
+            format!("sum(amount)\n{min}\n").into_bytes()
+        );
+    }
+
+    #[test]
+    fn still_rejects_truly_overflowing_signed_and_unsigned_totals() {
+        assert_eq!(
+            merge_integer_sums(
+                &[partial(&i128::MAX.to_string()), partial("1")], "Int128"
+            ),
+            Err(MergeError::SumOverflow),
+        );
+        let max = u128::MAX.to_string();
+        assert_eq!(
+            merge_integer_sums(&[partial(&max), partial("1")], "UInt128"),
+            Err(MergeError::SumOverflow),
         );
     }
 }
