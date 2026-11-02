@@ -1392,6 +1392,108 @@ impl WideSignedSum {
     }
 }
 
+/// Exact grouped COUNT(DISTINCT value) across shards. Each peer returns
+/// complete distinct (group, value) rows instead of partial cardinalities.
+/// Preserve NULL groups, but exclude NULL aggregate values.
+fn merge_grouped_distinct_pairs(
+    shards: &[(usize, Vec<u8>)],
+    key_column: &str,
+    value_column: &str,
+    max_rows: usize,
+) -> Result<Vec<u8>, MergeError> {
+    const MAX_GROUPS: usize = 100_000;
+    const MAX_PAIRS: usize = 200_000;
+    const MAX_KEY_BYTES: usize = 64 * 1024 * 1024;
+    let header = format!("{key_column}\t{value_column}\n");
+    let mut positions = HashMap::<NormalizedGroupKey<'_>, usize>::new();
+    let mut groups = Vec::<(&[u8], u64)>::new();
+    let mut seen = HashSet::<(usize, NormalizedGroupKey<'_>)>::new();
+    let mut retained_bytes = 0usize;
+
+    for (cap, body) in shards {
+        if *cap == 0 || !body.starts_with(header.as_bytes()) || !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidGroupedCount);
+        }
+        let rows = &body[header.len()..];
+        if rows.is_empty() {
+            continue;
+        }
+        let mut count = 0usize;
+        for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+            count = count
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if count >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            let Some(split) = row.iter().position(|&byte| byte == b'\t') else {
+                return Err(MergeError::InvalidGroupedCount);
+            };
+            let key = &row[..split];
+            let value = &row[split + 1..];
+            if value.contains(&b'\t') {
+                return Err(MergeError::InvalidGroupedCount);
+            }
+            let normalized_key =
+                normalized_group_key(key).map_err(|_| MergeError::InvalidGroupedCount)?;
+            let normalized_value =
+                normalized_group_key(value).map_err(|_| MergeError::InvalidGroupedCount)?;
+
+            let index = if let Some(&index) = positions.get(&normalized_key) {
+                index
+            } else {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                retained_bytes = retained_bytes
+                    .checked_add(key.len())
+                    .filter(|&bytes| bytes <= MAX_KEY_BYTES)
+                    .ok_or(MergeError::CoordinatorLimit)?;
+                let next = groups.len();
+                positions.insert(normalized_key, next);
+                groups.push((key, 0));
+                next
+            };
+            if value == br"\N" {
+                continue;
+            }
+            if !seen.contains(&(index, normalized_value.clone())) {
+                if seen.len() >= MAX_PAIRS {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                retained_bytes = retained_bytes
+                    .checked_add(value.len())
+                    .filter(|&bytes| bytes <= MAX_KEY_BYTES)
+                    .ok_or(MergeError::CoordinatorLimit)?;
+                seen.insert((index, normalized_value));
+                groups[index].1 = groups[index]
+                    .1
+                    .checked_add(1)
+                    .ok_or(MergeError::CountOverflow)?;
+            }
+        }
+    }
+    if groups.len() > max_rows {
+        return Err(MergeError::CoordinatorLimit);
+    }
+    let mut output = format!("{key_column}\tcountDistinct({value_column})\n").into_bytes();
+    for (key, count) in groups {
+        let digits = count.to_string();
+        if output
+            .len()
+            .checked_add(key.len() + digits.len() + 2)
+            .is_none_or(|length| length > MAX_RESPONSE_BYTES)
+        {
+            return Err(MergeError::CoordinatorLimit);
+        }
+        output.extend_from_slice(key);
+        output.push(b'\t');
+        output.extend_from_slice(digits.as_bytes());
+        output.push(b'\n');
+    }
+    Ok(output)
+}
+
 fn merge_grouped_integer_sums(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -2125,6 +2227,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             if is_safe_scan(&select)
                 || is_safe_count(&select)
                 || is_safe_distinct_scan(&select)
+                || is_safe_grouped_distinct(&select)
                 || is_safe_count_distinct(&select)
                 || is_safe_uniq(&select)
                 || is_safe_sorted_scan(&select)
@@ -2154,6 +2257,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         sorted_query.then(|| select.offset.unwrap_or(0) + select.limit.unwrap_or(0));
     let count_query = is_safe_count(&select) || is_safe_count_if(&select);
     let distinct_rows_query = is_safe_distinct_scan(&select);
+    let grouped_distinct_query = is_safe_grouped_distinct(&select);
     let distinct_count_column = match &select.projection {
         Projection::CountDistinct { column } => Some(column.as_str()),
         _ => None,
@@ -2170,6 +2274,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match sorted_scan_sql(sql, &select) {
             Some(query) => query,
             None => return Response::text("400 Bad Request", "unsupported distributed sort\n"),
+        }
+    } else if grouped_distinct_query {
+        match grouped_distinct_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported grouped DISTINCT\n"),
         }
     } else if distinct_rows_query {
         match unpaged_scan_sql(sql, &select) {
@@ -2380,6 +2489,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Some("Int32" | "Nullable(Int32)") => merge_distinct_bitmap32(&shards, column, true),
             Some("UInt32" | "Nullable(UInt32)") => merge_distinct_bitmap32(&shards, column, false),
             _ => merge_distinct_counts(&shards, column),
+        }
+    } else if grouped_distinct_query {
+        match &select.projection {
+            Projection::GroupedDistinctCount { column, value_column } => {
+                merge_grouped_distinct_pairs(
+                    &shards, column, value_column, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedCount),
         }
     } else if uniq_query {
         match &select.projection {
@@ -4563,6 +4681,68 @@ mod distributed_grouped_bitwise_tests {
                 None,
             ),
             Err(MergeError::SchemaMismatch),
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_distinct_count_tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_grouped_distinct_without_dropping_where_conditions() {
+        let sql = "SELECT category, count(DISTINCT label) FROM events WHERE id >= 10 GROUP BY category";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_distinct(&parsed));
+        assert_eq!(
+            grouped_distinct_shard_sql(sql, &parsed).as_deref(),
+            Some("SELECT DISTINCT category, label FROM events WHERE id >= 10"),
+        );
+        let unsafe_sql = "SELECT category, count(DISTINCT label) FROM events GROUP BY category LIMIT 2";
+        assert!(!is_safe_grouped_distinct(&parse_select(unsafe_sql).unwrap()));
+    }
+
+    #[test]
+    fn counts_shared_pairs_once_but_retains_null_only_groups() {
+        let shards = [
+            (10, b"category\tlabel\na\tx\na\ty\nb\t\\N\n".to_vec()),
+            (10, b"category\tlabel\na\ty\na\tz\nc\tvalue\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_distinct_pairs(&shards, "category", "label", 10).unwrap(),
+            b"category\tcountDistinct(label)\na\t3\nb\t0\nc\t1\n",
+        );
+    }
+
+    #[test]
+    fn escaped_values_use_logical_equality_and_null_groups_are_distinct() {
+        let shards = [
+            (10, b"category\tlabel\n\\N\tx\n\\\\N\tx\na\t\\x41\n".to_vec()),
+            (10, b"category\tlabel\n\\N\nx\na\tA\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_distinct_pairs(&shards, "category", "label", 10).unwrap(),
+            b"category\tcountDistinct(label)\n\\N\t1\n\\\\N\t1\na\t1\n",
+        );
+    }
+
+    #[test]
+    fn invalid_row_width_or_escapes_do_not_produce_partial_counts() {
+        for body in [
+            b"category\tlabel\na\n".as_slice(),
+            b"category\tlabel\na\tx\textra\n",
+            b"category\tlabel\na\tbad\\q\n",
+        ] {
+            assert_eq!(
+                merge_grouped_distinct_pairs(&[(10, body.to_vec())], "category", "label", 10),
+                Err(MergeError::InvalidGroupedCount),
+            );
+        }
+        assert_eq!(
+            merge_grouped_distinct_pairs(
+                &[(1, b"category\tlabel\na\tx\n".to_vec())], "category", "label", 10
+            ),
+            Err(MergeError::ShardRowLimit)
         );
     }
 }
