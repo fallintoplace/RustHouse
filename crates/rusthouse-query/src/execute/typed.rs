@@ -1154,6 +1154,77 @@ fn parallel_filtered_count_parts(
     })
 }
 
+/// Split a large immutable part into disjoint validated mark ranges.
+/// Each worker owns its decoder state, so no decoded batch is shared or
+/// copied between threads. Small parts retain the serial query path.
+fn parallel_filtered_count_single_part(
+    part: &Path,
+    workers: usize,
+    names: &[String],
+    conditions: &[Vec<Condition>],
+    count_column_index: Option<usize>,
+) -> Result<Option<u64>, ExecutionError> {
+    let reference = TypedPartReader::open(part, names)?;
+    let marks = reference.mark_count();
+    const MIN_PARALLEL_MARKS: usize = 64;
+    if marks < MIN_PARALLEL_MARKS || workers < 2 {
+        return Ok(None);
+    }
+    let chunk_size = marks.div_ceil(workers);
+    let partials = std::thread::scope(|scope| -> Result<Vec<u64>, ExecutionError> {
+        let handles = (0..marks)
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(marks);
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || -> Result<u64, ExecutionError> {
+                        let mut reader = TypedPartReader::open(part, names)?;
+                        reader.seek_to_mark(start)?;
+                        let mut subtotal = 0u64;
+                        for _ in start..end {
+                            let batch = reader.next_batch()?.ok_or_else(|| {
+                                ExecutionError::Invalid(
+                                    "typed mark range ended before its final batch".into(),
+                                )
+                            })?;
+                            for row in 0..batch[0].len() {
+                                if !passes(&batch, row, conditions)
+                                    || count_column_index
+                                        .is_some_and(|index| is_null_at(&batch[index], row))
+                                {
+                                    continue;
+                                }
+                                subtotal = subtotal.checked_add(1).ok_or_else(|| {
+                                    ExecutionError::Invalid("filtered COUNT overflow".into())
+                                })?;
+                            }
+                        }
+                        Ok(subtotal)
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start single-part COUNT worker: {error}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    ExecutionError::Invalid("single-part COUNT worker panicked".into())
+                })?
+            })
+            .collect()
+    })?;
+    let count = partials.into_iter().try_fold(0u64, |total, partial| {
+        total
+            .checked_add(partial)
+            .ok_or_else(|| ExecutionError::Invalid("filtered COUNT overflow".into()))
+    })?;
+    Ok(Some(count))
+}
+
 fn parallel_filtered_count(
     part: &Path,
     names: &[String],
@@ -1167,6 +1238,15 @@ fn parallel_filtered_count(
         return Ok(None);
     }
     let parts = rusthouse_storage::query_parts(part)?;
+    if parts.len() == 1 {
+        return parallel_filtered_count_single_part(
+            &parts[0],
+            workers,
+            names,
+            conditions,
+            count_column_index,
+        );
+    }
     if parts.len() < 16 {
         return Ok(None);
     }
