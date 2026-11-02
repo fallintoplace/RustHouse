@@ -59,6 +59,8 @@ pub struct JoinSelect {
     /// None projects every column from both tables.
     pub columns: Option<Vec<JoinColumn>>,
     pub aggregate: Option<JoinAggregate>,
+    /// User-provided name for a scalar aggregate result column.
+    pub aggregate_alias: Option<String>,
     /// Exactly one qualified GROUP BY key with COUNT(*) projected last.
     pub grouped_count: Option<JoinColumn>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
@@ -134,6 +136,11 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         } else {
             None
         }
+    };
+    let aggregate_alias = if aggregate.is_some() && parser.keyword("AS") {
+        Some(parser.word()?)
+    } else {
+        None
     };
     let mut grouped_count_projection = false;
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
@@ -651,6 +658,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         any,
         columns,
         aggregate,
+        aggregate_alias,
         grouped_count,
         keys,
         using_keys,
