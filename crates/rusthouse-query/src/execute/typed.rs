@@ -368,6 +368,7 @@ enum LikePattern {
 
 enum Test {
     Compare(Operator, Cell),
+    ByteCompare(Operator, i16),
     UuidCompare(Operator, [u8; 16]),
     In(Vec<Cell>, bool),
     UuidInSet(HashSet<[u8; 16]>, bool),
@@ -517,7 +518,8 @@ fn order_compiled_conditions(conditions: &mut [Condition]) {
     // an earlier cheap condition can already reject.
     conditions.sort_by_key(|condition| match &condition.test {
         Test::IsNull(_) => 0,
-        Test::UuidCompare(..)
+        Test::ByteCompare(..)
+        | Test::UuidCompare(..)
         | Test::UuidDistinctFrom(..)
         | Test::ByteInSet(..)
         | Test::ShortInSet(..) => 1,
@@ -556,7 +558,27 @@ pub(super) fn compile(
                 }
                 Predicate::Comparison {
                     operator, value, ..
-                } => Test::Compare(*operator, parse_literal(kind, value)?),
+                } => {
+                    let target = parse_literal(kind, value)?;
+                    if matches!(base_type(kind), "UInt8" | "Int8")
+                        && matches!(
+                            operator,
+                            Operator::Eq | Operator::Ne | Operator::Lt
+                                | Operator::Le | Operator::Gt | Operator::Ge
+                        )
+                    {
+                        let native = match &target {
+                            Cell::Numeric(Number::Unsigned(number)) => i16::try_from(*number).ok(),
+                            Cell::Numeric(Number::Signed(number)) => i16::try_from(*number).ok(),
+                            _ => None,
+                        };
+                        native.map_or(Test::Compare(*operator, target.clone()), |number| {
+                            Test::ByteCompare(*operator, number)
+                        })
+                    } else {
+                        Test::Compare(*operator, target)
+                    }
+                }
                 Predicate::In { values, .. } => compile_in(kind, values, false)?,
                 Predicate::NotIn { values, .. } => compile_in(kind, values, true)?,
                 Predicate::NotBetween { lower, upper, .. } if base_type(kind) == "UUID" => {
@@ -766,6 +788,32 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 }
                 Test::Compare(operator, target) => {
                     matches_comparison_at(column, row, target, *operator)
+                }
+                Test::ByteCompare(operator, expected) => {
+                    let value = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt8(values)) => {
+                            Some(i16::from(values[row]))
+                        }
+                        TypedColumn::Numeric(NumericColumn::Int8(values)) => {
+                            Some(i16::from(values[row]))
+                        }
+                        TypedColumn::NullableNumeric {
+                            values: NumericColumn::UInt8(values), nulls
+                        } if nulls[row] == 0 => Some(i16::from(values[row])),
+                        TypedColumn::NullableNumeric {
+                            values: NumericColumn::Int8(values), nulls
+                        } if nulls[row] == 0 => Some(i16::from(values[row])),
+                        _ => None,
+                    };
+                    value.is_some_and(|value| match operator {
+                        Operator::Eq => value == *expected,
+                        Operator::Ne => value != *expected,
+                        Operator::Lt => value < *expected,
+                        Operator::Le => value <= *expected,
+                        Operator::Gt => value > *expected,
+                        Operator::Ge => value >= *expected,
+                        _ => unreachable!("byte comparison supports only relational operators"),
+                    })
                 }
                 Test::UuidCompare(operator, target) => match column {
                     TypedColumn::Uuid(values) => {
@@ -3096,5 +3144,51 @@ mod typed_condition_cost_order_tests {
             Test::Compare(Operator::Modulo(_), _)
         ));
         assert!(matches!(conditions[3].test, Test::Like { .. }));
+    }
+}
+
+#[cfg(test)]
+mod direct_byte_compare_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_byte_comparisons_match_generic_on_signed_unsigned_and_nulls() {
+        for (kind, values) in [
+            ("UInt8", NumericColumn::UInt8(vec![0, 1, 127, 255])),
+            ("Int8", NumericColumn::Int8(vec![-128, -1, 0, 127])),
+        ] {
+            let indices = HashMap::from([("status".to_owned(), 0usize)]);
+            let types = HashMap::from([("status".to_owned(), format!("Nullable({kind})"))]);
+            for op in [
+                Operator::Eq, Operator::Ne, Operator::Lt,
+                Operator::Le, Operator::Gt, Operator::Ge,
+            ] {
+                let predicate = Predicate::Comparison {
+                    column: "status".into(),
+                    operator: op,
+                    value: "0".into(),
+                };
+                let conditions = compile(&[predicate], &indices, &types).unwrap();
+                assert!(matches!(conditions[0].test, Test::ByteCompare(..)));
+                let batch = [TypedColumn::NullableNumeric {
+                    values: values.clone(), nulls: vec![0, 0, 1, 0],
+                }];
+                let target = Cell::Numeric(if kind == "Int8" {
+                    Number::Signed(0)
+                } else {
+                    Number::Unsigned(0)
+                });
+                let old = [Condition {
+                    index: 0, test: Test::Compare(op, target),
+                }];
+                for row in 0..4 {
+                    assert_eq!(
+                        passes(&batch, row, std::slice::from_ref(&conditions)),
+                        passes(&batch, row, std::slice::from_ref(&old)),
+                        "{kind}, {op:?}, row {row}"
+                    );
+                }
+            }
+        }
     }
 }
