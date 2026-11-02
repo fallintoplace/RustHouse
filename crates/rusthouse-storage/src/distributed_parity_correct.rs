@@ -43,28 +43,44 @@ pub fn correct_one_unknown_corruption(
     if current == *parity {
         return Ok(None);
     }
+    // Any nonzero XOR syndrome fixes the candidate coefficient. Avoid
+    // rescanning an entire stripe for every replica that cannot match it.
+    let pivot = current
+        .xor
+        .iter()
+        .zip(&parity.xor)
+        .position(|(&actual, &expected)| actual != expected)
+        .ok_or("uncorrectable dual-parity syndrome")?;
+    let p = current.xor[pivot] ^ parity.xor[pivot];
+    let q = current.weighted[pivot] ^ parity.weighted[pivot];
     let mut coefficient = 1u8;
-    let mut match_index = None;
+    let mut candidate = None;
     for (index, shard) in shards.iter().enumerate() {
-        let mut consistent = true;
-        for offset in 0..width {
-            let p = current.xor[offset] ^ parity.xor[offset];
-            let q = current.weighted[offset] ^ parity.weighted[offset];
-            if gf256_mul(coefficient, p) != q
-                || (offset >= shard.len() && p != 0)
-            {
-                consistent = false;
-                break;
-            }
-        }
-        if consistent {
-            if match_index.replace(index).is_some() {
-                return Err("ambiguous parity error location");
-            }
+        if pivot < shard.len() && gf256_mul(coefficient, p) == q {
+            candidate = Some((index, coefficient));
+            break;
         }
         coefficient = gf256_mul(coefficient, 2);
     }
-    let index = match_index.ok_or("uncorrectable dual-parity syndrome")?;
+    let (index, coefficient) = candidate.ok_or("uncorrectable dual-parity syndrome")?;
+    if width < 1024 {
+        for offset in 0..width {
+            let p = current.xor[offset] ^ parity.xor[offset];
+            let q = current.weighted[offset] ^ parity.weighted[offset];
+            if gf256_mul(coefficient, p) != q || (offset >= shards[index].len() && p != 0) {
+                return Err("uncorrectable dual-parity syndrome");
+            }
+        }
+    } else {
+        let products: [u8; 256] = std::array::from_fn(|byte| gf256_mul(coefficient, byte as u8));
+        for offset in 0..width {
+            let p = current.xor[offset] ^ parity.xor[offset];
+            let q = current.weighted[offset] ^ parity.weighted[offset];
+            if products[usize::from(p)] != q || (offset >= shards[index].len() && p != 0) {
+                return Err("uncorrectable dual-parity syndrome");
+            }
+        }
+    }
     let restored = shards[index]
         .iter()
         .zip(current.xor.iter().zip(&parity.xor))
@@ -103,6 +119,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn locates_late_corruption_without_rechecking_every_replica() {
+        let originals = (0..8)
+            .map(|shard| {
+                (0..8192)
+                    .map(|offset| (offset * 31 + shard * 17) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let source = originals.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let parity = encode_double_parity(&source).unwrap();
+        let mut damaged = originals.clone();
+        damaged[7][8191] ^= 0x9d;
+        let corrupted = damaged.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        assert_eq!(
+            correct_one_unknown_corruption(&corrupted, &parity).unwrap(),
+            Some((7, originals[7].clone()))
+        );
+        damaged[2][4096] ^= 0x7e;
+        let twice = damaged.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        assert!(correct_one_unknown_corruption(&twice, &parity).is_err());
     }
 
     #[test]

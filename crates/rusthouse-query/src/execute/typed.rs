@@ -3,6 +3,8 @@
 
 mod like;
 mod spill;
+mod cells;
+pub(super) use self::cells::*;
 
 use self::like::*;
 use self::spill::TypedExternalSort;
@@ -108,89 +110,6 @@ fn remember_distinct_text(
     Ok(())
 }
 
-#[derive(Clone)]
-pub(super) enum Cell {
-    Numeric(Number),
-    Text(Vec<u8>),
-    Uuid(String),
-    Null,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) enum Key {
-    Numeric(NumberKey),
-    Text(Vec<u8>),
-    Uuid(String),
-    UuidBytes([u8; 16]),
-    Null,
-}
-
-impl Cell {
-    pub(super) fn key(&self) -> Key {
-        match self {
-            Self::Numeric(value) => Key::Numeric(NumberKey::from(*value)),
-            Self::Text(bytes) => Key::Text(bytes.clone()),
-            Self::Uuid(value) => Key::Uuid(value.clone()),
-            Self::Null => Key::Null,
-        }
-    }
-}
-
-/// Build a grouped hash key directly from a typed batch slot.
-/// Avoid creating an owned Cell only to clone its String or UUID again.
-pub(super) fn key_at(column: &TypedColumn, row: usize) -> Key {
-    match column {
-        TypedColumn::Numeric(values) => Key::Numeric(NumberKey::from(number_at(values, row))),
-        TypedColumn::NullableNumeric { values, nulls } => {
-            if nulls[row] != 0 {
-                Key::Null
-            } else {
-                Key::Numeric(NumberKey::from(number_at(values, row)))
-            }
-        }
-        TypedColumn::Text(values) => Key::Text(values.get(row).unwrap().to_vec()),
-        TypedColumn::NullableText { values, nulls } => {
-            if nulls[row] != 0 {
-                Key::Null
-            } else {
-                Key::Text(values.get(row).unwrap().to_vec())
-            }
-        }
-        TypedColumn::Uuid(values) => Key::UuidBytes(*values[row].as_bytes()),
-    }
-}
-
-/// Test the null bitmap without converting a value or allocating String/UUID cells.
-pub(super) fn is_null_at(column: &TypedColumn, row: usize) -> bool {
-    match column {
-        TypedColumn::NullableNumeric { nulls, .. } | TypedColumn::NullableText { nulls, .. } => {
-            nulls[row] != 0
-        }
-        _ => false,
-    }
-}
-
-pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
-    match column {
-        TypedColumn::Numeric(values) => Cell::Numeric(number_at(values, row)),
-        TypedColumn::Text(values) => Cell::Text(values.get(row).unwrap().to_owned()),
-        TypedColumn::Uuid(values) => Cell::Uuid(values[row].to_string()),
-        TypedColumn::NullableNumeric { values, nulls } => {
-            if nulls[row] != 0 {
-                Cell::Null
-            } else {
-                Cell::Numeric(number_at(values, row))
-            }
-        }
-        TypedColumn::NullableText { values, nulls } => {
-            if nulls[row] != 0 {
-                Cell::Null
-            } else {
-                Cell::Text(values.get(row).unwrap().to_owned())
-            }
-        }
-    }
-}
 
 fn is_typed(data_type: &str) -> bool {
     matches!(
@@ -710,8 +629,23 @@ fn matches_comparison_at(
     }
 }
 
-// IN and NOT IN probe String bytes directly rather than cloning every row.
+// IN and NOT IN probe decoded numeric values and String bytes without
+// allocating an owned Cell for every row.
 fn matches_in_at(column: &TypedColumn, row: usize, targets: &[Cell], negated: bool) -> bool {
+    let numeric = match column {
+        TypedColumn::Numeric(values) => Some(number_at(values, row)),
+        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+            Some(number_at(values, row))
+        }
+        TypedColumn::NullableNumeric { .. } => return false,
+        _ => None,
+    };
+    if let Some(number) = numeric {
+        return targets.iter().any(|target| {
+            matches!(target, Cell::Numeric(expected)
+                if super::predicates::number_matches(number, *expected, Operator::Eq))
+        }) != negated;
+    }
     if matches!(
         column,
         TypedColumn::Text(_) | TypedColumn::NullableText { .. }
@@ -2343,6 +2277,33 @@ mod like_tests {
         assert!(!matches_in_at(&column, 1, &targets, true));
         assert!(!matches_in_at(&column, 2, &targets, false));
         assert!(matches_in_at(&column, 2, &targets, true));
+    }
+
+    #[test]
+    fn probes_short_numeric_in_without_materializing_cells() {
+        let batch = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int64(vec![-7, 0, 42, 42]),
+            nulls: vec![0, 0, 0, 1],
+        };
+        let targets = [
+            Cell::Numeric(Number::Signed(-7)),
+            Cell::Numeric(Number::Signed(42)),
+            Cell::Null,
+        ];
+        assert!(matches_in_at(&batch, 0, &targets, false));
+        assert!(!matches_in_at(&batch, 0, &targets, true));
+        assert!(!matches_in_at(&batch, 1, &targets, false));
+        assert!(matches_in_at(&batch, 1, &targets, true));
+        assert!(matches_in_at(&batch, 2, &targets, false));
+        assert!(!matches_in_at(&batch, 3, &targets, true));
+        assert!(!matches_in_at(&batch, 3, &targets, false));
+
+        let floats = TypedColumn::Numeric(NumericColumn::Float64(vec![f64::NAN, 0.0, -0.0]));
+        let zero = [Cell::Numeric(Number::Float(0.0))];
+        assert!(!matches_in_at(&floats, 0, &zero, false));
+        assert!(matches_in_at(&floats, 0, &zero, true));
+        assert!(matches_in_at(&floats, 1, &zero, false));
+        assert!(matches_in_at(&floats, 2, &zero, false));
     }
 
     #[test]

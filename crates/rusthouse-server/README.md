@@ -18,6 +18,10 @@ For SELECT queries, a terminal ClickHouse `FORMAT TabSeparated`, `FORMAT CSV`,
 encoding. SQL `FORMAT` cannot be combined with URL `format=` or EXPLAIN.
 Regular typed ClickHouse JSONEachRow output is not implemented.
 
+The ClickHouse-compatible `default_format=` query parameter selects a default output format.
+An explicit SQL `FORMAT` clause overrides `default_format`; an explicit `format=` takes precedence over the default.
+Duplicate `default_format` values are rejected.
+
 Pass `format=tsv-no-header` to remove the header row, including for empty results.
 Pass `format=csv` on either method for RFC 4180-style CSV with CRLF row endings.
 CSV includes headers, quotes embedded commas/newlines, and uses an unquoted `\\N` for NULL.

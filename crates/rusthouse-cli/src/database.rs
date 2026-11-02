@@ -97,7 +97,6 @@ fn sync_database_directory(database: &Path) -> Result<(), String> {
         })
 }
 
-
 /// Calculate one integer row update without narrowing UInt128 or wrapping.
 fn checked_update_offset(
     current: &str,
