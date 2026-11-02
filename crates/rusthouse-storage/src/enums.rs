@@ -2,7 +2,7 @@ use crate::{NumericColumn, NumericReadError, read_numeric_column};
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fmt;
-use std::io::Read;
+use std::io::{self, Read, Write};
 
 const MAX_BATCH_ROWS: usize = 1_000_000;
 
@@ -109,6 +109,56 @@ pub fn read_enum_column<R: Read>(
     }
 
     Ok(EnumColumn { codes, variants })
+}
+
+/// Write a validated Enum8 or Enum16 column in ClickHouse physical order.
+///
+/// The complete batch is checked before writing to avoid publishing a
+/// truncated column when a late row contains an undefined enum value.
+pub fn write_enum_values<W: Write>(
+    output: &mut W,
+    data_type: &str,
+    codes: &[i16],
+) -> io::Result<()> {
+    let (width, variants) = parse_enum_type(data_type)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid Enum type"))?;
+    if codes.len() > MAX_BATCH_ROWS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Enum batch exceeds the row limit",
+        ));
+    }
+    let invalid = if codes.len() > 32 && variants.len() > 4 {
+        if width == 8 {
+            first_unknown_code::<4>(codes, &variants)
+        } else {
+            first_unknown_code::<1024>(codes, &variants)
+        }
+    } else {
+        codes.iter().copied().enumerate().find(|&(_, code)| !variants.contains_key(&code))
+    };
+    if invalid.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Enum value is absent from the declared type",
+        ));
+    }
+
+    let byte_width = if width == 8 { 1 } else { 2 };
+    let mut buffer = [0u8; 16 * 1024];
+    for chunk in codes.chunks(buffer.len() / byte_width) {
+        if width == 8 {
+            for (index, &code) in chunk.iter().enumerate() {
+                buffer[index] = code as i8 as u8;
+            }
+        } else {
+            for (index, &code) in chunk.iter().enumerate() {
+                buffer[index * 2..index * 2 + 2].copy_from_slice(&code.to_le_bytes());
+            }
+        }
+        output.write_all(&buffer[..chunk.len() * byte_width])?;
+    }
+    Ok(())
 }
 
 fn first_unknown_code<const WORDS: usize>(
@@ -440,5 +490,54 @@ mod tests {
         assert!(column.is_empty());
         assert_eq!(column.len(), 0);
         assert_eq!(column.variants().get(&0).map(String::as_str), Some("zero"));
+    }
+}
+
+#[cfg(test)]
+mod physical_enum_writer_tests {
+    use super::*;
+
+    #[test]
+    fn signed_enum8_and_enum16_round_trip_across_blocks() {
+        for (declaration, codes) in [
+            (
+                "Enum8('min'=-128, 'zero'=0, 'max'=127)",
+                [-128i16, 0, 127].repeat(6000),
+            ),
+            (
+                "Enum16('min'=-32768, 'zero'=0, 'max'=32767)",
+                [-32768i16, 0, 32767].repeat(6000),
+            ),
+        ] {
+            let mut bytes = Vec::new();
+            write_enum_values(&mut bytes, declaration, &codes).unwrap();
+            let decoded = read_enum_column(&mut bytes.as_slice(), declaration, codes.len()).unwrap();
+            assert_eq!(decoded.codes(), codes.as_slice());
+            assert_eq!(bytes.len(), codes.len() * if declaration.starts_with("Enum8") { 1 } else { 2 });
+        }
+    }
+
+    #[test]
+    fn bad_schema_or_late_unknown_code_never_writes_any_prefix() {
+        let declaration = "Enum8('no'=-128, 'yes'=127)";
+        let mut output = Vec::new();
+        assert!(write_enum_values(&mut output, "Enum8('bad'=256)", &[0]).is_err());
+        assert!(write_enum_values(&mut output, declaration, &[-128, 127, 12]).is_err());
+        assert!(write_enum_values(&mut output, declaration, &[128]).is_err());
+        assert!(output.is_empty());
+        write_enum_values(&mut output, declaration, &[-128, 127]).unwrap();
+        assert_eq!(output, [128, 127]);
+    }
+
+    #[test]
+    fn size_limit_is_checked_before_the_output_writer() {
+        let mut output = Vec::new();
+        let values = vec![0i16; MAX_BATCH_ROWS + 1];
+        assert_eq!(
+            write_enum_values(&mut output, "Enum8('x'=0)", &values)
+                .unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(output.is_empty());
     }
 }
