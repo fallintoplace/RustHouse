@@ -184,6 +184,44 @@ pub(super) fn is_safe_sum(select: &Select) -> bool {
     })
 }
 
+pub(super) fn is_safe_bitwise(select: &Select) -> bool {
+    is_safe_unpaged_projection(select, |projection| {
+        matches!(
+            projection,
+            Projection::Aggregate {
+                function: AggregateFunction::GroupBitAnd
+                    | AggregateFunction::GroupBitOr
+                    | AggregateFunction::GroupBitXor,
+                ..
+            }
+        )
+    })
+}
+
+pub(super) fn is_safe_sum_squares(select: &Select) -> bool {
+    is_safe_unpaged_projection(select, |projection| {
+        matches!(
+            projection,
+            Projection::Aggregate {
+                function: AggregateFunction::SumSquares,
+                ..
+            }
+        )
+    })
+}
+
+pub(super) fn is_safe_product(select: &Select) -> bool {
+    is_safe_unpaged_projection(select, |projection| {
+        matches!(
+            projection,
+            Projection::Aggregate {
+                function: AggregateFunction::Product,
+                ..
+            }
+        )
+    })
+}
+
 pub(super) fn is_safe_count_if(select: &Select) -> bool {
     is_safe_unpaged_projection(select, |projection| {
         matches!(
