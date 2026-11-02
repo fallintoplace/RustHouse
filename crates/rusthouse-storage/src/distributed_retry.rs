@@ -1130,8 +1130,7 @@ impl ReplicaCircuitBreaker {
             let shift = u32::from(trips.min(63));
             let cooldown = self
                 .base_cooldown_ms
-                .checked_shl(shift)
-                .unwrap_or(u64::MAX)
+                .saturating_mul(1u64 << shift)
                 .min(self.max_cooldown_ms);
             now_ms
                 .checked_add(cooldown)
@@ -1191,5 +1190,15 @@ mod replica_circuit_tests {
         assert_eq!(end, before);
         assert!(ReplicaCircuitBreaker::new(0, 10, 40, 0).is_err());
         assert!(ReplicaCircuitBreaker::new(1, 40, 10, 0).is_err());
+
+        // A checked bit shift does not detect truncated high bits. The
+        // second backoff must saturate and reject an unrepresentable deadline.
+        let mut huge = ReplicaCircuitBreaker::new(1, 1u64 << 63, u64::MAX, 0).unwrap();
+        huge.record_failure(0).unwrap();
+        assert_eq!(huge.retry_at_ms(), Some(1u64 << 63));
+        assert!(huge.permit(1u64 << 63).unwrap());
+        let unchanged = huge;
+        assert!(huge.record_failure(1u64 << 63).is_err());
+        assert_eq!(huge, unchanged);
     }
 }
