@@ -88,13 +88,16 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
         header: false,
     };
     if parser.keyword("WITH") {
-        if !parser.take(Token::LParen) || !parser.keyword("FORMAT") {
-            return Err(ParseError(
-                "COPY supports WITH (FORMAT CSV|TSV|SSV[, HEADER TRUE])".into(),
-            ));
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("COPY WITH requires '('".into()));
         }
-        options.format = parse_copy_format_option(parser)?;
-        if parser.take(Token::Comma) {
+        if parser.keyword("FORMAT") {
+            options.format = parse_copy_format_option(parser)?;
+            if parser.take(Token::Comma) {
+                options.header = parse_copy_header(parser)?;
+            }
+        } else {
+            // CSV is the default; specifying only HEADER retains that format.
             options.header = parse_copy_header(parser)?;
         }
         if options.format == CopyFormat::JsonEachRow && options.header {
@@ -237,5 +240,27 @@ mod tests {
             parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)")
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod copy_header_only_option_tests {
+    use super::*;
+
+    #[test]
+    fn header_only_uses_the_default_csv_format() {
+        for (short, expanded) in [
+            ("WITH (HEADER)", "WITH (FORMAT CSV, HEADER)"),
+            ("WITH (HEADER TRUE)", "WITH (FORMAT CSV, HEADER TRUE)"),
+            ("WITH (HEADER FALSE)", "WITH (FORMAT CSV, HEADER FALSE)"),
+        ] {
+            let short = parse_copy_from(&format!("COPY t FROM 't.csv' {short}"))
+                .unwrap().unwrap();
+            let expanded = parse_copy_from(&format!("COPY t FROM 't.csv' {expanded}"))
+                .unwrap().unwrap();
+            assert_eq!(short, expanded);
+        }
+        assert!(parse_copy_from("COPY t FROM 't.csv' WITH ()").is_err());
+        assert!(parse_copy_from("COPY t FROM 't.csv' WITH (HEADER WRONG)").is_err());
     }
 }
