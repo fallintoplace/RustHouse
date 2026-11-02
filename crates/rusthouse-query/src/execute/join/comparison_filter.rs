@@ -192,18 +192,14 @@ pub(super) fn execute<W: Write>(
         MAX_STREAM_BUILD_BYTES,
     )?;
     prefilter_dimension_rows(&mut right_rows, &filter, width, query.any);
-    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
-    for (row_index, row) in right_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, right_keys) {
-            if query.any {
-                hash.entry(key).or_insert(Bucket::One(row_index));
-            } else {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(row_index))
-                    .or_insert(Bucket::One(row_index));
-            }
-        }
-    }
+    // Preserve the dimension predicate before building. The shared builder
+    // retains source order for ALL matches and the first match for ANY.
+    let hash = build_join_hash(
+        &right_rows,
+        right_keys,
+        query.any,
+        super::super::query_workers(4),
+    )?;
     if !hash.is_empty() {
         // Validate the full stream and output row cap before writing output.
         scan(
