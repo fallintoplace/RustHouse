@@ -48,6 +48,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TO_DAYS"
             | "TOISOYEAR"
             | "TOISOWEEK"
+            | "TOUNIXTIMESTAMP64SECOND"
             | "TOUNIXTIMESTAMP64NANO"
             | "TOUNIXTIMESTAMP64MICRO"
             | "TOUNIXTIMESTAMP64MILLI"
@@ -517,6 +518,9 @@ pub(super) fn parse_after_open(
                 "December",
             ];
             Ok(ConstantValue::Text(MONTHS[(month - 1) as usize].to_owned()))
+        }),
+        "TOUNIXTIMESTAMP64SECOND" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds))
         }),
         "TOUNIXTIMESTAMP64NANO" => unary_date(parser, depth, |value| {
             let scaled = value
