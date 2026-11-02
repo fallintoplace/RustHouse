@@ -46,6 +46,7 @@ pub mod distributed_retry;
 pub mod distributed_rate_limit;
 pub mod distributed_scrub;
 pub mod distributed_snapshot_copy;
+pub mod distributed_weighted_snapshot_read;
 mod enums;
 mod file_sizes;
 mod fixed_strings;
