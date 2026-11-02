@@ -114,9 +114,9 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             } else {
                 Ddl::ShowTables
             }
-        } else if parser.keyword("COLUMNS") {
-            if !parser.keyword("FROM") {
-                return Err(ParseError("expected FROM after SHOW COLUMNS".into()));
+        } else if parser.keyword("COLUMNS") || parser.keyword("FIELDS") {
+            if !parser.keyword("FROM") && !parser.keyword("IN") {
+                return Err(ParseError("expected FROM or IN after SHOW COLUMNS".into()));
             }
             Ddl::DescribeTable {
                 name: identifier(&mut parser)?,
