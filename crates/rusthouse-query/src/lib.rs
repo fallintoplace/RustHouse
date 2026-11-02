@@ -323,7 +323,7 @@ impl Select {
                 return source;
             }
         }
-        if self.alias.as_deref() == Some(column) {
+        if self.alias.as_deref().is_some_and(|alias| alias.eq_ignore_ascii_case(column)) {
             if let Projection::Columns(columns) = &self.projection {
                 if let [source] = columns.as_slice() {
                     return source;
