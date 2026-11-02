@@ -1,34 +1,5 @@
 use crate::{PartError, WideMark};
 
-fn mark_offset(mark: &WideMark) -> (u64, u64) {
-    (mark.compressed_offset, mark.decompressed_offset)
-}
-
-fn validate_mark_position(name: &str, marks: &[WideMark], index: usize) -> Result<(), PartError> {
-    let mark = &marks[index];
-    if mark.rows == Some(0) && index + 1 != marks.len() {
-        return Err(PartError::InvalidScan(format!(
-            "zero-row mark is not terminal for {name}"
-        )));
-    }
-    if index > 0 {
-        let current_offset = mark_offset(mark);
-        let previous_offset = mark_offset(&marks[index - 1]);
-        if current_offset < previous_offset {
-            return Err(PartError::InvalidScan(format!(
-                "mark offsets are not ordered for {name}"
-            )));
-        }
-        if mark.rows != Some(0) && current_offset == previous_offset {
-            return Err(PartError::InvalidScan(format!(
-                "duplicate live mark offsets for {name}"
-            )));
-        }
-    }
-
-    Ok(())
-}
-
 fn row_count_mismatch(name: &str) -> PartError {
     PartError::InvalidScan(format!("mark row counts do not match count.txt for {name}"))
 }
@@ -50,8 +21,29 @@ fn validate_mark_rows(
     }
     let mut first_row_counts = reference.is_none().then(|| Vec::with_capacity(marks.len()));
     let mut total_rows = 0u64;
+    // Keep the previous offsets in registers rather than reindexing marks
+    // for every granule of every selected column.
+    let mut previous_offset = None;
     for (index, mark) in marks.iter().enumerate() {
-        validate_mark_position(name, marks, index)?;
+        if mark.rows == Some(0) && index + 1 != marks.len() {
+            return Err(PartError::InvalidScan(format!(
+                "zero-row mark is not terminal for {name}"
+            )));
+        }
+        let current_offset = (mark.compressed_offset, mark.decompressed_offset);
+        if let Some(previous) = previous_offset {
+            if current_offset < previous {
+                return Err(PartError::InvalidScan(format!(
+                    "mark offsets are not ordered for {name}"
+                )));
+            }
+            if mark.rows != Some(0) && current_offset == previous {
+                return Err(PartError::InvalidScan(format!(
+                    "duplicate live mark offsets for {name}"
+                )));
+            }
+        }
+        previous_offset = Some(current_offset);
         let rows = mark
             .rows
             .ok_or_else(|| PartError::InvalidScan("adaptive wide marks are required".into()))?;
@@ -167,6 +159,14 @@ mod tests {
                 .validate("a", &[mark(0, 0), mark(1, 1)], 1)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_backwards_decompressed_offsets_in_same_block() {
+        let mut first = mark(4, 1);
+        first.decompressed_offset = 8;
+        let next = mark(4, 1);
+        assert!(ScanLayout::default().validate("x", &[first, next], 2).is_err());
     }
 
     #[test]

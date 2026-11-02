@@ -1,20 +1,20 @@
 # Local database backup and recovery runbook
 
-RustHouse is experimental. This document describes a **cold, single-writer,
-local-filesystem** recovery workflow. It is not an HA, online-backup, or
-crash-durability guarantee.
+RustHouse is experimental. This guide explains how to back up and restore a
+local database while it is stopped. It does not guarantee high availability,
+online backup safety, or durability after a crash.
 
-## Preconditions
+## Before you start
 
-- Run on a trusted local filesystem. Do not expose the unauthenticated HTTP
-  listener to the public internet.
-- Stop all RustHouse writers and any process copying or rewriting the database.
-  Wait until writes have exited. The `.parts` directory may contain
-  `.rusthouse-active`, `.rusthouse-versions`, and immutable generations.
-- Check free disk capacity before copying the entire database. Include hidden
-  entries and every `.schema` file. Do not copy just the currently visible
-  `all_*` part directories.
-- Confirm that the source database is readable and consistent:
+- Use a trusted local filesystem. Do not expose the HTTP server to the public
+  internet; it has no built-in authentication.
+- Stop all RustHouse readers and writers, including the HTTP server. Stop any
+  other process that copies or changes the database. Wait for them to exit.
+- Check that there is enough free disk space to copy the entire database.
+  Include hidden files and every `.schema` file. The `.parts` folder may also
+  contain `.rusthouse-active`, `.rusthouse-versions`, and older generations.
+  Do not copy only the visible `all_*` part folders.
+- Check that the source database is readable and consistent:
 
 ```sh
 rusthouse doctor --database /srv/rusthouse/live --full-hashes
@@ -30,10 +30,10 @@ cp -a /srv/rusthouse/live/. /srv/rusthouse/backup-20261030/
 rusthouse doctor --database /srv/rusthouse/backup-20261030 --full-hashes
 ```
 
-The commands above assume a Unix-like system with `cp -a`. Keep the
-original directory unchanged until verification completes. A completed file
-copy does not by itself certify durable persistence on the backup device:
-use filesystem-appropriate sync, storage checks, and off-machine retention.
+These commands need a Unix-like system with `cp -a`. Keep the original folder
+unchanged until the check finishes. A successful copy alone does not prove the
+backup is durable. Use the right sync and storage checks for your filesystem,
+and keep a copy on another machine.
 
 Do not back up while writes, merges, compactions or schema changes are active.
 A copy of live files can contain a mix of incompatible generations.
@@ -49,13 +49,12 @@ rusthouse doctor --database /srv/rusthouse/restore-check --full-hashes
 rusthouse sql 'SHOW TABLES' --database /srv/rusthouse/restore-check
 ```
 
-For each required table, run a known row count and a representative query.
-Compare results with an independently captured manifest from before the
-backup. A full hash check detects corruption; it cannot tell whether an
-otherwise valid but older snapshot was accidentally selected.
+For each table you need, check the row count and run a sample query. Compare
+the results with a manifest saved before the backup. A full hash check can find
+corruption, but it cannot tell whether a valid snapshot is older than expected.
 
-Only redirect writes to the restored directory after validation and a
-planned cutover. Never run concurrent writers against one database path.
+Send writes to the restored folder only after the checks pass and you have a
+cutover plan. Do not run concurrent writers on the same database path.
 
 ## On failure
 

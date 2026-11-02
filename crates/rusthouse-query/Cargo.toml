@@ -26,6 +26,10 @@ harness = false
 name = "join"
 harness = false
 
+[[bench]]
+name = "parallel_queries"
+harness = false
+
 [dependencies]
 rusthouse-storage = { path = "../rusthouse-storage" }
 

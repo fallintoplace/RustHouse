@@ -150,6 +150,85 @@ fn insert_build_row(
     }
 }
 
+/// Build independent contiguous JOIN hash partitions and merge in source
+/// order. This preserves the first row used by ANY joins and the duplicate
+/// match order required by ordinary inner joins.
+fn build_join_hash(
+    rows: &[Vec<typed::Cell>],
+    keys: &[usize],
+    any: bool,
+    workers: usize,
+) -> Result<HashMap<Vec<typed::Key>, Bucket>, ExecutionError> {
+    const MIN_PARALLEL_ROWS: usize = 16_384;
+    if rows.len() < MIN_PARALLEL_ROWS || workers < 2 {
+        let mut hash = HashMap::with_capacity(initial_hash_capacity(rows.len()));
+        let mut scratch = Vec::with_capacity(keys.len());
+        for (index, row) in rows.iter().enumerate() {
+            insert_build_row(&mut hash, row, keys, &mut scratch, index, any);
+        }
+        return Ok(hash);
+    }
+    let chunk_size = rows.len().div_ceil(workers);
+    let partials = std::thread::scope(|scope| -> Result<_, ExecutionError> {
+        let handles = rows
+            .chunks(chunk_size)
+            .enumerate()
+            .map(|(chunk_index, chunk)| {
+                let start = chunk_index * chunk_size;
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || {
+                        let mut partial =
+                            HashMap::with_capacity(initial_hash_capacity(chunk.len()));
+                        let mut scratch = Vec::with_capacity(keys.len());
+                        for (local, row) in chunk.iter().enumerate() {
+                            insert_build_row(
+                                &mut partial,
+                                row,
+                                keys,
+                                &mut scratch,
+                                start + local,
+                                any,
+                            );
+                        }
+                        partial
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start parallel JOIN build worker: {error}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    ExecutionError::Invalid("parallel JOIN build worker panicked".into())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    let mut pieces = partials.into_iter();
+    let mut hash = pieces.next().unwrap_or_default();
+    for piece in pieces {
+        for (key, bucket) in piece {
+            match hash.entry(key) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(bucket);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    if !any {
+                        for &index in bucket.iter() {
+                            entry.get_mut().push(index);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(hash)
+}
+
 struct ProbeOptions {
     materialize_rows: bool,
     materialize_after: usize,
@@ -530,12 +609,8 @@ fn execute_streaming_inner<W: Write>(
         MAX_STREAM_BUILD_BYTES,
         Some(&right_meta),
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> =
-        HashMap::with_capacity(initial_hash_capacity(right_rows.len()));
-    let mut build_key = Vec::with_capacity(right_keys.len());
-    for (index, row) in right_rows.iter().enumerate() {
-        insert_build_row(&mut hash, row, right_keys, &mut build_key, index, query.any);
-    }
+    let workers = super::query_workers(4);
+    let hash = build_join_hash(&right_rows, right_keys, query.any, workers)?;
     if hash.is_empty() {
         let header = selected_header(selected);
         writeln!(output, "{header}")?;
@@ -1061,6 +1136,74 @@ fn execute_streaming_ordered_inner<W: Write>(
     Ok(())
 }
 
+/// Probe independent immutable fact parts concurrently for INNER JOIN COUNT.
+/// Partial counts need no cross-part output ordering or matched-row state.
+fn parallel_probe_inner_count(
+    left_path: &Path,
+    left_names: &[String],
+    left_keys: &[usize],
+    right_rows: &[Vec<typed::Cell>],
+    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    any: bool,
+    null_filter: Option<(usize, bool)>,
+) -> Result<Option<usize>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(left_path)?;
+    let workers = super::query_workers(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let counts = std::thread::scope(|scope| -> Result<_, ExecutionError> {
+        let handles = (0..workers)
+            .map(|_| {
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, || -> Result<usize, ExecutionError> {
+                        let mut subtotal = 0usize;
+                        while let Some(part) = parts.get(
+                            next.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                        ) {
+                            let count = probe_inner(
+                                part,
+                                left_names,
+                                left_keys,
+                                right_rows,
+                                hash,
+                                ProbeOptions {
+                                    materialize_rows: false,
+                                    materialize_after: 0,
+                                    stop_after: Some(usize::MAX),
+                                    any,
+                                    null_filter,
+                                },
+                                |_, _| Ok(()),
+                            )?;
+                            subtotal = subtotal
+                                .checked_add(count)
+                                .ok_or_else(|| invalid("parallel JOIN COUNT overflow"))?;
+                        }
+                        Ok(subtotal)
+                    })
+                    .map_err(|error| {
+                        invalid(format!("cannot start parallel JOIN probe worker: {error}"))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    invalid("parallel JOIN probe worker panicked")
+                })?
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    let count = counts.into_iter().try_fold(0usize, |sum, next| {
+        sum.checked_add(next)
+            .ok_or_else(|| invalid("parallel JOIN COUNT overflow"))
+    })?;
+    Ok(Some(count))
+}
+
 fn execute_streaming_inner_count<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -1113,21 +1256,33 @@ fn execute_streaming_inner_count<W: Write>(
                 }
             }
         }
-        probe_inner(
+        if let Some(count) = parallel_probe_inner_count(
             left_path,
             left_names,
             left_keys,
             &right_rows,
             &hash,
-            ProbeOptions {
-                materialize_rows: false,
-                materialize_after: 0,
-                stop_after: Some(usize::MAX),
-                any: query.any,
-                null_filter,
-            },
-            |_, _| Ok(()),
-        )?
+            query.any,
+            null_filter,
+        )? {
+            count
+        } else {
+            probe_inner(
+                left_path,
+                left_names,
+                left_keys,
+                &right_rows,
+                &hash,
+                ProbeOptions {
+                    materialize_rows: false,
+                    materialize_after: 0,
+                    stop_after: Some(usize::MAX),
+                    any: query.any,
+                    null_filter,
+                },
+                |_, _| Ok(()),
+            )?
+        }
     } else {
         let keep = count_build_columns(left_keys, null_filter, 0, left_names.len());
         let left_rows = read_projected_build_rows(
@@ -1985,5 +2140,39 @@ mod reusable_join_build_key_tests {
                 .collect::<Vec<_>>(),
             vec![0],
         );
+    }
+}
+
+#[cfg(test)]
+mod parallel_join_build_tests {
+    use super::*;
+
+    #[test]
+    fn parallel_hash_build_preserves_all_and_any_row_order() {
+        let rows = (0..16_384)
+            .map(|index| {
+                vec![typed::Cell::Numeric(Number::Unsigned(
+                    (index % 5) as u128,
+                ))]
+            })
+            .collect::<Vec<_>>();
+        let serial = build_join_hash(&rows, &[0], false, 1).unwrap();
+        let parallel = build_join_hash(&rows, &[0], false, 4).unwrap();
+        assert_eq!(serial.len(), parallel.len());
+        for (key, expected) in &serial {
+            let actual = parallel.get(key).unwrap();
+            assert_eq!(
+                actual.iter().copied().collect::<Vec<_>>(),
+                expected.iter().copied().collect::<Vec<_>>()
+            );
+        }
+        let any = build_join_hash(&rows, &[0], true, 4).unwrap();
+        assert_eq!(any.len(), 5);
+        for (key, bucket) in &any {
+            assert_eq!(bucket.iter().next(), serial.get(key).unwrap().iter().next());
+        }
+        for bucket in any.values() {
+            assert_eq!(bucket.iter().len(), 1);
+        }
     }
 }

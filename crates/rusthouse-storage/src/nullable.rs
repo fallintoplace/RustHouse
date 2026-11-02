@@ -74,6 +74,18 @@ impl Error for NullableReadError {
     }
 }
 
+// Validate eight independent 0/1 flags per word. The repeated mask is
+// endian-independent and checks every bit except each byte's low bit.
+fn valid_null_flags(null_map: &[u8]) -> bool {
+    let mut chunks = null_map.chunks_exact(8);
+    if !chunks.by_ref().all(|bytes| {
+        u64::from_ne_bytes(bytes.try_into().expect("eight null flags")) & 0xfefe_fefe_fefe_fefe == 0
+    }) {
+        return false;
+    }
+    chunks.remainder().iter().all(|&value| value <= 1)
+}
+
 pub fn read_null_map<R: Read>(reader: &mut R, rows: usize) -> Result<Vec<u8>, NullableReadError> {
     if rows > MAX_BATCH_ROWS {
         return Err(NullableReadError::TooManyRows(rows));
@@ -82,7 +94,7 @@ pub fn read_null_map<R: Read>(reader: &mut R, rows: usize) -> Result<Vec<u8>, Nu
     reader
         .read_exact(&mut null_map)
         .map_err(NullableReadError::Io)?;
-    if null_map.iter().any(|&value| value > 1) {
+    if !valid_null_flags(&null_map) {
         return Err(NullableReadError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
             "Nullable null map must contain only 0 or 1",
@@ -382,6 +394,21 @@ mod tests {
         assert!(column.values().is_empty());
         assert_eq!(nulls, &[77]);
         assert_eq!(data, &[42]);
+    }
+
+    #[test]
+    fn validates_all_null_flag_word_boundaries() {
+        for size in [0usize, 1, 7, 8, 9, 15, 16, 17] {
+            let mut flags = vec![0u8; size];
+            assert!(valid_null_flags(&flags));
+            flags.fill(1);
+            assert!(valid_null_flags(&flags));
+            for index in 0..size {
+                flags[index] = 2;
+                assert!(!valid_null_flags(&flags));
+                flags[index] = 1;
+            }
+        }
     }
 
     #[test]

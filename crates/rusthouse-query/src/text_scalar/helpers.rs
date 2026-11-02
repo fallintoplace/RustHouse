@@ -1,6 +1,15 @@
 use super::*;
 
 // Decode URL escapes with strict UTF-8 and bounded linear work.
+fn percent_hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 pub(super) fn decode_percent_encoded(input: &str, form: bool) -> Result<String, ParseError> {
     if !input.contains('%') && (!form || !input.contains('+')) {
         return Ok(input.to_owned());
@@ -9,26 +18,31 @@ pub(super) fn decode_percent_encoded(input: &str, form: bool) -> Result<String, 
     let mut decoded = Vec::with_capacity(source.len());
     let mut index = 0;
     while index < source.len() {
-        if source[index] == b'%' {
-            let high = source
-                .get(index + 1)
-                .and_then(|byte| char::from(*byte).to_digit(16));
-            let low = source
-                .get(index + 2)
-                .and_then(|byte| char::from(*byte).to_digit(16));
-            let (Some(high), Some(low)) = (high, low) else {
-                return Err(ParseError("invalid URL percent escape".into()));
-            };
-            decoded.push((high * 16 + low) as u8);
-            index += 3;
-        } else {
-            decoded.push(if form && source[index] == b'+' {
-                b' '
-            } else {
-                source[index]
-            });
+        // Copy ordinary spans together rather than branching and pushing
+        // once per byte in long URL components.
+        let start = index;
+        while index < source.len()
+            && source[index] != b'%'
+            && (!form || source[index] != b'+')
+        {
             index += 1;
         }
+        decoded.extend_from_slice(&source[start..index]);
+        if index == source.len() {
+            break;
+        }
+        if form && source[index] == b'+' {
+            decoded.push(b' ');
+            index += 1;
+            continue;
+        }
+        let high = source.get(index + 1).copied().and_then(percent_hex_digit);
+        let low = source.get(index + 2).copied().and_then(percent_hex_digit);
+        let (Some(high), Some(low)) = (high, low) else {
+            return Err(ParseError("invalid URL percent escape".into()));
+        };
+        decoded.push(high * 16 + low);
+        index += 3;
     }
     String::from_utf8(decoded).map_err(|_| ParseError("URL decode result is not UTF-8".into()))
 }
@@ -127,19 +141,18 @@ pub(super) fn significant_hostname_parts(url: &str) -> Option<(&str, &str, &str)
     let before_tld = &host[..last_dot];
     let second_dot = before_tld.rfind('.');
     let second = &before_tld[second_dot.map_or(0, |index| index + 1)..];
-    let significant_start = if matches!(
-        second.to_ascii_lowercase().as_str(),
-        "com" | "net" | "org" | "co"
-    ) {
+    // ASCII hostname validation above makes case-insensitive byte
+    // comparison sufficient; no lowercase allocation is needed.
+    let common_second_level = ["com", "net", "org", "co"]
+        .iter()
+        .any(|suffix| second.eq_ignore_ascii_case(suffix));
+    let significant_start = if common_second_level {
         let before_second = &before_tld[..second_dot?];
         before_second.rfind('.').map_or(0, |index| index + 1)
     } else {
         second_dot.map_or(0, |index| index + 1)
     };
-    let significant_end = if matches!(
-        second.to_ascii_lowercase().as_str(),
-        "com" | "net" | "org" | "co"
-    ) {
+    let significant_end = if common_second_level {
         second_dot?
     } else {
         last_dot
@@ -271,17 +284,31 @@ pub(super) fn binary_string(bytes: &[u8]) -> Result<String, ParseError> {
 }
 
 pub(super) fn parse_mac_address(input: &str) -> Option<u64> {
-    let mut value = 0_u64;
-    let mut count = 0;
-    for group in input.split(':') {
-        if group.len() != 2 || !group.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    fn digit(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = input.as_bytes();
+    // Six hex pairs and five separators always occupy exactly 17 bytes.
+    if bytes.len() != 17 {
+        return None;
+    }
+    let mut value = 0u64;
+    for group in 0..6 {
+        let offset = group * 3;
+        if group != 0 && bytes[offset - 1] != b':' {
             return None;
         }
-        let byte = u8::from_str_radix(group, 16).ok()?;
-        value = (value << 8) | u64::from(byte);
-        count += 1;
+        let high = digit(bytes[offset])?;
+        let low = digit(bytes[offset + 1])?;
+        value = (value << 8) | u64::from((high << 4) | low);
     }
-    (count == 6).then_some(value)
+    Some(value)
 }
 
 pub(super) fn parse_readable_size_bytes(input: &str) -> Option<i64> {
@@ -539,15 +566,29 @@ pub(super) fn base58_encode(input: &str) -> Result<String, ParseError> {
 }
 
 
+// Decode each Base58 symbol with one indexed lookup, not a 58-byte search.
+const BASE58_DIGITS: [u8; 256] = {
+    let mut table = [u8::MAX; 256];
+    let alphabet = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut index = 0;
+    while index < alphabet.len() {
+        table[alphabet[index] as usize] = index as u8;
+        index += 1;
+    }
+    table
+};
+
 pub(super) fn base58_decode(input: &str) -> Result<String, ParseError> {
-    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     if input.len() > 4096 {
         return Err(ParseError("base58Decode constant exceeds 4096 bytes".into()));
     }
     let mut decoded = Vec::<u8>::new();
     for symbol in input.bytes() {
-        let mut carry = ALPHABET.iter().position(|&value| value == symbol)
-            .ok_or_else(|| ParseError("base58Decode contains an invalid digit".into()))?;
+        let digit = BASE58_DIGITS[usize::from(symbol)];
+        if digit == u8::MAX {
+            return Err(ParseError("base58Decode contains an invalid digit".into()));
+        }
+        let mut carry = usize::from(digit);
         for byte in &mut decoded {
             carry += usize::from(*byte) * 58;
             *byte = (carry % 256) as u8;
@@ -625,9 +666,12 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
         return Err(ParseError("unhex requires ASCII digits".into()));
     }
     fn digit(value: u8) -> Result<u8, ParseError> {
-        char::from(value).to_digit(16)
-            .map(|value| value as u8)
-            .ok_or_else(|| ParseError("unhex contains a non-hexadecimal digit".into()))
+        match value {
+            b'0'..=b'9' => Ok(value - b'0'),
+            b'a'..=b'f' => Ok(value - b'a' + 10),
+            b'A'..=b'F' => Ok(value - b'A' + 10),
+            _ => Err(ParseError("unhex contains a non-hexadecimal digit".into())),
+        }
     }
     let mut pairs = input.as_bytes().chunks_exact(2);
     let mut bytes = Vec::with_capacity((input.len() + 1) / 2);
@@ -640,4 +684,100 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
     }
     String::from_utf8(bytes)
         .map_err(|_| ParseError("unhex constant is not valid UTF-8".into()))
+}
+
+#[cfg(test)]
+mod mac_pair_decode_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn parses_all_six_hex_pairs_and_rejects_malformed_addresses() {
+        assert_eq!(parse_mac_address("00:01:0a:0B:ff:FE"), Some(0x0001_0a0b_fffe));
+        assert_eq!(parse_mac_address("ff:ff:ff:ff:ff:ff"), Some(0xffff_ffff_ffff));
+        for invalid in [
+            "", "00:00:00:00:00", "00:00:00:00:00:00:00",
+            "00-00-00-00-00-00", "0:00:00:00:00:00",
+            "00:00:00:00:00:gg", "é0:00:00:00:00:00",
+        ] {
+            assert_eq!(parse_mac_address(invalid), None, "{invalid}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod significant_host_case_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn uppercase_common_suffixes_use_the_same_domain_labels() {
+        for host in [
+            "a.Example.co.uk", "a.Example.CO.uk",
+            "a.Example.com.au", "a.Example.COM.au",
+            "a.Example.NET.au", "a.Example.ORG.au"
+        ] {
+            let (_, label, suffix) = significant_hostname_parts(host).unwrap();
+            assert_eq!(label, "Example");
+            assert!(suffix.starts_with("Example."));
+        }
+        assert_eq!(
+            significant_hostname_parts("a.Example.de").map(|(_, label, suffix)| (label, suffix)),
+            Some(("Example", "Example.de"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod percent_decoding_spans_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_plain_spans_and_form_plus_exactly() {
+        let plain = format!("{}%20{}%C3%A9", "abc".repeat(100), "xyz".repeat(100));
+        let expected = format!("{} {}é", "abc".repeat(100), "xyz".repeat(100));
+        assert_eq!(decode_percent_encoded(&plain, false).unwrap(), expected);
+        assert_eq!(decode_percent_encoded("hello+world%2Bok", true).unwrap(), "hello world+ok");
+        assert_eq!(decode_percent_encoded("hello+world%2Bok", false).unwrap(), "hello+world+ok");
+        assert_eq!(decode_percent_encoded("%00", false).unwrap().as_bytes(), &[0]);
+        for invalid in ["%", "%A", "%GG", "%FF", "%é"] {
+            assert!(decode_percent_encoded(invalid, false).is_err(), "{invalid}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ascii_unhex_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_mixed_hex_pairs_and_odd_tail() {
+        assert_eq!(unhex_text("48656c6c6f").unwrap(), "Hello");
+        assert_eq!(unhex_text("4a4B4c").unwrap(), "JKL");
+        assert_eq!(unhex_text("41A").unwrap().as_bytes(), &[b'A', 10]);
+        assert_eq!(unhex_text("").unwrap(), "");
+        for invalid in ["GG", "00z", "1é", "ff"] {
+            assert!(unhex_text(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod base58_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn byte_lookup_matches_reference_for_every_input_byte() {
+        let alphabet = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        for byte in 0..=u8::MAX {
+            let expected = alphabet.iter().position(|&value| value == byte);
+            assert_eq!(
+                (BASE58_DIGITS[usize::from(byte)] != u8::MAX)
+                    .then_some(BASE58_DIGITS[usize::from(byte)] as usize),
+                expected
+            );
+        }
+        assert_eq!(base58_decode("111").unwrap().as_bytes(), &[0, 0, 0]);
+        assert_eq!(base58_decode("2").unwrap().as_bytes(), &[1]);
+        assert!(base58_decode("0").is_err());
+        assert!(base58_decode("é").is_err());
+    }
 }

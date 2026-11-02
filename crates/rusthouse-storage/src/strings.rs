@@ -72,17 +72,23 @@ impl StringColumn {
     }
 
     pub fn get(&self, row: usize) -> Option<&[u8]> {
-        let begin = *self.offsets.get(row)?;
-        let end = *self.offsets.get(row.checked_add(1)?)?;
+        // One row-bound check covers both offsets. Decoding guarantees that
+        // the private offset array has len() + 1 monotone entries.
+        if row >= self.len() {
+            return None;
+        }
+        let begin = self.offsets[row];
+        let end = self.offsets[row + 1];
         self.data.get(begin..end)
     }
 
     /// Return a string's byte length without touching its payload.
     /// The decoder validates monotone offsets when building the column.
     pub fn byte_length(&self, row: usize) -> Option<usize> {
-        let begin = *self.offsets.get(row)?;
-        let end = *self.offsets.get(row.checked_add(1)?)?;
-        end.checked_sub(begin)
+        if row >= self.len() {
+            return None;
+        }
+        Some(self.offsets[row + 1] - self.offsets[row])
     }
 
     fn push<R: Read>(&mut self, reader: &mut R, length: u64) -> Result<(), StringReadError> {
@@ -168,6 +174,28 @@ pub(crate) fn read_legacy_strings_buffered<R: BufRead>(
     checked_rows(rows)?;
     let mut values = StringColumn::new(rows);
     for _ in 0..rows {
+        // Most String rows have a one-byte length and fit in one block.
+        // Read the prefix and payload from one BufRead slice in that case.
+        let in_buffer = {
+            let chunk = reader.fill_buf()?;
+            if let Some((&length, rest)) = chunk.split_first() {
+                let length = usize::from(length);
+                if length < 128 && rest.len() >= length {
+                    let next = checked_end(values.data.len(), length as u64)?;
+                    values.data.extend_from_slice(&rest[..length]);
+                    values.offsets.push(next);
+                    Some(length + 1)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(consumed) = in_buffer {
+            reader.consume(consumed);
+            continue;
+        }
         let length = read_varuint_buffered(reader)?;
         let next = checked_end(values.data.len(), length)?;
         while values.data.len() < next {
@@ -185,6 +213,17 @@ pub(crate) fn read_legacy_strings_buffered<R: BufRead>(
 }
 
 fn read_varuint_buffered<R: BufRead>(reader: &mut R) -> Result<u64, StringReadError> {
+    // Most legacy String lengths fit in a single byte. Consume that byte
+    // directly instead of initializing the general ten-group decoder.
+    let first = reader.fill_buf()?;
+    match first.first().copied() {
+        Some(byte) if byte < 0x80 => {
+            reader.consume(1);
+            return Ok(u64::from(byte));
+        }
+        None => return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()),
+        _ => {}
+    }
     let mut result = 0u64;
     let mut group = 0usize;
     while group < 10 {
@@ -327,6 +366,16 @@ mod buffered_legacy_string_tests {
         assert_eq!(column.get(1), Some([b'a', 0xff, 0].as_slice()));
         assert_eq!(column.get(2), Some([b'z'; 128].as_slice()));
         assert_eq!(source.0, &[42]);
+    }
+
+    #[test]
+    fn single_byte_lengths_consume_only_their_own_prefix() {
+        for length in [0u8, 1, 63, 127] {
+            let bytes = [length, 0xaa];
+            let mut source = BufferOnly(&bytes);
+            assert_eq!(read_varuint_buffered(&mut source).unwrap(), u64::from(length));
+            assert_eq!(source.0, &[0xaa]);
+        }
     }
 
     #[test]
@@ -683,6 +732,26 @@ mod preflight_flattening_tests {
     use super::*;
 
     #[test]
+    fn fast_row_access_preserves_empty_long_and_out_of_range_values() {
+        let input = vec![
+            vec![],
+            b"abc".to_vec(),
+            vec![0, b'\\', 0xff, 0x7f],
+            vec![b'x'; 8192],
+            vec![],
+        ];
+        let values = StringColumn::from_rows(input.clone()).unwrap();
+        for (row, expected) in input.iter().enumerate() {
+            assert_eq!(values.get(row), Some(expected.as_slice()));
+            assert_eq!(values.byte_length(row), Some(expected.len()));
+        }
+        for row in [input.len(), input.len() + 1, usize::MAX] {
+            assert_eq!(values.get(row), None);
+            assert_eq!(values.byte_length(row), None);
+        }
+    }
+
+    #[test]
     fn prevalidated_rows_keep_exact_offsets_and_payloads() {
         let rows = (0..8_192).map(|i| vec![b'x'; i % 11]).collect::<Vec<_>>();
         let expected_bytes = rows.iter().map(Vec::len).sum::<usize>();
@@ -746,5 +815,40 @@ mod sized_string_mark_buffer_tests {
                 Err(StringReadError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod one_buffer_legacy_string_tests {
+    use super::*;
+    use std::io::{BufReader, Cursor};
+
+    #[test]
+    fn short_rows_and_split_payloads_decode_identically() {
+        let mut encoded = Vec::new();
+        let expected = (0..4096)
+            .map(|index| vec![(index % 251) as u8; index % 31])
+            .collect::<Vec<_>>();
+        for row in &expected {
+            encoded.push(row.len() as u8);
+            encoded.extend_from_slice(row);
+        }
+        // A narrow buffer forces the fallback across length/payload boundaries.
+        for capacity in [1usize, 2, 7, 64, 4096] {
+            let mut source = BufReader::with_capacity(capacity, Cursor::new(&encoded));
+            let decoded = read_legacy_strings_buffered(&mut source, expected.len()).unwrap();
+            for (row, expected) in expected.iter().enumerate() {
+                assert_eq!(decoded.get(row), Some(expected.as_slice()));
+            }
+        }
+    }
+
+    #[test]
+    fn truncated_short_payload_still_fails() {
+        let mut source = BufReader::with_capacity(32, Cursor::new([4u8, b'a', b'b']));
+        assert!(matches!(
+            read_legacy_strings_buffered(&mut source, 1),
+            Err(StringReadError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof
+        ));
     }
 }
