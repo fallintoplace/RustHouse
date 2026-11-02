@@ -56,6 +56,11 @@ pub(super) fn execute<W: Write>(
         .ok_or_else(|| invalid("JOIN group key missing"))?;
     let width = left_names.len();
     let index = resolve(query, key_column, left_names, right_names)?;
+    let group_type = if index < width {
+        inspect_query_source(left_path)?.columns[index].data_type.clone()
+    } else {
+        inspect_query_source(right_path)?.columns[index - width].data_type.clone()
+    };
     let group_name = format!("{}.{}", key_column.relation, key_column.name);
     if query.limit == Some(0) {
         writeln!(output, "{group_name}\tcount")?;
@@ -140,7 +145,7 @@ pub(super) fn execute<W: Write>(
         .skip(query.offset)
         .take(query.limit.unwrap_or(usize::MAX))
     {
-        typed::write_value(output, group)?;
+        typed::write_typed_value(output, group, &group_type)?;
         writeln!(output, "\t{count}")?;
     }
     Ok(())
