@@ -1,18 +1,18 @@
 # RustHouse security threat model (experimental)
 
-**Status: not production-certified.** This document describes the existing
-trust boundaries, not a claim that the database is safe for hostile users.
+**Status: experimental and not production-certified.** This guide explains
+the current security boundaries. RustHouse is not designed for hostile users.
 
 ## Assets and trust boundaries
 
-- Local database parts, schemas and historical snapshot generations can contain
-  sensitive data. Keep filesystem permissions under the operator's control.
-- The CLI accepts SQL and filenames from the local operator. It must not be
-  wrapped by an untrusted service that blindly interpolates user-provided SQL.
-- The HTTP server is read-only but provides SQL, table and schema discovery.
-  Read-only is **not** authorization or safe multi-tenancy.
-- Distributed coordinator and peer traffic uses unauthenticated plaintext
-  HTTP. A private RFC1918/Tailscale address is not itself authentication.
+- Database parts, schemas, and old snapshots can contain sensitive data. Use
+  filesystem permissions to control access.
+- The CLI accepts SQL and filenames from the local user. Do not build an
+  untrusted service that inserts user input directly into SQL.
+- The HTTP server can read SQL data and expose table and schema names.
+  Read-only access is **not** the same as authorization or safe multi-tenancy.
+- Coordinator and peer traffic uses plaintext HTTP without authentication.
+  A private RFC1918 or Tailscale address does not provide authentication.
 
 ## Threats ranked by deployment impact
 
@@ -37,7 +37,7 @@ trust boundaries, not a claim that the database is safe for hostile users.
    checks reachability only. It does not validate freshness, permissions,
    replication, or atomic multi-shard snapshots.
 
-## Deployment controls available now
+## Controls you can use now
 
 - Keep server bound to 127.0.0.1, or use a trusted encrypted overlay with
   strict peer-to-peer ACLs.
@@ -50,7 +50,7 @@ trust boundaries, not a claim that the database is safe for hostile users.
   another application. Do not treat a reverse proxy alone as row-level
   authorization.
 
-## Must-have work before a hostile multi-tenant or managed offering
+## Work needed before a public or multi-tenant service
 
 - Authenticated and authorized SQL/data access, with per-user and per-table
   permissions and auditable decisions.

@@ -1,7 +1,7 @@
 # Real billion-row RustHouse benchmarks
 
-Use an existing **physical** immutable wide-part snapshot. This benchmark
-refuses snapshots smaller than one billion rows by default.
+Use an existing frozen snapshot with **physical** immutable wide parts. By
+default, this benchmark requires at least one billion stored rows.
 
 ## Filtered COUNT (backwards compatible)
 
@@ -13,8 +13,8 @@ cargo bench -p rusthouse-query --bench billion_parts -- \
 
 ## Stored SUM, GROUP BY, and Top-K
 
-Write the exact expected tab-separated output for the chosen SQL to a file.
-The benchmark checks **every** warmup and sample against those bytes.
+Write the expected tab-separated output for your SQL query to a file. The
+benchmark checks **every** warmup and sample against that file.
 
 ```bash
 printf 'sum(id)\n499999999500000000\n' > /tmp/rusthouse-sum.expected
@@ -25,16 +25,17 @@ cargo bench -p rusthouse-query --bench billion_parts -- \
   --samples 7 --warmups 2 --max-median-seconds 3
 ```
 
-The sample SUM oracle is valid **only** if the snapshot contains each integer
-from 0 through 999999999 exactly once. Use an oracle computed independently
-from the actual snapshot for any other dataset.
+The example output is correct **only** when the snapshot contains every integer
+from 0 through 999999999 exactly once. For other data, calculate the expected
+output independently from that snapshot.
 
 Use the same `--sql` / `--expected-file` flags to measure filtered
 aggregates, GROUP BY, and ORDER BY with LIMIT. All executions must finish
 within RustHouse's current query limits.
 
-The optional `--max-median-seconds` fails the benchmark if it misses the
-target. Report both p50 and p90 plus CPU count, memory, storage type, data
-layout, selected columns, compression, warm-cache state, and number of parts.
-"Logical rows/s" describes input rows, **not** bytes read from disk. Do not
-interpret metadata-only counts as physical billion-row scans.
+Use `--max-median-seconds` to fail a run that misses a time target. When you
+share results, include p50, p90, CPU count, memory, storage type, data layout,
+selected columns, compression, cache state, and part count.
+
+"Logical rows/s" counts input rows, not bytes read from disk. A count answered
+from metadata is not a physical scan of one billion rows.
