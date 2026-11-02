@@ -25,6 +25,12 @@ pub enum ScalarExpr {
         operator: Operator,
         value: String,
     },
+    TextLike {
+        column: String,
+        pattern: String,
+        negated: bool,
+        case_insensitive: bool,
+    },
     And(Box<ScalarExpr>, Box<ScalarExpr>),
     Or(Box<ScalarExpr>, Box<ScalarExpr>),
     Case {
@@ -47,7 +53,7 @@ impl ScalarExpr {
         seen: &mut Option<HashSet<String>>,
     ) {
         match self {
-            Self::Column(name) | Self::TextLength(name) | Self::TextCompare { column: name, .. } => {
+            Self::Column(name) | Self::TextLength(name) | Self::TextCompare { column: name, .. } | Self::TextLike { column: name, .. } => {
                 if let Some(index) = seen.as_mut() {
                     if index.insert(name.clone()) {
                         out.push(name.clone());
@@ -161,6 +167,7 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
             }
             ScalarExpr::Column(_)
             | ScalarExpr::TextCompare { .. }
+            | ScalarExpr::TextLike { .. }
             | ScalarExpr::TextLength(_)
             | ScalarExpr::Integer(_)
             | ScalarExpr::Decimal(_) => {}
@@ -174,6 +181,28 @@ fn parse_comparison_tokens_at_depth(
     depth: usize,
 ) -> Result<ScalarExpr, ParseError> {
     let left = parse_arithmetic_tokens(parser, depth)?;
+    let negated = parser.keyword("NOT");
+    let like = parser.keyword("LIKE");
+    let ilike = !like && parser.keyword("ILIKE");
+    if like || ilike {
+        let ScalarExpr::Column(column) = left else {
+            return Err(ParseError("LIKE in scalar expressions requires a String column".into()));
+        };
+        let Some(Token::String(pattern)) = parser.tokens.get(parser.index) else {
+            return Err(ParseError("LIKE in scalar expressions requires a string literal".into()));
+        };
+        let pattern = pattern.clone();
+        parser.index += 1;
+        return Ok(ScalarExpr::TextLike {
+            column,
+            pattern,
+            negated,
+            case_insensitive: ilike,
+        });
+    }
+    if negated {
+        return Err(ParseError("expected LIKE or ILIKE after NOT".into()));
+    }
     if let Some(Token::Operator(operator)) = parser.tokens.get(parser.index) {
         let operator = *operator;
         if !matches!(

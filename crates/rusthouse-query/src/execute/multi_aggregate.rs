@@ -155,6 +155,12 @@ enum BoundExpr {
     Modulo(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
     TextCompare { index: usize, operator: crate::Operator, value: Vec<u8> },
+    TextLike {
+        index: usize,
+        pattern: typed::TextPattern,
+        negated: bool,
+        case_insensitive: bool,
+    },
     And(Box<Self>, Box<Self>),
     Or(Box<Self>, Box<Self>),
     Case {
@@ -197,6 +203,14 @@ impl BoundExpr {
                 operator: *operator,
                 value: value.as_bytes().to_vec(),
             },
+            ScalarExpr::TextLike { column, pattern, negated, case_insensitive } => {
+                Self::TextLike {
+                    index: index(column)?,
+                    pattern: typed::compile_text_pattern(pattern)?,
+                    negated: *negated,
+                    case_insensitive: *case_insensitive,
+                }
+            }
             ScalarExpr::And(left, right) => Self::And(
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
@@ -397,6 +411,20 @@ fn eval_number(
                     _ => unreachable!("text comparisons require relational operators"),
                 };
                 Number::Unsigned(u128::from(matched))
+            }))
+        }
+        BoundExpr::TextLike { index, pattern, negated, case_insensitive } => {
+            let source = match &batch[*index] {
+                TypedColumn::Text(values) => values.get(row),
+                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+                TypedColumn::NullableText { .. } => None,
+                _ => return Err(ExecutionError::Invalid(
+                    "LIKE expression requires a String column".into(),
+                )),
+            };
+            Ok(source.map(|source| {
+                let result = typed::text_pattern_matches(source, pattern, *case_insensitive);
+                Number::Unsigned(u128::from(result != *negated))
             }))
         }
         BoundExpr::And(left, right) | BoundExpr::Or(left, right) => {
