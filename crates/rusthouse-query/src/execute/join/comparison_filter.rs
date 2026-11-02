@@ -74,8 +74,9 @@ fn scan<W: Write>(
     offset: usize,
     limit: Option<usize>,
     emit: bool,
+    count_only: bool,
     output: &mut W,
-) -> Result<(), ExecutionError> {
+) -> Result<u64, ExecutionError> {
     let width = left_names.len();
     let columns = fact_probe_columns(width, left_keys, filter.column, selected, emit);
     let mut source_to_batch = vec![usize::MAX; width];
@@ -133,7 +134,7 @@ fn scan<W: Write>(
                 matched = matched
                     .checked_add(1)
                     .ok_or_else(|| invalid("JOIN match count overflow"))?;
-                if max_matches.is_none() && matched > MAX_RESULT_ROWS as u64 {
+                if !count_only && max_matches.is_none() && matched > MAX_RESULT_ROWS as u64 {
                     return Err(invalid("JOIN produces more than 131072 rows"));
                 }
                 if matched <= offset as u64 {
@@ -169,12 +170,12 @@ fn scan<W: Write>(
                 }
                 written += 1;
                 if limit.is_some_and(|limit| written >= limit) {
-                    return Ok(());
+                    return Ok(matched);
                 }
             }
         }
     }
-    Ok(())
+    Ok(matched)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -207,20 +208,32 @@ pub(super) fn execute<W: Write>(
         operator: *operator,
         literal,
     };
-    let mut header = String::new();
-    for (index, (_, name, _)) in selected.iter().enumerate() {
-        if index != 0 {
-            header.push('\t');
+    let count_only = query.aggregate == Some(JoinAggregate::CountStar);
+    let mut header = if count_only {
+        "count".to_owned()
+    } else {
+        String::new()
+    };
+    if !count_only {
+        for (index, (_, name, _)) in selected.iter().enumerate() {
+            if index != 0 {
+                header.push('\t');
+            }
+            header.push_str(name);
         }
-        header.push_str(name);
     }
-    if query.limit == Some(0) {
+    if query.limit == Some(0) || (count_only && query.offset != 0) {
         writeln!(output, "{header}")?;
         return Ok(());
     }
 
     let right_meta = inspect_query_source(right_path)?;
-    let mut kept = selected.to_vec();
+    // Aggregates must not retain unused JOIN projection columns.
+    let mut kept = if count_only {
+        Vec::new()
+    } else {
+        selected.to_vec()
+    };
     if index >= width {
         kept.push((index, String::new(), None));
     }
@@ -242,6 +255,31 @@ pub(super) fn execute<W: Write>(
         query.any,
         super::super::query_workers(4),
     )?;
+    if count_only {
+        // Scalar COUNT(*) counts every passing pair without the materialized
+        // result-row cap, and LIMIT applies to its single result row.
+        let count = if hash.is_empty() {
+            0
+        } else {
+            scan(
+                left_path,
+                left_names,
+                left_keys,
+                &right_rows,
+                &hash,
+                &filter,
+                &[],
+                query.any,
+                0,
+                None,
+                false,
+                true,
+                &mut std::io::sink(),
+            )?
+        };
+        writeln!(output, "count\n{count}")?;
+        return Ok(());
+    }
     if !hash.is_empty() {
         // Validate the full stream and output row cap before writing output.
         scan(
@@ -255,6 +293,7 @@ pub(super) fn execute<W: Write>(
             query.any,
             query.offset,
             query.limit,
+            false,
             false,
             &mut std::io::sink(),
         )?;
@@ -275,8 +314,10 @@ pub(super) fn execute<W: Write>(
         query.offset,
         query.limit,
         true,
+        false,
         output,
     )
+    .map(|_| ())
 }
 
 #[cfg(test)]
