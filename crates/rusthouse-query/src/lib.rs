@@ -1919,15 +1919,19 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("FIRST") && !parser.keyword("NEXT") {
             return Err(ParseError("FETCH requires FIRST or NEXT".into()));
         }
-        let value = parser.number()?;
-        if !value.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(ParseError(
-                "FETCH count must be a non-negative integer".into(),
-            ));
-        }
-        let count = value
-            .parse::<usize>()
-            .map_err(|_| ParseError("FETCH count is too large".into()))?;
+        let count = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+            let value = parser.number()?;
+            if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(ParseError(
+                    "FETCH count must be a non-negative integer".into(),
+                ));
+            }
+            value
+                .parse::<usize>()
+                .map_err(|_| ParseError("FETCH count is too large".into()))?
+        } else {
+            1
+        };
         if !parser.keyword("ROWS") && !parser.keyword("ROW") {
             return Err(ParseError("FETCH requires ROW or ROWS".into()));
         }
@@ -2106,5 +2110,25 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod fetch_optional_count_tests {
+    use super::*;
+
+    #[test]
+    fn missing_fetch_row_count_defaults_to_one() {
+        assert_eq!(
+            parse_select("SELECT number FROM numbers(5) FETCH FIRST ROW ONLY").unwrap(),
+            parse_select("SELECT number FROM numbers(5) LIMIT 1").unwrap()
+        );
+        assert_eq!(
+            parse_select(
+                "SELECT number FROM numbers(5) OFFSET 2 ROWS FETCH NEXT ROWS ONLY"
+            ).unwrap(),
+            parse_select("SELECT number FROM numbers(5) LIMIT 1 OFFSET 2").unwrap()
+        );
+        assert!(parse_select("SELECT number FROM numbers(5) FETCH FIRST ONLY").is_err());
     }
 }
