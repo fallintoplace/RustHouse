@@ -28,6 +28,7 @@ pub mod distributed_object_key;
 pub mod distributed_parity;
 pub mod distributed_parity_delta;
 pub mod distributed_quorum;
+pub mod distributed_repair_dag;
 pub mod distributed_weighted_quorum;
 pub mod distributed_joint_quorum;
 pub mod distributed_range_read;
