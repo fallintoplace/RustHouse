@@ -12,6 +12,7 @@ pub mod distributed_capacity;
 pub mod distributed_chunk_plan;
 pub mod distributed_copy_diff;
 pub mod distributed_crc32c;
+pub mod distributed_fair_transfer;
 pub mod distributed_inventory;
 pub mod distributed_lineage;
 pub mod distributed_membership;
