@@ -176,3 +176,162 @@ mod tests {
         assert_eq!(batch.next_cursor, 1);
     }
 }
+
+
+/// Durable state for weighted deficit-round-robin byte scheduling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeightedShardProgress {
+    pub shard: String,
+    pub completed: u64,
+    pub total: u64,
+    pub weight: u16,
+    /// Unused granted byte credits, carried between batches.
+    pub deficit: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeightedTransferBatch {
+    pub slices: Vec<TransferSlice>,
+    pub next_progress: Vec<WeightedShardProgress>,
+    pub next_cursor: usize,
+}
+
+/// Schedule proportional replica bandwidth without starving small shards.
+///
+/// Every visited shard receives `quantum * weight` credits before transferring.
+/// Remaining credits survive a partial batch; only persist the returned state
+/// after the corresponding bytes have been verified. No input is modified.
+pub fn plan_weighted_transfers(
+    progress: &[WeightedShardProgress],
+    start_cursor: usize,
+    quantum: u64,
+    byte_budget: u64,
+    max_slices: usize,
+) -> Result<WeightedTransferBatch, &'static str> {
+    const MAX_WEIGHT: u16 = 64;
+    const MAX_CREDIT: u64 = MAX_QUANTUM * MAX_WEIGHT as u64;
+    if progress.is_empty()
+        || progress.len() > MAX_SHARDS
+        || start_cursor >= progress.len()
+        || quantum == 0
+        || quantum > MAX_QUANTUM
+        || max_slices > MAX_SHARDS
+    {
+        return Err("invalid weighted transfer limits");
+    }
+    let mut seen = HashSet::with_capacity(progress.len());
+    for item in progress {
+        if !valid_shard(&item.shard)
+            || item.completed > item.total
+            || item.weight == 0
+            || item.weight > MAX_WEIGHT
+            || item.deficit > MAX_CREDIT
+            || !seen.insert(item.shard.as_str())
+        {
+            return Err("invalid weighted shard progress");
+        }
+    }
+    let mut next_progress = progress.to_vec();
+    let mut slices = Vec::with_capacity(max_slices);
+    let mut cursor = start_cursor;
+    let mut remaining = byte_budget;
+    while remaining > 0 && slices.len() < max_slices {
+        let Some(index) = (0..next_progress.len())
+            .map(|offset| (cursor + offset) % next_progress.len())
+            .find(|&index| next_progress[index].completed < next_progress[index].total)
+        else {
+            break;
+        };
+        let item = &mut next_progress[index];
+        let credit = quantum * u64::from(item.weight);
+        item.deficit = item.deficit.saturating_add(credit).min(MAX_CREDIT);
+        let length = item
+            .deficit
+            .min(item.total - item.completed)
+            .min(remaining);
+        // Both quantum and weight are positive; an unfinished shard can
+        // always make progress until the byte budget is exhausted.
+        debug_assert!(length > 0);
+        slices.push(TransferSlice {
+            shard: item.shard.clone(),
+            offset: item.completed,
+            length,
+        });
+        item.completed += length;
+        item.deficit -= length;
+        if item.completed == item.total {
+            item.deficit = 0;
+        }
+        remaining -= length;
+        cursor = (index + 1) % next_progress.len();
+    }
+    Ok(WeightedTransferBatch {
+        slices,
+        next_progress,
+        next_cursor: cursor,
+    })
+}
+
+#[cfg(test)]
+mod weighted_transfer_tests {
+    use super::*;
+
+    fn job(name: &str, weight: u16, total: u64) -> WeightedShardProgress {
+        WeightedShardProgress {
+            shard: name.into(),
+            completed: 0,
+            total,
+            weight,
+            deficit: 0,
+        }
+    }
+
+    #[test]
+    fn proportional_weights_and_resume_preserve_exact_byte_ranges() {
+        let mut progress = vec![job("slow", 1, 100), job("fast", 3, 100)];
+        let mut cursor = 0;
+        let mut slices = Vec::new();
+        for _ in 0..5 {
+            let plan = plan_weighted_transfers(&progress, cursor, 2, 16, 4).unwrap();
+            assert_eq!(plan.slices.iter().map(|s| s.length).sum::<u64>(), 16);
+            slices.extend(plan.slices);
+            progress = plan.next_progress;
+            cursor = plan.next_cursor;
+        }
+        assert_eq!(progress[0].completed, 20);
+        assert_eq!(progress[1].completed, 60);
+        for name in ["slow", "fast"] {
+            let mut expected_offset = 0;
+            for slice in slices.iter().filter(|slice| slice.shard == name) {
+                assert_eq!(slice.offset, expected_offset);
+                expected_offset += slice.length;
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_inputs_and_zero_budget_do_not_change_source() {
+        let source = [job("a", 1, 10), job("b", 2, 10)];
+        let batch = plan_weighted_transfers(&source, 1, 1, 0, 2).unwrap();
+        assert!(batch.slices.is_empty());
+        assert_eq!(batch.next_progress, source);
+        assert_eq!(batch.next_cursor, 1);
+        let mut wrong = source.to_vec();
+        wrong[1].shard = "a".into();
+        assert!(plan_weighted_transfers(&wrong, 0, 1, 10, 2).is_err());
+        wrong[1].shard = "b".into();
+        wrong[1].weight = 0;
+        assert!(plan_weighted_transfers(&wrong, 0, 1, 10, 2).is_err());
+        assert!(plan_weighted_transfers(&source, 0, 0, 10, 2).is_err());
+    }
+
+    #[test]
+    fn capacity_arithmetic_handles_largest_offsets() {
+        let mut item = job("large", 64, u64::MAX);
+        item.completed = u64::MAX - 2;
+        let batch = plan_weighted_transfers(&[item], 0, MAX_QUANTUM, 100, 2).unwrap();
+        assert_eq!(batch.slices[0].offset, u64::MAX - 2);
+        assert_eq!(batch.slices[0].length, 2);
+        assert_eq!(batch.next_progress[0].completed, u64::MAX);
+    }
+}
