@@ -1457,7 +1457,7 @@ fn merge_grouped_distinct_pairs(
             if value == br"\N" {
                 continue;
             }
-            if !seen.contains(&(index, normalized_value.clone())) {
+            if !seen.contains(&(index, normalized_value)) {
                 if seen.len() >= MAX_PAIRS {
                     return Err(MergeError::CoordinatorLimit);
                 }
