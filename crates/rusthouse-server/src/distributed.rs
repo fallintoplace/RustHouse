@@ -1408,7 +1408,20 @@ fn merge_grouped_integer_sums_query(
     value_column: &str,
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
-    let header = format!("{key_column}\tsum({value_column})\n");
+    let function = if global.is_some_and(|select| {
+        matches!(
+            select.projection,
+            Projection::GroupedAggregate {
+                function: AggregateFunction::SumSquares,
+                ..
+            }
+        )
+    }) {
+        "sumSquares"
+    } else {
+        "sum"
+    };
+    let header = format!("{key_column}\t{function}({value_column})\n");
     let unsigned = kind
         .strip_prefix("Nullable(")
         .unwrap_or(kind)
@@ -1969,7 +1982,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum,
+                function: AggregateFunction::Sum | AggregateFunction::SumSquares,
                 value_column,
                 ..
             },
@@ -1983,7 +1996,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum,
+                function: AggregateFunction::Sum | AggregateFunction::SumSquares,
                 column,
                 ..
             },
@@ -2115,7 +2128,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if grouped_sum_query {
         match (sum_type.as_deref(), group_schema, sum_schema) {
             (Some(kind), Some((_, key)), Some((_, value))) => {
-                if select.having.is_some()
+                if matches!(
+                    select.projection,
+                    Projection::GroupedAggregate {
+                        function: AggregateFunction::SumSquares,
+                        ..
+                    }
+                ) || select.having.is_some()
                     || select.order_by.is_some()
                     || select.limit.is_some()
                     || select.offset.is_some()
@@ -3988,5 +4007,46 @@ mod distributed_integer_product_tests {
         assert!(!is_safe_product(
             &parse_select("SELECT product(amount) FROM events LIMIT 1").unwrap()
         ));
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_sum_squares_tests {
+    use super::*;
+
+    #[test]
+    fn grouped_sum_squares_reduces_shared_keys_across_shards() {
+        let sql = "SELECT category, sumSquares(amount) FROM events GROUP BY category";
+        let select = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&select));
+        let shards = [
+            (10, b"category\tsumSquares(amount)\na\t9\nb\tNULL\n".to_vec()),
+            (10, b"category\tsumSquares(amount)\na\t16\nb\t4\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 10, "Int64", "category", "amount", Some(&select)
+            )
+            .unwrap(),
+            b"category\tsumSquares(amount)\na\t25\nb\t4\n"
+        );
+    }
+
+    #[test]
+    fn grouped_sum_squares_uses_global_having_after_reduction() {
+        let sql = "SELECT category, sumSquares(amount) FROM events GROUP BY category HAVING sumSquares(amount) > 20";
+        let select = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&select));
+        let shards = [
+            (10, b"category\tsumSquares(amount)\na\t9\nb\t16\n".to_vec()),
+            (10, b"category\tsumSquares(amount)\na\t16\nb\t0\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 10, "UInt64", "category", "amount", Some(&select)
+            )
+            .unwrap(),
+            b"category\tsumSquares(amount)\na\t25\n"
+        );
     }
 }
