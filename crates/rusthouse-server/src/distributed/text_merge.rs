@@ -3,6 +3,7 @@
 use super::{MAX_RESPONSE_BYTES, MergeError};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+
 #[derive(PartialEq, Eq)]
 struct TextHead {
     key: Option<Vec<u8>>,
@@ -263,6 +264,7 @@ mod tests {
             b"name\tid\na\t1\na\t2\na\t3\n"
         );
     }
+
     #[test]
     fn validates_trailing_rows_outside_the_requested_page() {
         let bad = [(10, b"name\nb\nc\na\n".to_vec())];
