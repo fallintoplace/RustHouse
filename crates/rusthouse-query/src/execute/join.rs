@@ -1269,20 +1269,12 @@ fn execute_streaming_inner_count<W: Write>(
             MAX_STREAM_BUILD_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(
-            right_rows.len(),
-        ));
-        for (index, row) in right_rows.iter().enumerate() {
-            if let Some(key) = row_key(row, right_keys) {
-                if query.any {
-                    hash.entry(key).or_insert(Bucket::One(index));
-                } else {
-                    hash.entry(key)
-                        .and_modify(|bucket| bucket.push(index))
-                        .or_insert(Bucket::One(index));
-                }
-            }
-        }
+        let hash = build_join_hash(
+            &right_rows,
+            right_keys,
+            query.any,
+            super::query_workers(4),
+        )?;
         if let Some(count) = parallel_probe_inner_count(
             left_path,
             left_names,
@@ -1320,16 +1312,13 @@ fn execute_streaming_inner_count<W: Write>(
             MAX_STREAM_BUILD_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(
-            left_rows.len(),
-        ));
-        for (index, row) in left_rows.iter().enumerate() {
-            if let Some(key) = row_key(row, left_keys) {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
-            }
-        }
+        // Preserve every left-side duplicate for the right-side COUNT probe.
+        let hash = build_join_hash(
+            &left_rows,
+            left_keys,
+            false,
+            super::query_workers(4),
+        )?;
         probe_right(
             right_path,
             right_names,
