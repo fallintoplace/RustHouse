@@ -266,6 +266,22 @@ pub(super) fn integer_type(kind: &str) -> bool {
     )
 }
 
+/// A multi-dimensional COUNT(*) can be reduced by its complete tuple key.
+/// Reject shard-local ordering and HAVING until they can be evaluated globally.
+pub(super) fn is_safe_grouped_multi_count(select: &Select) -> bool {
+    matches!(&select.projection, Projection::GroupedMultiCount { columns }
+        if (2..=8).contains(&columns.len()))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
 pub(super) fn is_safe_grouped_count(select: &Select) -> bool {
     matches!(select.projection, Projection::GroupedCount { .. })
         && matches!(select.source, Some(Source::Table(_)))
