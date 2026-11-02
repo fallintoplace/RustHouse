@@ -174,6 +174,28 @@ pub(crate) fn read_legacy_strings_buffered<R: BufRead>(
     checked_rows(rows)?;
     let mut values = StringColumn::new(rows);
     for _ in 0..rows {
+        // Most String rows have a one-byte length and fit in one block.
+        // Read the prefix and payload from one BufRead slice in that case.
+        let in_buffer = {
+            let chunk = reader.fill_buf()?;
+            if let Some((&length, rest)) = chunk.split_first() {
+                let length = usize::from(length);
+                if length < 128 && rest.len() >= length {
+                    let next = checked_end(values.data.len(), length as u64)?;
+                    values.data.extend_from_slice(&rest[..length]);
+                    values.offsets.push(next);
+                    Some(length + 1)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(consumed) = in_buffer {
+            reader.consume(consumed);
+            continue;
+        }
         let length = read_varuint_buffered(reader)?;
         let next = checked_end(values.data.len(), length)?;
         while values.data.len() < next {
@@ -772,5 +794,40 @@ mod sized_string_mark_buffer_tests {
                 Err(StringReadError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod one_buffer_legacy_string_tests {
+    use super::*;
+    use std::io::{BufReader, Cursor};
+
+    #[test]
+    fn short_rows_and_split_payloads_decode_identically() {
+        let mut encoded = Vec::new();
+        let expected = (0..4096)
+            .map(|index| vec![(index % 251) as u8; index % 31])
+            .collect::<Vec<_>>();
+        for row in &expected {
+            encoded.push(row.len() as u8);
+            encoded.extend_from_slice(row);
+        }
+        // A narrow buffer forces the fallback across length/payload boundaries.
+        for capacity in [1usize, 2, 7, 64, 4096] {
+            let mut source = BufReader::with_capacity(capacity, Cursor::new(&encoded));
+            let decoded = read_legacy_strings_buffered(&mut source, expected.len()).unwrap();
+            for (row, expected) in expected.iter().enumerate() {
+                assert_eq!(decoded.get(row), Some(expected.as_slice()));
+            }
+        }
+    }
+
+    #[test]
+    fn truncated_short_payload_still_fails() {
+        let mut source = BufReader::with_capacity(32, Cursor::new([4u8, b'a', b'b']));
+        assert!(matches!(
+            read_legacy_strings_buffered(&mut source, 1),
+            Err(StringReadError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof
+        ));
     }
 }
