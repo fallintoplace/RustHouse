@@ -639,9 +639,12 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
         return Err(ParseError("unhex requires ASCII digits".into()));
     }
     fn digit(value: u8) -> Result<u8, ParseError> {
-        char::from(value).to_digit(16)
-            .map(|value| value as u8)
-            .ok_or_else(|| ParseError("unhex contains a non-hexadecimal digit".into()))
+        match value {
+            b'0'..=b'9' => Ok(value - b'0'),
+            b'a'..=b'f' => Ok(value - b'a' + 10),
+            b'A'..=b'F' => Ok(value - b'A' + 10),
+            _ => Err(ParseError("unhex contains a non-hexadecimal digit".into())),
+        }
     }
     let mut pairs = input.as_bytes().chunks_exact(2);
     let mut bytes = Vec::with_capacity((input.len() + 1) / 2);
@@ -654,6 +657,22 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
     }
     String::from_utf8(bytes)
         .map_err(|_| ParseError("unhex constant is not valid UTF-8".into()))
+}
+
+#[cfg(test)]
+mod ascii_unhex_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_mixed_hex_pairs_and_odd_tail() {
+        assert_eq!(unhex_text("48656c6c6f").unwrap(), "Hello");
+        assert_eq!(unhex_text("4a4B4c").unwrap(), "JKL");
+        assert_eq!(unhex_text("41A").unwrap().as_bytes(), &[b'A', 10]);
+        assert_eq!(unhex_text("").unwrap(), "");
+        for invalid in ["GG", "00z", "1é", "ff"] {
+            assert!(unhex_text(invalid).is_err(), "{invalid}");
+        }
+    }
 }
 
 #[cfg(test)]
