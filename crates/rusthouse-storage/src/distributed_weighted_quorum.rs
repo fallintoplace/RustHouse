@@ -256,3 +256,127 @@ mod tests {
         }
     }
 }
+
+
+/// A joint-config acknowledgement must satisfy both the departing and the
+/// incoming membership. Neither configuration may commit by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JointWeightedQuorumObservation {
+    pub old: WeightedQuorumObservation,
+    pub new: WeightedQuorumObservation,
+    pub can_read: bool,
+    pub can_write: bool,
+}
+
+/// Evaluate one acknowledgement certificate during an explicit membership
+/// transition. Members added to one configuration are ignored by the other.
+///
+/// A node present in both configurations may have different voting weights.
+/// This function validates every acknowledgement against the union and never
+/// counts a duplicate acknowledgement twice in either configuration.
+pub fn observe_joint_weighted_quorum(
+    old_members: &[Member],
+    old_policy: WeightedQuorumPolicy,
+    new_members: &[Member],
+    new_policy: WeightedQuorumPolicy,
+    acknowledgements: &[&str],
+) -> Result<JointWeightedQuorumObservation, &'static str> {
+    WeightedQuorumPolicy::new(old_members, old_policy.reads, old_policy.writes)?;
+    WeightedQuorumPolicy::new(new_members, new_policy.reads, new_policy.writes)?;
+    if acknowledgements.len() > 256 {
+        return Err("too many joint quorum acknowledgements");
+    }
+
+    let mut old_acks = Vec::with_capacity(acknowledgements.len());
+    let mut new_acks = Vec::with_capacity(acknowledgements.len());
+    for &node in acknowledgements {
+        let in_old = old_members.iter().any(|member| member.node == node);
+        let in_new = new_members.iter().any(|member| member.node == node);
+        if !in_old && !in_new {
+            return Err("acknowledgement from unknown joint quorum member");
+        }
+        if in_old {
+            old_acks.push(node);
+        }
+        if in_new {
+            new_acks.push(node);
+        }
+    }
+
+    let old = old_policy.observe(old_members, &old_acks)?;
+    let new = new_policy.observe(new_members, &new_acks)?;
+    Ok(JointWeightedQuorumObservation {
+        can_read: old.can_read && new.can_read,
+        can_write: old.can_write && new.can_write,
+        old,
+        new,
+    })
+}
+
+#[cfg(test)]
+mod joint_quorum_tests {
+    use super::*;
+
+    fn member(node: &str, weight: u16) -> Member {
+        Member {
+            node: node.into(),
+            zone: "zone".into(),
+            weight,
+        }
+    }
+
+    #[test]
+    fn requires_both_configurations_to_approve_a_transition() {
+        let before = [member("a", 2), member("b", 2), member("c", 1)];
+        let after = [member("b", 2), member("c", 1), member("d", 2)];
+        let old = WeightedQuorumPolicy::new(&before, 3, 3).unwrap();
+        let new = WeightedQuorumPolicy::new(&after, 3, 3).unwrap();
+
+        let only_old =
+            observe_joint_weighted_quorum(&before, old, &after, new, &["a", "b"]).unwrap();
+        assert!(only_old.old.can_write);
+        assert!(!only_old.new.can_write);
+        assert!(!only_old.can_write);
+
+        let only_new =
+            observe_joint_weighted_quorum(&before, old, &after, new, &["b", "d"]).unwrap();
+        assert!(!only_new.old.can_write);
+        assert!(only_new.new.can_write);
+        assert!(!only_new.can_write);
+
+        let joint = observe_joint_weighted_quorum(
+            &before,
+            old,
+            &after,
+            new,
+            &["d", "b", "a", "d"],
+        )
+        .unwrap();
+        assert_eq!(joint.old.acknowledged_weight, 4);
+        assert_eq!(joint.new.acknowledged_weight, 4);
+        assert!(joint.can_read && joint.can_write);
+    }
+
+    #[test]
+    fn changed_weights_and_invalid_certificates_fail_closed() {
+        let before = [member("a", 3), member("b", 1)];
+        let after = [member("a", 1), member("b", 3)];
+        let old = WeightedQuorumPolicy::new(&before, 2, 3).unwrap();
+        let new = WeightedQuorumPolicy::new(&after, 2, 3).unwrap();
+        let a = observe_joint_weighted_quorum(&before, old, &after, new, &["a"]).unwrap();
+        assert_eq!(a.old.acknowledged_weight, 3);
+        assert_eq!(a.new.acknowledged_weight, 1);
+        assert!(!a.can_write);
+        assert!(observe_joint_weighted_quorum(
+            &before,
+            old,
+            &after,
+            new,
+            &["a", "unknown"]
+        )
+        .is_err());
+        let mut invalid = after.to_vec();
+        invalid[1].node = "a".into();
+        assert!(observe_joint_weighted_quorum(&before, old, &invalid, new, &[]).is_err());
+    }
+}
