@@ -183,9 +183,9 @@ fn aggregate_function(name: &str) -> Option<Option<AggregateFunction>> {
         "MEDIAN" => Some(Some(AggregateFunction::Median)),
         "ANY" | "ANY_VALUE" => Some(Some(AggregateFunction::Any)),
         "ANYLAST" => Some(Some(AggregateFunction::AnyLast)),
-        "GROUPBITAND" => Some(Some(AggregateFunction::GroupBitAnd)),
-        "GROUPBITOR" => Some(Some(AggregateFunction::GroupBitOr)),
-        "GROUPBITXOR" => Some(Some(AggregateFunction::GroupBitXor)),
+        "GROUPBITAND" | "BIT_AND" => Some(Some(AggregateFunction::GroupBitAnd)),
+        "GROUPBITOR" | "BIT_OR" => Some(Some(AggregateFunction::GroupBitOr)),
+        "GROUPBITXOR" | "BIT_XOR" => Some(Some(AggregateFunction::GroupBitXor)),
         _ => None,
     }
 }
