@@ -212,7 +212,7 @@ mod tests {
         assert!(ContentChunker::new(256, 128, 512).is_err());
         assert!(ContentChunker::new(64, 128, 16).is_err());
         assert!(ContentChunker::new(64, 128, MAX_CHUNK_BYTES + 1).is_err());
-        let mut chunker = ContentChunker::new(64, 128, 512).unwrap();
+        let chunker = ContentChunker::new(64, 128, 512).unwrap();
         let before = chunker.finish().unwrap();
         let invalid = vec![0; MAX_CHUNK_BYTES + 1];
         let mut short_bound = chunker;
