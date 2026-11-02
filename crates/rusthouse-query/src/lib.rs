@@ -856,6 +856,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 return Err(ParseError("expected ')' after COUNT(*)".into()));
             }
             Projection::Count
+        } else if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+            // A non-NULL numeric constant contributes one row to COUNT.
+            parser.index += 1;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after COUNT(constant)".into()));
+            }
+            Projection::Count
         } else {
             let column = parser.word()?;
             if !parser.take(Token::RParen) {
@@ -2106,5 +2113,32 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod count_numeric_literal_tests {
+    use super::{execute, parse_select};
+
+    #[test]
+    fn counts_numeric_constants_like_rows() {
+        for literal in ["0", "1", "42", "-3", "1.5"] {
+            let shorthand = parse_select(&format!("SELECT count({literal}) FROM numbers(4)")).unwrap();
+            let canonical = parse_select("SELECT count(*) FROM numbers(4)").unwrap();
+            assert_eq!(shorthand.projection, canonical.projection);
+            let mut output = Vec::new();
+            execute(&shorthand, None, &mut output).unwrap();
+            assert!(String::from_utf8(output).unwrap().ends_with("\n4\n"));
+        }
+        let empty = parse_select("SELECT count(1) FROM numbers(0)").unwrap();
+        let mut output = Vec::new();
+        execute(&empty, None, &mut output).unwrap();
+        assert!(String::from_utf8(output).unwrap().ends_with("\n0\n"));
+    }
+
+    #[test]
+    fn still_rejects_nontrivial_constant_arguments() {
+        assert!(parse_select("SELECT count(1, 2) FROM numbers(3)").is_err());
+        assert!(parse_select("SELECT count(1 + 2) FROM numbers(3)").is_err());
     }
 }
