@@ -18,8 +18,11 @@ pub fn maximum_replica_flow(
     source: usize,
     sink: usize,
 ) -> Result<u64, &'static str> {
-    if vertices < 2 || vertices > MAX_VERTICES || links.len() > MAX_LINKS
-        || source >= vertices || sink >= vertices || source == sink
+    if !(2..=MAX_VERTICES).contains(&vertices)
+        || links.len() > MAX_LINKS
+        || source >= vertices
+        || sink >= vertices
+        || source == sink
     {
         return Err("invalid replica flow topology");
     }
