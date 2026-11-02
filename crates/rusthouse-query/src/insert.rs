@@ -32,6 +32,14 @@ fn value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
             parser.index += 1;
             Ok(None)
         }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("TRUE") => {
+            parser.index += 1;
+            Ok(Some("1".into()))
+        }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("FALSE") => {
+            parser.index += 1;
+            Ok(Some("0".into()))
+        }
         Some(Token::Plus) => {
             parser.index += 1;
             match parser.tokens.get(parser.index) {
@@ -270,5 +278,22 @@ mod tests {
         ] {
             assert!(parse_insert(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod boolean_values_tests {
+    use super::*;
+
+    #[test]
+    fn boolean_values_are_stored_as_numeric_literals() {
+        let insert = parse_insert("INSERT INTO flags VALUES (TRUE, False, NULL)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            insert.rows,
+            vec![vec![Some("1".into()), Some("0".into()), None]]
+        );
+        assert!(parse_insert("INSERT INTO flags VALUES (TRUTH)").is_err());
     }
 }
