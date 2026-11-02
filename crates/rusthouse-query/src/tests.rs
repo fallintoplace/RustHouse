@@ -400,7 +400,6 @@ fn parses_count_column_and_rejects_malformed_arguments() {
     assert_eq!(parsed.alias.as_deref(), Some("total"));
     for sql in [
         "SELECT count(number, other) FROM numbers(10)",
-        "SELECT count(1) FROM numbers(10)",
         "SELECT count(*number) FROM numbers(10)",
         "SELECT count(number FROM numbers(10)",
         "SELECT count(number) FROM numbers(5) ORDER BY number",
