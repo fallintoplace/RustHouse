@@ -1113,7 +1113,13 @@ fn merge_grouped_integer_sums_query(
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
     merge_grouped_integer_reducer(
-        shards, max_rows, kind, key_column, value_column, AggregateFunction::Sum, global,
+        shards,
+        max_rows,
+        kind,
+        key_column,
+        value_column,
+        AggregateFunction::Sum,
+        global,
     )
 }
 
@@ -1126,7 +1132,13 @@ fn merge_grouped_integer_products_query(
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
     merge_grouped_integer_reducer(
-        shards, max_rows, kind, key_column, value_column, AggregateFunction::Product, global,
+        shards,
+        max_rows,
+        kind,
+        key_column,
+        value_column,
+        AggregateFunction::Product,
+        global,
     )
     .map_err(|error| match error {
         MergeError::InvalidGroupedSum => MergeError::InvalidGroupedProduct,
@@ -1819,11 +1831,14 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             })
     } else if grouped_product_query {
         match (sum_type.as_deref(), group_schema, sum_schema) {
-            (Some(kind), Some((_, key)), Some((_, value))) => {
-                merge_grouped_integer_products_query(
-                    &shards, max_rows.min(250_000), kind, key, value, Some(&select),
-                )
-            }
+            (Some(kind), Some((_, key)), Some((_, value))) => merge_grouped_integer_products_query(
+                &shards,
+                max_rows.min(250_000),
+                kind,
+                key,
+                value,
+                Some(&select),
+            ),
             _ => Err(MergeError::InvalidGroupedProduct),
         }
     } else if grouped_sum_query {
@@ -1930,9 +1945,10 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(MergeError::InvalidGroupedSum) => {
             Response::text("502 Bad Gateway", "malformed shard grouped SUM response\n")
         }
-        Err(MergeError::InvalidGroupedProduct) => {
-            Response::text("502 Bad Gateway", "malformed shard grouped PRODUCT response\n")
-        }
+        Err(MergeError::InvalidGroupedProduct) => Response::text(
+            "502 Bad Gateway",
+            "malformed shard grouped PRODUCT response\n",
+        ),
         Err(MergeError::InvalidSortedScan) => Response::text(
             "502 Bad Gateway",
             "malformed shard sorted integer response\n",
@@ -3301,9 +3317,8 @@ mod distributed_grouped_product_tests {
 
     #[test]
     fn reduces_integer_products_and_skips_empty_nullable_parts() {
-        let select = parse_select(
-            "SELECT region, product(amount) FROM events GROUP BY region",
-        ).unwrap();
+        let select =
+            parse_select("SELECT region, product(amount) FROM events GROUP BY region").unwrap();
         assert!(is_safe_grouped_product(&select));
         let shards = [
             (10, b"region\tproduct(amount)\na\t3\nb\tNULL\n".to_vec()),
@@ -3311,31 +3326,48 @@ mod distributed_grouped_product_tests {
         ];
         assert_eq!(
             merge_grouped_integer_products_query(
-                &shards, 10, "Nullable(Int64)", "region", "amount", Some(&select),
-            ).unwrap(),
+                &shards,
+                10,
+                "Nullable(Int64)",
+                "region",
+                "amount",
+                Some(&select),
+            )
+            .unwrap(),
             b"region\tproduct(amount)\na\t12\nb\t2\n"
         );
     }
 
     #[test]
     fn rejects_overflow_and_non_product_response_headers() {
-        let select = parse_select(
-            "SELECT region, product(amount) FROM events GROUP BY region",
-        ).unwrap();
+        let select =
+            parse_select("SELECT region, product(amount) FROM events GROUP BY region").unwrap();
         let shards = [
-            (10, b"region\tproduct(amount)\na\t340282366920938463463374607431768211455\n".to_vec()),
+            (
+                10,
+                b"region\tproduct(amount)\na\t340282366920938463463374607431768211455\n".to_vec(),
+            ),
             (10, b"region\tproduct(amount)\na\t2\n".to_vec()),
         ];
         assert_eq!(
             merge_grouped_integer_products_query(
-                &shards, 10, "UInt128", "region", "amount", Some(&select),
+                &shards,
+                10,
+                "UInt128",
+                "region",
+                "amount",
+                Some(&select),
             ),
             Err(MergeError::ProductOverflow),
         );
         assert_eq!(
             merge_grouped_integer_products_query(
                 &[(10, b"region\tsum(amount)\na\t2\n".to_vec())],
-                10, "UInt64", "region", "amount", Some(&select),
+                10,
+                "UInt64",
+                "region",
+                "amount",
+                Some(&select),
             ),
             Err(MergeError::SchemaMismatch),
         );
