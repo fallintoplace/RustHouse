@@ -501,8 +501,12 @@ pub fn recover_triple_erasure(
                 continue;
             }
             let factor = matrix[row][col];
-            for at in 0..count * 2 {
-                matrix[row][at] ^= gf256_mul(factor, matrix[col][at]);
+            let pivot_row = matrix[col];
+            for (target, &pivot_value) in matrix[row][..count * 2]
+                .iter_mut()
+                .zip(&pivot_row[..count * 2])
+            {
+                *target ^= gf256_mul(factor, pivot_value);
             }
         }
     }
@@ -518,7 +522,7 @@ pub fn recover_triple_erasure(
 
     // The unused parity equations are independent checksums when fewer than
     // three erasures occurred. They catch inconsistent supplied parity data.
-    for equation in count..3 {
+    for (equation, syndrome) in residual.iter().enumerate().skip(count) {
         for offset in 0..width {
             let mut actual = 0u8;
             for (value, &missing_index) in recovered.iter().zip(&missing) {
@@ -528,7 +532,7 @@ pub fn recover_triple_erasure(
                     value[offset],
                 );
             }
-            if actual != residual[equation][offset] {
+            if actual != syndrome[offset] {
                 return Err("triple parity syndromes disagree");
             }
         }
