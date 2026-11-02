@@ -1865,6 +1865,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
     let mut comma_offset = None;
     let mut limit = if parser.keyword("LIMIT") {
+        parser.take(Token::Plus);
         let value = parser.number()?;
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ParseError("LIMIT must be a non-negative integer".into()));
@@ -1873,6 +1874,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             .parse::<usize>()
             .map_err(|_| ParseError("LIMIT is too large".into()))?;
         if parser.take(Token::Comma) {
+            parser.take(Token::Plus);
             let value = parser.number()?;
             if !value.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Err(ParseError("LIMIT must be a non-negative integer".into()));
@@ -1897,6 +1899,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 "cannot combine LIMIT comma syntax with OFFSET".into(),
             ));
         }
+        parser.take(Token::Plus);
         let value = parser.number()?;
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ParseError("OFFSET must be a non-negative integer".into()));
@@ -1919,6 +1922,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("FIRST") && !parser.keyword("NEXT") {
             return Err(ParseError("FETCH requires FIRST or NEXT".into()));
         }
+        parser.take(Token::Plus);
         let value = parser.number()?;
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ParseError(
