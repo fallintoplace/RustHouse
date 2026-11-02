@@ -717,6 +717,22 @@ fn matches_in_at(column: &TypedColumn, row: usize, targets: &[Cell], negated: bo
         != negated
 }
 
+// A floating DISTINCT FROM target must treat two NaNs as equal. Check
+// decoded numeric storage without constructing a Cell for every candidate.
+fn numeric_nan_at(column: &TypedColumn, row: usize) -> bool {
+    match column {
+        TypedColumn::Numeric(NumericColumn::Float32(values)) => values[row].is_nan(),
+        TypedColumn::Numeric(NumericColumn::Float64(values)) => values[row].is_nan(),
+        TypedColumn::NullableNumeric {
+            values: NumericColumn::Float32(values), nulls
+        } => nulls[row] == 0 && values[row].is_nan(),
+        TypedColumn::NullableNumeric {
+            values: NumericColumn::Float64(values), nulls
+        } => nulls[row] == 0 && values[row].is_nan(),
+        _ => false,
+    }
+}
+
 pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
     branches.iter().any(|branch| {
         branch.iter().all(|condition| {
@@ -785,13 +801,10 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     _ => false,
                 },
                 Test::DistinctFrom(target, negated) => {
-                    let equal = if let Cell::Numeric(super::Number::Float(right)) = target {
-                        matches!(cell(column, row), Cell::Numeric(super::Number::Float(left)) if left.is_nan() && right.is_nan())
-                            || matches_comparison_at(column, row, target, Operator::Eq)
-                    } else {
-                        matches_comparison_at(column, row, target, Operator::Eq)
-                    };
-                    equal == *negated
+                    let both_nan = matches!(target, Cell::Numeric(Number::Float(value)) if value.is_nan())
+                        && numeric_nan_at(column, row);
+                    (both_nan || matches_comparison_at(column, row, target, Operator::Eq))
+                        == *negated
                 }
                 Test::In(targets, negated) => {
                     matches_in_at(column, row, targets, *negated)
@@ -3137,6 +3150,39 @@ mod typed_condition_cost_order_tests {
             Test::Compare(Operator::Modulo(_), _)
         ));
         assert!(matches!(conditions[3].test, Test::Like { .. }));
+    }
+}
+
+#[cfg(test)]
+mod native_distinct_nan_tests {
+    use super::*;
+
+    #[test]
+    fn native_nan_checks_preserve_distinct_and_nullable_semantics() {
+        let column = TypedColumn::NullableNumeric {
+            values: NumericColumn::Float32(vec![f32::NAN, -0.0, 1.0, f32::NAN]),
+            nulls: vec![0, 0, 0, 1],
+        };
+        assert!(numeric_nan_at(&column, 0));
+        assert!(!numeric_nan_at(&column, 1));
+        assert!(!numeric_nan_at(&column, 3));
+        let branches = vec![vec![Condition {
+            index: 0,
+            test: Test::DistinctFrom(Cell::Numeric(Number::Float(f64::NAN)), false),
+        }]];
+        let batch = [column];
+        assert_eq!(
+            (0..4).map(|row| passes(&batch, row, &branches)).collect::<Vec<_>>(),
+            [false, true, true, true]
+        );
+        let not_distinct = vec![vec![Condition {
+            index: 0,
+            test: Test::DistinctFrom(Cell::Numeric(Number::Float(f64::NAN)), true),
+        }]];
+        assert_eq!(
+            (0..4).map(|row| passes(&batch, row, &not_distinct)).collect::<Vec<_>>(),
+            [true, false, false, false]
+        );
     }
 }
 
