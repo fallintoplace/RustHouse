@@ -698,12 +698,14 @@ pub fn execute_multi_join<W: Write>(
             if position != 0 {
                 output.write_all(b"\t")?;
             }
-            let value = if matches!(row[*index], typed::Cell::Null) {
-                fallback.map_or(&row[*index], |right| &row[right])
+            let source = if matches!(row[*index], typed::Cell::Null) {
+                fallback.unwrap_or(*index)
             } else {
-                &row[*index]
+                *index
             };
-            typed::write_value(output, value)?;
+            typed::write_typed_value(
+                output, &row[source], column_type(&relations, source)
+            )?;
         }
         output.write_all(b"\n")?;
     }
