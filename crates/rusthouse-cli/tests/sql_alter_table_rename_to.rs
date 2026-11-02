@@ -29,7 +29,7 @@ fn alter_rename_to_preserves_persistent_rows() {
     successful(&db, "ALTER TABLE events RENAME TO archive");
     assert_eq!(
         successful(&db, "SELECT id, label FROM archive ORDER BY id").stdout,
-        b"id\\tlabel\\n1\\ta\\n2\\tb\\n"
+        b"id\tlabel\n1\ta\n2\tb\n"
     );
     assert!(!sql(&db, "SELECT id FROM events").status.success());
     assert!(!sql(&db, "ALTER TABLE archive RENAME TO archive").status.success());
