@@ -143,9 +143,11 @@ where
                                 continue;
                             }
                         }
-                        let value = left_group
-                            .as_ref()
-                            .unwrap_or(&right_rows[right_index][group_index - width]);
+                        let value = if let Some(value) = left_group.as_ref() {
+                            value
+                        } else {
+                            &right_rows[right_index][group_index - width]
+                        };
                         emit(value)?;
                     }
                 }
