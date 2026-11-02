@@ -123,6 +123,14 @@ pub(super) fn batch_matches(
     branches: &[Vec<CompiledPredicate>],
 ) -> bool {
     branches.iter().any(|predicates| {
+        // Numeric BETWEEN expands into two comparisons on one column.
+        // Read that native value only once in the common two-test case.
+        if let [first, second] = predicates.as_slice() {
+            if first.index == second.index {
+                let value = number_at(&batch[first.index], row);
+                return first.test.matches(value) && second.test.matches(value);
+            }
+        }
         predicates.iter().all(|predicate| {
             predicate
                 .test
@@ -1897,6 +1905,61 @@ mod arbitrary_stride_modulo_regression_tests {
         assert_eq!(
             count_monotonic_numbers(&[vec![predicate]], 1, 1_000_000_000, 4),
             Some(333_333_333)
+        );
+    }
+}
+
+#[cfg(test)]
+mod numeric_pair_single_decode_tests {
+    use super::*;
+
+    #[test]
+    fn paired_bounds_keep_inclusive_edges_and_or_branches() {
+        let batch = [NumericColumn::UInt16(vec![999, 1000, 5000, 9000, 9001])];
+        let range = vec![
+            CompiledPredicate {
+                index: 0,
+                test: CompiledTest::Comparison {
+                    operator: Operator::Ge,
+                    target: Number::Unsigned(1000),
+                },
+            },
+            CompiledPredicate {
+                index: 0,
+                test: CompiledTest::Comparison {
+                    operator: Operator::Le,
+                    target: Number::Unsigned(9000),
+                },
+            },
+        ];
+        let branches = vec![range];
+        assert_eq!(
+            (0..5).map(|row| batch_matches(&batch, row, &branches)).collect::<Vec<_>>(),
+            vec![false, true, true, true, false]
+        );
+        assert_eq!(count_batch_matches(&batch, &branches), 3);
+    }
+
+    #[test]
+    fn paired_float_comparisons_leave_nan_unmatched() {
+        let batch = [NumericColumn::Float64(vec![f64::NAN, -1.0, 0.0, 2.0])];
+        let branches = vec![vec![
+            CompiledPredicate {
+                index: 0,
+                test: CompiledTest::Comparison {
+                    operator: Operator::Ge, target: Number::Float(-1.0),
+                },
+            },
+            CompiledPredicate {
+                index: 0,
+                test: CompiledTest::Comparison {
+                    operator: Operator::Le, target: Number::Float(1.0),
+                },
+            },
+        ]];
+        assert_eq!(
+            (0..4).map(|row| batch_matches(&batch, row, &branches)).collect::<Vec<_>>(),
+            vec![false, true, true, false]
         );
     }
 }
