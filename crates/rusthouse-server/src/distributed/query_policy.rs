@@ -280,7 +280,7 @@ pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
     matches!(
         select.projection,
         Projection::GroupedAggregate {
-            function: AggregateFunction::Sum | AggregateFunction::SumSquares,
+            function: AggregateFunction::Sum | AggregateFunction::SumSquares | AggregateFunction::Count,
             ..
         }
     )
