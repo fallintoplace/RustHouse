@@ -16,6 +16,7 @@ pub mod distributed_chunk_receipts;
 pub mod distributed_copy_diff;
 pub mod distributed_content_chunks;
 pub mod distributed_crc32c;
+pub mod distributed_erasure_sources;
 pub mod distributed_failure_detector;
 pub mod distributed_fair_transfer;
 pub mod distributed_fencing;
