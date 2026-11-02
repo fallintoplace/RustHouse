@@ -1103,15 +1103,19 @@ fn parallel_exact_narrow_distinct(
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
-    let chunk_size = parts.len().div_ceil(workers);
+    // Claim large and small frozen parts dynamically to balance skew.
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
     let chunks = std::thread::scope(|scope| -> Result<_, ExecutionError> {
-        let handles = parts
-            .chunks(chunk_size)
-            .map(|paths| {
+        let handles = (0..workers)
+            .map(|_| {
+                let cursor = &cursor;
+                let parts = &parts;
                 std::thread::Builder::new()
                     .spawn_scoped(scope, move || -> Result<Vec<u64>, ExecutionError> {
                         let mut bits = vec![0u64; domain / 64];
-                        for path in paths {
+                        while let Some(path) = parts.get(
+                            cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                        ) {
                             let mut reader =
                                 rusthouse_storage::NumericPartReader::open(path, scan_columns)?;
                             while let Some(batch) = reader.next_batch()? {
