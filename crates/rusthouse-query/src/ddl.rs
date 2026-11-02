@@ -20,6 +20,12 @@ pub enum Ddl {
     ShowTablesNotLike {
         pattern: String,
     },
+    ShowTablesILike {
+        pattern: String,
+    },
+    ShowTablesNotILike {
+        pattern: String,
+    },
     ShowCreateTable {
         name: String,
     },
@@ -88,10 +94,12 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     if parser.keyword("SHOW") {
         let statement = if parser.keyword("TABLES") {
             let negated = parser.keyword("NOT");
-            if negated && !parser.keyword("LIKE") {
-                return Err(ParseError("SHOW TABLES NOT requires LIKE".into()));
+            let like = parser.keyword("LIKE");
+            let ilike = !like && parser.keyword("ILIKE");
+            if negated && !like && !ilike {
+                return Err(ParseError("SHOW TABLES NOT requires LIKE or ILIKE".into()));
             }
-            if negated || parser.keyword("LIKE") {
+            if like || ilike {
                 let pattern = match parser.tokens.get(parser.index) {
                     Some(Token::String(pattern)) => pattern.clone(),
                     _ => {
@@ -106,10 +114,11 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                     ));
                 }
                 parser.index += 1;
-                if negated {
-                    Ddl::ShowTablesNotLike { pattern }
-                } else {
-                    Ddl::ShowTablesLike { pattern }
+                match (negated, ilike) {
+                    (false, false) => Ddl::ShowTablesLike { pattern },
+                    (true, false) => Ddl::ShowTablesNotLike { pattern },
+                    (false, true) => Ddl::ShowTablesILike { pattern },
+                    (true, true) => Ddl::ShowTablesNotILike { pattern },
                 }
             } else {
                 Ddl::ShowTables
