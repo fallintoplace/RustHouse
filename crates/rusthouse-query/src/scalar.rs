@@ -109,6 +109,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BITCOUNT")
         || name.eq_ignore_ascii_case("BITNOT")
         || name.eq_ignore_ascii_case("BITTEST")
+        || name.eq_ignore_ascii_case("BITTESTALL")
         || name.eq_ignore_ascii_case("ISQRT")
         || name.eq_ignore_ascii_case("FACTORIAL")
         || name.eq_ignore_ascii_case("INTLOG")
@@ -986,6 +987,33 @@ fn parse_round_div(parser: &mut Parser, depth: usize) -> Result<i64, ParseError>
     i64::try_from(signed).map_err(|_| overflow())
 }
 
+/// Test every requested bit without shortcutting SQL argument validation.
+fn parse_bit_test_all(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "bitTestAll requires '('")?;
+    let value = expression(parser, depth + 1)? as u64;
+    require_token(parser, Token::Comma, "bitTestAll requires bit positions")?;
+    let mut all = true;
+    let mut positions = 0usize;
+    loop {
+        if positions >= 64 {
+            return Err(ParseError("bitTestAll supports at most 64 positions".into()));
+        }
+        let index = expression(parser, depth + 1)?;
+        let bit = u32::try_from(index)
+            .map_err(|_| ParseError("bitTestAll position must be between 0 and 63".into()))?;
+        if bit >= 64 {
+            return Err(ParseError("bitTestAll position must be between 0 and 63".into()));
+        }
+        all &= value & (1_u64 << bit) != 0;
+        positions += 1;
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    require_token(parser, Token::RParen, "bitTestAll requires ')'")?;
+    Ok(i64::from(all))
+}
+
 fn parse_bit_introspection(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let name = parser.word()?;
     require_token(parser, Token::LParen, "bit function requires '('")?;
@@ -1116,6 +1144,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("BITCOUNT") || name.eq_ignore_ascii_case("BITNOT") || name.eq_ignore_ascii_case("BITTEST"))
     {
         return parse_bit_introspection(parser, depth);
+    }
+    if parser.keyword("BITTESTALL") {
+        return parse_bit_test_all(parser, depth);
     }
     if parser.keyword("ROUND_DIV") {
         return parse_round_div(parser, depth);
@@ -1630,6 +1661,41 @@ mod small_modulus_primality_perf_tests {
             (2_305_843_009_213_693_951, true),
         ] {
             assert_eq!(prime_u64(value), prime, "{value}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_bit_test_all_tests {
+    use crate::{Projection, parse_select};
+
+    #[test]
+    fn checks_all_positions_in_signed_bit_patterns() {
+        for (sql, expected) in [
+            ("SELECT bitTestAll(43, 0, 1, 3, 5)", 1),
+            ("SELECT bitTestAll(43, 0, 1, 3, 5, 2)", 0),
+            ("SELECT bitTestAll(-1, 0, 63)", 1),
+            ("SELECT bitTestAll(0, 0)", 0),
+            ("SELECT bitTestAll(8, 3, 3)", 1),
+        ] {
+            assert_eq!(
+                parse_select(sql).unwrap().projection,
+                Projection::Literal(expected),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_missing_and_out_of_range_positions() {
+        for sql in [
+            "SELECT bitTestAll(1)",
+            "SELECT bitTestAll(1, -1)",
+            "SELECT bitTestAll(1, 64)",
+            "SELECT bitTestAll(1, 0,)",
+            "SELECT bitTestAll(1, 0, 64)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
 }
