@@ -194,9 +194,8 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             }));
         }
         if parser.keyword("DROP") {
-            if !parser.keyword("COLUMN") {
-                return Err(ParseError("expected COLUMN after DROP".into()));
-            }
+            // PostgreSQL permits COLUMN to be omitted for DROP.
+            parser.keyword("COLUMN");
             let if_exists = optional_if_exists(&mut parser)?;
             let column = identifier(&mut parser)?;
             finish_ddl(&mut parser)?;
@@ -641,5 +640,24 @@ mod show_columns_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod alter_drop_optional_column_tests {
+    use super::parse_ddl;
+
+    #[test]
+    fn drop_column_keyword_is_optional() {
+        for (implicit, explicit) in [
+            ("ALTER TABLE events DROP obsolete",
+             "ALTER TABLE events DROP COLUMN obsolete"),
+            ("ALTER TABLE events DROP IF EXISTS obsolete",
+             "ALTER TABLE events DROP COLUMN IF EXISTS obsolete"),
+        ] {
+            assert_eq!(parse_ddl(implicit).unwrap(), parse_ddl(explicit).unwrap());
+        }
+        assert!(parse_ddl("ALTER TABLE events DROP").is_err());
+        assert!(parse_ddl("ALTER TABLE events DROP IF EXISTS").is_err());
     }
 }
