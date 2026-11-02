@@ -1798,7 +1798,38 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "HEX_ENCODE" | "HEX" => {
+        "HEX" => {
+            let input = constant_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "HEX requires one argument")?;
+            let bytes = match input {
+                ConstantValue::Text(value) => value.into_bytes(),
+                ConstantValue::Integer(value) => {
+                    let all = value.to_be_bytes();
+                    let skip = if value < 0 {
+                        0
+                    } else {
+                        all.iter().take_while(|&&byte| byte == 0).count().min(7)
+                    };
+                    all[skip..].to_vec()
+                }
+                ConstantValue::Null => return Ok(ConstantValue::Null),
+            };
+            let length = bytes
+                .len()
+                .checked_mul(2)
+                .ok_or_else(|| ParseError("HEX result is too large".into()))?;
+            if length > MAX_TEXT_BYTES {
+                return Err(ParseError("HEX result is too large".into()));
+            }
+            const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+            let mut output = String::with_capacity(length);
+            for byte in bytes {
+                output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+                output.push(char::from(DIGITS[usize::from(byte & 15)]));
+            }
+            ConstantValue::Text(output)
+        }
+        "HEX_ENCODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "HEX_ENCODE requires one argument")?;
             match input {
