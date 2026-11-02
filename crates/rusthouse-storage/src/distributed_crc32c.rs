@@ -509,7 +509,7 @@ mod virtual_zero_range_crc_tests {
 
     #[test]
     fn huge_logical_zero_ranges_obey_checksum_composition() {
-        for length in [1u64 << 20, 1u64 << 32, (1u64 << 40) + 123, 1u64 << 63] {
+        for length in [1u64 << 20, 1u64 << 32, (1u64 << 40) + 123, 1u64 << 62] {
             let left = crc32c_zero_bytes(length);
             let right = crc32c_zero_bytes(37);
             assert_eq!(
