@@ -282,37 +282,77 @@ fn merge_uniq_shard_states(
     Ok(format!("{name}\n{count}\n").into_bytes())
 }
 
-fn shard_row_cap(peer: Peer) -> Result<usize, String> {
-    let response = remote::capabilities(peer)?;
-    if response.status != 200 || !response.content_type.starts_with("application/json") {
-        return Err("peer capabilities request failed".into());
+/// Parse only the canonical RustHouse peer capability document, never
+/// trust matching substrings embedded in arbitrary JSON string values.
+fn parse_peer_capabilities(data: &[u8]) -> Result<usize, String> {
+    let mut cursor = SchemaCursor {
+        bytes: data,
+        index: 0,
+    };
+    cursor.byte(b'{')?;
+    for (key, value) in [
+        ("name", "RustHouse"),
+        ("version", ""),
+        ("source", "database"),
+    ] {
+        if cursor.string()? != key {
+            return Err("unexpected peer capabilities field".into());
+        }
+        cursor.byte(b':')?;
+        let found = cursor.string()?;
+        if key == "version" {
+            if found.is_empty()
+                || found.len() > 64
+                || !found.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+            {
+                return Err("invalid peer version".into());
+            }
+        } else if found != value {
+            return Err("peer is not a read-only RustHouse database server".into());
+        }
+        cursor.byte(b',')?;
     }
-    let data =
-        std::str::from_utf8(&response.body).map_err(|_| "peer capabilities are not UTF-8")?;
-    if !data.contains("\"name\":\"RustHouse\"")
-        || !data.contains("\"source\":\"database\"")
-        || !data.contains("\"read_only\":true")
-    {
-        return Err("peer is not a read-only RustHouse database server".into());
+    if cursor.string()? != "read_only" {
+        return Err("missing peer read-only flag".into());
     }
-    let (_, cap_text) = data
-        .split_once("\"max_rows\":")
-        .ok_or("peer does not advertise a row limit")?;
-    // Capabilities are generated with max_rows as the final JSON field.
-    // Do not accept a numeric prefix followed by junk or extra fields.
-    let number = cap_text
-        .strip_suffix("}\n")
-        .ok_or("invalid peer row limit")?;
-    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err("invalid peer row limit".into());
+    cursor.byte(b':')?;
+    if cursor.bytes.get(cursor.index..cursor.index + 4) != Some(b"true") {
+        return Err("peer is not read-only".into());
     }
-    let cap = number
-        .parse::<usize>()
-        .map_err(|_| "invalid peer row limit")?;
-    if cap == 0 || cap > 250_000 {
+    cursor.index += 4;
+    cursor.byte(b',')?;
+    for (field, expected) in [
+        ("max_query_bytes", MAX_QUERY_BYTES as u64),
+        ("max_response_bytes", MAX_RESPONSE_BYTES as u64),
+    ] {
+        if cursor.string()? != field {
+            return Err("unexpected peer capabilities field".into());
+        }
+        cursor.byte(b':')?;
+        if cursor.unsigned_count()? != expected {
+            return Err("incompatible peer capability limits".into());
+        }
+        cursor.byte(b',')?;
+    }
+    if cursor.string()? != "max_rows" {
+        return Err("missing peer row limit".into());
+    }
+    cursor.byte(b':')?;
+    let rows = cursor.unsigned_count()?;
+    cursor.byte(b'}')?;
+    cursor.whitespace();
+    if cursor.index != data.len() || !(1..=250_000).contains(&rows) {
         return Err("unsupported peer row limit".into());
     }
-    Ok(cap)
+    usize::try_from(rows).map_err(|_| "unsupported peer row limit".into())
+}
+
+fn shard_row_cap(peer: Peer) -> Result<usize, String> {
+    let response = remote::capabilities(peer)?;
+    if response.status != 200 || response.content_type != "application/json; charset=utf-8" {
+        return Err("peer capabilities request failed".into());
+    }
+    parse_peer_capabilities(&response.body)
 }
 
 /// Validate the complete peer schema structure rather than accepting
@@ -3231,5 +3271,43 @@ mod logical_distinct_tsv_equivalence_tests {
             merge_distinct_tsv(&[(16, b"v\nvalid\n\\q\n".to_vec())], 1, 0, Some(1)),
             Err(MergeError::InvalidResponse),
         );
+    }
+}
+
+#[cfg(test)]
+mod strict_distributed_capabilities_tests {
+    use super::*;
+
+    fn valid() -> Vec<u8> {
+        format!(
+            "{{\"name\":\"RustHouse\",\"version\":\"0.1.0\",\"source\":\"database\",\"read_only\":true,\"max_query_bytes\":{MAX_QUERY_BYTES},\"max_response_bytes\":{MAX_RESPONSE_BYTES},\"max_rows\":42}}\n"
+        ).into_bytes()
+    }
+
+    #[test]
+    fn accepts_only_structured_canonical_peer_capabilities() {
+        assert_eq!(parse_peer_capabilities(&valid()).unwrap(), 42);
+        let mut spaced = valid();
+        spaced.splice(1..1, b"  ".iter().copied());
+        assert_eq!(parse_peer_capabilities(&spaced).unwrap(), 42);
+    }
+
+    #[test]
+    fn rejects_embedded_decoys_duplicate_keys_and_wrong_source_modes() {
+        let good = String::from_utf8(valid()).unwrap();
+        for bad in [
+            good.replace("\"source\":\"database\"", "\"source\":\"part\""),
+            good.replace("\"read_only\":true", "\"read_only\":false"),
+            good.replace("\"max_rows\":42", "\"max_rows\":42,\"max_rows\":7"),
+            good.replace("\"max_rows\":42", "\"max_rows\":0"),
+            good.replace("\"max_rows\":42", "\"max_rows\":042"),
+            good.replace("\"max_rows\":42", "\"max_rows\":\"42\""),
+            good.replace("\"version\":\"0.1.0\"", "\"version\":\"0.1.0\",\"version\":\"evil\""),
+            good.replace("\"name\":\"RustHouse\"", "\"name\":\"FakeRustHouse\""),
+            good.replace("\"max_response_bytes\":16777216", "\"max_response_bytes\":1"),
+            format!("{{\"spoof\":\"{}\"}}", good.replace('"', "\\\"")),
+        ] {
+            assert!(parse_peer_capabilities(bad.as_bytes()).is_err(), "{bad}");
+        }
     }
 }
