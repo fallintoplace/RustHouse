@@ -4,9 +4,11 @@
 mod dispatch;
 mod query_policy;
 mod sorted_merge;
+mod text_merge;
 
 use self::query_policy::*;
 use self::sorted_merge::*;
+use self::text_merge::*;
 
 use crate::cluster::{Cluster, Peer};
 use crate::remote;
@@ -583,7 +585,13 @@ fn read_shard(
     }
     let schema = schema_signature(&schema_response)?;
     let kind = sum_schema
-        .map(|(_, column)| shard_integer_kind(&schema_response, column))
+        .map(|(_, column)| {
+            if sorted_prefix_cap.is_some() {
+                shard_column_kind(&schema_response, column)
+            } else {
+                shard_integer_kind(&schema_response, column)
+            }
+        })
         .transpose()?;
     if sorted_prefix_cap.is_some()
         && kind
@@ -1813,15 +1821,26 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .as_deref()
             .map_or(Err(MergeError::InvalidSortedScan), |kind| {
                 let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
-                merge_sorted_integer_rows_page(
-                    &shards,
-                    &names,
-                    kind,
-                    order.descending,
-                    select.offset.unwrap_or(0),
-                    select.limit.unwrap_or(0),
-                    max_rows.min(250_000),
-                )
+                if kind == "String" {
+                    merge_sorted_text_rows_page(
+                        &shards,
+                        &names,
+                        order.descending,
+                        select.offset.unwrap_or(0),
+                        select.limit.unwrap_or(0),
+                        max_rows.min(250_000),
+                    )
+                } else {
+                    merge_sorted_integer_rows_page(
+                        &shards,
+                        &names,
+                        kind,
+                        order.descending,
+                        select.offset.unwrap_or(0),
+                        select.limit.unwrap_or(0),
+                        max_rows.min(250_000),
+                    )
+                }
             })
     } else if distinct_rows_query {
         merge_distinct_tsv(
