@@ -24,6 +24,7 @@ pub mod distributed_membership;
 pub mod distributed_merkle;
 pub mod distributed_object_key;
 pub mod distributed_parity;
+pub mod distributed_parity_delta;
 pub mod distributed_quorum;
 pub mod distributed_weighted_quorum;
 pub mod distributed_range_read;
