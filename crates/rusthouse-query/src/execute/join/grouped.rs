@@ -135,7 +135,7 @@ where
                                 typed::is_null_at(&batch[index], row)
                             } else {
                                 matches!(
-                                    right_rows[right_index][column - width],
+                                    &right_rows[right_index][column - width],
                                     typed::Cell::Null
                                 )
                             };
