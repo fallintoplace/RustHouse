@@ -1,0 +1,121 @@
+//! Locate one unknown corrupted data shard using dual GF256 parity syndromes.
+//! This is an offline diagnostic recovery aid. A successful syndrome match is
+//! not an integrity signature; independently verify repaired object digests.
+
+use crate::distributed_parity::{DoubleParity, encode_double_parity};
+
+fn gf256_mul(mut left: u8, mut right: u8) -> u8 {
+    let mut result = 0u8;
+    for _ in 0..8 {
+        if right & 1 != 0 {
+            result ^= left;
+        }
+        let high = left & 0x80 != 0;
+        left <<= 1;
+        if high {
+            left ^= 0x1d;
+        }
+        right >>= 1;
+    }
+    result
+}
+
+/// Diagnose and correct exactly one unknown data corruption using P/Q parity.
+///
+/// Returns None if the supplied data reproduces both parity shards. If P/Q
+/// syndromes identify one candidate index, return its corrected bytes.
+/// There is no guarantee that corrupt parity or multiple data errors cannot
+/// masquerade as a single error. Verify every repaired byte with an
+/// independent authenticated digest before publishing anything.
+pub fn correct_one_unknown_corruption(
+    shards: &[&[u8]],
+    parity: &DoubleParity,
+) -> Result<Option<(usize, Vec<u8>)>, &'static str> {
+    let width = parity.xor.len();
+    if !(2..=16).contains(&shards.len())
+        || width != parity.weighted.len()
+        || width > 8 * 1024 * 1024
+        || shards.iter().map(|part| part.len()).max() != Some(width)
+    {
+        return Err("invalid unknown-error correction stripe");
+    }
+    let current = encode_double_parity(shards)?;
+    if current == *parity {
+        return Ok(None);
+    }
+    let mut coefficient = 1u8;
+    let mut match_index = None;
+    for (index, shard) in shards.iter().enumerate() {
+        let mut consistent = true;
+        for offset in 0..width {
+            let p = current.xor[offset] ^ parity.xor[offset];
+            let q = current.weighted[offset] ^ parity.weighted[offset];
+            if gf256_mul(coefficient, p) != q
+                || (offset >= shard.len() && p != 0)
+            {
+                consistent = false;
+                break;
+            }
+        }
+        if consistent {
+            if match_index.replace(index).is_some() {
+                return Err("ambiguous parity error location");
+            }
+        }
+        coefficient = gf256_mul(coefficient, 2);
+    }
+    let index = match_index.ok_or("uncorrectable dual-parity syndrome")?;
+    let restored = shards[index]
+        .iter()
+        .zip(current.xor.iter().zip(&parity.xor))
+        .map(|(&byte, (&actual, &expected))| byte ^ actual ^ expected)
+        .collect::<Vec<_>>();
+    Ok(Some((index, restored)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifies_every_single_shard_and_byte_corruption() {
+        let originals = [
+            b"alpha".as_slice(),
+            b"charlie".as_slice(),
+            b"".as_slice(),
+            b"much-longer".as_slice(),
+            b"omega".as_slice(),
+        ];
+        let parity = encode_double_parity(&originals).unwrap();
+        assert_eq!(correct_one_unknown_corruption(&originals, &parity).unwrap(), None);
+        for index in 0..originals.len() {
+            if originals[index].is_empty() {
+                continue;
+            }
+            for offset in 0..originals[index].len() {
+                let mut damaged = originals.iter().map(|s| s.to_vec()).collect::<Vec<_>>();
+                damaged[index][offset] ^= 0x97;
+                let references = damaged.iter().map(Vec::as_slice).collect::<Vec<_>>();
+                assert_eq!(
+                    correct_one_unknown_corruption(&references, &parity).unwrap(),
+                    Some((index, originals[index].to_vec())),
+                    "index={index} offset={offset}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_multiple_corruptions_and_bad_stripe_shapes() {
+        let originals = [b"hello".as_slice(), b"world".as_slice(), b"ok".as_slice()];
+        let parity = encode_double_parity(&originals).unwrap();
+        let damaged = [b"hallo".as_slice(), b"werld".as_slice(), b"ok".as_slice()];
+        assert!(correct_one_unknown_corruption(&damaged, &parity).is_err());
+        assert!(correct_one_unknown_corruption(&originals[..1], &parity).is_err());
+        let mut bad = parity.clone();
+        bad.weighted.pop();
+        assert!(correct_one_unknown_corruption(&originals, &bad).is_err());
+        let wrong_width = [b"hello".as_slice(), b"world".as_slice(), b"ok!".as_slice()];
+        assert!(correct_one_unknown_corruption(&wrong_width, &parity).is_err());
+    }
+}
