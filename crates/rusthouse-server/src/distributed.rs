@@ -4,6 +4,7 @@
 mod dispatch;
 mod query_policy;
 mod sorted_merge;
+mod range_merge;
 mod multi_count_column;
 mod multi_bitwise;
 mod multi_product;
@@ -2224,6 +2225,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_sum(&select)
                 || is_safe_sum_squares(&select)
                 || is_safe_product(&select)
+                || is_safe_range(&select)
                 || is_safe_bitwise(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -2259,6 +2261,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_bitwise_query = is_safe_grouped_bitwise(&select);
     let sum_query = is_safe_sum(&select) || is_safe_sum_squares(&select);
     let product_query = is_safe_product(&select);
+    let range_query = is_safe_range(&select);
     let uniq_query = is_safe_uniq(&select);
     let shard_sql = if sorted_query {
         match sorted_scan_sql(sql, &select) {
@@ -2293,6 +2296,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => {
                 return Response::text("400 Bad Request", "unsupported global grouped query\n");
             }
+        }
+    } else if range_query {
+        match range_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported distributed RANGE\n"),
         }
     } else if uniq_query {
         match uniq_state_shard_sql(sql, &select) {
@@ -2337,6 +2345,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Projection::Aggregate {
                 function: AggregateFunction::Sum
                     | AggregateFunction::SumSquares
+                    | AggregateFunction::Range
                     | AggregateFunction::Product
                     | AggregateFunction::Min
                     | AggregateFunction::Max
@@ -2509,6 +2518,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .map_or(Err(MergeError::InvalidSum), |kind| {
                 merge_integer_sums(&shards, kind)
             })
+    } else if range_query {
+        match (&select.projection, sum_type.as_deref()) {
+            (Projection::Aggregate { column, .. }, Some(kind)) => {
+                range_merge::merge_global_range(&shards, column, kind)
+            }
+            _ => Err(MergeError::InvalidExtremum),
+        }
     } else if product_query {
         sum_type
             .as_deref()
