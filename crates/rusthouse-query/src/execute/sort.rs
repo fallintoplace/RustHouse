@@ -399,6 +399,26 @@ impl Ord for SortedRow {
     }
 }
 
+// Build each output row in reused storage. Calling Write once per field
+// turns wide ordered results into thousands of tiny system calls for an
+// unbuffered output, even though the row itself is bounded.
+fn write_numeric_row<W: Write>(
+    output: &mut W,
+    values: &[Number],
+    scratch: &mut Vec<u8>,
+) -> Result<(), ExecutionError> {
+    scratch.clear();
+    for (index, value) in values.iter().enumerate() {
+        if index != 0 {
+            scratch.push(b'\t');
+        }
+        write!(scratch, "{value}")?;
+    }
+    scratch.push(b'\n');
+    output.write_all(scratch)?;
+    Ok(())
+}
+
 /// Include the row itself and retained numeric vectors, not just row counts.
 fn retained_row_size(row: &SortedRow) -> Result<usize, ExecutionError> {
     let numbers = row
@@ -739,6 +759,7 @@ impl SortedRows {
             }
             let mut scanned = 0usize;
             let mut returned = 0usize;
+            let mut output_scratch = Vec::with_capacity(256);
             let limit = self.requested.saturating_sub(self.offset);
             merge_runs(
                 &self.run_paths,
@@ -749,13 +770,7 @@ impl SortedRows {
                         return Ok(false);
                     }
                     if scanned >= self.offset && returned < limit {
-                        for (index, value) in row.values.iter().enumerate() {
-                            if index != 0 {
-                                write!(output, "\t")?;
-                            }
-                            write!(output, "{value}")?;
-                        }
-                        writeln!(output)?;
+                        write_numeric_row(output, &row.values, &mut output_scratch)?;
                         returned += 1;
                     }
                     scanned = scanned
@@ -766,16 +781,44 @@ impl SortedRows {
             )?;
             return Ok(());
         }
+        let mut output_scratch = Vec::with_capacity(256);
         for row in self.rows.into_sorted_vec().into_iter().skip(self.offset) {
-            for (index, value) in row.values.iter().enumerate() {
-                if index != 0 {
-                    write!(output, "\t")?;
-                }
-                write!(output, "{value}")?;
-            }
-            writeln!(output)?;
+            write_numeric_row(output, &row.values, &mut output_scratch)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod sorted_output_batch_tests {
+    use super::*;
+    use std::io;
+
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        calls: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn writes_one_complete_call_per_row_with_reused_buffer() {
+        let mut output = CountingWriter { bytes: Vec::new(), calls: 0 };
+        let mut scratch = Vec::new();
+        write_numeric_row(&mut output, &[Number::Unsigned(12), Number::Signed(-5)], &mut scratch).unwrap();
+        write_numeric_row(&mut output, &[Number::Float(1.5)], &mut scratch).unwrap();
+        assert_eq!(output.bytes, b"12\t-5\n1.5\n");
+        assert_eq!(output.calls, 2);
     }
 }
 
