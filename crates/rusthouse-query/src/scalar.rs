@@ -97,6 +97,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("TRAILING_ZEROS")
         || name.eq_ignore_ascii_case("DIGITAL_ROOT")
         || name.eq_ignore_ascii_case("POW10")
+        || name.eq_ignore_ascii_case("INTEXP2")
         || name.eq_ignore_ascii_case("INTEXP10")
         || name.eq_ignore_ascii_case("TRIANGULAR")
         || name.eq_ignore_ascii_case("IS_PRIME")
@@ -733,6 +734,18 @@ fn parse_digital_root(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
     i64::try_from(root).map_err(|_| overflow())
 }
 
+/// Exact power of two for the representable Int64 constant domain.
+fn parse_int_exp2(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "intExp2 requires '('")?;
+    let exponent = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "intExp2 requires ')'")?;
+    let exponent = u32::try_from(exponent)
+        .map_err(|_| ParseError("intExp2 exponent must be nonnegative".into()))?;
+    1_i64.checked_shl(exponent)
+        .filter(|result| *result > 0)
+        .ok_or_else(overflow)
+}
+
 /// Checked signed Int64 power of ten for nonnegative integer exponents.
 fn parse_pow10(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "POW10 requires '('")?;
@@ -1284,6 +1297,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("DIGITAL_ROOT") {
         return parse_digital_root(parser, depth);
     }
+    if parser.keyword("INTEXP2") {
+        return parse_int_exp2(parser, depth);
+    }
     if parser.keyword("POW10") || parser.keyword("INTEXP10") {
         return parse_pow10(parser, depth);
     }
@@ -1795,6 +1811,42 @@ mod clickhouse_int_exp10_tests {
             "SELECT intExp10(10000)",
             "SELECT intExp10()",
             "SELECT intExp10(1, 2)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+#[cfg(test)]
+mod clickhouse_int_exp2_tests {
+    use crate::{Projection, parse_select};
+
+    #[test]
+    fn exact_powers_of_two_in_int64_range() {
+        for (power, expected) in [
+            (0, 1_i64),
+            (1, 2),
+            (10, 1024),
+            (31, 2_147_483_648),
+            (62, 4_611_686_018_427_387_904),
+        ] {
+            let sql = format!("SELECT intExp2({power})");
+            assert_eq!(
+                parse_select(&sql).unwrap().projection,
+                Projection::Literal(expected),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_negative_and_unrepresentable_powers() {
+        for sql in [
+            "SELECT intExp2(-1)",
+            "SELECT intExp2(63)",
+            "SELECT intExp2(64)",
+            "SELECT intExp2(100000)",
+            "SELECT intExp2()",
+            "SELECT intExp2(1, 2)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
