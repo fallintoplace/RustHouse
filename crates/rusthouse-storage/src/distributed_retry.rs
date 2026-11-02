@@ -664,7 +664,7 @@ pub struct ReplicaRetryCheckpoint<'a> {
 /// A checkpoint with the wrong seed, attempt number or elapsed delay must not
 /// silently replay a different schedule. The existing bounded heap planner
 /// supplies the same deterministic global event order as an unbroken run.
-pub fn plan_replica_retry_timeline_from(
+pub fn plan_replica_retry_timeline_from_checkpoints(
     checkpoints: &[ReplicaRetryCheckpoint<'_>],
     attempts_per_node: u32,
     base_ms: u64,
@@ -749,7 +749,7 @@ mod resumed_timeline_checkpoint_tests {
             })
             .collect::<Vec<_>>();
         let resumed =
-            plan_replica_retry_timeline_from(&checkpoints, 33, 100, 1000, deadline).unwrap();
+            plan_replica_retry_timeline_from_checkpoints(&checkpoints, 33, 100, 1000, deadline).unwrap();
         assert_eq!(resumed, expected);
     }
 
@@ -765,14 +765,14 @@ mod resumed_timeline_checkpoint_tests {
             elapsed: valid.elapsed + Duration::from_millis(1),
             ..valid
         };
-        assert!(plan_replica_retry_timeline_from(&[changed], 33, 100, 1000, Duration::MAX).is_err());
-        assert!(plan_replica_retry_timeline_from(&[valid], 3, 100, 1000, Duration::MAX).is_err());
+        assert!(plan_replica_retry_timeline_from_checkpoints(&[changed], 33, 100, 1000, Duration::MAX).is_err());
+        assert!(plan_replica_retry_timeline_from_checkpoints(&[valid], 3, 100, 1000, Duration::MAX).is_err());
         assert!(
-            plan_replica_retry_timeline_from(&[valid, valid], 33, 100, 1000, Duration::MAX)
+            plan_replica_retry_timeline_from_checkpoints(&[valid, valid], 33, 100, 1000, Duration::MAX)
                 .is_err()
         );
         assert!(
-            plan_replica_retry_timeline_from(&[valid], 33, 0, 1000, Duration::MAX)
+            plan_replica_retry_timeline_from_checkpoints(&[valid], 33, 0, 1000, Duration::MAX)
                 .is_err()
         );
     }
@@ -785,7 +785,7 @@ mod resumed_timeline_checkpoint_tests {
             next_attempt: 2,
             elapsed: elapsed(3, 2),
         };
-        let events = plan_replica_retry_timeline_from(
+        let events = plan_replica_retry_timeline_from_checkpoints(
             &[checkpoint],
             33,
             100,
@@ -800,7 +800,7 @@ mod resumed_timeline_checkpoint_tests {
             next_attempt: 0,
             elapsed: Duration::ZERO,
         };
-        let entire = plan_replica_retry_timeline_from(
+        let entire = plan_replica_retry_timeline_from_checkpoints(
             &[empty],
             33,
             100,
