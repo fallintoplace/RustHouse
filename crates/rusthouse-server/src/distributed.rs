@@ -1849,11 +1849,15 @@ fn merge_grouped_integer_sums_query(
             function: AggregateFunction::CountIf,
             ..
         }) => "countIf",
+        Some(Projection::GroupedAggregate {
+            function: AggregateFunction::Count,
+            ..
+        }) => "count",
         _ => "sum",
     };
     let header = format!("{key_column}\t{function}({value_column})\n");
-    // COUNTIF returns unsigned row counts, even with signed input columns.
-    let unsigned = function == "countIf"
+    // COUNTIF and COUNT(column) return unsigned counts for all input types.
+    let unsigned = matches!(function, "countIf" | "count")
         || kind
             .strip_prefix("Nullable(")
             .unwrap_or(kind)
@@ -2708,6 +2712,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_multi_extremum_query = is_safe_grouped_multi_extremum(&select);
     let grouped_multi_sum_query = is_safe_grouped_multi_sum(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
+    let grouped_count_column_query = matches!(
+        select.projection,
+        Projection::GroupedAggregate {
+            function: AggregateFunction::Count,
+            ..
+        }
+    );
     let grouped_extremum_query = is_safe_grouped_extremum(&select);
     let grouped_product_query = is_safe_grouped_product(&select);
     let grouped_bitwise_query = is_safe_grouped_bitwise(&select);
@@ -2836,6 +2847,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Projection::GroupedAggregate {
                 function: AggregateFunction::Sum
                     | AggregateFunction::SumSquares
+                    | AggregateFunction::Count
                     | AggregateFunction::CountIf
                     | AggregateFunction::Min
                     | AggregateFunction::Max
@@ -2872,6 +2884,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Projection::GroupedAggregate {
                 function: AggregateFunction::Sum
                     | AggregateFunction::SumSquares
+                    | AggregateFunction::Count
                     | AggregateFunction::CountIf
                     | AggregateFunction::Min
                     | AggregateFunction::Max
@@ -2909,7 +2922,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 group_schema,
                 table,
                 sorted_prefix,
-                grouped_multi_count_column_query,
+                grouped_multi_count_column_query || grouped_count_column_query,
                 extrema_function.is_some(),
                 &retained_input,
             )
@@ -5754,6 +5767,69 @@ mod distributed_grouped_countif_tests {
                 &overflow, 10, "UInt64", "category", "amount", Some(&parsed)
             ),
             Err(MergeError::SumOverflow),
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_count_column_tests {
+    use super::*;
+
+    #[test]
+    fn merges_nullable_string_counts_for_shared_keys() {
+        let sql = "SELECT category, count(label) FROM events GROUP BY category";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&parsed));
+        let shards = [
+            (10, b"category\tcount(label)\na\t2\nb\t0\n".to_vec()),
+            (10, b"category\tcount(label)\na\t3\nc\t1\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 10, "Nullable(String)", "category", "label", Some(&parsed)
+            ).unwrap(),
+            b"category\tcount(label)\na\t5\nb\t0\nc\t1\n"
+        );
+    }
+
+    #[test]
+    fn global_having_applies_after_combining_nullable_column_counts() {
+        let sql = "SELECT category, count(label) FROM events GROUP BY category HAVING count(label) > 3";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&parsed));
+        assert_eq!(
+            grouped_count_shard_sql(sql, &parsed).as_deref(),
+            Some("SELECT category, count(label) FROM events GROUP BY category"),
+        );
+        let shards = [
+            (10, b"category\tcount(label)\na\t2\nb\t1\n".to_vec()),
+            (10, b"category\tcount(label)\na\t3\nb\t1\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 10, "String", "category", "label", Some(&parsed)
+            ).unwrap(),
+            b"category\tcount(label)\na\t5\n"
+        );
+    }
+
+    #[test]
+    fn rejects_negative_counts_and_capped_shard_responses() {
+        let parsed =
+            parse_select("SELECT category, count(label) FROM events GROUP BY category").unwrap();
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &[(10, b"category\tcount(label)\na\t-1\n".to_vec())],
+                10, "String", "category", "label", Some(&parsed)
+            ),
+            Err(MergeError::InvalidGroupedSum),
+        );
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &[(1, b"category\tcount(label)\na\t2\n".to_vec())],
+                10, "String", "category", "label", Some(&parsed)
+            ),
+            Err(MergeError::ShardRowLimit),
         );
     }
 }
