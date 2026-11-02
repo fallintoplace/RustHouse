@@ -33,6 +33,34 @@ fn paged_match_limit(offset: usize, limit: Option<usize>) -> Option<u64> {
         .map(|limit| offset.saturating_add(limit) as u64)
 }
 
+// Read only JOIN keys, the fact-side filter and visible fact-side output.
+// The validation scan needs no output columns at all.
+fn fact_probe_columns(
+    width: usize,
+    keys: &[usize],
+    filter_column: usize,
+    selected: &[(usize, String, Option<usize>)],
+    emit: bool,
+) -> Vec<usize> {
+    let mut columns = keys.to_vec();
+    if filter_column < width {
+        columns.push(filter_column);
+    }
+    if emit {
+        columns.extend(
+            selected
+                .iter()
+                .filter_map(|(index, _, _)| (*index < width).then_some(*index)),
+        );
+    }
+    columns.sort_unstable();
+    columns.dedup();
+    if columns.is_empty() {
+        columns.push(0);
+    }
+    columns
+}
+
 #[allow(clippy::too_many_arguments)]
 fn scan<W: Write>(
     left_path: &Path,
@@ -49,7 +77,21 @@ fn scan<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let width = left_names.len();
-    let mut reader = TypedQueryReader::open(left_path, left_names)?;
+    let columns = fact_probe_columns(width, left_keys, filter.column, selected, emit);
+    let mut source_to_batch = vec![usize::MAX; width];
+    let names = columns
+        .iter()
+        .enumerate()
+        .map(|(batch_index, &source_index)| {
+            source_to_batch[source_index] = batch_index;
+            left_names[source_index].clone()
+        })
+        .collect::<Vec<_>>();
+    let key_columns = left_keys
+        .iter()
+        .map(|&index| source_to_batch[index])
+        .collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(left_path, &names)?;
     let mut key = Vec::with_capacity(left_keys.len());
     // Cache each distinct left projection separately across all dimension
     // matches for this fact row. One shared Cell corrupts multi-column output.
@@ -65,12 +107,12 @@ fn scan<W: Write>(
             // INNER JOIN predicates referencing only the fact side are safe
             // to evaluate before hashing, including for ANY joins.
             if filter.column < width {
-                let candidate = typed::cell(&batch[filter.column], row_index);
+                let candidate = typed::cell(&batch[source_to_batch[filter.column]], row_index);
                 if !typed::matches_comparison(&candidate, &filter.literal, filter.operator) {
                     continue;
                 }
             }
-            if !batch_key_into(&batch, row_index, left_keys, &mut key) {
+            if !batch_key_into(&batch, row_index, &key_columns, &mut key) {
                 continue;
             }
             let Some(matches) = hash.get(key.as_slice()) else {
@@ -104,7 +146,7 @@ fn scan<W: Write>(
                         }
                         let value: &typed::Cell = if *index < width {
                             left_cells[*index]
-                                .get_or_insert_with(|| typed::cell(&batch[*index], row_index))
+                                .get_or_insert_with(|| typed::cell(&batch[source_to_batch[*index]], row_index))
                         } else {
                             &right_rows[right_index][*index - width]
                         };
@@ -299,5 +341,29 @@ mod paged_join_match_limit_tests {
         );
         assert_eq!(paged_match_limit(0, Some(MAX_RESULT_ROWS + 1)), None);
         assert_eq!(paged_match_limit(0, None), None);
+    }
+}
+
+#[cfg(test)]
+mod fact_probe_column_tests {
+    use super::*;
+
+    #[test]
+    fn narrow_validation_and_output_read_only_required_columns() {
+        let projected = vec![
+            (5, String::new(), None),
+            (8, String::new(), None),
+            (5, String::new(), None),
+        ];
+        assert_eq!(
+            fact_probe_columns(6, &[1, 3], 4, &projected, false),
+            vec![1, 3, 4]
+        );
+        assert_eq!(
+            fact_probe_columns(6, &[1, 3], 4, &projected, true),
+            vec![1, 3, 4, 5]
+        );
+        assert_eq!(fact_probe_columns(6, &[1], 8, &projected, false), vec![1]);
+        assert_eq!(fact_probe_columns(6, &[], 8, &projected, false), vec![0]);
     }
 }
