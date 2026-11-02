@@ -15,6 +15,7 @@ mod json_array;
 mod json_compact_each_row;
 mod jsonl;
 mod markdown;
+mod metadata_sql;
 pub mod remote;
 mod sql_values;
 mod tables;
@@ -407,6 +408,23 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         request_format.or(default_format).unwrap_or(QueryFormat::Tsv)
     };
     let sql = statement.to_owned();
+    // DESCRIBE uses the same read lock and schema validation as SQL SELECT.
+    if sql
+        .trim_start()
+        .split_ascii_whitespace()
+        .next()
+        .is_some_and(|word| {
+            word.eq_ignore_ascii_case("DESCRIBE") || word.eq_ignore_ascii_case("DESC")
+        })
+    {
+        match rusthouse_query::parse_ddl(&sql) {
+            Ok(Some(rusthouse_query::Ddl::DescribeTable { name })) if path != "/explain" => {
+                return metadata_sql::handle(config, format, &name);
+            }
+            Ok(_) => return Response::text("400 Bad Request", "unsupported schema SQL\n"),
+            Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+        }
+    }
     // Discovery SQL uses the same validated schemas and read lock as /tables.
     if sql
         .trim_start()
