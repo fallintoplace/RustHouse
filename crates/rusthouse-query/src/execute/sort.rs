@@ -727,6 +727,41 @@ impl SortedRows {
         Ok(())
     }
 
+    /// Select global Top-K from bounded local heaps in contiguous input order.
+    /// Offset local ordinals so ties retain the same first-seen ordering as
+    /// a single serial scan across all parts.
+    pub(super) fn merge_partials(partials: Vec<Self>) -> Result<Self, ExecutionError> {
+        let mut parts = partials.into_iter();
+        let mut merged = parts
+            .next()
+            .ok_or_else(|| invalid("parallel Top-K requires at least one partition"))?;
+        for part in parts {
+            let sequence_base = merged.seen;
+            merged.seen = merged
+                .seen
+                .checked_add(part.seen)
+                .ok_or_else(|| invalid("parallel Top-K sequence overflow"))?;
+            for mut row in part.rows.into_vec() {
+                row.sequence = sequence_base
+                    .checked_add(row.sequence)
+                    .ok_or_else(|| invalid("parallel Top-K sequence overflow"))?;
+                let size = retained_row_size(&row)?;
+                if merged.rows.len() < merged.requested {
+                    merged.retained_bytes = updated_sort_bytes(merged.retained_bytes, 0, size)?;
+                    merged.rows.push(row);
+                } else if merged.rows.peek().is_some_and(|worst| row < *worst) {
+                    let old_size = retained_row_size(
+                        merged.rows.peek().expect("nonempty Top-K heap"),
+                    )?;
+                    merged.retained_bytes =
+                        updated_sort_bytes(merged.retained_bytes, old_size, size)?;
+                    *merged.rows.peek_mut().expect("nonempty Top-K heap") = row;
+                }
+            }
+        }
+        Ok(merged)
+    }
+
     pub(super) fn write<W: Write>(mut self, output: &mut W) -> Result<(), ExecutionError> {
         if !self.run_paths.is_empty() {
             self.flush_run()?;
@@ -1110,5 +1145,35 @@ mod external_run_order_validation_tests {
         })
         .unwrap();
         assert_eq!(seen, 1);
+    }
+}
+
+#[cfg(test)]
+mod parallel_topk_tests {
+    use super::*;
+
+    #[test]
+    fn local_heaps_merge_with_stable_ties_and_offset() {
+        let mut serial = SortedRows::with_offset(Some(3), 1, false).unwrap();
+        let mut first = SortedRows::with_offset(Some(3), 1, false).unwrap();
+        let mut second = SortedRows::with_offset(Some(3), 1, false).unwrap();
+        for (index, key) in [2u128, 1, 1, 7, 1, 4, 1, 3].into_iter().enumerate() {
+            let number = Number::Unsigned(key);
+            let value = vec![Number::Unsigned(index as u128)];
+            serial.push(number, value.clone()).unwrap();
+            if index < 4 {
+                first.push(number, value).unwrap();
+            } else {
+                second.push(number, value).unwrap();
+            }
+        }
+        let mut expected = Vec::new();
+        serial.write(&mut expected).unwrap();
+        let mut actual = Vec::new();
+        SortedRows::merge_partials(vec![first, second])
+            .unwrap()
+            .write(&mut actual)
+            .unwrap();
+        assert_eq!(actual, expected);
     }
 }

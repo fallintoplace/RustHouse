@@ -117,6 +117,102 @@ mod query_worker_tests {
     }
 }
 
+/// Run bounded ordered numeric scans over contiguous frozen part ranges.
+/// Each worker keeps only its local Top-K. Merging chunk results restores
+/// global first-seen tie order without retaining the scanned input rows.
+#[allow(clippy::too_many_arguments)]
+fn parallel_ordered_numeric_topk(
+    query: &Select,
+    source: &Path,
+    scan_columns: &[String],
+    projected_indices: &[usize],
+    comparisons: &[Vec<predicates::CompiledPredicate>],
+    sort_index: usize,
+    extra_sort_indices: &[usize],
+    no_filters: bool,
+) -> Result<Option<SortedRows>, ExecutionError> {
+    let Some(limit) = query.limit else {
+        return Ok(None);
+    };
+    let Some(requested) = limit.checked_add(query.offset.unwrap_or(0)) else {
+        return Ok(None);
+    };
+    const MAX_LOCAL_TOP_K: usize = 2048;
+    if query.distinct || requested == 0 || requested > MAX_LOCAL_TOP_K {
+        return Ok(None);
+    }
+    let parts = rusthouse_storage::query_parts(source)?;
+    let workers = query_workers(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let chunk_size = parts.len().div_ceil(workers);
+    let partials = std::thread::scope(|scope| -> Result<_, ExecutionError> {
+        let handles = parts
+            .chunks(chunk_size)
+            .map(|paths| {
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || -> Result<SortedRows, ExecutionError> {
+                        let mut top = SortedRows::with_offset(
+                            query.limit,
+                            query.offset.unwrap_or(0),
+                            query.order_by.as_ref().is_some_and(|order| order.descending),
+                        )?;
+                        top.set_extra_directions(
+                            query.order_by_extra.iter().map(|order| order.descending),
+                        );
+                        for path in paths {
+                            let mut reader = rusthouse_storage::NumericPartReader::open(
+                                path,
+                                scan_columns,
+                            )?;
+                            while let Some(batch) = reader.next_batch()? {
+                                for row in 0..batch[0].len() {
+                                    if !no_filters && !batch_matches(&batch, row, comparisons) {
+                                        continue;
+                                    }
+                                    let key = number_at(&batch[sort_index], row);
+                                    if top.would_discard(
+                                        key,
+                                        extra_sort_indices
+                                            .iter()
+                                            .map(|&index| number_at(&batch[index], row)),
+                                    ) {
+                                        continue;
+                                    }
+                                    let extra_keys = extra_sort_indices
+                                        .iter()
+                                        .map(|&index| number_at(&batch[index], row))
+                                        .collect::<Vec<_>>();
+                                    let values = projected_indices
+                                        .iter()
+                                        .map(|&index| number_at(&batch[index], row))
+                                        .collect::<Vec<_>>();
+                                    top.push_with_extra(key, extra_keys, values)?;
+                                }
+                            }
+                        }
+                        Ok(top)
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start parallel Top-K worker: {error}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    ExecutionError::Invalid("parallel Top-K worker panicked".into())
+                })?
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    Ok(Some(SortedRows::merge_partials(partials)?))
+}
+
 // Charge each shared memory reservation atomically on all supported Rust versions.
 fn try_reserve_shared(budget: &AtomicUsize, amount: usize, limit: usize) -> bool {
     let mut current = budget.load(AtomicOrdering::Acquire);
@@ -1333,6 +1429,18 @@ fn execute_into<W: Write>(
         write_header(query, output, &projected.join("\t"))?;
         if query.limit == Some(0) {
             return Ok(());
+        }
+        if let Some(top) = parallel_ordered_numeric_topk(
+            query,
+            part,
+            &scan_columns,
+            &projected_indices,
+            &comparisons,
+            index,
+            &extra_sort_indices,
+            no_filters,
+        )? {
+            return top.write(output);
         }
         while let Some(batch) = reader.next_batch()? {
             for row in 0..batch[0].len() {
