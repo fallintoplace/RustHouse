@@ -1263,7 +1263,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     if distinct
         && !matches!(
             projection,
-            Projection::All | Projection::Columns(_) | Projection::StringLength { .. }
+            Projection::All
+                | Projection::Columns(_)
+                | Projection::StringLength { .. }
+                | Projection::Literal(_)
+                | Projection::Constants(_)
         )
     {
         return Err(ParseError(
@@ -2132,5 +2136,28 @@ mod where_boolean_literal_tests {
                 parse_select(&numeric_sql).unwrap()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod distinct_constant_select_tests {
+    use super::{execute, parse_select};
+
+    #[test]
+    fn distinct_is_a_noop_for_single_row_constant_projections() {
+        for body in ["1", "'Ada'", "1, 'Ada'", "1 AS one"] {
+            let plain = parse_select(&format!("SELECT {body}")).unwrap();
+            let distinct = parse_select(&format!("SELECT DISTINCT {body}")).unwrap();
+            let mut plain_output = Vec::new();
+            let mut distinct_output = Vec::new();
+            execute(&plain, None, &mut plain_output).unwrap();
+            execute(&distinct, None, &mut distinct_output).unwrap();
+            assert_eq!(distinct_output, plain_output, "{body}");
+        }
+    }
+
+    #[test]
+    fn constant_select_still_rejects_table_sources() {
+        assert!(parse_select("SELECT DISTINCT 1 FROM numbers(5)").is_err());
     }
 }
