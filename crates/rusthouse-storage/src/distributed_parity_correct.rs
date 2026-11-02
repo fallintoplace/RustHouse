@@ -72,8 +72,7 @@ pub fn correct_one_unknown_corruption(
             }
         }
     } else {
-        let products: [u8; 256] =
-            std::array::from_fn(|byte| gf256_mul(coefficient, byte as u8));
+        let products: [u8; 256] = std::array::from_fn(|byte| gf256_mul(coefficient, byte as u8));
         for offset in 0..width {
             let p = current.xor[offset] ^ parity.xor[offset];
             let q = current.weighted[offset] ^ parity.weighted[offset];
