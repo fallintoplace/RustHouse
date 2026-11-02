@@ -1,7 +1,5 @@
 //! Maximum feasible flow through a bounded directed replica network.
 //! This is a capacity planner; it does not perform transport reservations.
-use std::collections::VecDeque;
-
 const MAX_VERTICES: usize = 64;
 const MAX_LINKS: usize = 1024;
 
@@ -38,14 +36,22 @@ pub fn maximum_replica_flow(
 
     let mut total_flow = 0u64;
     loop {
-        let mut parent = vec![usize::MAX; vertices];
+        // Each vertex enters the BFS queue at most once. Reuse bounded
+        // stack scratch across augmenting paths instead of allocating twice.
+        let mut parent = [usize::MAX; MAX_VERTICES];
+        let mut queue = [0usize; MAX_VERTICES];
         parent[source] = source;
-        let mut queue = VecDeque::from([source]);
-        while let Some(from) = queue.pop_front() {
+        queue[0] = source;
+        let mut head = 0usize;
+        let mut tail = 1usize;
+        while head < tail {
+            let from = queue[head];
+            head += 1;
             for (to, &capacity) in residual[from].iter().enumerate() {
                 if capacity > 0 && parent[to] == usize::MAX {
                     parent[to] = from;
-                    queue.push_back(to);
+                    queue[tail] = to;
+                    tail += 1;
                 }
             }
             if parent[sink] != usize::MAX { break; }
@@ -91,6 +97,24 @@ mod tests {
     fn combines_parallel_links_without_overflow() {
         assert_eq!(maximum_replica_flow(2, &[link(0,1,3), link(0,1,4)], 0, 1).unwrap(), 7);
         assert!(maximum_replica_flow(2, &[link(0,1,u64::MAX), link(0,1,1)], 0, 1).is_err());
+    }
+
+    #[test]
+    fn dense_multi_path_network_exercises_many_augmentations() {
+        let mut links = Vec::new();
+        for from in 1..=4 {
+            links.push(link(0, from, 10));
+        }
+        for from in 1..=4 {
+            for to in 5..=8 {
+                links.push(link(from, to, 10));
+            }
+        }
+        for from in 5..=8 {
+            links.push(link(from, 9, 10));
+        }
+        assert_eq!(maximum_replica_flow(10, &links, 0, 9).unwrap(), 40);
+        assert_eq!(maximum_replica_flow(10, &links, 9, 0).unwrap(), 0);
     }
 
     #[test]
