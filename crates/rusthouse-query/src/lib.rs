@@ -1297,6 +1297,20 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             return Err(ParseError("AS supports only a single result column".into()));
         }
         Some(parser.word()?)
+    } else if matches!(&projection, Projection::Columns(columns) if columns.len() == 1)
+        && matches!(
+            parser.tokens.get(parser.index),
+            Some(Token::Word(word))
+                if !matches!(
+                    word.to_ascii_uppercase().as_str(),
+                    "FROM" | "PREWHERE" | "WHERE" | "GROUP" | "HAVING" | "ORDER"
+                        | "LIMIT" | "OFFSET" | "FETCH" | "FORMAT" | "UNION"
+                        | "INTERSECT" | "EXCEPT" | "ALL" | "DISTINCT"
+                )
+        )
+    {
+        // A single projected column may use an implicit SQL output alias.
+        Some(parser.word()?)
     } else {
         None
     };
@@ -2106,5 +2120,35 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod implicit_single_column_alias_tests {
+    use super::{execute, parse_select};
+
+    #[test]
+    fn unqualified_column_alias_matches_as_form() {
+        for (implicit, explicit) in [
+            ("SELECT number n FROM numbers(5)",
+             "SELECT number AS n FROM numbers(5)"),
+            ("SELECT number n FROM numbers(5) ORDER BY n DESC LIMIT 2",
+             "SELECT number AS n FROM numbers(5) ORDER BY n DESC LIMIT 2"),
+            ("SELECT DISTINCT number n FROM numbers(5)",
+             "SELECT DISTINCT number AS n FROM numbers(5)"),
+        ] {
+            assert_eq!(parse_select(implicit).unwrap(), parse_select(explicit).unwrap());
+        }
+        let query = parse_select("SELECT number n FROM numbers(5) ORDER BY n DESC LIMIT 2").unwrap();
+        let mut output = Vec::new();
+        execute(&query, None, &mut output).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "n\n4\n3\n");
+    }
+
+    #[test]
+    fn implicit_alias_does_not_consume_sql_clause_keywords() {
+        assert!(parse_select("SELECT number FROM numbers(2)").is_ok());
+        assert!(parse_select("SELECT number WHERE number = 1").is_err());
+        assert!(parse_select("SELECT number n, other FROM numbers(2)").is_err());
     }
 }
