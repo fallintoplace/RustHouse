@@ -2492,11 +2492,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .as_deref()
             .map_or(Err(MergeError::InvalidSortedScan), |kind| {
                 let names = columns.iter().map(String::as_str).collect::<Vec<_>>();
-                if kind == "String" {
-                    merge_sorted_text_rows_page(
+                if matches!(kind, "String" | "Nullable(String)") {
+                    merge_sorted_text_rows_page_with_nulls(
                         &shards,
                         &names,
+                        kind,
                         order.descending,
+                        order.nulls_first,
                         select.offset.unwrap_or(0),
                         select.limit.unwrap_or(0),
                         max_rows.min(250_000),
