@@ -1919,15 +1919,20 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("FIRST") && !parser.keyword("NEXT") {
             return Err(ParseError("FETCH requires FIRST or NEXT".into()));
         }
-        let value = parser.number()?;
-        if !value.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(ParseError(
-                "FETCH count must be a non-negative integer".into(),
-            ));
-        }
-        let count = value
-            .parse::<usize>()
-            .map_err(|_| ParseError("FETCH count is too large".into()))?;
+        // SQL permits FETCH FIRST ROW ONLY with an omitted count (default 1).
+        let count = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+            let value = parser.number()?;
+            if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(ParseError(
+                    "FETCH count must be a non-negative integer".into(),
+                ));
+            }
+            value
+                .parse::<usize>()
+                .map_err(|_| ParseError("FETCH count is too large".into()))?
+        } else {
+            1
+        };
         if !parser.keyword("ROWS") && !parser.keyword("ROW") {
             return Err(ParseError("FETCH requires ROW or ROWS".into()));
         }
