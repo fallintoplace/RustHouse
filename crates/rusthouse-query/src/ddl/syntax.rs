@@ -142,7 +142,9 @@ pub(super) fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<Column
             name: column_name,
             data_type: column_type,
         });
-        if !parser.take(Token::Comma) {
+        if !parser.take(Token::Comma)
+            || parser.tokens.get(parser.index) == Some(&Token::RParen)
+        {
             break;
         }
     }
@@ -231,5 +233,16 @@ mod complex_type_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod trailing_ddl_comma_parser_tests {
+    #[test]
+    fn accepts_one_trailing_column_comma() {
+        let ddl = crate::ddl::parse_ddl("CREATE TABLE example (id INT, name TEXT,)").unwrap().unwrap();
+        let crate::ddl::Ddl::CreateTable { columns, .. } = ddl else { panic!("expected CREATE TABLE"); };
+        assert_eq!(columns.len(), 2);
+        assert!(crate::ddl::parse_ddl("CREATE TABLE example (id INT,,)").is_err());
     }
 }
