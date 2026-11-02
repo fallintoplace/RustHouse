@@ -399,6 +399,23 @@ impl Parser {
     }
 
     fn literal(&mut self) -> Result<String, ParseError> {
+        let mut depth = 0usize;
+        while self.take(Token::LParen) {
+            depth += 1;
+            if depth > 16 {
+                return Err(ParseError("literal parentheses exceed 16 levels".into()));
+            }
+        }
+        let literal = self.unparenthesized_literal()?;
+        for _ in 0..depth {
+            if !self.take(Token::RParen) {
+                return Err(ParseError("literal requires closing ')'".into()));
+            }
+        }
+        Ok(literal)
+    }
+
+    fn unparenthesized_literal(&mut self) -> Result<String, ParseError> {
         // TPC-H validation SQL commonly expresses date bounds as CAST('...' AS DATE).
         // Resolve only quoted date/timestamp literals; general CAST expressions
         // belong in the typed expression evaluator, not a literal predicate.
@@ -2132,5 +2149,34 @@ mod where_boolean_literal_tests {
                 parse_select(&numeric_sql).unwrap()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod parenthesized_predicate_literal_tests {
+    use super::parse_select;
+
+    #[test]
+    fn parentheses_do_not_change_literal_comparisons() {
+        for (wrapped, bare) in [
+            ("number = ((2))", "number = 2"),
+            ("number BETWEEN (1) AND (3)", "number BETWEEN 1 AND 3"),
+            ("number IN ((1), (2))", "number IN (1, 2)"),
+            ("name = ('Ada')", "name = 'Ada'"),
+            ("d = (DATE '2000-01-01')", "d = DATE '2000-01-01'"),
+        ] {
+            let sql = |condition: &str| format!("SELECT count(*) FROM t WHERE {condition}");
+            assert_eq!(parse_select(&sql(wrapped)).unwrap(), parse_select(&sql(bare)).unwrap(), "{wrapped}");
+        }
+    }
+
+    #[test]
+    fn malformed_or_deeply_parenthesized_literals_fail() {
+        for expression in ["(2", "(2 + 1)", "(())"] {
+            let sql = format!("SELECT count(*) FROM t WHERE number = {expression}");
+            assert!(parse_select(&sql).is_err(), "{sql}");
+        }
+        let nested = format!("{}1{}", "(".repeat(17), ")".repeat(17));
+        assert!(parse_select(&format!("SELECT count(*) FROM t WHERE number = {nested}")).is_err());
     }
 }
