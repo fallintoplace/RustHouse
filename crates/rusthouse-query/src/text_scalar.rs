@@ -94,6 +94,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "JSON_QUOTE"
                 | "ISVALIDJSON"
                 | "JSONTYPE"
+                | "JSONARRAYLENGTH"
                 | "JSONLENGTH"
                 | "JSON_EXISTS"
                 | "JSONHAS"
@@ -5204,6 +5205,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 }
             }
         }
+        "JSONARRAYLENGTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "JSONArrayLength requires one argument",
+            )?;
+            let length = input.and_then(|input| {
+                crate::json::parse_json(&input).ok().and_then(|json| {
+                    (json.type_name() == "Array").then(|| json.container_len())
+                })
+            });
+            match length {
+                Some(length) => ConstantValue::Integer(
+                    i64::try_from(length)
+                        .map_err(|_| ParseError("JSONArrayLength exceeds Int64".into()))?,
+                ),
+                None => ConstantValue::Null,
+            }
+        }
         "JSONLENGTH" => {
             let input = text_arg(parser, depth + 1)?;
             let path = if parser.take(Token::Comma) {
@@ -6731,5 +6752,39 @@ mod typed_json_exists_selector_tests {
             };
             assert_eq!(columns[0].value, crate::ConstantValue::Integer(expected), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_json_array_length_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn returns_length_only_for_valid_arrays() {
+        for (sql, expected) in [
+            (r#"SELECT JSONArrayLength('[1, {"a":2}, null]')"#, ConstantValue::Integer(3)),
+            (r#"SELECT JSONArrayLength('[]')"#, ConstantValue::Integer(0)),
+            (r#"SELECT JSONArrayLength('[[], [1, 2]]')"#, ConstantValue::Integer(2)),
+            (r#"SELECT JSONArrayLength('{}')"#, ConstantValue::Null),
+            (r#"SELECT JSONArrayLength('true')"#, ConstantValue::Null),
+            (r#"SELECT JSONArrayLength('invalid')"#, ConstantValue::Null),
+            (r#"SELECT JSONArrayLength(NULL)"#, ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_argument_count() {
+        assert!(parse_select("SELECT JSONArrayLength()").is_err());
+        assert!(parse_select("SELECT JSONArrayLength('[]', 'path')").is_err());
     }
 }
