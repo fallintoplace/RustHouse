@@ -1,4 +1,4 @@
-//! Streaming GROUP BY key, COUNT(*) over INNER JOIN matches.
+//! Streaming GROUP BY key, COUNT(*) over INNER and LEFT JOIN rows.
 use super::*;
 use std::collections::hash_map::Entry;
 
@@ -36,6 +36,137 @@ fn build_grouped_join_hash(
         }
     }
     hash
+}
+
+// Match the inner grouped path's exact count and retained-memory limits.
+fn add_group(
+    groups: &mut HashMap<typed::Key, (typed::Cell, u64)>,
+    value: &typed::Cell,
+    group_count: &mut usize,
+    bytes: &mut usize,
+) -> Result<(), ExecutionError> {
+    match groups.entry(value.key()) {
+        Entry::Occupied(mut occupied) => {
+            let count = &mut occupied.get_mut().1;
+            *count = count
+                .checked_add(1)
+                .ok_or_else(|| invalid("JOIN grouped count overflow"))?;
+        }
+        Entry::Vacant(vacant) => {
+            if *group_count >= MAX_JOIN_GROUPS {
+                return Err(invalid("too many JOIN groups"));
+            }
+            let variable = group_value_bytes(value);
+            *bytes = bytes
+                .checked_add(
+                    std::mem::size_of::<(typed::Key, typed::Cell, u64)>()
+                        .saturating_add(variable),
+                )
+                .ok_or_else(|| invalid("JOIN group memory overflow"))?;
+            if *bytes > MAX_JOIN_GROUP_BYTES {
+                return Err(invalid("JOIN grouped hash memory budget exceeded"));
+            }
+            *group_count += 1;
+            vacant.insert((value.clone(), 1));
+        }
+    }
+    Ok(())
+}
+
+// Stream the preserved LEFT input even when the right hash is empty. Null
+// join keys and missing matches produce one null-extended row per left row.
+#[allow(clippy::too_many_arguments)]
+fn probe_grouped_left<F>(
+    left_path: &Path,
+    left_names: &[String],
+    left_keys: &[usize],
+    right_rows: &[Vec<typed::Cell>],
+    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    group_index: usize,
+    null_filter: Option<(usize, bool)>,
+    any: bool,
+    mut emit: F,
+) -> Result<(), ExecutionError>
+where
+    F: FnMut(&typed::Cell) -> Result<(), ExecutionError>,
+{
+    let width = left_names.len();
+    let mut retained = left_keys.to_vec();
+    if group_index < width {
+        retained.push(group_index);
+    }
+    if let Some((column, _)) = null_filter {
+        if column < width {
+            retained.push(column);
+        }
+    }
+    retained.sort_unstable();
+    retained.dedup();
+    if retained.is_empty() {
+        retained.push(0);
+    }
+    let names = retained
+        .iter()
+        .map(|&column| left_names[column].clone())
+        .collect::<Vec<_>>();
+    let key_indices = left_keys
+        .iter()
+        .map(|column| retained.binary_search(column).expect("JOIN key retained"))
+        .collect::<Vec<_>>();
+    let group_batch = (group_index < width)
+        .then(|| retained.binary_search(&group_index).expect("group key retained"));
+    let filter_batch = null_filter.and_then(|(column, _)| {
+        (column < width).then(|| retained.binary_search(&column).expect("filter retained"))
+    });
+    let mut reader = TypedQueryReader::open(left_path, &names)?;
+    let mut key = Vec::with_capacity(left_keys.len());
+    let null = typed::Cell::Null;
+    while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            let left_group = group_batch.map(|column| typed::cell(&batch[column], row));
+            let mut matched = false;
+            if batch_key_into(&batch, row, &key_indices, &mut key) {
+                if let Some(indices) = hash.get(key.as_slice()) {
+                    for &right_index in indices.iter().take(if any { 1 } else { usize::MAX }) {
+                        // ON matches determine outer-row preservation before WHERE.
+                        matched = true;
+                        if let Some((column, not_null)) = null_filter {
+                            let is_null = if let Some(index) = filter_batch {
+                                typed::is_null_at(&batch[index], row)
+                            } else {
+                                matches!(
+                                    right_rows[right_index][column - width],
+                                    typed::Cell::Null
+                                )
+                            };
+                            if is_null == not_null {
+                                continue;
+                            }
+                        }
+                        let value = left_group
+                            .as_ref()
+                            .unwrap_or(&right_rows[right_index][group_index - width]);
+                        emit(value)?;
+                    }
+                }
+            }
+            if !matched {
+                // Every unmatched row has NULL in all right-side columns.
+                if let Some((_, not_null)) = null_filter {
+                    let is_null = if let Some(index) = filter_batch {
+                        typed::is_null_at(&batch[index], row)
+                    } else {
+                        true
+                    };
+                    if is_null == not_null {
+                        continue;
+                    }
+                }
+                emit(left_group.as_ref().unwrap_or(&null))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -82,7 +213,19 @@ pub(super) fn execute<W: Write>(
     let mut groups: HashMap<typed::Key, (typed::Cell, u64)> = HashMap::new();
     let mut group_count = 0usize;
     let mut bytes = 0usize;
-    if !hash.is_empty() {
+    if query.kind == JoinType::Left {
+        probe_grouped_left(
+            left_path,
+            left_names,
+            left_keys,
+            &right_rows,
+            &hash,
+            index,
+            null_filter,
+            query.any,
+            |value| add_group(&mut groups, value, &mut group_count, &mut bytes),
+        )?;
+    } else if !hash.is_empty() {
         probe_inner(
             left_path,
             left_names,
@@ -102,33 +245,7 @@ pub(super) fn execute<W: Write>(
                 } else {
                     &right[index - width]
                 };
-                let key = value.key();
-                match groups.entry(key) {
-                    Entry::Occupied(mut occupied) => {
-                        let count = &mut occupied.get_mut().1;
-                        *count = count
-                            .checked_add(1)
-                            .ok_or_else(|| invalid("JOIN grouped count overflow"))?;
-                    }
-                    Entry::Vacant(vacant) => {
-                        if group_count >= MAX_JOIN_GROUPS {
-                            return Err(invalid("too many JOIN groups"));
-                        }
-                        let variable = group_value_bytes(value);
-                        bytes = bytes
-                            .checked_add(
-                                std::mem::size_of::<(typed::Key, typed::Cell, u64)>()
-                                    .saturating_add(variable),
-                            )
-                            .ok_or_else(|| invalid("JOIN group memory overflow"))?;
-                        if bytes > MAX_JOIN_GROUP_BYTES {
-                            return Err(invalid("JOIN grouped hash memory budget exceeded"));
-                        }
-                        group_count += 1;
-                        vacant.insert((value.clone(), 1));
-                    }
-                }
-                Ok(())
+                add_group(&mut groups, value, &mut group_count, &mut bytes)
             },
         )?;
     }
