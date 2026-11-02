@@ -710,8 +710,23 @@ fn matches_comparison_at(
     }
 }
 
-// IN and NOT IN probe String bytes directly rather than cloning every row.
+// IN and NOT IN probe decoded numeric values and String bytes without
+// allocating an owned Cell for every row.
 fn matches_in_at(column: &TypedColumn, row: usize, targets: &[Cell], negated: bool) -> bool {
+    let numeric = match column {
+        TypedColumn::Numeric(values) => Some(number_at(values, row)),
+        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+            Some(number_at(values, row))
+        }
+        TypedColumn::NullableNumeric { .. } => return false,
+        _ => None,
+    };
+    if let Some(number) = numeric {
+        return targets.iter().any(|target| {
+            matches!(target, Cell::Numeric(expected)
+                if super::predicates::number_matches(number, *expected, Operator::Eq))
+        }) != negated;
+    }
     if matches!(
         column,
         TypedColumn::Text(_) | TypedColumn::NullableText { .. }
@@ -2343,6 +2358,33 @@ mod like_tests {
         assert!(!matches_in_at(&column, 1, &targets, true));
         assert!(!matches_in_at(&column, 2, &targets, false));
         assert!(matches_in_at(&column, 2, &targets, true));
+    }
+
+    #[test]
+    fn probes_short_numeric_in_without_materializing_cells() {
+        let batch = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int64(vec![-7, 0, 42, 42]),
+            nulls: vec![0, 0, 0, 1],
+        };
+        let targets = [
+            Cell::Numeric(Number::Signed(-7)),
+            Cell::Numeric(Number::Signed(42)),
+            Cell::Null,
+        ];
+        assert!(matches_in_at(&batch, 0, &targets, false));
+        assert!(!matches_in_at(&batch, 0, &targets, true));
+        assert!(!matches_in_at(&batch, 1, &targets, false));
+        assert!(matches_in_at(&batch, 1, &targets, true));
+        assert!(matches_in_at(&batch, 2, &targets, false));
+        assert!(!matches_in_at(&batch, 3, &targets, true));
+        assert!(!matches_in_at(&batch, 3, &targets, false));
+
+        let floats = TypedColumn::Numeric(NumericColumn::Float64(vec![f64::NAN, 0.0, -0.0]));
+        let zero = [Cell::Numeric(Number::Float(0.0))];
+        assert!(!matches_in_at(&floats, 0, &zero, false));
+        assert!(matches_in_at(&floats, 0, &zero, true));
+        assert!(matches_in_at(&floats, 1, &zero, false));
+        assert!(matches_in_at(&floats, 2, &zero, false));
     }
 
     #[test]
