@@ -237,7 +237,8 @@ struct ProbeOptions {
     null_filter: Option<(usize, bool)>,
 }
 
-/// Scan the probe side without retaining its rows or joined result pairs.
+/// Preserve the original whole-row probe API for paths that need every
+/// source column. Selective callers use probe_inner_projected instead.
 fn probe_inner<F>(
     left_path: &Path,
     left_names: &[String],
@@ -245,6 +246,41 @@ fn probe_inner<F>(
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Bucket>,
     options: ProbeOptions,
+    emit: F,
+) -> Result<usize, ExecutionError>
+where
+    F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
+{
+    probe_inner_projected(left_path, left_names, left_keys, right_rows, hash, options, None, emit)
+}
+
+/// Reconstruct original source positions from the compact typed scan.
+fn reconstruct_join_projection(
+    batch: &[TypedColumn],
+    row: usize,
+    retained: &[usize],
+    original_width: usize,
+    projected_mask: &[bool],
+) -> Vec<typed::Cell> {
+    let mut cells = vec![typed::Cell::Null; original_width];
+    for (&original, column) in retained.iter().zip(batch.iter()) {
+        if projected_mask[original] {
+            cells[original] = typed::cell(column, row);
+        }
+    }
+    cells
+}
+
+/// Scan the probe side without retaining its rows or joined result pairs.
+#[allow(clippy::too_many_arguments)]
+fn probe_inner_projected<F>(
+    left_path: &Path,
+    left_names: &[String],
+    left_keys: &[usize],
+    right_rows: &[Vec<typed::Cell>],
+    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    options: ProbeOptions,
+    projected: Option<&[usize]>,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -256,7 +292,13 @@ where
     // A COUNT or preflight probe needs join keys and filters only. Keep
     // original slot positions when actual output rows must be materialized.
     let mut retained = if options.materialize_rows {
-        (0..left_names.len()).collect::<Vec<_>>()
+        if let Some(columns) = projected {
+            let mut required = left_keys.to_vec();
+            required.extend_from_slice(columns);
+            required
+        } else {
+            (0..left_names.len()).collect::<Vec<_>>()
+        }
     } else {
         left_keys.to_vec()
     };
@@ -270,6 +312,13 @@ where
     if retained.is_empty() {
         retained.push(0); // CROSS JOIN still needs a row-count source.
     }
+    let projected_mask = projected.map(|columns| {
+        let mut mask = vec![false; left_names.len()];
+        for &index in columns {
+            mask[index] = true;
+        }
+        mask
+    });
     let selected = retained
         .iter()
         .map(|&index| left_names[index].clone())
@@ -319,10 +368,20 @@ where
                             if options.materialize_rows && matches >= options.materialize_after {
                                 left_row
                                     .get_or_insert_with(|| {
-                                        batch
-                                            .iter()
-                                            .map(|column| typed::cell(column, index))
-                                            .collect()
+                                        if let Some(mask) = projected_mask.as_deref() {
+                                            reconstruct_join_projection(
+                                                &batch,
+                                                index,
+                                                &retained,
+                                                left_names.len(),
+                                                mask,
+                                            )
+                                        } else {
+                                            batch
+                                                .iter()
+                                                .map(|column| typed::cell(column, index))
+                                                .collect()
+                                        }
                                     })
                                     .as_slice()
                             } else {
@@ -673,8 +732,12 @@ fn execute_streaming_inner<W: Write>(
     // JOIN projections write separators and scalar cells independently.
     // Buffer the output once for large streamed matches, while letting
     // BufWriter forward unusually large String cells without copying them.
+    let projected_left = selected
+        .iter()
+        .filter_map(|(index, _, _)| (*index < left_width).then_some(*index))
+        .collect::<Vec<_>>();
     let mut row_output = std::io::BufWriter::with_capacity(64 * 1024, output);
-    probe_inner(
+    probe_inner_projected(
         left_path,
         left_names,
         left_keys,
@@ -687,6 +750,7 @@ fn execute_streaming_inner<W: Write>(
             any: query.any,
             null_filter,
         },
+        Some(&projected_left),
         |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
@@ -1057,7 +1121,13 @@ fn execute_streaming_ordered_inner<W: Write>(
     let mut retained = 0usize;
     let mut sequence = 0usize;
     let width = left_names.len();
-    probe_inner(
+    let projected_left = selected
+        .iter()
+        .map(|(index, _, _)| *index)
+        .chain(order.iter().map(|(index, _, _)| *index))
+        .filter(|&index| index < width)
+        .collect::<Vec<_>>();
+    probe_inner_projected(
         left_path,
         left_names,
         left_keys,
@@ -1072,6 +1142,7 @@ fn execute_streaming_ordered_inner<W: Write>(
             any: query.any,
             null_filter,
         },
+        Some(&projected_left),
         |left, right| {
             let at = |index: usize| -> &typed::Cell {
                 if index < width {
@@ -2202,5 +2273,28 @@ mod parallel_join_build_tests {
         for bucket in any.values() {
             assert_eq!(bucket.iter().len(), 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod selective_join_probe_tests {
+    use super::*;
+
+    #[test]
+    fn source_slots_stay_stable_when_unreferenced_columns_are_skipped() {
+        let batch = vec![
+            TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt64(vec![4])),
+            TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt64(vec![9])),
+        ];
+        let cells = reconstruct_join_projection(
+            &batch,
+            0,
+            &[0, 2],
+            3,
+            &[false, false, true],
+        );
+        assert!(matches!(cells[0], typed::Cell::Null));
+        assert!(matches!(cells[1], typed::Cell::Null));
+        assert!(matches!(cells[2], typed::Cell::Numeric(Number::Unsigned(9))));
     }
 }
