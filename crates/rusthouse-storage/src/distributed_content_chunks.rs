@@ -299,7 +299,7 @@ pub fn plan_verified_chunk_delta(
             offsets.iter().copied().find(|&offset| {
                 let start = offset as usize;
                 let finish = start + bytes.len();
-                source[start..finish] == *bytes
+                &source[start..finish] == bytes
             })
         });
         if let Some(source_offset) = old_offset {
