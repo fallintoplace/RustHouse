@@ -217,30 +217,25 @@ fn parse_atom(
     conditions: &mut usize,
     depth: usize,
 ) -> Result<Branches, ParseError> {
-    // Parenthesized negations are different from NOT applied to one predicate:
-    // invert every AND/OR branch using De Morgan's laws before execution.
-    if parser.keyword("NOT") {
-        if parser.take(Token::LParen) {
-            check_parenthesis_depth(depth)?;
-            let expression = parse_or(parser, conditions, depth + 1)?;
-            if !parser.take(Token::RParen) {
-                return Err(ParseError("NOT group requires closing ')'".into()));
-            }
-            return negate(expression);
+    // Consecutive NOT operators cancel in pairs for both predicates and
+    // parenthesized Boolean expressions. Bound the prefix to avoid abuse.
+    let mut not_count = 0usize;
+    while parser.keyword("NOT") {
+        not_count += 1;
+        if not_count > MAX_DEPTH {
+            return Err(ParseError("WHERE has too many NOT operators".into()));
         }
-        // Reuse existing NOT IN, NOT BETWEEN, NOT LIKE and comparison parsing.
-        parser.index -= 1;
     }
+    let prefix_not = not_count % 2 == 1;
     if parser.take(Token::LParen) {
         check_parenthesis_depth(depth)?;
         let branches = parse_or(parser, conditions, depth + 1)?;
         if !parser.take(Token::RParen) {
             return Err(ParseError("WHERE requires closing ')'".into()));
         }
-        return Ok(branches);
+        return if prefix_not { negate(branches) } else { Ok(branches) };
     }
     let mut predicates = Vec::new();
-    let prefix_not = parser.keyword("NOT");
     let column = parser.word()?;
     let postfix_not = parser.keyword("NOT");
     let negate_in = prefix_not ^ postfix_not;
@@ -766,5 +761,35 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod repeated_not_regression_tests {
+    use super::*;
+    use crate::parse_select;
+
+    #[test]
+    fn pairs_of_not_operators_cancel_in_where_clauses() {
+        for (wrapped, simple) in [
+            ("NOT NOT number = 2", "number = 2"),
+            ("NOT NOT (number = 2 OR number = 3)", "(number = 2 OR number = 3)"),
+            ("NOT (NOT number = 2)", "number = 2"),
+            ("NOT NOT number NOT IN (1, 2)", "number NOT IN (1, 2)"),
+            ("NOT NOT number IS NULL", "number IS NULL"),
+        ] {
+            let a = parse_select(&format!("SELECT number FROM numbers(5) WHERE {wrapped}")).unwrap();
+            let b = parse_select(&format!("SELECT number FROM numbers(5) WHERE {simple}")).unwrap();
+            assert_eq!(a, b, "{wrapped}");
+        }
+    }
+
+    #[test]
+    fn rejects_unbounded_not_prefixes() {
+        let sql = format!(
+            "SELECT number FROM numbers(1) WHERE {}number = 1",
+            "NOT ".repeat(MAX_DEPTH + 1)
+        );
+        assert!(parse_select(&sql).is_err());
     }
 }
