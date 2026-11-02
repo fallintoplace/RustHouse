@@ -99,6 +99,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     }
     let mut parser = Parser { tokens, index: 0 };
     parser.keyword("SELECT");
+    parser.keyword("ALL");
     let aggregate = if parser.keyword("COUNT") {
         if !parser.take(Token::LParen) {
             return Err(ParseError("JOIN COUNT requires '('".into()));
