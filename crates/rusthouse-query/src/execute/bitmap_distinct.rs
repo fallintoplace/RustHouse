@@ -144,6 +144,10 @@ pub(super) struct BitmapDistinct32 {
     count: u64,
     sparse_keys: usize,
     dense_blocks: usize,
+    // One exact 8 KiB cache for the first observed 16-bit prefix. Low-cardinality
+    // event IDs often revisit it millions of times. The hash remains authoritative
+    // for new keys and for all other prefixes.
+    cached_prefix: Option<(u16, Box<[u64; WORDS_PER_BLOCK]>)>,
 }
 
 impl BitmapDistinct32 {
@@ -154,6 +158,16 @@ impl BitmapDistinct32 {
     pub(super) fn insert(&mut self, key: u32) -> Result<(), ExecutionError> {
         let prefix = (key >> 16) as u16;
         let suffix = key as u16;
+        // A set bit is a proven duplicate because this cache only records
+        // successful inserts. Merges can add uncached keys, never remove them.
+        if let Some((cached, bitmap)) = &self.cached_prefix {
+            if *cached == prefix {
+                let index = usize::from(suffix);
+                if bitmap[index / 64] & (1u64 << (index % 64)) != 0 {
+                    return Ok(());
+                }
+            }
+        }
         let block_count = self.blocks.len();
 
         // A single prefix lookup serves both existing and new blocks. The
@@ -239,6 +253,17 @@ impl BitmapDistinct32 {
                 .count
                 .checked_add(1)
                 .ok_or_else(|| ExecutionError::Invalid("distinct count overflow".into()))?;
+        }
+        // Also cache confirmed duplicates introduced by merge_from. A
+        // successful lookup is sufficient proof for future duplicate probes.
+        if let Some((cached, bitmap)) = self.cached_prefix.as_mut() {
+            if *cached == prefix {
+                set_bitmap_bit_if_unset(bitmap.as_mut(), suffix);
+            }
+        } else {
+            let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
+            set_bitmap_bit_if_unset(bitmap.as_mut(), suffix);
+            self.cached_prefix = Some((prefix, bitmap));
         }
         Ok(())
     }
@@ -788,5 +813,50 @@ mod singleton_dense_union_tests {
             4_094
         );
         assert!(matches!(duplicate, Block::Sparse(_)));
+    }
+}
+
+#[cfg(test)]
+mod cached_prefix_distinct_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_accounts_and_merged_states_remain_exact() {
+        let mut first = BitmapDistinct32::new();
+        for key in 0..10_000u32 {
+            first.insert(key).unwrap();
+        }
+        assert_eq!(first.cached_prefix.as_ref().map(|(prefix, _)| *prefix), Some(0));
+        for _ in 0..3 {
+            for key in (0..10_000u32).rev() {
+                first.insert(key).unwrap();
+            }
+        }
+        assert_eq!(first.len(), 10_000);
+
+        let mut second = BitmapDistinct32::new();
+        for key in 9_000..12_000u32 {
+            second.insert(key).unwrap();
+        }
+        first.merge_from(&second).unwrap();
+        assert_eq!(first.len(), 12_000);
+        for key in 10_000..12_000u32 {
+            first.insert(key).unwrap();
+        }
+        assert_eq!(first.len(), 12_000);
+        first.insert(1u32 << 16).unwrap();
+        first.insert(1u32 << 16).unwrap();
+        assert_eq!(first.len(), 12_001);
+    }
+
+    #[test]
+    fn first_prefix_can_be_negative_signed_keys() {
+        let mut distinct = BitmapDistinct32::new();
+        let minus_one = (-1i32) as u32;
+        distinct.insert(minus_one).unwrap();
+        distinct.insert(minus_one).unwrap();
+        distinct.insert(((-2i32) as u32)).unwrap();
+        assert_eq!(distinct.len(), 2);
+        assert_eq!(distinct.cached_prefix.as_ref().map(|(prefix, _)| *prefix), Some(u16::MAX));
     }
 }
