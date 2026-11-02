@@ -22,6 +22,7 @@ pub mod distributed_fencing;
 pub mod distributed_hedged_reads;
 pub mod distributed_hybrid_clock;
 pub mod distributed_inventory;
+pub mod distributed_lease_ledger;
 pub mod distributed_lineage;
 pub mod distributed_membership;
 pub mod distributed_merkle;
