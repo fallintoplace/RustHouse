@@ -235,3 +235,127 @@ mod tests {
         assert_eq!(uninterrupted, resumed);
     }
 }
+
+
+/// One peer's durable limiter and requested transfer size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerTransferRequest {
+    pub peer: String,
+    pub requested: u64,
+    pub bucket: TokenBucket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerTransferGrant {
+    pub peer: String,
+    pub bytes: u64,
+    pub bucket: TokenBucket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HierarchicalTransferPlan {
+    pub global_bucket: TokenBucket,
+    pub peers: Vec<PeerTransferGrant>,
+}
+
+/// Grant bytes against both a global limiter and each peer's own limiter.
+///
+/// Request order is the explicit priority order supplied by the caller. A
+/// weighted scheduler should order peers before calling this function.
+/// Failure is atomic: all caller-owned bucket states remain unchanged.
+pub fn grant_hierarchical_transfers(
+    global: TokenBucket,
+    requests: &[PeerTransferRequest],
+    now_ms: u64,
+) -> Result<HierarchicalTransferPlan, &'static str> {
+    use std::collections::HashSet;
+
+    if requests.len() > 64 {
+        return Err("too many replica transfer limiters");
+    }
+    let mut seen = HashSet::with_capacity(requests.len());
+    for request in requests {
+        if request.peer.is_empty()
+            || request.peer.len() > 64
+            || !request
+                .peer
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            || !seen.insert(request.peer.as_str())
+        {
+            return Err("invalid or duplicate replica transfer peer");
+        }
+    }
+
+    let mut global_bucket = global.refill(now_ms)?;
+    let mut peers = Vec::with_capacity(requests.len());
+    for request in requests {
+        let mut bucket = request.bucket.refill(now_ms)?;
+        let bytes = request
+            .requested
+            .min(global_bucket.tokens)
+            .min(bucket.tokens);
+        global_bucket.tokens -= bytes;
+        bucket.tokens -= bytes;
+        peers.push(PeerTransferGrant {
+            peer: request.peer.clone(),
+            bytes,
+            bucket,
+        });
+    }
+    Ok(HierarchicalTransferPlan {
+        global_bucket,
+        peers,
+    })
+}
+
+#[cfg(test)]
+mod hierarchical_transfer_tests {
+    use super::*;
+
+    fn peer(name: &str, requested: u64, capacity: u64) -> PeerTransferRequest {
+        PeerTransferRequest {
+            peer: name.into(),
+            requested,
+            bucket: TokenBucket::new(capacity, 1000, 10).unwrap(),
+        }
+    }
+
+    #[test]
+    fn global_and_peer_budgets_are_both_debited_exactly_once() {
+        let global = TokenBucket::new(15, 1000, 10).unwrap();
+        let requests = [peer("a", 100, 10), peer("b", 100, 10)];
+        let plan = grant_hierarchical_transfers(global, &requests, 10).unwrap();
+        assert_eq!(plan.peers[0].bytes, 10);
+        assert_eq!(plan.peers[1].bytes, 5);
+        assert_eq!(plan.global_bucket.available(), 0);
+        assert_eq!(plan.peers[0].bucket.available(), 0);
+        assert_eq!(plan.peers[1].bucket.available(), 5);
+        assert_eq!(global.available(), 15);
+        assert_eq!(requests[0].bucket.available(), 10);
+        let retry = plan
+            .peers
+            .iter()
+            .map(|entry| PeerTransferRequest {
+                peer: entry.peer.clone(),
+                requested: 100,
+                bucket: entry.bucket,
+            })
+            .collect::<Vec<_>>();
+        let next = grant_hierarchical_transfers(plan.global_bucket, &retry, 10).unwrap();
+        assert!(next.peers.iter().all(|peer| peer.bytes == 0));
+    }
+
+    #[test]
+    fn invalid_peer_or_clock_fails_without_mutating_input() {
+        let global = TokenBucket::new(10, 1, 100).unwrap();
+        let requests = [peer("one", 5, 5), peer("two", 5, 5)];
+        let before = requests.clone();
+        assert!(grant_hierarchical_transfers(global, &requests, 99).is_err());
+        assert_eq!(requests, before);
+        let repeated = [peer("a", 2, 4), peer("a", 3, 4)];
+        assert!(grant_hierarchical_transfers(global, &repeated, 100).is_err());
+        let injection = [peer("../path", 1, 1)];
+        assert!(grant_hierarchical_transfers(global, &injection, 100).is_err());
+    }
+}
