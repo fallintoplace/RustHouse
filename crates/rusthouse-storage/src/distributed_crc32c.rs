@@ -538,7 +538,25 @@ pub fn crc32c_file_parallel(file: &std::fs::File, expected_bytes: u64) -> io::Re
     let workers = std::thread::available_parallelism()
         .map_or(1, |available| available.get())
         .min(4);
-    if workers < 2 || expected_bytes < 16 * 1024 * 1024 {
+    crc32c_file_parallel_with_workers(file, expected_bytes, workers, None)
+}
+
+// Inject worker-spawn failures in tests to exercise the same fallback as
+// thread-resource exhaustion on production hosts.
+#[cfg(unix)]
+fn crc32c_file_parallel_with_workers(
+    file: &std::fs::File,
+    expected_bytes: u64,
+    workers: usize,
+    fail_spawn_at: Option<usize>,
+) -> io::Result<(u64, u32)> {
+    if file.metadata()?.len() != expected_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "checksum file length changed",
+        ));
+    }
+    if workers < 2 || (expected_bytes < 16 * 1024 * 1024 && fail_spawn_at.is_none()) {
         let result = crc32c_positioned_range(file, 0, expected_bytes)?;
         if file.metadata()?.len() != expected_bytes {
             return Err(io::Error::new(
@@ -553,20 +571,48 @@ pub fn crc32c_file_parallel(file: &std::fs::File, expected_bytes: u64) -> io::Re
     let extra = expected_bytes % worker_count;
     let result = std::thread::scope(|scope| -> io::Result<(u64, u32)> {
         let mut handles = Vec::with_capacity(workers);
+        let mut unclaimed_begin = expected_bytes;
         for index in 0..workers {
             let slot = index as u64;
             let begin = base * slot + slot.min(extra);
             let length = base + u64::from(slot < extra);
-            let handle = std::thread::Builder::new()
-                .spawn_scoped(scope, move || crc32c_positioned_range(file, begin, length))?;
-            handles.push(handle);
+            let spawned = if fail_spawn_at == Some(index) {
+                Err(io::Error::other("injected checksum worker spawn failure"))
+            } else {
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || crc32c_positioned_range(file, begin, length))
+            };
+            match spawned {
+                Ok(handle) => handles.push(handle),
+                Err(_) => {
+                    // Earlier chunks are already in flight. Hash only the
+                    // unclaimed contiguous suffix, without rereading them.
+                    unclaimed_begin = begin;
+                    break;
+                }
+            }
         }
+        let inline = if unclaimed_begin < expected_bytes {
+            Some(crc32c_positioned_range(
+                file,
+                unclaimed_begin,
+                expected_bytes - unclaimed_begin,
+            )?)
+        } else {
+            None
+        };
         let mut total = 0u64;
         let mut combined = 0u32;
         for handle in handles {
             let (length, checksum) = handle
                 .join()
                 .map_err(|_| io::Error::other("checksum worker panicked"))??;
+            combined = crc32c_combine(combined, checksum, length);
+            total = total
+                .checked_add(length)
+                .ok_or_else(|| io::Error::other("checksum file length overflow"))?;
+        }
+        if let Some((length, checksum)) = inline {
             combined = crc32c_combine(combined, checksum, length);
             total = total
                 .checked_add(length)
@@ -890,6 +936,44 @@ mod positioned_parallel_crc32c_tests {
         assert_eq!(bytes, input.len() as u64);
         assert_eq!(parallel_hash, crc32c(&input));
         assert!(crc32c_file_parallel(&file, input.len() as u64 - 1).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn thread_spawn_failures_hash_only_unclaimed_file_ranges() {
+        let input = (0..(1024 * 1024 + 19usize))
+            .map(|index| ((index * 31 + index / 17) % 251) as u8)
+            .collect::<Vec<_>>();
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-crc-file-spawn-fallback-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::write(&path, &input).unwrap();
+        let mut file = fs::File::open(&path).unwrap();
+        use std::io::{Seek, SeekFrom};
+        file.seek(SeekFrom::Start(39)).unwrap();
+        for workers in [2, 3, 4] {
+            for fail_at in 0..workers {
+                assert_eq!(
+                    crc32c_file_parallel_with_workers(
+                        &file,
+                        input.len() as u64,
+                        workers,
+                        Some(fail_at),
+                    ).unwrap(),
+                    (input.len() as u64, crc32c(&input)),
+                    "workers={workers}, fail_at={fail_at}"
+                );
+                assert_eq!(file.stream_position().unwrap(), 39);
+            }
+        }
+        assert!(crc32c_file_parallel_with_workers(
+            &file,
+            input.len() as u64 + 1,
+            4,
+            Some(0),
+        ).is_err());
         fs::remove_file(path).unwrap();
     }
 }
