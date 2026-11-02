@@ -470,6 +470,66 @@ mod parallel_crc_combine_tests {
     }
 }
 
+/// CRC32C of an arbitrary-size virtual zero-filled byte range.
+///
+/// Use GF(2) checksum composition and binary doubling instead of allocating
+/// or reading up to `length` bytes. This supports sparse-file verification and
+/// logical transfer padding, including lengths near u64::MAX.
+pub fn crc32c_zero_bytes(mut length: u64) -> u32 {
+    let mut combined = 0u32;
+    let mut block_crc = crc32c(&[0]);
+    let mut block_len = 1u64;
+    while length != 0 {
+        if length & 1 != 0 {
+            combined = crc32c_combine(combined, block_crc, block_len);
+        }
+        length >>= 1;
+        if length != 0 {
+            block_crc = crc32c_combine(block_crc, block_crc, block_len);
+            block_len <<= 1;
+        }
+    }
+    combined
+}
+
+#[cfg(test)]
+mod virtual_zero_range_crc_tests {
+    use super::*;
+
+    #[test]
+    fn virtual_zero_ranges_equal_real_zero_buffers() {
+        for len in (0..=256usize).chain([511, 512, 513, 4095, 4096, 65_535]) {
+            assert_eq!(
+                crc32c_zero_bytes(len as u64),
+                crc32c(&vec![0; len]),
+                "len={len}",
+            );
+        }
+    }
+
+    #[test]
+    fn huge_logical_zero_ranges_obey_checksum_composition() {
+        for length in [1u64 << 20, 1u64 << 32, (1u64 << 40) + 123, 1u64 << 62] {
+            let left = crc32c_zero_bytes(length);
+            let right = crc32c_zero_bytes(37);
+            assert_eq!(
+                crc32c_combine(left, right, 37),
+                crc32c_zero_bytes(length + 37),
+            );
+        }
+        let hi = 1u64 << 63;
+        assert_eq!(
+            crc32c_combine(
+                crc32c_zero_bytes(hi),
+                crc32c_zero_bytes(hi - 1),
+                hi - 1,
+            ),
+            crc32c_zero_bytes(u64::MAX),
+        );
+        assert_eq!(crc32c_zero_bytes(0), 0);
+    }
+}
+
 /// Stream a file, reading at most one byte past max_bytes to detect oversized input.
 /// Returns (length, checksum).
 pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64, u32)> {
