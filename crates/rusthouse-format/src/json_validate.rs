@@ -39,7 +39,14 @@ impl Parser<'_> {
             return Err(invalid());
         }
         loop {
-            let byte = *self.input.get(self.offset).ok_or_else(invalid)?;
+            // Skip ordinary string bytes as a span. Only quotes, escapes and
+            // control characters need the more expensive grammar checks.
+            let special = self.input[self.offset..]
+                .iter()
+                .position(|&byte| matches!(byte, b'"' | b'\\' | 0..=31))
+                .ok_or_else(invalid)?;
+            self.offset += special;
+            let byte = self.input[self.offset];
             self.offset += 1;
             match byte {
                 b'"' => return Ok(()),
@@ -238,6 +245,18 @@ mod tests {
         ] {
             validate_json_object(row).unwrap();
         }
+    }
+
+    #[test]
+    fn long_plain_strings_keep_control_and_escape_validation() {
+        let prefix = "a".repeat(64 * 1024);
+        let valid = format!("{{\"payload\":\"{}\\\\n\"}}", prefix);
+        validate_json_object(valid.as_bytes()).unwrap();
+        let invalid = format!("{{\"payload\":\"{}\t\"}}", prefix);
+        assert_eq!(
+            validate_json_object(invalid.as_bytes()).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
