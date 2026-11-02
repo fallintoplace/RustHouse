@@ -1205,3 +1205,162 @@ mod chronological_snapshot_lineage_tests {
         assert!(newest_consistent_snapshot(&history).is_err());
     }
 }
+
+
+/// Deterministic, bounded comparison of two independently recorded snapshot histories.
+///
+/// A matching epoch, generation and fingerprint is metadata agreement, not
+/// proof of ancestry or a committed write. Callers must not promote or delete
+/// a generation solely from this result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotHistoryDiff {
+    pub newest_common: Option<SnapshotVersion>,
+    pub conflicting: Vec<(SnapshotVersion, SnapshotVersion)>,
+    pub local_only: Vec<SnapshotVersion>,
+    pub remote_only: Vec<SnapshotVersion>,
+}
+
+fn validate_ordered_snapshot_history(history: &[SnapshotVersion]) -> Result<u64, &'static str> {
+    if history.is_empty() || history.len() > 4096 {
+        return Err("invalid snapshot history length");
+    }
+    let epoch = history[0].epoch;
+    let mut last_generation = 0;
+    for &version in history {
+        if !valid_epoch_member(version, epoch) || version.generation <= last_generation {
+            return Err("snapshot history must have increasing generations in one epoch");
+        }
+        last_generation = version.generation;
+    }
+    Ok(epoch)
+}
+
+/// Merge two strictly increasing histories in linear time, without assuming
+/// that a missing generation means the other replica has forgotten it.
+///
+/// Equal generations with different fingerprints are explicit conflicts.
+/// Differences in later generations do not erase earlier conflicts.
+pub fn compare_snapshot_histories(
+    local: &[SnapshotVersion],
+    remote: &[SnapshotVersion],
+) -> Result<SnapshotHistoryDiff, &'static str> {
+    let epoch = validate_ordered_snapshot_history(local)?;
+    if validate_ordered_snapshot_history(remote)? != epoch {
+        return Err("cannot compare snapshot histories across epochs");
+    }
+    let mut diff = SnapshotHistoryDiff {
+        newest_common: None,
+        conflicting: Vec::new(),
+        local_only: Vec::new(),
+        remote_only: Vec::new(),
+    };
+    let (mut left, mut right) = (0, 0);
+    while left < local.len() && right < remote.len() {
+        let a = local[left];
+        let b = remote[right];
+        match a.generation.cmp(&b.generation) {
+            std::cmp::Ordering::Less => {
+                diff.local_only.push(a);
+                left += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                diff.remote_only.push(b);
+                right += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                if a.fingerprint == b.fingerprint {
+                    diff.newest_common = Some(a);
+                } else {
+                    diff.conflicting.push((a, b));
+                }
+                left += 1;
+                right += 1;
+            }
+        }
+    }
+    diff.local_only.extend_from_slice(&local[left..]);
+    diff.remote_only.extend_from_slice(&remote[right..]);
+    Ok(diff)
+}
+
+#[cfg(test)]
+mod snapshot_history_merge_diff_tests {
+    use super::*;
+
+    fn version(generation: u64, fingerprint: u128) -> SnapshotVersion {
+        SnapshotVersion {
+            epoch: 7,
+            generation,
+            fingerprint,
+        }
+    }
+
+    #[test]
+    fn reports_gaps_conflicts_and_last_matching_observation() {
+        let local = [
+            version(1, 10),
+            version(2, 20),
+            version(4, 40),
+            version(6, 60),
+        ];
+        let remote = [
+            version(1, 10),
+            version(3, 30),
+            version(4, 999),
+            version(5, 50),
+            version(6, 60),
+        ];
+        let diff = compare_snapshot_histories(&local, &remote).unwrap();
+        assert_eq!(diff.newest_common, Some(version(6, 60)));
+        assert_eq!(diff.conflicting, [(version(4, 40), version(4, 999))]);
+        assert_eq!(diff.local_only, [version(2, 20)]);
+        assert_eq!(diff.remote_only, [version(3, 30), version(5, 50)]);
+    }
+
+    #[test]
+    fn rejects_invalid_inputs_even_when_the_other_history_is_valid() {
+        let good = [version(1, 1), version(2, 2)];
+        assert!(compare_snapshot_histories(&good, &[]).is_err());
+        assert!(compare_snapshot_histories(&good, &[good[1], good[0]]).is_err());
+        assert!(compare_snapshot_histories(&good, &[good[0], good[0]]).is_err());
+        assert!(compare_snapshot_histories(&good, &[version(0, 0)]).is_err());
+        assert!(
+            compare_snapshot_histories(&good, &[SnapshotVersion { epoch: 8, ..good[0] }]).is_err()
+        );
+        let oversized = vec![good[0]; 4097];
+        assert!(compare_snapshot_histories(&oversized, &good).is_err());
+    }
+
+    #[test]
+    fn linear_merge_matches_an_independent_generation_map_oracle() {
+        for stride in 2..=7u64 {
+            let local = (1..=500)
+                .filter(|g| g % stride != 0)
+                .map(|g| version(g, g as u128 * 3))
+                .collect::<Vec<_>>();
+            let remote = (1..=500)
+                .filter(|g| g % 5 != 0)
+                .map(|g| version(g, g as u128 * 3 + u128::from(g % 11 == 0)))
+                .collect::<Vec<_>>();
+            let diff = compare_snapshot_histories(&local, &remote).unwrap();
+            let remote_by_generation = remote
+                .iter()
+                .map(|v| (v.generation, v.fingerprint))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let expected_common = local
+                .iter()
+                .copied()
+                .rfind(|v| remote_by_generation.get(&v.generation) == Some(&v.fingerprint));
+            assert_eq!(diff.newest_common, expected_common);
+            let expected_conflicts = local
+                .iter()
+                .filter(|v| {
+                    remote_by_generation
+                        .get(&v.generation)
+                        .is_some_and(|f| *f != v.fingerprint)
+                })
+                .count();
+            assert_eq!(diff.conflicting.len(), expected_conflicts);
+        }
+    }
+}

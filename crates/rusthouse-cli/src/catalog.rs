@@ -4,6 +4,57 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(windows)]
+mod windows_schema_identity {
+    use std::ffi::c_void;
+    use std::fs::File;
+    use std::io;
+    use std::os::windows::io::AsRawHandle;
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+
+    #[repr(C)]
+    struct FileInformation {
+        attributes: u32,
+        created: FileTime,
+        accessed: FileTime,
+        modified: FileTime,
+        volume_serial: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        link_count: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(handle: *mut c_void, info: *mut FileInformation) -> i32;
+    }
+
+    fn identity(file: &File) -> io::Result<(u32, u64)> {
+        let mut info = std::mem::MaybeUninit::<FileInformation>::uninit();
+        // SAFETY: the open handle is valid and the C struct is fully
+        // initialized by Windows when the API reports success.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let info = unsafe { info.assume_init() };
+        Ok((
+            info.volume_serial,
+            (u64::from(info.index_high) << 32) | u64::from(info.index_low),
+        ))
+    }
+
+    pub(super) fn same_file(left: &File, right: &File) -> io::Result<bool> {
+        Ok(identity(left)? == identity(right)?)
+    }
+}
+
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
 const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
 const MAX_CATALOG_COLUMNS: usize = 128;
@@ -270,6 +321,23 @@ fn verify_schema_after_read(
             if after.dev() != before.dev() || after.ino() != before.ino() {
                 return Err(std::io::Error::other("catalog schema replaced during read"));
             }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if after.creation_time() != before.creation_time() {
+                return Err(std::io::Error::other("catalog schema replaced during read"));
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        // NTFS may preserve timestamps for a freshly replaced pathname.
+        // Compare the underlying file IDs rather than trusting metadata
+        // equality when validating the active schema handle.
+        let current = fs::File::open(path)?;
+        if !windows_schema_identity::same_file(file, &current)? {
+            return Err(std::io::Error::other("catalog schema replaced during read"));
         }
     }
     Ok(())

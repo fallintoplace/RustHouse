@@ -327,7 +327,15 @@ fn same_file_state(before: &fs::Metadata, after: &fs::Metadata) -> bool {
             && before.ctime() == after.ctime()
             && before.ctime_nsec() == after.ctime_nsec()
     }
-    #[cfg(not(unix))]
+    // Windows metadata does not expose stable file identity in Rust 1.85.
+    // Creation time is an additional replacement check when the old and new
+    // files happen to have the same length and last-write timestamp.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        before.creation_time() == after.creation_time()
+    }
+    #[cfg(not(any(unix, windows)))]
     true
 }
 

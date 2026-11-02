@@ -89,7 +89,8 @@ pub fn coalesce_indexed_chunks(
             .offset
             .checked_add(item.length)
             .ok_or("transfer chunk range overflow")?;
-        if item.length == 0
+        if chunk.index >= 65_536
+            || item.length == 0
             || item.length > max_run_bytes
             || item.offset < previous_end
             || previous_index.is_some_and(|index| chunk.index <= index)
@@ -99,8 +100,10 @@ pub fn coalesce_indexed_chunks(
         previous_end = end;
         previous_index = Some(chunk.index);
         if let Some(last) = runs.last_mut() {
-            let next_index = last.first_index + last.chunk_count;
-            let run_end = last.offset + last.length;
+            let next_index = last.first_index.checked_add(last.chunk_count)
+                .ok_or("transfer run index overflow")?;
+            let run_end = last.offset.checked_add(last.length)
+                .ok_or("transfer run byte range overflow")?;
             if chunk.index == next_index
                 && item.offset == run_end
                 && item.length <= max_run_bytes - last.length
@@ -194,6 +197,32 @@ mod coalesced_chunk_runs_tests {
         assert_eq!(runs[1].chunk_count, 4);
         assert_eq!(runs[2].chunk_count, 2);
         assert_eq!(coalesce_indexed_chunks(&indexed, 1000).unwrap().len(), 10);
+    }
+
+    #[test]
+    fn coalesced_runs_reject_impossible_indexes_without_panicking() {
+        for index in [65_536, usize::MAX] {
+            let bad = IndexedChunk {
+                index,
+                chunk: Chunk { offset: 0, length: 1 },
+            };
+            assert!(coalesce_indexed_chunks(&[bad], 10).is_err());
+            let valid = IndexedChunk {
+                index: 65_535,
+                chunk: Chunk { offset: 0, length: 1 },
+            };
+            assert!(coalesce_indexed_chunks(&[valid, bad], 10).is_err());
+        }
+        assert_eq!(
+            coalesce_indexed_chunks(
+                &[IndexedChunk {
+                    index: 65_535,
+                    chunk: Chunk { offset: u64::MAX - 1, length: 1 },
+                }],
+                u64::MAX,
+            ).unwrap()[0].first_index,
+            65_535,
+        );
     }
 
     #[test]

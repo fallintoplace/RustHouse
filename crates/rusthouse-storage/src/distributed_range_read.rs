@@ -38,7 +38,15 @@ fn object_state_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
             && before.ctime() == after.ctime()
             && before.ctime_nsec() == after.ctime_nsec()
     }
-    #[cfg(not(unix))]
+    // Windows metadata does not expose stable file identity in Rust 1.85.
+    // Creation time is an additional replacement check when the old and new
+    // files happen to have the same length and last-write timestamp.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        before.creation_time() == after.creation_time()
+    }
+    #[cfg(not(any(unix, windows)))]
     true
 }
 
@@ -164,6 +172,36 @@ pub fn read_object_ranges_into(
         read_at_into(&mut file, *offset, destination)?;
     }
     verify_object_after_read(path, &file, &baseline)
+}
+
+#[cfg(all(test, windows))]
+mod windows_creation_time_tests {
+    use super::*;
+
+    #[test]
+    fn detects_different_creation_time_despite_matching_modified_time() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-window-range-creation-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let first = directory.join("first");
+        let second = directory.join("second");
+        fs::write(&first, b"abcd").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(&second, b"wxyz").unwrap();
+        let old = fs::metadata(&first).unwrap();
+        let writer = fs::OpenOptions::new().write(true).open(&second).unwrap();
+        writer
+            .set_times(fs::FileTimes::new().set_modified(old.modified().unwrap()))
+            .unwrap();
+        let new = fs::metadata(&second).unwrap();
+        use std::os::windows::fs::MetadataExt;
+        if old.creation_time() != new.creation_time() {
+            assert!(!object_state_unchanged(&old, &new));
+        }
+        fs::remove_dir_all(&directory).unwrap();
+    }
 }
 
 #[cfg(test)]

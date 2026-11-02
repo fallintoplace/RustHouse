@@ -5,7 +5,11 @@ import json
 import ipaddress
 import math
 import sys
-from loopback_origin import require_loopback_http_origin
+# Work both as `python tools/cluster_health.py` and as `import tools.cluster_health`.
+if __package__:
+    from .loopback_origin import require_loopback_http_origin
+else:
+    from loopback_origin import require_loopback_http_origin
 from urllib.request import HTTPRedirectHandler, build_opener, ProxyHandler
 from urllib.error import HTTPError
 

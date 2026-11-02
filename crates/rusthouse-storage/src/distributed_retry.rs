@@ -855,3 +855,172 @@ mod bounded_retry_timeline_allocation_tests {
         assert!(plan_replica_retry_timeline(&nodes, 0, 1, 10, Duration::ZERO).is_ok());
     }
 }
+
+
+/// Admit planned retry events under shared and per-node sliding-window quotas.
+///
+/// Events are only selected, never executed. The window is half-open: an
+/// event exactly one window after an older event may use its released slot.
+/// Equal timestamps are resolved by attempt number and then node ID.
+pub fn admit_retry_events_with_quotas(
+    events: &[ReplicaRetryEvent],
+    window: Duration,
+    global_per_window: usize,
+    node_per_window: usize,
+) -> Result<Vec<ReplicaRetryEvent>, &'static str> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    if events.len() > 64 * 33
+        || window.is_zero()
+        || global_per_window == 0
+        || node_per_window == 0
+    {
+        return Err("invalid retry admission limits");
+    }
+    let mut names = HashSet::new();
+    let mut attempts = HashSet::new();
+    for event in events {
+        let node = event.node.as_str();
+        if node.is_empty()
+            || node.len() > 64
+            || !node
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || event.attempt > 32
+            || !attempts.insert((node, event.attempt))
+        {
+            return Err("invalid or duplicate retry event");
+        }
+        names.insert(node);
+    }
+    if names.len() > 64 {
+        return Err("too many retry nodes");
+    }
+    let mut ordered = events.iter().collect::<Vec<_>>();
+    ordered.sort_unstable_by(|left, right| {
+        left.due_after
+            .cmp(&right.due_after)
+            .then_with(|| left.attempt.cmp(&right.attempt))
+            .then_with(|| left.node.cmp(&right.node))
+    });
+    let mut global = VecDeque::<Duration>::new();
+    let mut per_node = HashMap::<&str, VecDeque<Duration>>::new();
+    let mut admitted = Vec::with_capacity(events.len());
+    for event in ordered {
+        while global
+            .front()
+            .is_some_and(|&start| event.due_after - start >= window)
+        {
+            global.pop_front();
+        }
+        let node_queue = per_node.entry(event.node.as_str()).or_default();
+        while node_queue
+            .front()
+            .is_some_and(|&start| event.due_after - start >= window)
+        {
+            node_queue.pop_front();
+        }
+        if global.len() >= global_per_window || node_queue.len() >= node_per_window {
+            continue;
+        }
+        global.push_back(event.due_after);
+        node_queue.push_back(event.due_after);
+        admitted.push(event.clone());
+    }
+    Ok(admitted)
+}
+
+#[cfg(test)]
+mod retry_admission_window_tests {
+    use super::*;
+
+    fn event(node: &str, attempt: u32, millis: u64) -> ReplicaRetryEvent {
+        ReplicaRetryEvent {
+            node: node.into(),
+            attempt,
+            due_after: Duration::from_millis(millis),
+        }
+    }
+
+    #[test]
+    fn respects_global_and_per_node_windows_at_exact_boundaries() {
+        let events = [
+            event("b", 0, 0),
+            event("a", 0, 0),
+            event("a", 1, 1),
+            event("b", 1, 50),
+            event("a", 2, 100),
+            event("b", 2, 100),
+        ];
+        let selected =
+            admit_retry_events_with_quotas(&events, Duration::from_millis(100), 2, 1).unwrap();
+        assert_eq!(
+            selected,
+            [event("a", 0, 0), event("b", 0, 0), event("a", 2, 100), event("b", 2, 100)]
+        );
+    }
+
+    #[test]
+    fn scheduling_is_invariant_under_event_input_order() {
+        let mut events = (0..33)
+            .flat_map(|attempt| {
+                (0..64).map(move |node| {
+                    event(&format!("node_{node:02}"), attempt, attempt as u64 * 5)
+                })
+            })
+            .collect::<Vec<_>>();
+        let first =
+            admit_retry_events_with_quotas(&events, Duration::from_millis(20), 12, 2).unwrap();
+        events.reverse();
+        let second =
+            admit_retry_events_with_quotas(&events, Duration::from_millis(20), 12, 2).unwrap();
+        assert_eq!(first, second);
+        let mut global = std::collections::VecDeque::new();
+        let mut per_node = std::collections::HashMap::<&str, Vec<u64>>::new();
+        for selected in &first {
+            let now = selected.due_after.as_millis() as u64;
+            while global.front().is_some_and(|&older| now - older >= 20) {
+                global.pop_front();
+            }
+            assert!(global.len() < 12);
+            global.push_back(now);
+            let times = per_node.entry(selected.node.as_str()).or_default();
+            times.retain(|&older| now - older < 20);
+            assert!(times.len() < 2);
+            times.push(now);
+        }
+    }
+
+    #[test]
+    fn rejects_bad_batches_before_any_admission() {
+        let ok = event("a", 0, 5);
+        assert!(
+            admit_retry_events_with_quotas(&[ok.clone(), ok], Duration::from_secs(1), 2, 1)
+                .is_err()
+        );
+        assert!(
+            admit_retry_events_with_quotas(
+                &[event("../a", 0, 0)],
+                Duration::from_secs(1),
+                2,
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            admit_retry_events_with_quotas(&[], Duration::ZERO, 1, 1).is_err()
+        );
+        assert!(
+            admit_retry_events_with_quotas(&[], Duration::from_secs(1), 0, 1).is_err()
+        );
+        assert!(
+            admit_retry_events_with_quotas(
+                &[event("a", 33, 0)],
+                Duration::from_secs(1),
+                1,
+                1
+            )
+            .is_err()
+        );
+    }
+}
