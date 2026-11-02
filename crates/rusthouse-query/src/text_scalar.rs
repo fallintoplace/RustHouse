@@ -100,6 +100,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "HASSUBSEQUENCECASEINSENSITIVE"
                 | "HASSUBSEQUENCECASEINSENSITIVEUTF8"
                 | "OVERLAY"
+                | "OVERLAYUTF8"
                 | "FORMATREADABLEQUANTITY"
                 | "QUERYSTRING"
                 | "SPLIT_PART"
@@ -2875,7 +2876,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "OVERLAY" => {
+        "OVERLAY" | "OVERLAYUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "OVERLAY requires replacement text")?;
             let replacement = text_arg(parser, depth + 1)?;
@@ -2893,9 +2894,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             )?;
             match (input, replacement, start) {
                 (Some(input), Some(replacement), Some(start)) => {
-                    if start < 1 {
-                        return Err(ParseError("OVERLAY positions are 1-based".into()));
-                    }
+                    // UTF-8 offsets are code-point positions. Negative offsets
+                    // count backwards from the end, with -1 selecting the last.
+                    let start = if name == "OVERLAYUTF8" && start < 0 {
+                        input.chars().count().saturating_sub(
+                            usize::try_from(start.unsigned_abs()).unwrap_or(usize::MAX),
+                        )
+                    } else {
+                        if start < 1 {
+                            return Err(ParseError("OVERLAY positions are 1-based".into()));
+                        }
+                        usize::try_from(start - 1).unwrap_or(usize::MAX)
+                    };
                     let remove = match length {
                         None => replacement.chars().count(),
                         Some(Some(length)) if length >= 0 => {
@@ -2906,7 +2916,6 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         Some(None) => return Ok(ConstantValue::Null),
                     };
-                    let start = usize::try_from(start - 1).unwrap_or(usize::MAX);
                     let prefix = input
                         .char_indices()
                         .nth(start)
