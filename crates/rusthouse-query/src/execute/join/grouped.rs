@@ -225,7 +225,7 @@ mod bounded_grouped_join_page_tests {
             baseline.sort_by(|&a, &b| compare(&rows[a], &rows[b]));
             for end in 1..rows.len() {
                 assert_eq!(
-                    super::super::sorted_group_positions(&rows, end, &compare),
+                    super::super::super::sorted_group_positions(&rows, end, &compare),
                     baseline[..end],
                 );
             }

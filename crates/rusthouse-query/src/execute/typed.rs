@@ -2449,6 +2449,8 @@ mod like_tests {
 
     #[test]
     fn probes_short_numeric_in_without_materializing_cells() {
+        use super::{Cell, matches_in_at};
+        use crate::execute::Number;
         let batch = TypedColumn::NullableNumeric {
             values: NumericColumn::Int64(vec![-7, 0, 42, 42]),
             nulls: vec![0, 0, 0, 1],
@@ -3267,10 +3269,7 @@ mod direct_byte_compare_tests {
 
     #[test]
     fn compiled_byte_comparisons_match_generic_on_signed_unsigned_and_nulls() {
-        for (kind, values) in [
-            ("UInt8", NumericColumn::UInt8(vec![0, 1, 127, 255])),
-            ("Int8", NumericColumn::Int8(vec![-128, -1, 0, 127])),
-        ] {
+        for kind in ["UInt8", "Int8"] {
             let indices = HashMap::from([("status".to_owned(), 0usize)]);
             let types = HashMap::from([("status".to_owned(), format!("Nullable({kind})"))]);
             for op in [
@@ -3284,15 +3283,20 @@ mod direct_byte_compare_tests {
                 };
                 let conditions = compile(&[predicate], &indices, &types).unwrap();
                 assert!(matches!(conditions[0].test, Test::ByteCompare(..)));
+                let values = if kind == "Int8" {
+                    NumericColumn::Int8(vec![-128, -1, 0, 127])
+                } else {
+                    NumericColumn::UInt8(vec![0, 1, 127, 255])
+                };
                 let batch = [TypedColumn::NullableNumeric {
-                    values: values.clone(), nulls: vec![0, 0, 1, 0],
+                    values, nulls: vec![0, 0, 1, 0],
                 }];
                 let target = Cell::Numeric(if kind == "Int8" {
                     Number::Signed(0)
                 } else {
                     Number::Unsigned(0)
                 });
-                let old = [Condition {
+                let old = vec![Condition {
                     index: 0, test: Test::Compare(op, target),
                 }];
                 for row in 0..4 {
