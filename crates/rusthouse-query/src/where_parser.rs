@@ -13,6 +13,32 @@ const MAX_EXPANDED_CONDITIONS: usize = 256;
 const MAX_DEPTH: usize = 16;
 const MAX_IN_LIST_VALUES: usize = 4_096;
 
+fn normalize_like_escape(pattern: &str, escape: char) -> Result<String, ParseError> {
+    let mut result = String::with_capacity(pattern.len());
+    let mut characters = pattern.chars();
+    while let Some(character) = characters.next() {
+        if character == escape {
+            let escaped = characters
+                .next()
+                .ok_or_else(|| ParseError("LIKE pattern has a trailing escape".into()))?;
+            if escaped != '%' && escaped != '_' && escaped != escape {
+                return Err(ParseError("LIKE ESCAPE must escape %, _ or itself".into()));
+            }
+            if escaped == '%' || escaped == '_' || escaped == '\\' {
+                result.push('\\');
+            }
+            result.push(escaped);
+        } else if character == '\\' {
+            // The executor treats backslash as its internal escape character.
+            result.push('\\');
+            result.push('\\');
+        } else {
+            result.push(character);
+        }
+    }
+    Ok(result)
+}
+
 fn bad_expansion() -> ParseError {
     ParseError("WHERE boolean expression expands beyond bounded predicate limits".into())
 }
@@ -316,16 +342,33 @@ fn parse_atom(
             Some(Token::String(value)) => value.clone(),
             _ => return Err(ParseError("LIKE requires a string literal".into())),
         };
-        let trailing_escapes = pattern
-            .as_bytes()
-            .iter()
-            .rev()
-            .take_while(|&&byte| byte == b'\\')
-            .count();
-        if trailing_escapes % 2 != 0 {
-            return Err(ParseError("LIKE pattern has a trailing escape".into()));
-        }
         parser.index += 1;
+        let pattern = if parser.keyword("ESCAPE") {
+            let escape = match parser.tokens.get(parser.index) {
+                Some(Token::String(value)) => value,
+                _ => return Err(ParseError("LIKE ESCAPE requires a string literal".into())),
+            };
+            let mut characters = escape.chars();
+            let Some(character) = characters.next() else {
+                return Err(ParseError("LIKE ESCAPE requires exactly one character".into()));
+            };
+            if characters.next().is_some() {
+                return Err(ParseError("LIKE ESCAPE requires exactly one character".into()));
+            }
+            parser.index += 1;
+            normalize_like_escape(&pattern, character)?
+        } else {
+            let trailing_escapes = pattern
+                .as_bytes()
+                .iter()
+                .rev()
+                .take_while(|&&byte| byte == b'\\')
+                .count();
+            if trailing_escapes % 2 != 0 {
+                return Err(ParseError("LIKE pattern has a trailing escape".into()));
+            }
+            pattern
+        };
         predicates.push(Predicate::Like {
             column,
             pattern,
@@ -766,5 +809,47 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod explicit_like_escape_tests {
+    use crate::{Predicate, parse_select};
+
+    fn pattern(sql: &str) -> String {
+        let parsed = parse_select(sql).unwrap();
+        let [Predicate::Like { pattern, .. }] = parsed.predicates.as_slice() else {
+            panic!("expected LIKE predicate");
+        };
+        pattern.clone()
+    }
+
+    #[test]
+    fn custom_escape_is_normalized_to_existing_matcher_syntax() {
+        assert_eq!(
+            pattern("SELECT url FROM urls WHERE url LIKE 'a!_%' ESCAPE '!'"),
+            "a\\_%"
+        );
+        assert_eq!(
+            pattern("SELECT url FROM urls WHERE url ILIKE 'a!!b' ESCAPE '!'"),
+            "a!b"
+        );
+        assert_eq!(
+            pattern(r"SELECT url FROM urls WHERE url LIKE 'a\\_!%' ESCAPE '!'"),
+            r"a\\_\%"
+        );
+    }
+
+    #[test]
+    fn malformed_escape_clauses_are_rejected() {
+        for sql in [
+            "SELECT url FROM urls WHERE url LIKE 'abc!' ESCAPE '!'",
+            "SELECT url FROM urls WHERE url LIKE 'abc!x' ESCAPE '!'",
+            "SELECT url FROM urls WHERE url LIKE 'abc' ESCAPE ''",
+            "SELECT url FROM urls WHERE url LIKE 'abc' ESCAPE 'ab'",
+            "SELECT url FROM urls WHERE url LIKE 'abc' ESCAPE 1",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
