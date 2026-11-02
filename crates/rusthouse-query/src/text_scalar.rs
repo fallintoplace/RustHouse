@@ -3618,7 +3618,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             };
             require(parser, Token::RParen, "expected ')' after RTRIM arguments")?;
             match (input, characters) {
-                (Some(input), None) => ConstantValue::Text(input.trim_end_matches(' ').to_owned()),
+                (Some(input), None) => ConstantValue::Text(
+                    input
+                        .trim_end_matches(|ch: char| ch.is_ascii_whitespace() || ch == '\u{000B}')
+                        .to_owned(),
+                ),
                 (Some(input), Some(Some(characters))) => ConstantValue::Text(
                     input
                         .trim_end_matches(|ch| characters.contains(ch))
