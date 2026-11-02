@@ -749,6 +749,11 @@ pub(super) fn execute<W: Write>(
         if !names.iter().any(|column| column == name) {
             names.push(name.to_owned());
         }
+        if let Some(other) = predicate.other_column() {
+            if !names.iter().any(|column| column == other) {
+                names.push(other.to_owned());
+            }
+        }
     }
     if names.is_empty() {
         names.push(

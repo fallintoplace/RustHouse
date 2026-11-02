@@ -204,6 +204,12 @@ pub enum Operator {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Predicate {
+    /// Compare two columns from the same SQL input row.
+    ColumnComparison {
+        column: String,
+        operator: Operator,
+        other: String,
+    },
     Comparison {
         column: String,
         operator: Operator,
@@ -241,9 +247,17 @@ pub enum Predicate {
 }
 
 impl Predicate {
+    fn other_column(&self) -> Option<&str> {
+        match self {
+            Self::ColumnComparison { other, .. } => Some(other),
+            _ => None,
+        }
+    }
+
     fn column(&self) -> &str {
         match self {
-            Self::Comparison { column, .. }
+            Self::ColumnComparison { column, .. }
+            | Self::Comparison { column, .. }
             | Self::In { column, .. }
             | Self::NotIn { column, .. }
             | Self::NotBetween { column, .. }

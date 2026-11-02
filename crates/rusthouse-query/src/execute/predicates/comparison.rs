@@ -6,6 +6,11 @@ pub(super) fn compile_predicate_test(
     convert: &mut impl FnMut(&str, &str) -> Result<Number, ExecutionError>,
 ) -> Result<CompiledTest, ExecutionError> {
     Ok(match predicate {
+        Predicate::ColumnComparison { .. } => {
+            return Err(ExecutionError::Invalid(
+                "column-to-column filters require typed SQL execution".into()
+            ));
+        }
         Predicate::Comparison {
             operator, value, ..
         } => {
