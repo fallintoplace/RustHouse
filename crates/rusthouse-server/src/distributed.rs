@@ -32,6 +32,7 @@ enum MergeError {
     InvalidSortedScan,
     InvalidSum,
     InvalidExtremum,
+    InvalidBitwise,
     CountOverflow,
     SumOverflow,
 }
@@ -1002,6 +1003,81 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
     Ok(output)
 }
 
+/// Merge bitwise aggregate states. An empty shard has no identity value.
+fn merge_integer_bitwise(
+    shards: &[(usize, Vec<u8>)],
+    kind: &str,
+    function: AggregateFunction,
+) -> Result<Vec<u8>, MergeError> {
+    if !matches!(
+        function,
+        AggregateFunction::GroupBitAnd
+            | AggregateFunction::GroupBitOr
+            | AggregateFunction::GroupBitXor
+    ) {
+        return Err(MergeError::InvalidBitwise);
+    }
+    let unsigned = kind
+        .strip_prefix("Nullable(")
+        .unwrap_or(kind)
+        .starts_with("UInt");
+    let mut header: Option<&[u8]> = None;
+    let mut signed: Option<i128> = None;
+    let mut unsigned_value: Option<u128> = None;
+    for (_, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidBitwise);
+        }
+        let end = body.iter().position(|&byte| byte == b'\n')
+            .ok_or(MergeError::InvalidBitwise)?;
+        let current_header = &body[..=end];
+        if current_header.len() <= 1 || body.len() <= end + 1 {
+            return Err(MergeError::InvalidBitwise);
+        }
+        if header.is_some_and(|expected| expected != current_header) {
+            return Err(MergeError::SchemaMismatch);
+        }
+        header = Some(current_header);
+        let value = &body[end + 1..body.len() - 1];
+        if value == b"NULL" {
+            continue;
+        }
+        let raw = std::str::from_utf8(value).map_err(|_| MergeError::InvalidBitwise)?;
+        if unsigned {
+            let next = raw.parse::<u128>().map_err(|_| MergeError::InvalidBitwise)?;
+            unsigned_value = Some(match unsigned_value {
+                None => next,
+                Some(prior) => match function {
+                    AggregateFunction::GroupBitAnd => prior & next,
+                    AggregateFunction::GroupBitOr => prior | next,
+                    AggregateFunction::GroupBitXor => prior ^ next,
+                    _ => unreachable!("validated bitwise function"),
+                },
+            });
+        } else {
+            let next = raw.parse::<i128>().map_err(|_| MergeError::InvalidBitwise)?;
+            signed = Some(match signed {
+                None => next,
+                Some(prior) => match function {
+                    AggregateFunction::GroupBitAnd => prior & next,
+                    AggregateFunction::GroupBitOr => prior | next,
+                    AggregateFunction::GroupBitXor => prior ^ next,
+                    _ => unreachable!("validated bitwise function"),
+                },
+            });
+        }
+    }
+    let mut output = header.ok_or(MergeError::InvalidBitwise)?.to_vec();
+    let rendered = if unsigned {
+        unsigned_value.map(|value| value.to_string())
+    } else {
+        signed.map(|value| value.to_string())
+    }.unwrap_or_else(|| "NULL".to_owned());
+    output.extend_from_slice(rendered.as_bytes());
+    output.push(b'\n');
+    Ok(output)
+}
+
 fn merge_integer_extrema(
     shards: &[(usize, Vec<u8>)],
     kind: &str,
@@ -1544,7 +1620,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
                 || is_safe_sum(&select)
-                || is_safe_extremum(&select) =>
+                || is_safe_extremum(&select)
+                || is_safe_bitwise(&select) =>
         {
             select
         }
@@ -1622,6 +1699,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else {
         sql.to_owned()
     };
+    let bitwise_function = match &select.projection {
+        Projection::Aggregate {
+            function: function @ (AggregateFunction::GroupBitAnd
+            | AggregateFunction::GroupBitOr
+            | AggregateFunction::GroupBitXor),
+            ..
+        } => Some(*function),
+        _ => None,
+    };
     let extrema_function = match &select.projection {
         Projection::Aggregate {
             function: function @ (AggregateFunction::Min | AggregateFunction::Max),
@@ -1633,7 +1719,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::Aggregate {
-                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+                    | AggregateFunction::GroupBitAnd | AggregateFunction::GroupBitOr
+                    | AggregateFunction::GroupBitXor,
                 column,
             },
         ) => Some((table.as_str(), column.as_str())),
@@ -1765,6 +1853,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .map_or(Err(MergeError::InvalidSum), |kind| {
                 merge_integer_sums(&shards, kind)
             })
+    } else if let Some(function) = bitwise_function {
+        sum_type
+            .as_deref()
+            .map_or(Err(MergeError::InvalidBitwise), |kind| {
+                merge_integer_bitwise(&shards, kind, function)
+            })
     } else if let Some(function) = extrema_function {
         sum_type
             .as_deref()
@@ -1884,6 +1978,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
         Err(MergeError::InvalidExtremum) => {
             Response::text("502 Bad Gateway", "malformed shard MIN/MAX response\n")
+        }
+        Err(MergeError::InvalidBitwise) => {
+            Response::text("502 Bad Gateway", "malformed shard bitwise aggregate response\n")
         }
         Err(MergeError::SumOverflow) => {
             Response::text("413 Payload Too Large", "distributed SUM overflow\n")
@@ -3231,5 +3328,78 @@ mod logical_distinct_tsv_equivalence_tests {
             merge_distinct_tsv(&[(16, b"v\nvalid\n\\q\n".to_vec())], 1, 0, Some(1)),
             Err(MergeError::InvalidResponse),
         );
+    }
+}
+
+#[cfg(test)]
+mod distributed_bitwise_aggregate_tests {
+    use super::*;
+
+    fn shard(value: &str) -> (usize, Vec<u8>) {
+        (10, value.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn merges_all_three_bitwise_functions() {
+        let xor = [shard("groupBitXor(bits)\n3\n"), shard("groupBitXor(bits)\n5\n")];
+        assert_eq!(
+            merge_integer_bitwise(&xor, "UInt64", AggregateFunction::GroupBitXor).unwrap(),
+            b"groupBitXor(bits)\n6\n"
+        );
+        let or = [shard("groupBitOr(bits)\n-8\n"), shard("groupBitOr(bits)\n3\n")];
+        assert_eq!(
+            merge_integer_bitwise(&or, "Int64", AggregateFunction::GroupBitOr).unwrap(),
+            b"groupBitOr(bits)\n-5\n"
+        );
+        let and = [shard("groupBitAnd(bits)\n7\n"), shard("groupBitAnd(bits)\n3\n")];
+        assert_eq!(
+            merge_integer_bitwise(&and, "UInt64", AggregateFunction::GroupBitAnd).unwrap(),
+            b"groupBitAnd(bits)\n3\n"
+        );
+    }
+
+    #[test]
+    fn ignores_empty_nullable_shards_without_inventing_an_identity() {
+        let values = [shard("groupBitAnd(bits)\nNULL\n"), shard("groupBitAnd(bits)\n7\n")];
+        assert_eq!(
+            merge_integer_bitwise(&values, "Nullable(UInt64)", AggregateFunction::GroupBitAnd).unwrap(),
+            b"groupBitAnd(bits)\n7\n"
+        );
+        assert_eq!(
+            merge_integer_bitwise(&values[..1], "Nullable(UInt64)", AggregateFunction::GroupBitAnd).unwrap(),
+            b"groupBitAnd(bits)\nNULL\n"
+        );
+    }
+
+    #[test]
+    fn rejects_corrupt_and_incompatible_shard_states() {
+        for bad in [
+            "groupBitXor(bits)\n",
+            "groupBitXor(bits)\n4\n5\n",
+            "groupBitXor(bits)\n-1\n",
+            "groupBitXor(bits)\n2.5\n",
+        ] {
+            assert_eq!(
+                merge_integer_bitwise(&[shard(bad)], "UInt64", AggregateFunction::GroupBitXor),
+                Err(MergeError::InvalidBitwise),
+            );
+        }
+        assert_eq!(
+            merge_integer_bitwise(
+                &[shard("groupBitAnd(bits)\n1\n"), shard("groupBitAnd(other)\n2\n")],
+                "UInt64", AggregateFunction::GroupBitAnd
+            ),
+            Err(MergeError::SchemaMismatch),
+        );
+    }
+
+    #[test]
+    fn policy_rejects_pagination() {
+        for function in ["groupBitAnd", "groupBitOr", "groupBitXor"] {
+            let sql = format!("SELECT {function}(bits) FROM events WHERE id > 1");
+            assert!(is_safe_bitwise(&parse_select(&sql).unwrap()));
+            let sql = format!("SELECT {function}(bits) FROM events LIMIT 1");
+            assert!(!is_safe_bitwise(&parse_select(&sql).unwrap()));
+        }
     }
 }
