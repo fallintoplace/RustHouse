@@ -173,3 +173,17 @@ ORDER BY / LIMIT / OFFSET are not supported. Grouped SUM remains unsupported.
 
 SUM requests require an additional schema lookup per shard. As with COUNT,
 shards must hold **disjoint source rows** or results double-count data.
+
+### Distributed integer bitwise aggregates
+
+The read-only coordinator reduces groupBitAnd(column), groupBitOr(column),
+and groupBitXor(column) across disjoint database shards with the same exact
+integer column type. NULL shard states are ignored. All-NULL inputs return NULL.
+Global sorting and pagination are not supported for these scalar aggregates.
+
+### Distributed integer sum of squares
+
+`sumSquares(column)` combines exact integer partial sums across disjoint shards.
+Peers must agree on the column's signed or unsigned integer type. Empty
+shards contribute NULL, and arithmetic overflow is rejected. Floating-point
+sum of squares is not supported by the distributed coordinator.

@@ -33,9 +33,12 @@ enum MergeError {
     InvalidGroupedSum,
     InvalidSortedScan,
     InvalidSum,
+    InvalidProduct,
+    InvalidBitwise,
     InvalidExtremum,
     CountOverflow,
     SumOverflow,
+    ProductOverflow,
 }
 
 /// Ordinary counts sum across shards; DISTINCT needs global key de-duplication.
@@ -1109,6 +1112,152 @@ fn extrema_fits_declared_type(kind: &str, raw: &str) -> bool {
     }
 }
 
+/// Merge bitwise aggregate states. An empty shard has no identity value.
+fn merge_integer_bitwise(
+    shards: &[(usize, Vec<u8>)],
+    kind: &str,
+    function: AggregateFunction,
+) -> Result<Vec<u8>, MergeError> {
+    if !matches!(
+        function,
+        AggregateFunction::GroupBitAnd
+            | AggregateFunction::GroupBitOr
+            | AggregateFunction::GroupBitXor
+    ) {
+        return Err(MergeError::InvalidBitwise);
+    }
+    let unsigned = kind
+        .strip_prefix("Nullable(")
+        .unwrap_or(kind)
+        .starts_with("UInt");
+    let mut header: Option<&[u8]> = None;
+    let mut signed: Option<i128> = None;
+    let mut unsigned_value: Option<u128> = None;
+    for (_, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidBitwise);
+        }
+        let end = body
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .ok_or(MergeError::InvalidBitwise)?;
+        let current_header = &body[..=end];
+        if current_header.len() <= 1 || body.len() <= end + 1 {
+            return Err(MergeError::InvalidBitwise);
+        }
+        if header.is_some_and(|expected| expected != current_header) {
+            return Err(MergeError::SchemaMismatch);
+        }
+        header = Some(current_header);
+        let value = &body[end + 1..body.len() - 1];
+        if value == b"NULL" {
+            continue;
+        }
+        let raw = std::str::from_utf8(value).map_err(|_| MergeError::InvalidBitwise)?;
+        if unsigned {
+            let next = raw
+                .parse::<u128>()
+                .map_err(|_| MergeError::InvalidBitwise)?;
+            unsigned_value = Some(match unsigned_value {
+                None => next,
+                Some(prior) => match function {
+                    AggregateFunction::GroupBitAnd => prior & next,
+                    AggregateFunction::GroupBitOr => prior | next,
+                    AggregateFunction::GroupBitXor => prior ^ next,
+                    _ => unreachable!("validated bitwise function"),
+                },
+            });
+        } else {
+            let next = raw
+                .parse::<i128>()
+                .map_err(|_| MergeError::InvalidBitwise)?;
+            signed = Some(match signed {
+                None => next,
+                Some(prior) => match function {
+                    AggregateFunction::GroupBitAnd => prior & next,
+                    AggregateFunction::GroupBitOr => prior | next,
+                    AggregateFunction::GroupBitXor => prior ^ next,
+                    _ => unreachable!("validated bitwise function"),
+                },
+            });
+        }
+    }
+    let mut output = header.ok_or(MergeError::InvalidBitwise)?.to_vec();
+    let rendered = if unsigned {
+        unsigned_value.map(|value| value.to_string())
+    } else {
+        signed.map(|value| value.to_string())
+    }
+    .unwrap_or_else(|| "NULL".to_owned());
+    output.extend_from_slice(rendered.as_bytes());
+    output.push(b'\n');
+    Ok(output)
+}
+
+/// PRODUCT is decomposable over disjoint shard partials. Empty shards do not
+/// contribute an identity, and overflow must fail rather than wrap.
+fn merge_integer_products(
+    shards: &[(usize, Vec<u8>)],
+    kind: &str,
+) -> Result<Vec<u8>, MergeError> {
+    let unsigned = kind
+        .strip_prefix("Nullable(")
+        .unwrap_or(kind)
+        .starts_with("UInt");
+    let mut expected_header: Option<&[u8]> = None;
+    let mut signed: Option<i128> = None;
+    let mut unsigned_value: Option<u128> = None;
+    for (_, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidProduct);
+        }
+        let end = body
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .ok_or(MergeError::InvalidProduct)?;
+        let header = &body[..=end];
+        if header.len() <= 1 || body.len() <= end + 1 {
+            return Err(MergeError::InvalidProduct);
+        }
+        if expected_header.is_some_and(|expected| expected != header) {
+            return Err(MergeError::SchemaMismatch);
+        }
+        expected_header = Some(header);
+        let value = &body[end + 1..body.len() - 1];
+        if value == b"NULL" {
+            continue;
+        }
+        let digits = std::str::from_utf8(value).map_err(|_| MergeError::InvalidProduct)?;
+        if unsigned {
+            let next = digits
+                .parse::<u128>()
+                .map_err(|_| MergeError::InvalidProduct)?;
+            unsigned_value = Some(match unsigned_value {
+                None => next,
+                Some(prior) => prior.checked_mul(next).ok_or(MergeError::ProductOverflow)?,
+            });
+        } else {
+            let next = digits
+                .parse::<i128>()
+                .map_err(|_| MergeError::InvalidProduct)?;
+            signed = Some(match signed {
+                None => next,
+                Some(prior) => prior.checked_mul(next).ok_or(MergeError::ProductOverflow)?,
+            });
+        }
+    }
+    let mut output = expected_header.ok_or(MergeError::InvalidProduct)?.to_vec();
+    let rendered = if unsigned {
+        unsigned_value.map(|value| value.to_string())
+    } else {
+        signed.map(|value| value.to_string())
+    }
+    .unwrap_or_else(|| "NULL".to_owned());
+    output.extend_from_slice(rendered.as_bytes());
+    output.push(b'\n');
+    Ok(output)
+}
+
 fn merge_integer_extrema(
     shards: &[(usize, Vec<u8>)],
     kind: &str,
@@ -1703,6 +1852,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
                 || is_safe_sum(&select)
+                || is_safe_sum_squares(&select)
+                || is_safe_product(&select)
+                || is_safe_bitwise(&select)
                 || is_safe_extremum(&select) =>
         {
             select
@@ -1725,7 +1877,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     };
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
-    let sum_query = is_safe_sum(&select);
+    let sum_query = is_safe_sum(&select) || is_safe_sum_squares(&select);
+    let product_query = is_safe_product(&select);
     let uniq_query = is_safe_uniq(&select);
     let shard_sql = if sorted_query {
         match sorted_scan_sql(sql, &select) {
@@ -1781,6 +1934,16 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else {
         sql.to_owned()
     };
+    let bitwise_function = match &select.projection {
+        Projection::Aggregate {
+            function:
+                function @ (AggregateFunction::GroupBitAnd
+                | AggregateFunction::GroupBitOr
+                | AggregateFunction::GroupBitXor),
+            ..
+        } => Some(*function),
+        _ => None,
+    };
     let extrema_function = match &select.projection {
         Projection::Aggregate {
             function: function @ (AggregateFunction::Min | AggregateFunction::Max),
@@ -1792,7 +1955,14 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::Aggregate {
-                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
+                function: AggregateFunction::Sum
+                    | AggregateFunction::SumSquares
+                    | AggregateFunction::Product
+                    | AggregateFunction::Min
+                    | AggregateFunction::Max
+                    | AggregateFunction::GroupBitAnd
+                    | AggregateFunction::GroupBitOr
+                    | AggregateFunction::GroupBitXor,
                 column,
             },
         ) => Some((table.as_str(), column.as_str())),
@@ -1924,6 +2094,18 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .map_or(Err(MergeError::InvalidSum), |kind| {
                 merge_integer_sums(&shards, kind)
             })
+    } else if product_query {
+        sum_type
+            .as_deref()
+            .map_or(Err(MergeError::InvalidProduct), |kind| {
+                merge_integer_products(&shards, kind)
+            })
+    } else if let Some(function) = bitwise_function {
+        sum_type
+            .as_deref()
+            .map_or(Err(MergeError::InvalidBitwise), |kind| {
+                merge_integer_bitwise(&shards, kind, function)
+            })
     } else if let Some(function) = extrema_function {
         sum_type
             .as_deref()
@@ -2052,6 +2234,16 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         ),
         Err(MergeError::InvalidSum) => {
             Response::text("502 Bad Gateway", "malformed shard SUM response\n")
+        }
+        Err(MergeError::InvalidBitwise) => Response::text(
+            "502 Bad Gateway",
+            "malformed shard bitwise aggregate response\n",
+        ),
+        Err(MergeError::InvalidProduct) => {
+            Response::text("502 Bad Gateway", "malformed shard PRODUCT response\n")
+        }
+        Err(MergeError::ProductOverflow) => {
+            Response::text("413 Payload Too Large", "distributed PRODUCT overflow\n")
         }
         Err(MergeError::InvalidExtremum) => {
             Response::text("502 Bad Gateway", "malformed shard MIN/MAX response\n")
@@ -3593,5 +3785,208 @@ mod distributed_grouped_signed_cancellation_tests {
             merge_grouped_integer_sums(&values, 10, "Int128", "category", "amount"),
             Err(MergeError::SumOverflow),
         );
+    }
+}
+
+#[cfg(test)]
+mod distributed_bitwise_aggregate_tests {
+    use super::*;
+
+    fn shard(value: &str) -> (usize, Vec<u8>) {
+        (10, value.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn merges_all_three_bitwise_functions() {
+        let xor = [
+            shard("groupBitXor(bits)\n3\n"),
+            shard("groupBitXor(bits)\n5\n"),
+        ];
+        assert_eq!(
+            merge_integer_bitwise(&xor, "UInt64", AggregateFunction::GroupBitXor).unwrap(),
+            b"groupBitXor(bits)\n6\n"
+        );
+        let or = [
+            shard("groupBitOr(bits)\n-8\n"),
+            shard("groupBitOr(bits)\n3\n"),
+        ];
+        assert_eq!(
+            merge_integer_bitwise(&or, "Int64", AggregateFunction::GroupBitOr).unwrap(),
+            b"groupBitOr(bits)\n-5\n"
+        );
+        let and = [
+            shard("groupBitAnd(bits)\n7\n"),
+            shard("groupBitAnd(bits)\n3\n"),
+        ];
+        assert_eq!(
+            merge_integer_bitwise(&and, "UInt64", AggregateFunction::GroupBitAnd).unwrap(),
+            b"groupBitAnd(bits)\n3\n"
+        );
+    }
+
+    #[test]
+    fn ignores_empty_nullable_shards_without_inventing_an_identity() {
+        let values = [
+            shard("groupBitAnd(bits)\nNULL\n"),
+            shard("groupBitAnd(bits)\n7\n"),
+        ];
+        assert_eq!(
+            merge_integer_bitwise(&values, "Nullable(UInt64)", AggregateFunction::GroupBitAnd)
+                .unwrap(),
+            b"groupBitAnd(bits)\n7\n"
+        );
+        assert_eq!(
+            merge_integer_bitwise(
+                &values[..1],
+                "Nullable(UInt64)",
+                AggregateFunction::GroupBitAnd
+            )
+            .unwrap(),
+            b"groupBitAnd(bits)\nNULL\n"
+        );
+    }
+
+    #[test]
+    fn rejects_corrupt_and_incompatible_shard_states() {
+        for bad in [
+            "groupBitXor(bits)\n",
+            "groupBitXor(bits)\n4\n5\n",
+            "groupBitXor(bits)\n-1\n",
+            "groupBitXor(bits)\n2.5\n",
+        ] {
+            assert_eq!(
+                merge_integer_bitwise(&[shard(bad)], "UInt64", AggregateFunction::GroupBitXor),
+                Err(MergeError::InvalidBitwise),
+            );
+        }
+        assert_eq!(
+            merge_integer_bitwise(
+                &[
+                    shard("groupBitAnd(bits)\n1\n"),
+                    shard("groupBitAnd(other)\n2\n")
+                ],
+                "UInt64",
+                AggregateFunction::GroupBitAnd
+            ),
+            Err(MergeError::SchemaMismatch),
+        );
+    }
+
+    #[test]
+    fn policy_rejects_pagination() {
+        for function in ["groupBitAnd", "groupBitOr", "groupBitXor"] {
+            let sql = format!("SELECT {function}(bits) FROM events WHERE id > 1");
+            assert!(is_safe_bitwise(&parse_select(&sql).unwrap()));
+            let sql = format!("SELECT {function}(bits) FROM events LIMIT 1");
+            assert!(!is_safe_bitwise(&parse_select(&sql).unwrap()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod distributed_sum_squares_tests {
+    use super::*;
+
+    #[test]
+    fn supports_exact_integer_sum_squares_without_global_clauses() {
+        for sql in [
+            "SELECT sumSquares(amount) FROM events",
+            "SELECT sumSquares(amount) FROM events WHERE id > 3",
+        ] {
+            assert!(is_safe_sum_squares(&parse_select(sql).unwrap()));
+        }
+        for sql in [
+            "SELECT sumSquares(amount) FROM events LIMIT 1",
+            "SELECT sumSquares(amount) FROM numbers(10)",
+            "SELECT sumSquares(amount) FROM events OFFSET 1",
+        ] {
+            assert!(parse_select(sql).map_or(true, |query| !is_safe_sum_squares(&query)));
+        }
+    }
+
+    #[test]
+    fn combines_shard_partial_squares_without_rounding_or_null_identity() {
+        let values = [
+            (10, b"sumSquares(amount)\n9\n".to_vec()),
+            (10, b"sumSquares(amount)\nNULL\n".to_vec()),
+            (10, b"sumSquares(amount)\n16\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_integer_sums(&values, "Nullable(Int64)").unwrap(),
+            b"sumSquares(amount)\n25\n"
+        );
+        assert_eq!(
+            merge_integer_sums(&values[1..2], "Int64").unwrap(),
+            b"sumSquares(amount)\nNULL\n"
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_integer_product_tests {
+    use super::*;
+
+    fn shard(body: &str) -> (usize, Vec<u8>) {
+        (10, body.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn multiplies_signed_and_unsigned_partial_products() {
+        let values = [
+            shard("product(amount)\n-3\n"),
+            shard("product(amount)\n4\n"),
+            shard("product(amount)\nNULL\n"),
+        ];
+        assert_eq!(
+            merge_integer_products(&values, "Nullable(Int64)").unwrap(),
+            b"product(amount)\n-12\n"
+        );
+        let values = [
+            shard("product(amount)\n0\n"),
+            shard("product(amount)\n18446744073709551615\n"),
+        ];
+        assert_eq!(
+            merge_integer_products(&values, "UInt64").unwrap(),
+            b"product(amount)\n0\n"
+        );
+        assert_eq!(
+            merge_integer_products(&[shard("product(amount)\nNULL\n")], "Int64").unwrap(),
+            b"product(amount)\nNULL\n"
+        );
+    }
+
+    #[test]
+    fn rejects_overflow_malformed_values_and_mismatched_headers() {
+        let values = [
+            shard("product(amount)\n340282366920938463463374607431768211455\n"),
+            shard("product(amount)\n2\n"),
+        ];
+        assert_eq!(
+            merge_integer_products(&values, "UInt128"),
+            Err(MergeError::ProductOverflow),
+        );
+        for invalid in ["product(amount)\n-1\n", "product(amount)\n1\n2\n", "product(amount)\n"] {
+            assert_eq!(
+                merge_integer_products(&[shard(invalid)], "UInt64"),
+                Err(MergeError::InvalidProduct),
+            );
+        }
+        assert_eq!(
+            merge_integer_products(
+                &[shard("product(amount)\n2\n"), shard("product(other)\n3\n")],
+                "UInt64",
+            ),
+            Err(MergeError::SchemaMismatch),
+        );
+    }
+
+    #[test]
+    fn product_requires_unpaged_named_table() {
+        assert!(is_safe_product(
+            &parse_select("SELECT product(amount) FROM events").unwrap()
+        ));
+        assert!(!is_safe_product(
+            &parse_select("SELECT product(amount) FROM events LIMIT 1").unwrap()
+        ));
     }
 }
