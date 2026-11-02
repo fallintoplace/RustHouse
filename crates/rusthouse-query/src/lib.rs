@@ -912,9 +912,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     {
         let name = parser.word()?;
         let function = match name.to_ascii_uppercase().as_str() {
-            "GROUPBITXOR" => AggregateFunction::GroupBitXor,
-            "GROUPBITOR" => AggregateFunction::GroupBitOr,
-            "GROUPBITAND" => AggregateFunction::GroupBitAnd,
+            "GROUPBITXOR" | "BIT_XOR" => AggregateFunction::GroupBitXor,
+            "GROUPBITOR" | "BIT_OR" => AggregateFunction::GroupBitOr,
+            "GROUPBITAND" | "BIT_AND" => AggregateFunction::GroupBitAnd,
             "ANYLAST" => AggregateFunction::AnyLast,
             "ANY" => AggregateFunction::Any,
             "COUNTIF" => AggregateFunction::CountIf,
@@ -1051,9 +1051,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             if parser.tokens.get(parser.index + 1) == Some(&Token::LParen) {
                 let function = match parser.tokens.get(parser.index) {
                     Some(Token::Word(name)) => match name.to_ascii_uppercase().as_str() {
-                        "GROUPBITXOR" => Some(AggregateFunction::GroupBitXor),
-                        "GROUPBITOR" => Some(AggregateFunction::GroupBitOr),
-                        "GROUPBITAND" => Some(AggregateFunction::GroupBitAnd),
+                        "GROUPBITXOR" | "BIT_XOR" => Some(AggregateFunction::GroupBitXor),
+                        "GROUPBITOR" | "BIT_OR" => Some(AggregateFunction::GroupBitOr),
+                        "GROUPBITAND" | "BIT_AND" => Some(AggregateFunction::GroupBitAnd),
                         "ANYLAST" => Some(AggregateFunction::AnyLast),
                         "ANY" => Some(AggregateFunction::Any),
                         "COUNTIF" => Some(AggregateFunction::CountIf),
@@ -1131,9 +1131,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             "MEDIAN" => AggregateFunction::Median,
                             "ANY" => AggregateFunction::Any,
                             "ANYLAST" => AggregateFunction::AnyLast,
-                            "GROUPBITAND" => AggregateFunction::GroupBitAnd,
-                            "GROUPBITOR" => AggregateFunction::GroupBitOr,
-                            "GROUPBITXOR" => AggregateFunction::GroupBitXor,
+                            "GROUPBITAND" | "BIT_AND" => AggregateFunction::GroupBitAnd,
+                            "GROUPBITOR" | "BIT_OR" => AggregateFunction::GroupBitOr,
+                            "GROUPBITXOR" | "BIT_XOR" => AggregateFunction::GroupBitXor,
                             _ => {
                                 return Err(ParseError(format!(
                                     "unsupported grouped aggregate: {name}"
