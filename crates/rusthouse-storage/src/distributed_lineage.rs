@@ -1350,8 +1350,7 @@ mod snapshot_history_merge_diff_tests {
             let expected_common = local
                 .iter()
                 .copied()
-                .filter(|v| remote_by_generation.get(&v.generation) == Some(&v.fingerprint))
-                .next_back();
+                .rfind(|v| remote_by_generation.get(&v.generation) == Some(&v.fingerprint));
             assert_eq!(diff.newest_common, expected_common);
             let expected_conflicts = local
                 .iter()
