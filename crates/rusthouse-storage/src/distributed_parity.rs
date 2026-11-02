@@ -139,3 +139,215 @@ mod tests {
         assert!(encode_xor_parity(&[&large, b""]).is_err());
     }
 }
+
+
+/// Two independent parity shards over GF(2^8), with primitive polynomial
+/// x^8 + x^4 + x^3 + x^2 + 1. These are not integrity signatures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoubleParity {
+    pub xor: Vec<u8>,
+    pub weighted: Vec<u8>,
+}
+
+fn gf256_mul(mut a: u8, mut b: u8) -> u8 {
+    let mut product = 0u8;
+    for _ in 0..8 {
+        if b & 1 != 0 {
+            product ^= a;
+        }
+        let carry = a & 0x80 != 0;
+        a <<= 1;
+        if carry {
+            a ^= 0x1d;
+        }
+        b >>= 1;
+    }
+    product
+}
+
+fn gf256_pow(mut base: u8, mut power: u16) -> u8 {
+    let mut result = 1u8;
+    while power != 0 {
+        if power & 1 != 0 {
+            result = gf256_mul(result, base);
+        }
+        base = gf256_mul(base, base);
+        power >>= 1;
+    }
+    result
+}
+
+fn parity_coefficient(index: usize) -> u8 {
+    // 2 is primitive under polynomial 0x11d; the first 16 coefficients
+    // are all distinct and nonzero.
+    gf256_pow(2, index as u16)
+}
+
+/// Encode XOR parity and a second independent Reed-Solomon-style parity.
+/// Source lengths are externally retained; short shards are zero-padded.
+pub fn encode_double_parity(sources: &[&[u8]]) -> Result<DoubleParity, &'static str> {
+    if !valid_stripe_count(sources.len()) {
+        return Err("invalid double parity shard count");
+    }
+    let width = sources.iter().map(|source| source.len()).max().unwrap_or(0);
+    if width > MAX_SHARD_BYTES {
+        return Err("double parity shard exceeds size limit");
+    }
+    let mut xor = vec![0u8; width];
+    let mut weighted = vec![0u8; width];
+    for (index, source) in sources.iter().enumerate() {
+        let coefficient = parity_coefficient(index);
+        for (offset, &byte) in source.iter().enumerate() {
+            xor[offset] ^= byte;
+            weighted[offset] ^= gf256_mul(coefficient, byte);
+        }
+    }
+    Ok(DoubleParity { xor, weighted })
+}
+
+/// Recover one or two absent data shards from an intact pair of parity shards.
+///
+/// Original lengths must come from independently verified metadata. This
+/// operation detects parity inconsistencies with one erasure, but cannot
+/// authenticate data or detect arbitrary corruption with two erasures.
+pub fn recover_double_erasure(
+    shards: &[Option<&[u8]>],
+    original_lengths: &[usize],
+    parity: &DoubleParity,
+) -> Result<Vec<(usize, Vec<u8>)>, &'static str> {
+    if !valid_stripe_count(shards.len())
+        || shards.len() != original_lengths.len()
+        || parity.xor.len() != parity.weighted.len()
+        || parity.xor.len() > MAX_SHARD_BYTES
+    {
+        return Err("invalid double parity recovery layout");
+    }
+    let width = parity.xor.len();
+    let mut missing = Vec::with_capacity(2);
+    for (index, (shard, &length)) in shards.iter().zip(original_lengths).enumerate() {
+        if length > width {
+            return Err("original shard length exceeds parity width");
+        }
+        match shard {
+            Some(bytes) if bytes.len() != length => {
+                return Err("available shard length does not match manifest");
+            }
+            None => missing.push(index),
+            _ => {}
+        }
+    }
+    if missing.is_empty() || missing.len() > 2 {
+        return Err("double parity requires one or two missing shards");
+    }
+
+    let mut xor = parity.xor.clone();
+    let mut weighted = parity.weighted.clone();
+    for (index, shard) in shards.iter().enumerate() {
+        if let Some(bytes) = shard {
+            let coefficient = parity_coefficient(index);
+            for (offset, &byte) in bytes.iter().enumerate() {
+                xor[offset] ^= byte;
+                weighted[offset] ^= gf256_mul(coefficient, byte);
+            }
+        }
+    }
+
+    let recovered = if missing.len() == 1 {
+        let coefficient = parity_coefficient(missing[0]);
+        if xor
+            .iter()
+            .zip(&weighted)
+            .any(|(&byte, &check)| gf256_mul(coefficient, byte) != check)
+        {
+            return Err("double parity syndromes disagree");
+        }
+        vec![(missing[0], xor)]
+    } else {
+        let left = parity_coefficient(missing[0]);
+        let right = parity_coefficient(missing[1]);
+        let divisor = left ^ right;
+        if divisor == 0 {
+            return Err("duplicate parity coefficients");
+        }
+        let inverse = gf256_pow(divisor, 254);
+        let mut a = Vec::with_capacity(width);
+        let mut b = Vec::with_capacity(width);
+        for (&p, &q) in xor.iter().zip(&weighted) {
+            let first = gf256_mul(inverse, q ^ gf256_mul(right, p));
+            a.push(first);
+            b.push(p ^ first);
+        }
+        vec![(missing[0], a), (missing[1], b)]
+    };
+
+    let mut output = recovered;
+    for (index, data) in &mut output {
+        let length = original_lengths[*index];
+        if data[length..].iter().any(|&byte| byte != 0) {
+            return Err("nonzero recovered parity padding");
+        }
+        data.truncate(length);
+    }
+    Ok(output)
+}
+
+#[cfg(test)]
+mod double_parity_tests {
+    use super::*;
+
+    #[test]
+    fn all_one_and_two_erasure_combinations_roundtrip() {
+        let originals: [&[u8]; 5] = [b"hello", b"abc", b"", b"longer-shard", b"xyz"];
+        let parity = encode_double_parity(&originals).unwrap();
+        let lengths = originals.iter().map(|part| part.len()).collect::<Vec<_>>();
+        for left in 0..originals.len() {
+            for right in left..originals.len() {
+                let shards = originals
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &part)| {
+                        (index != left && index != right).then_some(part)
+                    })
+                    .collect::<Vec<_>>();
+                let recovery = recover_double_erasure(&shards, &lengths, &parity).unwrap();
+                assert_eq!(recovery[0], (left, originals[left].to_vec()));
+                if left != right {
+                    assert_eq!(recovery[1], (right, originals[right].to_vec()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn catches_bad_layouts_padding_and_single_syndrome_corruption() {
+        let originals: [&[u8]; 3] = [b"aa", b"bbb", b"c"];
+        let parity = encode_double_parity(&originals).unwrap();
+        assert!(recover_double_erasure(
+            &[None, None, None],
+            &[2, 3, 1],
+            &parity
+        )
+        .is_err());
+        assert!(recover_double_erasure(
+            &[None, Some(b"bb"), Some(b"c")],
+            &[2, 3, 1],
+            &parity
+        )
+        .is_err());
+        let mut altered = parity.clone();
+        altered.weighted[0] ^= 1;
+        assert!(recover_double_erasure(
+            &[None, Some(b"bbb"), Some(b"c")],
+            &[2, 3, 1],
+            &altered
+        )
+        .is_err());
+        assert!(recover_double_erasure(
+            &[None, Some(b"bbb"), Some(b"c")],
+            &[1, 3, 1],
+            &parity
+        )
+        .is_err());
+        assert!(encode_double_parity(&[b"only-one"]).is_err());
+    }
+}
