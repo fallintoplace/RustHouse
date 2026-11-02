@@ -188,6 +188,9 @@ pub(super) fn execute<W: Write>(
         .collect::<HashMap<_, _>>();
     let mut names = vec![column.to_owned()];
     for (function, value_column) in items {
+        if *function == AggregateFunction::Count && value_column == "*" {
+            continue;
+        }
         if !names.contains(value_column) {
             names.push(value_column.clone());
         }
@@ -255,7 +258,9 @@ pub(super) fn execute<W: Write>(
     let group_index = indices[column];
     let item_indices = items
         .iter()
-        .map(|(_, name)| indices[name])
+        .map(|(function, name)| {
+            (*function != AggregateFunction::Count || name != "*").then(|| indices[name])
+        })
         .collect::<Vec<_>>();
     let filter_indices = filters
         .iter()
@@ -369,7 +374,7 @@ pub(super) fn execute<W: Write>(
                     }
                 }
             };
-            for (metric, ((function, _), (&column_index, state))) in items
+            for (metric, ((function, _), (column_index, state))) in items
                 .iter()
                 .zip(item_indices.iter().zip(groups[index].1.iter_mut()))
                 .enumerate()
@@ -380,16 +385,21 @@ pub(super) fn execute<W: Write>(
                         continue;
                     }
                 }
+                if *function == AggregateFunction::Count {
+                    if let Some(column_index) = *column_index {
+                        if !typed::is_null_at(&batch[column_index], row) {
+                            state.increment_count()?;
+                        }
+                    } else {
+                        state.increment_count()?;
+                    }
+                    continue;
+                }
+                let column_index = column_index.expect("non-COUNT(*) metric has a column");
                 if *function == AggregateFunction::Median
                     && !typed::is_null_at(&batch[column_index], row)
                 {
                     reserve_median_value(&mut retained_median_bytes)?;
-                }
-                if *function == AggregateFunction::Count {
-                    if !typed::is_null_at(&batch[column_index], row) {
-                        state.increment_count()?;
-                    }
-                    continue;
                 }
                 // Handle native numeric batches without creating a Cell
                 // for each aggregate value and every matching input row.
