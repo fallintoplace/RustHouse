@@ -167,8 +167,14 @@ fn push_visible_row(
     row: Vec<typed::Cell>,
     retained: &mut usize,
     filter: Option<(usize, bool)>,
+    comparison: Option<&(usize, crate::Operator, typed::Cell)>,
 ) -> Result<(), ExecutionError> {
     if filter.is_some_and(|(index, not_null)| matches!(row[index], typed::Cell::Null) == not_null) {
+        return Ok(());
+    }
+    if comparison.is_some_and(|(index, operator, literal)| {
+        !typed::matches_comparison(&row[*index], literal, *operator)
+    }) {
         return Ok(());
     }
     push_row(rows, row, retained)
@@ -358,6 +364,9 @@ fn required_physical_columns(
     if let Some((column, _)) = &query.where_null {
         retain_absolute(column_index(relations, column)?);
     }
+    if let Some((column, _, _)) = &query.where_comparison {
+        retain_absolute(column_index(relations, column)?);
+    }
     for (column, _, _) in &query.order_by {
         retain_absolute(column_index(relations, column)?);
     }
@@ -460,6 +469,10 @@ pub fn execute_multi_join<W: Write>(
         if let Some((column, _)) = &query.where_null {
             column_index(&relations, column)?;
         }
+        if let Some((column, _, literal)) = &query.where_comparison {
+            let index = column_index(&relations, column)?;
+            typed::parse_literal(column_type(&relations, index), literal)?;
+        }
         for (column, _, _) in &query.order_by {
             column_index(&relations, column)?;
         }
@@ -478,6 +491,7 @@ pub fn execute_multi_join<W: Write>(
         && query.steps.iter().all(|step| step.kind == JoinType::Inner)
         && query.order_by.is_empty()
         && query.aggregate.is_none()
+        && query.where_comparison.is_none()
     {
         return streaming::execute(query, paths, &relations, &initial_step, output);
     }
@@ -488,6 +502,15 @@ pub fn execute_multi_join<W: Write>(
         .where_null
         .as_ref()
         .map(|(column, not_null)| column_index(&relations, column).map(|index| (index, *not_null)))
+        .transpose()?;
+    let output_comparison = query
+        .where_comparison
+        .as_ref()
+        .map(|(column, operator, literal)| {
+            let index = column_index(&relations, column)?;
+            let value = typed::parse_literal(column_type(&relations, index), literal)?;
+            Ok::<_, ExecutionError>((index, *operator, value))
+        })
         .transpose()?;
     let required = required_physical_columns(query, &relations, &initial_step)?;
     let mut rows = read_projected_build_rows(
@@ -604,6 +627,11 @@ pub fn execute_multi_join<W: Write>(
         } else {
             None
         };
+        let comparison = if step_index == query.steps.len() {
+            output_comparison.as_ref()
+        } else {
+            None
+        };
         let mut probe_key = Vec::with_capacity(left_keys.len());
         for row in &rows {
             let mut matched = false;
@@ -634,7 +662,7 @@ pub fn execute_multi_join<W: Write>(
                             Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
                         joined.extend_from_slice(&right_rows[match_index]);
-                        push_visible_row(&mut next, joined, &mut retained, filter)?;
+                        push_visible_row(&mut next, joined, &mut retained, filter, comparison)?;
                     }
                 }
             }
@@ -642,7 +670,7 @@ pub fn execute_multi_join<W: Write>(
                 let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
                 joined.extend_from_slice(row);
                 joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
-                push_visible_row(&mut next, joined, &mut retained, filter)?;
+                push_visible_row(&mut next, joined, &mut retained, filter, comparison)?;
             }
         }
         if let Some(matched_right) = matched_right {
@@ -650,7 +678,7 @@ pub fn execute_multi_join<W: Write>(
                 if !matched {
                     let mut joined = vec![typed::Cell::Null; left_width];
                     joined.extend_from_slice(&right_rows[right_index]);
-                    push_visible_row(&mut next, joined, &mut retained, filter)?;
+                    push_visible_row(&mut next, joined, &mut retained, filter, comparison)?;
                 }
             }
         }
