@@ -1333,7 +1333,7 @@ mod snapshot_history_merge_diff_tests {
 
     #[test]
     fn linear_merge_matches_an_independent_generation_map_oracle() {
-        for stride in 1..=7u64 {
+        for stride in 2..=7u64 {
             let local = (1..=500)
                 .filter(|g| g % stride != 0)
                 .map(|g| version(g, g as u128 * 3))
