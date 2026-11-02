@@ -1002,6 +1002,39 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
     Ok(output)
 }
 
+/// Reject a corrupted peer MIN/MAX value that cannot exist in its schema.
+/// Unlike SUM, MIN/MAX must always retain the original physical width.
+fn extrema_fits_declared_type(kind: &str, raw: &str) -> bool {
+    let base = kind
+        .strip_prefix("Nullable(")
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(kind);
+    let (unsigned, bits) = match base {
+        "UInt8" => (true, 8),
+        "UInt16" => (true, 16),
+        "UInt32" => (true, 32),
+        "UInt64" => (true, 64),
+        "UInt128" => (true, 128),
+        "Int8" => (false, 8),
+        "Int16" => (false, 16),
+        "Int32" => (false, 32),
+        "Int64" => (false, 64),
+        "Int128" => (false, 128),
+        _ => return false,
+    };
+    if unsigned {
+        raw.parse::<u128>().is_ok_and(|value| {
+            bits == 128 || value <= (1u128 << bits) - 1
+        })
+    } else {
+        raw.parse::<i128>().is_ok_and(|value| {
+            bits == 128
+                || (value >= -(1i128 << (bits - 1))
+                    && value <= (1i128 << (bits - 1)) - 1)
+        })
+    }
+}
+
 fn merge_integer_extrema(
     shards: &[(usize, Vec<u8>)],
     kind: &str,
@@ -1041,6 +1074,9 @@ fn merge_integer_extrema(
             continue;
         }
         let number = std::str::from_utf8(value).map_err(|_| MergeError::InvalidExtremum)?;
+        if !extrema_fits_declared_type(kind, number) {
+            return Err(MergeError::InvalidExtremum);
+        }
         if unsigned {
             let parsed = number
                 .parse::<u128>()
@@ -3231,5 +3267,54 @@ mod logical_distinct_tsv_equivalence_tests {
             merge_distinct_tsv(&[(16, b"v\nvalid\n\\q\n".to_vec())], 1, 0, Some(1)),
             Err(MergeError::InvalidResponse),
         );
+    }
+}
+
+#[cfg(test)]
+mod distributed_extrema_width_validation_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_out_of_range_peer_minmax_values() {
+        for (kind, value) in [
+            ("Int8", "128"),
+            ("Int8", "-129"),
+            ("UInt8", "256"),
+            ("Nullable(UInt16)", "65536"),
+            ("Int16", "32768"),
+            ("UInt64", "18446744073709551616"),
+            ("Int128", "170141183460469231731687303715884105728"),
+        ] {
+            let body = format!("min(amount)\n{value}\n");
+            assert_eq!(
+                merge_integer_extrema(
+                    &[(10, body.into_bytes())],
+                    kind,
+                    AggregateFunction::Min,
+                ),
+                Err(MergeError::InvalidExtremum),
+                "{kind}: {value}",
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_signed_unsigned_and_nullable_schema_boundaries() {
+        for (kind, value) in [
+            ("Int8", "-128"),
+            ("Int8", "127"),
+            ("UInt8", "255"),
+            ("Nullable(UInt16)", "65535"),
+            ("Int16", "-32768"),
+            ("Int128", "-170141183460469231731687303715884105728"),
+            ("UInt128", "340282366920938463463374607431768211455"),
+        ] {
+            let body = format!("max(amount)\n{value}\n");
+            assert!(merge_integer_extrema(
+                &[(10, body.into_bytes())],
+                kind,
+                AggregateFunction::Max,
+            ).is_ok(), "{kind}: {value}");
+        }
     }
 }
