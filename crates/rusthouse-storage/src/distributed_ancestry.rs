@@ -35,7 +35,7 @@ impl SnapshotAncestry {
         let mut sorted = records.to_vec();
         sorted.sort_unstable_by_key(|record| (record.snapshot.epoch, record.snapshot.generation));
         let mut nodes: Vec<IndexedSnapshot> = Vec::with_capacity(sorted.len());
-        let mut by_generation = HashMap::with_capacity(sorted.len());
+        let mut by_generation: HashMap<(u64, u64), usize> = HashMap::with_capacity(sorted.len());
         for record in sorted {
             let version = record.snapshot;
             if version.epoch == 0 || version.generation == 0 {
