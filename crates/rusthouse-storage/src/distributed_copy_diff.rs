@@ -70,6 +70,11 @@ fn reject_portable_key_aliases(
     source: &[ObjectMetadata],
     destination: &[ObjectMetadata],
 ) -> Result<(), &'static str> {
+    // Enforce the inventory cap before hashing or allocating for untrusted
+    // caller-provided inventories.
+    if source.len() > 65_536 || destination.len() > 65_536 {
+        return Err("replica inventory too large");
+    }
     if !source
         .iter()
         .chain(destination)
