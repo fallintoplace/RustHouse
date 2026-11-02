@@ -9,7 +9,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from schema import TABLES, names
+from schema import TABLES, NUMERIC_MODES, names
 
 MAX_LINE = 8 * 1024 * 1024
 DECIMAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?\Z")
@@ -47,7 +47,9 @@ def parse_scaled_number(raw, scale):
     return int(raw)
 
 
-def convert_value(raw, kind, scale):
+def convert_value(raw, kind, scale, numeric_mode="scaled"):
+    if numeric_mode not in NUMERIC_MODES:
+        raise ValueError("unknown TPC-H numeric mode")
     if kind == "String":
         if not raw or raw == r"\N" or any(ord(char) < 32 or ord(char) == 127 for char in raw):
             raise ValueError("empty, NULL-marker, or control-character string")
@@ -57,13 +59,21 @@ def convert_value(raw, kind, scale):
             raise ValueError("date must be YYYY-MM-DD")
         return raw
     value = parse_scaled_number(raw, scale)
+    if numeric_mode == "float" and scale != 1:
+        # Preserve the original decimal magnitude instead of integer cents/basis points.
+        # This is an approximate Float64 fixture, not exact SQL DECIMAL support.
+        if not -2**63 <= value <= 2**63 - 1:
+            raise ValueError("decimal outside supported dbgen range")
+        return raw
     low, high = (0, 2**64 - 1) if kind == "UInt64" else (-2**63, 2**63 - 1)
     if not low <= value <= high:
         raise ValueError("integer outside RustHouse column range")
     return str(value)
 
 
-def convert_table(source, target, table):
+def convert_table(source, target, table, numeric_mode="scaled"):
+    if numeric_mode not in NUMERIC_MODES:
+        raise ValueError("unknown TPC-H numeric mode")
     if table not in TABLES:
         raise ValueError(f"unknown dbgen table: {table}")
     source, target = Path(source), Path(target)
@@ -93,7 +103,7 @@ def convert_table(source, target, table):
                     raise ValueError(f"{table} row {number}: wrong field count or missing trailing pipe")
                 try:
                     converted = [
-                        convert_value(raw, kind, scale)
+                        convert_value(raw, kind, scale, numeric_mode)
                         for raw, (_, kind, scale) in zip(fields[:-1], TABLES[table])
                     ]
                 except ValueError as error:
@@ -109,7 +119,10 @@ def convert_table(source, target, table):
     return rows
 
 
-def convert_directory(source_dir, target_dir, selected=None, jobs=1):
+def convert_directory(source_dir, target_dir, selected=None, jobs=1,
+                      numeric_mode="scaled"):
+    if numeric_mode not in NUMERIC_MODES:
+        raise ValueError("unknown TPC-H numeric mode")
     selected = tuple(TABLES if selected is None else selected)
     if not selected or len(set(selected)) != len(selected) or any(
         table not in TABLES for table in selected
@@ -121,7 +134,7 @@ def convert_directory(source_dir, target_dir, selected=None, jobs=1):
     def convert_one(table):
         src = Path(source_dir) / (table + ".tbl")
         dst = Path(target_dir) / (table + ".tsv")
-        return table, convert_table(src, dst, table)
+        return table, convert_table(src, dst, table, numeric_mode)
 
     # Table files are independent and can be converted on separate workers.
     # Maintain deterministic table-order reporting regardless of completion order.
@@ -138,10 +151,12 @@ def main(argv=None):
     parser.add_argument("--table", action="append", choices=tuple(TABLES))
     parser.add_argument("--jobs", type=int, default=1,
                         help="Parallel dbgen table converters (1 to 8)")
+    parser.add_argument("--numeric-mode", choices=NUMERIC_MODES, default="scaled",
+                        help="scaled integers (default) or unscaled approximate Float64")
     args = parser.parse_args(argv)
     try:
         counts = convert_directory(args.input_dir, args.output_dir, args.table,
-                                   jobs=args.jobs)
+                                   jobs=args.jobs, numeric_mode=args.numeric_mode)
     except (OSError, ValueError) as error:
         parser.exit(1, f"conversion failed: {error}\n")
     for table, rows in counts.items():
