@@ -214,6 +214,133 @@ pub fn membership_changes(
     Ok(changes)
 }
 
+/// Apply an explicit, previously reviewed membership delta as one value change.
+///
+/// Every removal or reconfiguration must match the exact old record, not just
+/// the node name. This prevents stale control-plane deltas from silently
+/// changing a newer membership snapshot. The input is never mutated.
+pub fn apply_membership_changes(
+    before: &[Member],
+    changes: &[MembershipChange],
+) -> Result<Vec<Member>, &'static str> {
+    validate_membership(before)?;
+    if changes.len() > 2 * MAX_MEMBER_RECORDS {
+        return Err("membership delta exceeds record limit");
+    }
+    let mut result = before.to_vec();
+    let mut touched = std::collections::HashSet::with_capacity(changes.len());
+    for change in changes {
+        let node = match change {
+            MembershipChange::Added(member) | MembershipChange::Removed(member) => {
+                member.node.as_str()
+            }
+            MembershipChange::Reconfigured { before, after } => {
+                if before.node != after.node {
+                    return Err("membership reconfiguration changed node identity");
+                }
+                before.node.as_str()
+            }
+        };
+        if !touched.insert(node) {
+            return Err("membership delta changes the same node twice");
+        }
+        let index = result.iter().position(|member| member.node == node);
+        match change {
+            MembershipChange::Added(member) => {
+                if index.is_some() {
+                    return Err("membership delta adds an existing node");
+                }
+                result.push(member.clone());
+            }
+            MembershipChange::Removed(member) => {
+                let position = index.ok_or("membership delta removes an unknown node")?;
+                if result[position] != *member {
+                    return Err("membership delta has a stale removal");
+                }
+                result.swap_remove(position);
+            }
+            MembershipChange::Reconfigured { before, after } => {
+                let position = index.ok_or("membership delta reconfigures an unknown node")?;
+                if result[position] != *before {
+                    return Err("membership delta has a stale reconfiguration");
+                }
+                result[position] = after.clone();
+            }
+        }
+    }
+    // Apply all additions and removals before validating the final snapshot.
+    // A full 64-node membership can be replaced without a false intermediate
+    // capacity rejection when additions precede removals.
+    result.sort_unstable_by(|left, right| left.node.cmp(&right.node));
+    validate_membership(&result)?;
+    Ok(result)
+}
+
+#[cfg(test)]
+mod apply_membership_delta_tests {
+    use super::*;
+
+    fn member(node: &str, zone: &str, weight: u16) -> Member {
+        Member { node: node.into(), zone: zone.into(), weight }
+    }
+
+    #[test]
+    fn generated_deltas_replay_exactly_in_canonical_order() {
+        for count in [1usize, 2, 8, 16, 32, 64] {
+            let before = (0..count).map(|i| {
+                member(&format!("n{i:03}"), "z1", 1)
+            }).collect::<Vec<_>>();
+            let mut after = before.iter().enumerate()
+                .filter_map(|(i, m)| {
+                    (i % 4 != 0).then(|| {
+                        let mut next = m.clone();
+                        if i % 3 == 0 { next.weight = 2; }
+                        next
+                    })
+                }).collect::<Vec<_>>();
+            after.push(member("replacement", "z2", 3));
+            let changes = membership_changes(&before, &after).unwrap();
+            let actual = apply_membership_changes(&before, &changes).unwrap();
+            after.sort_unstable_by(|a, b| a.node.cmp(&b.node));
+            assert_eq!(actual, after, "count={count}");
+            assert_eq!(apply_membership_changes(&actual, &[]).unwrap(), actual);
+        }
+    }
+
+    #[test]
+    fn stale_duplicate_and_renaming_changes_fail_closed() {
+        let before = vec![member("a", "east", 1), member("b", "west", 1)];
+        let remove = MembershipChange::Removed(member("a", "east", 1));
+        assert!(apply_membership_changes(&before, &[remove.clone(), remove]).is_err());
+        assert!(apply_membership_changes(
+            &before,
+            &[MembershipChange::Removed(member("a", "east", 2))]
+        ).is_err());
+        assert!(apply_membership_changes(
+            &before,
+            &[MembershipChange::Added(member("a", "west", 1))]
+        ).is_err());
+        assert!(apply_membership_changes(
+            &before,
+            &[MembershipChange::Reconfigured {
+                before: member("a", "east", 1),
+                after: member("renamed", "east", 1),
+            }]
+        ).is_err());
+        assert!(apply_membership_changes(
+            &before,
+            &[
+                MembershipChange::Removed(member("a", "east", 1)),
+                MembershipChange::Removed(member("b", "west", 1)),
+            ],
+        ).is_err());
+        assert!(apply_membership_changes(&before, &vec![
+            MembershipChange::Added(member("x", "east", 1)); 129
+        ]).is_err());
+        assert_eq!(before[0].node, "a");
+    }
+}
+
 /// Capacity and node count advertised for one failure domain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZoneCapacity {
