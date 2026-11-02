@@ -487,6 +487,15 @@ impl Parser {
             }
             return Ok(value);
         }
+        // Whitespace between the unary minus and a numeric literal makes
+        // the lexer emit separate tokens. Keep the same value as -123.
+        if self.take(Token::Minus) {
+            let magnitude = self.number()?;
+            if magnitude.starts_with('-') {
+                return Err(ParseError("unexpected second sign in literal".into()));
+            }
+            return Ok(format!("-{magnitude}"));
+        }
         let is_number = matches!(self.tokens.get(self.index), Some(Token::Number(_)));
         let value = match self.tokens.get(self.index) {
             Some(Token::Number(value) | Token::String(value)) => value.clone(),
@@ -2106,5 +2115,29 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod spaced_negative_predicate_tests {
+    use super::parse_select;
+
+    #[test]
+    fn spaced_negative_literals_match_adjacent_literals() {
+        for (spaced, adjacent) in [
+            ("number >= - 2", "number >= -2"),
+            ("number BETWEEN - 3 AND - 1", "number BETWEEN -3 AND -1"),
+            ("number IN (- 3, - 2)", "number IN (-3, -2)"),
+            ("number < - 0.5", "number < -0.5"),
+        ] {
+            let left = parse_select(&format!(
+                "SELECT number FROM numbers(4) WHERE {spaced}"
+            )).unwrap();
+            let right = parse_select(&format!(
+                "SELECT number FROM numbers(4) WHERE {adjacent}"
+            )).unwrap();
+            assert_eq!(left, right, "{spaced}");
+        }
+        assert!(parse_select("SELECT number FROM numbers(4) WHERE number = - NULL").is_err());
     }
 }
