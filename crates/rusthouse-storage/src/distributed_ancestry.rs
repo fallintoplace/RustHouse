@@ -218,3 +218,127 @@ mod tests {
         assert!(SnapshotAncestry::new(&history[..0]).is_err());
     }
 }
+
+
+/// Two immutable histories after their verified shared ancestor.
+///
+/// Paths are ordered oldest-to-newest and exclude the common ancestor.
+/// No snapshot is copied or published by the planner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotDivergence {
+    pub common: Option<SnapshotVersion>,
+    pub left_only: Vec<SnapshotVersion>,
+    pub right_only: Vec<SnapshotVersion>,
+}
+
+impl SnapshotAncestry {
+    fn path_after(
+        &self,
+        head: SnapshotVersion,
+        exclusive_ancestor: Option<SnapshotVersion>,
+        max_entries: usize,
+    ) -> Result<Vec<SnapshotVersion>, &'static str> {
+        let mut cursor = Some(self.index(head)?);
+        let mut path = Vec::new();
+        while let Some(index) = cursor {
+            let node = &self.nodes[index];
+            if Some(node.version) == exclusive_ancestor {
+                break;
+            }
+            if path.len() == max_entries {
+                return Err("snapshot divergence exceeds requested path bound");
+            }
+            path.push(node.version);
+            cursor = node.jumps[0];
+        }
+        path.reverse();
+        Ok(path)
+    }
+
+    /// Describe divergent snapshot chains without conflating generations
+    /// from different epochs or independently rooted histories.
+    ///
+    /// The bounded output is useful for diagnosing split histories before a
+    /// replica chooses a source; it is not a merge or recovery algorithm.
+    pub fn divergent_paths(
+        &self,
+        left_head: SnapshotVersion,
+        right_head: SnapshotVersion,
+        max_entries_per_side: usize,
+    ) -> Result<SnapshotDivergence, &'static str> {
+        if max_entries_per_side == 0 || max_entries_per_side > MAX_SNAPSHOTS {
+            return Err("invalid snapshot divergence path limit");
+        }
+        let common = self.common_ancestor(left_head, right_head)?;
+        let left_only = self.path_after(left_head, common, max_entries_per_side)?;
+        let right_only = self.path_after(right_head, common, max_entries_per_side)?;
+        Ok(SnapshotDivergence {
+            common,
+            left_only,
+            right_only,
+        })
+    }
+}
+
+#[cfg(test)]
+mod divergence_path_tests {
+    use super::*;
+
+    fn v(epoch: u64, generation: u64) -> SnapshotVersion {
+        SnapshotVersion {
+            epoch,
+            generation,
+            fingerprint: u128::from(epoch) << 64 | u128::from(generation),
+        }
+    }
+
+    #[test]
+    fn returns_both_branches_in_oldest_first_order() {
+        let root = v(1, 1);
+        let left = v(1, 2);
+        let right = v(1, 3);
+        let left_head = v(1, 5);
+        let right_head = v(1, 4);
+        let ancestry = SnapshotAncestry::new(&[
+            SnapshotParent { snapshot: left_head, parent: Some(left) },
+            SnapshotParent { snapshot: right_head, parent: Some(right) },
+            SnapshotParent { snapshot: right, parent: Some(root) },
+            SnapshotParent { snapshot: root, parent: None },
+            SnapshotParent { snapshot: left, parent: Some(root) },
+        ]).unwrap();
+
+        let difference = ancestry.divergent_paths(left_head, right_head, 2).unwrap();
+        assert_eq!(difference.common, Some(root));
+        assert_eq!(difference.left_only, vec![left, left_head]);
+        assert_eq!(difference.right_only, vec![right, right_head]);
+        assert!(ancestry.divergent_paths(left_head, right_head, 1).is_err());
+
+        let ancestor_head = ancestry.divergent_paths(root, left_head, 2).unwrap();
+        assert_eq!(ancestor_head.common, Some(root));
+        assert!(ancestor_head.left_only.is_empty());
+        assert_eq!(ancestor_head.right_only, vec![left, left_head]);
+
+        let identical = ancestry.divergent_paths(root, root, 1).unwrap();
+        assert!(identical.left_only.is_empty());
+        assert!(identical.right_only.is_empty());
+    }
+
+    #[test]
+    fn disconnected_epochs_and_bad_heads_fail_closed() {
+        let a = v(1, 1);
+        let b = v(2, 1);
+        let ancestry = SnapshotAncestry::new(&[
+            SnapshotParent { snapshot: a, parent: None },
+            SnapshotParent { snapshot: b, parent: None },
+        ]).unwrap();
+        let difference = ancestry.divergent_paths(a, b, 1).unwrap();
+        assert_eq!(difference.common, None);
+        assert_eq!(difference.left_only, vec![a]);
+        assert_eq!(difference.right_only, vec![b]);
+        assert!(ancestry.divergent_paths(a, b, 0).is_err());
+        assert!(ancestry.divergent_paths(a, b, MAX_SNAPSHOTS + 1).is_err());
+        assert!(ancestry.divergent_paths(a, v(1, 5), 1).is_err());
+        let forged = SnapshotVersion { fingerprint: 99, ..a };
+        assert!(ancestry.divergent_paths(forged, b, 1).is_err());
+    }
+}
