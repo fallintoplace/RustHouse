@@ -1876,7 +1876,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
     let mut comma_offset = None;
     let mut limit = if parser.keyword("LIMIT") {
+        let parenthesized = parser.take(Token::LParen);
         let value = parser.number()?;
+        if parenthesized && !parser.take(Token::RParen) {
+            return Err(ParseError("LIMIT count requires closing ')'".into()));
+        }
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ParseError("LIMIT must be a non-negative integer".into()));
         }
@@ -2133,6 +2137,26 @@ mod where_boolean_literal_tests {
                 parse_select(&boolean_sql).unwrap(),
                 parse_select(&numeric_sql).unwrap()
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod parenthesized_limit_tests {
+    use super::parse_select;
+
+    #[test]
+    fn wrapped_limit_is_the_same_unsigned_count() {
+        assert_eq!(
+            parse_select("SELECT number FROM numbers(9) LIMIT (3)").unwrap(),
+            parse_select("SELECT number FROM numbers(9) LIMIT 3").unwrap()
+        );
+        for sql in [
+            "SELECT number FROM numbers(9) LIMIT (3",
+            "SELECT number FROM numbers(9) LIMIT (1+2)",
+            "SELECT number FROM numbers(9) LIMIT (-1)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
 }
