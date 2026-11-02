@@ -238,7 +238,9 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     }
     let if_not_exists = optional_if_not_exists(&mut parser)?;
     let name = identifier(&mut parser)?;
-    if parser.keyword("LIKE") {
+    // ClickHouse CREATE TABLE target AS existing_table clones the source schema.
+    // Query-based CREATE TABLE AS SELECT remains unsupported.
+    if parser.keyword("LIKE") || parser.keyword("AS") {
         let source = identifier(&mut parser)?;
         finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::CreateTableLike {
