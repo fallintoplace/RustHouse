@@ -21,6 +21,7 @@ pub mod distributed_fair_transfer;
 pub mod distributed_fencing;
 pub mod distributed_hedged_reads;
 pub mod distributed_hybrid_clock;
+pub mod distributed_idempotency;
 pub mod distributed_inventory;
 pub mod distributed_lease_ledger;
 pub mod distributed_lineage;
