@@ -2,6 +2,7 @@
 """Run ClickBench SQL with honest coverage for projected input tables."""
 
 import argparse
+from collections import Counter
 from decimal import Decimal, InvalidOperation
 import json
 import re
@@ -153,6 +154,27 @@ def matches_reference(actual, reference):
     return True
 
 
+def matches_unordered_reference(actual, reference):
+    """Compare complete TSV rows as a multiset, including duplicate counts.
+
+    Unlike ordered mode, this deliberately requires byte-exact cells. It must
+    never silently relax numeric precision or treat missing rows as ties.
+    """
+    return Counter(actual.splitlines()) == Counter(reference.splitlines())
+
+
+def parse_unordered_ids(raw, queries):
+    if raw is None:
+        return frozenset()
+    identifiers = raw.split(",")
+    if not identifiers or any(not part.isascii() or not part.isdecimal() for part in identifiers):
+        raise ValueError("--unordered requires comma-separated query numbers")
+    selected = {int(part) for part in identifiers}
+    if not selected or not selected.issubset({number for number, _ in queries}):
+        raise ValueError("--unordered contains an unavailable query number")
+    return frozenset(selected)
+
+
 def error_status(message):
     lowered = message.lower()
     if "sql parse error" in lowered or "parse error" in lowered:
@@ -162,7 +184,8 @@ def error_status(message):
     return "execution_error"
 
 
-def benchmark_one(number, sql, execute, runs, warmups, reference=None):
+def benchmark_one(number, sql, execute, runs, warmups, reference=None,
+                  unordered=False):
     status = "passed" if reference is not None else "unverified"
     elapsed = []
     error = None
@@ -179,7 +202,9 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None):
             break
         # Measure the engine invocation, not Python golden-output comparison.
         finished = time.perf_counter() if start is not None else None
-        if reference is not None and not matches_reference(output, reference):
+        if reference is not None and not (
+                matches_unordered_reference(output, reference) if unordered
+                else matches_reference(output, reference)):
             status, error = "mismatch", "output differs from the reference"
             break
         if finished is not None:
@@ -218,7 +243,8 @@ def coverage(results):
     }
 
 
-def run(queries, execute, runs, warmups, projection=None, references=None):
+def run(queries, execute, runs, warmups, projection=None, references=None,
+        unordered_ids=frozenset()):
     results = []
     for number, sql in queries:
         skip, missing = preflight(number, projection)
@@ -248,7 +274,8 @@ def run(queries, execute, runs, warmups, projection=None, references=None):
                     "latency": None, "error": str(path),
                 })
                 continue
-        result = benchmark_one(number, sql, execute, runs, warmups, reference)
+        result = benchmark_one(number, sql, execute, runs, warmups, reference,
+                               unordered=number in unordered_ids)
         result["missing_columns"] = []
         results.append(result)
     return results
@@ -262,6 +289,7 @@ def main(argv=None):
     parser.add_argument("--projection-manifest", type=Path)
     parser.add_argument("--reference-dir", type=Path)
     parser.add_argument("--only", help="Comma-separated original ClickBench query numbers")
+    parser.add_argument("--unordered", help="Query IDs with byte-exact, order-insensitive TSV comparisons")
     parser.add_argument("--runs", type=int, default=7)
     parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=120)
@@ -273,11 +301,13 @@ def main(argv=None):
         all_queries = load_queries(options.queries_file)
         queries = select_queries(all_queries, options.only)
         projection = load_projection(options.projection_manifest)
+        unordered_ids = parse_unordered_ids(options.unordered, all_queries)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.error(str(error))
     execute = lambda sql: cli_sql(options.binary, options.database, sql, options.timeout)
     results = run(
-        queries, execute, options.runs, options.warmups, projection, options.reference_dir
+        queries, execute, options.runs, options.warmups, projection,
+        options.reference_dir, unordered_ids
     )
     report = {
         "engine": "rusthouse-cli",
@@ -288,6 +318,7 @@ def main(argv=None):
         "timing_scope": "warm-cache end-to-end CLI (startup and filesystem reads included)",
         "projection_manifest": str(options.projection_manifest) if projection else None,
         "reference_checked": options.reference_dir is not None,
+        "unordered_query_ids": sorted(unordered_ids),
         "runs": options.runs,
         "warmups": options.warmups,
         "coverage": coverage(results),
