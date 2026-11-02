@@ -206,11 +206,13 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                 if_exists,
             }));
         }
-        if !parser.keyword("ADD") || !parser.keyword("COLUMN") {
+        if !parser.keyword("ADD") {
             return Err(ParseError(
                 "expected ADD COLUMN or DROP COLUMN after table name".into(),
             ));
         }
+        // PostgreSQL permits COLUMN to be omitted for ADD.
+        parser.keyword("COLUMN");
         let if_not_exists = optional_if_not_exists(&mut parser)?;
         let name = identifier(&mut parser)?;
         let data_type = data_type(&mut parser, 0)?;
@@ -641,5 +643,24 @@ mod show_columns_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod alter_add_optional_column_tests {
+    use super::parse_ddl;
+
+    #[test]
+    fn add_column_keyword_is_optional() {
+        for (implicit, explicit) in [
+            ("ALTER TABLE events ADD value UInt64",
+             "ALTER TABLE events ADD COLUMN value UInt64"),
+            ("ALTER TABLE events ADD IF NOT EXISTS value UInt64",
+             "ALTER TABLE events ADD COLUMN IF NOT EXISTS value UInt64"),
+        ] {
+            assert_eq!(parse_ddl(implicit).unwrap(), parse_ddl(explicit).unwrap());
+        }
+        assert!(parse_ddl("ALTER TABLE events ADD").is_err());
+        assert!(parse_ddl("ALTER TABLE events ADD COLUMN").is_err());
     }
 }
