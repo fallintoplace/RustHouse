@@ -818,6 +818,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
     let mut distinct = parser.keyword("DISTINCT");
+    if !distinct {
+        // ALL is the default SELECT quantifier in SQL.
+        parser.keyword("ALL");
+    }
     let mut literal_alias = None;
 
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
@@ -2106,5 +2110,26 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod select_all_quantifier_tests {
+    use super::{execute, parse_select};
+
+    #[test]
+    fn explicit_all_matches_default_row_projection() {
+        let baseline = parse_select("SELECT number FROM numbers(5) ORDER BY number DESC LIMIT 3").unwrap();
+        let explicit = parse_select("SELECT ALL number FROM numbers(5) ORDER BY number DESC LIMIT 3").unwrap();
+        assert_eq!(baseline, explicit);
+        let mut output = Vec::new();
+        execute(&explicit, None, &mut output).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "number\n4\n3\n2\n");
+    }
+
+    #[test]
+    fn distinct_and_all_cannot_be_combined() {
+        assert!(parse_select("SELECT DISTINCT ALL number FROM numbers(2)").is_err());
+        assert!(parse_select("SELECT ALL DISTINCT number FROM numbers(2)").is_err());
     }
 }
