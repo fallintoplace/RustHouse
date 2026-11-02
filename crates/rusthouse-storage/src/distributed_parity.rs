@@ -205,6 +205,45 @@ fn gf256_mul(mut a: u8, mut b: u8) -> u8 {
     product
 }
 
+// Multiplication by a stripe coefficient is constant across its bytes.
+fn gf256_table(coefficient: u8) -> [u8; 256] {
+    std::array::from_fn(|byte| gf256_mul(coefficient, byte as u8))
+}
+
+fn xor_weighted_source(xor: &mut [u8], weighted: &mut [u8], source: &[u8], coefficient: u8) {
+    if source.len() < 1024 {
+        for (offset, &byte) in source.iter().enumerate() {
+            xor[offset] ^= byte;
+            weighted[offset] ^= gf256_mul(coefficient, byte);
+        }
+    } else {
+        let table = gf256_table(coefficient);
+        for (offset, &byte) in source.iter().enumerate() {
+            xor[offset] ^= byte;
+            weighted[offset] ^= table[usize::from(byte)];
+        }
+    }
+}
+
+fn xor_triple_source(parity: &mut TripleParity, source: &[u8], coefficient: u8) {
+    let squared = gf256_mul(coefficient, coefficient);
+    if source.len() < 1024 {
+        for (offset, &byte) in source.iter().enumerate() {
+            parity.xor[offset] ^= byte;
+            parity.weighted[offset] ^= gf256_mul(coefficient, byte);
+            parity.squared[offset] ^= gf256_mul(squared, byte);
+        }
+    } else {
+        let first = gf256_table(coefficient);
+        let second = gf256_table(squared);
+        for (offset, &byte) in source.iter().enumerate() {
+            parity.xor[offset] ^= byte;
+            parity.weighted[offset] ^= first[usize::from(byte)];
+            parity.squared[offset] ^= second[usize::from(byte)];
+        }
+    }
+}
+
 fn gf256_pow(mut base: u8, mut power: u16) -> u8 {
     let mut result = 1u8;
     while power != 0 {
@@ -237,10 +276,7 @@ pub fn encode_double_parity(sources: &[&[u8]]) -> Result<DoubleParity, &'static 
     let mut weighted = vec![0u8; width];
     for (index, source) in sources.iter().enumerate() {
         let coefficient = parity_coefficient(index);
-        for (offset, &byte) in source.iter().enumerate() {
-            xor[offset] ^= byte;
-            weighted[offset] ^= gf256_mul(coefficient, byte);
-        }
+        xor_weighted_source(&mut xor, &mut weighted, source, coefficient);
     }
     Ok(DoubleParity { xor, weighted })
 }
@@ -285,10 +321,7 @@ pub fn recover_double_erasure(
     for (index, shard) in shards.iter().enumerate() {
         if let Some(bytes) = shard {
             let coefficient = parity_coefficient(index);
-            for (offset, &byte) in bytes.iter().enumerate() {
-                xor[offset] ^= byte;
-                weighted[offset] ^= gf256_mul(coefficient, byte);
-            }
+            xor_weighted_source(&mut xor, &mut weighted, bytes, coefficient);
         }
     }
 
@@ -418,12 +451,7 @@ pub fn encode_triple_parity(sources: &[&[u8]]) -> Result<TripleParity, &'static 
     };
     for (index, source) in sources.iter().enumerate() {
         let coefficient = parity_coefficient(index);
-        let squared = gf256_mul(coefficient, coefficient);
-        for (offset, &byte) in source.iter().enumerate() {
-            parity.xor[offset] ^= byte;
-            parity.weighted[offset] ^= gf256_mul(coefficient, byte);
-            parity.squared[offset] ^= gf256_mul(squared, byte);
-        }
+        xor_triple_source(&mut parity, source, coefficient);
     }
     Ok(parity)
 }
@@ -463,10 +491,20 @@ pub fn recover_triple_erasure(
                 }
                 let coefficient = parity_coefficient(index);
                 let squared = gf256_mul(coefficient, coefficient);
-                for (offset, &byte) in data.iter().enumerate() {
-                    residual[0][offset] ^= byte;
-                    residual[1][offset] ^= gf256_mul(coefficient, byte);
-                    residual[2][offset] ^= gf256_mul(squared, byte);
+                if data.len() < 1024 {
+                    for (offset, &byte) in data.iter().enumerate() {
+                        residual[0][offset] ^= byte;
+                        residual[1][offset] ^= gf256_mul(coefficient, byte);
+                        residual[2][offset] ^= gf256_mul(squared, byte);
+                    }
+                } else {
+                    let first = gf256_table(coefficient);
+                    let second = gf256_table(squared);
+                    for (offset, &byte) in data.iter().enumerate() {
+                        residual[0][offset] ^= byte;
+                        residual[1][offset] ^= first[usize::from(byte)];
+                        residual[2][offset] ^= second[usize::from(byte)];
+                    }
                 }
             }
             None => missing.push(index),
@@ -550,6 +588,44 @@ pub fn recover_triple_erasure(
 #[cfg(test)]
 mod triple_parity_tests {
     use super::*;
+
+    #[test]
+    fn long_byte_shards_match_scalar_gf256_reference() {
+        let sources = (0..4)
+            .map(|index| {
+                (0..(2048 + index * 71))
+                    .map(|offset| (offset * 37 + index * 19) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let references = sources.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let encoded = encode_triple_parity(&references).unwrap();
+        let double = encode_double_parity(&references).unwrap();
+        assert_eq!(encoded.xor, double.xor);
+        assert_eq!(encoded.weighted, double.weighted);
+        for offset in 0..encoded.xor.len() {
+            let mut expected = [0u8; 3];
+            for (index, source) in references.iter().enumerate() {
+                let byte = source.get(offset).copied().unwrap_or(0);
+                let coefficient = parity_coefficient(index);
+                expected[0] ^= byte;
+                expected[1] ^= gf256_mul(coefficient, byte);
+                expected[2] ^= gf256_mul(gf256_mul(coefficient, coefficient), byte);
+            }
+            assert_eq!([encoded.xor[offset], encoded.weighted[offset], encoded.squared[offset]], expected);
+        }
+        let lengths = sources.iter().map(Vec::len).collect::<Vec<_>>();
+        let available = [None, Some(references[1]), None, Some(references[3])];
+        let decoded = recover_double_erasure(
+            &available,
+            &lengths,
+            &double,
+        ).unwrap();
+        assert_eq!(decoded, vec![(0, sources[0].clone()), (2, sources[2].clone())]);
+        let triple_available = [None, Some(references[1]), None, None];
+        let decoded = recover_triple_erasure(&triple_available, &lengths, &encoded).unwrap();
+        assert_eq!(decoded, vec![(0, sources[0].clone()), (2, sources[2].clone()), (3, sources[3].clone())]);
+    }
 
     #[test]
     fn all_one_two_and_three_erasures_reconstruct_exact_bytes() {
