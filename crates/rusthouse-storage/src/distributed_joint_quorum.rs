@@ -135,7 +135,7 @@ mod tests {
         let new = members(&[("d", 1), ("e", 1), ("f", 1)]);
         let policy = WeightedQuorumPolicy::new(&old, 2, 2).unwrap();
         let result = validate_joint_quorums(&old, policy, &new, policy).unwrap();
-        assert_eq!(result.writes_intersect, false);
+        assert!(!result.writes_intersect);
         assert!(!result.safe());
     }
 }
