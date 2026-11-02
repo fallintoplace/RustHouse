@@ -111,6 +111,22 @@ pub(super) fn is_safe_distinct_scan(select: &Select) -> bool {
         && select.having.is_none()
 }
 
+/// Grouped DISTINCT needs raw distinct (group, value) pairs from each
+/// shard. Summing per-shard distinct counts would double-count overlaps.
+pub(super) fn is_safe_grouped_distinct(select: &Select) -> bool {
+    matches!(&select.projection, Projection::GroupedDistinctCount { column, value_column }
+        if column != value_column)
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
 /// A multi-key grouped DISTINCT must exchange raw unique tuples, not
 /// aggregate local per-group cardinalities which could overlap.
 pub(super) fn is_safe_multi_grouped_distinct(select: &Select) -> bool {
@@ -150,6 +166,138 @@ pub(super) fn multi_grouped_distinct_shard_sql(
     projected.push(value_column.clone());
     expected.projection = Projection::Columns(projected);
     expected.distinct = true;
+    verify_rewritten_select(rewritten, &expected)
+}
+
+/// Dispatch shard-local unique pairs, preserving the full WHERE predicate
+/// and verifying every AST field after rewriting.
+pub(super) fn grouped_distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    if !is_safe_grouped_distinct(select) {
+        return None;
+    }
+    let Projection::GroupedDistinctCount { column, value_column } = &select.projection else {
+        return None;
+    };
+    let from = clause_offset(sql, b"FROM")?;
+    let group = clause_offset(&sql[from..], b"GROUP")? + from;
+    let rewritten = format!(
+        "SELECT DISTINCT {column}, {value_column} {}",
+        sql[from..group].trim_end()
+    );
+    let mut expected = select.clone();
+    expected.projection = Projection::Columns(vec![column.clone(), value_column.clone()]);
+    expected.distinct = true;
+    verify_rewritten_select(rewritten, &expected)
+}
+
+/// A global RMS must weight local RMS states by their non-NULL counts.
+pub(super) fn is_safe_rms(select: &Select) -> bool {
+    select.alias.is_none()
+        && is_safe_unpaged_projection(select, |projection| {
+            matches!(projection, Projection::Aggregate {
+                function: AggregateFunction::Rms, ..
+            })
+        })
+}
+
+pub(super) fn rms_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    if !is_safe_rms(select) {
+        return None;
+    }
+    let Projection::Aggregate { column, .. } = &select.projection else {
+        return None;
+    };
+    let from = clause_offset(sql, b"FROM")?;
+    let rewritten = format!("SELECT rms({column}), count({column}) {}", &sql[from..]);
+    let mut expected = select.clone();
+    expected.projection = Projection::MultipleAggregates(vec![
+        rusthouse_query::AggregateItem {
+            function: Some(AggregateFunction::Rms),
+            argument: Some(rusthouse_query::ScalarExpr::Column(column.clone())),
+            distinct: false,
+            alias: None,
+        },
+        rusthouse_query::AggregateItem {
+            function: None,
+            argument: Some(rusthouse_query::ScalarExpr::Column(column.clone())),
+            distinct: false,
+            alias: None,
+        },
+    ]);
+    verify_rewritten_select(rewritten, &expected)
+}
+
+/// Global AVG needs both exact SUM and non-NULL COUNT from each shard.
+pub(super) fn is_safe_avg(select: &Select) -> bool {
+    select.alias.is_none()
+        && is_safe_unpaged_projection(select, |projection| {
+            matches!(projection, Projection::Aggregate {
+                function: AggregateFunction::Avg, ..
+            })
+        })
+}
+
+pub(super) fn avg_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    if !is_safe_avg(select) {
+        return None;
+    }
+    let Projection::Aggregate { column, .. } = &select.projection else {
+        return None;
+    };
+    let from = clause_offset(sql, b"FROM")?;
+    let rewritten = format!("SELECT sum({column}), count({column}) {}", &sql[from..]);
+    let mut expected = select.clone();
+    expected.projection = Projection::MultipleAggregates(vec![
+        rusthouse_query::AggregateItem {
+            function: Some(AggregateFunction::Sum),
+            argument: Some(rusthouse_query::ScalarExpr::Column(column.clone())),
+            distinct: false,
+            alias: None,
+        },
+        rusthouse_query::AggregateItem {
+            function: None,
+            argument: Some(rusthouse_query::ScalarExpr::Column(column.clone())),
+            distinct: false,
+            alias: None,
+        },
+    ]);
+    verify_rewritten_select(rewritten, &expected)
+}
+
+/// RANGE needs both extrema from every peer; local ranges do not compose.
+pub(super) fn is_safe_range(select: &Select) -> bool {
+    select.alias.is_none()
+        && is_safe_unpaged_projection(select, |projection| {
+            matches!(projection, Projection::Aggregate {
+                function: AggregateFunction::Range, ..
+            })
+        })
+}
+
+pub(super) fn range_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    if !is_safe_range(select) {
+        return None;
+    }
+    let Projection::Aggregate { column, .. } = &select.projection else {
+        return None;
+    };
+    let from = clause_offset(sql, b"FROM")?;
+    let rewritten = format!("SELECT min({column}), max({column}) {}", &sql[from..]);
+    let mut expected = select.clone();
+    expected.projection = Projection::MultipleAggregates(vec![
+        rusthouse_query::AggregateItem {
+            function: Some(AggregateFunction::Min),
+            argument: Some(rusthouse_query::ScalarExpr::Column(column.clone())),
+            distinct: false,
+            alias: None,
+        },
+        rusthouse_query::AggregateItem {
+            function: Some(AggregateFunction::Max),
+            argument: Some(rusthouse_query::ScalarExpr::Column(column.clone())),
+            distinct: false,
+            alias: None,
+        },
+    ]);
     verify_rewritten_select(rewritten, &expected)
 }
 
@@ -306,6 +454,163 @@ pub(super) fn integer_type(kind: &str) -> bool {
             | "Int64"
             | "Int128"
     )
+}
+
+/// Multi-key integer SUM can be combined without shard-local ranking.
+pub(super) fn is_safe_grouped_multi_sum(select: &Select) -> bool {
+    matches!(&select.projection,
+        Projection::GroupedMultiAggregates { columns, items, aliases, filters }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && items[0].0 == AggregateFunction::Sum
+            && aliases.iter().all(Option::is_none)
+            && filters.iter().all(Option::is_none))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// Multi-dimensional extrema are associative for exact integer keys.
+pub(super) fn is_safe_grouped_multi_extremum(select: &Select) -> bool {
+    matches!(&select.projection,
+        Projection::GroupedMultiAggregates { columns, items, aliases, filters }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && matches!(items[0].0, AggregateFunction::Min | AggregateFunction::Max)
+            && aliases.iter().all(Option::is_none)
+            && filters.iter().all(Option::is_none))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// CountIf partials are unsigned counts even with signed numeric inputs.
+pub(super) fn is_safe_grouped_multi_countif(select: &Select) -> bool {
+    matches!(&select.projection,
+        Projection::GroupedMultiAggregates { columns, items, aliases, filters }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && items[0].0 == AggregateFunction::CountIf
+            && aliases.iter().all(Option::is_none)
+            && filters.iter().all(Option::is_none))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// SUMSQUARES partials are nonnegative even for signed integer inputs.
+pub(super) fn is_safe_grouped_multi_sumsquares(select: &Select) -> bool {
+    matches!(&select.projection,
+        Projection::GroupedMultiAggregates { columns, items, aliases, filters }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && items[0].0 == AggregateFunction::SumSquares
+            && aliases.iter().all(Option::is_none)
+            && filters.iter().all(Option::is_none))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// A single PRODUCT per tuple can be reduced associatively across shards.
+pub(super) fn is_safe_grouped_multi_product(select: &Select) -> bool {
+    matches!(&select.projection,
+        Projection::GroupedMultiAggregates { columns, items, aliases, filters }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && items[0].0 == AggregateFunction::Product
+            && aliases.iter().all(Option::is_none)
+            && filters.iter().all(Option::is_none))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// Bitwise AND/OR/XOR can combine partial integer group states exactly.
+pub(super) fn is_safe_grouped_multi_bitwise(select: &Select) -> bool {
+    matches!(&select.projection,
+        Projection::GroupedMultiAggregates { columns, items, aliases, filters }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && matches!(items[0].0, AggregateFunction::GroupBitAnd
+                | AggregateFunction::GroupBitOr | AggregateFunction::GroupBitXor)
+            && aliases.iter().all(Option::is_none)
+            && filters.iter().all(Option::is_none))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// Counting non-NULL values may scan String and UUID columns as well.
+pub(super) fn is_safe_grouped_multi_count_column(select: &Select) -> bool {
+    matches!(&select.projection,
+        Projection::GroupedMultiAggregates { columns, items, aliases, filters }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && items[0].0 == AggregateFunction::Count
+            && aliases.iter().all(Option::is_none)
+            && filters.iter().all(Option::is_none))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// A multi-dimensional COUNT(*) can be reduced by its complete tuple key.
+/// Reject shard-local ordering and HAVING until they can be evaluated globally.
+pub(super) fn is_safe_grouped_multi_count(select: &Select) -> bool {
+    matches!(&select.projection, Projection::GroupedMultiCount { columns }
+        if (2..=8).contains(&columns.len()))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
 }
 
 pub(super) fn is_safe_grouped_count(select: &Select) -> bool {
@@ -599,3 +904,6 @@ mod rewrite_sql_clause_scanner_tests {
         assert!(clause_offset("SELECT 'FROM' /* WHERE */", b"WHERE").is_none());
     }
 }
+
+
+
