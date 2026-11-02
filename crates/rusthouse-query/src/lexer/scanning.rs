@@ -133,6 +133,28 @@ fn valid_quoted_identifier(bytes: &[u8]) -> bool {
 /// Parse quoted identifiers without treating reserved words as SQL keywords.
 /// Database identifiers must keep the same bounded ASCII rules as unquoted
 /// names so quoted DDL cannot bypass storage path validation.
+pub(super) fn scan_bracket_identifier(
+    sql: &str,
+    index: &mut usize,
+) -> Result<Token, ParseError> {
+    let start = *index + 1;
+    let ending = sql[start..]
+        .find(']')
+        .ok_or_else(|| ParseError("unterminated bracket identifier".into()))?;
+    let end = start + ending;
+    let identifier = &sql[start..end];
+    if identifier.len() > 128 {
+        return Err(ParseError("quoted identifier exceeds 128 bytes".into()));
+    }
+    if !valid_quoted_identifier(identifier.as_bytes()) {
+        return Err(ParseError(
+            "quoted identifiers require a simple ASCII identifier".into(),
+        ));
+    }
+    *index = end + 1;
+    Ok(Token::QuotedWord(identifier.to_owned()))
+}
+
 pub(super) fn scan_quoted_identifier(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
     let delimiter = bytes[*index];
