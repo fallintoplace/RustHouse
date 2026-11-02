@@ -260,6 +260,23 @@ pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
         ))
 }
 
+pub(super) fn is_safe_grouped_bitwise(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::GroupedAggregate {
+            function: AggregateFunction::GroupBitAnd
+                | AggregateFunction::GroupBitOr
+                | AggregateFunction::GroupBitXor,
+            ..
+        }
+    )
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.order_terms().all(|order| order.column == "#aggregate")
+}
+
 pub(super) fn group_key_type(kind: &str) -> bool {
     let base = kind
         .strip_prefix("Nullable(")
