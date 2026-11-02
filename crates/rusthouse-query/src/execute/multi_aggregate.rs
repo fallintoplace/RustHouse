@@ -815,7 +815,11 @@ pub(super) fn execute<W: Write>(
             |item| match (&item.function, &item.argument, item.distinct) {
                 (None, _, false) => true,
                 (
-                    Some(crate::AggregateFunction::Sum),
+                    Some(
+                        crate::AggregateFunction::Sum
+                            | crate::AggregateFunction::Min
+                            | crate::AggregateFunction::Max
+                    ),
                     Some(crate::ScalarExpr::Column(column)),
                     false,
                 ) => types.get(column).is_some_and(|kind| {
