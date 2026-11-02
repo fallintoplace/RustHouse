@@ -1,6 +1,8 @@
 # RustHouse
 
-**RustHouse is an experimental Rust SQL CLI and offline MergeTree inspector.** It queries generated numbers or frozen wide parts using a limited, read-only SELECT dialect. It also has a separate metadata-only schema catalog and a localhost HTTP server. **Not a production database.**
+**RustHouse is an experimental SQL database and MergeTree toolkit written in Rust.** Create local tables, import data, run analytical queries, and explore frozen MergeTree parts from the command line. A read-only HTTP server makes queries available to local applications.
+
+RustHouse is designed for local experiments and offline analysis. Its SQL dialect and storage have the boundaries described below; the server defaults to loopback and does not include authentication.
 
 The five-crate Cargo workspace separates storage, query execution, shared result formatting, the CLI, and the HTTP server. `rusthouse-format` contains output adapters used by both entry points.
 
@@ -47,7 +49,7 @@ cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORD
 
 ## Supported features
 
-- **SQL:** `SELECT * RENAME old AS new` (query output only), `WHERE` (including `IN`, `BETWEEN`, `LIKE`, and `ILIKE`), sorting (including `ORDER BY ... NULLS FIRST/LAST`), `DISTINCT`, numeric aggregates (including `median`), grouped numeric aggregates by one key, `COUNT(column)` (skips NULLs), grouped counts with `HAVING`, and pagination. Scalar `SELECT` without `FROM` also supports signed integer arithmetic (`+`, `-`, `*`, `%`) with parentheses, checked 64-bit overflow and zero-divisor errors, plus `GREATEST` and `LEAST` with 2 to 16 integer expressions. This is a limited SQL subset.
+- **SQL:** `SELECT * RENAME old AS new` (query output only), `WHERE` (including `IN`, `BETWEEN`, `LIKE`, and `ILIKE`), sorting (including `ORDER BY ... NULLS FIRST/LAST`), `DISTINCT`, numeric aggregates (including `median`), grouped aggregates, multi-key grouped counts, `COUNT(column)` (skips NULLs), `HAVING`, and pagination. Scalar `SELECT` without `FROM` also supports signed integer arithmetic (`+`, `-`, `*`, `%`) with parentheses, checked 64-bit overflow and zero-divisor errors, plus `GREATEST` and `LEAST` with 2 to 16 integer expressions.
 - **Scalar integers:** `CLAMP(value, lower, upper)` limits an evaluated integer expression to inclusive bounds in `SELECT` without `FROM`. Reversed bounds are rejected.
 - **Integer arithmetic:** Scalar `GCD(a, b)` and `LCM(a, b)` work on signed constants, return non-negative signed results, and report overflow when a magnitude exceeds `Int64`.
 - **Bit shifts:** Scalar `bitShiftLeft(value, amount)` and `bitShiftRight(value, amount)` accept shift counts from 0 to 63, reject overflowing left shifts, and perform arithmetic right shifts on signed integers.
@@ -106,6 +108,32 @@ cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./catalog
 
 ## Benchmarks
 
+RustHouse includes reference-checked analytics workloads for local measurement.
+On an Apple M1 Pro with 32 GB RAM, a release build at `7c450104` with Rust
+1.96.0 measured these median CLI query times on deterministic data with a warm
+OS cache:
+
+| Workload | Rows | Median |
+| --- | ---: | ---: |
+| Counts grouped by region and category | 200,000 events | 21.8 ms |
+| Counts grouped by user and ranked | 200,000 events, 997 users | 12.0 ms |
+| Four-table inner join, ordered, with `LIMIT 20` | 16,000 events, 997 accounts | 41.6 ms |
+
+Each result matched SQLite over the same data. Measurements use seven runs after
+two warmups and include CLI startup, query execution, and TSV output. Fixture
+generation, import, and SQLite evaluation are outside the timed samples. These
+are synthetic single-query measurements, not a cross-engine comparison. Run
+the same workloads on your machine:
+
+```sh
+cargo build --release --locked -p rusthouse-cli
+python3 -m bench workload analytics-suite -- --binary target/release/rusthouse --workload bench/analytics/workloads/multidimensional-grouping.json --rows 200000 --runs 7 --warmups 2
+python3 -m bench workload analytics-suite -- --binary target/release/rusthouse --workload bench/analytics/workloads/group-cardinality-pressure.json --rows 200000 --runs 7 --warmups 2
+python3 -m bench workload analytics-suite -- --binary target/release/rusthouse --workload bench/analytics/workloads/join-four-table-chain.json --rows 16000 --runs 7 --warmups 2
+```
+
+See the [analytics suite guide](bench/analytics/SUITES.md) for more workloads.
+
 Measure the wall-clock time of 20 verified SQL queries with no external fixture:
 
 ```sh
@@ -140,7 +168,7 @@ cargo bench -p rusthouse-query --bench parts --locked -- --rows 65536 --samples 
 
 The disk benchmark generates its parts once before timing, parses SQL before samples, warms each query three times, and checks query results. This includes filesystem reads with OS caching but does not force cold-cache operation. It is not a ClickHouse comparison.
 
-This covers query execution and formatting into a memory buffer, **not** disk scans, terminal rendering, or server overhead. Compare runs on the same machine and Rust compiler version; shared CI runners are not suitable for stable performance numbers.
+The in-memory benchmark covers query execution and formatting into a memory buffer. The part benchmark also reads locally written parts. Compare runs on the same machine and Rust compiler version; shared CI runners are not suitable for stable performance numbers.
 
 ## Development
 
