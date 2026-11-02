@@ -1024,3 +1024,172 @@ mod retry_admission_window_tests {
         );
     }
 }
+
+
+/// Local scheduling state for adaptive replica retry admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplicaCircuitPhase {
+    Closed,
+    Open,
+    HalfOpen,
+}
+
+/// Deterministic circuit breaker. It does not run network operations or
+/// coordinate across processes; persist updates with transfer outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplicaCircuitBreaker {
+    phase: ReplicaCircuitPhase,
+    failure_threshold: u16,
+    consecutive_failures: u16,
+    reopen_count: u16,
+    base_cooldown_ms: u64,
+    max_cooldown_ms: u64,
+    retry_at_ms: u64,
+    last_ms: u64,
+}
+
+impl ReplicaCircuitBreaker {
+    pub fn new(
+        failure_threshold: u16,
+        base_cooldown_ms: u64,
+        max_cooldown_ms: u64,
+        at_ms: u64,
+    ) -> Result<Self, &'static str> {
+        if failure_threshold == 0
+            || failure_threshold > 1000
+            || base_cooldown_ms == 0
+            || max_cooldown_ms < base_cooldown_ms
+        {
+            return Err("invalid replica circuit breaker configuration");
+        }
+        Ok(Self {
+            phase: ReplicaCircuitPhase::Closed,
+            failure_threshold,
+            consecutive_failures: 0,
+            reopen_count: 0,
+            base_cooldown_ms,
+            max_cooldown_ms,
+            retry_at_ms: 0,
+            last_ms: at_ms,
+        })
+    }
+
+    pub fn phase(&self) -> ReplicaCircuitPhase {
+        self.phase
+    }
+
+    pub fn retry_at_ms(&self) -> Option<u64> {
+        (self.phase == ReplicaCircuitPhase::Open).then_some(self.retry_at_ms)
+    }
+
+    /// Admit normal traffic when closed, or exactly one half-open probe.
+    /// Repeated polls during the probe cannot admit another request.
+    pub fn permit(&mut self, now_ms: u64) -> Result<bool, &'static str> {
+        if now_ms < self.last_ms {
+            return Err("replica circuit breaker clock moved backwards");
+        }
+        self.last_ms = now_ms;
+        match self.phase {
+            ReplicaCircuitPhase::Closed => Ok(true),
+            ReplicaCircuitPhase::Open if now_ms >= self.retry_at_ms => {
+                self.phase = ReplicaCircuitPhase::HalfOpen;
+                Ok(true)
+            }
+            ReplicaCircuitPhase::Open | ReplicaCircuitPhase::HalfOpen => Ok(false),
+        }
+    }
+
+    /// Record a successful request. The half-open probe closes the breaker.
+    pub fn record_success(&mut self, now_ms: u64) -> Result<(), &'static str> {
+        if now_ms < self.last_ms {
+            return Err("replica circuit breaker clock moved backwards");
+        }
+        if self.phase == ReplicaCircuitPhase::Open {
+            return Err("cannot complete a request while circuit is open");
+        }
+        self.last_ms = now_ms;
+        self.phase = ReplicaCircuitPhase::Closed;
+        self.consecutive_failures = 0;
+        self.reopen_count = 0;
+        Ok(())
+    }
+
+    /// Record a failure without mutating state if the next cooldown overflows.
+    pub fn record_failure(&mut self, now_ms: u64) -> Result<(), &'static str> {
+        if now_ms < self.last_ms {
+            return Err("replica circuit breaker clock moved backwards");
+        }
+        if self.phase == ReplicaCircuitPhase::Open {
+            return Err("cannot complete a request while circuit is open");
+        }
+        let failures = self.consecutive_failures.saturating_add(1);
+        let trips = self.reopen_count;
+        let open = self.phase == ReplicaCircuitPhase::HalfOpen
+            || failures >= self.failure_threshold;
+        let retry_at = if open {
+            let shift = u32::from(trips.min(63));
+            let cooldown = self
+                .base_cooldown_ms
+                .checked_shl(shift)
+                .unwrap_or(u64::MAX)
+                .min(self.max_cooldown_ms);
+            now_ms
+                .checked_add(cooldown)
+                .ok_or("replica circuit breaker cooldown overflow")?
+        } else {
+            self.retry_at_ms
+        };
+        self.last_ms = now_ms;
+        self.consecutive_failures = failures;
+        if open {
+            self.phase = ReplicaCircuitPhase::Open;
+            self.retry_at_ms = retry_at;
+            self.reopen_count = trips.saturating_add(1);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod replica_circuit_tests {
+    use super::*;
+
+    #[test]
+    fn opens_after_threshold_and_exponentially_retries_single_probes() {
+        let mut breaker = ReplicaCircuitBreaker::new(2, 10, 40, 100).unwrap();
+        assert!(breaker.permit(100).unwrap());
+        breaker.record_failure(100).unwrap();
+        assert_eq!(breaker.phase(), ReplicaCircuitPhase::Closed);
+        assert!(breaker.permit(101).unwrap());
+        breaker.record_failure(101).unwrap();
+        assert_eq!(breaker.retry_at_ms(), Some(111));
+        assert!(!breaker.permit(110).unwrap());
+        assert!(breaker.permit(111).unwrap());
+        assert_eq!(breaker.phase(), ReplicaCircuitPhase::HalfOpen);
+        assert!(!breaker.permit(111).unwrap());
+        breaker.record_failure(111).unwrap();
+        assert_eq!(breaker.retry_at_ms(), Some(131));
+        assert!(!breaker.permit(130).unwrap());
+        assert!(breaker.permit(131).unwrap());
+        breaker.record_success(131).unwrap();
+        assert_eq!(breaker.phase(), ReplicaCircuitPhase::Closed);
+        assert_eq!(breaker.retry_at_ms(), None);
+    }
+
+    #[test]
+    fn rejects_backwards_clock_and_overflow_without_mutation() {
+        let mut breaker = ReplicaCircuitBreaker::new(1, 10, 40, 100).unwrap();
+        let before = breaker;
+        assert!(breaker.record_failure(99).is_err());
+        assert_eq!(breaker, before);
+        assert!(breaker.permit(99).is_err());
+        assert_eq!(breaker, before);
+
+        let mut end = ReplicaCircuitBreaker::new(1, 10, 40, u64::MAX - 5).unwrap();
+        let before = end;
+        assert!(end.record_failure(u64::MAX - 5).is_err());
+        assert_eq!(end, before);
+        assert!(ReplicaCircuitBreaker::new(0, 10, 40, 0).is_err());
+        assert!(ReplicaCircuitBreaker::new(1, 40, 10, 0).is_err());
+    }
+}
