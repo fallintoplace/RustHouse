@@ -1315,11 +1315,11 @@ fn execute_streaming_inner_count<W: Write>(
         ..
     } = columns;
     if query.limit == Some(0) || query.offset > 0 {
-        output.write_all(b"count\n")?;
+        writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
         return Ok(());
     }
     if left_count == 0 || right_count == 0 {
-        output.write_all(b"count\n0\n")?;
+        writeln!(output, "{}\n0", query.aggregate_alias.as_deref().unwrap_or("count"))?;
         return Ok(());
     }
     let count = if right_count <= MAX_STREAM_BUILD_ROWS
@@ -1401,7 +1401,7 @@ fn execute_streaming_inner_count<W: Write>(
             |_, _| Ok(()),
         )?
     };
-    write!(output, "count\n{count}\n")?;
+    writeln!(output, "{}\n{count}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
     Ok(())
 }
 
@@ -1627,7 +1627,7 @@ pub fn execute_join<W: Write>(
 
     // Scalar COUNT LIMIT 0 has a header-only result, including OUTER joins.
     if query.aggregate == Some(JoinAggregate::CountStar) && query.limit == Some(0) {
-        output.write_all(b"count\n")?;
+        writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
         return Ok(());
     }
     // LIMIT 0 needs the validated output schema, but not either input scan.
@@ -1825,7 +1825,7 @@ pub fn execute_join<W: Write>(
         }
     }
     if count_only {
-        output.write_all(b"count\n")?;
+        writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
         if query.offset == 0 {
             writeln!(output, "{count}")?;
         }
