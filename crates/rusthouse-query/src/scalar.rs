@@ -75,6 +75,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_extrema(name)
         || name.eq_ignore_ascii_case("IS_POWER_OF_TWO")
         || name.eq_ignore_ascii_case("BIT_REVERSE")
+        || name.eq_ignore_ascii_case("BYTESWAP")
         || is_power(name)
         || name.eq_ignore_ascii_case("NEXT_POWER_OF_TWO")
         || name.eq_ignore_ascii_case("BIT_EXTRACT")
@@ -402,6 +403,38 @@ fn checked_bit_rotate(value: i64, amount: i64, left: bool) -> Result<i64, ParseE
     } else {
         value.rotate_right(shift)
     })
+}
+
+/// Reverse the bytes of the narrowest integer type fitting an SQL literal.
+/// The constant evaluator represents unsigned results only up to Int64::MAX.
+fn parse_byte_swap(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "byteSwap requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "byteSwap requires ')'")?;
+    if value >= 0 {
+        let value = value as u64;
+        let swapped = if value <= u8::MAX as u64 {
+            value
+        } else if value <= u16::MAX as u64 {
+            u64::from((value as u16).swap_bytes())
+        } else if value <= u32::MAX as u64 {
+            u64::from((value as u32).swap_bytes())
+        } else {
+            value.swap_bytes()
+        };
+        i64::try_from(swapped).map_err(|_| overflow())
+    } else {
+        let swapped = if i8::try_from(value).is_ok() {
+            value
+        } else if let Ok(value) = i16::try_from(value) {
+            i64::from(value.swap_bytes())
+        } else if let Ok(value) = i32::try_from(value) {
+            i64::from(value.swap_bytes())
+        } else {
+            value.swap_bytes()
+        };
+        Ok(swapped)
+    }
 }
 
 fn parse_bit_reverse(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -1100,6 +1133,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("BIT_WIDTH") {
         return parse_bit_width(parser, depth);
     }
+    if parser.keyword("BYTESWAP") {
+        return parse_byte_swap(parser, depth);
+    }
     if parser.keyword("BIT_REVERSE") {
         return parse_bit_reverse(parser, depth);
     }
@@ -1630,6 +1666,39 @@ mod small_modulus_primality_perf_tests {
             (2_305_843_009_213_693_951, true),
         ] {
             assert_eq!(prime_u64(value), prime, "{value}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_byte_swap_tests {
+    use crate::{Projection, parse_select};
+
+    #[test]
+    fn reverses_inferred_unsigned_integer_widths() {
+        for (sql, expected) in [
+            ("SELECT byteSwap(54)", 54_i64),
+            ("SELECT byteSwap(4135)", 10_000),
+            ("SELECT byteSwap(3351772109)", 3_455_829_959),
+            ("SELECT byteSwap(0)", 0),
+            ("SELECT byteSwap(-1)", -1),
+        ] {
+            assert_eq!(
+                parse_select(sql).unwrap().projection,
+                Projection::Literal(expected),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_results_above_the_constant_int64_domain() {
+        for sql in [
+            "SELECT byteSwap(123294967295)",
+            "SELECT byteSwap()",
+            "SELECT byteSwap(1, 2)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
 }
