@@ -162,7 +162,7 @@ mod tests {
             part("d", "p", 4, 20),
             part("e", "p", 5, 30),
         ];
-        let plans = plan_compaction_pairs(&parts, 500, 350, 2).unwrap();
+        let plans = plan_compaction_pairs(&parts, 500, 250, 2).unwrap();
         assert_eq!(plans.len(), 1);
         assert_eq!((&plans[0].left[..], &plans[0].right[..]), ("c", "d"));
         assert_eq!(plans[0].read_bytes, 30);
