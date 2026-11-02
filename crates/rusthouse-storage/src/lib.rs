@@ -31,6 +31,7 @@ pub mod distributed_replica_order;
 pub mod distributed_resume_map;
 pub mod distributed_retention;
 pub mod distributed_retry;
+pub mod distributed_rate_limit;
 pub mod distributed_scrub;
 pub mod distributed_snapshot_copy;
 mod enums;
