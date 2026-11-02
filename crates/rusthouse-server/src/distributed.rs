@@ -303,7 +303,9 @@ fn parse_peer_capabilities(data: &[u8]) -> Result<usize, String> {
         if key == "version" {
             if found.is_empty()
                 || found.len() > 64
-                || !found.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+                || !found
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
             {
                 return Err("invalid peer version".into());
             }
@@ -3302,9 +3304,15 @@ mod strict_distributed_capabilities_tests {
             good.replace("\"max_rows\":42", "\"max_rows\":0"),
             good.replace("\"max_rows\":42", "\"max_rows\":042"),
             good.replace("\"max_rows\":42", "\"max_rows\":\"42\""),
-            good.replace("\"version\":\"0.1.0\"", "\"version\":\"0.1.0\",\"version\":\"evil\""),
+            good.replace(
+                "\"version\":\"0.1.0\"",
+                "\"version\":\"0.1.0\",\"version\":\"evil\"",
+            ),
             good.replace("\"name\":\"RustHouse\"", "\"name\":\"FakeRustHouse\""),
-            good.replace("\"max_response_bytes\":16777216", "\"max_response_bytes\":1"),
+            good.replace(
+                "\"max_response_bytes\":16777216",
+                "\"max_response_bytes\":1",
+            ),
             format!("{{\"spoof\":\"{}\"}}", good.replace('"', "\\\"")),
         ] {
             assert!(parse_peer_capabilities(bad.as_bytes()).is_err(), "{bad}");
