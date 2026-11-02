@@ -250,6 +250,9 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         }
         let if_exists = optional_if_exists(&mut parser)?;
         let name = identifier(&mut parser)?;
+        // RustHouse has no dependent schema objects. Explicit RESTRICT is
+        // therefore equivalent to the existing default DROP behavior.
+        parser.keyword("RESTRICT");
         finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::DropTable { name, if_exists }));
     }
@@ -641,5 +644,26 @@ mod show_columns_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod drop_table_restrict_tests {
+    use super::parse_ddl;
+
+    #[test]
+    fn explicit_restrict_matches_default_drop_semantics() {
+        for prefix in ["DROP TABLE t", "DROP TABLE IF EXISTS t"] {
+            assert_eq!(
+                parse_ddl(&format!("{prefix} RESTRICT")).unwrap(),
+                parse_ddl(prefix).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_cascade_and_duplicate_restrict_are_rejected() {
+        assert!(parse_ddl("DROP TABLE t CASCADE").is_err());
+        assert!(parse_ddl("DROP TABLE t RESTRICT RESTRICT").is_err());
     }
 }
