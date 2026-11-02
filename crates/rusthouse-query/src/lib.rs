@@ -1125,7 +1125,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         if !parser.take(Token::LParen) {
                             return Err(ParseError("expected '(' after aggregate name".into()));
                         }
-                        let value_column = parser.word()?;
+                        let value_column = if function == AggregateFunction::Count && parser.take(Token::Star) {
+                            "*".to_owned()
+                        } else {
+                            parser.word()?
+                        };
                         let filter = if conditional {
                             if !parser.take(Token::Comma) {
                                 return Err(ParseError(
