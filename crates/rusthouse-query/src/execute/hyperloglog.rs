@@ -58,6 +58,11 @@ const SMALL_NEGATIVE_HASHES: [u64; 256] = {
     hashes
 };
 
+// Common all-zero and nonfinite floating-point dimensions should not
+// rehash the same canonical eight bytes for every input row.
+const ZERO_FLOAT_HASH: u64 = HyperLogLog::hash(&0u64.to_le_bytes());
+const NAN_FLOAT_HASH: u64 = HyperLogLog::hash(&f64::NAN.to_bits().to_le_bytes());
+
 pub(super) struct HyperLogLog {
     registers: Box<[u8; REGISTERS]>,
 }
@@ -116,16 +121,9 @@ impl HyperLogLog {
                 SMALL_UNSIGNED_HASHES[value as usize]
             }
             Number::Signed(value) => Self::hash(&value.to_le_bytes()),
-            Number::Float(value) => {
-                let bits = if value == 0.0 {
-                    0
-                } else if value.is_nan() {
-                    f64::NAN.to_bits()
-                } else {
-                    value.to_bits()
-                };
-                Self::hash(&bits.to_le_bytes())
-            }
+            Number::Float(value) if value == 0.0 => ZERO_FLOAT_HASH,
+            Number::Float(value) if value.is_nan() => NAN_FLOAT_HASH,
+            Number::Float(value) => Self::hash(&value.to_bits().to_le_bytes()),
         };
         self.add(hash);
     }
