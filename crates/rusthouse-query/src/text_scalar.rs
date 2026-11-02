@@ -40,6 +40,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "CHR"
                 | "TOUNIXTIMESTAMP"
                 | "STRINGBYTESUNIQ"
+                | "SOUNDEX"
                 | "BIT_LENGTH"
                 | "BITMASKTOLIST"
                 | "IS_INT64"
@@ -562,6 +563,43 @@ fn bounded_utf8_edit_distance(left: &str, right: &str) -> Result<i64, ParseError
     Ok(previous[short.len()] as i64)
 }
 
+fn soundex_ascii(input: &str) -> String {
+    fn digit(byte: u8) -> u8 {
+        match byte.to_ascii_uppercase() {
+            b'B' | b'F' | b'P' | b'V' => b'1',
+            b'C' | b'G' | b'J' | b'K' | b'Q' | b'S' | b'X' | b'Z' => b'2',
+            b'D' | b'T' => b'3',
+            b'L' => b'4',
+            b'M' | b'N' => b'5',
+            b'R' => b'6',
+            _ => b'0',
+        }
+    }
+
+    let mut letters = input.bytes().filter(u8::is_ascii_alphabetic);
+    let mut code = String::with_capacity(4);
+    let mut previous = b'0';
+    if let Some(first) = letters.next() {
+        code.push(char::from(first.to_ascii_uppercase()));
+        previous = digit(first);
+    }
+    for letter in letters {
+        let next = digit(letter);
+        if next != b'0' && next != previous {
+            code.push(char::from(next));
+            if code.len() == 4 {
+                break;
+            }
+        }
+        // ClickHouse treats H/W as zero, breaking runs of the same digit.
+        previous = next;
+    }
+    while code.len() < 4 {
+        code.push('0');
+    }
+    code
+}
+
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
     parse_at_depth(parser, 0)
 }
@@ -576,6 +614,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         return super::date_scalar::parse_after_open(parser, &name, depth);
     }
     let value = match name.as_str() {
+        "SOUNDEX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "soundex requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(soundex_ascii(&input)),
+                None => ConstantValue::Null,
+            }
+        }
         "CRC32" => {
             let value = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "CRC32 requires one argument")?;
