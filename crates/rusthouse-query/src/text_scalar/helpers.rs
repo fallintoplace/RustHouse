@@ -1,6 +1,15 @@
 use super::*;
 
 // Decode URL escapes with strict UTF-8 and bounded linear work.
+fn percent_hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 pub(super) fn decode_percent_encoded(input: &str, form: bool) -> Result<String, ParseError> {
     if !input.contains('%') && (!form || !input.contains('+')) {
         return Ok(input.to_owned());
@@ -9,26 +18,31 @@ pub(super) fn decode_percent_encoded(input: &str, form: bool) -> Result<String, 
     let mut decoded = Vec::with_capacity(source.len());
     let mut index = 0;
     while index < source.len() {
-        if source[index] == b'%' {
-            let high = source
-                .get(index + 1)
-                .and_then(|byte| char::from(*byte).to_digit(16));
-            let low = source
-                .get(index + 2)
-                .and_then(|byte| char::from(*byte).to_digit(16));
-            let (Some(high), Some(low)) = (high, low) else {
-                return Err(ParseError("invalid URL percent escape".into()));
-            };
-            decoded.push((high * 16 + low) as u8);
-            index += 3;
-        } else {
-            decoded.push(if form && source[index] == b'+' {
-                b' '
-            } else {
-                source[index]
-            });
+        // Copy ordinary spans together rather than branching and pushing
+        // once per byte in long URL components.
+        let start = index;
+        while index < source.len()
+            && source[index] != b'%'
+            && (!form || source[index] != b'+')
+        {
             index += 1;
         }
+        decoded.extend_from_slice(&source[start..index]);
+        if index == source.len() {
+            break;
+        }
+        if form && source[index] == b'+' {
+            decoded.push(b' ');
+            index += 1;
+            continue;
+        }
+        let high = source.get(index + 1).copied().and_then(percent_hex_digit);
+        let low = source.get(index + 2).copied().and_then(percent_hex_digit);
+        let (Some(high), Some(low)) = (high, low) else {
+            return Err(ParseError("invalid URL percent escape".into()));
+        };
+        decoded.push(high * 16 + low);
+        index += 3;
     }
     String::from_utf8(decoded).map_err(|_| ParseError("URL decode result is not UTF-8".into()))
 }
@@ -640,4 +654,22 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
     }
     String::from_utf8(bytes)
         .map_err(|_| ParseError("unhex constant is not valid UTF-8".into()))
+}
+
+#[cfg(test)]
+mod percent_decoding_spans_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_plain_spans_and_form_plus_exactly() {
+        let plain = format!("{}%20{}%C3%A9", "abc".repeat(100), "xyz".repeat(100));
+        let expected = format!("{} {}é", "abc".repeat(100), "xyz".repeat(100));
+        assert_eq!(decode_percent_encoded(&plain, false).unwrap(), expected);
+        assert_eq!(decode_percent_encoded("hello+world%2Bok", true).unwrap(), "hello world+ok");
+        assert_eq!(decode_percent_encoded("hello+world%2Bok", false).unwrap(), "hello+world+ok");
+        assert_eq!(decode_percent_encoded("%00", false).unwrap().as_bytes(), &[0]);
+        for invalid in ["%", "%A", "%GG", "%FF", "%é"] {
+            assert!(decode_percent_encoded(invalid, false).is_err(), "{invalid}");
+        }
+    }
 }
