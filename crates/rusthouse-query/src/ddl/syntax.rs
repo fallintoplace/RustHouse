@@ -52,6 +52,17 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
     let name = parser.word()?;
     let canonical = canonical_type(&name)
         .ok_or_else(|| ParseError(format!("unsupported DDL column type: {name}")))?;
+    if parser.keyword("UNSIGNED") {
+        let unsigned = match canonical {
+            "Int8" => "UInt8",
+            "Int16" => "UInt16",
+            "Int32" => "UInt32",
+            "Int64" => "UInt64",
+            "Int128" => "UInt128",
+            _ => return Err(ParseError("UNSIGNED requires a signed integer type".into())),
+        };
+        return Ok(unsigned.into());
+    }
     if matches!(canonical, "Nullable" | "Array" | "Map") {
         if nesting >= MAX_DDL_TYPE_DEPTH {
             return Err(ParseError("DDL type nesting exceeds 4 levels".into()));
@@ -228,6 +239,37 @@ mod complex_type_tests {
             "CREATE TABLE t (m Map(Map(String, Int8), String))",
             "CREATE TABLE t (m Map(String, Array(Array(Array(Array(UInt8))))))",
             "CREATE TABLE t (j JSON(UInt8))",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod unsigned_integer_suffix_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn signed_integer_widths_accept_unsigned_suffix() {
+        let Some(Ddl::CreateTable { columns, .. }) = parse_ddl(
+            "CREATE TABLE sizes (a TINYINT UNSIGNED, b SMALLINT UNSIGNED, c INT UNSIGNED, d BIGINT UNSIGNED, e INT128 UNSIGNED)",
+        )
+        .unwrap() else {
+            panic!("expected CREATE TABLE");
+        };
+        let types = columns
+            .iter()
+            .map(|column| column.data_type.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(types, ["UInt8", "UInt16", "UInt32", "UInt64", "UInt128"]);
+    }
+
+    #[test]
+    fn unsigned_suffix_rejects_non_integer_types() {
+        for sql in [
+            "CREATE TABLE t (value FLOAT UNSIGNED)",
+            "CREATE TABLE t (value VARCHAR UNSIGNED)",
+            "CREATE TABLE t (value UINT64 UNSIGNED)",
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
