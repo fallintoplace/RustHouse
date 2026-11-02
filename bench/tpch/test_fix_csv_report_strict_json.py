@@ -2,11 +2,30 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
-from report_csv import load_report
+from report_csv import load_report, report_metadata_identity
 
 
 class StrictCsvReportJsonTests(unittest.TestCase):
+    def test_windows_uses_birthtime_for_stable_identity(self):
+        one = SimpleNamespace(
+            st_dev=3, st_ino=4, st_size=20, st_mtime_ns=100,
+            st_ctime_ns=101, st_birthtime_ns=300,
+        )
+        same_file_different_ctime = SimpleNamespace(
+            st_dev=3, st_ino=4, st_size=20, st_mtime_ns=100,
+            st_ctime_ns=102, st_birthtime_ns=300,
+        )
+        self.assertEqual(
+            report_metadata_identity(one, windows=True),
+            report_metadata_identity(same_file_different_ctime, windows=True),
+        )
+        self.assertNotEqual(
+            report_metadata_identity(one, windows=False),
+            report_metadata_identity(same_file_different_ctime, windows=False),
+        )
+
     def test_rejects_duplicate_result_fields(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "report.json"
