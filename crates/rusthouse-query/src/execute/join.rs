@@ -1099,19 +1099,14 @@ fn execute_streaming_ordered_inner<W: Write>(
         MAX_STREAM_BUILD_BYTES,
         Some(&right_metadata),
     )?;
-    let mut hash =
-        HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
-    for (index, row) in right_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, right_keys) {
-            if query.any {
-                hash.entry(key).or_insert(Bucket::One(index));
-            } else {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
-            }
-        }
-    }
+    // Reuse the cardinality-aware build for ordered top-K joins.
+    // Preserve source match order and ANY first-match semantics.
+    let hash = build_join_hash(
+        &right_rows,
+        right_keys,
+        query.any,
+        super::query_workers(4),
+    )?;
     let mut heap = BinaryHeap::<OrderedJoinRow>::with_capacity(requested.min(1024));
     let directions: Arc<[(bool, Option<bool>)]> = order
         .iter()
