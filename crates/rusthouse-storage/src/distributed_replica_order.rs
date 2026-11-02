@@ -1174,3 +1174,162 @@ mod quorum_snapshot_zone_failover_tests {
         );
     }
 }
+
+
+/// Choose bounded hedge candidates from one quorum-observed snapshot.
+///
+/// The fastest eligible replica is first. Later candidates prefer previously
+/// unused failure zones before choosing same-zone fallbacks. Latency estimates
+/// are advisory and do not authorize reads from a different snapshot.
+pub fn plan_latency_aware_quorum_hedges(
+    members: &[&str],
+    policy: crate::distributed_quorum::QuorumPolicy,
+    replicas: &[ReplicaSnapshotStatus],
+    zones: &[(&str, &str)],
+    latency_ms: &[(&str, u64)],
+    max_hedges: usize,
+) -> Result<(crate::distributed_lineage::SnapshotVersion, Vec<String>), &'static str> {
+    use std::collections::{HashMap, HashSet};
+
+    if max_hedges > 64 || latency_ms.len() != members.len() {
+        return Err("invalid quorum hedge planning bounds");
+    }
+    let mut latencies = HashMap::with_capacity(latency_ms.len());
+    for &(node, latency) in latency_ms {
+        if !valid_node(node)
+            || !members.contains(&node)
+            || latencies.insert(node, latency).is_some()
+        {
+            return Err("invalid or duplicate replica latency metadata");
+        }
+    }
+    // The existing planner validates all replica observations and all zones,
+    // including excluded unhealthy nodes and conflicting snapshot versions.
+    let (snapshot, mut eligible) =
+        rank_zone_diverse_quorum_snapshot_replicas(members, policy, replicas, zones)?;
+    eligible.sort_unstable_by(|left, right| {
+        latencies[left.as_str()]
+            .cmp(&latencies[right.as_str()])
+            .then_with(|| left.cmp(right))
+    });
+    let mut visited_zones = HashSet::new();
+    let mut preferred = Vec::with_capacity(eligible.len());
+    let mut fallback = Vec::new();
+    for node in eligible {
+        let zone = zones
+            .iter()
+            .find(|&&(name, _)| name == node)
+            .map(|&(_, zone)| zone)
+            .expect("validated zone metadata");
+        if visited_zones.insert(zone) {
+            preferred.push(node);
+        } else {
+            fallback.push(node);
+        }
+    }
+    preferred.extend(fallback);
+    preferred.truncate(max_hedges);
+    Ok((snapshot, preferred))
+}
+
+#[cfg(test)]
+mod latency_quorum_hedge_tests {
+    use super::*;
+    use crate::distributed_lineage::SnapshotVersion;
+    use crate::distributed_quorum::QuorumPolicy;
+
+    fn status(node: &str, version: SnapshotVersion, healthy: bool) -> ReplicaSnapshotStatus {
+        ReplicaSnapshotStatus {
+            node: node.into(),
+            snapshot: version,
+            healthy,
+        }
+    }
+
+    #[test]
+    fn fastest_fresh_peer_wins_without_allowing_a_minority_newer_snapshot() {
+        let members = ["a", "b", "c", "d", "e"];
+        let policy = QuorumPolicy::new(5, 3, 3).unwrap();
+        let majority = SnapshotVersion {
+            epoch: 2,
+            generation: 8,
+            fingerprint: 123,
+        };
+        let minority = SnapshotVersion {
+            generation: 9,
+            fingerprint: 456,
+            ..majority
+        };
+        let statuses = [
+            status("a", majority, true),
+            status("b", majority, true),
+            status("c", majority, true),
+            status("d", minority, true),
+            status("e", majority, false),
+        ];
+        let zones = [
+            ("a", "east"),
+            ("b", "east"),
+            ("c", "west"),
+            ("d", "north"),
+            ("e", "north"),
+        ];
+        let latency = [("a", 50), ("b", 5), ("c", 10), ("d", 1), ("e", 0)];
+        let (chosen, candidates) = plan_latency_aware_quorum_hedges(
+            &members, policy, &statuses, &zones, &latency, 3,
+        )
+        .unwrap();
+        assert_eq!(chosen, majority);
+        assert_eq!(candidates, ["b", "c", "a"]);
+        let (_, limited) = plan_latency_aware_quorum_hedges(
+            &members, policy, &statuses, &zones, &latency, 2,
+        )
+        .unwrap();
+        assert_eq!(limited, ["b", "c"]);
+    }
+
+    #[test]
+    fn invalid_and_incomplete_metadata_fails_instead_of_selecting_fast_peers() {
+        let members = ["a", "b", "c"];
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let version = SnapshotVersion {
+            epoch: 1,
+            generation: 3,
+            fingerprint: 11,
+        };
+        let statuses = [
+            status("a", version, true),
+            status("b", version, true),
+            status("c", version, false),
+        ];
+        let zones = [("a", "x"), ("b", "y"), ("c", "z")];
+        assert!(
+            plan_latency_aware_quorum_hedges(
+                &members, policy, &statuses, &zones,
+                &[("a", 1), ("b", 2)], 2
+            )
+            .is_err()
+        );
+        assert!(
+            plan_latency_aware_quorum_hedges(
+                &members, policy, &statuses, &zones,
+                &[("a", 1), ("a", 2), ("c", 3)], 2
+            )
+            .is_err()
+        );
+        assert!(
+            plan_latency_aware_quorum_hedges(
+                &members, policy, &statuses, &zones,
+                &[("a", 1), ("b", 2), ("d", 3)], 2
+            )
+            .is_err()
+        );
+        assert!(
+            plan_latency_aware_quorum_hedges(
+                &members, policy, &statuses, &zones,
+                &[("a", 1), ("b", 2), ("c", 3)], 65
+            )
+            .is_err()
+        );
+    }
+}
