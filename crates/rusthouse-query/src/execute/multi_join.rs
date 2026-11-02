@@ -464,7 +464,7 @@ pub fn execute_multi_join<W: Write>(
             column_index(&relations, column)?;
         }
         if query.aggregate == Some(crate::JoinAggregate::CountStar) {
-            output.write_all(b"count\n")?;
+            writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
         } else {
             let selected = output_columns(query, &relations, &initial_step)?;
             write_join_header(output, &selected)?;
@@ -591,7 +591,7 @@ pub fn execute_multi_join<W: Write>(
                     }
                 }
             }
-            writeln!(output, "count\n{count}")?;
+            writeln!(output, "{}\n{count}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
             return Ok(());
         }
         // Most fact-to-dimension joins preserve the incoming row count.
@@ -681,7 +681,7 @@ pub fn execute_multi_join<W: Write>(
         });
     }
     if query.aggregate == Some(crate::JoinAggregate::CountStar) {
-        output.write_all(b"count\n")?;
+        writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
         if query.offset == 0 {
             writeln!(output, "{}", rows.len())?;
         }
