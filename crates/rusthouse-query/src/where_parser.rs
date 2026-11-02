@@ -793,7 +793,7 @@ mod tpch_q19_predicate_budget_tests {
         assert_eq!(query.or_predicates.len(), 2);
         let mut output = Vec::new();
         execute(&query, None, &mut output).unwrap();
-        assert_eq!(output, b"number\\n0\\n4\\n6\\n10\\n12\\n16\\n");
+        assert_eq!(output, b"number\n0\n4\n6\n10\n12\n16\n");
     }
 
     #[test]
