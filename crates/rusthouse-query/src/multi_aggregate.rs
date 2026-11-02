@@ -179,7 +179,7 @@ fn aggregate_function(name: &str) -> Option<Option<AggregateFunction>> {
         "VARPOP" => Some(Some(AggregateFunction::VarPop)),
         "VARSAMP" => Some(Some(AggregateFunction::VarSamp)),
         "STDDEVPOP" => Some(Some(AggregateFunction::StddevPop)),
-        "STDDEVSAMP" => Some(Some(AggregateFunction::StddevSamp)),
+        "STDDEVSAMP" | "STDDEV_SAMP" => Some(Some(AggregateFunction::StddevSamp)),
         "MEDIAN" => Some(Some(AggregateFunction::Median)),
         "ANY" => Some(Some(AggregateFunction::Any)),
         "ANYLAST" => Some(Some(AggregateFunction::AnyLast)),
