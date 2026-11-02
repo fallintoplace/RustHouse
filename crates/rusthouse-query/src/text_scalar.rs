@@ -550,12 +550,12 @@ fn soundex_ascii(input: &str) -> String {
     }
 
     let mut letters = input.bytes().filter(u8::is_ascii_alphabetic);
-    let Some(first) = letters.next() else {
-        return String::new();
-    };
     let mut code = String::with_capacity(4);
-    code.push(char::from(first.to_ascii_uppercase()));
-    let mut previous = digit(first);
+    let mut previous = b'0';
+    if let Some(first) = letters.next() {
+        code.push(char::from(first.to_ascii_uppercase()));
+        previous = digit(first);
+    }
     for letter in letters {
         let next = digit(letter);
         if next != b'0' && next != previous {
@@ -564,10 +564,8 @@ fn soundex_ascii(input: &str) -> String {
                 break;
             }
         }
-        // H and W do not break adjacent runs of the same consonant code.
-        if !matches!(letter.to_ascii_uppercase(), b'H' | b'W') {
-            previous = next;
-        }
+        // ClickHouse treats H/W as zero, breaking runs of the same digit.
+        previous = next;
     }
     while code.len() < 4 {
         code.push('0');
