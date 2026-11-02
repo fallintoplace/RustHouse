@@ -1761,6 +1761,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     } else {
         None
     };
+    if let (Projection::Columns(columns), Some(name)) = (&projection, alias.as_deref()) {
+        if let [column] = columns.as_slice() {
+            for term in order_by.iter_mut().chain(order_by_extra.iter_mut()) {
+                if term.column.eq_ignore_ascii_case(name) {
+                    term.column = column.clone();
+                }
+            }
+        }
+    }
     if matches!(
         projection,
         Projection::GroupedCount { .. }
@@ -2105,6 +2114,24 @@ mod tpch_interval_unit_tests {
                 Predicate::Comparison { operator: Operator::Le | Operator::Lt, value, .. }
                     if value == expected
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod order_by_selected_alias_tests {
+    use super::*;
+
+    #[test]
+    fn single_column_alias_is_valid_for_sorting() {
+        let canonical = parse_select(
+            "SELECT number AS n FROM numbers(5) ORDER BY number DESC LIMIT 2"
+        ).unwrap();
+        for sql in [
+            "SELECT number AS n FROM numbers(5) ORDER BY n DESC LIMIT 2",
+            "SELECT number AS n FROM numbers(5) ORDER BY N DESC LIMIT 2",
+        ] {
+            assert_eq!(parse_select(sql).unwrap(), canonical);
         }
     }
 }
