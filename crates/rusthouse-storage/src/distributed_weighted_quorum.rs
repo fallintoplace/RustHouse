@@ -380,3 +380,117 @@ mod joint_quorum_tests {
         assert!(observe_joint_weighted_quorum(&before, old, &invalid, new, &[]).is_err());
     }
 }
+
+
+/// Worst-case surviving voting weight after exactly this many independent
+/// failure zones disappear. This assesses availability, not fault consensus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeightedZoneFailure {
+    pub failed_zones: usize,
+    pub surviving_weight: u64,
+    pub can_read: bool,
+    pub can_write: bool,
+}
+
+impl WeightedQuorumPolicy {
+    /// Calculate the tight, placement-independent failure bound by removing
+    /// the heaviest zones. Up to 64 members and at most 64 zones are allowed.
+    pub fn worst_case_zone_failure(
+        self,
+        members: &[Member],
+        failed_zones: usize,
+    ) -> Result<WeightedZoneFailure, &'static str> {
+        Self::new(members, self.reads, self.writes)?;
+        let total = total_weight(members)?;
+        let mut zones: Vec<(&str, u64)> = Vec::new();
+        for member in members {
+            if let Some((_, weight)) = zones
+                .iter_mut()
+                .find(|(zone, _)| *zone == member.zone.as_str())
+            {
+                *weight = weight
+                    .checked_add(u64::from(member.weight))
+                    .ok_or("zone weight overflow")?;
+            } else {
+                zones.push((&member.zone, u64::from(member.weight)));
+            }
+        }
+        if failed_zones > zones.len() {
+            return Err("failed zone count exceeds membership");
+        }
+        zones.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let lost = zones
+            .iter()
+            .take(failed_zones)
+            .try_fold(0u64, |sum, (_, weight)| {
+                sum.checked_add(*weight).ok_or("zone weight overflow")
+            })?;
+        let surviving_weight = total
+            .checked_sub(lost)
+            .ok_or("zone weight exceeds membership")?;
+        Ok(WeightedZoneFailure {
+            failed_zones,
+            surviving_weight,
+            can_read: surviving_weight >= self.reads,
+            can_write: surviving_weight >= self.writes,
+        })
+    }
+}
+
+#[cfg(test)]
+mod weighted_zone_failure_tests {
+    use super::*;
+
+    fn members() -> Vec<Member> {
+        [
+            ("a", "east", 4u16),
+            ("b", "east", 2),
+            ("c", "west", 3),
+            ("d", "north", 1),
+            ("e", "south", 1),
+        ]
+        .into_iter()
+        .map(|(node, zone, weight)| Member {
+            node: node.into(),
+            zone: zone.into(),
+            weight,
+        })
+        .collect()
+    }
+
+    #[test]
+    fn greatest_weight_loss_matches_all_zone_subsets() {
+        let members = members();
+        let policy = WeightedQuorumPolicy::new(&members, 5, 7).unwrap();
+        let weights = [6u64, 3, 1, 1];
+        let total = weights.iter().sum::<u64>();
+        for count in 0..=4usize {
+            let min_survivors = (0usize..16)
+                .filter(|mask| mask.count_ones() as usize == count)
+                .map(|mask| {
+                    total - weights.iter().enumerate()
+                        .filter(|(index, _)| mask & (1 << index) != 0)
+                        .map(|(_, weight)| *weight)
+                        .sum::<u64>()
+                })
+                .min()
+                .unwrap();
+            let status = policy.worst_case_zone_failure(&members, count).unwrap();
+            assert_eq!(status.surviving_weight, min_survivors);
+            assert_eq!(status.can_read, min_survivors >= policy.reads);
+            assert_eq!(status.can_write, min_survivors >= policy.writes);
+        }
+        assert!(policy.worst_case_zone_failure(&members, 5).is_err());
+    }
+
+    #[test]
+    fn rejects_stale_quorum_policy_and_invalid_membership() {
+        let members = members();
+        let policy = WeightedQuorumPolicy::new(&members, 5, 7).unwrap();
+        let mut changed = members;
+        changed[0].weight = 0;
+        assert!(policy.worst_case_zone_failure(&changed, 1).is_err());
+        let empty = Vec::<Member>::new();
+        assert!(policy.worst_case_zone_failure(&empty, 0).is_err());
+    }
+}
