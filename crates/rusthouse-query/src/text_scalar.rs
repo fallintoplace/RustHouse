@@ -73,6 +73,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "CONCAT"
                 | "CONCATASSUMEINJECTIVE"
                 | "QUOTE_LITERAL"
+                | "FROMUNIXTIMESTAMP64SECOND"
                 | "FROMUNIXTIMESTAMP64MILLI"
                 | "CUTQUERYSTRINGANDFRAGMENT"
                 | "THROWIF"
@@ -2411,6 +2412,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Text(result)
             } else {
                 ConstantValue::Null
+            }
+        }
+        "FROMUNIXTIMESTAMP64SECOND" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "fromUnixTimestamp64Second requires one argument",
+            )?;
+            match input {
+                Some(seconds) => ConstantValue::Text(
+                    super::date_scalar::render_datetime64_utc(seconds)?,
+                ),
+                None => ConstantValue::Null,
             }
         }
         "FROMUNIXTIMESTAMP64MILLI" => {
