@@ -1,8 +1,8 @@
 # RustHouse v1 Core release contract (proposal)
 
-This document defines a **proposed** scope and acceptance checklist for the first
-stable RustHouse core release. It does not declare the current repository production-ready.
-All release gates below must be verified against the final release candidate.
+This document proposes the scope and checks for the first stable RustHouse
+core release. It does not say the current project is ready for production.
+Check every release gate against the final release candidate.
 
 ## Supported core scope
 
@@ -12,11 +12,10 @@ All release gates below must be verified against the final release candidate.
 - CLI inspection, verification, bounded queries, and supported output formats.
 - The local database diagnostic command (`rusthouse doctor`).
 
-The SQL grammar is a documented subset, **not** ClickHouse compatibility.
-Unsupported input must fail with a nonzero exit status instead of silently
-returning truncated or incorrect results. Existing statement, part-count,
-join-size, and import limits remain part of the contract until deliberately
-changed and tested.
+The SQL grammar is a documented subset. It does not promise ClickHouse
+compatibility. Unsupported input must return a nonzero exit status. It must not
+silently return incomplete or incorrect results. Current limits on statements,
+parts, joins, and imports remain in place until they are changed and tested.
 
 ## Experimental scope (not part of the stable v1 contract)
 
@@ -32,10 +31,9 @@ across shards.
 
 ## Persistence guarantees
 
-A local statement publishes immutable part files and, where applicable,
-an active-generation pointer. A script of multiple statements is **not** one
-transaction. Tests that terminate a process at publication boundaries are
-useful, but they do not prove survival of sudden machine power loss.
+A local statement writes immutable parts and may update the active-generation
+pointer. A script with multiple statements is **not** one transaction. Tests
+that stop a process during publication do not prove safety after power loss.
 
 Until a power-loss test program exists, do **not** advertise a general
 power-loss durability or zero-data-loss guarantee. The initial stable release
@@ -84,5 +82,5 @@ for compatibility. Do not bump the version to v1.0 without determining how
 older local data directories are detected, upgraded if necessary, and
 recovered if an upgrade is interrupted.
 
-This is an acceptance document, not an assertion that these promises already
-hold. The primary project README remains the source for current features.
+This is a proposed checklist, not a promise that these requirements already
+hold. See the main README for current features.
