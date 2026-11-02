@@ -761,12 +761,47 @@ fn order_by_all_columns(projection: &Projection) -> Result<Vec<String>, ParseErr
     Ok(std::mem::take(&mut columns))
 }
 
+
+fn trim_trailing_block_comments(mut sql: &str) -> &str {
+    loop {
+        sql = sql.trim_end();
+        if !sql.ends_with("*/") {
+            return sql;
+        }
+        let bytes = sql.as_bytes();
+        let mut cursor = bytes.len();
+        let mut depth = 0usize;
+        let mut start = None;
+        while cursor >= 2 {
+            if &bytes[cursor - 2..cursor] == b"*/" {
+                depth += 1;
+                cursor -= 2;
+            } else if &bytes[cursor - 2..cursor] == b"/*" {
+                depth -= 1;
+                cursor -= 2;
+                if depth == 0 {
+                    start = Some(cursor);
+                    break;
+                }
+            } else {
+                cursor -= 1;
+            }
+        }
+        let Some(start) = start else {
+            // Leave malformed SQL to the lexer, which reports the real error.
+            return sql;
+        };
+        sql = &sql[..start];
+    }
+}
+
 /// Split a terminal ClickHouse FORMAT clause without confusing SQL string
 /// contents or comments with keywords. Return the original SQL when absent.
 /// The caller validates the requested format against supported encodings.
 pub fn split_clickhouse_format(sql: &str) -> Result<(&str, Option<&str>), ParseError> {
-    let trimmed = sql.trim_end();
+    let trimmed = trim_trailing_block_comments(sql.trim_end());
     let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
+    let trimmed = trim_trailing_block_comments(trimmed);
     let tokens = tokenize(trimmed)?;
     let (Some(Token::Word(name)), Some(Token::Word(keyword))) =
         (tokens.last(), tokens.get(tokens.len().saturating_sub(2)))
@@ -2134,5 +2169,31 @@ mod where_boolean_literal_tests {
                 parse_select(&numeric_sql).unwrap()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod format_trailing_block_comment_tests {
+    use super::split_clickhouse_format;
+
+    #[test]
+    fn recognizes_format_even_with_nested_trailing_block_comments() {
+        for sql in [
+            "SELECT 1 FORMAT TSV /* note */",
+            "SELECT 1 FORMAT TSV /* outer /* inner */ tail */",
+            "SELECT 1 FORMAT TSV; /* note */",
+            "SELECT 1 FORMAT TSV /* note */;",
+        ] {
+            let (query, format) = split_clickhouse_format(sql).unwrap();
+            assert_eq!(query, "SELECT 1", "{sql}");
+            assert_eq!(format, Some("TSV"), "{sql}");
+        }
+    }
+
+    #[test]
+    fn ignores_format_words_inside_strings_and_rejects_incomplete_comments() {
+        let sql = "SELECT 'FORMAT TSV' /* note */";
+        assert_eq!(split_clickhouse_format(sql).unwrap(), (sql, None));
+        assert!(split_clickhouse_format("SELECT 1 FORMAT TSV /* unfinished").is_err());
     }
 }
