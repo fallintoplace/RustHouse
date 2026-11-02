@@ -1375,6 +1375,9 @@ pub fn read_coalesced_object_ranges_into(
     ranges: &mut [(u64, &mut [u8])],
     max_total_bytes: usize,
 ) -> io::Result<()> {
+    if ranges.len() > MAX_RANGES {
+        return Err(io::Error::other("too many object ranges"));
+    }
     let (mut file, baseline) = open_verified_object(path)?;
     let requests = ranges
         .iter()
@@ -1392,7 +1395,8 @@ pub fn read_coalesced_object_ranges_into(
             let request_end = *offset + destination.len() as u64;
             if *offset >= span.offset && request_end <= end {
                 let start = (*offset - span.offset) as usize;
-                destination.copy_from_slice(&bytes[start..start + destination.len()]);
+                let length = destination.len();
+                destination.copy_from_slice(&bytes[start..start + length]);
             }
         }
     }
