@@ -48,6 +48,35 @@ pub fn plan_compaction_pairs(
     byte_budget: u64,
     max_pairs: usize,
 ) -> Result<Vec<CompactionPair>, &'static str> {
+    plan_compaction_pairs_with_ratio(parts, max_pair_bytes, byte_budget, max_pairs, None)
+}
+
+/// Refuse compaction pairs whose sizes differ by more than max_size_ratio.
+///
+/// The ratio is checked without overflowing even for u64::MAX part sizes.
+/// The original planner remains available for callers that allow skew.
+pub fn plan_balanced_compaction_pairs(
+    parts: &[PartRange],
+    max_pair_bytes: u64,
+    byte_budget: u64,
+    max_pairs: usize,
+    max_size_ratio: u64,
+) -> Result<Vec<CompactionPair>, &'static str> {
+    if max_size_ratio == 0 {
+        return Err("invalid compaction size ratio");
+    }
+    plan_compaction_pairs_with_ratio(
+        parts, max_pair_bytes, byte_budget, max_pairs, Some(max_size_ratio),
+    )
+}
+
+fn plan_compaction_pairs_with_ratio(
+    parts: &[PartRange],
+    max_pair_bytes: u64,
+    byte_budget: u64,
+    max_pairs: usize,
+    max_size_ratio: Option<u64>,
+) -> Result<Vec<CompactionPair>, &'static str> {
     if parts.len() > MAX_PARTS
         || max_pairs > MAX_PLANS
         || max_pair_bytes == 0
@@ -90,6 +119,11 @@ pub fn plan_compaction_pairs(
             || left.level != right.level
             || left.last_block.checked_add(1) != Some(right.first_block)
         {
+            continue;
+        }
+        let smaller = left.bytes.min(right.bytes);
+        let larger = left.bytes.max(right.bytes);
+        if max_size_ratio.is_some_and(|ratio| larger > smaller.saturating_mul(ratio)) {
             continue;
         }
         let cost = left
@@ -217,6 +251,31 @@ mod tests {
         ];
         let planned = plan_compaction_pairs(&high, 20, 20, 1).unwrap();
         assert_eq!(planned[0].last_block, u64::MAX);
+    }
+
+    #[test]
+    fn balanced_planner_skips_skewed_pairs_but_retains_normal_pairs() {
+        let unequal = [part("a", "p", 1, 1000), part("b", "p", 2, 1)];
+        assert_eq!(plan_compaction_pairs(&unequal, 2000, 2000, 1).unwrap().len(), 1);
+        assert!(plan_balanced_compaction_pairs(&unequal, 2000, 2000, 1, 4)
+            .unwrap().is_empty());
+        assert!(plan_balanced_compaction_pairs(&unequal, 2000, 2000, 1, 0).is_err());
+
+        let parts = [
+            part("a", "p", 1, 10),
+            part("b", "p", 2, 30),
+            part("c", "p", 3, 30),
+            part("d", "p", 4, 10),
+        ];
+        let balanced = plan_balanced_compaction_pairs(&parts, 100, 100, 2, 2).unwrap();
+        assert_eq!(balanced.len(), 1);
+        assert_eq!((&balanced[0].left[..], &balanced[0].right[..]), ("b", "c"));
+
+        let limits = [
+            part("high", "p", 1, u64::MAX - 1),
+            part("low", "p", 2, 1),
+        ];
+        assert!(plan_balanced_compaction_pairs(&limits, u64::MAX, u64::MAX, 1, u64::MAX).is_err());
     }
 
     #[test]
