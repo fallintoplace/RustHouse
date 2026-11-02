@@ -1103,13 +1103,17 @@ struct WideSignedSum {
 
 impl WideSignedSum {
     fn new(value: i128) -> Self {
-        Self { high: if value < 0 { -1 } else { 0 }, low: value as u128 }
+        Self {
+            high: if value < 0 { -1 } else { 0 },
+            low: value as u128,
+        }
     }
 
     fn add(&mut self, value: i128) -> Result<(), MergeError> {
         let (low, carry) = self.low.overflowing_add(value as u128);
         let sign = if value < 0 { -1i64 } else { 0 };
-        self.high = self.high
+        self.high = self
+            .high
             .checked_add(sign)
             .and_then(|high| high.checked_add(i64::from(carry)))
             .ok_or(MergeError::SumOverflow)?;
@@ -1235,7 +1239,11 @@ fn merge_grouped_integer_sums_query(
     let groups = groups
         .into_iter()
         .map(|(key, signed, unsigned)| {
-            Ok((key, signed.map(WideSignedSum::to_i128).transpose()?, unsigned))
+            Ok((
+                key,
+                signed.map(WideSignedSum::to_i128).transpose()?,
+                unsigned,
+            ))
         })
         .collect::<Result<Vec<_>, MergeError>>()?;
     // Reduce all shards before any global filtering, ranking, or paging.
@@ -3280,7 +3288,10 @@ mod distributed_grouped_signed_cancellation_tests {
     use super::*;
 
     fn partial(value: &str) -> (usize, Vec<u8>) {
-        (10, format!("category\tsum(amount)\na\t{value}\n").into_bytes())
+        (
+            10,
+            format!("category\tsum(amount)\na\t{value}\n").into_bytes(),
+        )
     }
 
     #[test]
