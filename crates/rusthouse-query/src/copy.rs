@@ -47,19 +47,19 @@ fn parse_copy_column_list(parser: &mut Parser) -> Result<Option<Vec<String>>, Pa
 }
 
 fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseError> {
-    for (keyword, format) in [
-        ("CSV", CopyFormat::Csv),
-        ("TSV", CopyFormat::Tsv),
-        ("SSV", CopyFormat::Ssv),
-        ("JSONEACHROW", CopyFormat::JsonEachRow),
-    ] {
-        if parser.keyword(keyword) {
-            return Ok(format);
-        }
-    }
-    Err(ParseError(
-        "COPY format must be CSV, TSV, SSV or JSONEachRow".into(),
-    ))
+    parser.take(Token::Operator(super::Operator::Eq));
+    let format = match parser.tokens.get(parser.index) {
+        Some(Token::Word(word) | Token::String(word)) => match word.to_ascii_uppercase().as_str() {
+            "CSV" => CopyFormat::Csv,
+            "TSV" => CopyFormat::Tsv,
+            "SSV" => CopyFormat::Ssv,
+            "JSONEACHROW" => CopyFormat::JsonEachRow,
+            _ => return Err(ParseError("COPY format must be CSV, TSV, SSV or JSONEachRow".into())),
+        },
+        _ => return Err(ParseError("COPY requires a format name".into())),
+    };
+    parser.index += 1;
+    Ok(format)
 }
 
 fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
@@ -237,5 +237,33 @@ mod tests {
             parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)")
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod copy_quoted_format_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_quoted_and_equals_copy_format_options() {
+        for sql in [
+            "COPY events FROM 'rows.csv' WITH (FORMAT = 'csv')",
+            "COPY events FROM 'rows.csv' WITH (FORMAT='CSV')",
+            "COPY events FROM 'rows.csv' WITH (FORMAT = CSV)",
+        ] {
+            assert_eq!(parse_copy_from(sql).unwrap().unwrap().format, CopyFormat::Csv);
+        }
+        assert_eq!(
+            parse_copy_from("COPY events FROM 'rows.tsv' WITH (FORMAT 'tsv')")
+                .unwrap().unwrap().format,
+            CopyFormat::Tsv,
+        );
+        for invalid in [
+            "COPY events FROM 'rows.csv' WITH (FORMAT =)",
+            "COPY events FROM 'rows.csv' WITH (FORMAT = 'invalid')",
+            "COPY events FROM 'rows.csv' WITH (FORMAT == CSV)",
+        ] {
+            assert!(parse_copy_from(invalid).is_err(), "{invalid}");
+        }
     }
 }
