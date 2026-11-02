@@ -330,6 +330,9 @@ impl BitmapDistinct32 {
                 "COUNT(DISTINCT) exceeded its dense-bitmap memory budget".into(),
             ));
         }
+        // Merge plans know the exact number of new prefixes. Reserve once
+        // to avoid repeated growth and rehashing during distributed unions.
+        self.blocks.reserve(new_prefixes);
         for (&prefix, incoming) in &other.blocks {
             let additions = if let Some(current) = self.blocks.get_mut(&prefix) {
                 Self::merge_block(current, incoming)
