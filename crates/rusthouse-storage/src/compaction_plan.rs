@@ -287,3 +287,161 @@ mod tests {
         assert!(plan_compaction_pairs(&parts, 0, 10, 1).is_err());
     }
 }
+
+
+/// Find the least costly set of exactly `required_pairs` disjoint adjacent
+/// compactions. Unlike the greedy planner, this uses dynamic programming.
+pub fn plan_min_cost_compaction_pairs(
+    parts: &[PartRange],
+    max_pair_bytes: u64,
+    byte_budget: u64,
+    required_pairs: usize,
+) -> Result<Vec<CompactionPair>, &'static str> {
+    const MAX_BATCH_PAIRS: usize = 64;
+    if required_pairs > MAX_BATCH_PAIRS {
+        return Err("exact compaction batch exceeds limit");
+    }
+    // Reuse all name, overlap, level and byte overflow checks before
+    // allocating the DP state. Zero planned pairs is a validation-only call.
+    plan_compaction_pairs(parts, max_pair_bytes, 0, 0)?;
+    if required_pairs == 0 {
+        return Ok(Vec::new());
+    }
+    if parts.len() < required_pairs * 2 {
+        return Err("not enough parts for exact compaction count");
+    }
+
+    let mut ordered = (0..parts.len()).collect::<Vec<_>>();
+    ordered.sort_unstable_by(|&a, &b| {
+        parts[a]
+            .partition
+            .cmp(&parts[b].partition)
+            .then_with(|| parts[a].first_block.cmp(&parts[b].first_block))
+            .then_with(|| parts[a].name.cmp(&parts[b].name))
+    });
+    let mut costs = vec![None; parts.len()];
+    for (index, pair) in ordered.windows(2).enumerate() {
+        let left = &parts[pair[0]];
+        let right = &parts[pair[1]];
+        if left.partition != right.partition
+            || left.level != right.level
+            || left.last_block.checked_add(1) != Some(right.first_block)
+        {
+            continue;
+        }
+        let cost = left
+            .bytes
+            .checked_add(right.bytes)
+            .ok_or("compaction pair byte sum overflow")?;
+        if cost <= max_pair_bytes {
+            costs[index] = Some(cost);
+        }
+    }
+
+    // dp[i][k] is the minimum read cost to select k nonoverlapping
+    // adjacent pairs from ordered parts i..n. u128 avoids overflow even
+    // when the requested global budget is u64::MAX.
+    let count = ordered.len();
+    let mut dp = vec![vec![u128::MAX; required_pairs + 1]; count + 2];
+    for row in &mut dp {
+        row[0] = 0;
+    }
+    for index in (0..count).rev() {
+        for pairs in 1..=required_pairs {
+            let skip = dp[index + 1][pairs];
+            let take = costs[index]
+                .and_then(|cost| {
+                    (dp[index + 2][pairs - 1] != u128::MAX)
+                        .then(|| u128::from(cost) + dp[index + 2][pairs - 1])
+                })
+                .unwrap_or(u128::MAX);
+            dp[index][pairs] = skip.min(take);
+        }
+    }
+    if dp[0][required_pairs] > u128::from(byte_budget) {
+        return Err("no exact compaction matching within byte budget");
+    }
+
+    let mut result = Vec::with_capacity(required_pairs);
+    let mut index = 0usize;
+    let mut remaining = required_pairs;
+    while remaining > 0 {
+        let take = costs[index].and_then(|cost| {
+            (dp[index + 2][remaining - 1] != u128::MAX)
+                .then(|| u128::from(cost) + dp[index + 2][remaining - 1])
+        });
+        if let Some(cost) = costs[index].filter(|_| {
+            take.is_some_and(|candidate| candidate <= dp[index + 1][remaining])
+        }) {
+            let left = &parts[ordered[index]];
+            let right = &parts[ordered[index + 1]];
+            result.push(CompactionPair {
+                left: left.name.clone(),
+                right: right.name.clone(),
+                partition: left.partition.clone(),
+                first_block: left.first_block,
+                last_block: right.last_block,
+                read_bytes: cost,
+                resulting_level: left.level + 1,
+            });
+            index += 2;
+            remaining -= 1;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod optimal_compaction_tests {
+    use super::*;
+
+    fn part(name: &str, first: u64, bytes: u64) -> PartRange {
+        PartRange {
+            name: name.into(),
+            partition: "p".into(),
+            first_block: first,
+            last_block: first,
+            bytes,
+            level: 0,
+        }
+    }
+
+    #[test]
+    fn exact_matching_recovers_two_pairs_that_greedy_misses() {
+        let parts = [
+            part("a", 1, 2),
+            part("b", 2, 1),
+            part("c", 3, 1),
+            part("d", 4, 2),
+        ];
+        // Greedy consumes (b,c), preventing the only two-pair matching.
+        let greedy = plan_compaction_pairs(&parts, 10, 6, 2).unwrap();
+        assert_eq!(greedy.len(), 1);
+        let optimal = plan_min_cost_compaction_pairs(&parts, 10, 6, 2).unwrap();
+        assert_eq!(optimal.len(), 2);
+        assert_eq!((&optimal[0].left[..], &optimal[0].right[..]), ("a", "b"));
+        assert_eq!((&optimal[1].left[..], &optimal[1].right[..]), ("c", "d"));
+        assert_eq!(optimal.iter().map(|pair| pair.read_bytes).sum::<u64>(), 6);
+        assert!(plan_min_cost_compaction_pairs(&parts, 10, 5, 2).is_err());
+    }
+
+    #[test]
+    fn respects_partitions_levels_and_tight_limits() {
+        let mut parts = [part("a", 1, 10), part("b", 2, 1)];
+        assert_eq!(
+            plan_min_cost_compaction_pairs(&parts, 11, 11, 1)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(plan_min_cost_compaction_pairs(&parts, 10, 100, 1).is_err());
+        parts[1].level = 1;
+        assert!(plan_min_cost_compaction_pairs(&parts, 100, 100, 1).is_err());
+        assert!(plan_min_cost_compaction_pairs(&parts, 100, 100, 65).is_err());
+        assert!(plan_min_cost_compaction_pairs(&parts, 100, 100, 0)
+            .unwrap()
+            .is_empty());
+    }
+}
