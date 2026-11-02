@@ -50,12 +50,25 @@ pub fn replace_double_parity_source(
     for _ in 0..changed_index {
         factor = gf_mul(factor, 2);
     }
-    for offset in 0..old.len().max(new.len()) {
+    let length = old.len().max(new.len());
+    // The GF multiplier is constant for this replacement. Cache its 256
+    // possible outputs only when the stripe is large enough to amortize it.
+    let table = (length >= 1024).then(|| {
+        let mut table = [0u8; 256];
+        for (value, product) in table.iter_mut().enumerate() {
+            *product = gf_mul(factor, value as u8);
+        }
+        table
+    });
+    for offset in 0..length {
         let before = old.get(offset).copied().unwrap_or(0);
         let after = new.get(offset).copied().unwrap_or(0);
         let delta = before ^ after;
         parity.xor[offset] ^= delta;
-        parity.weighted[offset] ^= gf_mul(factor, delta);
+        parity.weighted[offset] ^= match &table {
+            Some(table) => table[usize::from(delta)],
+            None => gf_mul(factor, delta),
+        };
     }
     Ok(())
 }
@@ -139,5 +152,24 @@ mod tests {
         let mut malformed = original.clone();
         malformed.weighted.pop();
         assert!(replace_double_parity_source(&mut malformed, 2, 0, b"abc", b"x").is_err());
+    }
+}
+
+#[cfg(test)]
+mod large_delta_lookup_tests {
+    use super::*;
+    use crate::distributed_parity::encode_double_parity;
+
+    #[test]
+    fn cached_gf_products_match_full_parity_reencoding() {
+        let first = vec![0x55; 4096];
+        let second = vec![0xaa; 4096];
+        let old = (0..4096).map(|i| (i % 256) as u8).collect::<Vec<_>>();
+        let new = (0..4096).map(|i| ((i * 13 + 7) % 256) as u8).collect::<Vec<_>>();
+        let original = encode_double_parity(&[&first, &second, &old]).unwrap();
+        let mut updated = original;
+        replace_double_parity_source(&mut updated, 3, 2, &old, &new).unwrap();
+        let expected = encode_double_parity(&[&first, &second, &new]).unwrap();
+        assert_eq!(updated, expected);
     }
 }
