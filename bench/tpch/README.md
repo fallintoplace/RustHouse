@@ -62,6 +62,11 @@ TPC-H numbers. Filesystem caches may be warm. Use identical SQL, data rows,
 types, CPU and power settings. The tool does not prove that the supplied
 databases contain identical data beyond the verified query outputs.
 
+For exploratory Float64 fixtures only, `--comparison numeric` compares ordered
+results using 1e-9 absolute and relative numeric tolerance. Text, headers,
+row counts, and row ordering stay exact. This mode is not suitable for official
+TPC-H accuracy claims or exact DECIMAL conformance. Exact remains the default.
+
 When the SQL does not specify row order, use `--comparison unordered` to
 compare output rows as a multiset (including duplicate counts). The default
 is exact ordered TSV comparison. Both engines still must match the reference.
