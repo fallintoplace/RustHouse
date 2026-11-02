@@ -53,10 +53,9 @@ fn next_text_row(
     if first == br"\N" {
         return Err(MergeError::InvalidSortedScan);
     }
-    rusthouse_format::validate_tsv_field(first)
-        .map_err(|_| MergeError::InvalidSortedScan)?;
-    let key = rusthouse_format::decode_tsv_field(first)
-        .map_err(|_| MergeError::InvalidSortedScan)?;
+    rusthouse_format::validate_tsv_field(first).map_err(|_| MergeError::InvalidSortedScan)?;
+    let key =
+        rusthouse_format::decode_tsv_field(first).map_err(|_| MergeError::InvalidSortedScan)?;
     let mut count = 1usize;
     for field in fields {
         count += 1;
@@ -158,9 +157,7 @@ pub(super) fn merge_sorted_text_rows_page(
         if returned >= limit {
             break;
         }
-        if let Some((end, key)) =
-            next_text_row(&shards[head.shard].1, head.end, columns.len())?
-        {
+        if let Some((end, key)) = next_text_row(&shards[head.shard].1, head.end, columns.len())? {
             heap.push(TextHead {
                 key,
                 shard: head.shard,
@@ -241,8 +238,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let page =
-            merge_sorted_text_rows_page(&shards, &["key", "payload"], false, 3990, 20, 20)
-                .unwrap();
+            merge_sorted_text_rows_page(&shards, &["key", "payload"], false, 3990, 20, 20).unwrap();
         let rows = std::str::from_utf8(&page).unwrap();
         assert_eq!(rows.lines().count(), 21);
         assert!(rows.starts_with("key\tpayload\n0498-6\tvalue\n"));
