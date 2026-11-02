@@ -66,9 +66,9 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
     if !parser.keyword("HEADER") {
         return Err(ParseError("expected HEADER after CSV".into()));
     }
-    if parser.keyword("TRUE") {
+    if parser.keyword("TRUE") || parser.keyword("ON") {
         Ok(true)
-    } else if parser.keyword("FALSE") {
+    } else if parser.keyword("FALSE") || parser.keyword("OFF") {
         Ok(false)
     } else if parser.tokens.get(parser.index) == Some(&Token::RParen) {
         Ok(true)
@@ -237,5 +237,29 @@ mod tests {
             parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)")
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod copy_header_on_off_tests {
+    use super::*;
+
+    #[test]
+    fn on_off_header_values_match_boolean_spelling() {
+        for (short, expanded) in [
+            ("HEADER ON", "HEADER TRUE"),
+            ("HEADER OFF", "HEADER FALSE"),
+        ] {
+            let short = parse_copy_from(&format!(
+                "COPY t FROM 'data.csv' WITH (FORMAT CSV, {short})"
+            )).unwrap().unwrap();
+            let expanded = parse_copy_from(&format!(
+                "COPY t FROM 'data.csv' WITH (FORMAT CSV, {expanded})"
+            )).unwrap().unwrap();
+            assert_eq!(short, expanded);
+        }
+        assert!(parse_copy_from(
+            "COPY t FROM 'data.csv' WITH (FORMAT CSV, HEADER MAYBE)"
+        ).is_err());
     }
 }
