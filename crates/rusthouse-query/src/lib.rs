@@ -873,10 +873,12 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             return Err(ParseError("expected ')' after uniqState(column)".into()));
         }
         Projection::ApproxDistinctState { column }
-    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("UNIQ"))
+    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("UNIQ") || name.eq_ignore_ascii_case("APPROX_COUNT_DISTINCT"))
         && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
     {
-        parser.keyword("UNIQ");
+        if !parser.keyword("UNIQ") {
+            parser.keyword("APPROX_COUNT_DISTINCT");
+        }
         parser.take(Token::LParen);
         let column = parser.word()?;
         if !parser.take(Token::RParen) {
