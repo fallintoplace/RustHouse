@@ -244,7 +244,17 @@ fn parse_atom(
     let column = parser.word()?;
     let postfix_not = parser.keyword("NOT");
     let negate_in = prefix_not ^ postfix_not;
-    if parser.keyword("IS") {
+    let isnull = parser.keyword("ISNULL");
+    let notnull = !isnull && parser.keyword("NOTNULL");
+    if isnull || notnull {
+        if postfix_not {
+            return Err(ParseError("unexpected NOT before null predicate".into()));
+        }
+        predicates.push(Predicate::IsNull {
+            column,
+            negated: notnull ^ prefix_not,
+        });
+    } else if parser.keyword("IS") {
         if postfix_not {
             return Err(ParseError("unexpected NOT before IS".into()));
         }
@@ -766,5 +776,35 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod postgres_null_keyword_tests {
+    use crate::parse_select;
+
+    #[test]
+    fn compact_null_keywords_match_standard_is_null() {
+        for (short, standard) in [
+            ("number ISNULL", "number IS NULL"),
+            ("number NOTNULL", "number IS NOT NULL"),
+            ("NOT number ISNULL", "NOT number IS NULL"),
+            ("NOT number NOTNULL", "NOT number IS NOT NULL"),
+        ] {
+            let short = format!("SELECT number FROM numbers(8) WHERE {short}");
+            let standard = format!("SELECT number FROM numbers(8) WHERE {standard}");
+            assert_eq!(
+                parse_select(&short).unwrap().predicates,
+                parse_select(&standard).unwrap().predicates,
+                "{short}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_null_keywords_do_not_accept_broken_not_syntax() {
+        assert!(
+            parse_select("SELECT number FROM numbers(8) WHERE number NOT ISNULL").is_err()
+        );
     }
 }
