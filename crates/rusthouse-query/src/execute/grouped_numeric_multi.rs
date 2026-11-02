@@ -366,7 +366,7 @@ pub(super) fn execute<W: Write>(
                 }
                 if *function == AggregateFunction::Count {
                     if !typed::is_null_at(&batch[column_index], row) {
-                        state.update(Number::Unsigned(1))?;
+                        state.increment_count()?;
                     }
                     continue;
                 }
