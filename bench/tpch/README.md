@@ -23,6 +23,15 @@ Unit tests:
 
     python3 -m unittest discover -s bench/tpch -p 'test_*.py'
 
+Parser-only inventory, without a populated database:
+
+    python3 bench/tpch/parser_inventory.py --binary target/release/rusthouse \\
+      --queries-dir bench/tpch/queries --output /tmp/tpch-parser-coverage.json
+
+The parser inventory attempts all 22 queries via `--show-ast`. It does not
+read TPC-H data and cannot establish whether the query executes correctly.
+Use `official_coverage.py` and independent references for execution coverage.
+
 
 ## Unscaled Float64 compatibility fixture
 
