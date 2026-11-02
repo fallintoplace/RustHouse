@@ -168,3 +168,22 @@ mod tests {
         assert!(replace_double_parity_source(&mut malformed, 2, 0, b"abc", b"x").is_err());
     }
 }
+
+#[cfg(test)]
+mod large_delta_lookup_tests {
+    use super::*;
+    use crate::distributed_parity::encode_double_parity;
+
+    #[test]
+    fn cached_gf_products_match_full_parity_reencoding() {
+        let first = vec![0x55; 4096];
+        let second = vec![0xaa; 4096];
+        let old = (0..4096).map(|i| (i % 256) as u8).collect::<Vec<_>>();
+        let new = (0..4096).map(|i| ((i * 13 + 7) % 256) as u8).collect::<Vec<_>>();
+        let original = encode_double_parity(&[&first, &second, &old]).unwrap();
+        let mut updated = original;
+        replace_double_parity_source(&mut updated, 3, 2, &old, &new).unwrap();
+        let expected = encode_double_parity(&[&first, &second, &new]).unwrap();
+        assert_eq!(updated, expected);
+    }
+}
