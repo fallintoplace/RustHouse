@@ -105,9 +105,7 @@ fn parallel_ordered_numeric_topk(
         return Ok(None);
     }
     let parts = rusthouse_storage::query_parts(source)?;
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |count| count.get())
-        .min(4);
+    let workers = query_workers(4);
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
