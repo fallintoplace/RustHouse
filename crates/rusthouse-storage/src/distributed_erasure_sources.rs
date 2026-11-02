@@ -39,7 +39,8 @@ pub fn choose_erasure_sources(
             || source.zone.is_empty() || source.zone.len() > 64
             || !source.node.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
             || !source.zone.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            || source.transfer_cost == 0 || !nodes.insert(source.node.as_str())
+            || source.fragment >= 128 || source.transfer_cost == 0
+            || !nodes.insert(source.node.as_str())
         {
             return Err("invalid erasure recovery source");
         }
