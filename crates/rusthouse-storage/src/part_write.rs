@@ -137,8 +137,7 @@ fn fixed_width_bytes_per_row(data_type: &str) -> usize {
 // require a real directory without following reparse points. The caller's
 // atomic rename still publishes the complete part, but power-loss directory
 // durability on Windows is weaker than POSIX.
-#[cfg(windows)]
-fn sync_part_directory(path: &Path) -> Result<(), PartError> {
+fn checked_part_directory(path: &Path) -> Result<(), PartError> {
     let meta = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
     if !meta.file_type().is_dir() {
         return Err(invalid("wide-part output is not a real directory"));
@@ -146,8 +145,14 @@ fn sync_part_directory(path: &Path) -> Result<(), PartError> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn sync_part_directory(path: &Path) -> Result<(), PartError> {
+    checked_part_directory(path)
+}
+
 #[cfg(not(windows))]
 fn sync_part_directory(path: &Path) -> Result<(), PartError> {
+    checked_part_directory(path)?;
     fs::File::open(path)
         .and_then(|dir| dir.sync_all())
         .map_err(|error| io_error(path, error))
