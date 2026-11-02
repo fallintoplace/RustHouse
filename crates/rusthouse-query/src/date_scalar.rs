@@ -55,6 +55,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOYYYYMMDD"
             | "TOYYYYMM"
             | "TOQUARTER"
+            | "DATENAME"
             | "MONTHNAME"
             | "TOMONTH"
             | "TODAYOFYEAR"
@@ -499,6 +500,62 @@ pub(super) fn parse_after_open(
                 _ => return Err(ParseError("unsupported dateDiff unit".into())),
             };
             Ok(ConstantValue::Integer(difference))
+        }
+        "DATENAME" => {
+            let part = super::text_scalar::text_arg(parser, depth + 1)?;
+            require_separator(parser, "dateName requires a date value")?;
+            let date = super::text_scalar::text_arg(parser, depth + 1)?;
+            let timezone = if parser.take(Token::Comma) {
+                Some(super::text_scalar::text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("dateName expects two or three arguments".into()));
+            }
+            let (Some(part), Some(date)) = (part, date) else {
+                return Ok(ConstantValue::Null);
+            };
+            if timezone == Some(None) {
+                return Ok(ConstantValue::Null);
+            }
+            if timezone
+                .as_ref()
+                .and_then(|zone| zone.as_ref())
+                .is_some_and(|zone| zone != "UTC")
+            {
+                return Err(ParseError("dateName only supports UTC timestamps".into()));
+            }
+            let date = Temporal::parse(&date)?;
+            let days = date.seconds.div_euclid(DAY_SECONDS);
+            let (year, month, day) = civil_from_days(days);
+            let time = date.seconds.rem_euclid(DAY_SECONDS);
+            let result = match part.as_str() {
+                "year" => year.to_string(),
+                "quarter" => ((month - 1) / 3 + 1).to_string(),
+                "month" => {
+                    const MONTHS: &[&str; 12] = &[
+                        "January", "February", "March", "April", "May", "June",
+                        "July", "August", "September", "October", "November", "December",
+                    ];
+                    MONTHS[(month - 1) as usize].to_owned()
+                }
+                "week" => iso_week_and_year(days).1.to_string(),
+                "dayofyear" => (days - days_from_civil(year, 1, 1) + 1).to_string(),
+                "day" => day.to_string(),
+                "weekday" => {
+                    const WEEKDAYS: &[&str; 7] = &[
+                        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                        "Saturday", "Sunday",
+                    ];
+                    WEEKDAYS[(days + 3).rem_euclid(7) as usize].to_owned()
+                }
+                "hour" => (time / 3600).to_string(),
+                "minute" => (time / 60 % 60).to_string(),
+                "second" => (time % 60).to_string(),
+                _ => return Err(ParseError("invalid dateName part".into())),
+            };
+            Ok(ConstantValue::Text(result))
         }
         "MONTHNAME" => unary_date(parser, depth, |value| {
             let (_, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
