@@ -62,6 +62,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "UPPERUTF8"
                 | "URL_DECODE"
                 | "DECODEURLCOMPONENT"
+                | "TRYDECODEURLCOMPONENT"
                 | "IS_EMPTY"
                 | "EMPTY"
                 | "REVERSE"
@@ -259,6 +260,39 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "RIGHTPADUTF8"
                 | "NORMALIZEIPV6"
         )
+}
+
+// Decode URL escapes with strict UTF-8 and bounded linear work.
+fn decode_percent_encoded(input: &str, form: bool) -> Result<String, ParseError> {
+    if !input.contains('%') && (!form || !input.contains('+')) {
+        return Ok(input.to_owned());
+    }
+    let source = input.as_bytes();
+    let mut decoded = Vec::with_capacity(source.len());
+    let mut index = 0;
+    while index < source.len() {
+        if source[index] == b'%' {
+            let high = source
+                .get(index + 1)
+                .and_then(|byte| char::from(*byte).to_digit(16));
+            let low = source
+                .get(index + 2)
+                .and_then(|byte| char::from(*byte).to_digit(16));
+            let (Some(high), Some(low)) = (high, low) else {
+                return Err(ParseError("invalid URL percent escape".into()));
+            };
+            decoded.push((high * 16 + low) as u8);
+            index += 3;
+        } else {
+            decoded.push(if form && source[index] == b'+' {
+                b' '
+            } else {
+                source[index]
+            });
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| ParseError("URL decode result is not UTF-8".into()))
 }
 
 // Compile the reflected IEEE polynomial table once instead of executing
@@ -4299,51 +4333,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "URL_DECODE" | "DECODEURLCOMPONENT" | "DECODEURLFORMCOMPONENT" => {
+        "URL_DECODE" | "DECODEURLCOMPONENT" | "DECODEURLFORMCOMPONENT"
+        | "TRYDECODEURLCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "URL_DECODE requires one argument")?;
+            require(parser, Token::RParen, "URL decoder requires one argument")?;
             match input {
-                Some(input)
-                    if !input.contains('%')
-                        && (name != "DECODEURLFORMCOMPONENT" || !input.contains('+')) =>
-                {
-                    // Common case: no decoding work is needed, so reuse the String.
-                    ConstantValue::Text(input)
-                }
                 Some(input) => {
-                    let source = input.as_bytes();
-                    let mut result = Vec::with_capacity(source.len());
-                    let mut index = 0;
-                    while index < source.len() {
-                        if source[index] == b'%' {
-                            if index + 2 >= source.len() {
-                                return Err(ParseError("URL_DECODE has incomplete escape".into()));
-                            }
-                            let high = char::from(source[index + 1]).to_digit(16);
-                            let low = char::from(source[index + 2]).to_digit(16);
-                            let byte = match (high, low) {
-                                (Some(high), Some(low)) => (high * 16 + low) as u8,
-                                _ => {
-                                    return Err(ParseError("URL_DECODE has invalid escape".into()));
-                                }
-                            };
-                            result.push(byte);
-                            index += 3;
-                        } else {
-                            result.push(
-                                if source[index] == b'+' && name == "DECODEURLFORMCOMPONENT" {
-                                    b' '
-                                } else {
-                                    source[index]
-                                },
-                            );
-                            index += 1;
-                        }
+                    let decoded = decode_percent_encoded(
+                        &input,
+                        name == "DECODEURLFORMCOMPONENT",
+                    );
+                    if name == "TRYDECODEURLCOMPONENT" {
+                        decoded.map_or(ConstantValue::Null, ConstantValue::Text)
+                    } else {
+                        ConstantValue::Text(decoded?)
                     }
-                    ConstantValue::Text(
-                        String::from_utf8(result)
-                            .map_err(|_| ParseError("URL_DECODE result is not UTF-8".into()))?,
-                    )
                 }
                 None => ConstantValue::Null,
             }
