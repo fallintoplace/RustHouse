@@ -415,9 +415,12 @@ impl Parser {
                 return Err(ParseError("CAST requires AS".into()));
             }
             let target = self.word()?;
-            if !target.eq_ignore_ascii_case("DATE") && !target.eq_ignore_ascii_case("TIMESTAMP") {
+            if !["DATE", "TIMESTAMP", "TEXT", "VARCHAR", "CHARACTER", "STRING"]
+                .iter()
+                .any(|type_name| target.eq_ignore_ascii_case(type_name))
+            {
                 return Err(ParseError(
-                    "only CAST(... AS DATE/TIMESTAMP) is supported in predicates".into(),
+                    "only CAST(... AS DATE/TIMESTAMP/TEXT/VARCHAR/CHARACTER/STRING) is supported in predicates".into(),
                 ));
             }
             if !self.take(Token::RParen) {
@@ -2106,5 +2109,33 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod cast_text_predicate_tests {
+    use super::parse_select;
+
+    #[test]
+    fn treats_cast_text_literals_like_quoted_string_predicates() {
+        let plain = parse_select("SELECT count(*) FROM t WHERE name = 'Ada'").unwrap();
+        for type_name in ["TEXT", "VARCHAR", "CHARACTER", "STRING"] {
+            let sql = format!(
+                "SELECT count(*) FROM t WHERE name = CAST('Ada' AS {type_name})"
+            );
+            assert_eq!(parse_select(&sql).unwrap(), plain, "{sql}");
+        }
+        let plain_in = parse_select("SELECT count(*) FROM t WHERE name IN ('Ada')").unwrap();
+        let cast_in = parse_select(
+            "SELECT count(*) FROM t WHERE name IN (CAST('Ada' AS VARCHAR))"
+        ).unwrap();
+        assert_eq!(cast_in, plain_in);
+    }
+
+    #[test]
+    fn rejects_unsupported_cast_types_in_predicates() {
+        assert!(parse_select(
+            "SELECT count(*) FROM t WHERE name = CAST('Ada' AS INTEGER)"
+        ).is_err());
     }
 }
