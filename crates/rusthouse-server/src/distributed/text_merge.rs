@@ -1,23 +1,43 @@
-//! Exact global top-K for non-nullable String keys in TSV shard prefixes.
-//! Validate every shard before emitting a page, but retain only one decoded
-//! candidate key per shard during the merge.
+//! Exact global top-K for String and Nullable(String) keys in TSV shard prefixes.
+//! Validate every shard, but retain only one decoded key per shard while merging.
 use super::{MAX_RESPONSE_BYTES, MergeError};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-
 #[derive(PartialEq, Eq)]
 struct TextHead {
-    key: Vec<u8>,
+    key: Option<Vec<u8>>,
     shard: usize,
     start: usize,
     end: usize,
     descending: bool,
+    nulls_first: Option<bool>,
+}
+
+fn text_key_cmp(
+    left: &Option<Vec<u8>>,
+    right: &Option<Vec<u8>>,
+    descending: bool,
+    nulls_first: Option<bool>,
+) -> Ordering {
+    match (left, right, nulls_first) {
+        (None, None, _) => Ordering::Equal,
+        (None, Some(_), Some(true)) | (Some(_), None, Some(false)) => Ordering::Less,
+        (None, Some(_), Some(false)) | (Some(_), None, Some(true)) => Ordering::Greater,
+        _ => {
+            let cmp = left.cmp(right);
+            if descending {
+                cmp.reverse()
+            } else {
+                cmp
+            }
+        }
+    }
 }
 
 impl Ord for TextHead {
     fn cmp(&self, other: &Self) -> Ordering {
-        let cmp = self.key.cmp(&other.key);
-        (if self.descending { cmp } else { cmp.reverse() })
+        text_key_cmp(&self.key, &other.key, self.descending, self.nulls_first)
+            .reverse()
             .then_with(|| other.shard.cmp(&self.shard))
             .then_with(|| other.start.cmp(&self.start))
     }
@@ -29,13 +49,14 @@ impl PartialOrd for TextHead {
     }
 }
 
-/// Decode one row without allocating the projected, non-key columns.
-/// The same parser is used for full validation and for advancing a heap head.
+/// Decode one TSV row without allocating projected non-key fields.
+/// This parser is used both for full validation and to advance a heap head.
 fn next_text_row(
     body: &[u8],
     start: usize,
     columns: usize,
-) -> Result<Option<(usize, Vec<u8>)>, MergeError> {
+    nullable: bool,
+) -> Result<Option<(usize, Option<Vec<u8>>)>, MergeError> {
     if start == body.len() {
         return Ok(None);
     }
@@ -50,12 +71,18 @@ fn next_text_row(
         .ok_or(MergeError::CoordinatorLimit)?;
     let mut fields = body[start..end - 1].split(|&byte| byte == b'\t');
     let first = fields.next().ok_or(MergeError::InvalidSortedScan)?;
-    if first == br"\N" {
-        return Err(MergeError::InvalidSortedScan);
-    }
-    rusthouse_format::validate_tsv_field(first).map_err(|_| MergeError::InvalidSortedScan)?;
-    let key =
-        rusthouse_format::decode_tsv_field(first).map_err(|_| MergeError::InvalidSortedScan)?;
+    let key = if first == br"\N" {
+        if !nullable {
+            return Err(MergeError::InvalidSortedScan);
+        }
+        None
+    } else {
+        rusthouse_format::validate_tsv_field(first).map_err(|_| MergeError::InvalidSortedScan)?;
+        Some(
+            rusthouse_format::decode_tsv_field(first)
+                .map_err(|_| MergeError::InvalidSortedScan)?,
+        )
+    };
     let mut count = 1usize;
     for field in fields {
         count += 1;
@@ -73,6 +100,7 @@ fn next_text_row(
     Ok(Some((end, key)))
 }
 
+#[cfg(test)]
 pub(super) fn merge_sorted_text_rows_page(
     shards: &[(usize, Vec<u8>)],
     columns: &[&str],
@@ -81,6 +109,26 @@ pub(super) fn merge_sorted_text_rows_page(
     limit: usize,
     max_rows: usize,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_sorted_text_rows_page_with_nulls(
+        shards, columns, "String", descending, None, offset, limit, max_rows,
+    )
+}
+
+pub(super) fn merge_sorted_text_rows_page_with_nulls(
+    shards: &[(usize, Vec<u8>)],
+    columns: &[&str],
+    kind: &str,
+    descending: bool,
+    nulls_first: Option<bool>,
+    offset: usize,
+    limit: usize,
+    max_rows: usize,
+) -> Result<Vec<u8>, MergeError> {
+    let nullable = match kind {
+        "String" => false,
+        "Nullable(String)" => true,
+        _ => return Err(MergeError::InvalidSortedScan),
+    };
     if !(1..=16).contains(&columns.len()) || shards.is_empty() {
         return Err(MergeError::InvalidSortedScan);
     }
@@ -90,31 +138,29 @@ pub(super) fn merge_sorted_text_rows_page(
     let header = format!("{}\n", columns.join("\t"));
     let mut decoded_key_bytes = 0usize;
 
-    // Check *all* rows, not only the requested page. A corrupt or truncated
-    // tail must never be hidden by an early LIMIT at the coordinator.
+    // Validate every row, including trailing rows outside the page.
+    // A malformed tail must never be hidden by an early LIMIT.
     for (cap, body) in shards {
         if *cap <= prefix || !body.ends_with(b"\n") || !body.starts_with(header.as_bytes()) {
             return Err(MergeError::InvalidSortedScan);
         }
         let mut position = header.len();
-        let mut previous: Option<Vec<u8>> = None;
-        let mut rows = 0usize;
-        while let Some((end, key)) = next_text_row(body, position, columns.len())? {
+        let mut previous: Option<Option<Vec<u8>>> = None;
+        let mut row_count = 0usize;
+        while let Some((end, key)) = next_text_row(body, position, columns.len(), nullable)? {
             if previous.as_ref().is_some_and(|prior| {
-                if descending {
-                    prior < &key
-                } else {
-                    prior > &key
-                }
+                text_key_cmp(prior, &key, descending, nulls_first).is_gt()
             }) {
                 return Err(MergeError::InvalidSortedScan);
             }
-            rows = rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
-            if rows > prefix || rows >= *cap {
+            row_count = row_count
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if row_count > prefix || row_count >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
             decoded_key_bytes = decoded_key_bytes
-                .checked_add(key.len())
+                .checked_add(key.as_ref().map_or(0, Vec::len))
                 .filter(|&bytes| bytes <= MAX_RESPONSE_BYTES)
                 .ok_or(MergeError::CoordinatorLimit)?;
             previous = Some(key);
@@ -122,17 +168,17 @@ pub(super) fn merge_sorted_text_rows_page(
         }
     }
 
-    // Each heap entry owns only its current key and two byte offsets. The
-    // response buffers remain borrowed, even for a very large merge page.
+    // The heap holds one decoded key per shard. Row payloads stay borrowed.
     let mut heap = BinaryHeap::new();
     for (shard, (_, body)) in shards.iter().enumerate() {
-        if let Some((end, key)) = next_text_row(body, header.len(), columns.len())? {
+        if let Some((end, key)) = next_text_row(body, header.len(), columns.len(), nullable)? {
             heap.push(TextHead {
                 key,
                 shard,
                 start: header.len(),
                 end,
                 descending,
+                nulls_first,
             });
         }
     }
@@ -157,13 +203,19 @@ pub(super) fn merge_sorted_text_rows_page(
         if returned >= limit {
             break;
         }
-        if let Some((end, key)) = next_text_row(&shards[head.shard].1, head.end, columns.len())? {
+        if let Some((end, key)) = next_text_row(
+            &shards[head.shard].1,
+            head.end,
+            columns.len(),
+            nullable,
+        )? {
             heap.push(TextHead {
                 key,
                 shard: head.shard,
                 start: head.end,
                 end,
                 descending,
+                nulls_first,
             });
         }
     }
@@ -211,7 +263,6 @@ mod tests {
             b"name\tid\na\t1\na\t2\na\t3\n"
         );
     }
-
     #[test]
     fn validates_trailing_rows_outside_the_requested_page() {
         let bad = [(10, b"name\nb\nc\na\n".to_vec())];
@@ -243,5 +294,98 @@ mod tests {
         assert_eq!(rows.lines().count(), 21);
         assert!(rows.starts_with("key\tpayload\n0498-6\tvalue\n"));
         assert!(rows.ends_with("0501-1\tvalue\n"));
+    }
+}
+
+#[cfg(test)]
+mod nullable_text_topk_tests {
+    use super::*;
+
+    #[test]
+    fn merges_nullable_strings_with_default_ascending_and_descending_order() {
+        let ascending = [
+            (10, b"name\tid\n\\N\t1\nb\t2\n".to_vec()),
+            (10, b"name\tid\n\\N\t3\na\t4\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_sorted_text_rows_page_with_nulls(
+                &ascending, &["name", "id"], "Nullable(String)", false, None, 0, 4, 4,
+            )
+            .unwrap(),
+            b"name\tid\n\\N\t1\n\\N\t3\na\t4\nb\t2\n"
+        );
+        let descending = [
+            (10, b"name\nz\nmalformed\textra\n".to_vec()),
+            (10, b"name\nb\n\\N\n".to_vec()),
+        ];
+        // A malformed field is rejected even when a short page could be returned.
+        assert_eq!(
+            merge_sorted_text_rows_page_with_nulls(
+                &descending, &["name"], "Nullable(String)", true, None, 0, 1, 1,
+            ),
+            Err(MergeError::InvalidSortedScan)
+        );
+        let valid_descending = [
+            (10, b"name\nz\n\\N\n".to_vec()),
+            (10, b"name\ny\n\\N\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_sorted_text_rows_page_with_nulls(
+                &valid_descending, &["name"], "Nullable(String)", true, None, 0, 4, 4,
+            )
+            .unwrap(),
+            b"name\nz\ny\n\\N\n\\N\n"
+        );
+    }
+
+    #[test]
+    fn explicit_null_placement_is_not_reversed_with_descending() {
+        let shards = [
+            (10, b"name\tidx\na\t1\n\\N\t2\n".to_vec()),
+            (10, b"name\tidx\nb\t3\n\\N\t4\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_sorted_text_rows_page_with_nulls(
+                &shards, &["name", "idx"], "Nullable(String)", false, Some(false), 1, 3, 3,
+            )
+            .unwrap(),
+            b"name\tidx\nb\t3\n\\N\t2\n\\N\t4\n"
+        );
+        let bad = [(10, b"name\n\\N\na\n".to_vec())];
+        assert_eq!(
+            merge_sorted_text_rows_page_with_nulls(
+                &bad, &["name"], "Nullable(String)", false, Some(false), 0, 1, 1,
+            ),
+            Err(MergeError::InvalidSortedScan)
+        );
+        let first = [
+            (10, b"name\n\\N\nz\n".to_vec()),
+            (10, b"name\n\\N\ny\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_sorted_text_rows_page_with_nulls(
+                &first, &["name"], "Nullable(String)", true, Some(true), 0, 4, 4,
+            )
+            .unwrap(),
+            b"name\n\\N\n\\N\nz\ny\n"
+        );
+    }
+
+    #[test]
+    fn null_marker_is_distinct_from_a_literal_backslash_n_string() {
+        let shards = [(10, b"name\n\\N\n\\\\N\n".to_vec())];
+        assert_eq!(
+            merge_sorted_text_rows_page_with_nulls(
+                &shards, &["name"], "Nullable(String)", false, None, 0, 2, 2,
+            )
+            .unwrap(),
+            b"name\n\\N\n\\\\N\n"
+        );
+        assert_eq!(
+            merge_sorted_text_rows_page_with_nulls(
+                &shards, &["name"], "String", false, None, 0, 2, 2,
+            ),
+            Err(MergeError::InvalidSortedScan)
+        );
     }
 }
