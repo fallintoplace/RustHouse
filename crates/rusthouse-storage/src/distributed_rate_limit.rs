@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(restored.fractional_credit(), 0);
         let slow = TokenBucket::restore(u64::MAX, 0, 1, 0, 999).unwrap();
         let after = slow.refill(u64::MAX).unwrap();
-        assert_eq!(after.available(), u64::MAX / 1000);
+        assert_eq!(after.available(), u64::MAX / 1000 + 1);
         assert_eq!(after.fractional_credit(), 614);
     }
 
