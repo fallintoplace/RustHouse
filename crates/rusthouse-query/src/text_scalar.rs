@@ -3297,10 +3297,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "TRIM" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "TRIM requires one argument")?;
-            match input {
-                Some(value) => ConstantValue::Text(value.trim_matches(' ').to_owned()),
-                None => ConstantValue::Null,
+            let characters = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after TRIM arguments")?;
+            match (input, characters) {
+                (Some(value), None) => ConstantValue::Text(
+                    value
+                        .trim_matches(|ch: char| ch.is_ascii_whitespace() || ch == '\u{000B}')
+                        .to_owned(),
+                ),
+                (Some(value), Some(Some(characters))) => ConstantValue::Text(
+                    value
+                        .trim_matches(|ch| characters.contains(ch))
+                        .to_owned(),
+                ),
+                _ => ConstantValue::Null,
             }
         }
         "COUNTSUBSTRINGSCASEINSENSITIVE" => {
