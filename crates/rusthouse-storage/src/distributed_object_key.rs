@@ -390,3 +390,91 @@ mod borrowed_canonical_key_tests {
         );
     }
 }
+
+
+/// Parse and sort an immutable object manifest without filesystem-name aliases.
+///
+/// Every input must be a canonical generation-scoped ObjectKey. The batch
+/// rejects keys that collide under ASCII case folding, including on platforms
+/// where a case-sensitive filesystem would otherwise permit both objects.
+/// No disk access or copy is performed.
+pub fn parse_unique_object_keys(
+    paths: &[&std::path::Path],
+) -> Result<Vec<ObjectKey>, &'static str> {
+    use std::collections::HashSet;
+
+    if paths.len() > 65_536 {
+        return Err("replica object key batch exceeds bound");
+    }
+    let mut seen = HashSet::with_capacity(paths.len());
+    let mut parsed = Vec::with_capacity(paths.len());
+    for &path in paths {
+        let key = ObjectKey::parse_relative(path)?;
+        let canonical = key
+            .relative_path()
+            .to_str()
+            .ok_or("non-UTF8 distributed object key")?
+            .to_ascii_lowercase();
+        if !seen.insert(canonical.clone()) {
+            return Err("replica object keys alias on a case-insensitive filesystem");
+        }
+        parsed.push((canonical, key));
+    }
+    parsed.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    Ok(parsed.into_iter().map(|(_, key)| key).collect())
+}
+
+#[cfg(test)]
+mod portable_object_key_batch_tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn output_order_does_not_depend_on_inventory_enumeration_order() {
+        let paths = [
+            Path::new("cluster/shard/g4/part_2/data.bin"),
+            Path::new("cluster/shard/g3/part_1/checksums.txt"),
+            Path::new("cluster/shard/g4/part_1/data.bin"),
+        ];
+        let first = parse_unique_object_keys(&paths).unwrap();
+        let reversed = paths.iter().rev().copied().collect::<Vec<_>>();
+        assert_eq!(parse_unique_object_keys(&reversed).unwrap(), first);
+        assert_eq!(first[0].generation(), 3);
+        assert_eq!(first[1].part(), "part_1");
+        assert_eq!(first[2].part(), "part_2");
+    }
+
+    #[test]
+    fn rejects_casefolded_aliases_and_unsafe_keys_without_partial_results() {
+        let aliases = [
+            Path::new("Cluster/shard/g4/part/Checksums.txt"),
+            Path::new("cluster/shard/g4/part/checksums.txt"),
+        ];
+        assert!(parse_unique_object_keys(&aliases).is_err());
+        let repeated = [aliases[0], aliases[0]];
+        assert!(parse_unique_object_keys(&repeated).is_err());
+        let unsafe_paths = [
+            Path::new("cluster/shard/g04/part/data.bin"),
+            Path::new("cluster/shard/g4/../data.bin"),
+            Path::new("cluster/shard/g4/CON/data.bin"),
+        ];
+        for bad in unsafe_paths {
+            assert!(parse_unique_object_keys(&[bad]).is_err());
+        }
+        assert!(parse_unique_object_keys(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn checks_many_keys_without_quadratic_duplicate_scans() {
+        let owned = (0..4096)
+            .map(|index| PathBuf::from(format!(
+                "cluster/shard/g7/part_{index:05}/data.bin"
+            )))
+            .collect::<Vec<_>>();
+        let refs = owned.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+        let result = parse_unique_object_keys(&refs).unwrap();
+        assert_eq!(result.len(), owned.len());
+        assert_eq!(result[0].part(), "part_00000");
+        assert_eq!(result[4095].part(), "part_04095");
+    }
+}
