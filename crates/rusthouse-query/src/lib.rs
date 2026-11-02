@@ -1265,6 +1265,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::GroupedCount { .. }
                 | Projection::GroupedDistinctCount { .. }
                 | Projection::GroupedMultiCount { .. }
+                | Projection::GroupedMultiDistinctCount { .. }
                 | Projection::StringLength { .. }
         ) || matches!(&projection, Projection::Columns(columns) if columns.len() == 1);
         if !single_result {

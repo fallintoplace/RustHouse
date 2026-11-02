@@ -114,11 +114,8 @@ pub(super) fn execute<W: Write>(
     for branch in &query.or_predicates {
         conditions.push(typed::compile(branch, &indices, &types)?);
     }
-    writeln!(
-        output,
-        "{}\tcountDistinct({value_column})",
-        columns.join("\t")
-    )?;
+    let count_header = query.alias.clone().unwrap_or_else(|| format!("countDistinct({value_column})"));
+    writeln!(output, "{}\t{count_header}", columns.join("\t"))?;
     if query.limit == Some(0) {
         return Ok(());
     }
