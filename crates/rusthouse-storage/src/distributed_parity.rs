@@ -391,3 +391,202 @@ mod double_parity_tests {
         assert!(encode_double_parity(&[b"only-one"]).is_err());
     }
 }
+
+
+/// Three parity equations for recovery of up to three erased data shards.
+/// A parity checksum alone is not a proof of authentic object contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TripleParity {
+    pub xor: Vec<u8>,
+    pub weighted: Vec<u8>,
+    pub squared: Vec<u8>,
+}
+
+/// Encode P, Q and R parity with independent GF(256) coefficients.
+pub fn encode_triple_parity(sources: &[&[u8]]) -> Result<TripleParity, &'static str> {
+    if !valid_stripe_count(sources.len()) {
+        return Err("invalid triple parity shard count");
+    }
+    let width = sources.iter().map(|part| part.len()).max().unwrap_or(0);
+    if width > MAX_SHARD_BYTES {
+        return Err("triple parity shard exceeds size limit");
+    }
+    let mut parity = TripleParity {
+        xor: vec![0; width],
+        weighted: vec![0; width],
+        squared: vec![0; width],
+    };
+    for (index, source) in sources.iter().enumerate() {
+        let coefficient = parity_coefficient(index);
+        let squared = gf256_mul(coefficient, coefficient);
+        for (offset, &byte) in source.iter().enumerate() {
+            parity.xor[offset] ^= byte;
+            parity.weighted[offset] ^= gf256_mul(coefficient, byte);
+            parity.squared[offset] ^= gf256_mul(squared, byte);
+        }
+    }
+    Ok(parity)
+}
+
+/// Recover one, two or three absent data shards using bounded Gaussian
+/// elimination. Original lengths must be obtained from trusted metadata.
+/// With all three parity equations consumed, there is no residual syndrome
+/// to distinguish corrupt surviving data from correct data.
+pub fn recover_triple_erasure(
+    shards: &[Option<&[u8]>],
+    original_lengths: &[usize],
+    parity: &TripleParity,
+) -> Result<Vec<(usize, Vec<u8>)>, &'static str> {
+    if !valid_stripe_count(shards.len())
+        || shards.len() != original_lengths.len()
+        || parity.xor.len() != parity.weighted.len()
+        || parity.xor.len() != parity.squared.len()
+        || parity.xor.len() > MAX_SHARD_BYTES
+    {
+        return Err("invalid triple parity stripe layout");
+    }
+    let width = parity.xor.len();
+    let mut missing = Vec::with_capacity(3);
+    let mut residual = [
+        parity.xor.clone(),
+        parity.weighted.clone(),
+        parity.squared.clone(),
+    ];
+    for (index, (shard, &length)) in shards.iter().zip(original_lengths).enumerate() {
+        if length > width {
+            return Err("original shard length exceeds parity width");
+        }
+        match shard {
+            Some(data) => {
+                if data.len() != length {
+                    return Err("available shard length does not match manifest");
+                }
+                let coefficient = parity_coefficient(index);
+                let squared = gf256_mul(coefficient, coefficient);
+                for (offset, &byte) in data.iter().enumerate() {
+                    residual[0][offset] ^= byte;
+                    residual[1][offset] ^= gf256_mul(coefficient, byte);
+                    residual[2][offset] ^= gf256_mul(squared, byte);
+                }
+            }
+            None => missing.push(index),
+        }
+    }
+    let count = missing.len();
+    if !(1..=3).contains(&count) {
+        return Err("triple parity requires one to three missing shards");
+    }
+
+    // Invert the small Vandermonde coefficient matrix once per stripe.
+    // Its first count columns describe the unknown data bytes and its
+    // trailing columns become the inverse after elimination.
+    let mut matrix = [[0u8; 6]; 3];
+    for row in 0..count {
+        for (col, &missing_index) in missing.iter().enumerate() {
+            matrix[row][col] = gf256_pow(parity_coefficient(missing_index), row as u16);
+        }
+        matrix[row][count + row] = 1;
+    }
+    for col in 0..count {
+        let pivot = (col..count)
+            .find(|&row| matrix[row][col] != 0)
+            .ok_or("singular triple parity coefficients")?;
+        matrix.swap(col, pivot);
+        let inverse = gf256_pow(matrix[col][col], 254);
+        for slot in &mut matrix[col] {
+            *slot = gf256_mul(*slot, inverse);
+        }
+        for row in 0..count {
+            if row == col {
+                continue;
+            }
+            let factor = matrix[row][col];
+            let pivot_row = matrix[col];
+            for (target, &pivot_value) in matrix[row][..count * 2]
+                .iter_mut()
+                .zip(&pivot_row[..count * 2])
+            {
+                *target ^= gf256_mul(factor, pivot_value);
+            }
+        }
+    }
+
+    let mut recovered = (0..count).map(|_| vec![0u8; width]).collect::<Vec<_>>();
+    for (row, output) in recovered.iter_mut().enumerate() {
+        for (offset, value) in output.iter_mut().enumerate() {
+            for equation in 0..count {
+                *value ^= gf256_mul(matrix[row][count + equation], residual[equation][offset]);
+            }
+        }
+    }
+
+    // The unused parity equations are independent checksums when fewer than
+    // three erasures occurred. They catch inconsistent supplied parity data.
+    for (equation, syndrome) in residual.iter().enumerate().skip(count) {
+        for offset in 0..width {
+            let mut actual = 0u8;
+            for (value, &missing_index) in recovered.iter().zip(&missing) {
+                let coefficient = parity_coefficient(missing_index);
+                actual ^= gf256_mul(
+                    gf256_pow(coefficient, equation as u16),
+                    value[offset],
+                );
+            }
+            if actual != syndrome[offset] {
+                return Err("triple parity syndromes disagree");
+            }
+        }
+    }
+    for (data, &index) in recovered.iter_mut().zip(&missing) {
+        let length = original_lengths[index];
+        if data[length..].iter().any(|&byte| byte != 0) {
+            return Err("nonzero triple parity padding");
+        }
+        data.truncate(length);
+    }
+    Ok(missing.into_iter().zip(recovered).collect())
+}
+
+#[cfg(test)]
+mod triple_parity_tests {
+    use super::*;
+
+    #[test]
+    fn all_one_two_and_three_erasures_reconstruct_exact_bytes() {
+        let originals: [&[u8]; 6] = [
+            b"short", b"", b"longer-payload", b"abc", b"binary\x00\xff", b"z"
+        ];
+        let parity = encode_triple_parity(&originals).unwrap();
+        let lengths = originals.iter().map(|part| part.len()).collect::<Vec<_>>();
+        for mask in 1usize..(1 << originals.len()) {
+            if mask.count_ones() > 3 {
+                continue;
+            }
+            let damaged = originals
+                .iter()
+                .enumerate()
+                .map(|(index, &data)| (mask & (1 << index) == 0).then_some(data))
+                .collect::<Vec<_>>();
+            let result = recover_triple_erasure(&damaged, &lengths, &parity).unwrap();
+            assert_eq!(result.len(), mask.count_ones() as usize);
+            for (index, restored) in result {
+                assert_eq!(restored, originals[index]);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_corrupt_syndromes_lengths_and_excess_erasures() {
+        let originals: [&[u8]; 4] = [b"one", b"two", b"longest", b""];
+        let parity = encode_triple_parity(&originals).unwrap();
+        let lengths = originals.iter().map(|part| part.len()).collect::<Vec<_>>();
+        let damaged = [None, Some(originals[1]), Some(originals[2]), Some(originals[3])];
+        let mut corrupt = parity.clone();
+        corrupt.squared[0] ^= 1;
+        assert!(recover_triple_erasure(&damaged, &lengths, &corrupt).is_err());
+        assert!(recover_triple_erasure(&[None, None, None, None], &lengths, &parity).is_err());
+        assert!(recover_triple_erasure(&damaged, &[3, 3, 7], &parity).is_err());
+        assert!(recover_triple_erasure(&[Some(b"x"), None, None, None], &lengths, &parity).is_err());
+        assert!(encode_triple_parity(&[b"only"]).is_err());
+    }
+}
