@@ -338,3 +338,180 @@ mod tests {
         assert_eq!(first.differing_positions(&second), Some(vec![513]));
     }
 }
+
+
+/// Canonical compact proof for multiple inventory leaves. Each shared
+/// subtree is sent at most once, unlike independent inclusion proofs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MerkleMultiProof {
+    pub leaf_count: usize,
+    pub indices: Vec<usize>,
+    pub siblings: Vec<[u8; 32]>,
+}
+
+impl MerkleInventory {
+    /// Build a bounded multiproof from sorted, distinct leaf positions.
+    pub fn multi_proof(&self, indices: &[usize]) -> Option<MerkleMultiProof> {
+        if indices.is_empty()
+            || indices.iter().any(|&index| index >= self.objects.len())
+            || indices.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return None;
+        }
+        let mut positions = indices.to_vec();
+        let mut siblings = Vec::new();
+        for level in self.levels.iter().take(self.levels.len() - 1) {
+            let mut next = Vec::new();
+            for &position in &positions {
+                let sibling = position ^ 1;
+                if sibling < level.len()
+                    && positions.binary_search(&sibling).is_err()
+                {
+                    siblings.push(level[sibling]);
+                }
+                let parent = position / 2;
+                if next.last().copied() != Some(parent) {
+                    next.push(parent);
+                }
+            }
+            positions = next;
+        }
+        Some(MerkleMultiProof {
+            leaf_count: self.objects.len(),
+            indices: indices.to_vec(),
+            siblings,
+        })
+    }
+
+    /// Validate the exact tree shape, supplied leaf positions and all
+    /// sibling hashes against a trusted root. Extra proof data is rejected.
+    pub fn verify_multi_proof(
+        root: [u8; 32],
+        objects: &[(usize, ObjectMetadata)],
+        proof: &MerkleMultiProof,
+    ) -> bool {
+        if objects.is_empty()
+            || proof.leaf_count == 0
+            || objects.len() != proof.indices.len()
+            || proof
+                .indices
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return false;
+        }
+        let mut positions = Vec::with_capacity(objects.len());
+        for ((index, object), &expected) in objects.iter().zip(&proof.indices) {
+            if *index != expected || *index >= proof.leaf_count {
+                return false;
+            }
+            positions.push((*index, leaf_digest(object)));
+        }
+        let mut consumed = 0usize;
+        let mut width = proof.leaf_count;
+        let empty_right = sha256(&[3]);
+        while width > 1 {
+            let mut next: Vec<(usize, Digest)> = Vec::with_capacity(positions.len());
+            for &(index, digest) in &positions {
+                let sibling_index = index ^ 1;
+                let sibling = match positions.binary_search_by_key(&sibling_index, |item| item.0) {
+                    Ok(at) => positions[at].1,
+                    Err(_) if sibling_index >= width => empty_right,
+                    Err(_) => {
+                        let Some(value) = proof.siblings.get(consumed).copied() else {
+                            return false;
+                        };
+                        consumed += 1;
+                        value
+                    }
+                };
+                let parent = if index & 1 == 0 {
+                    parent_digest(digest, sibling)
+                } else {
+                    parent_digest(sibling, digest)
+                };
+                let parent_index = index / 2;
+                if let Some((previous_index, previous_digest)) = next.last() {
+                    if *previous_index == parent_index {
+                        if *previous_digest != parent {
+                            return false;
+                        }
+                        continue;
+                    }
+                }
+                next.push((parent_index, parent));
+            }
+            positions = next;
+            width = width.div_ceil(2);
+        }
+        consumed == proof.siblings.len()
+            && positions.len() == 1
+            && positions[0] == (0, root)
+    }
+}
+
+#[cfg(test)]
+mod compact_multiproof_tests {
+    use super::*;
+
+    fn object(index: usize) -> ObjectMetadata {
+        ObjectMetadata {
+            key: format!("parts/{index:05}.bin"),
+            bytes: index as u64,
+            crc32c: index as u32,
+        }
+    }
+
+    #[test]
+    fn multiproofs_verify_sparse_dense_and_odd_trees() {
+        for count in [1usize, 2, 3, 5, 16, 17, 65] {
+            let entries = (0..count).map(object).collect::<Vec<_>>();
+            let tree = MerkleInventory::new(&entries).unwrap();
+            for selection in [
+                vec![0],
+                vec![count - 1],
+                (0..count).filter(|index| index % 3 == 0).collect(),
+                (0..count).collect(),
+            ] {
+                let proof = tree.multi_proof(&selection).unwrap();
+                let selected = selection
+                    .iter()
+                    .map(|&index| (index, entries[index].clone()))
+                    .collect::<Vec<_>>();
+                assert!(MerkleInventory::verify_multi_proof(
+                    tree.root(), &selected, &proof
+                ));
+                let mut changed = selected.clone();
+                changed[0].1.bytes ^= 1;
+                assert!(!MerkleInventory::verify_multi_proof(
+                    tree.root(), &changed, &proof
+                ));
+                let mut extra = proof.clone();
+                extra.siblings.push([0; 32]);
+                assert!(!MerkleInventory::verify_multi_proof(
+                    tree.root(), &selected, &extra
+                ));
+                let individual = selection.iter().map(|&index| {
+                    tree.proof(index).unwrap().siblings.len()
+                }).sum::<usize>();
+                assert!(proof.siblings.len() <= individual);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_incomplete_proofs() {
+        let entries = (0..5).map(object).collect::<Vec<_>>();
+        let tree = MerkleInventory::new(&entries).unwrap();
+        assert!(tree.multi_proof(&[]).is_none());
+        assert!(tree.multi_proof(&[1, 1]).is_none());
+        assert!(tree.multi_proof(&[2, 1]).is_none());
+        assert!(tree.multi_proof(&[5]).is_none());
+        let mut proof = tree.multi_proof(&[0, 4]).unwrap();
+        let selected = vec![(0, entries[0].clone()), (4, entries[4].clone())];
+        proof.siblings.pop();
+        assert!(!MerkleInventory::verify_multi_proof(
+            tree.root(), &selected, &proof
+        ));
+    }
+}
