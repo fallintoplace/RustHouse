@@ -266,6 +266,26 @@ pub(super) fn integer_type(kind: &str) -> bool {
     )
 }
 
+/// Multi-key integer SUM can be combined without shard-local ranking.
+pub(super) fn is_safe_grouped_multi_sum(select: &Select) -> bool {
+    matches!(&select.projection,
+        Projection::GroupedMultiAggregates { columns, items, aliases, filters }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && items[0].0 == AggregateFunction::Sum
+            && aliases.iter().all(Option::is_none)
+            && filters.iter().all(Option::is_none))
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
 /// Multi-dimensional extrema are associative for exact integer keys.
 pub(super) fn is_safe_grouped_multi_extremum(select: &Select) -> bool {
     matches!(&select.projection,
