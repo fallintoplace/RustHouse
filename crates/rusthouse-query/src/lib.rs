@@ -818,6 +818,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
     let mut distinct = parser.keyword("DISTINCT");
+    if !distinct {
+        parser.keyword("ALL");
+    }
     let mut literal_alias = None;
 
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
@@ -2105,6 +2108,23 @@ mod tpch_interval_unit_tests {
                 Predicate::Comparison { operator: Operator::Le | Operator::Lt, value, .. }
                     if value == expected
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod select_all_modifier_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_all_matches_default_select() {
+        for sql in [
+            "SELECT ALL number FROM numbers(3)",
+            "SELECT ALL count(*) FROM numbers(3)",
+            "SELECT ALL number FROM numbers(3) WHERE number > 0 ORDER BY number LIMIT 1",
+        ] {
+            let implicit = sql.replacen("SELECT ALL ", "SELECT ", 1);
+            assert_eq!(parse_select(sql).unwrap(), parse_select(&implicit).unwrap(), "{sql}");
         }
     }
 }
