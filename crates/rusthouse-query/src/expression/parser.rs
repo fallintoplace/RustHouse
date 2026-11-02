@@ -25,12 +25,50 @@ fn parse_case(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseErro
     if !parser.keyword("CASE") {
         return Err(ParseError("CASE expression requires CASE".into()));
     }
+    let operand = if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("WHEN")
+    ) {
+        None
+    } else {
+        Some(parse_expression_tokens_at_depth(parser, depth + 1)?)
+    };
     let mut branches = Vec::new();
     while parser.keyword("WHEN") {
         if branches.len() >= 16 {
             return Err(ParseError("CASE supports at most 16 WHEN branches".into()));
         }
-        let condition = parse_expression_tokens_at_depth(parser, depth + 1)?;
+        let condition = if let Some(operand) = &operand {
+            if matches!(
+                parser.tokens.get(parser.index),
+                Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
+            ) {
+                return Err(ParseError("simple CASE NULL matches are unsupported".into()));
+            }
+            if let Some(Token::String(value)) = parser.tokens.get(parser.index) {
+                let ScalarExpr::Column(column) = operand else {
+                    return Err(ParseError(
+                        "simple CASE text matches require a column".into(),
+                    ));
+                };
+                let value = value.clone();
+                parser.index += 1;
+                ScalarExpr::TextCompare {
+                    column: column.clone(),
+                    operator: Operator::Eq,
+                    value,
+                }
+            } else {
+                let value = parse_expression_tokens_at_depth(parser, depth + 1)?;
+                ScalarExpr::Compare(
+                    Box::new(operand.clone()),
+                    Operator::Eq,
+                    Box::new(value),
+                )
+            }
+        } else {
+            parse_expression_tokens_at_depth(parser, depth + 1)?
+        };
         if !parser.keyword("THEN") {
             return Err(ParseError("CASE WHEN requires THEN".into()));
         }
@@ -243,5 +281,60 @@ mod separated_min_int64_literal_tests {
                 Box::new(ScalarExpr::Integer(17)),
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod simple_case_expression_tests {
+    use crate::expression::{ScalarExpr, parse_scalar_expression};
+
+    #[test]
+    fn numeric_simple_case_matches_existing_searched_case_ast() {
+        for (simple, searched) in [
+            (
+                "CASE amount WHEN 1 THEN 10 WHEN 2 THEN 20 ELSE 0 END",
+                "CASE WHEN amount = 1 THEN 10 WHEN amount = 2 THEN 20 ELSE 0 END",
+            ),
+            (
+                "CASE amount % 2 WHEN 0 THEN 1 ELSE 0 END",
+                "CASE WHEN amount % 2 = 0 THEN 1 ELSE 0 END",
+            ),
+        ] {
+            assert_eq!(
+                parse_scalar_expression(simple).unwrap(),
+                parse_scalar_expression(searched).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn text_simple_case_uses_existing_string_equality_predicate() {
+        let expr = parse_scalar_expression(
+            "CASE country WHEN 'DE' THEN 1 WHEN 'FR' THEN 2 ELSE 0 END"
+        )
+        .unwrap();
+        let ScalarExpr::Case { branches, .. } = expr else {
+            panic!("expected CASE");
+        };
+        assert!(matches!(
+            &branches[0].0,
+            ScalarExpr::TextCompare {
+                column,
+                value,
+                ..
+            } if column == "country" && value == "DE"
+        ));
+    }
+
+    #[test]
+    fn malformed_simple_case_forms_are_rejected() {
+        for input in [
+            "CASE amount WHEN 1 10 END",
+            "CASE amount ELSE 0 END",
+            "CASE amount WHEN NULL THEN 1 END",
+            "CASE amount WHEN 'x' THEN 1 END extra",
+        ] {
+            assert!(parse_scalar_expression(input).is_err(), "{input}");
+        }
     }
 }
