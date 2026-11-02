@@ -490,6 +490,26 @@ fn simple_json_path(path: &str) -> Result<Vec<crate::json::JsonPathSegment<'_>>,
             }
             b'[' => {
                 cursor += 1;
+                if bytes.get(cursor) == Some(&b'\'') {
+                    cursor += 1;
+                    let start = cursor;
+                    while cursor < bytes.len() && bytes[cursor] != b'\'' {
+                        // Keep path components borrowed. Unsupported escapes
+                        // must fail, never silently select a different key.
+                        if bytes[cursor] == b'\\' || bytes[cursor] < 0x20 {
+                            return Err(ParseError("unsupported JSON_EXISTS quoted key".into()));
+                        }
+                        cursor += 1;
+                    }
+                    if bytes.get(cursor) != Some(&b'\'')
+                        || bytes.get(cursor + 1) != Some(&b']')
+                    {
+                        return Err(ParseError("unterminated JSON_EXISTS quoted key".into()));
+                    }
+                    components.push(crate::json::JsonPathSegment::Key(&path[start..cursor]));
+                    cursor += 2;
+                    continue;
+                }
                 let start = cursor;
                 while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
                     cursor += 1;

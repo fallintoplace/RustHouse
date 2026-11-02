@@ -6,7 +6,11 @@ import math
 import re
 import sys
 from urllib.parse import quote
-from loopback_origin import require_loopback_http_origin
+# Work both as `python tools/source_probe.py` and as `import tools.source_probe`.
+if __package__:
+    from .loopback_origin import require_loopback_http_origin
+else:
+    from loopback_origin import require_loopback_http_origin
 from urllib.request import HTTPRedirectHandler, Request, build_opener, ProxyHandler
 
 

@@ -518,6 +518,46 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let _ = respond(&mut stream, response, accept_lz4);
 }
 
+
+// The accept thread must never perform a blocking write. When an overloaded
+// client's receive window is full, best-effort delivery is safer than
+// preventing other clients from connecting.
+const BUSY_RESPONSE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 12\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\nserver busy\n";
+
+fn reject_busy_connection(mut stream: TcpStream) {
+    if stream.set_nonblocking(true).is_ok() {
+        let _ = stream.write_all(BUSY_RESPONSE);
+    }
+}
+
+#[cfg(test)]
+mod nonblocking_overload_tests {
+    use super::*;
+
+    #[test]
+    fn busy_response_has_a_valid_bounded_content_length() {
+        let (head, body) = BUSY_RESPONSE.split_at(
+            BUSY_RESPONSE.windows(4).position(|bytes| bytes == b"\r\n\r\n").unwrap() + 4
+        );
+        assert!(head.starts_with(b"HTTP/1.1 503 Service Unavailable\r\n"));
+        assert!(head.windows(b"Content-Length: 12\r\n".len())
+            .any(|part| part == b"Content-Length: 12\r\n"));
+        assert_eq!(body, b"server busy\n");
+    }
+
+    #[test]
+    fn busy_replies_are_sent_without_the_regular_response_writer() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        reject_busy_connection(server);
+        let mut response = Vec::new();
+        let mut client = client;
+        client.read_to_end(&mut response).unwrap();
+        assert_eq!(response, BUSY_RESPONSE);
+    }
+}
+
 /// Allow IPv6 only on ::1 without extending the experimental
 /// unauthenticated peer transport beyond the existing private IPv4 policy.
 fn permitted_listener_bind(bind: IpAddr, allow_private_network: bool) -> bool {
@@ -662,20 +702,12 @@ fn main() -> io::Result<()> {
             }
         };
         if !acquired {
-            let mut stream = stream;
-            // Busy replies run on the accept thread, outside serve()'s
-            // per-connection timeout setup. Never block acceptance here.
-            if stream
-                .set_write_timeout(Some(Duration::from_millis(250)))
-                .is_err()
-            {
-                continue;
-            }
-            let _ = respond(
-                &mut stream,
-                Response::text("503 Service Unavailable", "server busy\n"),
-                false,
-            );
+            // A full socket send buffer must never block the accept thread.
+            // The ordinary response writer resets the socket timeout to five
+            // seconds, which would defeat a short overload deadline.
+            reject_busy_connection(stream);
+            HTTP_REQUESTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+            HTTP_ERRORS_TOTAL.fetch_add(1, Ordering::Relaxed);
             continue;
         }
         let config = Arc::clone(&config);

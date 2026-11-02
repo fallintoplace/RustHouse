@@ -13,6 +13,33 @@ fn same_source_identity(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     before.dev() == after.dev() && before.ino() == after.ino()
 }
 
+// The staging directory can be renamed while a large source is copied.
+// Directory mtimes change when creating staging files, so compare stable
+// filesystem identity rather than timestamps.
+fn same_destination_directory(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    if !before.file_type().is_dir() || !after.file_type().is_dir() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        before.dev() == after.dev() && before.ino() == after.ino()
+    }
+    #[cfg(not(unix))]
+    true
+}
+
+fn verify_destination_directory(parent: &Path, initial: &fs::Metadata) -> io::Result<()> {
+    let current = fs::symlink_metadata(parent)?;
+    if !same_destination_directory(initial, &current) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "replica destination directory changed during copy",
+        ));
+    }
+    Ok(())
+}
+
 fn source_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     if !after.file_type().is_file()
         || before.len() != after.len()
@@ -27,7 +54,15 @@ fn source_unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
             && before.ctime() == after.ctime()
             && before.ctime_nsec() == after.ctime_nsec()
     }
-    #[cfg(not(unix))]
+    // Windows metadata does not expose stable file identity in Rust 1.85.
+    // Creation time is an additional replacement check when the old and new
+    // files happen to have the same length and last-write timestamp.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        before.creation_time() == after.creation_time()
+    }
+    #[cfg(not(any(unix, windows)))]
     true
 }
 
@@ -163,11 +198,23 @@ fn copy_immutable_file_impl(
     let parent = destination
         .parent()
         .ok_or_else(|| io::Error::other("destination has no parent directory"))?;
-    if !fs::symlink_metadata(parent)?.file_type().is_dir() {
+    let initial_parent = fs::symlink_metadata(parent)?;
+    if !initial_parent.file_type().is_dir() {
         return Err(io::Error::other(
             "destination parent is not a real directory",
         ));
     }
+    #[cfg(unix)]
+    let parent_handle = {
+        let directory = File::open(parent)?;
+        if !same_destination_directory(&initial_parent, &directory.metadata()?) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "replica destination directory changed before copy",
+            ));
+        }
+        directory
+    };
     require_new_destination(destination)?;
     let mut input = File::open(source)?;
     let opened = input.metadata()?;
@@ -205,12 +252,15 @@ fn copy_immutable_file_impl(
         {
             return Err(io::Error::other("source changed during immutable copy"));
         }
+        // A renamed or replaced destination directory must not silently
+        // redirect publication of a previously verified immutable object.
+        verify_destination_directory(parent, &initial_parent)?;
         fs::hard_link(&staging, destination)?;
         Ok(total)
     });
     let total = finish_copy_publication(&staging, published)?;
     #[cfg(unix)]
-    File::open(parent)?.sync_all()?;
+    parent_handle.sync_all()?;
     Ok(total)
 }
 
@@ -622,5 +672,40 @@ mod committed_copy_cleanup_tests {
         let staging = std::env::temp_dir();
         let failed = finish_copy_publication(&staging, Err(io::Error::other("copy rejected")));
         assert_eq!(failed.unwrap_err().to_string(), "copy rejected");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod replica_destination_identity_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn detects_directory_replacement_and_symlink_after_stage_creation() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-replica-parent-id-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        let parent = root.join("destination");
+        let old = root.join("moved");
+        fs::create_dir_all(&parent).unwrap();
+        let initial = fs::symlink_metadata(&parent).unwrap();
+        fs::write(parent.join(".rusthouse-staging"), b"verified").unwrap();
+        verify_destination_directory(&parent, &initial).unwrap();
+        fs::rename(&parent, &old).unwrap();
+        fs::create_dir(&parent).unwrap();
+        assert_eq!(
+            verify_destination_directory(&parent, &initial).unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+        );
+        fs::remove_dir(&parent).unwrap();
+        symlink(&old, &parent).unwrap();
+        assert_eq!(
+            verify_destination_directory(&parent, &initial).unwrap_err().kind(),
+            io::ErrorKind::InvalidData,
+        );
+        fs::remove_file(&parent).unwrap();
+        fs::remove_dir_all(&root).unwrap();
     }
 }

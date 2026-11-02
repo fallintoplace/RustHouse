@@ -973,3 +973,123 @@ mod windows_snapshot_directory_sync_tests {
         sync_directory(&path).unwrap();
     }
 }
+
+
+/// Compare two offline immutable snapshots by file path, size and stored CRC32C.
+///
+/// This is symmetric anti-entropy diagnostics, not a copy/delete action.
+/// CRC32C detects accidental corruption but does not authenticate replicas.
+/// The two inventories are sampled independently, not as a distributed atomic
+/// snapshot. All writers must be stopped while inventorying either root.
+pub fn compare_frozen_snapshot_files(
+    left: &Path,
+    right: &Path,
+    max_files: usize,
+    max_bytes_per_snapshot: u64,
+) -> Result<crate::distributed_copy_diff::ReplicaInventoryDifference, PartError> {
+    use crate::distributed_copy_diff::{ObjectMetadata, compare_replica_inventories};
+    use crate::distributed_inventory::{CheckedInventoryEntry, inventory_snapshot_crc32c};
+
+    let file_limit = max_files.min(65_536);
+    let left_files = inventory_snapshot_crc32c(left, file_limit, max_bytes_per_snapshot)?;
+    let right_files = inventory_snapshot_crc32c(right, file_limit, max_bytes_per_snapshot)?;
+    let convert = |entries: &[CheckedInventoryEntry]| -> Result<Vec<ObjectMetadata>, PartError> {
+        entries
+            .iter()
+            .map(|entry| {
+                // Use portable slash-delimited inventory keys on all platforms,
+                // and reject non-UTF8 names instead of silently replacing bytes.
+                let mut key = String::new();
+                for segment in entry.relative_path.iter() {
+                    let segment = segment.to_str().ok_or_else(|| {
+                        PartError::InvalidScan("non-UTF8 snapshot inventory path".into())
+                    })?;
+                    if !key.is_empty() {
+                        key.push('/');
+                    }
+                    key.push_str(segment);
+                }
+                Ok(ObjectMetadata {
+                    key,
+                    bytes: entry.bytes,
+                    crc32c: entry.crc32c,
+                })
+            })
+            .collect()
+    };
+    let lhs = convert(&left_files)?;
+    let rhs = convert(&right_files)?;
+    compare_replica_inventories(&lhs, &rhs)
+        .map_err(|reason| PartError::InvalidScan(reason.into()))
+}
+
+#[cfg(test)]
+mod frozen_snapshot_anti_entropy_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    fn write_part(root: &Path, part: &str, value: u64) {
+        write_wide_part(
+            &root.join(part),
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[vec![Some(value.to_string())]],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn compares_equal_missing_and_conflicting_files_without_writes() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-snapshot-content-diff-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let left = root.join("left");
+        let right = root.join("right");
+        let corrupted = root.join("changed");
+        for dir in [&left, &right, &corrupted] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        write_part(&left, "all_0_0_0", 1);
+        write_part(&right, "all_0_0_0", 1);
+        write_part(&corrupted, "all_0_0_0", 2);
+        let equal = compare_frozen_snapshot_files(&left, &right, 64, 1_000_000).unwrap();
+        assert!(equal.only_left.is_empty());
+        assert!(equal.only_right.is_empty());
+        assert!(equal.conflicting.is_empty());
+        let changed = compare_frozen_snapshot_files(&left, &corrupted, 64, 1_000_000).unwrap();
+        assert!(!changed.conflicting.is_empty());
+        assert!(changed.only_left.is_empty());
+        assert!(changed.only_right.is_empty());
+
+        write_part(&left, "all_1_1_0", 3);
+        let missing = compare_frozen_snapshot_files(&left, &right, 64, 1_000_000).unwrap();
+        assert!(!missing.only_left.is_empty());
+        assert!(missing.only_right.is_empty());
+        assert!(missing.conflicting.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_incomplete_inventories_and_byte_budget_shortfalls() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-snapshot-diff-bounds-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let left = root.join("a");
+        let right = root.join("b");
+        fs::create_dir_all(&left).unwrap();
+        fs::create_dir_all(&right).unwrap();
+        write_part(&left, "all_0_0_0", 1);
+        write_part(&right, "all_0_0_0", 1);
+        assert!(compare_frozen_snapshot_files(&left, &right, 0, 1_000_000).is_err());
+        assert!(compare_frozen_snapshot_files(&left, &right, 100, 0).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

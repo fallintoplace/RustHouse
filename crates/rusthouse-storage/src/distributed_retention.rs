@@ -1323,3 +1323,170 @@ mod linear_sorted_pin_retention_tests {
         ).is_err());
     }
 }
+
+
+/// Generation and its optional direct predecessor in a complete offline history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerationParent {
+    pub generation: u64,
+    pub parent: Option<u64>,
+}
+
+/// Plan deletion candidates while retaining the ancestor closure of every pin.
+///
+/// The caller supplies a complete, immutable generation-parent inventory.
+/// Unknown parents, nonmonotonic edges, duplicate generations and missing pins
+/// fail closed. Results are sorted by generation. No filesystem changes occur.
+pub fn retention_candidates_with_ancestry(
+    history: &[GenerationParent],
+    active: u64,
+    pinned: &[u64],
+    keep_newest: usize,
+) -> Result<Vec<u64>, &'static str> {
+    if history.is_empty() || history.len() > 16_384 || pinned.len() > 16_384 {
+        return Err("invalid snapshot ancestry inventory size");
+    }
+    let mut ordered = history.to_vec();
+    ordered.sort_unstable_by_key(|entry| entry.generation);
+    for (index, entry) in ordered.iter().enumerate() {
+        if entry.generation == 0
+            || (index > 0 && ordered[index - 1].generation == entry.generation)
+            || entry.parent.is_some_and(|parent| parent == 0 || parent >= entry.generation)
+        {
+            return Err("invalid or duplicate snapshot ancestry");
+        }
+        if let Some(parent) = entry.parent {
+            if ordered
+                .binary_search_by_key(&parent, |candidate| candidate.generation)
+                .is_err()
+            {
+                return Err("snapshot ancestry references a missing parent");
+            }
+        }
+    }
+    let index_of = |generation: u64| {
+        ordered
+            .binary_search_by_key(&generation, |entry| entry.generation)
+            .map_err(|_| "snapshot retention anchor is missing")
+    };
+    let active_index = index_of(active)?;
+    let mut anchors = Vec::with_capacity(pinned.len() + keep_newest.min(ordered.len()) + 1);
+    anchors.push(active_index);
+    for &pin in pinned {
+        anchors.push(index_of(pin)?);
+    }
+    let newest_start = ordered.len().saturating_sub(keep_newest);
+    anchors.extend(newest_start..ordered.len());
+
+    // Each generation is followed at most once: marking an already retained
+    // generation means its entire parent chain was marked earlier.
+    let mut retained = vec![false; ordered.len()];
+    for anchor in anchors {
+        let mut current = Some(anchor);
+        while let Some(index) = current {
+            if retained[index] {
+                break;
+            }
+            retained[index] = true;
+            current = ordered[index]
+                .parent
+                .map(index_of)
+                .transpose()?;
+        }
+    }
+    Ok(ordered
+        .iter()
+        .zip(retained)
+        .filter_map(|(entry, keep)| (!keep).then_some(entry.generation))
+        .collect())
+}
+
+#[cfg(test)]
+mod ancestry_retention_tests {
+    use super::*;
+
+    #[test]
+    fn never_selects_ancestors_of_the_active_or_pinned_generations() {
+        let history = [
+            GenerationParent { generation: 6, parent: Some(4) },
+            GenerationParent { generation: 1, parent: None },
+            GenerationParent { generation: 4, parent: Some(2) },
+            GenerationParent { generation: 5, parent: Some(3) },
+            GenerationParent { generation: 3, parent: Some(1) },
+            GenerationParent { generation: 2, parent: Some(1) },
+        ];
+        assert_eq!(
+            retention_candidates_with_ancestry(&history, 6, &[5], 0).unwrap(),
+            Vec::<u64>::new()
+        );
+        assert_eq!(
+            retention_candidates_with_ancestry(&history, 6, &[], 0).unwrap(),
+            [3, 5]
+        );
+        assert_eq!(
+            retention_candidates_with_ancestry(&history, 6, &[], 2).unwrap(),
+            Vec::<u64>::new()
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_histories_even_when_a_bad_edge_is_not_retained() {
+        let valid = [
+            GenerationParent { generation: 1, parent: None },
+            GenerationParent { generation: 2, parent: Some(1) },
+        ];
+        assert!(retention_candidates_with_ancestry(&valid, 3, &[], 1).is_err());
+        assert!(retention_candidates_with_ancestry(&valid, 2, &[3], 1).is_err());
+        let mut bad = valid;
+        bad[1].parent = Some(3);
+        assert!(retention_candidates_with_ancestry(&bad, 1, &[], 0).is_err());
+        bad[1].parent = Some(2);
+        assert!(retention_candidates_with_ancestry(&bad, 1, &[], 0).is_err());
+        bad[1].parent = Some(0);
+        assert!(retention_candidates_with_ancestry(&bad, 1, &[], 0).is_err());
+        bad[1] = bad[0];
+        assert!(retention_candidates_with_ancestry(&bad, 1, &[], 0).is_err());
+        assert!(retention_candidates_with_ancestry(&[], 1, &[], 0).is_err());
+    }
+
+    #[test]
+    fn balanced_histories_match_an_independent_mark_and_sweep_oracle() {
+        use std::collections::{BTreeMap, BTreeSet};
+        for size in [2u64, 3, 17, 128, 1024] {
+            let mut history = (1..=size)
+                .map(|generation| GenerationParent {
+                    generation,
+                    parent: (generation > 1).then_some(generation / 2),
+                })
+                .collect::<Vec<_>>();
+            history.reverse();
+            let parents = history
+                .iter()
+                .map(|entry| (entry.generation, entry.parent))
+                .collect::<BTreeMap<_, _>>();
+            for keep_newest in [0, 1, 2, 7] {
+                let active = size / 2 + 1;
+                let pinned = [size / 3 + 1];
+                let mut retained = BTreeSet::new();
+                let mut anchors = vec![active, pinned[0]];
+                anchors.extend((1..=size).rev().take(keep_newest));
+                for anchor in anchors {
+                    let mut node = Some(anchor);
+                    while let Some(generation) = node {
+                        retained.insert(generation);
+                        node = parents[&generation];
+                    }
+                }
+                let expected = (1..=size)
+                    .filter(|generation| !retained.contains(generation))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    retention_candidates_with_ancestry(
+                        &history, active, &pinned, keep_newest
+                    ).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+}

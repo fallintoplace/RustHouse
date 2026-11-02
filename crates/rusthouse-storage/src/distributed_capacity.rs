@@ -545,6 +545,125 @@ pub fn reserve_replica_capacity_plan(
     Ok(result)
 }
 
+#[derive(Clone, Copy)]
+enum ReservationFinalization {
+    Commit,
+    Release,
+}
+
+// Multi-node capacity changes are planned as one value transition, not a
+// distributed transaction. Each batch is fully validated before returning.
+fn finalize_replica_capacity_plan(
+    nodes: &[ReplicaNodeCapacity],
+    requests: &[(&str, u64)],
+    operation: ReservationFinalization,
+) -> Result<Vec<ReplicaNodeCapacity>, &'static str> {
+    if requests.len() > MAX_RESERVATION_OBJECTS {
+        return Err("invalid multi-replica reservation limits");
+    }
+    // Reuse the same identity, duplicate and overcommit validation as reserve.
+    // This rejects an invalid starting state even for an empty request batch.
+    let mut result = reserve_replica_capacity_plan(nodes, &[])?;
+    let mut by_name = [("", 0usize); 64];
+    for (slot, (index, node)) in by_name.iter_mut().zip(result.iter().enumerate()) {
+        *slot = (node.node.as_str(), index);
+    }
+    let ordered = &mut by_name[..result.len()];
+    ordered.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    let mut totals = [0u64; 64];
+    for &(name, bytes) in requests {
+        let position = ordered
+            .binary_search_by(|(node, _)| node.cmp(&name))
+            .map_err(|_| "unknown replica reservation node")?;
+        let index = ordered[position].1;
+        totals[index] = totals[index]
+            .checked_add(bytes)
+            .ok_or("replica reservation batch overflow")?;
+    }
+    // Apply to a new owned result, so an error on a later node cannot leak
+    // partially committed or released state to the caller.
+    for (node, &bytes) in result.iter_mut().zip(totals.iter()) {
+        node.capacity = match operation {
+            ReservationFinalization::Commit => node.capacity.commit(bytes)?,
+            ReservationFinalization::Release => node.capacity.release(bytes)?,
+        };
+    }
+    Ok(result)
+}
+
+/// Atomically plan converting verified, reserved replica bytes into usage.
+/// Repeated node requests are aggregated and every original state is checked.
+pub fn commit_replica_capacity_plan(
+    nodes: &[ReplicaNodeCapacity],
+    requests: &[(&str, u64)],
+) -> Result<Vec<ReplicaNodeCapacity>, &'static str> {
+    finalize_replica_capacity_plan(nodes, requests, ReservationFinalization::Commit)
+}
+
+/// Atomically plan releasing unused reserved replica bytes after an abort.
+/// No node is changed if any request is unknown or exceeds its reservation.
+pub fn release_replica_capacity_plan(
+    nodes: &[ReplicaNodeCapacity],
+    requests: &[(&str, u64)],
+) -> Result<Vec<ReplicaNodeCapacity>, &'static str> {
+    finalize_replica_capacity_plan(nodes, requests, ReservationFinalization::Release)
+}
+
+#[cfg(test)]
+mod multi_replica_reservation_finalization_tests {
+    use super::*;
+
+    fn node(name: &str, total: u64, used: u64, reserved: u64) -> ReplicaNodeCapacity {
+        ReplicaNodeCapacity {
+            node: name.into(),
+            capacity: Capacity { total, used, reserved },
+        }
+    }
+
+    #[test]
+    fn multi_node_commit_and_release_match_sequential_capacity_transitions() {
+        let original = vec![
+            node("west", 100, 20, 40),
+            node("east", 100, 5, 50),
+            node("cold", 100, 0, 0),
+        ];
+        let requests = [("east", 10), ("west", 7), ("east", 20), ("west", 13)];
+        let committed = commit_replica_capacity_plan(&original, &requests).unwrap();
+        assert_eq!(committed[0].capacity, original[0].capacity.commit(20).unwrap());
+        assert_eq!(committed[1].capacity, original[1].capacity.commit(30).unwrap());
+        assert_eq!(committed[2], original[2]);
+        let released = release_replica_capacity_plan(&original, &requests).unwrap();
+        assert_eq!(released[0].capacity, original[0].capacity.release(20).unwrap());
+        assert_eq!(released[1].capacity, original[1].capacity.release(30).unwrap());
+        assert_eq!(original[0].capacity.reserved, 40);
+    }
+
+    #[test]
+    fn rejects_invalid_node_batches_without_partial_commits() {
+        let before = vec![node("a", 100, 10, 15), node("b", 100, 0, 0)];
+        assert!(commit_replica_capacity_plan(&before, &[("a", 15), ("b", 1)]).is_err());
+        assert!(release_replica_capacity_plan(&before, &[("a", 16)]).is_err());
+        assert!(commit_replica_capacity_plan(&before, &[("missing", 0)]).is_err());
+        assert!(commit_replica_capacity_plan(&before, &[("a", u64::MAX), ("a", 1)]).is_err());
+        assert!(release_replica_capacity_plan(&before, &vec![("a", 0); 65_537]).is_err());
+        assert!(commit_replica_capacity_plan(&[before[0].clone(), before[0].clone()], &[]).is_err());
+        assert_eq!(before[0].capacity.reserved, 15);
+    }
+
+    #[test]
+    fn full_node_membership_uses_binary_search_without_aliasing() {
+        let nodes = (0..64).map(|i| node(&format!("n{i:02}"), 100, 0, 100))
+            .collect::<Vec<_>>();
+        let requests = (0..64).rev().flat_map(|i| {
+            let name = nodes[i].node.as_str();
+            [(name, 1u64), (name, 2u64)]
+        }).collect::<Vec<_>>();
+        let next = commit_replica_capacity_plan(&nodes, &requests).unwrap();
+        assert!(next.iter().all(|node| node.capacity.used == 3
+            && node.capacity.reserved == 97));
+    }
+}
+
 #[cfg(test)]
 mod multi_replica_capacity_planning_tests {
     use super::*;
