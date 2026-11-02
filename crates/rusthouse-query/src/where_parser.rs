@@ -244,7 +244,23 @@ fn parse_atom(
     let column = parser.word()?;
     let postfix_not = parser.keyword("NOT");
     let negate_in = prefix_not ^ postfix_not;
-    if parser.keyword("IS") {
+    if parser.keyword("ISNULL") {
+        if postfix_not {
+            return Err(ParseError("NOT before ISNULL is unsupported".into()));
+        }
+        predicates.push(Predicate::IsNull {
+            column,
+            negated: prefix_not,
+        });
+    } else if parser.keyword("NOTNULL") {
+        if postfix_not {
+            return Err(ParseError("NOT before NOTNULL is unsupported".into()));
+        }
+        predicates.push(Predicate::IsNull {
+            column,
+            negated: !prefix_not,
+        });
+    } else if parser.keyword("IS") {
         if postfix_not {
             return Err(ParseError("unexpected NOT before IS".into()));
         }
@@ -766,5 +782,34 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod postgres_null_shorthand_tests {
+    use super::*;
+    use crate::{execute, parse_select};
+
+    fn rows(sql: &str) -> String {
+        let query = parse_select(sql).unwrap();
+        let mut output = Vec::new();
+        execute(&query, None, &mut output).unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn isnull_and_notnull_are_null_predicate_aliases() {
+        for (shorthand, standard) in [
+            ("number ISNULL", "number IS NULL"),
+            ("number NOTNULL", "number IS NOT NULL"),
+            ("NOT number ISNULL", "number IS NOT NULL"),
+        ] {
+            let base = "SELECT number FROM numbers(4) WHERE ";
+            assert_eq!(
+                rows(&format!("{base}{shorthand} ORDER BY number")),
+                rows(&format!("{base}{standard} ORDER BY number"))
+            );
+        }
+        assert!(parse_select("SELECT number FROM numbers(4) WHERE number NOT ISNULL").is_err());
     }
 }
