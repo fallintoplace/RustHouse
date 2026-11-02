@@ -232,9 +232,8 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         return Ok(Some(Ddl::OptimizeTable { name }));
     }
     if parser.keyword("TRUNCATE") {
-        if !parser.keyword("TABLE") {
-            return Err(ParseError("expected TABLE after TRUNCATE".into()));
-        }
+        // TABLE is optional in SQL-standard TRUNCATE syntax.
+        parser.keyword("TABLE");
         let if_exists = optional_if_exists(&mut parser)?;
         let name = identifier(&mut parser)?;
         finish_ddl(&mut parser)?;
@@ -641,5 +640,22 @@ mod show_columns_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod truncate_optional_table_tests {
+    use super::parse_ddl;
+
+    #[test]
+    fn truncate_table_keyword_is_optional() {
+        for (implicit, explicit) in [
+            ("TRUNCATE events", "TRUNCATE TABLE events"),
+            ("TRUNCATE IF EXISTS events", "TRUNCATE TABLE IF EXISTS events"),
+        ] {
+            assert_eq!(parse_ddl(implicit).unwrap(), parse_ddl(explicit).unwrap());
+        }
+        assert!(parse_ddl("TRUNCATE").is_err());
+        assert!(parse_ddl("TRUNCATE TABLE").is_err());
     }
 }
