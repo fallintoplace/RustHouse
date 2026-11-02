@@ -1352,3 +1352,176 @@ mod windows_immutable_object_handle_tests {
         fs::remove_dir(directory).unwrap();
     }
 }
+
+
+/// One disjoint physical read covering one or more logical range requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoalescedReadSpan {
+    pub offset: u64,
+    pub length: usize,
+}
+
+/// Merge overlapping and adjacent logical reads into minimal physical spans.
+///
+/// The original requested-byte sum, not just the union size, must fit the
+/// existing 8 MiB read budget. All bounds are checked before allocating data.
+pub fn plan_coalesced_object_ranges(
+    ranges: &[(u64, usize)],
+    file_length: u64,
+    max_total_bytes: usize,
+) -> io::Result<Vec<CoalescedReadSpan>> {
+    if ranges.len() > MAX_RANGES {
+        return Err(io::Error::other("too many object ranges"));
+    }
+    let mut requested = 0usize;
+    let mut ordered = Vec::with_capacity(ranges.len());
+    for &(offset, length) in ranges {
+        requested = requested
+            .checked_add(length)
+            .ok_or_else(|| io::Error::other("object range byte overflow"))?;
+        if requested > max_total_bytes || requested > ABSOLUTE_MAX_RANGE {
+            return Err(io::Error::other("object ranges exceed byte limit"));
+        }
+        validate_range(offset, length, file_length)?;
+        if length != 0 {
+            ordered.push(CoalescedReadSpan { offset, length });
+        }
+    }
+    ordered.sort_unstable_by_key(|span| span.offset);
+    let mut merged = Vec::<CoalescedReadSpan>::with_capacity(ordered.len());
+    for span in ordered {
+        if let Some(last) = merged.last_mut() {
+            let end = last.offset + last.length as u64;
+            if span.offset <= end {
+                let new_end = end.max(span.offset + span.length as u64);
+                last.length = (new_end - last.offset) as usize;
+                continue;
+            }
+        }
+        merged.push(span);
+    }
+    Ok(merged)
+}
+
+/// Coalesce overlapping requests into one verified read per physical span.
+///
+/// Callers choosing this API trade up to 8 MiB of temporary memory for fewer
+/// positioned file reads. Destination buffers can be partially modified on
+/// an I/O or identity error and must then be discarded.
+pub fn read_coalesced_object_ranges_into(
+    path: &Path,
+    ranges: &mut [(u64, &mut [u8])],
+    max_total_bytes: usize,
+) -> io::Result<()> {
+    if ranges.len() > MAX_RANGES {
+        return Err(io::Error::other("too many object ranges"));
+    }
+    let (mut file, baseline) = open_verified_object(path)?;
+    let requests = ranges
+        .iter()
+        .map(|(offset, bytes)| (*offset, bytes.len()))
+        .collect::<Vec<_>>();
+    let spans = plan_coalesced_object_ranges(&requests, baseline.len(), max_total_bytes)?;
+    for span in spans {
+        let mut bytes = vec![0u8; span.length];
+        read_at_into(&mut file, span.offset, &mut bytes)?;
+        let end = span.offset + span.length as u64;
+        for (offset, destination) in ranges.iter_mut() {
+            if destination.is_empty() {
+                continue;
+            }
+            let request_end = *offset + destination.len() as u64;
+            if *offset >= span.offset && request_end <= end {
+                let start = (*offset - span.offset) as usize;
+                let length = destination.len();
+                destination.copy_from_slice(&bytes[start..start + length]);
+            }
+        }
+    }
+    verify_object_after_read(path, &file, &baseline)
+}
+
+#[cfg(test)]
+mod coalesced_object_read_tests {
+    use super::*;
+
+    #[test]
+    fn interval_union_matches_a_bytewise_reference_model() {
+        for count in [0usize, 1, 2, 17, 128, 1024] {
+            let ranges = (0..count)
+                .map(|index| ((index * 13 % 201) as u64, index * 7 % 17))
+                .collect::<Vec<_>>();
+            let spans = plan_coalesced_object_ranges(&ranges, 256, 8 * 1024 * 1024).unwrap();
+            assert!(spans.windows(2).all(|pair| {
+                pair[0].offset + (pair[0].length as u64) < pair[1].offset
+            }));
+            let mut expected = [false; 256];
+            let mut actual = [false; 256];
+            for &(offset, length) in &ranges {
+                expected[offset as usize..offset as usize + length].fill(true);
+            }
+            for span in spans {
+                actual[span.offset as usize..span.offset as usize + span.length].fill(true);
+            }
+            assert_eq!(actual, expected, "count={count}");
+        }
+    }
+
+    #[test]
+    fn coalesced_reads_match_independent_exact_ranges_for_overlapping_inputs() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-coalesced-reads-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let contents = (0..4096)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&path, &contents).unwrap();
+        let mut first = [0u8; 49];
+        let mut second = [0u8; 40];
+        let mut third = [0u8; 11];
+        let mut empty = [];
+        {
+            let mut requests = [
+                (95u64, first.as_mut_slice()),
+                (101, second.as_mut_slice()),
+                (135, third.as_mut_slice()),
+                (4096, empty.as_mut_slice()),
+            ];
+            read_coalesced_object_ranges_into(&path, &mut requests, 100).unwrap();
+        }
+        assert_eq!(&first, &contents[95..144]);
+        assert_eq!(&second, &contents[101..141]);
+        assert_eq!(&third, &contents[135..146]);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn invalid_ranges_fail_without_touching_destinations() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-invalid-coalesced-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        fs::write(&path, [7u8; 32]).unwrap();
+        let mut good = [0xabu8; 4];
+        let mut bad = [0xcdu8; 8];
+        {
+            let mut requests = [
+                (0u64, good.as_mut_slice()),
+                (30, bad.as_mut_slice()),
+            ];
+            assert!(read_coalesced_object_ranges_into(&path, &mut requests, 12).is_err());
+        }
+        assert_eq!(good, [0xab; 4]);
+        assert_eq!(bad, [0xcd; 8]);
+        assert!(
+            plan_coalesced_object_ranges(&[(u64::MAX, 2)], u64::MAX, 10).is_err()
+        );
+        assert!(
+            plan_coalesced_object_ranges(&[(0, 5), (0, 5)], 32, 9).is_err()
+        );
+        fs::remove_file(path).unwrap();
+    }
+}
