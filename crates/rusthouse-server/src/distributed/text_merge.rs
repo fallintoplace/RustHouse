@@ -262,7 +262,7 @@ mod nullable_text_topk_tests {
             b"name\tid\n\\N\t1\n\\N\t3\na\t4\nb\t2\n"
         );
         let descending = [
-            (10, b"name\nid\n".to_vec()),
+            (10, b"name\nz\nmalformed\textra\n".to_vec()),
             (10, b"name\nb\n\\N\n".to_vec()),
         ];
         // A malformed field is rejected even when a short page could be returned.
