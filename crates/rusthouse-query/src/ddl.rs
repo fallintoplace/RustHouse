@@ -43,6 +43,9 @@ pub enum Ddl {
     TruncateTable {
         name: String,
     },
+    TruncateTableIfExists {
+        name: String,
+    },
     OptimizeTable {
         name: String,
     },
@@ -223,9 +226,14 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         if !parser.keyword("TABLE") {
             return Err(ParseError("expected TABLE after TRUNCATE".into()));
         }
+        let if_exists = optional_if_exists(&mut parser)?;
         let name = identifier(&mut parser)?;
         finish_ddl(&mut parser)?;
-        return Ok(Some(Ddl::TruncateTable { name }));
+        return Ok(Some(if if_exists {
+            Ddl::TruncateTableIfExists { name }
+        } else {
+            Ddl::TruncateTable { name }
+        }));
     }
     if parser.keyword("DROP") {
         if !parser.keyword("TABLE") {
