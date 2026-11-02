@@ -108,8 +108,8 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
             rows: vec![Vec::new()],
         }));
     }
-    if !parser.keyword("VALUES") {
-        return Err(ParseError("expected VALUES after INSERT table".into()));
+    if !parser.keyword("VALUES") && !parser.keyword("VALUE") {
+        return Err(ParseError("expected VALUES or VALUE after INSERT table".into()));
     }
     let mut rows = Vec::new();
     loop {
@@ -270,5 +270,22 @@ mod tests {
         ] {
             assert!(parse_insert(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+
+#[cfg(test)]
+mod insert_singular_value_tests {
+    use super::parse_insert;
+
+    #[test]
+    fn singular_value_uses_the_existing_insert_rows() {
+        let standard = parse_insert("INSERT INTO events (id, name) VALUES (1, 'a')")
+            .unwrap();
+        let singular = parse_insert("INSERT INTO events (id, name) VALUE (1, 'a')")
+            .unwrap();
+        assert_eq!(standard, singular);
+        assert!(parse_insert("INSERT INTO events VALUE").is_err());
+        assert!(parse_insert("INSERT INTO events VALUE (1) garbage").is_err());
     }
 }
