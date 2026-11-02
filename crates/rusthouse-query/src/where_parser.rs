@@ -5,7 +5,9 @@ use crate::lexer::Token;
 use crate::{Operator, ParseError, Parser, Predicate};
 
 type Branches = Vec<Vec<Predicate>>;
-const MAX_CONDITIONS: usize = 16;
+// TPC-H Q19 has three OR branches with more than sixteen predicates total.
+// The 64-branch / 256-expanded-predicate budgets below still cap DNF work.
+const MAX_CONDITIONS: usize = 64;
 const MAX_BRANCHES: usize = 64;
 const MAX_EXPANDED_CONDITIONS: usize = 256;
 const MAX_DEPTH: usize = 16;
