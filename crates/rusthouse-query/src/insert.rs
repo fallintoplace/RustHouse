@@ -116,6 +116,8 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
         if rows.len() >= MAX_INSERT_ROWS {
             return Err(ParseError("INSERT supports at most 8192 rows".into()));
         }
+        // SQL row value constructors may be written as ROW (...).
+        parser.keyword("ROW");
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected '(' after VALUES".into()));
         }
@@ -270,5 +272,22 @@ mod tests {
         ] {
             assert!(parse_insert(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+
+#[cfg(test)]
+mod insert_row_constructor_tests {
+    use super::parse_insert;
+
+    #[test]
+    fn row_constructor_is_identical_to_parenthesized_values() {
+        let standard = parse_insert("INSERT INTO events (id) VALUES (1), (2)")
+            .unwrap();
+        let explicit = parse_insert("INSERT INTO events (id) VALUES ROW (1), ROW (2)")
+            .unwrap();
+        assert_eq!(standard, explicit);
+        assert!(parse_insert("INSERT INTO events VALUES ROW 1").is_err());
+        assert!(parse_insert("INSERT INTO events VALUES ROW (1) extra").is_err());
     }
 }
