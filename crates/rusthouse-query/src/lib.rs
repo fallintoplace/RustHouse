@@ -996,6 +996,18 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             };
             let alias = if parser.keyword("AS") {
                 Some(parser.word()?)
+            } else if matches!(
+                parser.tokens.get(parser.index),
+                Some(Token::Word(word))
+                    if !matches!(
+                        word.to_ascii_uppercase().as_str(),
+                        "FROM" | "PREWHERE" | "WHERE" | "GROUP" | "HAVING" | "ORDER"
+                            | "LIMIT" | "OFFSET" | "FETCH" | "FORMAT" | "UNION"
+                            | "INTERSECT" | "EXCEPT" | "ALL" | "DISTINCT" | "SELECT"
+                    )
+            ) {
+                // SQL permits aliases for scalar expressions without AS.
+                Some(parser.word()?)
             } else {
                 None
             };
@@ -2106,5 +2118,36 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod implicit_constant_alias_tests {
+    use super::{execute, parse_select};
+
+    #[test]
+    fn implicit_constant_alias_matches_explicit_as() {
+        for (implicit, explicit) in [
+            ("SELECT 7 answer", "SELECT 7 AS answer"),
+            ("SELECT 'Ada' name, -7 id, NULL missing",
+             "SELECT 'Ada' AS name, -7 AS id, NULL AS missing"),
+            ("SELECT 7 answer LIMIT 1", "SELECT 7 AS answer LIMIT 1"),
+        ] {
+            assert_eq!(parse_select(implicit).unwrap(), parse_select(explicit).unwrap());
+        }
+        let mut output = Vec::new();
+        execute(
+            &parse_select("SELECT 'Ada' name, -7 id, NULL missing").unwrap(),
+            None,
+            &mut output,
+        ).unwrap();
+        assert_eq!(output, b"name\tid\tmissing\nAda\t-7\t\\N\n");
+    }
+
+    #[test]
+    fn keywords_still_start_clauses_and_missing_aliases_fail() {
+        assert!(parse_select("SELECT 1 LIMIT 1").is_ok());
+        assert!(parse_select("SELECT 'Ada' AS").is_err());
+        assert!(parse_select("SELECT 1 SELECT").is_err());
     }
 }
