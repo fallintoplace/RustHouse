@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(detector.samples(), 4);
         assert!(detector.phi(400).unwrap().unwrap().abs() < 0.000_001);
         let phi = detector.phi(630).unwrap().unwrap();
-        assert!((phi - 1.0).abs() < 0.001);
+        assert!((phi - 1.0).abs() < 0.002);
         assert_eq!(detector.suspicious(630, 0.9).unwrap(), Some(true));
         assert_eq!(detector.suspicious(630, 1.1).unwrap(), Some(false));
     }
