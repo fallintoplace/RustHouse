@@ -18,7 +18,8 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "SMALLINT" => "Int16",
         "INTEGER" | "INT" => "Int32",
         "BIGINT" => "Int64",
-        "TEXT" | "VARCHAR" | "CHARACTER" | "CHAR" | "NCHAR" | "NVARCHAR" => "String",
+        "TEXT" | "VARCHAR" | "CHARACTER" | "CHAR" | "NCHAR" | "NVARCHAR"
+        | "BYTEA" | "BLOB" | "VARBINARY" => "String",
         "TIMESTAMP" => "DateTime",
         "REAL" | "FLOAT" => "Float32",
         "DOUBLE" => "Float64",
@@ -242,5 +243,28 @@ mod complex_type_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod binary_text_alias_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn byte_string_aliases_use_existing_string_storage() {
+        let Some(Ddl::CreateTable { columns, .. }) = parse_ddl(
+            "CREATE TABLE blobs (pg BYTEA, generic BLOB, mysql VARBINARY)"
+        ).unwrap() else {
+            panic!("expected CREATE TABLE");
+        };
+        assert_eq!(
+            columns.iter().map(|column| column.data_type.as_str()).collect::<Vec<_>>(),
+            ["String", "String", "String"]
+        );
+        assert!(matches!(
+            parse_ddl("ALTER TABLE blobs ADD COLUMN more BYTEA").unwrap(),
+            Some(Ddl::AddColumn { column, .. }) if column.data_type == "String"
+        ));
+        assert!(parse_ddl("CREATE TABLE blobs (bad VARBINARY(3))").is_err());
     }
 }
