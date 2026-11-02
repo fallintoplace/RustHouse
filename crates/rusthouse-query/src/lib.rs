@@ -803,7 +803,9 @@ fn grouped_metric_column(
     parser: &mut Parser,
     function: AggregateFunction,
 ) -> Result<String, ParseError> {
+    let all = parser.keyword("ALL");
     if function == AggregateFunction::Count
+        && !all
         && (parser.take(Token::Star)
             || parser.tokens.get(parser.index) == Some(&Token::RParen))
     {
@@ -841,7 +843,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected COUNT() or COUNT(*)".into()));
         }
-        if parser.keyword("DISTINCT") {
+        let all = parser.keyword("ALL");
+        if !all && parser.keyword("DISTINCT") {
             let column = parser.word()?;
             if !parser.take(Token::RParen) {
                 return Err(ParseError(
@@ -849,9 +852,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 ));
             }
             Projection::CountDistinct { column }
-        } else if parser.take(Token::RParen) {
+        } else if !all && parser.take(Token::RParen) {
             Projection::Count
-        } else if parser.take(Token::Star) {
+        } else if !all && parser.take(Token::Star) {
             if !parser.take(Token::RParen) {
                 return Err(ParseError("expected ')' after COUNT(*)".into()));
             }
@@ -2105,6 +2108,42 @@ mod tpch_interval_unit_tests {
                 Predicate::Comparison { operator: Operator::Le | Operator::Lt, value, .. }
                     if value == expected
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod explicit_all_aggregate_tests {
+    use super::{execute, parse_select};
+
+    #[test]
+    fn count_all_column_matches_default_count_column() {
+        for (explicit, normal) in [
+            ("SELECT COUNT(ALL number) FROM numbers(4)",
+             "SELECT COUNT(number) FROM numbers(4)"),
+            ("SELECT number, COUNT(ALL number) FROM numbers(4) GROUP BY number",
+             "SELECT number, COUNT(number) FROM numbers(4) GROUP BY number"),
+            ("SELECT COUNT(ALL number), SUM(number) FROM numbers(4)",
+             "SELECT COUNT(number), SUM(number) FROM numbers(4)"),
+            ("SELECT number, SUM(ALL number) FROM numbers(4) GROUP BY number",
+             "SELECT number, SUM(number) FROM numbers(4) GROUP BY number"),
+        ] {
+            assert_eq!(parse_select(explicit).unwrap(), parse_select(normal).unwrap(), "{explicit}");
+        }
+        let mut output = Vec::new();
+        let query = parse_select("SELECT count(ALL number) FROM numbers(4)").unwrap();
+        execute(&query, None, &mut output).unwrap();
+        assert!(String::from_utf8(output).unwrap().ends_with("\n4\n"));
+    }
+
+    #[test]
+    fn all_requires_an_argument() {
+        for sql in [
+            "SELECT COUNT(ALL) FROM numbers(2)",
+            "SELECT COUNT(ALL *) FROM numbers(2)",
+            "SELECT COUNT(ALL number, other) FROM numbers(2)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
 }
