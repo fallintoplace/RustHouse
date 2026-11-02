@@ -17,25 +17,34 @@ fn numeric_column_error() -> ExecutionError {
     ExecutionError::Invalid("numeric aggregates require numeric columns".into())
 }
 
+// Conditional metrics only need zero/nonzero, not a widened Number per row.
+fn numeric_nonzero_at(values: &NumericColumn, row: usize) -> bool {
+    match values {
+        NumericColumn::UInt8(values) => values[row] != 0,
+        NumericColumn::UInt16(values) => values[row] != 0,
+        NumericColumn::UInt32(values) => values[row] != 0,
+        NumericColumn::UInt64(values) => values[row] != 0,
+        NumericColumn::UInt128(values) => values[row] != 0,
+        NumericColumn::Int8(values) => values[row] != 0,
+        NumericColumn::Int16(values) => values[row] != 0,
+        NumericColumn::Int32(values) => values[row] != 0,
+        NumericColumn::Int64(values) => values[row] != 0,
+        NumericColumn::Int128(values) => values[row] != 0,
+        NumericColumn::Float32(values) => values[row] != 0.0,
+        NumericColumn::Float64(values) => values[row] != 0.0,
+    }
+}
+
 fn filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
-    let number = match column {
-        TypedColumn::Numeric(values) => Some(super::number_at(values, row)),
-        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
-            Some(super::number_at(values, row))
+    match column {
+        TypedColumn::Numeric(values) => Ok(numeric_nonzero_at(values, row)),
+        TypedColumn::NullableNumeric { values, nulls } => {
+            Ok(nulls[row] == 0 && numeric_nonzero_at(values, row))
         }
-        TypedColumn::NullableNumeric { .. } => None,
-        _ => {
-            return Err(ExecutionError::Invalid(
-                "conditional metric filter must be numeric".into(),
-            ));
-        }
-    };
-    Ok(match number {
-        Some(Number::Unsigned(value)) => value != 0,
-        Some(Number::Signed(value)) => value != 0,
-        Some(Number::Float(value)) => value != 0.0,
-        None => false,
-    })
+        _ => Err(ExecutionError::Invalid(
+            "conditional metric filter must be numeric".into(),
+        )),
+    }
 }
 
 const MAX_GROUP_STATE_BYTES: usize = 64 * 1024 * 1024;
@@ -713,6 +722,41 @@ mod nullable_numeric_group_slots_tests {
         assert_eq!(slots.get(0), Some(10));
         assert_eq!(slots.get(2047), Some(2057));
         assert_eq!(slots.get(65_535), None);
+    }
+}
+
+#[cfg(test)]
+mod native_conditional_filter_tests {
+    use super::*;
+
+    #[test]
+    fn native_zero_probes_keep_nullable_and_nan_semantics() {
+        let columns = [
+            TypedColumn::Numeric(NumericColumn::UInt8(vec![0, 1, 255])),
+            TypedColumn::Numeric(NumericColumn::Int64(vec![0, -1, i64::MAX])),
+            TypedColumn::Numeric(NumericColumn::Float32(vec![0.0, -0.0, f32::NAN])),
+            TypedColumn::Numeric(NumericColumn::Float64(vec![0.0, -0.0, f64::INFINITY])),
+            TypedColumn::NullableNumeric {
+                values: NumericColumn::UInt8(vec![1, 0, 1]),
+                nulls: vec![1, 0, 0],
+            },
+        ];
+        let expected = [
+            [false, true, true],
+            [false, true, true],
+            [false, false, true],
+            [false, false, true],
+            [false, false, true],
+        ];
+        for (column, expected) in columns.iter().zip(expected) {
+            for (row, enabled) in expected.into_iter().enumerate() {
+                assert_eq!(filter_enabled(column, row).unwrap(), enabled);
+            }
+        }
+        assert!(filter_enabled(
+            &TypedColumn::Numeric(NumericColumn::UInt128(vec![u128::MAX])),
+            0
+        ).unwrap());
     }
 }
 
