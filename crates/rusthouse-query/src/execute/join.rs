@@ -150,6 +150,85 @@ fn insert_build_row(
     }
 }
 
+/// Build independent contiguous JOIN hash partitions and merge in source
+/// order. This preserves the first row used by ANY joins and the duplicate
+/// match order required by ordinary inner joins.
+fn build_join_hash(
+    rows: &[Vec<typed::Cell>],
+    keys: &[usize],
+    any: bool,
+    workers: usize,
+) -> Result<HashMap<Vec<typed::Key>, Bucket>, ExecutionError> {
+    const MIN_PARALLEL_ROWS: usize = 16_384;
+    if rows.len() < MIN_PARALLEL_ROWS || workers < 2 {
+        let mut hash = HashMap::with_capacity(initial_hash_capacity(rows.len()));
+        let mut scratch = Vec::with_capacity(keys.len());
+        for (index, row) in rows.iter().enumerate() {
+            insert_build_row(&mut hash, row, keys, &mut scratch, index, any);
+        }
+        return Ok(hash);
+    }
+    let chunk_size = rows.len().div_ceil(workers);
+    let partials = std::thread::scope(|scope| -> Result<_, ExecutionError> {
+        let handles = rows
+            .chunks(chunk_size)
+            .enumerate()
+            .map(|(chunk_index, chunk)| {
+                let start = chunk_index * chunk_size;
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || {
+                        let mut partial =
+                            HashMap::with_capacity(initial_hash_capacity(chunk.len()));
+                        let mut scratch = Vec::with_capacity(keys.len());
+                        for (local, row) in chunk.iter().enumerate() {
+                            insert_build_row(
+                                &mut partial,
+                                row,
+                                keys,
+                                &mut scratch,
+                                start + local,
+                                any,
+                            );
+                        }
+                        partial
+                    })
+                    .map_err(|error| {
+                        ExecutionError::Invalid(format!(
+                            "cannot start parallel JOIN build worker: {error}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    ExecutionError::Invalid("parallel JOIN build worker panicked".into())
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    let mut pieces = partials.into_iter();
+    let mut hash = pieces.next().unwrap_or_default();
+    for piece in pieces {
+        for (key, bucket) in piece {
+            match hash.entry(key) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(bucket);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    if !any {
+                        for &index in bucket.iter() {
+                            entry.get_mut().push(index);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(hash)
+}
+
 struct ProbeOptions {
     materialize_rows: bool,
     materialize_after: usize,
@@ -530,12 +609,8 @@ fn execute_streaming_inner<W: Write>(
         MAX_STREAM_BUILD_BYTES,
         Some(&right_meta),
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> =
-        HashMap::with_capacity(initial_hash_capacity(right_rows.len()));
-    let mut build_key = Vec::with_capacity(right_keys.len());
-    for (index, row) in right_rows.iter().enumerate() {
-        insert_build_row(&mut hash, row, right_keys, &mut build_key, index, query.any);
-    }
+    let workers = super::query_workers(4);
+    let hash = build_join_hash(&right_rows, right_keys, query.any, workers)?;
     if hash.is_empty() {
         let header = selected_header(selected);
         writeln!(output, "{header}")?;
@@ -1985,5 +2060,39 @@ mod reusable_join_build_key_tests {
                 .collect::<Vec<_>>(),
             vec![0],
         );
+    }
+}
+
+#[cfg(test)]
+mod parallel_join_build_tests {
+    use super::*;
+
+    #[test]
+    fn parallel_hash_build_preserves_all_and_any_row_order() {
+        let rows = (0..16_384)
+            .map(|index| {
+                vec![typed::Cell::Numeric(Number::Unsigned(
+                    (index % 5) as u128,
+                ))]
+            })
+            .collect::<Vec<_>>();
+        let serial = build_join_hash(&rows, &[0], false, 1).unwrap();
+        let parallel = build_join_hash(&rows, &[0], false, 4).unwrap();
+        assert_eq!(serial.len(), parallel.len());
+        for (key, expected) in &serial {
+            let actual = parallel.get(key).unwrap();
+            assert_eq!(
+                actual.iter().copied().collect::<Vec<_>>(),
+                expected.iter().copied().collect::<Vec<_>>()
+            );
+        }
+        let any = build_join_hash(&rows, &[0], true, 4).unwrap();
+        assert_eq!(any.len(), 5);
+        for (key, bucket) in &any {
+            assert_eq!(bucket.iter().next(), serial.get(key).unwrap().iter().next());
+        }
+        for bucket in any.values() {
+            assert_eq!(bucket.iter().len(), 1);
+        }
     }
 }

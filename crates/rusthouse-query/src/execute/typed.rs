@@ -287,6 +287,7 @@ enum LikePattern {
 
 enum Test {
     Compare(Operator, Cell),
+    ByteCompare(Operator, i16),
     UuidCompare(Operator, [u8; 16]),
     In(Vec<Cell>, bool),
     UuidInSet(HashSet<[u8; 16]>, bool),
@@ -295,6 +296,7 @@ enum Test {
     ByteInSet([u64; 4], bool),
     ShortInSet(Box<[u64; 1024]>, bool),
     NotBetween(Cell, Cell),
+    NumericBetween(Number, Number),
     UuidNotBetween([u8; 16], [u8; 16]),
     IsNull(bool),
     DistinctFrom(Cell, bool),
@@ -436,12 +438,13 @@ fn order_compiled_conditions(conditions: &mut [Condition]) {
     // an earlier cheap condition can already reject.
     conditions.sort_by_key(|condition| match &condition.test {
         Test::IsNull(_) => 0,
-        Test::UuidCompare(..)
+        Test::ByteCompare(..)
+        | Test::UuidCompare(..)
         | Test::UuidDistinctFrom(..)
         | Test::ByteInSet(..)
         | Test::ShortInSet(..) => 1,
         Test::Compare(Operator::Modulo(_) | Operator::ModuloNe(_), _) => 4,
-        Test::Compare(..) | Test::NotBetween(..) | Test::UuidNotBetween(..) => 2,
+        Test::Compare(..) | Test::NotBetween(..) | Test::NumericBetween(..) | Test::UuidNotBetween(..) => 2,
         Test::In(values, _) if values.len() <= 4 => 2,
         Test::In(..)
         | Test::TextInSet(..)
@@ -475,7 +478,27 @@ pub(super) fn compile(
                 }
                 Predicate::Comparison {
                     operator, value, ..
-                } => Test::Compare(*operator, parse_literal(kind, value)?),
+                } => {
+                    let target = parse_literal(kind, value)?;
+                    if matches!(base_type(kind), "UInt8" | "Int8")
+                        && matches!(
+                            operator,
+                            Operator::Eq | Operator::Ne | Operator::Lt
+                                | Operator::Le | Operator::Gt | Operator::Ge
+                        )
+                    {
+                        let native = match &target {
+                            Cell::Numeric(Number::Unsigned(number)) => i16::try_from(*number).ok(),
+                            Cell::Numeric(Number::Signed(number)) => i16::try_from(*number).ok(),
+                            _ => None,
+                        };
+                        native.map_or(Test::Compare(*operator, target.clone()), |number| {
+                            Test::ByteCompare(*operator, number)
+                        })
+                    } else {
+                        Test::Compare(*operator, target)
+                    }
+                }
                 Predicate::In { values, .. } => compile_in(kind, values, false)?,
                 Predicate::NotIn { values, .. } => compile_in(kind, values, true)?,
                 Predicate::NotBetween { lower, upper, .. } if base_type(kind) == "UUID" => {
@@ -513,6 +536,28 @@ pub(super) fn compile(
         })
         .collect::<Result<Vec<_>, _>>()?;
     order_compiled_conditions(&mut conditions);
+    // BETWEEN expands to >= and <= in the parser. Fuse adjacent numeric
+    // bounds so the value is decoded only once for a matching row.
+    let mut index = 0;
+    while index + 1 < conditions.len() {
+        let between = if conditions[index].index == conditions[index + 1].index {
+            match (&conditions[index].test, &conditions[index + 1].test) {
+                (Test::Compare(Operator::Ge, Cell::Numeric(lower)),
+                 Test::Compare(Operator::Le, Cell::Numeric(upper))) => Some((*lower, *upper)),
+                (Test::Compare(Operator::Le, Cell::Numeric(upper)),
+                 Test::Compare(Operator::Ge, Cell::Numeric(lower))) => Some((*lower, *upper)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some((lower, upper)) = between {
+            conditions[index].test = Test::NumericBetween(lower, upper);
+            conditions.remove(index + 1);
+        } else {
+            index += 1;
+        }
+    }
     Ok(conditions)
 }
 
@@ -672,6 +717,22 @@ fn matches_in_at(column: &TypedColumn, row: usize, targets: &[Cell], negated: bo
         != negated
 }
 
+// A floating DISTINCT FROM target must treat two NaNs as equal. Check
+// decoded numeric storage without constructing a Cell for every candidate.
+fn numeric_nan_at(column: &TypedColumn, row: usize) -> bool {
+    match column {
+        TypedColumn::Numeric(NumericColumn::Float32(values)) => values[row].is_nan(),
+        TypedColumn::Numeric(NumericColumn::Float64(values)) => values[row].is_nan(),
+        TypedColumn::NullableNumeric {
+            values: NumericColumn::Float32(values), nulls
+        } => nulls[row] == 0 && values[row].is_nan(),
+        TypedColumn::NullableNumeric {
+            values: NumericColumn::Float64(values), nulls
+        } => nulls[row] == 0 && values[row].is_nan(),
+        _ => false,
+    }
+}
+
 pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
     branches.iter().any(|branch| {
         branch.iter().all(|condition| {
@@ -701,6 +762,32 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 Test::Compare(operator, target) => {
                     matches_comparison_at(column, row, target, *operator)
                 }
+                Test::ByteCompare(operator, expected) => {
+                    let value = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt8(values)) => {
+                            Some(i16::from(values[row]))
+                        }
+                        TypedColumn::Numeric(NumericColumn::Int8(values)) => {
+                            Some(i16::from(values[row]))
+                        }
+                        TypedColumn::NullableNumeric {
+                            values: NumericColumn::UInt8(values), nulls
+                        } if nulls[row] == 0 => Some(i16::from(values[row])),
+                        TypedColumn::NullableNumeric {
+                            values: NumericColumn::Int8(values), nulls
+                        } if nulls[row] == 0 => Some(i16::from(values[row])),
+                        _ => None,
+                    };
+                    value.is_some_and(|value| match operator {
+                        Operator::Eq => value == *expected,
+                        Operator::Ne => value != *expected,
+                        Operator::Lt => value < *expected,
+                        Operator::Le => value <= *expected,
+                        Operator::Gt => value > *expected,
+                        Operator::Ge => value >= *expected,
+                        _ => unreachable!("byte comparison supports only relational operators"),
+                    })
+                }
                 Test::UuidCompare(operator, target) => match column {
                     TypedColumn::Uuid(values) => {
                         matches_uuid_compare(values[row].as_bytes(), target, *operator)
@@ -714,13 +801,10 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     _ => false,
                 },
                 Test::DistinctFrom(target, negated) => {
-                    let equal = if let Cell::Numeric(super::Number::Float(right)) = target {
-                        matches!(cell(column, row), Cell::Numeric(super::Number::Float(left)) if left.is_nan() && right.is_nan())
-                            || matches_comparison_at(column, row, target, Operator::Eq)
-                    } else {
-                        matches_comparison_at(column, row, target, Operator::Eq)
-                    };
-                    equal == *negated
+                    let both_nan = matches!(target, Cell::Numeric(Number::Float(value)) if value.is_nan())
+                        && numeric_nan_at(column, row);
+                    (both_nan || matches_comparison_at(column, row, target, Operator::Eq))
+                        == *negated
                 }
                 Test::In(targets, negated) => {
                     matches_in_at(column, row, targets, *negated)
@@ -796,6 +880,19 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     }
                     _ => false,
                 },
+                Test::NumericBetween(lower, upper) => {
+                    let value = match column {
+                        TypedColumn::Numeric(values) => Some(number_at(values, row)),
+                        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+                            Some(number_at(values, row))
+                        }
+                        _ => None,
+                    };
+                    value.is_some_and(|value| {
+                        super::predicates::number_matches(value, *lower, Operator::Ge)
+                            && super::predicates::number_matches(value, *upper, Operator::Le)
+                    })
+                }
                 Test::NotBetween(lower, upper) => {
                     let is_null = match column {
                         TypedColumn::NullableNumeric { nulls, .. }
@@ -1001,9 +1098,7 @@ fn static_nonnullable_null_filter(
 /// The serial path is retained for small part counts and filtered queries.
 fn parallel_exact_u32_distinct(part: &Path, column: &str) -> Result<Option<u64>, ExecutionError> {
     let parts = rusthouse_storage::query_parts(part)?;
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |parallelism| parallelism.get())
-        .min(4);
+    let workers = super::query_workers(4);
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
@@ -1175,9 +1270,7 @@ fn parallel_filtered_count(
     conditions: &[Vec<Condition>],
     count_column_index: Option<usize>,
 ) -> Result<Option<u64>, ExecutionError> {
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |count| count.get())
-        .min(4);
+    let workers = super::query_workers(4);
     if workers < 2 {
         return Ok(None);
     }
@@ -3057,5 +3150,157 @@ mod typed_condition_cost_order_tests {
             Test::Compare(Operator::Modulo(_), _)
         ));
         assert!(matches!(conditions[3].test, Test::Like { .. }));
+    }
+}
+
+#[cfg(test)]
+mod native_distinct_nan_tests {
+    use super::*;
+
+    #[test]
+    fn native_nan_checks_preserve_distinct_and_nullable_semantics() {
+        let column = TypedColumn::NullableNumeric {
+            values: NumericColumn::Float32(vec![f32::NAN, -0.0, 1.0, f32::NAN]),
+            nulls: vec![0, 0, 0, 1],
+        };
+        assert!(numeric_nan_at(&column, 0));
+        assert!(!numeric_nan_at(&column, 1));
+        assert!(!numeric_nan_at(&column, 3));
+        let branches = vec![vec![Condition {
+            index: 0,
+            test: Test::DistinctFrom(Cell::Numeric(Number::Float(f64::NAN)), false),
+        }]];
+        let batch = [column];
+        assert_eq!(
+            (0..4).map(|row| passes(&batch, row, &branches)).collect::<Vec<_>>(),
+            [false, true, true, true]
+        );
+        let not_distinct = vec![vec![Condition {
+            index: 0,
+            test: Test::DistinctFrom(Cell::Numeric(Number::Float(f64::NAN)), true),
+        }]];
+        assert_eq!(
+            (0..4).map(|row| passes(&batch, row, &not_distinct)).collect::<Vec<_>>(),
+            [true, false, false, false]
+        );
+    }
+}
+
+#[cfg(test)]
+mod direct_byte_compare_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_byte_comparisons_match_generic_on_signed_unsigned_and_nulls() {
+        for (kind, values) in [
+            ("UInt8", NumericColumn::UInt8(vec![0, 1, 127, 255])),
+            ("Int8", NumericColumn::Int8(vec![-128, -1, 0, 127])),
+        ] {
+            let indices = HashMap::from([("status".to_owned(), 0usize)]);
+            let types = HashMap::from([("status".to_owned(), format!("Nullable({kind})"))]);
+            for op in [
+                Operator::Eq, Operator::Ne, Operator::Lt,
+                Operator::Le, Operator::Gt, Operator::Ge,
+            ] {
+                let predicate = Predicate::Comparison {
+                    column: "status".into(),
+                    operator: op,
+                    value: "0".into(),
+                };
+                let conditions = compile(&[predicate], &indices, &types).unwrap();
+                assert!(matches!(conditions[0].test, Test::ByteCompare(..)));
+                let batch = [TypedColumn::NullableNumeric {
+                    values: values.clone(), nulls: vec![0, 0, 1, 0],
+                }];
+                let target = Cell::Numeric(if kind == "Int8" {
+                    Number::Signed(0)
+                } else {
+                    Number::Unsigned(0)
+                });
+                let old = [Condition {
+                    index: 0, test: Test::Compare(op, target),
+                }];
+                for row in 0..4 {
+                    assert_eq!(
+                        passes(&batch, row, std::slice::from_ref(&conditions)),
+                        passes(&batch, row, std::slice::from_ref(&old)),
+                        "{kind}, {op:?}, row {row}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fused_numeric_between_tests {
+    use super::*;
+
+    #[test]
+    fn between_matches_two_independent_comparisons_at_boundaries_and_nulls() {
+        let predicates = vec![
+            Predicate::Comparison {
+                column: "amount".into(),
+                operator: Operator::Ge,
+                value: "1000".into(),
+            },
+            Predicate::Comparison {
+                column: "amount".into(),
+                operator: Operator::Le,
+                value: "9000".into(),
+            },
+        ];
+        let indices = HashMap::from([("amount".to_owned(), 0usize)]);
+        let types = HashMap::from([("amount".to_owned(), "Nullable(UInt16)".to_owned())]);
+        let conditions = compile(&predicates, &indices, &types).unwrap();
+        assert_eq!(conditions.len(), 1);
+        assert!(matches!(conditions[0].test, Test::NumericBetween(..)));
+        let batch = [TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt16(vec![999, 1000, 9000, 9001, 5000]),
+            nulls: vec![0, 0, 0, 0, 1],
+        }];
+        let old = vec![
+            Condition {
+                index: 0,
+                test: Test::Compare(Operator::Ge, Cell::Numeric(Number::Unsigned(1000))),
+            },
+            Condition {
+                index: 0,
+                test: Test::Compare(Operator::Le, Cell::Numeric(Number::Unsigned(9000))),
+            },
+        ];
+        for row in 0..5 {
+            assert_eq!(
+                passes(&batch, row, std::slice::from_ref(&conditions)),
+                passes(&batch, row, std::slice::from_ref(&old)),
+                "row {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn fused_float_between_preserves_nan_semantics() {
+        let predicates = vec![
+            Predicate::Comparison {
+                column: "x".into(),
+                operator: Operator::Ge,
+                value: "-1".into(),
+            },
+            Predicate::Comparison {
+                column: "x".into(),
+                operator: Operator::Le,
+                value: "1".into(),
+            },
+        ];
+        let indices = HashMap::from([("x".to_owned(), 0usize)]);
+        let types = HashMap::from([("x".to_owned(), "Float64".to_owned())]);
+        let conditions = compile(&predicates, &indices, &types).unwrap();
+        let batch = [TypedColumn::Numeric(NumericColumn::Float64(vec![
+            f64::NAN, -1.0, 0.0, 1.0, 2.0,
+        ]))];
+        let results = (0..5)
+            .map(|row| passes(&batch, row, std::slice::from_ref(&conditions)))
+            .collect::<Vec<_>>();
+        assert_eq!(results, vec![false, true, true, true, false]);
     }
 }
