@@ -2,6 +2,7 @@
 """Run SQL compatibility and end-to-end latency checks against RustHouse."""
 import argparse
 from collections import Counter
+from decimal import Decimal, InvalidOperation
 import hashlib
 import os
 import re
@@ -103,6 +104,50 @@ def invoke(binary, database, sql, timeout):
 def summary(seconds):
     return latency_summary(seconds)
 
+NUMERIC_RELATIVE_TOLERANCE = Decimal("1e-9")
+NUMERIC_ABSOLUTE_TOLERANCE = Decimal("1e-9")
+
+
+def numeric_rows_match(actual, reference):
+    """Explicit approximate comparison for unscaled Float64 fixtures only.
+
+    Row order, row counts, column counts, and nonnumeric values stay exact.
+    Numeric nonfinite values must match byte-for-byte or fail.
+    """
+    try:
+        output_rows = actual.decode("utf-8").splitlines()
+        expected_rows = reference.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return False
+    if len(output_rows) != len(expected_rows):
+        return False
+    if not output_rows:
+        return True
+    if output_rows[0] != expected_rows[0]:
+        return False
+    for output_row, expected_row in zip(output_rows[1:], expected_rows[1:]):
+        values = output_row.split("\t")
+        targets = expected_row.split("\t")
+        if len(values) != len(targets):
+            return False
+        for value, target in zip(values, targets):
+            if value == target:
+                continue
+            try:
+                actual_value = Decimal(value)
+                expected_value = Decimal(target)
+            except InvalidOperation:
+                return False
+            if not actual_value.is_finite() or not expected_value.is_finite():
+                return False
+            diff = abs(actual_value - expected_value)
+            bound = max(NUMERIC_ABSOLUTE_TOLERANCE,
+                        abs(expected_value) * NUMERIC_RELATIVE_TOLERANCE)
+            if diff > bound:
+                return False
+    return True
+
+
 def compare_reference(actual, reference, mode="exact"):
     if mode == "exact":
         return actual == reference
@@ -110,6 +155,8 @@ def compare_reference(actual, reference, mode="exact"):
         return Counter(actual.splitlines(keepends=True)) == Counter(
             reference.splitlines(keepends=True)
         )
+    if mode == "numeric":
+        return numeric_rows_match(actual, reference)
     raise ValueError(f"unknown reference comparison mode: {mode}")
 
 
@@ -199,7 +246,7 @@ def main(argv=None):
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--queries-dir", type=Path, required=True)
     parser.add_argument("--reference-dir", type=Path)
-    parser.add_argument("--comparison", choices=("exact", "unordered"), default="exact",
+    parser.add_argument("--comparison", choices=("exact", "unordered", "numeric"), default="exact",
                         help="Compare row order exactly or as a multiset")
     parser.add_argument("--require-verified", action="store_true",
                         help="Require golden output for every measured query")

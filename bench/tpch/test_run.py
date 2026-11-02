@@ -159,6 +159,20 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result["status"], "unverified")
         self.assertEqual(summarize_coverage([result])["verified_queries"], 0)
 
+    def test_opt_in_float64_numeric_reference_uses_strict_shape(self):
+        expected = b"revenue\n8.000000000\n"
+        self.assertTrue(compare_reference(b"revenue\n8.0000000005\n", expected, "numeric"))
+        self.assertFalse(compare_reference(b"revenue\n8.01\n", expected, "numeric"))
+        self.assertFalse(compare_reference(b"sum\n8\n", expected, "numeric"))
+        self.assertFalse(compare_reference(b"revenue\n8\n8\n", expected, "numeric"))
+        self.assertFalse(compare_reference(b"revenue\nNaN\n", expected, "numeric"))
+        self.assertFalse(compare_reference(b"revenue\n8\tx\n", expected, "numeric"))
+        self.assertFalse(compare_reference(b"revenue\n8.0000000005\n", expected))
+        self.assertTrue(compare_reference(b"name\tamount\na\t2.0000000001\n",
+                                          b"name\tamount\na\t2\n", "numeric"))
+        self.assertFalse(compare_reference(b"name\tamount\nb\t2\n",
+                                           b"name\tamount\na\t2\n", "numeric"))
+
     def test_unordered_rows_preserve_duplicate_counts(self):
         expected = b"1\n2\n2\n"
         self.assertFalse(compare_reference(b"2\n1\n2\n", expected))
