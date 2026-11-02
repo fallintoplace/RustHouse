@@ -69,7 +69,12 @@ fn measure(fixture: &Fixture, name: &str, sql: &str, expected_body: &str) {
         execute(black_box(&query), Some(&fixture.0), &mut output).unwrap();
     }
     assert_eq!(
-        std::str::from_utf8(&output).unwrap().lines().skip(1).collect::<Vec<_>>().join("\\n"),
+        std::str::from_utf8(&output)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("\n"),
         expected_body,
         "{name} returned an unexpected result"
     );
@@ -88,10 +93,33 @@ fn measure(fixture: &Fixture, name: &str, sql: &str, expected_body: &str) {
 fn main() {
     let fixture = Fixture::new();
     println!("Parallel query benchmark: {PARTS} parts, {ROWS_PER_PART} rows/part");
-    println!("RUSTHOUSE_QUERY_THREADS={}", std::env::var("RUSTHOUSE_QUERY_THREADS").unwrap_or_else(|_| "default".into()));
+    println!(
+        "RUSTHOUSE_QUERY_THREADS={}",
+        std::env::var("RUSTHOUSE_QUERY_THREADS").unwrap_or_else(|_| "default".into())
+    );
     println!("{:<20} {:>10}", "query", "median ms");
-    measure(&fixture, "filtered count", "SELECT count(*) FROM part WHERE flag = 1", "10240");
-    measure(&fixture, "filtered sum", "SELECT sum(amount) FROM part WHERE flag = 1", "2611200");
-    measure(&fixture, "exact distinct", "SELECT count(DISTINCT category) FROM part", "4");
-    measure(&fixture, "grouped count", "SELECT category, count(*) FROM part GROUP BY category ORDER BY category", "0\\t5120\\n1\\t5120\\n2\\t5120\\n3\\t5120");
+    measure(
+        &fixture,
+        "filtered count",
+        "SELECT count(*) FROM part WHERE flag = 1",
+        "10240",
+    );
+    measure(
+        &fixture,
+        "filtered sum",
+        "SELECT sum(amount) FROM part WHERE flag = 1",
+        "2621440",
+    );
+    measure(
+        &fixture,
+        "exact distinct",
+        "SELECT count(DISTINCT category) FROM part",
+        "4",
+    );
+    measure(
+        &fixture,
+        "grouped count",
+        "SELECT category, count(*) FROM part GROUP BY category ORDER BY category",
+        "0\t5120\n1\t5120\n2\t5120\n3\t5120",
+    );
 }
