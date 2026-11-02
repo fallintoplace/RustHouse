@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql
-from schema import TABLES, create_sql, names
+from schema import TABLES, NUMERIC_MODES, create_sql, names
 
 MAX_RECORD_BYTES = 8 * 1024 * 1024
 
@@ -50,7 +50,10 @@ def copy_statement(table, source):
     return query
 
 
-def load_tables(binary, database, input_dir, selected=None, timeout=3600, execute=None):
+def load_tables(binary, database, input_dir, selected=None, timeout=3600, execute=None,
+                numeric_mode="scaled"):
+    if numeric_mode not in NUMERIC_MODES:
+        raise ValueError("unknown TPC-H numeric mode")
     selected = tuple(TABLES if selected is None else selected)
     if not selected or len(set(selected)) != len(selected):
         raise ValueError("tables must be a nonempty unique selection")
@@ -71,7 +74,7 @@ def load_tables(binary, database, input_dir, selected=None, timeout=3600, execut
     reports = []
     for table in selected:
         source, expected = sources[table]
-        execute(create_sql(table))
+        execute(create_sql(table, numeric_mode))
         query = copy_statement(table, source)
         started = time.perf_counter()
         execute(query)
@@ -95,10 +98,13 @@ def main(argv=None):
     parser.add_argument("--input-dir", type=Path, required=True)
     parser.add_argument("--table", action="append", choices=tuple(TABLES))
     parser.add_argument("--timeout", type=float, default=3600)
+    parser.add_argument("--numeric-mode", choices=NUMERIC_MODES, default="scaled",
+                        help="must match the conversion mode")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = load_tables(args.binary, args.database, args.input_dir, args.table, args.timeout)
+        report = load_tables(args.binary, args.database, args.input_dir, args.table,
+                             args.timeout, numeric_mode=args.numeric_mode)
     except (OSError, RuntimeError, ValueError) as error:
         parser.exit(1, f"TPC-H import failed: {error}\n")
     result = json.dumps(report, indent=2) + "\n"
