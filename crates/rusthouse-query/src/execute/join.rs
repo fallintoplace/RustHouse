@@ -1061,6 +1061,76 @@ fn execute_streaming_ordered_inner<W: Write>(
     Ok(())
 }
 
+/// Probe independent immutable fact parts concurrently for INNER JOIN COUNT.
+/// Partial counts need no cross-part output ordering or matched-row state.
+fn parallel_probe_inner_count(
+    left_path: &Path,
+    left_names: &[String],
+    left_keys: &[usize],
+    right_rows: &[Vec<typed::Cell>],
+    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    any: bool,
+    null_filter: Option<(usize, bool)>,
+) -> Result<Option<usize>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(left_path)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let counts = std::thread::scope(|scope| -> Result<_, ExecutionError> {
+        let handles = (0..workers)
+            .map(|_| {
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, || -> Result<usize, ExecutionError> {
+                        let mut subtotal = 0usize;
+                        while let Some(part) = parts.get(
+                            next.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                        ) {
+                            let count = probe_inner(
+                                part,
+                                left_names,
+                                left_keys,
+                                right_rows,
+                                hash,
+                                ProbeOptions {
+                                    materialize_rows: false,
+                                    materialize_after: 0,
+                                    stop_after: Some(usize::MAX),
+                                    any,
+                                    null_filter,
+                                },
+                                |_, _| Ok(()),
+                            )?;
+                            subtotal = subtotal
+                                .checked_add(count)
+                                .ok_or_else(|| invalid("parallel JOIN COUNT overflow"))?;
+                        }
+                        Ok(subtotal)
+                    })
+                    .map_err(|error| {
+                        invalid(format!("cannot start parallel JOIN probe worker: {error}"))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    invalid("parallel JOIN probe worker panicked")
+                })?
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    let count = counts.into_iter().try_fold(0usize, |sum, next| {
+        sum.checked_add(next)
+            .ok_or_else(|| invalid("parallel JOIN COUNT overflow"))
+    })?;
+    Ok(Some(count))
+}
+
 fn execute_streaming_inner_count<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -1113,21 +1183,33 @@ fn execute_streaming_inner_count<W: Write>(
                 }
             }
         }
-        probe_inner(
+        if let Some(count) = parallel_probe_inner_count(
             left_path,
             left_names,
             left_keys,
             &right_rows,
             &hash,
-            ProbeOptions {
-                materialize_rows: false,
-                materialize_after: 0,
-                stop_after: Some(usize::MAX),
-                any: query.any,
-                null_filter,
-            },
-            |_, _| Ok(()),
-        )?
+            query.any,
+            null_filter,
+        )? {
+            count
+        } else {
+            probe_inner(
+                left_path,
+                left_names,
+                left_keys,
+                &right_rows,
+                &hash,
+                ProbeOptions {
+                    materialize_rows: false,
+                    materialize_after: 0,
+                    stop_after: Some(usize::MAX),
+                    any: query.any,
+                    null_filter,
+                },
+                |_, _| Ok(()),
+            )?
+        }
     } else {
         let keep = count_build_columns(left_keys, null_filter, 0, left_names.len());
         let left_rows = read_projected_build_rows(
