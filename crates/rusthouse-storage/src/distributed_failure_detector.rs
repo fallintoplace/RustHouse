@@ -250,11 +250,12 @@ impl HeartbeatDetector {
             return Ok(None);
         }
         let mut intervals = self.intervals_ms.iter().copied().collect::<Vec<_>>();
-        intervals.sort_unstable();
         let rank = ((intervals.len() as f64 * percentile).ceil() as usize)
             .saturating_sub(1)
             .min(intervals.len() - 1);
-        let delay = intervals[rank]
+        // Only the selected quantile matters. A full sort is unnecessary.
+        let (_, quantile, _) = intervals.select_nth_unstable(rank);
+        let delay = (*quantile)
             .checked_mul(u64::from(tolerance))
             .ok_or("empirical heartbeat deadline overflow")?;
         let deadline = last
@@ -317,5 +318,27 @@ mod empirical_deadline_tests {
         detector.observe(u64::MAX - 1).unwrap();
         assert!(detector.quantile_deadline_ms(0.5, 2).is_err());
         assert!(detector.missed_quantile_deadline(0, 0.5, 1).is_err());
+    }
+}
+
+#[cfg(test)]
+mod quantile_selection_equivalence_tests {
+    use super::*;
+
+    #[test]
+    fn selection_matches_nearest_rank_for_tied_intervals() {
+        let mut detector = HeartbeatDetector::new(8, 1).unwrap();
+        for ms in [0, 100, 200, 400, 700, 1100] {
+            detector.observe(ms).unwrap();
+        }
+        for (percentile, expected_interval) in [
+            (0.01, 100), (0.2, 100), (0.4, 100), (0.5, 200),
+            (0.6, 200), (0.8, 300), (1.0, 400),
+        ] {
+            assert_eq!(
+                detector.quantile_deadline_ms(percentile, 2).unwrap(),
+                Some(1100 + expected_interval * 2),
+            );
+        }
     }
 }
