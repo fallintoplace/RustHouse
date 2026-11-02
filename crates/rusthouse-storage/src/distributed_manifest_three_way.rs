@@ -28,8 +28,12 @@ pub fn plan_three_way_manifest_merge(
     for inventory in [base, local, remote] {
         plan_replica_copies(inventory, &[])?;
     }
-    let index = |records: &[ObjectMetadata]| records.iter()
-        .map(|record| (record.key.as_str(), record)).collect::<BTreeMap<_, _>>();
+    fn index<'a>(records: &'a [ObjectMetadata]) -> BTreeMap<&'a str, &'a ObjectMetadata> {
+        records
+            .iter()
+            .map(|record| (record.key.as_str(), record))
+            .collect()
+    }
     let original = index(base);
     let left = index(local);
     let right = index(remote);
