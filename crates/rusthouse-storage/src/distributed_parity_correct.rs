@@ -115,7 +115,7 @@ mod tests {
         let mut bad = parity.clone();
         bad.weighted.pop();
         assert!(correct_one_unknown_corruption(&originals, &bad).is_err());
-        let wrong_width = [b"hello".as_slice(), b"world".as_slice(), b"ok!".as_slice()];
+        let wrong_width = [b"hello".as_slice(), b"world".as_slice(), b"abcdef".as_slice()];
         assert!(correct_one_unknown_corruption(&wrong_width, &parity).is_err());
     }
 }
