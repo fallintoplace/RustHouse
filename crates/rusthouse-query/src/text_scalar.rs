@@ -2842,9 +2842,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "SUBSTRING" | "SUBSTRINGUTF8" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "SUBSTRING requires a start position")?;
+            // Accept standard SUBSTRING(text FROM start [FOR length])
+            // without changing ClickHouse's comma-separated form.
+            let standard = name == "SUBSTRING" && parser.keyword("FROM");
+            if !standard {
+                require(parser, Token::Comma, "SUBSTRING requires a start position")?;
+            }
             let position = integer_arg(parser, depth + 1)?;
-            let length = if parser.take(Token::Comma) {
+            let length = if (standard && parser.keyword("FOR"))
+                || (!standard && parser.take(Token::Comma))
+            {
                 Some(integer_arg(parser, depth + 1)?)
             } else {
                 None
