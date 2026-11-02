@@ -1113,6 +1113,7 @@ fn parallel_exact_narrow_distinct(
         let handles = (0..workers)
             .map(|_| {
                 let cursor = &cursor;
+                let parts = &parts;
                 std::thread::Builder::new()
                     .spawn_scoped(scope, move || -> Result<Vec<u64>, ExecutionError> {
                         let mut bits = vec![0u64; domain / 64];
