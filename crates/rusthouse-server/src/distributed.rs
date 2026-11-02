@@ -625,6 +625,7 @@ fn read_shard(
     group_schema: Option<(&str, &str)>,
     table: &str,
     sorted_prefix_cap: Option<usize>,
+    allow_nonnumeric_count: bool,
     used_bytes: &AtomicUsize,
 ) -> Result<ShardResponse, String> {
     let (cap, schema_response) = preflight_shard(peer, table)?;
@@ -634,7 +635,7 @@ fn read_shard(
     let schema = schema_signature(&schema_response)?;
     let kind = sum_schema
         .map(|(_, column)| {
-            if sorted_prefix_cap.is_some() {
+            if sorted_prefix_cap.is_some() || allow_nonnumeric_count {
                 shard_column_kind(&schema_response, column)
             } else {
                 shard_integer_kind(&schema_response, column)
@@ -1410,24 +1411,24 @@ fn merge_grouped_integer_sums_query(
     value_column: &str,
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
-    let function = if global.is_some_and(|select| {
-        matches!(
-            select.projection,
-            Projection::GroupedAggregate {
-                function: AggregateFunction::SumSquares,
-                ..
-            }
-        )
-    }) {
-        "sumSquares"
-    } else {
-        "sum"
+    let function = match global.map(|select| &select.projection) {
+        Some(Projection::GroupedAggregate {
+            function: AggregateFunction::SumSquares,
+            ..
+        }) => "sumSquares",
+        Some(Projection::GroupedAggregate {
+            function: AggregateFunction::Count,
+            ..
+        }) => "count",
+        _ => "sum",
     };
     let header = format!("{key_column}\t{function}({value_column})\n");
-    let unsigned = kind
-        .strip_prefix("Nullable(")
-        .unwrap_or(kind)
-        .starts_with("UInt");
+    // COUNT(column) yields unsigned non-NULL counts for all value types.
+    let unsigned = function == "count"
+        || kind
+            .strip_prefix("Nullable(")
+            .unwrap_or(kind)
+            .starts_with("UInt");
     let mut positions = HashMap::<NormalizedGroupKey<'_>, usize>::new();
     let mut groups = Vec::<(&[u8], Option<WideSignedSum>, Option<u128>)>::new();
     for (cap, body) in shards {
@@ -2160,6 +2161,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     };
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
+    let grouped_count_column_query = matches!(
+        select.projection,
+        Projection::GroupedAggregate {
+            function: AggregateFunction::Count,
+            ..
+        }
+    );
     let grouped_extremum_query = is_safe_grouped_extremum(&select);
     let grouped_product_query = is_safe_grouped_product(&select);
     let grouped_bitwise_query = is_safe_grouped_bitwise(&select);
@@ -2257,6 +2265,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Projection::GroupedAggregate {
                 function: AggregateFunction::Sum
                     | AggregateFunction::SumSquares
+                    | AggregateFunction::Count
                     | AggregateFunction::Min
                     | AggregateFunction::Max
                     | AggregateFunction::Product
@@ -2278,6 +2287,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Projection::GroupedAggregate {
                 function: AggregateFunction::Sum
                     | AggregateFunction::SumSquares
+                    | AggregateFunction::Count
                     | AggregateFunction::Min
                     | AggregateFunction::Max
                     | AggregateFunction::Product
@@ -2314,6 +2324,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 group_schema,
                 table,
                 sorted_prefix,
+                grouped_count_column_query,
                 &retained_input,
             )
         });
@@ -4563,6 +4574,69 @@ mod distributed_grouped_bitwise_tests {
                 None,
             ),
             Err(MergeError::SchemaMismatch),
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_count_column_tests {
+    use super::*;
+
+    #[test]
+    fn merges_nullable_string_counts_for_shared_keys() {
+        let sql = "SELECT category, count(label) FROM events GROUP BY category";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&parsed));
+        let shards = [
+            (10, b"category\tcount(label)\na\t2\nb\t0\n".to_vec()),
+            (10, b"category\tcount(label)\na\t3\nc\t1\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 10, "Nullable(String)", "category", "label", Some(&parsed)
+            ).unwrap(),
+            b"category\tcount(label)\na\t5\nb\t0\nc\t1\n"
+        );
+    }
+
+    #[test]
+    fn global_having_applies_after_combining_nullable_column_counts() {
+        let sql = "SELECT category, count(label) FROM events GROUP BY category HAVING count(label) > 3";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&parsed));
+        assert_eq!(
+            grouped_count_shard_sql(sql, &parsed).as_deref(),
+            Some("SELECT category, count(label) FROM events GROUP BY category"),
+        );
+        let shards = [
+            (10, b"category\tcount(label)\na\t2\nb\t1\n".to_vec()),
+            (10, b"category\tcount(label)\na\t3\nb\t1\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 10, "String", "category", "label", Some(&parsed)
+            ).unwrap(),
+            b"category\tcount(label)\na\t5\n"
+        );
+    }
+
+    #[test]
+    fn rejects_negative_counts_and_capped_shard_responses() {
+        let parsed =
+            parse_select("SELECT category, count(label) FROM events GROUP BY category").unwrap();
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &[(10, b"category\tcount(label)\na\t-1\n".to_vec())],
+                10, "String", "category", "label", Some(&parsed)
+            ),
+            Err(MergeError::InvalidGroupedSum),
+        );
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &[(1, b"category\tcount(label)\na\t2\n".to_vec())],
+                10, "String", "category", "label", Some(&parsed)
+            ),
+            Err(MergeError::ShardRowLimit),
         );
     }
 }
