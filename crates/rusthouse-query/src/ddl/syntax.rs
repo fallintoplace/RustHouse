@@ -137,7 +137,10 @@ pub(super) fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<Column
         if !names.insert(column_name.clone()) {
             return Err(ParseError(format!("duplicate DDL column: {column_name}")));
         }
-        let column_type = data_type(parser, 0)?;
+        let mut column_type = data_type(parser, 0)?;
+        if parser.keyword("NULL") && !column_type.starts_with("Nullable(") {
+            column_type = format!("Nullable({column_type})");
+        }
         columns.push(ColumnDef {
             name: column_name,
             data_type: column_type,
