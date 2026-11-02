@@ -876,6 +876,28 @@ fn bounded_damerau_levenshtein(left: &[u8], right: &[u8]) -> Result<i64, ParseEr
     Ok(matrix[(left.len() + 1) * width + right.len() + 1] as i64)
 }
 
+fn unhex_text(input: &str) -> Result<String, ParseError> {
+    if !input.is_ascii() {
+        return Err(ParseError("unhex requires ASCII digits".into()));
+    }
+    fn digit(value: u8) -> Result<u8, ParseError> {
+        char::from(value).to_digit(16)
+            .map(|value| value as u8)
+            .ok_or_else(|| ParseError("unhex contains a non-hexadecimal digit".into()))
+    }
+    let mut pairs = input.as_bytes().chunks_exact(2);
+    let mut bytes = Vec::with_capacity((input.len() + 1) / 2);
+    for pair in pairs.by_ref() {
+        bytes.push((digit(pair[0])? << 4) | digit(pair[1])?);
+    }
+    if let Some(&last) = pairs.remainder().first() {
+        // ClickHouse takes a lone trailing digit as the low nibble of a byte.
+        bytes.push(digit(last)?);
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| ParseError("unhex constant is not valid UTF-8".into()))
+}
+
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
     parse_at_depth(parser, 0)
 }
@@ -3505,28 +3527,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "unhex requires one argument")?;
             match input {
-                Some(input) => {
-                    if !input.is_ascii() {
-                        return Err(ParseError("unhex requires hexadecimal ASCII".into()));
-                    }
-                    let mut decoded = Vec::with_capacity(input.len().div_ceil(2));
-                    let mut offset = 0;
-                    if input.len() % 2 != 0 {
-                        let nibble = u8::from_str_radix(&input[..1], 16)
-                            .map_err(|_| ParseError("unhex requires hexadecimal digits".into()))?;
-                        decoded.push(nibble);
-                        offset = 1;
-                    }
-                    for pair in input[offset..].as_bytes().chunks_exact(2) {
-                        let pair = std::str::from_utf8(pair)
-                            .map_err(|_| ParseError("unhex requires hexadecimal ASCII".into()))?;
-                        let byte = u8::from_str_radix(pair, 16)
-                            .map_err(|_| ParseError("unhex requires hexadecimal digits".into()))?;
-                        decoded.push(byte);
-                    }
-                    ConstantValue::Text(String::from_utf8(decoded)
-                        .map_err(|_| ParseError("unhex result is not UTF-8".into()))?)
-                }
+                Some(input) => ConstantValue::Text(unhex_text(&input)?),
                 None => ConstantValue::Null,
             }
         }
@@ -7273,5 +7274,43 @@ mod clickhouse_base58_decode_tests {
         assert_eq!(value("SELECT base58Decode(NULL)"), ConstantValue::Null);
         assert!(parse_select("SELECT base58Decode()").is_err());
         assert!(parse_select("SELECT base58Decode('1', '2')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_unhex_tests {
+    use super::*;
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decodes_even_and_odd_hex_digit_counts() {
+        assert_eq!(unhex_text("").unwrap(), "");
+        assert_eq!(unhex_text("6869").unwrap(), "hi");
+        assert_eq!(unhex_text("61A").unwrap(), "a\n");
+        assert_eq!(unhex_text("4").unwrap(), "\u{0004}");
+        assert_eq!(unhex_text("00").unwrap(), "\0");
+        assert_eq!(unhex_text("C3A9").unwrap(), "é");
+    }
+
+    #[test]
+    fn rejects_malformed_or_non_utf8_text_constants() {
+        assert!(unhex_text("G0").is_err());
+        assert!(unhex_text("aé").is_err());
+        assert!(unhex_text("FF").is_err());
+        assert_eq!(
+            value("SELECT unhex('6869')"),
+            ConstantValue::Text("hi".into())
+        );
+        assert_eq!(value("SELECT unhex(NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT unhex()").is_err());
+        assert!(parse_select("SELECT unhex('61', '62')").is_err());
     }
 }
