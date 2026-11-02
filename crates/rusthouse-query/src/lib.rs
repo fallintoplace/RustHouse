@@ -803,11 +803,16 @@ fn grouped_metric_column(
     parser: &mut Parser,
     function: AggregateFunction,
 ) -> Result<String, ParseError> {
-    if function == AggregateFunction::Count
-        && (parser.take(Token::Star)
-            || parser.tokens.get(parser.index) == Some(&Token::RParen))
-    {
-        return Ok("*".into());
+    if function == AggregateFunction::Count {
+        if parser.take(Token::Star)
+            || parser.tokens.get(parser.index) == Some(&Token::RParen)
+        {
+            return Ok("*".into());
+        }
+        if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+            parser.index += 1;
+            return Ok("*".into());
+        }
     }
     parser.word()
 }
@@ -854,6 +859,12 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         } else if parser.take(Token::Star) {
             if !parser.take(Token::RParen) {
                 return Err(ParseError("expected ')' after COUNT(*)".into()));
+            }
+            Projection::Count
+        } else if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+            parser.index += 1;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after COUNT(constant)".into()));
             }
             Projection::Count
         } else {
@@ -2106,5 +2117,31 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod count_numeric_constant_tests {
+    use super::*;
+
+    #[test]
+    fn count_of_non_null_numeric_constant_counts_rows() {
+        for sql in [
+            "SELECT COUNT(1) FROM numbers(4)",
+            "SELECT COUNT(0) FROM numbers(4)",
+            "SELECT COUNT(-1) FROM numbers(4)",
+        ] {
+            assert_eq!(parse_select(sql).unwrap().projection, Projection::Count);
+        }
+        let canonical = parse_select(
+            "SELECT number, COUNT(*) FROM numbers(4) GROUP BY number"
+        ).unwrap();
+        for value in ["1", "0", "23"] {
+            let sql = format!(
+                "SELECT number, COUNT({value}) FROM numbers(4) GROUP BY number"
+            );
+            assert_eq!(parse_select(&sql).unwrap(), canonical);
+        }
+        assert!(parse_select("SELECT COUNT(1, 2) FROM numbers(4)").is_err());
     }
 }
