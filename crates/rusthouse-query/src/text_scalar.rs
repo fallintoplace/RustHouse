@@ -51,6 +51,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "CUTQUERYSTRING"
                 | "COLLAPSE_WHITESPACE"
                 | "LOWER"
+                | "LCASE"
                 | "LOWERUTF8"
                 | "HEX_ENCODE"
                 | "DECODEXMLCOMPONENT"
@@ -59,6 +60,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "IS_ASCII"
                 | "ISIPV4STRING"
                 | "UPPER"
+                | "UCASE"
                 | "UPPERUTF8"
                 | "URL_DECODE"
                 | "DECODEURLCOMPONENT"
@@ -1877,7 +1879,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LOWER" => {
+        "LOWER" | "LCASE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LOWER requires one argument")?;
             match input {
@@ -1999,7 +2001,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "UPPER" => {
+        "UPPER" | "UCASE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "UPPER requires one argument")?;
             match input {
