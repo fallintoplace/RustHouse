@@ -4,17 +4,21 @@ This guide covers SQL features, local storage, limits, and benchmarks.
 
 ## Bounded SQL joins
 
-Two persistent tables can be queried with a typed, in-memory INNER equi-join:
+Join two local tables with an INNER JOIN:
 
 ```sh
 cargo run -p rusthouse-cli -- sql "SELECT u.id, t.label FROM users u JOIN teams t ON u.team_id = t.id ORDER BY u.id LIMIT 10" --database ./mydb
 ```
 
-Join columns must use qualified names. NULL join keys do not match. The parser supports up to eight named tables in a JOIN chain, up to eight equality keys per JOIN, INNER/LEFT/RIGHT/FULL joins, optional aliases, projections, ORDER BY, LIMIT and OFFSET.
+Use qualified names for join columns, such as `u.team_id`. NULL join keys do not match. RustHouse supports INNER, LEFT, RIGHT, and FULL joins, with up to eight tables and eight equality keys per join. Aliases, projections, ORDER BY, LIMIT, and OFFSET are also supported.
 
-**Two-table execution limits:** An unordered INNER JOIN can build a hash table from up to **262,144 build-side rows** (subject to a **32 MiB** retained-cell budget) while streaming the other side without a fixed probe-row cap. An ordered or non-streaming outer JOIN normally retains at most **32,768 rows per input**, also subject to the byte budget; specialized ordered and RIGHT OUTER paths can stream larger inputs when applicable. An unbounded two-table JOIN rejects more than **131,072 matched rows**. Supported paged INNER JOINs can scan larger match counts without retaining all output rows; LIMIT and OFFSET still determine the returned page.
+**Limits for two-table joins:**
 
-**Chained joins:** Three to eight tables currently use a bounded materialized intermediate, with a **64 MiB** retained-row budget and the **131,072 matched rows** limit. This is experimental hash-join execution, not a disk-spilling general-purpose join planner. See `crates/rusthouse-query/src/join.rs` for the shared runtime limits.
+- An unordered INNER JOIN can build a hash table with up to **262,144 rows** and **32 MiB** of retained cells. It can stream the other input without a fixed row limit.
+- An ordered or non-streaming outer JOIN normally retains up to **32,768 rows per input**, also within the byte limit. Some ordered and RIGHT OUTER paths can stream larger inputs.
+- An unbounded two-table JOIN rejects more than **131,072 matched rows**. Supported paged INNER JOINs can scan more matches without retaining every output row. LIMIT and OFFSET select the returned page.
+
+**Joins with three to eight tables** keep intermediate rows in memory. They have a **64 MiB** retained-row budget and a **131,072 matched-row** limit. This experimental hash join does not spill to disk. See `crates/rusthouse-query/src/join.rs` for the shared limits.
 
 ## Query frozen parts
 
@@ -23,7 +27,7 @@ cargo run -p rusthouse-cli -- inspect-part /path/to/wide-part --json
 cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORDER BY id" --part /path/to/frozen-active-parts
 ```
 
-`--part` accepts one wide part or a directory of compatible active wide parts. `part` is the SQL source for those files, not a catalog table.
+Pass one wide part or a folder of compatible active wide parts to `--part`. In SQL, use `part` as the source name.
 
 ## Supported features
 
@@ -49,15 +53,25 @@ cargo run -p rusthouse-cli -- sql "INSERT INTO generated (id) SELECT number FROM
 cargo run -p rusthouse-cli -- sql "COPY events FROM '/path/to/events.csv' WITH (FORMAT CSV, HEADER TRUE)" --database ./mydb
 ```
 
-COPY FROM JSONEachRow imports ClickHouse newline-delimited JSON objects with schema-aware field mapping, nullable missing fields, strict JSON escaping, and atomic failure on malformed input. Use `COPY events FROM '/path/to/events.jsonl' WITH (FORMAT JSONEachRow)`. Records are bounded to 1 MiB each, and CSV-style headers are not allowed.
+**JSONEachRow:** Use `COPY events FROM '/path/to/events.jsonl' WITH (FORMAT JSONEachRow)` to import newline-delimited JSON objects. Fields are mapped to the table schema. Missing nullable fields are allowed, JSON escapes are checked, and malformed input fails atomically. Each record is limited to 1 MiB. CSV-style headers are not allowed.
 
-COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. CSV imports are limited to 50,000 data rows and 8 MiB. Large imports publish verified parts by atomically switching the active snapshot. Existing immutable parts are preserved. TSV imports stream UTF-8 records instead of buffering the entire file. They support imports larger than 50,000 rows and 8 MiB of total input, with a per-record 8 MiB bound, a bounded part buffer, and the existing 16,384-part limit. CSV and TSV bulk inserts both publish verified parts atomically.
+**CSV:** Import local UTF-8 files, including quoted commas, quotes, and newlines. With `HEADER TRUE`, header names map to table columns. Without a header, fields follow table column order. An unquoted empty field becomes NULL; a quoted empty field stays an empty string. CSV imports are limited to 50,000 data rows and 8 MiB.
 
-INSERT ... SELECT streams results from another table or a supported generated source to an on-disk spool, then writes verified immutable parts with one atomic snapshot publication. Output is not held in a single unbounded in-memory result. Each decoded output record is limited to 8 MiB. Queries remain subject to the executor's own result and snapshot limits. It supports named target columns and the same type checks as INSERT VALUES. A SELECT that yields no rows is a no-op. The source read and append hold a single exclusive database lock, preventing concurrent table changes during the statement. This is **not** a cross-statement transaction.
+**TSV:** Imports stream UTF-8 records, so the whole file is not held in memory. TSV supports more than 50,000 rows and more than 8 MiB of input. Each record is limited to 8 MiB. Part buffering is bounded, and the 16,384-part limit applies.
 
-`--database` stores table schemas and **immutable wide parts** locally. Supported SQL includes `CREATE TABLE`, `INSERT ... VALUES`, `SELECT`, `SHOW TABLES`, `SHOW CREATE TABLE`, `DESCRIBE TABLE`, `CREATE TABLE ... LIKE`, `RENAME TABLE`, `DROP TABLE` and `TRUNCATE TABLE`. Queries support the existing `--format`, `--output`, `--max-rows` and `--explain` options. Database writes are single-writer, limited to supported numeric, String and Nullable columns, and **not transactional across statements**. This is for local experiments, not concurrent production workloads. Run a sequence of up to 128 statements (256 KiB total) with `rusthouse sql --script setup.sql --database ./mydb`. Scripts permit SQL line comments and stop on the first error; they are **not transactions**.
+CSV and TSV bulk imports publish verified parts by switching the active snapshot atomically. Existing immutable parts are preserved.
 
-**Current limits:** CLI SQL input is limited to 64 KiB (the tokenizer also has a token-count bound), INSERT supports up to 4,096 rows per statement, and tables are limited to 16,384 immutable parts. JOIN is supported in the bounded read-only modes described above; background compaction and cross-statement transactions are not supported. On Unix, the persistent `.rusthouse-write.lock` file uses a kernel advisory lock, automatically released when a process exits or crashes. Do not delete this file while the database is in use. Stop older RustHouse processes before upgrading. Other platforms retain create-new lock-file semantics. The localhost HTTP server shares the CLI database read lock for persistent table queries.
+**INSERT ... SELECT:** Results from a table or supported generated source are first written to a disk spool. RustHouse then writes verified immutable parts and switches the active snapshot atomically. It does not keep the full output in memory. Each decoded record is limited to 8 MiB, and query result and snapshot limits still apply.
+
+You can name target columns. Type checks match INSERT VALUES. A SELECT with no rows makes no changes. One exclusive database lock covers the source read and append, so tables cannot change during the statement. This is **not** a transaction across multiple statements.
+
+`--database` stores table schemas and **immutable wide parts** locally. Supported commands include `CREATE TABLE`, `INSERT ... VALUES`, `SELECT`, `SHOW TABLES`, `SHOW CREATE TABLE`, `DESCRIBE TABLE`, `CREATE TABLE ... LIKE`, `RENAME TABLE`, `DROP TABLE`, and `TRUNCATE TABLE`. Queries support `--format`, `--output`, `--max-rows`, and `--explain`.
+
+Local databases are for experiments. Writes use a single writer and support selected numeric, String, and Nullable columns. Multiple statements are **not** one transaction. To run up to 128 statements (256 KiB total), use `rusthouse sql --script setup.sql --database ./mydb`. Scripts allow SQL line comments and stop at the first error.
+
+**Current limits:** SQL input is limited to 64 KiB and a bounded number of tokens. INSERT supports up to 4,096 rows per statement. A table can have up to 16,384 immutable parts. Joins use the limits described above. Background compaction and transactions across statements are not supported.
+
+On Unix, the persistent `.rusthouse-write.lock` uses a kernel advisory lock. The lock is released when a process exits or crashes. Do not delete the file while the database is in use. Stop older RustHouse processes before upgrading. Other platforms use create-new lock-file semantics. The HTTP server uses the same database read lock as the CLI for persistent table queries.
 
 `DELETE FROM events WHERE id = 1` removes matching rows from the active snapshot, preserving the previous generation for recovery. `DELETE FROM events` removes all rows, while `TRUNCATE TABLE events` is the faster option when there is no predicate. DELETE streams replacement parts in bounded batches. A single rewritten row is limited to 16 MiB of values; the 16,384-part snapshot limit still applies.
 
@@ -144,7 +158,7 @@ Measure filtered scans on locally written immutable wide parts in release mode:
 cargo bench -p rusthouse-query --bench parts --locked -- --rows 65536 --samples 11
 ```
 
-The disk benchmark generates its parts once before timing, parses SQL before samples, warms each query three times, and checks query results. This includes filesystem reads with OS caching but does not force cold-cache operation. It is not a ClickHouse comparison.
+The part benchmark creates its parts before timing. It parses each query, warms it up three times, and checks the result. Times include filesystem reads with OS caching. They are not cold-cache results or a ClickHouse comparison.
 
 The in-memory benchmark covers query execution and formatting into a memory buffer. The part benchmark also reads locally written parts. Compare runs on the same machine and Rust compiler version; shared CI runners are not suitable for stable performance numbers.
 
@@ -184,6 +198,6 @@ committed rows and subsequent writes:
 cargo test -p rusthouse-cli --test sql_database_crash_points --locked
 ```
 
-This models sudden **process termination**, not power loss or a filesystem
-that violates flush guarantees. Ordinary tests do not set the fault-point
-environment variable.
+This test models sudden **process termination**. It does not model power loss
+or a filesystem that breaks flush guarantees. Ordinary tests do not enable the
+fault points.
