@@ -6,7 +6,7 @@ use std::ops::Range;
 
 struct TextRow {
     range: Range<usize>,
-    key: Vec<u8>,
+    key: Option<Vec<u8>>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -30,7 +30,11 @@ fn text_key_cmp(
         (None, Some(_), Some(false)) | (Some(_), None, Some(true)) => Ordering::Greater,
         _ => {
             let cmp = left.cmp(right);
-            if descending { cmp.reverse() } else { cmp }
+            if descending {
+                cmp.reverse()
+            } else {
+                cmp
+            }
         }
     }
 }
@@ -258,7 +262,8 @@ mod nullable_text_topk_tests {
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
                 &ascending, &["name", "id"], "Nullable(String)", false, None, 0, 4, 4,
-            ).unwrap(),
+            )
+            .unwrap(),
             b"name\tid\n\\N\t1\n\\N\t3\na\t4\nb\t2\n"
         );
         let descending = [
@@ -279,7 +284,8 @@ mod nullable_text_topk_tests {
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
                 &valid_descending, &["name"], "Nullable(String)", true, None, 0, 4, 4,
-            ).unwrap(),
+            )
+            .unwrap(),
             b"name\nz\ny\n\\N\n\\N\n"
         );
     }
@@ -293,7 +299,8 @@ mod nullable_text_topk_tests {
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
                 &shards, &["name", "idx"], "Nullable(String)", false, Some(false), 1, 3, 3,
-            ).unwrap(),
+            )
+            .unwrap(),
             b"name\tidx\nb\t3\n\\N\t2\n\\N\t4\n"
         );
         let bad = [(10, b"name\n\\N\na\n".to_vec())];
@@ -310,7 +317,8 @@ mod nullable_text_topk_tests {
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
                 &first, &["name"], "Nullable(String)", true, Some(true), 0, 4, 4,
-            ).unwrap(),
+            )
+            .unwrap(),
             b"name\n\\N\n\\N\nz\ny\n"
         );
     }
@@ -321,7 +329,8 @@ mod nullable_text_topk_tests {
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
                 &shards, &["name"], "Nullable(String)", false, None, 0, 2, 2,
-            ).unwrap(),
+            )
+            .unwrap(),
             b"name\n\\N\n\\\\N\n"
         );
         assert_eq!(
