@@ -609,9 +609,7 @@ fn execute_streaming_inner<W: Write>(
         MAX_STREAM_BUILD_BYTES,
         Some(&right_meta),
     )?;
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |count| count.get())
-        .min(4);
+    let workers = super::query_workers(4);
     let hash = build_join_hash(&right_rows, right_keys, query.any, workers)?;
     if hash.is_empty() {
         let header = selected_header(selected);
