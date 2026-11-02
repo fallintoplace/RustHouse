@@ -534,8 +534,8 @@ pub fn recover_triple_erasure(
         for (row, output) in recovered.iter_mut().enumerate() {
             for (offset, value) in output.iter_mut().enumerate() {
                 for equation in 0..count {
-                    *value ^= products[row][equation]
-                        [usize::from(residual[equation][offset])];
+                    let byte = usize::from(residual[equation][offset]);
+                    *value ^= products[row][equation][byte];
                 }
             }
         }
