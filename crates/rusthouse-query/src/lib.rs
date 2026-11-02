@@ -1919,15 +1919,23 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("FIRST") && !parser.keyword("NEXT") {
             return Err(ParseError("FETCH requires FIRST or NEXT".into()));
         }
-        let value = parser.number()?;
-        if !value.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(ParseError(
-                "FETCH count must be a non-negative integer".into(),
-            ));
-        }
-        let count = value
-            .parse::<usize>()
-            .map_err(|_| ParseError("FETCH count is too large".into()))?;
+        // SQL allows the count to be omitted, meaning one row.
+        let count = if matches!(
+            parser.tokens.get(parser.index),
+            Some(Token::Word(word)) if word.eq_ignore_ascii_case("ROW") || word.eq_ignore_ascii_case("ROWS")
+        ) {
+            1
+        } else {
+            let value = parser.number()?;
+            if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(ParseError(
+                    "FETCH count must be a non-negative integer".into(),
+                ));
+            }
+            value
+                .parse::<usize>()
+                .map_err(|_| ParseError("FETCH count is too large".into()))?
+        };
         if !parser.keyword("ROWS") && !parser.keyword("ROW") {
             return Err(ParseError("FETCH requires ROW or ROWS".into()));
         }
@@ -2105,6 +2113,40 @@ mod tpch_interval_unit_tests {
                 Predicate::Comparison { operator: Operator::Le | Operator::Lt, value, .. }
                     if value == expected
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod fetch_implicit_one_tests {
+    use super::{execute, parse_select};
+
+    #[test]
+    fn fetch_without_count_defaults_to_one() {
+        for (shorthand, explicit) in [
+            ("SELECT number FROM numbers(5) FETCH FIRST ROW ONLY",
+             "SELECT number FROM numbers(5) FETCH FIRST 1 ROW ONLY"),
+            ("SELECT number FROM numbers(5) ORDER BY number DESC FETCH NEXT ROWS ONLY",
+             "SELECT number FROM numbers(5) ORDER BY number DESC FETCH NEXT 1 ROWS ONLY"),
+            ("SELECT number FROM numbers(5) OFFSET 2 ROWS FETCH NEXT ROW ONLY",
+             "SELECT number FROM numbers(5) OFFSET 2 ROWS FETCH NEXT 1 ROW ONLY"),
+        ] {
+            assert_eq!(parse_select(shorthand).unwrap(), parse_select(explicit).unwrap());
+        }
+        let query = parse_select("SELECT number FROM numbers(3) FETCH FIRST ROW ONLY").unwrap();
+        let mut output = Vec::new();
+        execute(&query, None, &mut output).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "number\n0\n");
+    }
+
+    #[test]
+    fn fetch_still_requires_row_and_only_keywords() {
+        for sql in [
+            "SELECT number FROM numbers(3) FETCH FIRST ONLY",
+            "SELECT number FROM numbers(3) FETCH FIRST ROW",
+            "SELECT number FROM numbers(3) FETCH ROW ONLY",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
 }
