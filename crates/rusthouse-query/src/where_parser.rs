@@ -212,6 +212,31 @@ fn check_parenthesis_depth(depth: usize) -> Result<(), ParseError> {
     Ok(())
 }
 
+fn remap_like_escape(pattern: &str, escape: char) -> Result<String, ParseError> {
+    if escape == '\\' {
+        return Ok(pattern.to_owned());
+    }
+    let mut rewritten = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch == escape {
+            let escaped = chars
+                .next()
+                .ok_or_else(|| ParseError("LIKE pattern has a trailing escape".into()))?;
+            if matches!(escaped, '%' | '_' | '\\') {
+                rewritten.push('\\');
+            }
+            rewritten.push(escaped);
+        } else if ch == '\\' {
+            rewritten.push('\\');
+            rewritten.push('\\');
+        } else {
+            rewritten.push(ch);
+        }
+    }
+    Ok(rewritten)
+}
+
 fn parse_atom(
     parser: &mut Parser,
     conditions: &mut usize,
@@ -312,10 +337,25 @@ fn parse_atom(
         };
         predicates.push(predicate);
     } else if let Some(case_insensitive) = parser.like_keyword() {
-        let pattern = match parser.tokens.get(parser.index) {
+        let mut pattern = match parser.tokens.get(parser.index) {
             Some(Token::String(value)) => value.clone(),
             _ => return Err(ParseError("LIKE requires a string literal".into())),
         };
+        parser.index += 1;
+        if parser.keyword("ESCAPE") {
+            let Some(Token::String(value)) = parser.tokens.get(parser.index) else {
+                return Err(ParseError("LIKE ESCAPE requires one character".into()));
+            };
+            let mut characters = value.chars();
+            let Some(escape) = characters.next() else {
+                return Err(ParseError("LIKE ESCAPE requires one character".into()));
+            };
+            if characters.next().is_some() {
+                return Err(ParseError("LIKE ESCAPE requires one character".into()));
+            }
+            parser.index += 1;
+            pattern = remap_like_escape(&pattern, escape)?;
+        }
         let trailing_escapes = pattern
             .as_bytes()
             .iter()
@@ -325,7 +365,6 @@ fn parse_atom(
         if trailing_escapes % 2 != 0 {
             return Err(ParseError("LIKE pattern has a trailing escape".into()));
         }
-        parser.index += 1;
         predicates.push(Predicate::Like {
             column,
             pattern,
@@ -766,5 +805,45 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod like_escape_clause_tests {
+    use crate::parse_select;
+
+    #[test]
+    fn custom_escape_normalizes_to_existing_like_pattern() {
+        for predicate in ["LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE"] {
+            let custom = parse_select(&format!(
+                "SELECT * FROM labels WHERE name {predicate} 'ab!_%' ESCAPE '!'"
+            ))
+            .unwrap();
+            let normalized = parse_select(&format!(
+                r"SELECT * FROM labels WHERE name {predicate} 'ab\_%'"
+            ))
+            .unwrap();
+            assert_eq!(custom.predicates, normalized.predicates);
+        }
+        let explicit = parse_select(
+            r"SELECT * FROM labels WHERE name LIKE 'ab\_%' ESCAPE '\\'"
+        )
+        .unwrap();
+        let implicit = parse_select(r"SELECT * FROM labels WHERE name LIKE 'ab\_%'")
+            .unwrap();
+        assert_eq!(explicit.predicates, implicit.predicates);
+    }
+
+    #[test]
+    fn invalid_escape_clauses_fail_closed() {
+        for sql in [
+            "SELECT * FROM labels WHERE name LIKE 'a' ESCAPE ''",
+            "SELECT * FROM labels WHERE name LIKE 'a' ESCAPE '!!'",
+            "SELECT * FROM labels WHERE name LIKE 'a' ESCAPE 42",
+            "SELECT * FROM labels WHERE name LIKE 'a!' ESCAPE '!'",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
