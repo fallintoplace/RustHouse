@@ -333,6 +333,8 @@ fn parse_atom(
             negated: negate_in,
         });
     } else if parser.keyword("BETWEEN") {
+        // ASYMMETRIC is the SQL default and uses the existing ordered bounds.
+        parser.keyword("ASYMMETRIC");
         let lower = parser.literal()?;
         if !parser.keyword("AND") {
             return Err(ParseError("BETWEEN requires AND".into()));
@@ -766,5 +768,31 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod asymmetric_between_tests {
+    use crate::parse_select;
+
+    #[test]
+    fn explicit_asymmetric_uses_the_default_between_semantics() {
+        for modifier in ["", "NOT "] {
+            let plain = parse_select(&format!(
+                "SELECT * FROM numbers(10) WHERE number {modifier}BETWEEN 2 AND 5"
+            ))
+            .unwrap();
+            let explicit = parse_select(&format!(
+                "SELECT * FROM numbers(10) WHERE number {modifier}BETWEEN ASYMMETRIC 2 AND 5"
+            ))
+            .unwrap();
+            assert_eq!(plain.predicates, explicit.predicates);
+            assert_eq!(plain.or_predicates, explicit.or_predicates);
+        }
+        assert!(parse_select(
+            "SELECT * FROM numbers(10) WHERE number BETWEEN ASYMMETRIC 1"
+        )
+        .is_err());
     }
 }
