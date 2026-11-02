@@ -1908,7 +1908,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 "cannot combine LIMIT comma syntax with OFFSET".into(),
             ));
         }
+        let parenthesized = parser.take(Token::LParen);
         let value = parser.number()?;
+        if parenthesized && !parser.take(Token::RParen) {
+            return Err(ParseError("OFFSET count requires closing ')'".into()));
+        }
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ParseError("OFFSET must be a non-negative integer".into()));
         }
@@ -2133,6 +2137,31 @@ mod where_boolean_literal_tests {
                 parse_select(&boolean_sql).unwrap(),
                 parse_select(&numeric_sql).unwrap()
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod parenthesized_offset_tests {
+    use super::parse_select;
+
+    #[test]
+    fn wrapped_offset_keeps_existing_pagination() {
+        for (wrapped, plain) in [
+            ("LIMIT 3 OFFSET (2)", "LIMIT 3 OFFSET 2"),
+            ("OFFSET (2) ROWS", "OFFSET 2 ROWS"),
+        ] {
+            let prefix = "SELECT number FROM numbers(10) ";
+            assert_eq!(
+                parse_select(&format!("{prefix}{wrapped}")).unwrap(),
+                parse_select(&format!("{prefix}{plain}")).unwrap()
+            );
+        }
+        for sql in [
+            "SELECT number FROM numbers(10) OFFSET (2",
+            "SELECT number FROM numbers(10) OFFSET (-2)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
 }
