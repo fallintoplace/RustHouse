@@ -827,6 +827,23 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     if !distinct {
         parser.keyword("ALL");
     }
+    // TOP is an alternative spelling of the existing row limit.
+    let top = if parser.keyword("TOP") {
+        let parenthesized = parser.take(Token::LParen);
+        let value = parser.number()?;
+        if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ParseError("TOP must be a non-negative integer".into()));
+        }
+        let count = value
+            .parse::<usize>()
+            .map_err(|_| ParseError("TOP is too large".into()))?;
+        if parenthesized && !parser.take(Token::RParen) {
+            return Err(ParseError("TOP requires closing ')'".into()));
+        }
+        Some(count)
+    } else {
+        None
+    };
     let mut literal_alias = None;
 
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
@@ -1874,6 +1891,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
     let mut comma_offset = None;
     let mut limit = if parser.keyword("LIMIT") {
+        if top.is_some() {
+            return Err(ParseError("cannot combine TOP with LIMIT".into()));
+        }
         let value = parser.number()?;
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ParseError("LIMIT must be a non-negative integer".into()));
@@ -1896,7 +1916,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             Some(first)
         }
     } else {
-        None
+        top
     };
 
     // Accept both ClickHouse LIMIT pagination and SQL-standard OFFSET/FETCH.
@@ -2131,6 +2151,37 @@ mod where_boolean_literal_tests {
                 parse_select(&boolean_sql).unwrap(),
                 parse_select(&numeric_sql).unwrap()
             );
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod select_top_limit_tests {
+    use super::parse_select;
+
+    #[test]
+    fn top_reuses_existing_limit_and_sorting() {
+        let top = parse_select("SELECT TOP 3 number FROM numbers(10) ORDER BY number DESC")
+            .unwrap();
+        let wrapped = parse_select("SELECT TOP (3) number FROM numbers(10) ORDER BY number DESC")
+            .unwrap();
+        let limit = parse_select("SELECT number FROM numbers(10) ORDER BY number DESC LIMIT 3")
+            .unwrap();
+        assert_eq!(top, wrapped);
+        assert_eq!(top, limit);
+    }
+
+    #[test]
+    fn rejects_unsupported_top_forms() {
+        for sql in [
+            "SELECT TOP -1 number FROM numbers(10)",
+            "SELECT TOP (2 number FROM numbers(10)",
+            "SELECT TOP 2 number FROM numbers(10) LIMIT 1",
+            "SELECT TOP 2 number FROM numbers(10) FETCH NEXT 1 ROW ONLY",
+            "SELECT TOP 2 PERCENT number FROM numbers(10)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
 }
