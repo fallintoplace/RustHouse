@@ -132,6 +132,27 @@ fn fixed_width_bytes_per_row(data_type: &str) -> usize {
     }
 }
 
+// Part files and the final checksums manifest are each synced before
+// publication. Windows standard file handles cannot flush a directory, so
+// require a real directory without following reparse points. The caller's
+// atomic rename still publishes the complete part, but power-loss directory
+// durability on Windows is weaker than POSIX.
+#[cfg(windows)]
+fn sync_part_directory(path: &Path) -> Result<(), PartError> {
+    let meta = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
+    if !meta.file_type().is_dir() {
+        return Err(invalid("wide-part output is not a real directory"));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn sync_part_directory(path: &Path) -> Result<(), PartError> {
+    fs::File::open(path)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| io_error(path, error))
+}
+
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), PartError> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -465,9 +486,7 @@ pub fn write_wide_part_with_compression(
 
         // Write the manifest only after all listed files have been synced.
         write_file(&part.join("checksums.txt"), &encode_checksums(&files))?;
-        fs::File::open(part)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|error| io_error(part, error))
+        sync_part_directory(part)
     })();
     if write_result.is_err() {
         // A bad value in a later column must not leave a partial part.
@@ -495,6 +514,22 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn completed_writer_syncs_real_part_directory_and_rejects_files() {
+        let root = root();
+        let part = root.join("complete");
+        let columns = [Column {
+            name: "id".into(),
+            data_type: "UInt64".into(),
+        }];
+        write_wide_part(&part, &columns, &[vec![Some("42".into())]]).unwrap();
+        sync_part_directory(&part).unwrap();
+        let not_dir = root.join("not-a-directory");
+        fs::write(&not_dir, b"hello").unwrap();
+        assert!(sync_part_directory(&not_dir).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
