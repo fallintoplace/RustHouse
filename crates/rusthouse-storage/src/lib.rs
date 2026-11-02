@@ -2,6 +2,7 @@ mod arrays;
 mod checksums;
 mod columns;
 mod compression;
+pub mod compaction_plan;
 mod database_lock;
 mod database_table;
 mod dates;
