@@ -399,6 +399,26 @@ impl Ord for SortedRow {
     }
 }
 
+// Build each output row in reused storage. Calling Write once per field
+// turns wide ordered results into thousands of tiny system calls for an
+// unbuffered output, even though the row itself is bounded.
+fn write_numeric_row<W: Write>(
+    output: &mut W,
+    values: &[Number],
+    scratch: &mut Vec<u8>,
+) -> Result<(), ExecutionError> {
+    scratch.clear();
+    for (index, value) in values.iter().enumerate() {
+        if index != 0 {
+            scratch.push(b'\t');
+        }
+        write!(scratch, "{value}")?;
+    }
+    scratch.push(b'\n');
+    output.write_all(scratch)?;
+    Ok(())
+}
+
 /// Include the row itself and retained numeric vectors, not just row counts.
 fn retained_row_size(row: &SortedRow) -> Result<usize, ExecutionError> {
     let numbers = row
@@ -707,6 +727,41 @@ impl SortedRows {
         Ok(())
     }
 
+    /// Select global Top-K from bounded local heaps in contiguous input order.
+    /// Offset local ordinals so ties retain the same first-seen ordering as
+    /// a single serial scan across all parts.
+    pub(super) fn merge_partials(partials: Vec<Self>) -> Result<Self, ExecutionError> {
+        let mut parts = partials.into_iter();
+        let mut merged = parts
+            .next()
+            .ok_or_else(|| invalid("parallel Top-K requires at least one partition"))?;
+        for part in parts {
+            let sequence_base = merged.seen;
+            merged.seen = merged
+                .seen
+                .checked_add(part.seen)
+                .ok_or_else(|| invalid("parallel Top-K sequence overflow"))?;
+            for mut row in part.rows.into_vec() {
+                row.sequence = sequence_base
+                    .checked_add(row.sequence)
+                    .ok_or_else(|| invalid("parallel Top-K sequence overflow"))?;
+                let size = retained_row_size(&row)?;
+                if merged.rows.len() < merged.requested {
+                    merged.retained_bytes = updated_sort_bytes(merged.retained_bytes, 0, size)?;
+                    merged.rows.push(row);
+                } else if merged.rows.peek().is_some_and(|worst| row < *worst) {
+                    let old_size = retained_row_size(
+                        merged.rows.peek().expect("nonempty Top-K heap"),
+                    )?;
+                    merged.retained_bytes =
+                        updated_sort_bytes(merged.retained_bytes, old_size, size)?;
+                    *merged.rows.peek_mut().expect("nonempty Top-K heap") = row;
+                }
+            }
+        }
+        Ok(merged)
+    }
+
     pub(super) fn write<W: Write>(mut self, output: &mut W) -> Result<(), ExecutionError> {
         if !self.run_paths.is_empty() {
             self.flush_run()?;
@@ -739,6 +794,7 @@ impl SortedRows {
             }
             let mut scanned = 0usize;
             let mut returned = 0usize;
+            let mut output_scratch = Vec::with_capacity(256);
             let limit = self.requested.saturating_sub(self.offset);
             merge_runs(
                 &self.run_paths,
@@ -749,13 +805,7 @@ impl SortedRows {
                         return Ok(false);
                     }
                     if scanned >= self.offset && returned < limit {
-                        for (index, value) in row.values.iter().enumerate() {
-                            if index != 0 {
-                                write!(output, "\t")?;
-                            }
-                            write!(output, "{value}")?;
-                        }
-                        writeln!(output)?;
+                        write_numeric_row(output, &row.values, &mut output_scratch)?;
                         returned += 1;
                     }
                     scanned = scanned
@@ -766,16 +816,44 @@ impl SortedRows {
             )?;
             return Ok(());
         }
+        let mut output_scratch = Vec::with_capacity(256);
         for row in self.rows.into_sorted_vec().into_iter().skip(self.offset) {
-            for (index, value) in row.values.iter().enumerate() {
-                if index != 0 {
-                    write!(output, "\t")?;
-                }
-                write!(output, "{value}")?;
-            }
-            writeln!(output)?;
+            write_numeric_row(output, &row.values, &mut output_scratch)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod sorted_output_batch_tests {
+    use super::*;
+    use std::io;
+
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        calls: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn writes_one_complete_call_per_row_with_reused_buffer() {
+        let mut output = CountingWriter { bytes: Vec::new(), calls: 0 };
+        let mut scratch = Vec::new();
+        write_numeric_row(&mut output, &[Number::Unsigned(12), Number::Signed(-5)], &mut scratch).unwrap();
+        write_numeric_row(&mut output, &[Number::Float(1.5)], &mut scratch).unwrap();
+        assert_eq!(output.bytes, b"12\t-5\n1.5\n");
+        assert_eq!(output.calls, 2);
     }
 }
 
@@ -1067,5 +1145,35 @@ mod external_run_order_validation_tests {
         })
         .unwrap();
         assert_eq!(seen, 1);
+    }
+}
+
+#[cfg(test)]
+mod parallel_topk_tests {
+    use super::*;
+
+    #[test]
+    fn local_heaps_merge_with_stable_ties_and_offset() {
+        let mut serial = SortedRows::with_offset(Some(3), 1, false).unwrap();
+        let mut first = SortedRows::with_offset(Some(3), 1, false).unwrap();
+        let mut second = SortedRows::with_offset(Some(3), 1, false).unwrap();
+        for (index, key) in [2u128, 1, 1, 7, 1, 4, 1, 3].into_iter().enumerate() {
+            let number = Number::Unsigned(key);
+            let value = vec![Number::Unsigned(index as u128)];
+            serial.push(number, value.clone()).unwrap();
+            if index < 4 {
+                first.push(number, value).unwrap();
+            } else {
+                second.push(number, value).unwrap();
+            }
+        }
+        let mut expected = Vec::new();
+        serial.write(&mut expected).unwrap();
+        let mut actual = Vec::new();
+        SortedRows::merge_partials(vec![first, second])
+            .unwrap()
+            .write(&mut actual)
+            .unwrap();
+        assert_eq!(actual, expected);
     }
 }

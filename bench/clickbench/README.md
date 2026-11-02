@@ -50,6 +50,13 @@ exactly (including integers over 2^53), and decimal/floating cells are checked
 with relative tolerance 1e-12. Unverified runs are labeled unverified and
 never counted as proven correct.
 
+For queries without guaranteed output ordering, provide their original query
+numbers with `--unordered 4,5` (replace with the actual order-free query IDs).
+This mode compares full TSV rows as a **byte-exact multiset**, preserving
+repeated rows. It does not use the ordered numeric tolerance and is not suitable
+for queries where order is semantically required. This option must be chosen
+explicitly; no ORDER BY clause is silently ignored.
+
 Statuses distinguish passed, unverified, skipped_missing_columns,
 unknown_requirements, parse_error, schema_error, execution_error, mismatch,
 timeout and missing_reference. The JSON summary reports eligible queries,

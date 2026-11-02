@@ -999,7 +999,20 @@ pub(super) fn execute<W: Write>(
             match state {
                 State::Count(count) => write!(output, "{count}")?,
                 State::Distinct(seen) => write!(output, "{}", seen.len())?,
-                State::Numeric(state) => write!(output, "{}", state.render())?,
+                State::Numeric(state) => {
+                    let mut value = state.render();
+                    if matches!(
+                        items[index].function,
+                        Some(crate::AggregateFunction::Min | crate::AggregateFunction::Max)
+                    ) {
+                        if let Some(ScalarExpr::Column(column)) = &items[index].argument {
+                            if let Some(data_type) = types.get(column) {
+                                value = typed::format_temporal_aggregate(value, data_type);
+                            }
+                        }
+                    }
+                    write!(output, "{value}")?;
+                }
             }
         }
         output.write_all(b"\n")?;

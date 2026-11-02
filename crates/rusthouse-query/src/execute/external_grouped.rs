@@ -54,6 +54,17 @@ fn read_varint(input: &mut impl BufRead, eof_allowed: bool) -> Result<Option<u64
     // In a buffered run, most varints fit entirely in the current slice.
     // Avoid a virtual read call for every individual encoded byte.
     let available = input.fill_buf()?;
+    // Most compact GROUP BY spill keys and counts fit into one byte.
+    // Skip the general decoder without an extra buffered read.
+    match available.first().copied() {
+        Some(byte) if byte < 0x80 => {
+            input.consume(1);
+            return Ok(Some(u64::from(byte)));
+        }
+        None if eof_allowed => return Ok(None),
+        None => return Err(invalid("truncated GROUP BY spill varint")),
+        _ => {}
+    }
     if available.len() >= 10 {
         let mut result = 0u64;
         for (index, &byte) in available[..10].iter().enumerate() {

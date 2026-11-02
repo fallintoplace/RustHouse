@@ -4,17 +4,31 @@ fn invalid_escape(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn hex_digit(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        b'A'..=b'F' => Some(value - b'A' + 10),
-        _ => None,
+// Classify a byte with one lookup instead of three ASCII-range branches
+// for each nibble of a TSV hex escape.
+const HEX_NIBBLES: [u8; 256] = {
+    let mut table = [u8::MAX; 256];
+    let mut digit = 0usize;
+    while digit < 10 {
+        table[b'0' as usize + digit] = digit as u8;
+        digit += 1;
     }
-}
+    digit = 0;
+    while digit < 6 {
+        table[b'a' as usize + digit] = (digit + 10) as u8;
+        table[b'A' as usize + digit] = (digit + 10) as u8;
+        digit += 1;
+    }
+    table
+};
 
 fn checked_hex_digit(value: u8) -> io::Result<u8> {
-    hex_digit(value).ok_or_else(|| invalid_escape("invalid TSV hex escape"))
+    let digit = HEX_NIBBLES[value as usize];
+    if digit == u8::MAX {
+        Err(invalid_escape("invalid TSV hex escape"))
+    } else {
+        Ok(digit)
+    }
 }
 
 fn decode_hex_byte(field: &[u8], index: usize) -> io::Result<u8> {
@@ -131,6 +145,19 @@ mod tests {
         decode_tsv_field_into(br"good\x20again", &mut buffer).unwrap();
         assert_eq!(buffer, b"good again");
         assert_eq!(buffer.as_ptr(), original);
+    }
+
+    #[test]
+    fn hex_nibble_table_accepts_only_ascii_hex() {
+        for value in 0u8..=u8::MAX {
+            let expected = match value {
+                b'0'..=b'9' => Some(value - b'0'),
+                b'a'..=b'f' => Some(value - b'a' + 10),
+                b'A'..=b'F' => Some(value - b'A' + 10),
+                _ => None,
+            };
+            assert_eq!(checked_hex_digit(value).ok(), expected);
+        }
     }
 
     #[test]

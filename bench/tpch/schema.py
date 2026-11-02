@@ -63,10 +63,20 @@ def names(table):
     return [column[0] for column in TABLES[table]]
 
 
-def create_sql(table):
+NUMERIC_MODES = ("scaled", "float")
+
+
+def column_type(kind, scale, numeric_mode="scaled"):
+    if numeric_mode not in NUMERIC_MODES:
+        raise ValueError("unknown TPC-H numeric mode")
+    return "Float64" if numeric_mode == "float" and scale != 1 else kind
+
+
+def create_sql(table, numeric_mode="scaled"):
     columns = TABLES[table]
     return "CREATE TABLE " + table + " (" + ", ".join(
-        f"{name} {kind}" for name, kind, _ in columns
+        f"{name} {column_type(kind, scale, numeric_mode)}"
+        for name, kind, scale in columns
     ) + ")"
 
 

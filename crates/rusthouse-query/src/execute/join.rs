@@ -650,6 +650,10 @@ fn execute_streaming_inner<W: Write>(
         .offset
         .saturating_add(query.limit.unwrap_or(usize::MAX));
     let mut position = 0usize;
+    // JOIN projections write separators and scalar cells independently.
+    // Buffer the output once for large streamed matches, while letting
+    // BufWriter forward unusually large String cells without copying them.
+    let mut row_output = std::io::BufWriter::with_capacity(64 * 1024, output);
     probe_inner(
         left_path,
         left_names,
@@ -667,21 +671,22 @@ fn execute_streaming_inner<W: Write>(
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
                     if index != 0 {
-                        output.write_all(b"\t")?;
+                        row_output.write_all(b"\t")?;
                     }
                     let cell = if *column < left_width {
                         &left[*column]
                     } else {
                         &right[*column - left_width]
                     };
-                    typed::write_value(output, cell)?;
+                    typed::write_value(&mut row_output, cell)?;
                 }
-                output.write_all(b"\n")?;
+                row_output.write_all(b"\n")?;
             }
             position += 1;
             Ok(())
         },
     )?;
+    row_output.flush()?;
     Ok(())
 }
 

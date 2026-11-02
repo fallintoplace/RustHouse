@@ -24,6 +24,22 @@ Unit tests:
     python3 -m unittest discover -s bench/tpch -p 'test_*.py'
 
 
+## Unscaled Float64 compatibility fixture
+
+The default dbgen converter stores money in integer cents and discounts in
+integer basis points. Canonical TPC-H SQL expects fractional values, so that
+fixture cannot be compared directly with native-decimal reference results.
+
+For exploratory SQL compatibility, convert and load into a **new** RustHouse
+database with `--numeric-mode float` on **both** commands:
+
+    python3 bench/tpch/convert_dbgen.py --input-dir /path/to/dbgen --output-dir /tmp/tpch-float --numeric-mode float
+    python3 bench/tpch/load_dbgen.py --binary target/release/rusthouse --database /tmp/tpch-float-db --input-dir /tmp/tpch-float --numeric-mode float
+
+This uses unscaled Float64 values, not native exact SQL DECIMAL. It can reveal
+parser/executor coverage on canonical SQL, but it is **not** a TPC-H-compliant
+numeric schema. A scaled TSV must never be loaded as a float-mode fixture.
+
 ## Pair cold CLI timings with DuckDB
 
 Prepare the same logical tables in a RustHouse database and a DuckDB database.
