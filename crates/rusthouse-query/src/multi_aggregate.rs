@@ -213,6 +213,7 @@ pub(crate) fn parse_multiple(
         }
         parser.index += 2;
         let distinct = parser.keyword("DISTINCT");
+        let all = !distinct && parser.keyword("ALL");
         if distinct && function.is_some() {
             return Err(ParseError("DISTINCT is only supported for COUNT".into()));
         }
@@ -225,6 +226,9 @@ pub(crate) fn parse_multiple(
         };
         if function.is_some() && argument.is_none() {
             return Err(ParseError("numeric aggregate needs a column".into()));
+        }
+        if all && argument.is_none() {
+            return Err(ParseError("ALL aggregate requires an argument".into()));
         }
         if already_closed && distinct {
             return Err(ParseError("COUNT(DISTINCT) requires a column".into()));
