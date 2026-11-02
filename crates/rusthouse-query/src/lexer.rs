@@ -141,6 +141,10 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 Token::Operator(scan_comparison(bytes, &mut index))
             }
             b'0'..=b'9' | b'-' => scan_number(sql, &mut index)?,
+            b'e' | b'E' if bytes.get(index + 1) == Some(&b'\'') => {
+                index += 1;
+                scan_string(sql, &mut index)?
+            }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => scan_word(sql, &mut index),
             _ => {
                 return Err(ParseError(format!(
@@ -535,5 +539,25 @@ mod bulk_comment_span_tests {
         }
         let deep = format!("SELECT {} 1 {}", "/*".repeat(33), "*/".repeat(33));
         assert!(tokenize(&deep).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod escaped_string_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_explicit_escaped_string_literals() {
+        assert_eq!(
+            tokenize(r"SELECT E'line\nnext', e'it''s'").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("line\nnext".into()),
+                Token::Comma,
+                Token::String("it's".into()),
+            ]
+        );
+        assert!(tokenize("SELECT E'unterminated").is_err());
     }
 }
