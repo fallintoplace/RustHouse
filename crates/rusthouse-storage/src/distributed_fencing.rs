@@ -185,3 +185,119 @@ mod tests {
         assert!(ledger.is_empty());
     }
 }
+
+
+/// Optimistic, externally authorized replacement of a local fencing claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedFenceUpdate {
+    /// The exact previously observed claim, or None for an absent shard.
+    pub expected: Option<FenceClaim>,
+    pub next: FenceClaim,
+}
+
+impl FencingLedger {
+    /// Compare all prior claims before installing any new fencing tokens.
+    ///
+    /// This rejects stale plans even when they carry a newer token than the
+    /// ledger. As with apply_batch, the caller must obtain new tokens from an
+    /// authoritative coordinator and durably persist the resulting state.
+    pub fn apply_checked_batch(
+        &mut self,
+        updates: &[CheckedFenceUpdate],
+    ) -> Result<(), &'static str> {
+        if updates.len() > MAX_FENCED_SHARDS {
+            return Err("checked fencing batch exceeds limit");
+        }
+        let mut seen = HashSet::with_capacity(updates.len());
+        let mut claims = Vec::with_capacity(updates.len());
+        for update in updates {
+            if !seen.insert(update.next.shard.as_str()) {
+                return Err("duplicate checked fencing shard");
+            }
+            let matches_current = match (
+                self.get(&update.next.shard),
+                update.expected.as_ref(),
+            ) {
+                (None, None) => true,
+                (Some((holder, token)), Some(expected)) => {
+                    expected.shard == update.next.shard
+                        && expected.holder == holder
+                        && expected.token == token
+                }
+                _ => false,
+            };
+            if !matches_current {
+                return Err("stale fencing compare-and-swap expectation");
+            }
+            claims.push(update.next.clone());
+        }
+        // All expectations are checked first. apply_batch validates every new
+        // claim and the capacity before changing the ledger.
+        self.apply_batch(&claims)
+    }
+}
+
+#[cfg(test)]
+mod checked_fencing_tests {
+    use super::*;
+
+    fn claim(shard: &str, holder: &str, sequence: u64) -> FenceClaim {
+        FenceClaim {
+            shard: shard.into(),
+            holder: holder.into(),
+            token: FenceToken { epoch: 1, sequence },
+        }
+    }
+
+    #[test]
+    fn compare_and_swap_rejects_stale_plans_with_newer_tokens() {
+        let mut ledger = FencingLedger::new();
+        let original = claim("one", "a", 1);
+        ledger.apply_batch(std::slice::from_ref(&original)).unwrap();
+        let replacement = CheckedFenceUpdate {
+            expected: Some(original.clone()),
+            next: claim("one", "b", 2),
+        };
+        ledger
+            .apply_checked_batch(std::slice::from_ref(&replacement))
+            .unwrap();
+        assert_eq!(ledger.get("one").unwrap().0, "b");
+
+        let stale = CheckedFenceUpdate {
+            expected: Some(original),
+            next: claim("one", "c", 100),
+        };
+        let before = ledger.clone();
+        assert!(ledger.apply_checked_batch(&[stale]).is_err());
+        assert_eq!(ledger, before);
+    }
+
+    #[test]
+    fn partial_failures_cannot_publish_any_checked_claims() {
+        let mut ledger = FencingLedger::new();
+        let first = claim("first", "owner", 2);
+        ledger.apply_batch(std::slice::from_ref(&first)).unwrap();
+        let before = ledger.clone();
+
+        let good = CheckedFenceUpdate {
+            expected: None,
+            next: claim("new", "owner", 1),
+        };
+        let bad = CheckedFenceUpdate {
+            expected: None,
+            next: claim("first", "another", 99),
+        };
+        assert!(ledger.apply_checked_batch(&[good.clone(), bad]).is_err());
+        assert_eq!(ledger, before);
+
+        let duplicate = CheckedFenceUpdate {
+            expected: None,
+            next: claim("new", "owner", 2),
+        };
+        assert!(ledger.apply_checked_batch(&[good.clone(), duplicate]).is_err());
+        assert_eq!(ledger, before);
+
+        ledger.apply_checked_batch(&[good]).unwrap();
+        assert_eq!(ledger.get("new").unwrap().1.sequence, 1);
+    }
+}
