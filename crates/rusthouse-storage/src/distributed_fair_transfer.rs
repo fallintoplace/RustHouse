@@ -97,6 +97,51 @@ pub fn plan_fair_transfers(
     })
 }
 
+/// Rebuild progress from externally verified transfer slices.
+///
+/// A caller must authenticate and check the bytes before supplying each slice.
+/// This function only validates that acknowledged ranges are contiguous, do
+/// not exceed source limits, and belong to known shards. Failed replay does
+/// not change the original progress checkpoint.
+pub fn replay_verified_transfer_slices(
+    progress: &[ShardProgress],
+    verified_slices: &[TransferSlice],
+) -> Result<Vec<ShardProgress>, &'static str> {
+    use std::collections::HashMap;
+
+    if progress.is_empty()
+        || progress.len() > MAX_SHARDS
+        || verified_slices.len() > MAX_SHARDS
+    {
+        return Err("invalid verified transfer replay limits");
+    }
+    let mut by_name = HashMap::with_capacity(progress.len());
+    for (index, item) in progress.iter().enumerate() {
+        if !valid_shard(&item.shard)
+            || item.completed > item.total
+            || by_name.insert(item.shard.as_str(), index).is_some()
+        {
+            return Err("invalid or duplicate shard transfer progress");
+        }
+    }
+    let mut next = progress.to_vec();
+    for slice in verified_slices {
+        let Some(&index) = by_name.get(slice.shard.as_str()) else {
+            return Err("verified transfer refers to unknown shard");
+        };
+        let item = &mut next[index];
+        if slice.length == 0
+            || slice.length > MAX_QUANTUM
+            || slice.offset != item.completed
+            || slice.length > item.total - item.completed
+        {
+            return Err("verified transfer range is inconsistent with checkpoint");
+        }
+        item.completed += slice.length;
+    }
+    Ok(next)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +210,32 @@ mod tests {
         assert!(plan_fair_transfers(&[job("../bad", 0, 3)], 0, 4, 5, 1).is_err());
         assert!(plan_fair_transfers(&[job("a", 0, 3)], 1, 4, 5, 1).is_err());
         assert!(plan_fair_transfers(&[job("a", 0, 3)], 0, 0, 5, 1).is_err());
+    }
+
+    #[test]
+    fn verified_slices_replay_exactly_and_reject_forged_progress() {
+        let original = [job("large", 0, 10), job("small", 2, 5)];
+        let batch = plan_fair_transfers(&original, 0, 4, 8, 3).unwrap();
+        let replayed = replay_verified_transfer_slices(&original, &batch.slices).unwrap();
+        assert_eq!(replayed, batch.next_progress);
+        assert_eq!(original[0].completed, 0);
+        assert_eq!(original[1].completed, 2);
+
+        let mut forged = batch.slices.clone();
+        forged[0].offset += 1;
+        assert!(replay_verified_transfer_slices(&original, &forged).is_err());
+
+        let mut forged = batch.slices.clone();
+        forged[0].length = 11;
+        assert!(replay_verified_transfer_slices(&original, &forged).is_err());
+
+        let mut forged = batch.slices.clone();
+        forged[0].shard = "other".into();
+        assert!(replay_verified_transfer_slices(&original, &forged).is_err());
+
+        let duplicated = [job("same", 0, 1), job("same", 0, 1)];
+        assert!(replay_verified_transfer_slices(&duplicated, &[]).is_err());
+        assert!(replay_verified_transfer_slices(&original, &[]).is_ok());
     }
 
     #[test]
