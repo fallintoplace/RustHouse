@@ -471,17 +471,27 @@ impl Parser {
                     } else {
                         amount
                     };
-                    if self.keyword("YEAR") {
+                    if self.keyword("YEAR") || self.keyword("YEARS") {
                         return literal::add_date_years(&value, amount);
                     }
-                    if self.keyword("MONTH") {
+                    if self.keyword("QUARTER") || self.keyword("QUARTERS") {
+                        let months = amount.checked_mul(3)
+                            .ok_or_else(|| ParseError("INTERVAL quarter count overflow".into()))?;
+                        return literal::add_date_months(&value, months);
+                    }
+                    if self.keyword("MONTH") || self.keyword("MONTHS") {
                         return literal::add_date_months(&value, amount);
                     }
-                    if self.keyword("DAY") {
+                    if self.keyword("WEEK") || self.keyword("WEEKS") {
+                        let days = amount.checked_mul(7)
+                            .ok_or_else(|| ParseError("INTERVAL week count overflow".into()))?;
+                        return literal::add_date_days(&value, days);
+                    }
+                    if self.keyword("DAY") || self.keyword("DAYS") {
                         return literal::add_date_days(&value, amount);
                     }
                     return Err(ParseError(
-                        "only INTERVAL DAY, MONTH or YEAR is supported".into(),
+                        "only INTERVAL DAY, WEEK, MONTH, QUARTER or YEAR is supported".into(),
                     ));
                 }
             }
@@ -2105,6 +2115,41 @@ mod tpch_interval_unit_tests {
                 Predicate::Comparison { operator: Operator::Le | Operator::Lt, value, .. }
                     if value == expected
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod extended_date_interval_tests {
+    use super::{Predicate, parse_select};
+
+    #[test]
+    fn folds_week_quarter_and_plural_units_into_date_literals() {
+        for (date, sign, amount, unit, expected) in [
+            ("2000-01-01", "+", "1", "WEEK", "2000-01-08"),
+            ("2000-01-01", "+", "2", "WEEKS", "2000-01-15"),
+            ("2000-01-31", "+", "1", "QUARTER", "2000-04-30"),
+            ("2000-01-31", "-", "1", "QUARTERS", "1999-10-31"),
+            ("2000-01-01", "+", "1", "DAYS", "2000-01-02"),
+            ("2000-01-01", "+", "1", "MONTHS", "2000-02-01"),
+            ("2000-01-01", "+", "1", "YEARS", "2001-01-01"),
+        ] {
+            let sql = format!(
+                "SELECT count(*) FROM t WHERE d < DATE '{date}' {sign} INTERVAL '{amount}' {unit}"
+            );
+            let query = parse_select(&sql).unwrap();
+            assert!(matches!(&query.predicates[0],
+                Predicate::Comparison { value, .. } if value == expected), "{sql}");
+        }
+    }
+
+    #[test]
+    fn refuses_overflowing_interval_unit_multipliers() {
+        for unit in ["WEEK", "QUARTER"] {
+            let sql = format!(
+                "SELECT count(*) FROM t WHERE d < DATE '2000-01-01' + INTERVAL '9223372036854775807' {unit}"
+            );
+            assert!(parse_select(&sql).is_err(), "{sql}");
         }
     }
 }
