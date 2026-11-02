@@ -14,9 +14,7 @@ pub(super) fn parallel_dense_grouped_count(
     kind: &str,
 ) -> Result<Option<GroupedCounts>, ExecutionError> {
     let parts = rusthouse_storage::query_parts(part)?;
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |count| count.get())
-        .min(4);
+    let workers = super::super::query_workers(4);
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }

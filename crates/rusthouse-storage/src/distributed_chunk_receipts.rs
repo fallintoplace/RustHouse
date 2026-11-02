@@ -50,16 +50,19 @@ impl ChunkReceipts {
     /// Missing half-open chunk intervals within the current receive window.
     pub fn missing_ranges(&self) -> Vec<Range<u64>> {
         let end = self.next.saturating_add(self.window).min(self.total);
-        let mut start = None;
+        let mut cursor = self.next;
         let mut ranges = Vec::new();
-        for index in self.next..end {
-            if !self.buffered.contains_key(&index) {
-                start.get_or_insert(index);
-            } else if let Some(begin) = start.take() {
-                ranges.push(begin..index);
+        // The BTreeMap is already sorted. Visit received chunks instead of
+        // probing every missing index in a sparse receive window.
+        for (&received, _) in self.buffered.range(self.next..end) {
+            if cursor < received {
+                ranges.push(cursor..received);
             }
+            cursor = received + 1;
         }
-        if let Some(begin) = start { ranges.push(begin..end); }
+        if cursor < end {
+            ranges.push(cursor..end);
+        }
         ranges
     }
 }
@@ -99,5 +102,27 @@ mod tests {
         window.acknowledge(0, 0).unwrap();
         assert!(window.acknowledge(0, 0).is_err());
         assert_eq!(window.missing_ranges(), vec![]);
+    }
+}
+
+#[cfg(test)]
+mod sparse_receipt_gap_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_window_gaps_match_half_open_receipt_ranges() {
+        let mut window = ChunkReceipts::new(4096, 4096).unwrap();
+        window.acknowledge(3, 30).unwrap();
+        window.acknowledge(2000, 20).unwrap();
+        window.acknowledge(4095, 40).unwrap();
+        assert_eq!(
+            window.missing_ranges(),
+            vec![0..3, 4..2000, 2001..4095],
+        );
+        for index in 0..3 {
+            window.acknowledge(index, index as u32).unwrap();
+        }
+        assert_eq!(window.contiguous_received(), 4);
+        assert_eq!(window.missing_ranges(), vec![4..2000, 2001..4095]);
     }
 }

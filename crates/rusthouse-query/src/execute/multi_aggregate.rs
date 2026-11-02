@@ -523,9 +523,7 @@ fn parallel_exact_multi_aggregates(
     no_filters: bool,
 ) -> Result<Option<Vec<State>>, ExecutionError> {
     let parts = rusthouse_storage::query_parts(part)?;
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |count| count.get())
-        .min(4);
+    let workers = super::query_workers(4);
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
@@ -817,7 +815,11 @@ pub(super) fn execute<W: Write>(
             |item| match (&item.function, &item.argument, item.distinct) {
                 (None, _, false) => true,
                 (
-                    Some(crate::AggregateFunction::Sum),
+                    Some(
+                        crate::AggregateFunction::Sum
+                            | crate::AggregateFunction::Min
+                            | crate::AggregateFunction::Max
+                    ),
                     Some(crate::ScalarExpr::Column(column)),
                     false,
                 ) => types.get(column).is_some_and(|kind| {

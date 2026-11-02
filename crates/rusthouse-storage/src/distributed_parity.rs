@@ -550,10 +550,31 @@ pub fn recover_triple_erasure(
     }
 
     let mut recovered = (0..count).map(|_| vec![0u8; width]).collect::<Vec<_>>();
-    for (row, output) in recovered.iter_mut().enumerate() {
-        for (offset, value) in output.iter_mut().enumerate() {
+    if width < 1024 {
+        for (row, output) in recovered.iter_mut().enumerate() {
+            for (offset, value) in output.iter_mut().enumerate() {
+                for equation in 0..count {
+                    *value ^= gf256_mul(matrix[row][count + equation], residual[equation][offset]);
+                }
+            }
+        }
+    } else {
+        // Inverse matrix coefficients are fixed for the whole stripe.
+        // Tabulate GF256 products once instead of multiplying every byte.
+        let mut products = [[[0u8; 256]; 3]; 3];
+        for row in 0..count {
             for equation in 0..count {
-                *value ^= gf256_mul(matrix[row][count + equation], residual[equation][offset]);
+                let factor = matrix[row][count + equation];
+                products[row][equation] =
+                    std::array::from_fn(|byte| gf256_mul(factor, byte as u8));
+            }
+        }
+        for (row, output) in recovered.iter_mut().enumerate() {
+            for (offset, value) in output.iter_mut().enumerate() {
+                for equation in 0..count {
+                    let byte = usize::from(residual[equation][offset]);
+                    *value ^= products[row][equation][byte];
+                }
             }
         }
     }
@@ -561,17 +582,35 @@ pub fn recover_triple_erasure(
     // The unused parity equations are independent checksums when fewer than
     // three erasures occurred. They catch inconsistent supplied parity data.
     for (equation, syndrome) in residual.iter().enumerate().skip(count) {
-        for offset in 0..width {
-            let mut actual = 0u8;
-            for (value, &missing_index) in recovered.iter().zip(&missing) {
-                let coefficient = parity_coefficient(missing_index);
-                actual ^= gf256_mul(
-                    gf256_pow(coefficient, equation as u16),
-                    value[offset],
-                );
+        // An erasure's coefficient never changes across byte offsets.
+        // Previously each byte repeated the GF256 exponentiation.
+        let mut factors = [0u8; 3];
+        for (slot, &missing_index) in missing.iter().enumerate() {
+            factors[slot] = gf256_pow(parity_coefficient(missing_index), equation as u16);
+        }
+        if width < 1024 {
+            for offset in 0..width {
+                let mut actual = 0u8;
+                for (value, &factor) in recovered.iter().zip(&factors) {
+                    actual ^= gf256_mul(factor, value[offset]);
+                }
+                if actual != syndrome[offset] {
+                    return Err("triple parity syndromes disagree");
+                }
             }
-            if actual != syndrome[offset] {
-                return Err("triple parity syndromes disagree");
+        } else {
+            // The table amortizes eight GF256 shift/xor rounds per byte.
+            let products: [[u8; 256]; 3] = factors.map(|factor| {
+                std::array::from_fn(|byte| gf256_mul(factor, byte as u8))
+            });
+            for offset in 0..width {
+                let mut actual = 0u8;
+                for (value, table) in recovered.iter().zip(&products) {
+                    actual ^= table[usize::from(value[offset])];
+                }
+                if actual != syndrome[offset] {
+                    return Err("triple parity syndromes disagree");
+                }
             }
         }
     }
@@ -647,6 +686,61 @@ mod triple_parity_tests {
             assert_eq!(result.len(), mask.count_ones() as usize);
             for (index, restored) in result {
                 assert_eq!(restored, originals[index]);
+            }
+        }
+    }
+
+    #[test]
+    fn large_single_and_double_erasures_validate_unused_syndromes() {
+        let sources = (0..5usize)
+            .map(|shard| {
+                (0..3072usize)
+                    .map(|offset| (offset * 97 + shard * 19) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let slices = sources.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let lengths = sources.iter().map(Vec::len).collect::<Vec<_>>();
+        let parity = encode_triple_parity(&slices).unwrap();
+        for missing in [[1usize, usize::MAX], [2usize, 4usize]] {
+            let damaged = slices
+                .iter()
+                .enumerate()
+                .map(|(index, &source)| {
+                    (!missing.contains(&index)).then_some(source)
+                })
+                .collect::<Vec<_>>();
+            let recovered = recover_triple_erasure(&damaged, &lengths, &parity).unwrap();
+            for (index, bytes) in recovered {
+                assert_eq!(bytes, sources[index]);
+            }
+            let mut corrupted = parity.clone();
+            corrupted.squared[2048] ^= 0x80;
+            assert!(recover_triple_erasure(&damaged, &lengths, &corrupted).is_err());
+        }
+    }
+
+    #[test]
+    fn wide_three_erasure_reconstruction_matches_exact_sources() {
+        let sources = (0..6usize)
+            .map(|shard| {
+                (0..(4096 + shard * 31))
+                    .map(|offset| (offset * 29 + shard * 71) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let parts = sources.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let lengths = sources.iter().map(Vec::len).collect::<Vec<_>>();
+        let parity = encode_triple_parity(&parts).unwrap();
+        for missing in [[0usize, 2usize, 5usize], [1usize, 3usize, 4usize]] {
+            let available = parts
+                .iter()
+                .enumerate()
+                .map(|(index, &part)| (!missing.contains(&index)).then_some(part))
+                .collect::<Vec<_>>();
+            let recovered = recover_triple_erasure(&available, &lengths, &parity).unwrap();
+            for (index, bytes) in recovered {
+                assert_eq!(bytes, sources[index]);
             }
         }
     }

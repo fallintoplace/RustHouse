@@ -89,6 +89,27 @@ fn numeric_value_at(column: &TypedColumn, row: usize) -> Result<Option<Number>, 
     }
 }
 
+// Byte status flags are common conditional metric filters. Check them
+// directly before falling back to the generic numeric expression path.
+fn numeric_filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
+    match column {
+        TypedColumn::Numeric(NumericColumn::UInt8(values)) => Ok(values[row] != 0),
+        TypedColumn::Numeric(NumericColumn::Int8(values)) => Ok(values[row] != 0),
+        TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt8(values), nulls
+        } => Ok(nulls[row] == 0 && values[row] != 0),
+        TypedColumn::NullableNumeric {
+            values: NumericColumn::Int8(values), nulls
+        } => Ok(nulls[row] == 0 && values[row] != 0),
+        column => Ok(match numeric_value_at(column, row)? {
+            Some(Number::Unsigned(value)) => value != 0,
+            Some(Number::Signed(value)) => value != 0,
+            Some(Number::Float(value)) => value != 0.0,
+            None => false,
+        }),
+    }
+}
+
 // Encode a composite GROUP BY key into reusable storage. String components
 // borrow the column's decoded bytes; only the first occurrence of a group
 // needs to own an encoded key. Tags and lengths preserve tuple boundaries.
@@ -391,19 +412,13 @@ pub(super) fn execute<W: Write>(
                 .enumerate()
             {
                 if let Some(&filter_index) = filter_indices.get(metric).and_then(Option::as_ref) {
-                    let enabled = match numeric_value_at(&batch[filter_index], row)? {
-                        Some(Number::Unsigned(value)) => value != 0,
-                        Some(Number::Signed(value)) => value != 0,
-                        Some(Number::Float(value)) => value != 0.0,
-                        None => false,
-                    };
-                    if !enabled {
+                    if !numeric_filter_enabled(&batch[filter_index], row)? {
                         continue;
                     }
                 }
                 if *function == AggregateFunction::Count {
                     if !typed::is_null_at(&batch[index], row) {
-                        state.update(Number::Unsigned(1))?;
+                        state.increment_count()?;
                     }
                     continue;
                 }
@@ -411,7 +426,11 @@ pub(super) fn execute<W: Write>(
                     if *function == AggregateFunction::Median {
                         charge_median_value(&mut retained_median_bytes)?;
                     }
-                    state.update(value)?;
+                    if *function == AggregateFunction::Sum {
+                        state.update_sum(value)?;
+                    } else {
+                        state.update(value)?;
+                    }
                 }
             }
         }
@@ -750,5 +769,34 @@ mod narrow_composite_group_encoding_tests {
         append_group_component(&nullable, 1, &mut encoded);
         assert_eq!(encoded[0], 3);
         assert_eq!(&encoded[1..], &7u128.to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+mod byte_conditional_group_filters_tests {
+    use super::*;
+
+    #[test]
+    fn byte_status_flags_and_nullable_rows_keep_truthiness() {
+        let columns = [
+            TypedColumn::Numeric(NumericColumn::UInt8(vec![0, 1, 255])),
+            TypedColumn::Numeric(NumericColumn::Int8(vec![0, -1, 127])),
+            TypedColumn::NullableNumeric {
+                values: NumericColumn::Int8(vec![-1, 0, 1]),
+                nulls: vec![1, 0, 0],
+            },
+            TypedColumn::Numeric(NumericColumn::Float64(vec![0.0, -0.0, f64::NAN])),
+        ];
+        let expected = [
+            [false, true, true],
+            [false, true, true],
+            [false, false, true],
+            [false, false, true],
+        ];
+        for (column, expected) in columns.iter().zip(expected) {
+            for (row, flag) in expected.into_iter().enumerate() {
+                assert_eq!(numeric_filter_enabled(column, row).unwrap(), flag);
+            }
+        }
     }
 }
