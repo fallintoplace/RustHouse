@@ -685,7 +685,12 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     let write_group =
         |key: &Cell, state: &AggregateState, output: &mut W| -> Result<(), ExecutionError> {
             typed::write_typed_value(output, key, group_type)?;
-            writeln!(output, "\t{}", state.render())?;
+            let value = if matches!(function, AggregateFunction::Min | AggregateFunction::Max) {
+                typed::format_temporal_aggregate(state.render(), &selected.data_type)
+            } else {
+                state.render()
+            };
+            writeln!(output, "\t{value}")?;
             Ok(())
         };
     if let Some(indices) = bounded_order {

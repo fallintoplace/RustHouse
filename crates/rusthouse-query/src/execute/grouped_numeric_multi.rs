@@ -530,8 +530,13 @@ pub(super) fn execute<W: Write>(
     let write_group =
         |key: &Cell, states: &[AggregateState], output: &mut W| -> Result<(), ExecutionError> {
             typed::write_typed_value(output, key, group_type)?;
-            for state in states {
-                write!(output, "\t{}", state.render())?;
+            for (state, (function, column)) in states.iter().zip(items) {
+                let value = if matches!(function, AggregateFunction::Min | AggregateFunction::Max) {
+                    typed::format_temporal_aggregate(state.render(), &types[column])
+                } else {
+                    state.render()
+                };
+                write!(output, "\t{value}")?;
             }
             writeln!(output)?;
             Ok(())
