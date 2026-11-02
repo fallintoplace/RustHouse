@@ -28,9 +28,9 @@ fn optimize_final_preserves_rows() {
     successful(&db, "INSERT INTO events VALUES (1)");
     successful(&db, "INSERT INTO events VALUES (2)");
     successful(&db, "OPTIMIZE TABLE events FINAL");
-    assert_eq!(successful(&db, "SELECT id FROM events ORDER BY id").stdout, b"id\\n1\\n2\\n");
+    assert_eq!(successful(&db, "SELECT id FROM events ORDER BY id").stdout, b"id\n1\n2\n");
     successful(&db, "OPTIMIZE TABLE events FINAL");
-    assert_eq!(successful(&db, "SELECT count(*) FROM events").stdout, b"count\\n2\\n");
+    assert_eq!(successful(&db, "SELECT count(*) FROM events").stdout, b"count\n2\n");
     assert!(!sql(&db, "OPTIMIZE TABLE events FINAL DEDUPLICATE").status.success());
 
     fs::remove_dir_all(db).unwrap();
