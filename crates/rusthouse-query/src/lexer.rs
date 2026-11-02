@@ -67,6 +67,10 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 index += 1;
                 continue;
             }
+            b'n' | b'N' if bytes.get(index + 1) == Some(&b'\'') => {
+                index += 1;
+                scan_string(sql, &mut index)?
+            }
             b'\'' => scan_string(sql, &mut index)?,
             b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
@@ -535,5 +539,26 @@ mod bulk_comment_span_tests {
         }
         let deep = format!("SELECT {} 1 {}", "/*".repeat(33), "*/".repeat(33));
         assert!(tokenize(&deep).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod national_string_literal_tests {
+    use super::*;
+
+    #[test]
+    fn national_prefix_uses_existing_utf8_string_scanner() {
+        assert_eq!(
+            tokenize("SELECT N'café', n'東京'").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("café".into()),
+                Token::Comma,
+                Token::String("東京".into()),
+            ]
+        );
+        assert!(tokenize("SELECT N'unterminated").is_err());
+        assert_eq!(tokenize("SELECT name").unwrap()[1], Token::Word("name".into()));
     }
 }
