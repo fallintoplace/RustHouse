@@ -208,6 +208,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "SUBTRACTMONTHS"
                 | "TOSTRINGCUTTOZERO"
                 | "REPEAT"
+                | "BASE58DECODE"
                 | "BASE64_DECODE"
                 | "BASE64URLDECODE"
                 | "TRYBASE64URLDECODE"
@@ -533,6 +534,39 @@ fn bounded_utf8_edit_distance(left: &str, right: &str) -> Result<i64, ParseError
         std::mem::swap(&mut previous, &mut current);
     }
     Ok(previous[short.len()] as i64)
+}
+
+
+fn base58_decode(input: &str) -> Result<String, ParseError> {
+    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    if input.len() > 4096 {
+        return Err(ParseError("base58Decode constant exceeds 4096 bytes".into()));
+    }
+    let mut decoded = Vec::<u8>::new();
+    for symbol in input.bytes() {
+        let mut carry = ALPHABET.iter().position(|&value| value == symbol)
+            .ok_or_else(|| ParseError("base58Decode contains an invalid digit".into()))?;
+        for byte in &mut decoded {
+            carry += usize::from(*byte) * 58;
+            *byte = (carry % 256) as u8;
+            carry /= 256;
+        }
+        while carry != 0 {
+            decoded.push((carry % 256) as u8);
+            carry /= 256;
+        }
+    }
+    let zeros = input.bytes().take_while(|&byte| byte == b'1').count();
+    let length = zeros.checked_add(decoded.len())
+        .ok_or_else(|| ParseError("base58Decode output is too large".into()))?;
+    if length > MAX_TEXT_BYTES {
+        return Err(ParseError("base58Decode output is too large".into()));
+    }
+    let mut bytes = Vec::with_capacity(length);
+    bytes.extend(std::iter::repeat_n(0, zeros));
+    bytes.extend(decoded.iter().rev());
+    String::from_utf8(bytes)
+        .map_err(|_| ParseError("base58Decode constant is not valid UTF-8".into()))
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
@@ -4811,6 +4845,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "BASE58DECODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "base58Decode requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(base58_decode(&input)?),
+                None => ConstantValue::Null,
+            }
+        }
         "BASE64_DECODE" | "BASE64DECODE" | "TRYBASE64DECODE" | "BASE64URLDECODE"
         | "FROM_BASE64" | "FROM_BASE64URL" | "TRYBASE64URLDECODE" => {
             let input = text_arg(parser, depth + 1)?;
@@ -6572,5 +6614,45 @@ mod clickhouse_position_case_insensitive_utf8_parity_tests {
         assert!(parse_select("SELECT positionCaseInsensitiveUTF8('a')").is_err());
         assert!(parse_select("SELECT positionCaseInsensitiveUTF8('abc', 'a', -1)").is_err());
         assert!(parse_select("SELECT positionCaseInsensitiveUTF8('a', 'b', 1, 2)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_base58_decode_tests {
+    use super::*;
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decodes_bitcoin_base58_and_preserves_leading_zero_bytes() {
+        assert_eq!(base58_decode("").unwrap(), "");
+        assert_eq!(base58_decode("9Ajdvzr").unwrap(), "Hello");
+        assert_eq!(base58_decode("3dc8KtHrwM").unwrap(), "Encoded");
+        assert_eq!(base58_decode("1128").unwrap(), "\0\0A");
+        assert_eq!(base58_decode("11").unwrap(), "\0\0");
+        assert_eq!(base58_decode("2").unwrap(), "\u{0001}");
+    }
+
+    #[test]
+    fn validates_alphabet_utf8_and_argument_count() {
+        for invalid in ["0", "O", "I", "l", "invalid"] {
+            assert!(base58_decode(invalid).is_err(), "{invalid}");
+        }
+        assert!(base58_decode("5Q").is_err());
+        assert!(base58_decode(&"z".repeat(4097)).is_err());
+        assert_eq!(
+            value("SELECT base58Decode('9Ajdvzr')"),
+            ConstantValue::Text("Hello".into())
+        );
+        assert_eq!(value("SELECT base58Decode(NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT base58Decode()").is_err());
+        assert!(parse_select("SELECT base58Decode('1', '2')").is_err());
     }
 }
