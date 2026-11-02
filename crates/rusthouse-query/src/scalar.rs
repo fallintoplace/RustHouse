@@ -107,6 +107,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
         || name.eq_ignore_ascii_case("BITCOUNT")
+        || name.eq_ignore_ascii_case("BITTESTANY")
         || name.eq_ignore_ascii_case("BITNOT")
         || name.eq_ignore_ascii_case("BITTEST")
         || name.eq_ignore_ascii_case("ISQRT")
@@ -653,6 +654,33 @@ fn parse_width_bucket(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
 }
 
 /// Modify a single bit in the signed 64-bit two's-complement representation.
+/// Test all supplied indices before returning whether any selected bit is set.
+fn parse_bit_test_any(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "bitTestAny requires '('")?;
+    let value = expression(parser, depth + 1)? as u64;
+    require_token(parser, Token::Comma, "bitTestAny requires bit positions")?;
+    let mut any = false;
+    let mut positions = 0usize;
+    loop {
+        if positions >= 64 {
+            return Err(ParseError("bitTestAny supports at most 64 positions".into()));
+        }
+        let index = expression(parser, depth + 1)?;
+        let bit = u32::try_from(index)
+            .map_err(|_| ParseError("bitTestAny position must be between 0 and 63".into()))?;
+        if bit >= 64 {
+            return Err(ParseError("bitTestAny position must be between 0 and 63".into()));
+        }
+        any |= value & (1_u64 << bit) != 0;
+        positions += 1;
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    require_token(parser, Token::RParen, "bitTestAny requires ')'")?;
+    Ok(i64::from(any))
+}
+
 fn parse_bit_update(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let name = parser.word()?;
     require_token(parser, Token::LParen, "bit update requires '('")?;
@@ -1128,6 +1156,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("FLOOR_TO_MULTIPLE") {
         return parse_floor_to_multiple(parser, depth);
+    }
+    if parser.keyword("BITTESTANY") {
+        return parse_bit_test_any(parser, depth);
     }
     if parser.keyword("BIT_EXTRACT") {
         return parse_bit_extract(parser, depth);
@@ -1630,6 +1661,41 @@ mod small_modulus_primality_perf_tests {
             (2_305_843_009_213_693_951, true),
         ] {
             assert_eq!(prime_u64(value), prime, "{value}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_bit_test_any_tests {
+    use crate::{Projection, parse_select};
+
+    #[test]
+    fn finds_any_set_position_in_signed_bit_patterns() {
+        for (sql, expected) in [
+            ("SELECT bitTestAny(43, 0, 2)", 1),
+            ("SELECT bitTestAny(43, 4, 2)", 0),
+            ("SELECT bitTestAny(-1, 63, 0)", 1),
+            ("SELECT bitTestAny(0, 0, 63)", 0),
+            ("SELECT bitTestAny(8, 1, 3)", 1),
+        ] {
+            assert_eq!(
+                parse_select(sql).unwrap().projection,
+                Projection::Literal(expected),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_every_position_even_after_a_match() {
+        for sql in [
+            "SELECT bitTestAny(1)",
+            "SELECT bitTestAny(1, -1)",
+            "SELECT bitTestAny(1, 64)",
+            "SELECT bitTestAny(1, 0, 64)",
+            "SELECT bitTestAny(1, 0,)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
 }
