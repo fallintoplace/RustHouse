@@ -33,19 +33,14 @@ pub(super) fn execute<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash =
-        HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
-    for (row_index, row) in right_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, right_keys) {
-            if query.any {
-                hash.entry(key).or_insert(Bucket::One(row_index));
-            } else {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(row_index))
-                    .or_insert(Bucket::One(row_index));
-            }
-        }
-    }
+    // Reuse the cardinality-aware hash builder. It only copies unique keys
+    // and can build independent partitions when the dimension is large.
+    let hash = build_join_hash(
+        &right_rows,
+        right_keys,
+        query.any,
+        super::super::query_workers(4),
+    )?;
     let mut count = 0u64;
     if !hash.is_empty() {
         probe_inner(
