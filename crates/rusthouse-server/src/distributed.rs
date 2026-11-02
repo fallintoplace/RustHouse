@@ -361,6 +361,7 @@ fn shard_row_cap(peer: Peer) -> Result<usize, String> {
 /// column-looking substrings inside malformed JSON or unrelated fields.
 /// Schema identifiers and physical types are ASCII and do not need JSON escapes.
 struct PeerSchema {
+    rows: u64,
     columns: Vec<(String, String)>,
 }
 
@@ -435,7 +436,7 @@ fn parse_peer_schema(bytes: &[u8]) -> Result<PeerSchema, String> {
         return Err("peer schema has no rows".into());
     }
     cursor.byte(b':')?;
-    cursor.unsigned_count()?;
+    let rows = cursor.unsigned_count()?;
     cursor.byte(b',')?;
     if cursor.string()? != "columns" {
         return Err("peer schema has no columns".into());
@@ -480,7 +481,7 @@ fn parse_peer_schema(bytes: &[u8]) -> Result<PeerSchema, String> {
     if cursor.index != bytes.len() || columns.is_empty() {
         return Err("trailing data or empty peer schema".into());
     }
-    Ok(PeerSchema { columns })
+    Ok(PeerSchema { rows, columns })
 }
 
 #[cfg(test)]
@@ -642,6 +643,17 @@ fn read_shard(
     }
     if result.content_type != "text/tab-separated-values; charset=utf-8" {
         return Err("peer did not return TSV".into());
+    }
+    // Check for concurrent schema changes and row-count changes around the
+    // peer query. This catches many torn reads, but is not an atomic
+    // multi-shard snapshot or protection against same-row-count rewrites.
+    let after_response = remote::schema(peer, table)?;
+    let after = schema_signature(&after_response)?;
+    if after != schema
+        || parse_peer_schema(&schema_response.body)?.rows
+            != parse_peer_schema(&after_response.body)?.rows
+    {
+        return Err("peer table changed while distributed query was running".into());
     }
     reserve_shard_bytes(used_bytes, result.body.len())?;
     Ok(ShardResponse {
@@ -975,7 +987,10 @@ fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> 
 /// NULL represents an empty shard rather than zero or a failed parse.
 fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>, MergeError> {
     let mut expected_header: Option<&[u8]> = None;
-    let mut signed_total = 0i128;
+    // Signed shard totals may cancel. Peer-order accumulation could overflow
+    // even when the exact global answer fits i128.
+    let mut positive_parts = Vec::new();
+    let mut negative_parts = Vec::new();
     let mut unsigned_total = 0u128;
     let mut seen = false;
     let unsigned = kind
@@ -1017,11 +1032,30 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
                 .ok_or(MergeError::SumOverflow)?;
         } else {
             let partial = digits.parse::<i128>().map_err(|_| MergeError::InvalidSum)?;
-            signed_total = signed_total
-                .checked_add(partial)
-                .ok_or(MergeError::SumOverflow)?;
+            if partial >= 0 {
+                positive_parts.push(partial);
+            } else {
+                negative_parts.push(partial);
+            }
         }
         seen = true;
+    }
+    // Alternate signs when possible. A partial sum outside i128 range is
+    // avoided if the final exact sum is representable, without a BigInt.
+    let mut signed_total = 0i128;
+    while !positive_parts.is_empty() || !negative_parts.is_empty() {
+        let next = if signed_total > 0 && !negative_parts.is_empty() {
+            negative_parts.pop().expect("nonempty")
+        } else if signed_total < 0 && !positive_parts.is_empty() {
+            positive_parts.pop().expect("nonempty")
+        } else if let Some(positive) = positive_parts.pop() {
+            positive
+        } else {
+            negative_parts.pop().expect("nonempty")
+        };
+        signed_total = signed_total
+            .checked_add(next)
+            .ok_or(MergeError::SumOverflow)?;
     }
     let header = expected_header.ok_or(MergeError::InvalidSum)?;
     let result = if !seen {
@@ -1035,6 +1069,36 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
     output.extend_from_slice(result.as_bytes());
     output.push(b'\n');
     Ok(output)
+}
+
+/// Reject a corrupted peer MIN/MAX value that cannot exist in its schema.
+/// Unlike SUM, MIN/MAX must always retain the original physical width.
+fn extrema_fits_declared_type(kind: &str, raw: &str) -> bool {
+    let base = kind
+        .strip_prefix("Nullable(")
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(kind);
+    let (unsigned, bits) = match base {
+        "UInt8" => (true, 8),
+        "UInt16" => (true, 16),
+        "UInt32" => (true, 32),
+        "UInt64" => (true, 64),
+        "UInt128" => (true, 128),
+        "Int8" => (false, 8),
+        "Int16" => (false, 16),
+        "Int32" => (false, 32),
+        "Int64" => (false, 64),
+        "Int128" => (false, 128),
+        _ => return false,
+    };
+    if unsigned {
+        raw.parse::<u128>()
+            .is_ok_and(|value| bits == 128 || value <= (1u128 << bits) - 1)
+    } else {
+        raw.parse::<i128>().is_ok_and(|value| {
+            bits == 128 || (value >= -(1i128 << (bits - 1)) && value <= (1i128 << (bits - 1)) - 1)
+        })
+    }
 }
 
 fn merge_integer_extrema(
@@ -1076,6 +1140,9 @@ fn merge_integer_extrema(
             continue;
         }
         let number = std::str::from_utf8(value).map_err(|_| MergeError::InvalidExtremum)?;
+        if !extrema_fits_declared_type(kind, number) {
+            return Err(MergeError::InvalidExtremum);
+        }
         if unsigned {
             let parsed = number
                 .parse::<u128>()
@@ -1127,6 +1194,45 @@ fn normalized_group_key(raw: &[u8]) -> Result<NormalizedGroupKey<'_>, ()> {
     }
 }
 
+/// A signed shard SUM may temporarily exceed i128 and later cancel with
+/// another shard. Retain a fixed-size signed high limb rather than rejecting
+/// a representable final aggregate. At most 32 peers contribute to each group.
+#[derive(Clone, Copy)]
+struct WideSignedSum {
+    high: i64,
+    low: u128,
+}
+
+impl WideSignedSum {
+    fn new(value: i128) -> Self {
+        Self {
+            high: if value < 0 { -1 } else { 0 },
+            low: value as u128,
+        }
+    }
+
+    fn add(&mut self, value: i128) -> Result<(), MergeError> {
+        let (low, carry) = self.low.overflowing_add(value as u128);
+        let sign = if value < 0 { -1i64 } else { 0 };
+        self.high = self
+            .high
+            .checked_add(sign)
+            .and_then(|high| high.checked_add(i64::from(carry)))
+            .ok_or(MergeError::SumOverflow)?;
+        self.low = low;
+        Ok(())
+    }
+
+    fn to_i128(self) -> Result<i128, MergeError> {
+        let signed = self.low as i128;
+        if self.high == if signed < 0 { -1 } else { 0 } {
+            Ok(signed)
+        } else {
+            Err(MergeError::SumOverflow)
+        }
+    }
+}
+
 fn merge_grouped_integer_sums(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -1151,7 +1257,7 @@ fn merge_grouped_integer_sums_query(
         .unwrap_or(kind)
         .starts_with("UInt");
     let mut positions = HashMap::<NormalizedGroupKey<'_>, usize>::new();
-    let mut groups = Vec::<(&[u8], Option<i128>, Option<u128>)>::new();
+    let mut groups = Vec::<(&[u8], Option<WideSignedSum>, Option<u128>)>::new();
     for (cap, body) in shards {
         if *cap == 0 || !body.ends_with(b"\n") {
             return Err(MergeError::InvalidGroupedSum);
@@ -1221,17 +1327,27 @@ fn merge_grouped_integer_sums_query(
                     let number = number
                         .parse::<i128>()
                         .map_err(|_| MergeError::InvalidGroupedSum)?;
-                    groups[index].1 = Some(
-                        groups[index]
-                            .1
-                            .unwrap_or(0)
-                            .checked_add(number)
-                            .ok_or(MergeError::SumOverflow)?,
-                    );
+                    if let Some(current) = &mut groups[index].1 {
+                        current.add(number)?;
+                    } else {
+                        groups[index].1 = Some(WideSignedSum::new(number));
+                    }
                 }
             }
         }
     }
+    // Convert to i128 only after all shards contribute. A true global
+    // overflow still fails, but intermediate cancellation is allowed.
+    let groups = groups
+        .into_iter()
+        .map(|(key, signed, unsigned)| {
+            Ok((
+                key,
+                signed.map(WideSignedSum::to_i128).transpose()?,
+                unsigned,
+            ))
+        })
+        .collect::<Result<Vec<_>, MergeError>>()?;
     // Reduce all shards before any global filtering, ranking, or paging.
     // Shard-local HAVING or LIMIT would produce incorrect aggregated results.
     let mut selected = (0..groups.len()).collect::<Vec<_>>();
@@ -3311,5 +3427,152 @@ mod strict_distributed_capabilities_tests {
         ] {
             assert!(parse_peer_capabilities(bad.as_bytes()).is_err(), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod peer_preflight_version_checks {
+    use super::*;
+
+    #[test]
+    fn schema_parser_preserves_row_count_for_post_query_consistency_checks() {
+        let first =
+            parse_peer_schema(br#"{"rows":12,"columns":[{"name":"id","type":"UInt64"}]}"#).unwrap();
+        let updated =
+            parse_peer_schema(br#"{"rows":13,"columns":[{"name":"id","type":"UInt64"}]}"#).unwrap();
+        assert_eq!(first.columns, updated.columns);
+        assert_ne!(first.rows, updated.rows);
+    }
+
+    #[test]
+    fn schema_parser_rejects_unrepresentable_and_noncanonical_row_counts() {
+        for bad in [
+            br#"{"rows":18446744073709551616,"columns":[{"name":"id","type":"UInt64"}]}"#
+                .as_slice(),
+            br#"{"rows":01,"columns":[{"name":"id","type":"UInt64"}]}"#.as_slice(),
+            br#"{"rows":-1,"columns":[{"name":"id","type":"UInt64"}]}"#.as_slice(),
+        ] {
+            assert!(parse_peer_schema(bad).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod distributed_extrema_width_validation_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_out_of_range_peer_minmax_values() {
+        for (kind, value) in [
+            ("Int8", "128"),
+            ("Int8", "-129"),
+            ("UInt8", "256"),
+            ("Nullable(UInt16)", "65536"),
+            ("Int16", "32768"),
+            ("UInt64", "18446744073709551616"),
+            ("Int128", "170141183460469231731687303715884105728"),
+        ] {
+            let body = format!("min(amount)\n{value}\n");
+            assert_eq!(
+                merge_integer_extrema(&[(10, body.into_bytes())], kind, AggregateFunction::Min,),
+                Err(MergeError::InvalidExtremum),
+                "{kind}: {value}",
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_signed_unsigned_and_nullable_schema_boundaries() {
+        for (kind, value) in [
+            ("Int8", "-128"),
+            ("Int8", "127"),
+            ("UInt8", "255"),
+            ("Nullable(UInt16)", "65535"),
+            ("Int16", "-32768"),
+            ("Int128", "-170141183460469231731687303715884105728"),
+            ("UInt128", "340282366920938463463374607431768211455"),
+        ] {
+            let body = format!("max(amount)\n{value}\n");
+            assert!(
+                merge_integer_extrema(&[(10, body.into_bytes())], kind, AggregateFunction::Max,)
+                    .is_ok(),
+                "{kind}: {value}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod distributed_signed_sum_cancellation_tests {
+    use super::*;
+
+    fn partial(value: &str) -> (usize, Vec<u8>) {
+        (10, format!("sum(amount)\n{value}\n").into_bytes())
+    }
+
+    #[test]
+    fn allows_signed_cancellation_even_when_peer_order_would_overflow() {
+        let max = i128::MAX.to_string();
+        let min = i128::MIN.to_string();
+        let positive = [partial(&max), partial("1"), partial("-1")];
+        assert_eq!(
+            merge_integer_sums(&positive, "Int128").unwrap(),
+            format!("sum(amount)\n{max}\n").into_bytes()
+        );
+        let negative = [partial(&min), partial("-1"), partial("1")];
+        assert_eq!(
+            merge_integer_sums(&negative, "Int128").unwrap(),
+            format!("sum(amount)\n{min}\n").into_bytes()
+        );
+    }
+
+    #[test]
+    fn still_rejects_truly_overflowing_signed_and_unsigned_totals() {
+        assert_eq!(
+            merge_integer_sums(&[partial(&i128::MAX.to_string()), partial("1")], "Int128"),
+            Err(MergeError::SumOverflow),
+        );
+        let max = u128::MAX.to_string();
+        assert_eq!(
+            merge_integer_sums(&[partial(&max), partial("1")], "UInt128"),
+            Err(MergeError::SumOverflow),
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_signed_cancellation_tests {
+    use super::*;
+
+    fn partial(value: &str) -> (usize, Vec<u8>) {
+        (
+            10,
+            format!("category\tsum(amount)\na\t{value}\n").into_bytes(),
+        )
+    }
+
+    #[test]
+    fn permits_exact_signed_cancellation_across_shards() {
+        let max = i128::MAX.to_string();
+        let values = [partial(&max), partial("1"), partial("-1")];
+        assert_eq!(
+            merge_grouped_integer_sums(&values, 10, "Int128", "category", "amount").unwrap(),
+            format!("category\tsum(amount)\na\t{max}\n").into_bytes(),
+        );
+        let min = i128::MIN.to_string();
+        let values = [partial(&min), partial("-1"), partial("1")];
+        assert_eq!(
+            merge_grouped_integer_sums(&values, 10, "Int128", "category", "amount").unwrap(),
+            format!("category\tsum(amount)\na\t{min}\n").into_bytes(),
+        );
+    }
+
+    #[test]
+    fn rejects_true_global_signed_overflow_after_reducing_all_shards() {
+        let values = [partial(&i128::MAX.to_string()), partial("1")];
+        assert_eq!(
+            merge_grouped_integer_sums(&values, 10, "Int128", "category", "amount"),
+            Err(MergeError::SumOverflow),
+        );
     }
 }
