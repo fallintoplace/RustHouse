@@ -540,6 +540,7 @@ impl Parser {
     }
     fn order_term(&mut self, projection: &Projection) -> Result<OrderBy, ParseError> {
         // Positions are 1-based and refer to projected columns.
+        let wrapped_key = self.take(Token::LParen);
         let column = if matches!(self.tokens.get(self.index), Some(Token::Number(_))) {
             let position = self
                 .number()?
@@ -610,6 +611,9 @@ impl Parser {
         } else {
             self.word()?
         };
+        if wrapped_key && !self.take(Token::RParen) {
+            return Err(ParseError("ORDER BY key requires closing ')'".into()));
+        }
         if matches!(
             projection,
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
@@ -2134,5 +2138,27 @@ mod where_boolean_literal_tests {
                 parse_select(&numeric_sql).unwrap()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod parenthesized_order_by_tests {
+    use super::parse_select;
+
+    #[test]
+    fn wrapped_ordering_keys_match_unwrapped_columns_and_positions() {
+        for (wrapped, plain) in [
+            ("ORDER BY (number) DESC", "ORDER BY number DESC"),
+            ("ORDER BY (1) ASC", "ORDER BY 1 ASC"),
+        ] {
+            let prefix = "SELECT number FROM numbers(10) ";
+            assert_eq!(
+                parse_select(&format!("{prefix}{wrapped}")).unwrap(),
+                parse_select(&format!("{prefix}{plain}")).unwrap()
+            );
+        }
+        assert!(parse_select(
+            "SELECT number FROM numbers(10) ORDER BY (number DESC"
+        ).is_err());
     }
 }
