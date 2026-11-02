@@ -295,6 +295,7 @@ enum Test {
     ByteInSet([u64; 4], bool),
     ShortInSet(Box<[u64; 1024]>, bool),
     NotBetween(Cell, Cell),
+    NumericBetween(Number, Number),
     UuidNotBetween([u8; 16], [u8; 16]),
     IsNull(bool),
     DistinctFrom(Cell, bool),
@@ -441,7 +442,7 @@ fn order_compiled_conditions(conditions: &mut [Condition]) {
         | Test::ByteInSet(..)
         | Test::ShortInSet(..) => 1,
         Test::Compare(Operator::Modulo(_) | Operator::ModuloNe(_), _) => 4,
-        Test::Compare(..) | Test::NotBetween(..) | Test::UuidNotBetween(..) => 2,
+        Test::Compare(..) | Test::NotBetween(..) | Test::NumericBetween(..) | Test::UuidNotBetween(..) => 2,
         Test::In(values, _) if values.len() <= 4 => 2,
         Test::In(..)
         | Test::TextInSet(..)
@@ -513,6 +514,28 @@ pub(super) fn compile(
         })
         .collect::<Result<Vec<_>, _>>()?;
     order_compiled_conditions(&mut conditions);
+    // BETWEEN expands to >= and <= in the parser. Fuse adjacent numeric
+    // bounds so the value is decoded only once for a matching row.
+    let mut index = 0;
+    while index + 1 < conditions.len() {
+        let between = if conditions[index].index == conditions[index + 1].index {
+            match (&conditions[index].test, &conditions[index + 1].test) {
+                (Test::Compare(Operator::Ge, Cell::Numeric(lower)),
+                 Test::Compare(Operator::Le, Cell::Numeric(upper))) => Some((*lower, *upper)),
+                (Test::Compare(Operator::Le, Cell::Numeric(upper)),
+                 Test::Compare(Operator::Ge, Cell::Numeric(lower))) => Some((*lower, *upper)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some((lower, upper)) = between {
+            conditions[index].test = Test::NumericBetween(lower, upper);
+            conditions.remove(index + 1);
+        } else {
+            index += 1;
+        }
+    }
     Ok(conditions)
 }
 
@@ -796,6 +819,19 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     }
                     _ => false,
                 },
+                Test::NumericBetween(lower, upper) => {
+                    let value = match column {
+                        TypedColumn::Numeric(values) => Some(number_at(values, row)),
+                        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+                            Some(number_at(values, row))
+                        }
+                        _ => None,
+                    };
+                    value.is_some_and(|value| {
+                        super::predicates::number_matches(value, *lower, Operator::Ge)
+                            && super::predicates::number_matches(value, *upper, Operator::Le)
+                    })
+                }
                 Test::NotBetween(lower, upper) => {
                     let is_null = match column {
                         TypedColumn::NullableNumeric { nulls, .. }
@@ -3057,5 +3093,78 @@ mod typed_condition_cost_order_tests {
             Test::Compare(Operator::Modulo(_), _)
         ));
         assert!(matches!(conditions[3].test, Test::Like { .. }));
+    }
+}
+
+#[cfg(test)]
+mod fused_numeric_between_tests {
+    use super::*;
+
+    #[test]
+    fn between_matches_two_independent_comparisons_at_boundaries_and_nulls() {
+        let predicates = vec![
+            Predicate::Comparison {
+                column: "amount".into(),
+                operator: Operator::Ge,
+                value: "1000".into(),
+            },
+            Predicate::Comparison {
+                column: "amount".into(),
+                operator: Operator::Le,
+                value: "9000".into(),
+            },
+        ];
+        let indices = HashMap::from([("amount".to_owned(), 0usize)]);
+        let types = HashMap::from([("amount".to_owned(), "Nullable(UInt16)".to_owned())]);
+        let conditions = compile(&predicates, &indices, &types).unwrap();
+        assert_eq!(conditions.len(), 1);
+        assert!(matches!(conditions[0].test, Test::NumericBetween(..)));
+        let batch = [TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt16(vec![999, 1000, 9000, 9001, 5000]),
+            nulls: vec![0, 0, 0, 0, 1],
+        }];
+        let old = vec![
+            Condition {
+                index: 0,
+                test: Test::Compare(Operator::Ge, Cell::Numeric(Number::Unsigned(1000))),
+            },
+            Condition {
+                index: 0,
+                test: Test::Compare(Operator::Le, Cell::Numeric(Number::Unsigned(9000))),
+            },
+        ];
+        for row in 0..5 {
+            assert_eq!(
+                passes(&batch, row, std::slice::from_ref(&conditions)),
+                passes(&batch, row, std::slice::from_ref(&old)),
+                "row {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn fused_float_between_preserves_nan_semantics() {
+        let predicates = vec![
+            Predicate::Comparison {
+                column: "x".into(),
+                operator: Operator::Ge,
+                value: "-1".into(),
+            },
+            Predicate::Comparison {
+                column: "x".into(),
+                operator: Operator::Le,
+                value: "1".into(),
+            },
+        ];
+        let indices = HashMap::from([("x".to_owned(), 0usize)]);
+        let types = HashMap::from([("x".to_owned(), "Float64".to_owned())]);
+        let conditions = compile(&predicates, &indices, &types).unwrap();
+        let batch = [TypedColumn::Numeric(NumericColumn::Float64(vec![
+            f64::NAN, -1.0, 0.0, 1.0, 2.0,
+        ]))];
+        let results = (0..5)
+            .map(|row| passes(&batch, row, std::slice::from_ref(&conditions)))
+            .collect::<Vec<_>>();
+        assert_eq!(results, vec![false, true, true, true, false]);
     }
 }
