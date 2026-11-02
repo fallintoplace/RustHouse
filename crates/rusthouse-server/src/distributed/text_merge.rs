@@ -1,0 +1,204 @@
+//! Exact global top-K for non-nullable String keys in TSV shard prefixes.
+use super::{MAX_RESPONSE_BYTES, MergeError};
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+use std::ops::Range;
+
+struct TextRow {
+    range: Range<usize>,
+    key: Vec<u8>,
+}
+
+#[derive(PartialEq, Eq)]
+struct TextHead {
+    key: Vec<u8>,
+    shard: usize,
+    index: usize,
+    descending: bool,
+}
+
+impl Ord for TextHead {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let cmp = self.key.cmp(&other.key);
+        (if self.descending { cmp } else { cmp.reverse() })
+            .then_with(|| other.shard.cmp(&self.shard))
+            .then_with(|| other.index.cmp(&self.index))
+    }
+}
+
+impl PartialOrd for TextHead {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+pub(super) fn merge_sorted_text_rows_page(
+    shards: &[(usize, Vec<u8>)],
+    columns: &[&str],
+    descending: bool,
+    offset: usize,
+    limit: usize,
+    max_rows: usize,
+) -> Result<Vec<u8>, MergeError> {
+    if !(1..=16).contains(&columns.len()) || shards.is_empty() {
+        return Err(MergeError::InvalidSortedScan);
+    }
+    let prefix = offset
+        .checked_add(limit)
+        .ok_or(MergeError::CoordinatorLimit)?;
+    let header = format!("{}\n", columns.join("\t"));
+    let mut all_rows = Vec::with_capacity(shards.len());
+    let mut decoded_key_bytes = 0usize;
+    for (cap, body) in shards {
+        if *cap <= prefix || !body.ends_with(b"\n") || !body.starts_with(header.as_bytes()) {
+            return Err(MergeError::InvalidSortedScan);
+        }
+        let mut rows = Vec::new();
+        let mut position = header.len();
+        let mut previous: Option<Vec<u8>> = None;
+        while position < body.len() {
+            let end = body[position..]
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .ok_or(MergeError::InvalidSortedScan)?
+                + position
+                + 1;
+            let fields = body[position..end - 1].split(|&byte| byte == b'\t');
+            let mut first = None;
+            let mut count = 0usize;
+            for field in fields {
+                count += 1;
+                if count > columns.len() {
+                    return Err(MergeError::InvalidSortedScan);
+                }
+                if field != br"\N" {
+                    rusthouse_format::validate_tsv_field(field)
+                        .map_err(|_| MergeError::InvalidSortedScan)?;
+                }
+                if count == 1 {
+                    if field == br"\N" {
+                        return Err(MergeError::InvalidSortedScan);
+                    }
+                    first = Some(
+                        rusthouse_format::decode_tsv_field(field)
+                            .map_err(|_| MergeError::InvalidSortedScan)?,
+                    );
+                }
+            }
+            if count != columns.len() {
+                return Err(MergeError::InvalidSortedScan);
+            }
+            let key = first.ok_or(MergeError::InvalidSortedScan)?;
+            if previous.as_ref().is_some_and(|prior| {
+                if descending {
+                    prior < &key
+                } else {
+                    prior > &key
+                }
+            }) {
+                return Err(MergeError::InvalidSortedScan);
+            }
+            decoded_key_bytes = decoded_key_bytes
+                .checked_add(key.len())
+                .filter(|&bytes| bytes <= MAX_RESPONSE_BYTES)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            previous = Some(key.clone());
+            rows.push(TextRow {
+                range: position..end,
+                key,
+            });
+            if rows.len() > prefix || rows.len() >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            position = end;
+        }
+        all_rows.push(rows);
+    }
+
+    let mut heap = BinaryHeap::new();
+    for (shard, rows) in all_rows.iter().enumerate() {
+        if let Some(first) = rows.first() {
+            heap.push(TextHead {
+                key: first.key.clone(),
+                shard,
+                index: 0,
+                descending,
+            });
+        }
+    }
+    let mut result = header.into_bytes();
+    let mut seen = 0usize;
+    let mut returned = 0usize;
+    while let Some(head) = heap.pop() {
+        let row = &all_rows[head.shard][head.index];
+        if seen >= offset && returned < limit {
+            let bytes = &shards[head.shard].1[row.range.clone()];
+            if returned >= max_rows
+                || result
+                    .len()
+                    .checked_add(bytes.len())
+                    .is_none_or(|size| size > MAX_RESPONSE_BYTES)
+            {
+                return Err(MergeError::CoordinatorLimit);
+            }
+            result.extend_from_slice(bytes);
+            returned += 1;
+        }
+        seen += 1;
+        if returned >= limit {
+            break;
+        }
+        if let Some(next) = all_rows[head.shard].get(head.index + 1) {
+            heap.push(TextHead {
+                key: next.key.clone(),
+                shard: head.shard,
+                index: head.index + 1,
+                descending,
+            });
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merges_decoded_string_keys_in_global_order() {
+        let shards = [
+            (10, b"name\tid\nA\\n\t1\nc\t2\n".to_vec()),
+            (10, b"name\tid\nb\t3\nd\t4\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_sorted_text_rows_page(&shards, &["name", "id"], false, 1, 2, 2).unwrap(),
+            b"name\tid\nb\t3\nc\t2\n"
+        );
+    }
+
+    #[test]
+    fn detects_corrupt_order_and_nullable_keys() {
+        let bad = [(10, b"name\nz\na\n".to_vec())];
+        assert_eq!(
+            merge_sorted_text_rows_page(&bad, &["name"], false, 0, 2, 2),
+            Err(MergeError::InvalidSortedScan),
+        );
+        let missing = [(10, b"name\n\\N\n".to_vec())];
+        assert_eq!(
+            merge_sorted_text_rows_page(&missing, &["name"], false, 0, 1, 1),
+            Err(MergeError::InvalidSortedScan),
+        );
+    }
+
+    #[test]
+    fn uses_stable_peer_order_for_equal_keys() {
+        let shards = [
+            (10, b"name\tid\na\t1\na\t2\n".to_vec()),
+            (10, b"name\tid\na\t3\nb\t4\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_sorted_text_rows_page(&shards, &["name", "id"], false, 0, 3, 3).unwrap(),
+            b"name\tid\na\t1\na\t2\na\t3\n"
+        );
+    }
+}
