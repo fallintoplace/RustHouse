@@ -271,17 +271,31 @@ pub(super) fn binary_string(bytes: &[u8]) -> Result<String, ParseError> {
 }
 
 pub(super) fn parse_mac_address(input: &str) -> Option<u64> {
-    let mut value = 0_u64;
-    let mut count = 0;
-    for group in input.split(':') {
-        if group.len() != 2 || !group.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    fn digit(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = input.as_bytes();
+    // Six hex pairs and five separators always occupy exactly 17 bytes.
+    if bytes.len() != 17 {
+        return None;
+    }
+    let mut value = 0u64;
+    for group in 0..6 {
+        let offset = group * 3;
+        if group != 0 && bytes[offset - 1] != b':' {
             return None;
         }
-        let byte = u8::from_str_radix(group, 16).ok()?;
-        value = (value << 8) | u64::from(byte);
-        count += 1;
+        let high = digit(bytes[offset])?;
+        let low = digit(bytes[offset + 1])?;
+        value = (value << 8) | u64::from((high << 4) | low);
     }
-    (count == 6).then_some(value)
+    Some(value)
 }
 
 pub(super) fn parse_readable_size_bytes(input: &str) -> Option<i64> {
@@ -640,4 +654,22 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
     }
     String::from_utf8(bytes)
         .map_err(|_| ParseError("unhex constant is not valid UTF-8".into()))
+}
+
+#[cfg(test)]
+mod mac_pair_decode_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn parses_all_six_hex_pairs_and_rejects_malformed_addresses() {
+        assert_eq!(parse_mac_address("00:01:0a:0B:ff:FE"), Some(0x0001_0a0b_fffe));
+        assert_eq!(parse_mac_address("ff:ff:ff:ff:ff:ff"), Some(0xffff_ffff_ffff));
+        for invalid in [
+            "", "00:00:00:00:00", "00:00:00:00:00:00:00",
+            "00-00-00-00-00-00", "0:00:00:00:00:00",
+            "00:00:00:00:00:gg", "é0:00:00:00:00:00",
+        ] {
+            assert_eq!(parse_mac_address(invalid), None, "{invalid}");
+        }
+    }
 }
