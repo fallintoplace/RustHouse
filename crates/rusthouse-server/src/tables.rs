@@ -1,4 +1,7 @@
-use super::{Config, LimitedWriter, Response, write_json_string};
+use super::{
+    Config, CsvWriter, JsonArraySink, JsonCompactEachRowWriter, JsonlWriter, LimitedWriter,
+    MarkdownWriter, QueryFormat, Response, SqlValuesWriter, WithoutHeader, write_json_string,
+};
 use rusthouse_query::{Ddl, parse_ddl};
 use rusthouse_storage::acquire_database_lock;
 use std::collections::HashSet;
@@ -146,6 +149,79 @@ fn write_table_listing<W: Write>(output: &mut W, names: &[String]) -> io::Result
         write_json_string(output, name)?;
     }
     output.write_all(b"]}\n")
+}
+
+/// Expose the catalog through read-only SQL without opening stored part rows.
+pub(super) fn handle_sql(config: &Config, format: QueryFormat) -> Response {
+    if config.part.is_some() {
+        return Response::text("400 Bad Request", "SHOW TABLES requires --database\n");
+    }
+    let Some(database) = config.database.as_deref() else {
+        return Response::text("400 Bad Request", "SHOW TABLES requires --database\n");
+    };
+    let _lock = match acquire_database_lock(database, false) {
+        Ok(lock) => lock,
+        Err(error) => return Response::text("409 Conflict", &format!("{error}\n")),
+    };
+    let names = match table_names(database) {
+        Ok(names) => names,
+        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+    };
+    let emit = |output: &mut dyn Write| -> io::Result<()> {
+        output.write_all(b"name\n")?;
+        for name in &names {
+            output.write_all(name.as_bytes())?;
+            output.write_all(b"\n")?;
+        }
+        Ok(())
+    };
+    let mut writer = LimitedWriter::new();
+    let write = match format {
+        QueryFormat::Tsv => emit(&mut writer),
+        QueryFormat::TsvNoHeader => emit(&mut WithoutHeader::new(&mut writer)),
+        QueryFormat::Csv => emit(&mut CsvWriter::new(&mut writer)),
+        QueryFormat::CsvNoHeader => emit(&mut CsvWriter::new(WithoutHeader::new(&mut writer))),
+        QueryFormat::Jsonl => emit(&mut JsonlWriter::new(&mut writer)),
+        QueryFormat::Markdown => emit(&mut MarkdownWriter::new(&mut writer)),
+        QueryFormat::SqlValues => {
+            let mut values = SqlValuesWriter::new(&mut writer);
+            emit(&mut values).and_then(|()| values.finish())
+        }
+        QueryFormat::JsonCompactEachRow => {
+            let mut compact = JsonCompactEachRowWriter::new(&mut writer);
+            emit(&mut compact).and_then(|()| compact.finish())
+        }
+        QueryFormat::Json | QueryFormat::JsonPretty => {
+            let mut array = if matches!(format, QueryFormat::JsonPretty) {
+                JsonArraySink::new_pretty(&mut writer)
+            } else {
+                JsonArraySink::new(&mut writer)
+            };
+            emit(&mut JsonlWriter::new(&mut array)).and_then(|()| array.finish())
+        }
+    };
+    match write {
+        Ok(()) => Response {
+            status: "200 OK",
+            content_type: match format {
+                QueryFormat::Tsv | QueryFormat::TsvNoHeader => {
+                    "text/tab-separated-values; charset=utf-8"
+                }
+                QueryFormat::Csv | QueryFormat::CsvNoHeader => "text/csv; charset=utf-8",
+                QueryFormat::Jsonl | QueryFormat::JsonCompactEachRow => {
+                    "application/x-ndjson; charset=utf-8"
+                }
+                QueryFormat::Json | QueryFormat::JsonPretty => "application/json; charset=utf-8",
+                QueryFormat::SqlValues => "text/plain; charset=utf-8",
+                QueryFormat::Markdown => "text/markdown; charset=utf-8",
+            },
+            body: writer.data,
+        },
+        Err(_) if writer.exceeded => {
+            Response::text("413 Payload Too Large", "table listing exceeds 16 MiB\n")
+        }
+        Err(error) => Response::text("400 Bad Request", &format!("{error}\n")),
+    }
 }
 
 pub(super) fn handle(method: &str, body: &[u8], config: &Config) -> Response {

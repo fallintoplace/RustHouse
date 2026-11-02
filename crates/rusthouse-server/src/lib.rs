@@ -400,6 +400,20 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         request_format.unwrap_or(QueryFormat::Tsv)
     };
     let sql = statement.to_owned();
+    // Discovery SQL uses the same validated schemas and read lock as /tables.
+    if sql
+        .trim_start()
+        .get(..4)
+        .is_some_and(|word| word.eq_ignore_ascii_case("SHOW"))
+    {
+        match rusthouse_query::parse_ddl(&sql) {
+            Ok(Some(rusthouse_query::Ddl::ShowTables)) if path != "/explain" => {
+                return tables::handle_sql(config, format);
+            }
+            Ok(_) => return Response::text("400 Bad Request", "unsupported metadata SQL\n"),
+            Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+        }
+    }
     // Join queries need multiple resolved table sources and an independent
     // bounded executor. Delegate before the single-source SELECT parser.
     match parse_join(&sql) {
