@@ -181,6 +181,21 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             finish_ddl(&mut parser)?;
             return Ok(Some(Ddl::RenameColumn { table, from, to }));
         }
+        if parser.keyword("ALTER") {
+            if !parser.keyword("COLUMN") {
+                return Err(ParseError("expected COLUMN after ALTER".into()));
+            }
+            let name = identifier(&mut parser)?;
+            if !parser.keyword("TYPE") {
+                return Err(ParseError("expected TYPE after ALTER COLUMN".into()));
+            }
+            let data_type = data_type(&mut parser, 0)?;
+            finish_ddl(&mut parser)?;
+            return Ok(Some(Ddl::ModifyColumn {
+                table,
+                column: ColumnDef { name, data_type },
+            }));
+        }
         if parser.keyword("MODIFY") {
             if !parser.keyword("COLUMN") {
                 return Err(ParseError("expected COLUMN after MODIFY".into()));
@@ -638,6 +653,37 @@ mod show_columns_tests {
             "SHOW COLUMNS FROM events; DROP TABLE events",
             "DESC TABLE",
             "DESC TABLE events ORDER BY name",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod alter_column_type_tests {
+    use super::*;
+
+    #[test]
+    fn alter_column_type_reuses_existing_modify_plan() {
+        let expected = parse_ddl("ALTER TABLE measurements MODIFY COLUMN amount UInt64").unwrap();
+        assert_eq!(
+            parse_ddl("ALTER TABLE measurements ALTER COLUMN amount TYPE UInt64").unwrap(),
+            expected
+        );
+        assert_eq!(
+            parse_ddl("alter table measurements alter column amount type UInt64;").unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn malformed_alter_column_type_does_not_change_schema() {
+        for sql in [
+            "ALTER TABLE measurements ALTER amount TYPE UInt64",
+            "ALTER TABLE measurements ALTER COLUMN amount",
+            "ALTER TABLE measurements ALTER COLUMN amount UInt64",
+            "ALTER TABLE measurements ALTER COLUMN amount TYPE Unknown",
+            "ALTER TABLE measurements ALTER COLUMN amount TYPE UInt64 extra",
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
