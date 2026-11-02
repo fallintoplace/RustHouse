@@ -67,6 +67,7 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 index += 1;
                 continue;
             }
+            b'[' => scan_bracket_identifier(sql, &mut index)?,
             b'\'' => scan_string(sql, &mut index)?,
             b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
@@ -535,5 +536,29 @@ mod bulk_comment_span_tests {
         }
         let deep = format!("SELECT {} 1 {}", "/*".repeat(33), "*/".repeat(33));
         assert!(tokenize(&deep).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod bracket_identifier_tests {
+    use super::*;
+
+    #[test]
+    fn bracket_identifiers_use_the_same_safe_names_as_quoted_identifiers() {
+        assert_eq!(
+            tokenize("SELECT [select], [user_2] FROM [tables]").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::QuotedWord("select".into()),
+                Token::Comma,
+                Token::QuotedWord("user_2".into()),
+                Token::Word("FROM".into()),
+                Token::QuotedWord("tables".into()),
+            ]
+        );
+        for invalid in ["SELECT [not closed", "SELECT [a b]", "SELECT [../evil]"] {
+            assert!(tokenize(invalid).is_err(), "{invalid}");
+        }
     }
 }
