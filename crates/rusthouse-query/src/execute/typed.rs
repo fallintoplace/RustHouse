@@ -728,6 +728,28 @@ fn matches_in_at(column: &TypedColumn, row: usize, targets: &[Cell], negated: bo
                 != negated
         });
     }
+    // Tiny numeric IN lists do not need a temporary Cell for each row.
+    // Borrow the decoded numeric vector, preserving NULL and NaN behavior.
+    let number = match column {
+        TypedColumn::Numeric(values) => Some(number_at(values, row)),
+        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+            Some(number_at(values, row))
+        }
+        TypedColumn::NullableNumeric { .. } => None,
+        _ => None,
+    };
+    if let Some(value) = number {
+        return targets
+            .iter()
+            .any(|target| {
+                matches!(target, Cell::Numeric(expected)
+                    if super::predicates::number_matches(value, *expected, Operator::Eq))
+            })
+            != negated;
+    }
+    if matches!(column, TypedColumn::NullableNumeric { .. }) {
+        return false;
+    }
     let value = cell(column, row);
     if matches!(value, Cell::Null) {
         return false;
@@ -3096,5 +3118,58 @@ mod typed_condition_cost_order_tests {
             Test::Compare(Operator::Modulo(_), _)
         ));
         assert!(matches!(conditions[3].test, Test::Like { .. }));
+    }
+}
+
+#[cfg(test)]
+mod short_numeric_in_borrowed_tests {
+    use super::*;
+
+    #[test]
+    fn short_in_and_not_in_keep_numeric_null_and_nan_semantics() {
+        let numeric = [TypedColumn::NullableNumeric {
+            values: NumericColumn::Int64(vec![-3, 7, 8, 0]),
+            nulls: vec![0, 0, 0, 1],
+        }];
+        let members = vec![
+            Cell::Numeric(Number::Signed(-3)),
+            Cell::Numeric(Number::Signed(8)),
+        ];
+        for negated in [false, true] {
+            let conditions = [vec![Condition {
+                index: 0,
+                test: Test::In(members.clone(), negated),
+            }]];
+            let expected = if negated {
+                [false, true, false, false]
+            } else {
+                [true, false, true, false]
+            };
+            for (row, &value) in expected.iter().enumerate() {
+                assert_eq!(passes(&numeric, row, &conditions), value, "row {row}");
+            }
+        }
+
+        let floats = [TypedColumn::Numeric(NumericColumn::Float64(vec![
+            f64::NAN, -0.0, 0.0, 1.5, 3.0,
+        ]))];
+        let targets = vec![
+            Cell::Numeric(Number::Float(0.0)),
+            Cell::Numeric(Number::Float(1.5)),
+        ];
+        for negated in [false, true] {
+            let conditions = [vec![Condition {
+                index: 0,
+                test: Test::In(targets.clone(), negated),
+            }]];
+            let expected = if negated {
+                [true, false, false, false, true]
+            } else {
+                [false, true, true, true, false]
+            };
+            for (row, &value) in expected.iter().enumerate() {
+                assert_eq!(passes(&floats, row, &conditions), value, "row {row}");
+            }
+        }
     }
 }
