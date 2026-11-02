@@ -42,6 +42,40 @@ fn scan_exponent(bytes: &[u8], index: &mut usize) -> Result<(), ParseError> {
 pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
     let start = *index;
+    let negative = bytes[start] == b'-';
+    let unsigned_start = start + usize::from(negative);
+    if bytes.get(unsigned_start) == Some(&b'0')
+        && matches!(bytes.get(unsigned_start + 1), Some(b'x' | b'X'))
+    {
+        *index = unsigned_start + 2;
+        let digits_start = *index;
+        while let Some(&byte) = bytes.get(*index) {
+            if byte.is_ascii_hexdigit() {
+                *index += 1;
+            } else if byte == b'_'
+                && *index > digits_start
+                && bytes
+                    .get(*index + 1)
+                    .is_some_and(|next| next.is_ascii_hexdigit())
+            {
+                *index += 1;
+            } else {
+                break;
+            }
+        }
+        if *index == digits_start {
+            return Err(ParseError("hex literal requires digits".into()));
+        }
+        let digits = sql[digits_start..*index].replace('_', "");
+        let magnitude = u128::from_str_radix(&digits, 16)
+            .map_err(|_| ParseError("hex integer literal overflows UInt128".into()))?;
+        let value = if negative {
+            format!("-{magnitude}")
+        } else {
+            magnitude.to_string()
+        };
+        return Ok(Token::Number(value));
+    }
     if bytes[*index] == b'-' {
         *index += 1;
         if bytes.get(*index) != Some(&b'.') {
@@ -442,5 +476,39 @@ mod clickhouse_control_escape_tests {
             Token::String("one\u{0007}two\u{000b}three\\_four".into())
         );
         assert_eq!(cursor, sql.len());
+    }
+}
+
+
+#[cfg(test)]
+mod hex_integer_literal_tests {
+    use super::*;
+
+    #[test]
+    fn converts_hex_literals_to_canonical_integer_tokens() {
+        for (input, expected) in [
+            ("0x2a", "42"),
+            ("0XFF", "255"),
+            ("-0x10", "-16"),
+            ("0xAB_CD", "43981"),
+        ] {
+            let mut cursor = 0;
+            assert_eq!(
+                scan_number(input, &mut cursor).unwrap(),
+                Token::Number(expected.into())
+            );
+            assert_eq!(cursor, input.len());
+        }
+        assert!(matches!(
+            crate::parse_select("SELECT 0x2a").unwrap().projection,
+            crate::Projection::Literal(42)
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_and_overflowing_hex_literals() {
+        for input in ["0x", "0x_1", "0x1_", "0x1__2", "0x100000000000000000000000000000000"] {
+            assert!(crate::parse_select(&format!("SELECT {input}")).is_err(), "{input}");
+        }
     }
 }
