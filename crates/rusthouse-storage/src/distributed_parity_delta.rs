@@ -51,24 +51,24 @@ pub fn replace_double_parity_source(
         factor = gf_mul(factor, 2);
     }
     let length = old.len().max(new.len());
-    // The GF multiplier is constant for this replacement. Cache its 256
-    // possible outputs only when the stripe is large enough to amortize it.
-    let table = (length >= 1024).then(|| {
-        let mut table = [0u8; 256];
-        for (value, product) in table.iter_mut().enumerate() {
-            *product = gf_mul(factor, value as u8);
+    if length < 1024 {
+        for offset in 0..length {
+            let before = old.get(offset).copied().unwrap_or(0);
+            let after = new.get(offset).copied().unwrap_or(0);
+            let delta = before ^ after;
+            parity.xor[offset] ^= delta;
+            parity.weighted[offset] ^= gf_mul(factor, delta);
         }
-        table
-    });
-    for offset in 0..length {
-        let before = old.get(offset).copied().unwrap_or(0);
-        let after = new.get(offset).copied().unwrap_or(0);
-        let delta = before ^ after;
-        parity.xor[offset] ^= delta;
-        parity.weighted[offset] ^= match &table {
-            Some(table) => table[usize::from(delta)],
-            None => gf_mul(factor, delta),
-        };
+    } else {
+        // The changed source has one coefficient for all of its bytes.
+        let products: [u8; 256] = std::array::from_fn(|byte| gf_mul(factor, byte as u8));
+        for offset in 0..length {
+            let before = old.get(offset).copied().unwrap_or(0);
+            let after = new.get(offset).copied().unwrap_or(0);
+            let delta = before ^ after;
+            parity.xor[offset] ^= delta;
+            parity.weighted[offset] ^= products[usize::from(delta)];
+        }
     }
     Ok(())
 }
@@ -134,6 +134,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn long_updates_match_reencoding_across_all_byte_values() {
+        let old = (0..4096).map(|index| index as u8).collect::<Vec<_>>();
+        let other = (0..4096).map(|index| (index * 53) as u8).collect::<Vec<_>>();
+        let replacement = (0..3073).map(|index| (index * 29 + 17) as u8).collect::<Vec<_>>();
+        let initial = encode_double_parity(&[&old, &other]).unwrap();
+        let mut updated = initial.clone();
+        replace_double_parity_source(&mut updated, 2, 0, &old, &replacement).unwrap();
+        let mut expected = encode_double_parity(&[&replacement, &other]).unwrap();
+        expected.xor.resize(initial.xor.len(), 0);
+        expected.weighted.resize(initial.weighted.len(), 0);
+        assert_eq!(updated, expected);
     }
 
     #[test]

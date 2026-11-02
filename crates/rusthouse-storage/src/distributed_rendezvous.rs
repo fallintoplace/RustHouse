@@ -122,21 +122,23 @@ fn rank_replicas_with_seed(seed: u64, nodes: &[String], replicas: usize) -> Vec<
             second.expect("at least two validated nodes").1.to_owned(),
         ];
     }
-    let mut ranked: Vec<(u64, &str)> = nodes
-        .iter()
-        .map(|node| (score_with_seed(seed, node), node.as_str()))
-        .collect();
+    // Membership is capped at 64. Rank on the stack rather than allocating
+    // one temporary tuple vector for every shard in a placement batch.
+    let mut storage = [(0u64, ""); MAX_PLACEMENT_NODES];
+    for (index, node) in nodes.iter().enumerate() {
+        storage[index] = (score_with_seed(seed, node), node.as_str());
+    }
+    let ranked = &mut storage[..nodes.len()];
     if replicas < ranked.len() {
         ranked.select_nth_unstable_by(replicas, |left, right| {
             right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
         });
-        ranked.truncate(replicas);
     }
-    ranked.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
-    ranked
-        .into_iter()
-        .take(replicas)
-        .map(|(_, node)| node.to_owned())
+    ranked[..replicas]
+        .sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
+    ranked[..replicas]
+        .iter()
+        .map(|(_, node)| (*node).to_owned())
         .collect()
 }
 
@@ -194,6 +196,29 @@ pub fn replicas_for_many(
 #[cfg(test)]
 mod repeated_shard_batch_placement_tests {
     use super::*;
+
+    #[test]
+    fn stack_ranking_matches_full_order_for_three_to_sixty_four_replicas() {
+        let nodes = (0..64)
+            .map(|number| format!("replica_{number:02}"))
+            .collect::<Vec<_>>();
+        for replicas in [3usize, 4, 7, 31, 63, 64] {
+            let seed = shard_seed("part_42");
+            let mut expected = nodes
+                .iter()
+                .map(|node| (score_with_seed(seed, node), node.as_str()))
+                .collect::<Vec<_>>();
+            expected.sort_unstable_by(|left, right| {
+                right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
+            });
+            let expected = expected
+                .into_iter()
+                .take(replicas)
+                .map(|(_, node)| node.to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(replicas_for("part_42", &nodes, replicas).unwrap(), expected);
+        }
+    }
 
     #[test]
     fn repeated_large_batches_match_independent_rendezvous_placements() {

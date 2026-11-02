@@ -44,7 +44,13 @@ impl ReaderPinLedger {
             return Err("invalid reader snapshot pin or clock");
         }
         if let Some(&previous) = self.highest.get(&pin.reader) {
-            if pin.token < previous { return Err("stale reader fencing token"); }
+            if pin.token < previous
+                || (pin.token == previous
+                    && self.active.get(&pin.reader)
+                        .is_none_or(|active| active.expires_at_ms <= now_ms))
+            {
+                return Err("stale reader fencing token");
+            }
         }
         if let Some(previous) = self.active.get(&pin.reader) {
             if pin.token == previous.token
@@ -123,5 +129,33 @@ mod tests {
         ledger.pin(pin("reader", 1, 1, 110), 100, 10).unwrap();
         assert!(ledger.expire(99).is_err());
         assert_eq!(ledger.pinned_versions(101).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod expired_pin_token_tests {
+    use super::*;
+
+    #[test]
+    fn expired_reader_token_cannot_repin_a_snapshot() {
+        let mut ledger = ReaderPinLedger::new();
+        let make_pin = |token: u64, generation: u64, expiry: u64| ReaderPin {
+            reader: "reader".into(),
+            snapshot: SnapshotVersion {
+                epoch: 1,
+                generation,
+                fingerprint: u128::from(generation),
+            },
+            token: FenceToken { epoch: 1, sequence: token },
+            expires_at_ms: expiry,
+        };
+        ledger.pin(make_pin(8, 2, 200), 100, 100).unwrap();
+        // An expired entry must not be revived even before expire() is called.
+        assert!(ledger.pin(make_pin(8, 2, 300), 200, 100).is_err());
+        assert!(ledger.pin(make_pin(8, 3, 300), 200, 100).is_err());
+        assert_eq!(ledger.expire(200).unwrap(), 1);
+        assert!(ledger.pin(make_pin(8, 2, 300), 200, 100).is_err());
+        ledger.pin(make_pin(9, 3, 300), 200, 100).unwrap();
+        assert_eq!(ledger.pinned_versions(201).len(), 1);
     }
 }

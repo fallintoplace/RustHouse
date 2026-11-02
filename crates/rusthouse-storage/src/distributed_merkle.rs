@@ -362,11 +362,16 @@ impl MerkleInventory {
         let mut siblings = Vec::new();
         for level in self.levels.iter().take(self.levels.len() - 1) {
             let mut next = Vec::new();
-            for &position in &positions {
+            for (at, &position) in positions.iter().enumerate() {
                 let sibling = position ^ 1;
-                if sibling < level.len()
-                    && positions.binary_search(&sibling).is_err()
-                {
+                // A selected adjacent leaf must be the immediately previous
+                // or next sorted position; no binary search is required.
+                let present = if position & 1 == 0 {
+                    positions.get(at + 1) == Some(&sibling)
+                } else {
+                    at > 0 && positions[at - 1] == sibling
+                };
+                if sibling < level.len() && !present {
                     siblings.push(level[sibling]);
                 }
                 let parent = position / 2;
@@ -412,12 +417,17 @@ impl MerkleInventory {
         let empty_right = sha256(&[3]);
         while width > 1 {
             let mut next: Vec<(usize, Digest)> = Vec::with_capacity(positions.len());
-            for &(index, digest) in &positions {
+            for (at, &(index, digest)) in positions.iter().enumerate() {
                 let sibling_index = index ^ 1;
-                let sibling = match positions.binary_search_by_key(&sibling_index, |item| item.0) {
-                    Ok(at) => positions[at].1,
-                    Err(_) if sibling_index >= width => empty_right,
-                    Err(_) => {
+                let adjacent = if index & 1 == 0 {
+                    positions.get(at + 1)
+                } else {
+                    at.checked_sub(1).and_then(|previous| positions.get(previous))
+                };
+                let sibling = match adjacent {
+                    Some(&(other_index, digest)) if other_index == sibling_index => digest,
+                    _ if sibling_index >= width => empty_right,
+                    _ => {
                         let Some(value) = proof.siblings.get(consumed).copied() else {
                             return false;
                         };
@@ -496,6 +506,29 @@ mod compact_multiproof_tests {
                 }).sum::<usize>();
                 assert!(proof.siblings.len() <= individual);
             }
+        }
+    }
+
+    #[test]
+    fn large_mixed_multiproof_matches_independent_leaf_proofs() {
+        let entries = (0..1025).map(object).collect::<Vec<_>>();
+        let tree = MerkleInventory::new(&entries).unwrap();
+        let selected_indices = (0..entries.len())
+            .filter(|index| index % 7 == 0 || index % 13 == 1)
+            .collect::<Vec<_>>();
+        let proof = tree.multi_proof(&selected_indices).unwrap();
+        let selected = selected_indices
+            .iter()
+            .map(|&index| (index, entries[index].clone()))
+            .collect::<Vec<_>>();
+        assert!(MerkleInventory::verify_multi_proof(tree.root(), &selected, &proof));
+        for &position in &[0usize, 1, 8, 1024] {
+            let alone = tree.multi_proof(&[position]).unwrap();
+            assert!(MerkleInventory::verify_multi_proof(
+                tree.root(),
+                &[(position, entries[position].clone())],
+                &alone,
+            ));
         }
     }
 

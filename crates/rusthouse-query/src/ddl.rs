@@ -20,6 +20,12 @@ pub enum Ddl {
     ShowTablesNotLike {
         pattern: String,
     },
+    ShowTablesILike {
+        pattern: String,
+    },
+    ShowTablesNotILike {
+        pattern: String,
+    },
     ShowCreateTable {
         name: String,
     },
@@ -41,6 +47,9 @@ pub enum Ddl {
         if_exists: bool,
     },
     TruncateTable {
+        name: String,
+    },
+    TruncateTableIfExists {
         name: String,
     },
     OptimizeTable {
@@ -78,9 +87,8 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         index: 0,
     };
     if parser.keyword("DESCRIBE") || parser.keyword("DESC") {
-        if !parser.keyword("TABLE") {
-            return Err(ParseError("expected TABLE after DESCRIBE".into()));
-        }
+        // TABLE is optional in both DESCRIBE and DESC.
+        parser.keyword("TABLE");
         let name = identifier(&mut parser)?;
         finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::DescribeTable { name }));
@@ -88,10 +96,12 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     if parser.keyword("SHOW") {
         let statement = if parser.keyword("TABLES") {
             let negated = parser.keyword("NOT");
-            if negated && !parser.keyword("LIKE") {
-                return Err(ParseError("SHOW TABLES NOT requires LIKE".into()));
+            let like = parser.keyword("LIKE");
+            let ilike = !like && parser.keyword("ILIKE");
+            if negated && !like && !ilike {
+                return Err(ParseError("SHOW TABLES NOT requires LIKE or ILIKE".into()));
             }
-            if negated || parser.keyword("LIKE") {
+            if like || ilike {
                 let pattern = match parser.tokens.get(parser.index) {
                     Some(Token::String(pattern)) => pattern.clone(),
                     _ => {
@@ -106,17 +116,18 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                     ));
                 }
                 parser.index += 1;
-                if negated {
-                    Ddl::ShowTablesNotLike { pattern }
-                } else {
-                    Ddl::ShowTablesLike { pattern }
+                match (negated, ilike) {
+                    (false, false) => Ddl::ShowTablesLike { pattern },
+                    (true, false) => Ddl::ShowTablesNotLike { pattern },
+                    (false, true) => Ddl::ShowTablesILike { pattern },
+                    (true, true) => Ddl::ShowTablesNotILike { pattern },
                 }
             } else {
                 Ddl::ShowTables
             }
-        } else if parser.keyword("COLUMNS") {
-            if !parser.keyword("FROM") {
-                return Err(ParseError("expected FROM after SHOW COLUMNS".into()));
+        } else if parser.keyword("COLUMNS") || parser.keyword("FIELDS") {
+            if !parser.keyword("FROM") && !parser.keyword("IN") {
+                return Err(ParseError("expected FROM or IN after SHOW COLUMNS".into()));
             }
             Ddl::DescribeTable {
                 name: identifier(&mut parser)?,
@@ -154,6 +165,11 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         }
         let table = identifier(&mut parser)?;
         if parser.keyword("RENAME") {
+            if parser.keyword("TO") {
+                let to = identifier(&mut parser)?;
+                finish_ddl(&mut parser)?;
+                return Ok(Some(Ddl::RenameTable { from: table, to }));
+            }
             if !parser.keyword("COLUMN") {
                 return Err(ParseError("expected COLUMN after RENAME".into()));
             }
@@ -210,6 +226,8 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             return Err(ParseError("expected TABLE after OPTIMIZE".into()));
         }
         let name = identifier(&mut parser)?;
+        // The local OPTIMIZE operation already fully compacts active parts.
+        parser.keyword("FINAL");
         finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::OptimizeTable { name }));
     }
@@ -217,9 +235,14 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         if !parser.keyword("TABLE") {
             return Err(ParseError("expected TABLE after TRUNCATE".into()));
         }
+        let if_exists = optional_if_exists(&mut parser)?;
         let name = identifier(&mut parser)?;
         finish_ddl(&mut parser)?;
-        return Ok(Some(Ddl::TruncateTable { name }));
+        return Ok(Some(if if_exists {
+            Ddl::TruncateTableIfExists { name }
+        } else {
+            Ddl::TruncateTable { name }
+        }));
     }
     if parser.keyword("DROP") {
         if !parser.keyword("TABLE") {
@@ -238,7 +261,9 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     }
     let if_not_exists = optional_if_not_exists(&mut parser)?;
     let name = identifier(&mut parser)?;
-    if parser.keyword("LIKE") {
+    // ClickHouse CREATE TABLE target AS existing_table clones the source schema.
+    // Query-based CREATE TABLE AS SELECT remains unsupported.
+    if parser.keyword("LIKE") || parser.keyword("AS") {
         let source = identifier(&mut parser)?;
         finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::CreateTableLike {
@@ -611,7 +636,6 @@ mod show_columns_tests {
             "SHOW COLUMNS FROM",
             "SHOW COLUMNS FROM events EXTRA",
             "SHOW COLUMNS FROM events; DROP TABLE events",
-            "DESC events",
             "DESC TABLE",
             "DESC TABLE events ORDER BY name",
         ] {

@@ -60,7 +60,10 @@ impl IdempotencyLedger {
             }
         }
         self.requests.retain(|_, entry| entry.expires_at_ms > now_ms);
-        if self.requests.len() >= MAX_REQUESTS || self.highest_epoch.len() >= MAX_REQUESTS {
+        if self.requests.len() >= MAX_REQUESTS
+            || (self.highest_epoch.len() >= MAX_REQUESTS
+                && !self.highest_epoch.contains_key(&key.node))
+        {
             return Err("replica idempotency ledger is full");
         }
         self.requests.insert(key.clone(), Entry { fingerprint: payload_fingerprint, expires_at_ms: expiry });
@@ -96,5 +99,37 @@ mod tests {
     fn ttl_overflow_is_rejected() {
         let mut ledger = IdempotencyLedger::new();
         assert!(ledger.admit(key(1, 1), 1, u64::MAX, 2).is_err());
+    }
+}
+
+#[cfg(test)]
+mod full_fencing_history_tests {
+    use super::*;
+
+    #[test]
+    fn existing_nodes_can_continue_after_the_history_reaches_capacity() {
+        let mut ledger = IdempotencyLedger::new();
+        for index in 0..MAX_REQUESTS {
+            let key = RequestKey {
+                node: format!("replica_{index}"),
+                epoch: 1,
+                nonce: 1,
+            };
+            assert_eq!(ledger.admit(key, 10, 100, 1).unwrap(), Admission::New);
+        }
+
+        // Request entries expire, but fencing history stays full.
+        let existing = RequestKey {
+            node: "replica_0".into(),
+            epoch: 1,
+            nonce: 2,
+        };
+        assert_eq!(ledger.admit(existing, 20, 101, 1).unwrap(), Admission::New);
+        let unknown = RequestKey {
+            node: "new_replica".into(),
+            epoch: 1,
+            nonce: 1,
+        };
+        assert!(ledger.admit(unknown, 20, 101, 1).is_err());
     }
 }
