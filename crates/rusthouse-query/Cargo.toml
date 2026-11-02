@@ -19,6 +19,10 @@ name = "grouped"
 harness = false
 
 [[bench]]
+name = "passenger_distance"
+harness = false
+
+[[bench]]
 name = "billion_parts"
 harness = false
 
