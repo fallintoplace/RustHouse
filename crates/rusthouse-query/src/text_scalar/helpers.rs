@@ -141,19 +141,18 @@ pub(super) fn significant_hostname_parts(url: &str) -> Option<(&str, &str, &str)
     let before_tld = &host[..last_dot];
     let second_dot = before_tld.rfind('.');
     let second = &before_tld[second_dot.map_or(0, |index| index + 1)..];
-    let significant_start = if matches!(
-        second.to_ascii_lowercase().as_str(),
-        "com" | "net" | "org" | "co"
-    ) {
+    // ASCII hostname validation above makes case-insensitive byte
+    // comparison sufficient; no lowercase allocation is needed.
+    let common_second_level = ["com", "net", "org", "co"]
+        .iter()
+        .any(|suffix| second.eq_ignore_ascii_case(suffix));
+    let significant_start = if common_second_level {
         let before_second = &before_tld[..second_dot?];
         before_second.rfind('.').map_or(0, |index| index + 1)
     } else {
         second_dot.map_or(0, |index| index + 1)
     };
-    let significant_end = if matches!(
-        second.to_ascii_lowercase().as_str(),
-        "com" | "net" | "org" | "co"
-    ) {
+    let significant_end = if common_second_level {
         second_dot?
     } else {
         last_dot
@@ -671,6 +670,28 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
     }
     String::from_utf8(bytes)
         .map_err(|_| ParseError("unhex constant is not valid UTF-8".into()))
+}
+
+#[cfg(test)]
+mod significant_host_case_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn uppercase_common_suffixes_use_the_same_domain_labels() {
+        for host in [
+            "a.Example.co.uk", "a.Example.CO.uk",
+            "a.Example.com.au", "a.Example.COM.au",
+            "a.Example.NET.au", "a.Example.ORG.au"
+        ] {
+            let (_, label, suffix) = significant_hostname_parts(host).unwrap();
+            assert_eq!(label, "Example");
+            assert!(suffix.starts_with("Example."));
+        }
+        assert_eq!(
+            significant_hostname_parts("a.Example.de").map(|(_, label, suffix)| (label, suffix)),
+            Some(("Example", "Example.de"))
+        );
+    }
 }
 
 #[cfg(test)]
