@@ -113,6 +113,72 @@ fn validated_schema_kind<'a>(schema: &'a [u8], column: &str) -> Option<&'a str> 
     remaining.starts_with('}').then_some(kind)
 }
 
+/// Parse a UUID text key into its exact 128-bit identity. Hex-letter case
+/// does not change UUID equality, so string hashing would be incorrect for
+/// noncanonical but otherwise valid peer encodings.
+fn parse_uuid_wire(raw: &[u8]) -> Option<u128> {
+    if raw.len() != 36 {
+        return None;
+    }
+    let mut key = 0u128;
+    for (index, &byte) in raw.iter().enumerate() {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            if byte != b'-' {
+                return None;
+            }
+            continue;
+        }
+        let nibble = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return None,
+        };
+        key = (key << 4) | u128::from(nibble);
+    }
+    Some(key)
+}
+
+fn merge_distinct_uuid(
+    shards: &[(usize, Vec<u8>)],
+    column: &str,
+    nullable: bool,
+) -> Result<Vec<u8>, MergeError> {
+    const MAX_KEYS: usize = 100_000;
+    let header = format!("{column}\n");
+    let mut keys = HashSet::<u128>::new();
+    for (cap, body) in shards {
+        if !body.starts_with(header.as_bytes()) || !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidDistinctCount);
+        }
+        let rows = &body[header.len()..];
+        if rows.is_empty() {
+            continue;
+        }
+        let mut count = 0usize;
+        for raw in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+            count = count
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if *cap == 0 || count >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            if raw == br"\N" {
+                if !nullable {
+                    return Err(MergeError::InvalidDistinctCount);
+                }
+                continue;
+            }
+            let key = parse_uuid_wire(raw).ok_or(MergeError::InvalidDistinctCount)?;
+            if keys.len() >= MAX_KEYS && !keys.contains(&key) {
+                return Err(MergeError::CoordinatorLimit);
+            }
+            keys.insert(key);
+        }
+    }
+    Ok(format!("count(DISTINCT {column})\n{}\n", keys.len()).into_bytes())
+}
+
 /// Deduplicate 64/128-bit integers as fixed-width values instead of owned
 /// decimal TSV buffers. All peer schemas are checked before this reducer runs.
 fn merge_distinct_wide_integers(
@@ -2595,6 +2661,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             ) => merge_distinct_bitmap16(&shards, column, kind),
             Some("Int32" | "Nullable(Int32)") => merge_distinct_bitmap32(&shards, column, true),
             Some("UInt32" | "Nullable(UInt32)") => merge_distinct_bitmap32(&shards, column, false),
+            Some("UUID") => merge_distinct_uuid(&shards, column, false),
+            Some("Nullable(UUID)") => merge_distinct_uuid(&shards, column, true),
             Some(kind @ ("Int64" | "UInt64" | "Int128" | "UInt128"
                 | "Nullable(Int64)" | "Nullable(UInt64)"
                 | "Nullable(Int128)" | "Nullable(UInt128)")) => {
@@ -5019,6 +5087,66 @@ mod global_wide_distinct_tests {
         assert_eq!(
             merge_distinct_wide_integers(&additional, "id", "UInt64"),
             Err(MergeError::CoordinatorLimit)
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_uuid_distinct_tests {
+    use super::*;
+
+    #[test]
+    fn uppercase_and_lowercase_wire_hex_are_the_same_uuid() {
+        let one = b"id\n550e8400-e29b-41d4-a716-446655440000\n00000000-0000-0000-0000-000000000000\n".to_vec();
+        let two = b"id\n550E8400-E29B-41D4-A716-446655440000\n00000000-0000-0000-0000-000000000000\n".to_vec();
+        assert_eq!(
+            merge_distinct_uuid(&[(10, one), (10, two)], "id", false).unwrap(),
+            b"count(DISTINCT id)\n2\n"
+        );
+    }
+
+    #[test]
+    fn supports_nullable_uuid_and_rejects_null_in_required_columns() {
+        let shard = [(10, b"id\n\\N\n550e8400-e29b-41d4-a716-446655440000\n".to_vec())];
+        assert_eq!(
+            merge_distinct_uuid(&shard, "id", true).unwrap(),
+            b"count(DISTINCT id)\n1\n"
+        );
+        assert_eq!(
+            merge_distinct_uuid(&shard, "id", false),
+            Err(MergeError::InvalidDistinctCount)
+        );
+    }
+
+    #[test]
+    fn malformed_uuid_wire_never_enters_global_distinct_keys() {
+        for value in [
+            "550e8400e29b41d4a716446655440000",
+            "550e8400-e29b-41d4-a716-44665544000Z",
+            "550e8400_e29b-41d4-a716-446655440000",
+            "550e8400-e29b-41d4-a716-446655440000 ",
+            "",
+        ] {
+            let body = format!("id\n{value}\n").into_bytes();
+            assert_eq!(
+                merge_distinct_uuid(&[(10, body)], "id", false),
+                Err(MergeError::InvalidDistinctCount),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_shard_cap_before_deduplicating_uuid_rows() {
+        let key = "550e8400-e29b-41d4-a716-446655440000";
+        let wire = format!("id\n{key}\n{key}\n").into_bytes();
+        assert_eq!(
+            merge_distinct_uuid(&[(2, wire.clone())], "id", false),
+            Err(MergeError::ShardRowLimit)
+        );
+        assert_eq!(
+            merge_distinct_uuid(&[(5, wire)], "id", false).unwrap(),
+            b"count(DISTINCT id)\n1\n"
         );
     }
 }
