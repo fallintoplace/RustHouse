@@ -482,6 +482,7 @@ pub struct TypedPartReader {
     columns: Vec<ColumnReader>,
     marks: usize,
     next_mark: usize,
+    decode_workers: usize,
 }
 
 /// Decode one requested projection column. Each column has independent file
@@ -752,10 +753,18 @@ impl TypedPartReader {
                 layout.validate(&format!("{name}.size0"), &sizes.marks, metadata.rows)?;
             }
         }
+        let decode_workers = if names.len() >= 8 {
+            std::thread::available_parallelism()
+                .map_or(1, |count| count.get())
+                .min(4)
+        } else {
+            1
+        };
         Ok(Self {
             columns,
             marks: layout.mark_count(),
             next_mark: 0,
+            decode_workers,
         })
     }
 
@@ -849,15 +858,11 @@ impl TypedPartReader {
             })?)
             .map_err(|_| PartError::InvalidScan("row count too large".into()))?;
         const PARALLEL_DECODE_ROWS: usize = 4096;
-        const PARALLEL_DECODE_COLUMNS: usize = 8;
-        let workers =
-            if rows >= PARALLEL_DECODE_ROWS && self.columns.len() >= PARALLEL_DECODE_COLUMNS {
-                std::thread::available_parallelism()
-                    .map_or(1, |count| count.get())
-                    .min(4)
-            } else {
-                1
-            };
+        let workers = if rows >= PARALLEL_DECODE_ROWS {
+            self.decode_workers
+        } else {
+            1
+        };
         let batch = decode_typed_columns(&mut self.columns, index, rows, workers)?;
         self.next_mark += 1;
         Ok(Some(batch))
