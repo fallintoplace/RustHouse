@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn reads_escape_and_national_string_literal_prefixes() {
         assert_eq!(
-            tokenize(r"SELECT E'line\\nnext', N'café', e'it''s', n'ø'").unwrap(),
+            tokenize(r"SELECT E'line\nnext', N'café', e'it''s', n'ø'").unwrap(),
             vec![
                 Token::Word("SELECT".into()),
                 Token::String("line\nnext".into()),
