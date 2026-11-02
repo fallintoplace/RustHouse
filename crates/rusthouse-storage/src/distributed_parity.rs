@@ -550,10 +550,31 @@ pub fn recover_triple_erasure(
     }
 
     let mut recovered = (0..count).map(|_| vec![0u8; width]).collect::<Vec<_>>();
-    for (row, output) in recovered.iter_mut().enumerate() {
-        for (offset, value) in output.iter_mut().enumerate() {
+    if width < 1024 {
+        for (row, output) in recovered.iter_mut().enumerate() {
+            for (offset, value) in output.iter_mut().enumerate() {
+                for equation in 0..count {
+                    *value ^= gf256_mul(matrix[row][count + equation], residual[equation][offset]);
+                }
+            }
+        }
+    } else {
+        // Inverse matrix coefficients are fixed for the whole stripe.
+        // Tabulate GF256 products once instead of multiplying every byte.
+        let mut products = [[[0u8; 256]; 3]; 3];
+        for row in 0..count {
             for equation in 0..count {
-                *value ^= gf256_mul(matrix[row][count + equation], residual[equation][offset]);
+                let factor = matrix[row][count + equation];
+                products[row][equation] =
+                    std::array::from_fn(|byte| gf256_mul(factor, byte as u8));
+            }
+        }
+        for (row, output) in recovered.iter_mut().enumerate() {
+            for (offset, value) in output.iter_mut().enumerate() {
+                for equation in 0..count {
+                    let byte = usize::from(residual[equation][offset]);
+                    *value ^= products[row][equation][byte];
+                }
             }
         }
     }
@@ -696,6 +717,31 @@ mod triple_parity_tests {
             let mut corrupted = parity.clone();
             corrupted.squared[2048] ^= 0x80;
             assert!(recover_triple_erasure(&damaged, &lengths, &corrupted).is_err());
+        }
+    }
+
+    #[test]
+    fn wide_three_erasure_reconstruction_matches_exact_sources() {
+        let sources = (0..6usize)
+            .map(|shard| {
+                (0..(4096 + shard * 31))
+                    .map(|offset| (offset * 29 + shard * 71) as u8)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let parts = sources.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let lengths = sources.iter().map(Vec::len).collect::<Vec<_>>();
+        let parity = encode_triple_parity(&parts).unwrap();
+        for missing in [[0usize, 2usize, 5usize], [1usize, 3usize, 4usize]] {
+            let available = parts
+                .iter()
+                .enumerate()
+                .map(|(index, &part)| (!missing.contains(&index)).then_some(part))
+                .collect::<Vec<_>>();
+            let recovered = recover_triple_erasure(&available, &lengths, &parity).unwrap();
+            for (index, bytes) in recovered {
+                assert_eq!(bytes, sources[index]);
+            }
         }
     }
 
