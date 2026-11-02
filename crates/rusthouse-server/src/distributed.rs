@@ -4,6 +4,7 @@
 mod dispatch;
 mod query_policy;
 mod sorted_merge;
+mod multi_countif;
 mod multi_extrema;
 mod multi_sum;
 mod text_merge;
@@ -2204,6 +2205,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_sorted_scan(&select)
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
+                || is_safe_grouped_multi_countif(&select)
                 || is_safe_grouped_multi_extremum(&select)
                 || is_safe_grouped_multi_sum(&select)
                 || is_safe_grouped_sum(&select)
@@ -2235,6 +2237,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => None,
     };
     let grouped_count_query = is_safe_grouped_count(&select);
+    let grouped_multi_countif_query = is_safe_grouped_multi_countif(&select);
     let grouped_multi_extremum_query = is_safe_grouped_multi_extremum(&select);
     let grouped_multi_sum_query = is_safe_grouped_multi_sum(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
@@ -2345,6 +2348,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 ..
             },
         ) => Some((table.as_str(), value_column.as_str())),
+        (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
+            if grouped_multi_countif_query => Some((table.as_str(), items[0].1.as_str())),
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
             if grouped_multi_extremum_query => Some((table.as_str(), items[0].1.as_str())),
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
@@ -2578,6 +2583,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
                 multi_extrema::merge_multi_key_extrema(
                     &shards, columns, &items[0].1, kind, items[0].0, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multi_countif_query {
+        match &select.projection {
+            Projection::GroupedMultiAggregates { columns, items, .. } => {
+                multi_countif::merge_multi_key_countif(
+                    &shards, columns, &items[0].1, max_rows.min(250_000),
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
