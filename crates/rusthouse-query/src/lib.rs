@@ -487,6 +487,12 @@ impl Parser {
             }
             return Ok(value);
         }
+        if self.keyword("TRUE") {
+            return Ok("1".into());
+        }
+        if self.keyword("FALSE") {
+            return Ok("0".into());
+        }
         let is_number = matches!(self.tokens.get(self.index), Some(Token::Number(_)));
         let value = match self.tokens.get(self.index) {
             Some(Token::Number(value) | Token::String(value)) => value.clone(),
@@ -2105,6 +2111,23 @@ mod tpch_interval_unit_tests {
                 Predicate::Comparison { operator: Operator::Le | Operator::Lt, value, .. }
                     if value == expected
             ));
+        }
+    }
+}
+    
+#[cfg(test)]
+mod where_boolean_literal_tests {
+    use super::*;
+
+    #[test]
+    fn where_compares_boolean_literals_as_numeric_values() {
+        for (keyword, numeric) in [("TRUE", "1"), ("FALSE", "0"), ("tRuE", "1")] {
+            let boolean_sql = format!("SELECT number FROM numbers(3) WHERE number = {keyword}");
+            let numeric_sql = format!("SELECT number FROM numbers(3) WHERE number = {numeric}");
+            assert_eq!(
+                parse_select(&boolean_sql).unwrap(),
+                parse_select(&numeric_sql).unwrap()
+            );
         }
     }
 }
