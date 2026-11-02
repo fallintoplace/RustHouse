@@ -1174,6 +1174,129 @@ pub fn zone_failure_quorum_curve(
     Ok(outcomes)
 }
 
+/// Restore the fewest down failure domains needed to regain each
+/// quorum threshold. Zone choices are sorted by survivor count, then name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZoneRecoveryPlan {
+    pub surviving_replicas: usize,
+    pub restore_for_reads: Vec<String>,
+    pub restore_for_writes: Vec<String>,
+}
+
+/// Plan availability recovery from a concrete set of failed zones.
+///
+/// Every listed zone must exist and be unique. This is only a quorum-capacity
+/// calculation, not proof that recovering a node restores a durable snapshot.
+pub fn plan_zone_quorum_recovery(
+    policy: QuorumPolicy,
+    members: &[crate::distributed_membership::Member],
+    down_zones: &[&str],
+) -> Result<ZoneRecoveryPlan, &'static str> {
+    policy.validate()?;
+    crate::distributed_membership::validate_membership(members)?;
+    if members.len() != policy.replicas || down_zones.len() > members.len() {
+        return Err("invalid zone recovery membership");
+    }
+    let mut zones = Vec::<(&str, usize)>::new();
+    for member in members {
+        if let Some((_, count)) = zones.iter_mut()
+            .find(|(zone, _)| *zone == member.zone.as_str()) {
+            *count += 1;
+        } else {
+            zones.push((&member.zone, 1));
+        }
+    }
+    let mut failed = Vec::<(&str, usize)>::new();
+    for &zone in down_zones {
+        let count = zones.iter().find(|(known, _)| *known == zone)
+            .ok_or("unknown failure zone")?.1;
+        if failed.iter().any(|(known, _)| *known == zone) {
+            return Err("duplicate failure zone");
+        }
+        failed.push((zone, count));
+    }
+    let lost = failed.iter().map(|(_, count)| *count).sum::<usize>();
+    let surviving_replicas = members.len() - lost;
+    failed.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    fn restore(
+        failed: &[(&str, usize)],
+        missing: usize,
+    ) -> Vec<String> {
+        let mut restored = Vec::new();
+        let mut nodes = 0usize;
+        for &(zone, count) in failed {
+            if nodes >= missing {
+                break;
+            }
+            restored.push(zone.to_owned());
+            nodes += count;
+        }
+        restored
+    }
+    Ok(ZoneRecoveryPlan {
+        surviving_replicas,
+        restore_for_reads: restore(&failed, policy.reads.saturating_sub(surviving_replicas)),
+        restore_for_writes: restore(&failed, policy.writes.saturating_sub(surviving_replicas)),
+    })
+}
+
+#[cfg(test)]
+mod actual_zone_quorum_recovery_tests {
+    use super::*;
+    use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn recovery_chooses_minimum_number_of_lost_zones() {
+        let members = parse_membership(
+            "a east 1\nb east 1\nc east 1\nd west 1\ne west 1\nf north 1\ng south 1\n"
+        ).unwrap();
+        let policy = QuorumPolicy::new(7, 4, 4).unwrap();
+        let zones = ["east", "west", "north", "south"];
+        for mask in 0usize..16 {
+            let down = zones.iter().enumerate()
+                .filter_map(|(i, zone)| ((mask >> i) & 1 != 0).then_some(*zone))
+                .collect::<Vec<_>>();
+            let plan = plan_zone_quorum_recovery(policy, &members, &down).unwrap();
+            let surviving = members.iter().filter(|m| !down.contains(&m.zone.as_str())).count();
+            assert_eq!(plan.surviving_replicas, surviving);
+            for (selected, threshold) in [
+                (&plan.restore_for_reads, policy.reads),
+                (&plan.restore_for_writes, policy.writes),
+            ] {
+                let regained = selected.iter().map(|zone| {
+                    members.iter().filter(|m| m.zone == *zone).count()
+                }).sum::<usize>();
+                assert!(surviving + regained >= threshold);
+                let mut min_count = usize::MAX;
+                for subset in 0usize..(1usize << down.len()) {
+                    let added = down.iter().enumerate().filter(|(i, _)| subset & (1usize << *i) != 0)
+                        .map(|(_, zone)| members.iter().filter(|m| m.zone == *zone).count())
+                        .sum::<usize>();
+                    if surviving + added >= threshold {
+                        min_count = min_count.min(subset.count_ones() as usize);
+                    }
+                }
+                assert_eq!(selected.len(), min_count);
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_duplicate_and_mismatched_outages_are_rejected() {
+        let members = parse_membership("a east 1\nb west 1\nc south 1\n").unwrap();
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let result = plan_zone_quorum_recovery(policy, &members, &["east", "west"]);
+        assert_eq!(result.unwrap().restore_for_reads, vec!["east".to_owned()]);
+        assert!(plan_zone_quorum_recovery(policy, &members, &["unknown"]).is_err());
+        assert!(plan_zone_quorum_recovery(policy, &members, &["east", "east"]).is_err());
+        assert!(plan_zone_quorum_recovery(
+            QuorumPolicy::new(4, 3, 3).unwrap(),
+            &members,
+            &[],
+        ).is_err());
+    }
+}
+
 #[cfg(test)]
 mod batched_zone_failure_quorum_tests {
     use super::*;
