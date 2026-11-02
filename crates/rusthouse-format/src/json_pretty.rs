@@ -39,56 +39,6 @@ fn is_empty_json_container_pair(open: u8, close: u8) -> bool {
     matches!((open, close), (b'{', b'}') | (b'[', b']'))
 }
 
-fn validate_pretty_depth(row: &[u8]) -> io::Result<()> {
-    let mut inside_string = false;
-    let mut escaped = false;
-    let mut depth = 0usize;
-    // Match each closing delimiter against its opener before writing any bytes.
-    let mut containers = [0u8; MAX_PRETTY_JSON_DEPTH];
-    for &byte in row {
-        if inside_string {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                inside_string = false;
-            }
-            continue;
-        }
-        match byte {
-            b'"' => inside_string = true,
-            b'{' | b'[' => {
-                if depth >= MAX_PRETTY_JSON_DEPTH {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "pretty JSON nesting exceeds 256 levels",
-                    ));
-                }
-                containers[depth] = byte;
-                depth += 1;
-            }
-            b'}' | b']' => {
-                if depth == 0 || !is_empty_json_container_pair(containers[depth - 1], byte) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "unbalanced pretty JSON delimiter",
-                    ));
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-    if depth != 0 || inside_string {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unterminated pretty JSON container or string",
-        ));
-    }
-    Ok(())
-}
-
 // Batch punctuation-heavy JSON output without a heap allocation per row.
 struct RowWriter<'a, W: Write> {
     output: &'a mut W,
@@ -147,8 +97,10 @@ pub fn write_pretty_json_row_prefixed<W: Write>(
     prefix: &[u8],
     row: &[u8],
 ) -> io::Result<()> {
-    // Never expose a framing prefix for an invalid nested JSON row.
-    validate_pretty_depth(row)?;
+    // A public formatter must not emit its prefix for malformed JSON.
+    // The shared parser validates strings, escapes, numbers and nesting
+    // before the first byte reaches a writer.
+    super::json_validate::validate_json_value(row)?;
     output.write_all(prefix)?;
     let mut writer = RowWriter::new(output);
     write_pretty_json_row_into(&mut writer, row)?;
@@ -633,5 +585,64 @@ mod atomic_pretty_json_validation_tests {
         let mut rendered = Vec::new();
         write_pretty_json_row(&mut rendered, &nested).unwrap();
         assert!(rendered.starts_with(b"["));
+    }
+}
+
+#[cfg(test)]
+mod strict_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_json_never_publishes_the_framing_prefix() {
+        for bad in [
+            br#"{"x":truth}"#.as_slice(),
+            br#"{"x":01}"#.as_slice(),
+            br#"{"x":1e+}"#.as_slice(),
+            br#"{"x":[1,,2]}"#.as_slice(),
+            br#"{"x":"\u12G4"}"#.as_slice(),
+            br#"{"x":true,}"#.as_slice(),
+            br#"[1,,2]"#.as_slice(),
+            br#"{"x":1}{"y":2}"#.as_slice(),
+        ] {
+            let mut output = Vec::new();
+            assert_eq!(
+                write_pretty_json_row_prefixed(&mut output, b"record:", bad)
+                    .unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert!(output.is_empty(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn valid_surrogate_pair_is_prettified_after_validation() {
+        let mut output = Vec::new();
+        write_pretty_json_row_prefixed(
+            &mut output,
+            b"record:",
+            br#"{"emoji":"\uD83D\uDE03"}"#,
+        )
+        .unwrap();
+        assert!(output.starts_with(b"record:{"));
+        assert!(output.windows(12).any(|span| span == br#"\uD83D\uDE03"#));
+    }
+}
+
+#[cfg(test)]
+mod valid_root_json_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn arrays_scalars_and_nested_json_remain_pretty_printable() {
+        for input in [
+            br#"[1,2,{"x":3}]"#.as_slice(),
+            br#""literal""#.as_slice(),
+            br#"123"#.as_slice(),
+            br#"true"#.as_slice(),
+        ] {
+            let mut rendered = Vec::new();
+            write_pretty_json_row_prefixed(&mut rendered, b"row:", input).unwrap();
+            assert!(rendered.starts_with(b"row:"));
+        }
     }
 }
