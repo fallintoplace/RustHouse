@@ -293,7 +293,7 @@ pub fn plan_min_cost_compaction_pairs(
             let take = costs[index]
                 .and_then(|cost| {
                     (dp[index + 2][pairs - 1] != u128::MAX)
-                        .then_some(u128::from(cost) + dp[index + 2][pairs - 1])
+                        .then(|| u128::from(cost) + dp[index + 2][pairs - 1])
                 })
                 .unwrap_or(u128::MAX);
             dp[index][pairs] = skip.min(take);
@@ -309,7 +309,7 @@ pub fn plan_min_cost_compaction_pairs(
     while remaining > 0 {
         let take = costs[index].and_then(|cost| {
             (dp[index + 2][remaining - 1] != u128::MAX)
-                .then_some(u128::from(cost) + dp[index + 2][remaining - 1])
+                .then(|| u128::from(cost) + dp[index + 2][remaining - 1])
         });
         if let Some(cost) = costs[index].filter(|_| {
             take.is_some_and(|candidate| candidate <= dp[index + 1][remaining])
