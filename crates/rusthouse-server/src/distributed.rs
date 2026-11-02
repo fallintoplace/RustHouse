@@ -4,6 +4,7 @@
 mod dispatch;
 mod query_policy;
 mod sorted_merge;
+mod multi_count_column;
 mod multi_bitwise;
 mod multi_product;
 mod multi_sumsquares;
@@ -695,6 +696,7 @@ fn read_shard(
     group_schema: Option<(&str, &str)>,
     table: &str,
     sorted_prefix_cap: Option<usize>,
+    allow_nonnumeric_count: bool,
     allow_uuid_extremum: bool,
     used_bytes: &AtomicUsize,
 ) -> Result<ShardResponse, String> {
@@ -705,7 +707,7 @@ fn read_shard(
     let schema = schema_signature(&schema_response)?;
     let kind = sum_schema
         .map(|(_, column)| {
-            if sorted_prefix_cap.is_some() {
+            if sorted_prefix_cap.is_some() || allow_nonnumeric_count {
                 shard_column_kind(&schema_response, column)
             } else if allow_uuid_extremum {
                 let kind = shard_column_kind(&schema_response, column)?;
@@ -2208,6 +2210,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_sorted_scan(&select)
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
+                || is_safe_grouped_multi_count_column(&select)
                 || is_safe_grouped_multi_bitwise(&select)
                 || is_safe_grouped_multi_product(&select)
                 || is_safe_grouped_multi_sumsquares(&select)
@@ -2243,6 +2246,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => None,
     };
     let grouped_count_query = is_safe_grouped_count(&select);
+    let grouped_multi_count_column_query = is_safe_grouped_multi_count_column(&select);
     let grouped_multi_bitwise_query = is_safe_grouped_multi_bitwise(&select);
     let grouped_multi_product_query = is_safe_grouped_multi_product(&select);
     let grouped_multi_sumsquares_query = is_safe_grouped_multi_sumsquares(&select);
@@ -2358,6 +2362,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             },
         ) => Some((table.as_str(), value_column.as_str())),
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
+            if grouped_multi_count_column_query => Some((table.as_str(), items[0].1.as_str())),
+        (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
             if grouped_multi_bitwise_query => Some((table.as_str(), items[0].1.as_str())),
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
             if grouped_multi_product_query => Some((table.as_str(), items[0].1.as_str())),
@@ -2416,6 +2422,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 group_schema,
                 table,
                 sorted_prefix,
+                grouped_multi_count_column_query,
                 extrema_function.is_some(),
                 &retained_input,
             )
@@ -2616,6 +2623,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
                 multi_sumsquares::merge_multi_key_sumsquares(
                     &shards, columns, &items[0].1, kind, max_rows.min(250_000),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multi_count_column_query {
+        match &select.projection {
+            Projection::GroupedMultiAggregates { columns, items, .. } => {
+                multi_count_column::merge_multi_key_count_column(
+                    &shards, columns, &items[0].1, max_rows.min(250_000),
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
