@@ -7,6 +7,7 @@ mod database_table;
 mod dates;
 mod decimal;
 pub mod distributed_activate;
+pub mod distributed_ancestry;
 pub mod distributed_atomic_copy;
 pub mod distributed_capacity;
 pub mod distributed_chunk_plan;
