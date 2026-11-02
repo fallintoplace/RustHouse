@@ -1269,7 +1269,7 @@ mod actual_zone_quorum_recovery_tests {
                 assert!(surviving + regained >= threshold);
                 let mut min_count = usize::MAX;
                 for subset in 0usize..(1usize << down.len()) {
-                    let added = down.iter().enumerate().filter(|(i, _)| subset & (1 << i) != 0)
+                    let added = down.iter().enumerate().filter(|(i, _)| subset & (1usize << *i) != 0)
                         .map(|(_, zone)| members.iter().filter(|m| m.zone == *zone).count())
                         .sum::<usize>();
                     if surviving + added >= threshold {
