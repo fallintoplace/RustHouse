@@ -33,6 +33,7 @@ pub mod distributed_quorum;
 pub mod distributed_repair_assignment;
 pub mod distributed_repair_dag;
 pub mod distributed_snapshot_reachability;
+pub mod distributed_transfer_journal;
 pub mod distributed_version_vector;
 pub mod distributed_weighted_quorum;
 pub mod distributed_joint_quorum;
