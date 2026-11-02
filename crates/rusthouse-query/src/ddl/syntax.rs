@@ -138,6 +138,14 @@ pub(super) fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<Column
             return Err(ParseError(format!("duplicate DDL column: {column_name}")));
         }
         let column_type = data_type(parser, 0)?;
+        if parser.keyword("NOT") {
+            if !parser.keyword("NULL") {
+                return Err(ParseError("column NOT requires NULL".into()));
+            }
+            if column_type.starts_with("Nullable(") {
+                return Err(ParseError("Nullable column cannot be NOT NULL".into()));
+            }
+        }
         columns.push(ColumnDef {
             name: column_name,
             data_type: column_type,
