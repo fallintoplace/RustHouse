@@ -33,6 +33,16 @@ def parse_finite_report_float(value):
     return parsed
 
 
+def report_metadata_identity(info, *, windows):
+    # Windows may report different st_ctime_ns values for lstat and fstat.
+    # The creation timestamp is the stable file identity field on Windows.
+    change_time = (
+        getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+        if windows else info.st_ctime_ns
+    )
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, change_time)
+
+
 def load_report(path):
     path = Path(path)
     before = path.lstat()
@@ -40,8 +50,7 @@ def load_report(path):
         raise ValueError("report must be a regular, non-symlinked file")
 
     def identity(info):
-        return (info.st_dev, info.st_ino, info.st_size,
-                info.st_mtime_ns, info.st_ctime_ns)
+        return report_metadata_identity(info, windows=os.name == "nt")
 
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags)
