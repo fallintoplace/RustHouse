@@ -43,6 +43,34 @@ fn skip_line_comment(bytes: &[u8], index: &mut usize) {
         .unwrap_or(remaining.len());
 }
 
+fn scan_dollar_quoted_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
+    let bytes = sql.as_bytes();
+    let start = *index;
+    let mut cursor = start + 1;
+    if bytes.get(cursor) != Some(&b'$') {
+        if !matches!(bytes.get(cursor), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')) {
+            return Err(ParseError("invalid dollar-quoted string delimiter".into()));
+        }
+        cursor += 1;
+        while matches!(
+            bytes.get(cursor),
+            Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+        ) {
+            cursor += 1;
+        }
+    }
+    if bytes.get(cursor) != Some(&b'$') {
+        return Err(ParseError("unterminated dollar-quoted string delimiter".into()));
+    }
+    let delimiter = &sql[start..=cursor];
+    let value_start = cursor + 1;
+    let end = sql[value_start..]
+        .find(delimiter)
+        .ok_or_else(|| ParseError("unterminated dollar-quoted string".into()))?;
+    *index = value_start + end + delimiter.len();
+    Ok(Token::String(sql[value_start..value_start + end].into()))
+}
+
 fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseError> {
     if sql.len() > max_bytes {
         return Err(ParseError(format!(
@@ -116,6 +144,7 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 skip_line_comment(bytes, &mut index);
                 continue;
             }
+            b'$' => scan_dollar_quoted_string(sql, &mut index)?,
             b'-' if bytes.get(index + 1) == Some(&b'-') => {
                 index += 2;
                 skip_line_comment(bytes, &mut index);
@@ -535,5 +564,43 @@ mod bulk_comment_span_tests {
         }
         let deep = format!("SELECT {} 1 {}", "/*".repeat(33), "*/".repeat(33));
         assert!(tokenize(&deep).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod dollar_quoted_string_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_raw_text_in_dollar_quoted_literals() {
+        assert_eq!(
+            tokenize(r"SELECT $$it's \n raw$$, $tag$C:\tmp$tag$").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String(r"it's \n raw".into()),
+                Token::Comma,
+                Token::String(r"C:\tmp".into()),
+            ]
+        );
+        assert_eq!(
+            tokenize("SELECT $a$one$A$two$a$").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("one$A$two".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_dollar_quoted_literals() {
+        for sql in [
+            "SELECT $$unfinished",
+            "SELECT $tag$unfinished$other$",
+            "SELECT $9$bad$9$",
+            "SELECT $tag missing",
+        ] {
+            assert!(tokenize(sql).is_err(), "{sql}");
+        }
     }
 }
