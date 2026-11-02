@@ -43,7 +43,9 @@ pub(super) fn merge_sorted_text_rows_page(
     if !(1..=16).contains(&columns.len()) || shards.is_empty() {
         return Err(MergeError::InvalidSortedScan);
     }
-    let prefix = offset.checked_add(limit).ok_or(MergeError::CoordinatorLimit)?;
+    let prefix = offset
+        .checked_add(limit)
+        .ok_or(MergeError::CoordinatorLimit)?;
     let header = format!("{}\n", columns.join("\t"));
     let mut all_rows = Vec::with_capacity(shards.len());
     let mut decoded_key_bytes = 0usize;
@@ -59,7 +61,8 @@ pub(super) fn merge_sorted_text_rows_page(
                 .iter()
                 .position(|&byte| byte == b'\n')
                 .ok_or(MergeError::InvalidSortedScan)?
-                + position + 1;
+                + position
+                + 1;
             let fields = body[position..end - 1].split(|&byte| byte == b'\t');
             let mut first = None;
             let mut count = 0usize;
@@ -87,7 +90,11 @@ pub(super) fn merge_sorted_text_rows_page(
             }
             let key = first.ok_or(MergeError::InvalidSortedScan)?;
             if previous.as_ref().is_some_and(|prior| {
-                if descending { prior < &key } else { prior > &key }
+                if descending {
+                    prior < &key
+                } else {
+                    prior > &key
+                }
             }) {
                 return Err(MergeError::InvalidSortedScan);
             }
@@ -96,7 +103,10 @@ pub(super) fn merge_sorted_text_rows_page(
                 .filter(|&bytes| bytes <= MAX_RESPONSE_BYTES)
                 .ok_or(MergeError::CoordinatorLimit)?;
             previous = Some(key.clone());
-            rows.push(TextRow { range: position..end, key });
+            rows.push(TextRow {
+                range: position..end,
+                key,
+            });
             if rows.len() > prefix || rows.len() >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
@@ -161,9 +171,7 @@ mod tests {
             (10, b"name\tid\nb\t3\nd\t4\n".to_vec()),
         ];
         assert_eq!(
-            merge_sorted_text_rows_page(
-                &shards, &["name", "id"], false, 1, 2, 2
-            ).unwrap(),
+            merge_sorted_text_rows_page(&shards, &["name", "id"], false, 1, 2, 2).unwrap(),
             b"name\tid\nb\t3\nc\t2\n"
         );
     }
