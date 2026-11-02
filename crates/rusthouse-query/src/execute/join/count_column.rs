@@ -16,7 +16,9 @@ pub(super) fn execute<W: Write>(
 ) -> Result<(), ExecutionError> {
     let width = left_names.len();
     let index = resolve(query, column, left_names, right_names)?;
-    let header = format!("count({}.{})", column.relation, column.name);
+    let header = query.aggregate_alias.clone().unwrap_or_else(|| {
+        format!("count({}.{})", column.relation, column.name)
+    });
     if query.limit == Some(0) || query.offset > 0 {
         writeln!(output, "{header}")?;
         return Ok(());
