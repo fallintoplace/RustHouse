@@ -270,6 +270,8 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
         Ddl::ShowTables
         | Ddl::ShowTablesLike { .. }
         | Ddl::ShowTablesNotLike { .. }
+        | Ddl::ShowTablesILike { .. }
+        | Ddl::ShowTablesNotILike { .. }
         | Ddl::ShowCreateTable { .. }
         | Ddl::DescribeTable { .. } => {
             // Do not create a new database just to list empty tables.
