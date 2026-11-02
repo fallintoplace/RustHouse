@@ -1112,7 +1112,13 @@ fn merge_grouped_integer_sums_query(
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
     merge_grouped_integer_bitwise_or_sum(
-        shards, max_rows, kind, key_column, value_column, AggregateFunction::Sum, global,
+        shards,
+        max_rows,
+        kind,
+        key_column,
+        value_column,
+        AggregateFunction::Sum,
+        global,
     )
 }
 
@@ -1126,8 +1132,15 @@ fn merge_grouped_integer_bitwise_query(
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
     merge_grouped_integer_bitwise_or_sum(
-        shards, max_rows, kind, key_column, value_column, function, global,
-    ).map_err(|error| match error {
+        shards,
+        max_rows,
+        kind,
+        key_column,
+        value_column,
+        function,
+        global,
+    )
+    .map_err(|error| match error {
         MergeError::InvalidGroupedSum => MergeError::InvalidGroupedBitwise,
         other => other,
     })
@@ -1144,8 +1157,10 @@ fn merge_grouped_integer_bitwise_or_sum(
 ) -> Result<Vec<u8>, MergeError> {
     if !matches!(
         function,
-        AggregateFunction::Sum | AggregateFunction::GroupBitAnd
-            | AggregateFunction::GroupBitOr | AggregateFunction::GroupBitXor
+        AggregateFunction::Sum
+            | AggregateFunction::GroupBitAnd
+            | AggregateFunction::GroupBitOr
+            | AggregateFunction::GroupBitXor
     ) {
         return Err(MergeError::InvalidGroupedSum);
     }
@@ -1829,12 +1844,25 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 merge_integer_extrema(&shards, kind, function)
             })
     } else if grouped_bitwise_query {
-        match (sum_type.as_deref(), group_schema, sum_schema, &select.projection) {
+        match (
+            sum_type.as_deref(),
+            group_schema,
+            sum_schema,
+            &select.projection,
+        ) {
             (
-                Some(kind), Some((_, key)), Some((_, value)),
+                Some(kind),
+                Some((_, key)),
+                Some((_, value)),
                 Projection::GroupedAggregate { function, .. },
             ) => merge_grouped_integer_bitwise_query(
-                &shards, max_rows.min(250_000), kind, key, value, *function, Some(&select),
+                &shards,
+                max_rows.min(250_000),
+                kind,
+                key,
+                value,
+                *function,
+                Some(&select),
             ),
             _ => Err(MergeError::InvalidGroupedBitwise),
         }
@@ -1942,9 +1970,10 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(MergeError::InvalidGroupedSum) => {
             Response::text("502 Bad Gateway", "malformed shard grouped SUM response\n")
         }
-        Err(MergeError::InvalidGroupedBitwise) => {
-            Response::text("502 Bad Gateway", "malformed shard grouped bitwise response\n")
-        }
+        Err(MergeError::InvalidGroupedBitwise) => Response::text(
+            "502 Bad Gateway",
+            "malformed shard grouped bitwise response\n",
+        ),
         Err(MergeError::InvalidSortedScan) => Response::text(
             "502 Bad Gateway",
             "malformed shard sorted integer response\n",
@@ -3310,9 +3339,8 @@ mod distributed_grouped_bitwise_tests {
 
     #[test]
     fn combines_signed_and_nullable_bitwise_groups_across_shards() {
-        let select = parse_select(
-            "SELECT region, groupBitXor(bits) FROM events GROUP BY region",
-        ).unwrap();
+        let select =
+            parse_select("SELECT region, groupBitXor(bits) FROM events GROUP BY region").unwrap();
         assert!(is_safe_grouped_bitwise(&select));
         let shards = [
             (10, b"region\tgroupBitXor(bits)\na\t3\nb\tNULL\n".to_vec()),
@@ -3320,9 +3348,15 @@ mod distributed_grouped_bitwise_tests {
         ];
         assert_eq!(
             merge_grouped_integer_bitwise_query(
-                &shards, 10, "Nullable(UInt64)", "region", "bits",
-                AggregateFunction::GroupBitXor, Some(&select),
-            ).unwrap(),
+                &shards,
+                10,
+                "Nullable(UInt64)",
+                "region",
+                "bits",
+                AggregateFunction::GroupBitXor,
+                Some(&select),
+            )
+            .unwrap(),
             b"region\tgroupBitXor(bits)\na\t6\nb\t7\n"
         );
         let and = [
@@ -3331,9 +3365,15 @@ mod distributed_grouped_bitwise_tests {
         ];
         assert_eq!(
             merge_grouped_integer_bitwise_query(
-                &and, 10, "Int64", "region", "bits",
-                AggregateFunction::GroupBitAnd, None,
-            ).unwrap(),
+                &and,
+                10,
+                "Int64",
+                "region",
+                "bits",
+                AggregateFunction::GroupBitAnd,
+                None,
+            )
+            .unwrap(),
             b"region\tgroupBitAnd(bits)\na\t7\n"
         );
     }
@@ -3343,8 +3383,12 @@ mod distributed_grouped_bitwise_tests {
         assert_eq!(
             merge_grouped_integer_bitwise_query(
                 &[(10, b"region\tsum(bits)\na\t3\n".to_vec())],
-                10, "UInt64", "region", "bits",
-                AggregateFunction::GroupBitOr, None,
+                10,
+                "UInt64",
+                "region",
+                "bits",
+                AggregateFunction::GroupBitOr,
+                None,
             ),
             Err(MergeError::SchemaMismatch),
         );
