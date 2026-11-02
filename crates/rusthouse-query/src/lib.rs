@@ -697,7 +697,14 @@ impl Parser {
         } else {
             column
         };
-        let descending = if self.keyword("DESC") {
+        let using_operator = self.keyword("USING");
+        let descending = if using_operator {
+            match self.operator()? {
+                Operator::Lt => false,
+                Operator::Gt => true,
+                _ => return Err(ParseError("ORDER BY USING requires < or >".into())),
+            }
+        } else if self.keyword("DESC") {
             true
         } else {
             self.keyword("ASC");
@@ -711,6 +718,8 @@ impl Parser {
             } else {
                 return Err(ParseError("NULLS requires FIRST or LAST".into()));
             }
+        } else if using_operator {
+            Some(descending)
         } else {
             None
         };
