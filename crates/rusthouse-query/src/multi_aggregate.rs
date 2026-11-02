@@ -45,6 +45,39 @@ fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
             output.push_str(name);
             output.push(')');
         }
+        ScalarExpr::TextCompare { column, operator, value } => {
+            output.push_str(column);
+            let symbol = match operator {
+                crate::Operator::Eq => "=",
+                crate::Operator::Ne => "!=",
+                crate::Operator::Lt => "<",
+                crate::Operator::Le => "<=",
+                crate::Operator::Gt => ">",
+                crate::Operator::Ge => ">=",
+                _ => unreachable!("text comparisons require relational operators"),
+            };
+            write!(output, " {symbol} '").expect("writing to String cannot fail");
+            output.push_str(&value.replace('\'', "''"));
+            output.push('\'');
+        }
+        ScalarExpr::TextLike { column, pattern, negated, case_insensitive } => {
+            output.push_str(column);
+            output.push_str(match (*negated, *case_insensitive) {
+                (false, false) => " LIKE '",
+                (false, true) => " ILIKE '",
+                (true, false) => " NOT LIKE '",
+                (true, true) => " NOT ILIKE '",
+            });
+            output.push_str(&pattern.replace('\'', "''"));
+            output.push('\'');
+        }
+        ScalarExpr::And(left, right) | ScalarExpr::Or(left, right) => {
+            output.push('(');
+            render_expr_into(left, output);
+            output.push_str(if matches!(expr, ScalarExpr::And(..)) { " AND " } else { " OR " });
+            render_expr_into(right, output);
+            output.push(')');
+        }
         ScalarExpr::Integer(number) => {
             write!(output, "{number}").expect("writing to String cannot fail");
         }

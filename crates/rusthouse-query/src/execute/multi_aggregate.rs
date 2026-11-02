@@ -154,6 +154,15 @@ enum BoundExpr {
     Divide(Box<Self>, Box<Self>),
     Modulo(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
+    TextCompare { index: usize, operator: crate::Operator, value: Vec<u8> },
+    TextLike {
+        index: usize,
+        pattern: typed::TextPattern,
+        negated: bool,
+        case_insensitive: bool,
+    },
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
     Case {
         branches: Vec<(Self, Self)>,
         else_expr: Option<Box<Self>>,
@@ -189,6 +198,27 @@ impl BoundExpr {
             },
             ScalarExpr::Column(name) => Self::Column(index(name)?),
             ScalarExpr::TextLength(name) => Self::TextLength(index(name)?),
+            ScalarExpr::TextCompare { column, operator, value } => Self::TextCompare {
+                index: index(column)?,
+                operator: *operator,
+                value: value.as_bytes().to_vec(),
+            },
+            ScalarExpr::TextLike { column, pattern, negated, case_insensitive } => {
+                Self::TextLike {
+                    index: index(column)?,
+                    pattern: typed::compile_text_pattern(pattern)?,
+                    negated: *negated,
+                    case_insensitive: *case_insensitive,
+                }
+            }
+            ScalarExpr::And(left, right) => Self::And(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
+            ScalarExpr::Or(left, right) => Self::Or(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
             ScalarExpr::Integer(number) => Self::Integer(*number),
             ScalarExpr::Decimal(number) => {
                 let value = number.parse::<f64>().map_err(|_| {
@@ -357,6 +387,69 @@ fn eval_number(
                 Some(value) => eval_number(value, batch, row),
                 None => Ok(None),
             }
+        }
+        BoundExpr::TextCompare { index, operator, value } => {
+            let source = match &batch[*index] {
+                TypedColumn::Text(values) => values.get(row),
+                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
+                    values.get(row)
+                }
+                TypedColumn::NullableText { .. } => None,
+                _ => return Err(ExecutionError::Invalid(
+                    "text expression comparison requires a String column".into(),
+                )),
+            };
+            Ok(source.map(|source| {
+                let ordering = source.cmp(value.as_slice());
+                let matched = match operator {
+                    crate::Operator::Eq => ordering.is_eq(),
+                    crate::Operator::Ne => ordering.is_ne(),
+                    crate::Operator::Lt => ordering.is_lt(),
+                    crate::Operator::Le => ordering.is_le(),
+                    crate::Operator::Gt => ordering.is_gt(),
+                    crate::Operator::Ge => ordering.is_ge(),
+                    _ => unreachable!("text comparisons require relational operators"),
+                };
+                Number::Unsigned(u128::from(matched))
+            }))
+        }
+        BoundExpr::TextLike { index, pattern, negated, case_insensitive } => {
+            let source = match &batch[*index] {
+                TypedColumn::Text(values) => values.get(row),
+                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+                TypedColumn::NullableText { .. } => None,
+                _ => return Err(ExecutionError::Invalid(
+                    "LIKE expression requires a String column".into(),
+                )),
+            };
+            Ok(source.map(|source| {
+                let result = typed::text_pattern_matches(source, pattern, *case_insensitive);
+                Number::Unsigned(u128::from(result != *negated))
+            }))
+        }
+        BoundExpr::And(left, right) | BoundExpr::Or(left, right) => {
+            let as_bool = |value: Number| match value {
+                Number::Unsigned(value) => value != 0,
+                Number::Signed(value) => value != 0,
+                Number::Float(value) => value != 0.0,
+            };
+            let left_result = eval_number(left, batch, row)?.map(as_bool);
+            let is_and = matches!(expression, BoundExpr::And(..));
+            if left_result == Some(!is_and) {
+                return Ok(Some(Number::Unsigned(u128::from(!is_and))));
+            }
+            let right_result = eval_number(right, batch, row)?.map(as_bool);
+            let result = match (left_result, right_result) {
+                (Some(left), Some(right)) => Some(if is_and { left && right } else { left || right }),
+                (Some(left), None) => {
+                    if left == !is_and { Some(left) } else { None }
+                }
+                (None, Some(right)) => {
+                    if right == !is_and { Some(right) } else { None }
+                }
+                (None, None) => None,
+            };
+            Ok(result.map(|value| Number::Unsigned(u128::from(value))))
         }
         BoundExpr::Column(index) => numeric_argument_at(batch, *index, row),
         BoundExpr::Compare(left, operator, right) => {

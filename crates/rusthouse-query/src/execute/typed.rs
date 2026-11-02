@@ -971,6 +971,19 @@ pub(super) fn format_temporal_aggregate(value: String, data_type: &str) -> Strin
     }
 }
 
+/// Reuse the same compiled LIKE implementation as SQL WHERE filters.
+pub(super) struct TextPattern(LikePattern);
+
+pub(super) fn compile_text_pattern(pattern: &str) -> Result<TextPattern, ExecutionError> {
+    compile_like(pattern).map(TextPattern)
+}
+
+pub(super) fn text_pattern_matches(
+    text: &[u8], pattern: &TextPattern, case_insensitive: bool
+) -> bool {
+    like_matches(text, &pattern.0, case_insensitive)
+}
+
 pub(super) fn write_typed_value<W: Write>(
     output: &mut W,
     value: &Cell,
