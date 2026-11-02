@@ -170,9 +170,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                 finish_ddl(&mut parser)?;
                 return Ok(Some(Ddl::RenameTable { from: table, to }));
             }
-            if !parser.keyword("COLUMN") {
-                return Err(ParseError("expected COLUMN after RENAME".into()));
-            }
+            parser.keyword("COLUMN");
             let from = identifier(&mut parser)?;
             if !parser.keyword("TO") {
                 return Err(ParseError("expected TO after source column".into()));
@@ -641,5 +639,15 @@ mod show_columns_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod rename_without_column_parser_tests {
+    #[test]
+    fn rename_column_keyword_is_optional() {
+        let ddl = crate::ddl::parse_ddl("ALTER TABLE sample RENAME old_name TO new_name").unwrap();
+        assert!(matches!(ddl, Some(crate::ddl::Ddl::RenameColumn { table, from, to })
+            if table == "sample" && from == "old_name" && to == "new_name"));
     }
 }
