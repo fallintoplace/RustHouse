@@ -32,6 +32,17 @@ fn value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
             parser.index += 1;
             Ok(None)
         }
+        Some(Token::Minus) => {
+            parser.index += 1;
+            match parser.tokens.get(parser.index) {
+                Some(Token::Number(value)) if !value.starts_with('-') => {
+                    let value = format!("-{value}");
+                    parser.index += 1;
+                    Ok(Some(value))
+                }
+                _ => Err(ParseError("INSERT - requires a numeric literal".into())),
+            }
+        }
         Some(Token::Plus) => {
             parser.index += 1;
             match parser.tokens.get(parser.index) {
@@ -270,5 +281,27 @@ mod tests {
         ] {
             assert!(parse_insert(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod insert_spaced_unary_minus_tests {
+    use super::*;
+
+    #[test]
+    fn signed_numeric_literals_accept_whitespace_after_minus() {
+        let insert = parse_insert("INSERT INTO amounts VALUES (- 1, + 2, -3)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            insert.rows,
+            vec![vec![
+                Some("-1".into()),
+                Some("2".into()),
+                Some("-3".into()),
+            ]]
+        );
+        assert!(parse_insert("INSERT INTO amounts VALUES (- -1)").is_err());
+        assert!(parse_insert("INSERT INTO amounts VALUES (- 'text')").is_err());
     }
 }
