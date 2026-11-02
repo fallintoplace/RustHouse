@@ -620,14 +620,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     }
     // Chained numeric/column aggregates and OUTER or filtered chained COUNT
     // lack a matching streaming semantics implementation. Reject them.
+    // COUNT(*) can also use the bounded materializing executor for OUTER
+    // chains. Only the all-INNER case uses the multiplicity-only fast path.
     if !steps.is_empty()
         && aggregate.is_some()
-        && (!matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))
-            || kind != JoinType::Inner
-            || steps.iter().any(|step| step.kind != JoinType::Inner))
+        && !matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))
     {
         return Err(ParseError(
-            "chained JOIN COUNT requires all INNER joins and no post-join NULL filter".into(),
+            "chained JOIN supports COUNT(*) as its only scalar aggregate".into(),
         ));
     }
     if aggregate.is_some()

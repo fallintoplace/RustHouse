@@ -543,6 +543,8 @@ pub fn execute_multi_join<W: Write>(
         // COUNT(*) over a validated all-INNER chain needs only the final
         // hash-bucket multiplicities. No final joined rows are retained.
         if query.aggregate == Some(crate::JoinAggregate::CountStar)
+            && query.kind == JoinType::Inner
+            && query.steps.iter().all(|step| step.kind == JoinType::Inner)
             && step_index == query.steps.len()
         {
             let mut count = 0u64;
