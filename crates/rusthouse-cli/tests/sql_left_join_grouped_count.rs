@@ -12,7 +12,10 @@ fn sql(query: &str, db: &Path) -> Output {
 
 #[test]
 fn left_join_grouped_count_preserves_unmatched_rows_and_null_keys() {
-    let db = std::env::temp_dir().join(format!("rusthouse-left-group-count-{}", std::process::id()));
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-left-group-count-{}",
+        std::process::id()
+    ));
     for statement in [
         "CREATE TABLE rides (id UInt64, pickup Nullable(UInt8))",
         "CREATE TABLE zones (id UInt64, region Nullable(String))",
