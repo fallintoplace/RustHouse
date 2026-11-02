@@ -95,7 +95,12 @@ mod tests {
                 )
                 .unwrap();
                 let slices = updated.iter().map(Vec::as_slice).collect::<Vec<_>>();
-                assert_eq!(incremental, encode_double_parity(&slices).unwrap());
+                // Incremental replacement intentionally keeps the original stripe width.
+                // A full re-encode may shrink when the longest shard is replaced.
+                let mut expected = encode_double_parity(&slices).unwrap();
+                expected.xor.resize(initial.xor.len(), 0);
+                expected.weighted.resize(initial.weighted.len(), 0);
+                assert_eq!(incremental, expected);
                 let lengths = updated.iter().map(Vec::len).collect::<Vec<_>>();
                 for left in 0..updated.len() {
                     for right in left..updated.len() {
