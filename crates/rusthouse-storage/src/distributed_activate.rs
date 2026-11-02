@@ -684,6 +684,7 @@ mod conditional_activation_preflight_tests {
         assert!(preview_verified_generation_activation(&root, 1, 2, 0, 0).is_err());
         assert!(preview_verified_generation_activation(&root, 0, 2, 64, 1_000_000).is_err());
         fs::write(candidate.join("all_0_0_0/extra.bin"), b"unknown").unwrap();
+        fs::write(candidate.join("all_0_0_0/extra.mrk2"), b"bad-mark").unwrap();
         assert!(
             preview_verified_generation_activation(&root, 1, 2, 64, 1_000_000).is_err()
         );
