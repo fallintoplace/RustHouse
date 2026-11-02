@@ -2376,11 +2376,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let mut result = String::new();
             let mut written = false;
             let mut count = 0;
+            let mut null_argument = false;
             loop {
                 if count == 16 {
                     return Err(ParseError("CONCAT_WS supports at most 16 values".into()));
                 }
                 let value = text_arg(parser, depth + 1)?;
+                null_argument |= name == "CONCATWITHSEPARATOR" && value.is_none();
                 if let (Some(separator), Some(value)) = (separator.as_ref(), value) {
                     let separator_len = if written { separator.len() } else { 0 };
                     let total = result
@@ -2407,7 +2409,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 Token::RParen,
                 "expected ')' after CONCAT_WS arguments",
             )?;
-            if separator.is_some() {
+            if separator.is_some() && !null_argument {
                 ConstantValue::Text(result)
             } else {
                 ConstantValue::Null
