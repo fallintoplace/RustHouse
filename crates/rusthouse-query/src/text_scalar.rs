@@ -240,6 +240,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "TOPLEVELDOMAIN"
                 | "COMPARESUBSTRINGS"
                 | "EDITDISTANCE"
+                | "DAMERAULEVENSHTEINDISTANCE"
                 | "EDITDISTANCEUTF8"
                 | "FORMATREADABLESIZE"
                 | "FORMATREADABLEDECIMALSIZE"
@@ -815,6 +816,55 @@ fn base58_decode(input: &str) -> Result<String, ParseError> {
     bytes.extend(decoded.iter().rev());
     String::from_utf8(bytes)
         .map_err(|_| ParseError("base58Decode constant is not valid UTF-8".into()))
+}
+
+fn bounded_damerau_levenshtein(left: &[u8], right: &[u8]) -> Result<i64, ParseError> {
+    if left == right {
+        return Ok(0);
+    }
+    if left.is_empty() || right.is_empty() {
+        return Ok(left.len().max(right.len()) as i64);
+    }
+    let rows = left.len() + 2;
+    let width = right.len() + 2;
+    let cells = rows
+        .checked_mul(width)
+        .filter(|&count| count <= 1_000_000)
+        .ok_or_else(|| ParseError("Damerau-Levenshtein exceeds computation budget".into()))?;
+    let mut matrix = vec![0usize; cells];
+    let maximum = left.len() + right.len();
+    matrix[0] = maximum;
+    for i in 0..=left.len() {
+        matrix[(i + 1) * width] = maximum;
+        matrix[(i + 1) * width + 1] = i;
+    }
+    for j in 0..=right.len() {
+        matrix[j + 1] = maximum;
+        matrix[width + j + 1] = j;
+    }
+    let mut last_position = [0usize; 256];
+    for i in 1..=left.len() {
+        let mut last_match = 0usize;
+        for j in 1..=right.len() {
+            let previous_i = last_position[right[j - 1] as usize];
+            let previous_j = last_match;
+            let cost = usize::from(left[i - 1] != right[j - 1]);
+            if cost == 0 {
+                last_match = j;
+            }
+            let substitution = matrix[i * width + j] + cost;
+            let insertion = matrix[(i + 1) * width + j] + 1;
+            let deletion = matrix[i * width + j + 1] + 1;
+            let transposition = matrix[previous_i * width + previous_j]
+                + (i - previous_i - 1)
+                + 1
+                + (j - previous_j - 1);
+            matrix[(i + 1) * width + j + 1] =
+                substitution.min(insertion).min(deletion).min(transposition);
+        }
+        last_position[left[i - 1] as usize] = i;
+    }
+    Ok(matrix[(left.len() + 1) * width + right.len() + 1] as i64)
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
@@ -1569,6 +1619,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         std::cmp::Ordering::Greater => 1,
                     })
                 }
+                _ => ConstantValue::Null,
+            }
+        }
+        "DAMERAULEVENSHTEINDISTANCE" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "Damerau-Levenshtein requires two strings")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "Damerau-Levenshtein requires two strings")?;
+            match (left, right) {
+                (Some(left), Some(right)) => ConstantValue::Integer(
+                    bounded_damerau_levenshtein(left.as_bytes(), right.as_bytes())?,
+                ),
                 _ => ConstantValue::Null,
             }
         }
