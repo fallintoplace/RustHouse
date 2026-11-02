@@ -25,7 +25,8 @@ pub fn maximum_replica_flow(
     {
         return Err("invalid replica flow topology");
     }
-    let mut residual = vec![vec![0u64; vertices]; vertices];
+    // Reverse residual capacity may exceed u64 when antiparallel links exist.
+    let mut residual = vec![vec![0u128; vertices]; vertices];
     for link in links {
         if link.from >= vertices || link.to >= vertices
             || link.from == link.to || link.bytes_per_second == 0
@@ -33,7 +34,8 @@ pub fn maximum_replica_flow(
             return Err("invalid replica network link");
         }
         residual[link.from][link.to] = residual[link.from][link.to]
-            .checked_add(link.bytes_per_second).ok_or("replica link capacity overflow")?;
+            .checked_add(u128::from(link.bytes_per_second))
+            .ok_or("replica link capacity overflow")?;
     }
 
     let mut total_flow = 0u64;
@@ -51,7 +53,7 @@ pub fn maximum_replica_flow(
             if parent[sink] != usize::MAX { break; }
         }
         if parent[sink] == usize::MAX { return Ok(total_flow); }
-        let mut bottleneck = u64::MAX;
+        let mut bottleneck = u128::MAX;
         let mut cursor = sink;
         while cursor != source {
             let previous = parent[cursor];
@@ -60,7 +62,9 @@ pub fn maximum_replica_flow(
         }
         // Validate all potentially overflowing updates before modifying the
         // residual graph so a maliciously large capacity never wraps.
-        total_flow = total_flow.checked_add(bottleneck)
+        let added_flow = u64::try_from(bottleneck)
+            .map_err(|_| "replica total flow overflow")?;
+        total_flow = total_flow.checked_add(added_flow)
             .ok_or("replica total flow overflow")?;
         cursor = sink;
         while cursor != source {
@@ -98,5 +102,20 @@ mod tests {
         assert!(maximum_replica_flow(2, &[link(1,1,1)], 0, 1).is_err());
         assert!(maximum_replica_flow(2, &[], 0, 0).is_err());
         assert!(maximum_replica_flow(2, &[link(0,2,1)], 0, 1).is_err());
+    }
+}
+
+#[cfg(test)]
+mod antiparallel_residual_tests {
+    use super::*;
+
+    #[test]
+    fn maximum_reverse_capacity_does_not_reject_valid_flow() {
+        let links = [
+            CapacityLink { from: 0, to: 1, bytes_per_second: u64::MAX },
+            CapacityLink { from: 1, to: 0, bytes_per_second: u64::MAX },
+        ];
+        assert_eq!(maximum_replica_flow(2, &links, 0, 1).unwrap(), u64::MAX);
+        assert_eq!(maximum_replica_flow(2, &links, 1, 0).unwrap(), u64::MAX);
     }
 }
