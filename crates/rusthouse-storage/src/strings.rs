@@ -72,17 +72,23 @@ impl StringColumn {
     }
 
     pub fn get(&self, row: usize) -> Option<&[u8]> {
-        let begin = *self.offsets.get(row)?;
-        let end = *self.offsets.get(row.checked_add(1)?)?;
+        // One row-bound check covers both offsets. Decoding guarantees that
+        // the private offset array has len() + 1 monotone entries.
+        if row >= self.len() {
+            return None;
+        }
+        let begin = self.offsets[row];
+        let end = self.offsets[row + 1];
         self.data.get(begin..end)
     }
 
     /// Return a string's byte length without touching its payload.
     /// The decoder validates monotone offsets when building the column.
     pub fn byte_length(&self, row: usize) -> Option<usize> {
-        let begin = *self.offsets.get(row)?;
-        let end = *self.offsets.get(row.checked_add(1)?)?;
-        end.checked_sub(begin)
+        if row >= self.len() {
+            return None;
+        }
+        Some(self.offsets[row + 1] - self.offsets[row])
     }
 
     fn push<R: Read>(&mut self, reader: &mut R, length: u64) -> Result<(), StringReadError> {
@@ -681,6 +687,26 @@ mod buffered_varuint_bulk_tests {
 #[cfg(test)]
 mod preflight_flattening_tests {
     use super::*;
+
+    #[test]
+    fn fast_row_access_preserves_empty_long_and_out_of_range_values() {
+        let input = vec![
+            vec![],
+            b"abc".to_vec(),
+            vec![0, b'\\', 0xff, 0x7f],
+            vec![b'x'; 8192],
+            vec![],
+        ];
+        let values = StringColumn::from_rows(input.clone()).unwrap();
+        for (row, expected) in input.iter().enumerate() {
+            assert_eq!(values.get(row), Some(expected.as_slice()));
+            assert_eq!(values.byte_length(row), Some(expected.len()));
+        }
+        for row in [input.len(), input.len() + 1, usize::MAX] {
+            assert_eq!(values.get(row), None);
+            assert_eq!(values.byte_length(row), None);
+        }
+    }
 
     #[test]
     fn prevalidated_rows_keep_exact_offsets_and_payloads() {
