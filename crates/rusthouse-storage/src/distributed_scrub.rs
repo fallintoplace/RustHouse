@@ -780,3 +780,140 @@ mod atomic_scrub_report_tests {
         );
     }
 }
+
+
+/// Part-level work item for read-only snapshot scrubbing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScrubTarget {
+    pub part: String,
+    pub bytes: u64,
+    pub last_verified_at: u64,
+    /// Operator priority from 0 (background) to 3 (urgent).
+    pub priority: u8,
+}
+
+/// Select an affordable, age-ordered verification batch without reading files.
+///
+/// A high-priority item that does not fit is skipped so smaller items can
+/// make progress. No selection authorizes mutation or deletion. All targets
+/// are validated even when the budget or requested page size is zero.
+pub fn plan_budgeted_scrub_batch(
+    targets: &[ScrubTarget],
+    now: u64,
+    max_bytes: u64,
+    max_parts: usize,
+) -> Result<Vec<String>, &'static str> {
+    use std::collections::HashSet;
+
+    if targets.len() > 16_384 || max_parts > 256 {
+        return Err("invalid snapshot scrub scheduling bounds");
+    }
+    let mut seen = HashSet::with_capacity(targets.len());
+    for target in targets {
+        crate::distributed_object_key::ObjectKey::new(
+            "scrub", "local", 1, &target.part, "checksums.txt",
+        )?;
+        if target.last_verified_at > now
+            || target.priority > 3
+            || !seen.insert(target.part.to_ascii_lowercase())
+        {
+            return Err("invalid or duplicate snapshot scrub target");
+        }
+    }
+    let mut ordered = targets.iter().collect::<Vec<_>>();
+    ordered.sort_unstable_by(|left, right| {
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.last_verified_at.cmp(&right.last_verified_at))
+            .then_with(|| left.part.cmp(&right.part))
+    });
+    let mut remaining = max_bytes;
+    let mut selected = Vec::with_capacity(max_parts.min(targets.len()));
+    for target in ordered {
+        if selected.len() == max_parts {
+            break;
+        }
+        if target.bytes <= remaining {
+            remaining -= target.bytes;
+            selected.push(target.part.clone());
+        }
+    }
+    Ok(selected)
+}
+
+#[cfg(test)]
+mod budgeted_scrub_scheduler_tests {
+    use super::*;
+
+    fn target(part: &str, bytes: u64, age: u64, priority: u8) -> ScrubTarget {
+        ScrubTarget {
+            part: part.into(),
+            bytes,
+            last_verified_at: age,
+            priority,
+        }
+    }
+
+    #[test]
+    fn skips_oversized_urgent_parts_without_starving_smaller_parts() {
+        let mut inventory = [
+            target("p_a", 6, 10, 1),
+            target("p_b", 4, 40, 3),
+            target("p_c", 25, 0, 3),
+            target("p_d", 3, 1, 0),
+        ];
+        let first = plan_budgeted_scrub_batch(&inventory, 50, 12, 3).unwrap();
+        assert_eq!(first, ["p_b", "p_a"]);
+        inventory.reverse();
+        assert_eq!(
+            plan_budgeted_scrub_batch(&inventory, 50, 12, 3).unwrap(),
+            first
+        );
+        assert_eq!(
+            plan_budgeted_scrub_batch(&inventory, 50, 0, 3).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn rejects_bad_priorities_future_dates_and_portable_name_aliases() {
+        let valid = target("good_1", 3, 5, 3);
+        assert!(
+            plan_budgeted_scrub_batch(&[valid.clone(), valid.clone()], 5, 0, 0).is_err()
+        );
+        assert!(
+            plan_budgeted_scrub_batch(
+                &[valid.clone(), target("GOOD_1", 1, 0, 0)], 5, 0, 0
+            )
+            .is_err()
+        );
+        assert!(
+            plan_budgeted_scrub_batch(&[target("../bad", 1, 0, 0)], 5, 0, 0).is_err()
+        );
+        assert!(
+            plan_budgeted_scrub_batch(&[target("future", 1, 6, 0)], 5, 0, 0).is_err()
+        );
+        assert!(
+            plan_budgeted_scrub_batch(&[target("bad", 1, 0, 4)], 5, 0, 0).is_err()
+        );
+        assert!(plan_budgeted_scrub_batch(&[], 5, 0, 257).is_err());
+    }
+
+    #[test]
+    fn full_size_queues_keep_a_bounded_deterministic_prefix() {
+        let inventory = (0..16_384)
+            .map(|index| target(&format!("part_{index:05}"), 1, index as u64, 2))
+            .collect::<Vec<_>>();
+        let selected =
+            plan_budgeted_scrub_batch(&inventory, 20_000, 10_000, 256).unwrap();
+        assert_eq!(selected.len(), 256);
+        assert_eq!(selected[0], "part_00000");
+        assert_eq!(selected[255], "part_00255");
+        assert_eq!(
+            plan_budgeted_scrub_batch(&inventory, 20_000, 3, 256).unwrap(),
+            ["part_00000", "part_00001", "part_00002"]
+        );
+        assert!(plan_budgeted_scrub_batch(&inventory, 1, 1, 1).is_err());
+    }
+}
