@@ -97,6 +97,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("TRAILING_ZEROS")
         || name.eq_ignore_ascii_case("DIGITAL_ROOT")
         || name.eq_ignore_ascii_case("POW10")
+        || name.eq_ignore_ascii_case("INTEXP10")
         || name.eq_ignore_ascii_case("TRIANGULAR")
         || name.eq_ignore_ascii_case("IS_PRIME")
         || name.eq_ignore_ascii_case("PERMUTATIONS")
@@ -1283,7 +1284,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("DIGITAL_ROOT") {
         return parse_digital_root(parser, depth);
     }
-    if parser.keyword("POW10") {
+    if parser.keyword("POW10") || parser.keyword("INTEXP10") {
         return parse_pow10(parser, depth);
     }
     if parser.keyword("TRIANGULAR") {
@@ -1760,6 +1761,40 @@ mod clickhouse_bit_test_any_tests {
             "SELECT bitTestAny(1, 64)",
             "SELECT bitTestAny(1, 0, 64)",
             "SELECT bitTestAny(1, 0,)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_int_exp10_tests {
+    use crate::{Projection, parse_select};
+
+    #[test]
+    fn reuses_exact_checked_base_ten_power() {
+        for (sql, expected) in [
+            ("SELECT intExp10(0)", 1_i64),
+            ("SELECT intExp10(1)", 10),
+            ("SELECT intExp10(9)", 1_000_000_000),
+            ("SELECT intExp10(18)", 1_000_000_000_000_000_000),
+        ] {
+            assert_eq!(
+                parse_select(sql).unwrap().projection,
+                Projection::Literal(expected),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn handles_wrong_arity_sign_and_overflow() {
+        for sql in [
+            "SELECT intExp10(-1)",
+            "SELECT intExp10(19)",
+            "SELECT intExp10(10000)",
+            "SELECT intExp10()",
+            "SELECT intExp10(1, 2)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
