@@ -53,6 +53,8 @@ struct OutputState {
 
 struct OutputSpec<'a> {
     selected: &'a [(usize, String, Option<usize>)],
+    /// Physical source types, including projected USING fallbacks.
+    types: Vec<&'a str>,
     null_filter: Option<(usize, bool)>,
     offset: usize,
     limit: Option<usize>,
@@ -90,13 +92,12 @@ fn visit<W: Write>(
             if position != 0 {
                 output.write_all(b"\t")?;
             }
-            let value = &row[*index];
-            let value = if matches!(value, typed::Cell::Null) {
-                fallback.and_then(|index| row.get(index)).unwrap_or(value)
+            let source = if matches!(row[*index], typed::Cell::Null) {
+                fallback.unwrap_or(*index)
             } else {
-                value
+                *index
             };
-            typed::write_value(output, value)?;
+            typed::write_typed_value(output, &row[source], spec.types[source])?;
         }
         output.write_all(b"\n")?;
         state.emitted += 1;
@@ -142,6 +143,10 @@ pub(super) fn execute<W: Write>(
         .transpose()?;
     let spec = OutputSpec {
         selected: &selected,
+        types: relations
+            .iter()
+            .flat_map(|relation| relation.types.iter().map(String::as_str))
+            .collect(),
         null_filter,
         offset: query.offset,
         limit: query.limit,
