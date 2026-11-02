@@ -1415,7 +1415,7 @@ mod coalesced_object_read_tests {
                 .collect::<Vec<_>>();
             let spans = plan_coalesced_object_ranges(&ranges, 256, 8 * 1024 * 1024).unwrap();
             assert!(spans.windows(2).all(|pair| {
-                pair[0].offset + pair[0].length as u64 < pair[1].offset
+                pair[0].offset + (pair[0].length as u64) < pair[1].offset
             }));
             let mut expected = [false; 256];
             let mut actual = [false; 256];
