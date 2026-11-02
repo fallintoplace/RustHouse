@@ -817,7 +817,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     if !parser.keyword("SELECT") {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
+    let explicit_all = parser.keyword("ALL");
     let mut distinct = parser.keyword("DISTINCT");
+    if explicit_all && distinct {
+        return Err(ParseError("SELECT ALL and DISTINCT cannot be combined".into()));
+    }
     let mut literal_alias = None;
 
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
