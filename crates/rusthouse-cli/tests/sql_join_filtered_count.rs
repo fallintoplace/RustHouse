@@ -12,7 +12,10 @@ fn sql(query: &str, db: &Path) -> Output {
 
 #[test]
 fn filtered_inner_join_counts_preserve_duplicates_nulls_and_any_first_match() {
-    let db = std::env::temp_dir().join(format!("rusthouse-join-filter-count-{}", std::process::id()));
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-join-filter-count-{}",
+        std::process::id()
+    ));
     for statement in [
         "CREATE TABLE facts (id UInt64, amount Nullable(Int64), active UInt8)",
         "CREATE TABLE dims (id UInt64, zone String)",
@@ -72,7 +75,10 @@ fn filtered_inner_join_counts_preserve_duplicates_nulls_and_any_first_match() {
 
 #[test]
 fn filtered_join_count_is_not_limited_to_materialized_result_rows() {
-    let db = std::env::temp_dir().join(format!("rusthouse-join-filter-large-{}", std::process::id()));
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-join-filter-large-{}",
+        std::process::id()
+    ));
     for statement in [
         "CREATE TABLE facts (id UInt64)",
         "CREATE TABLE dims (id UInt64)",
