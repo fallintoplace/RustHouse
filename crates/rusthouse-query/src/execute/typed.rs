@@ -993,18 +993,21 @@ fn parallel_exact_u32_distinct(part: &Path, column: &str) -> Result<Option<u64>,
         return Ok(None);
     }
     let names = [column.to_owned()];
-    let chunk_size = parts.len().div_ceil(workers);
+    // Claim large and small frozen parts dynamically to balance skew.
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
     let partials = std::thread::scope(|scope| -> Result<_, ExecutionError> {
-        let handles = parts
-            .chunks(chunk_size)
-            .map(|chunk| {
+        let handles = (0..workers)
+            .map(|_| {
                 let names = &names;
+                let cursor = &cursor;
                 std::thread::Builder::new()
                     .spawn_scoped(
                         scope,
                         move || -> Result<BitmapDistinct32, ExecutionError> {
                             let mut bitmap = BitmapDistinct32::new();
-                            for path in chunk {
+                            while let Some(path) = parts.get(
+                                cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                            ) {
                                 let mut scan = TypedPartReader::open(path, names)?;
                                 while let Some(batch) = scan.next_batch()? {
                                     let values = &batch[0];
