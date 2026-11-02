@@ -18,6 +18,14 @@ pub struct HedgedAttempt {
     pub at_ms: u64,
 }
 
+fn valid_replica_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 pub fn plan_hedged_reads(
     replicas: &[HedgedReplica],
     snapshot: SnapshotVersion,
@@ -34,8 +42,8 @@ pub fn plan_hedged_reads(
     }
     let mut names = HashSet::new();
     for replica in replicas {
-        if replica.node.is_empty() || replica.node.len() > 64
-            || replica.zone.is_empty() || replica.zone.len() > 64
+        if !valid_replica_label(&replica.node)
+            || !valid_replica_label(&replica.zone)
             || replica.p95_latency_ms == 0 || !names.insert(&replica.node)
             || replica.snapshot.epoch == 0 || replica.snapshot.generation == 0
         {
@@ -117,5 +125,39 @@ mod tests {
     fn conflicting_fingerprint_rejected_even_if_other_peer_matches() {
         let replicas = [candidate("a", "east", 10, 9), candidate("b", "west", 10, 10)];
         assert!(plan_hedged_reads(&replicas, version(9), 100, 10, 2).is_err());
+    }
+}
+
+#[cfg(test)]
+mod hedged_replica_identity_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_control_characters_and_path_like_replica_labels() {
+        let version = SnapshotVersion { epoch: 1, generation: 1, fingerprint: 7 };
+        for (node, zone) in [
+            ("node\nother", "zone"),
+            ("node/other", "zone"),
+            ("node", "../zone"),
+            ("node", "zone\tother"),
+            ("node", "z\u{00e9}ne"),
+        ] {
+            let replicas = [HedgedReplica {
+                node: node.into(),
+                zone: zone.into(),
+                healthy: true,
+                p95_latency_ms: 10,
+                snapshot: version,
+            }];
+            assert!(plan_hedged_reads(&replicas, version, 50, 10, 1).is_err());
+        }
+        let valid = [HedgedReplica {
+            node: "node_01".into(),
+            zone: "eu-central-1".into(),
+            healthy: true,
+            p95_latency_ms: 10,
+            snapshot: version,
+        }];
+        assert_eq!(plan_hedged_reads(&valid, version, 50, 10, 1).unwrap().len(), 1);
     }
 }

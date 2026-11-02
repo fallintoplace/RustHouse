@@ -17,25 +17,34 @@ fn numeric_column_error() -> ExecutionError {
     ExecutionError::Invalid("numeric aggregates require numeric columns".into())
 }
 
+// Conditional metrics only need zero/nonzero, not a widened Number per row.
+fn numeric_nonzero_at(values: &NumericColumn, row: usize) -> bool {
+    match values {
+        NumericColumn::UInt8(values) => values[row] != 0,
+        NumericColumn::UInt16(values) => values[row] != 0,
+        NumericColumn::UInt32(values) => values[row] != 0,
+        NumericColumn::UInt64(values) => values[row] != 0,
+        NumericColumn::UInt128(values) => values[row] != 0,
+        NumericColumn::Int8(values) => values[row] != 0,
+        NumericColumn::Int16(values) => values[row] != 0,
+        NumericColumn::Int32(values) => values[row] != 0,
+        NumericColumn::Int64(values) => values[row] != 0,
+        NumericColumn::Int128(values) => values[row] != 0,
+        NumericColumn::Float32(values) => values[row] != 0.0,
+        NumericColumn::Float64(values) => values[row] != 0.0,
+    }
+}
+
 fn filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
-    let number = match column {
-        TypedColumn::Numeric(values) => Some(super::number_at(values, row)),
-        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
-            Some(super::number_at(values, row))
+    match column {
+        TypedColumn::Numeric(values) => Ok(numeric_nonzero_at(values, row)),
+        TypedColumn::NullableNumeric { values, nulls } => {
+            Ok(nulls[row] == 0 && numeric_nonzero_at(values, row))
         }
-        TypedColumn::NullableNumeric { .. } => None,
-        _ => {
-            return Err(ExecutionError::Invalid(
-                "conditional metric filter must be numeric".into(),
-            ));
-        }
-    };
-    Ok(match number {
-        Some(Number::Unsigned(value)) => value != 0,
-        Some(Number::Signed(value)) => value != 0,
-        Some(Number::Float(value)) => value != 0.0,
-        None => false,
-    })
+        _ => Err(ExecutionError::Invalid(
+            "conditional metric filter must be numeric".into(),
+        )),
+    }
 }
 
 const MAX_GROUP_STATE_BYTES: usize = 64 * 1024 * 1024;
@@ -86,7 +95,7 @@ fn reserve_group(
 enum GroupSlots {
     // Each nullable numeric domain adds exactly one extra NULL key.
     Byte(Box<[usize; 257]>),
-    WideSparse(HashMap<usize, usize>),
+    WideSparse { map: HashMap<usize, usize>, probes: usize },
     WideDense(Vec<usize>),
 }
 
@@ -94,15 +103,27 @@ impl GroupSlots {
     fn for_type(kind: &str) -> Option<Self> {
         match typed::base_type(kind) {
             "UInt8" | "Int8" => Some(Self::Byte(Box::new([usize::MAX; 257]))),
-            "UInt16" | "Int16" => Some(Self::WideSparse(HashMap::new())),
+            "UInt16" | "Int16" => Some(Self::WideSparse { map: HashMap::new(), probes: 0 }),
             _ => None,
         }
     }
 
-    fn get(&self, key: usize) -> Option<usize> {
+    fn get(&mut self, key: usize) -> Option<usize> {
+        if let Self::WideSparse { map, probes } = self {
+            *probes += 1;
+            // Even one frequently repeated UInt16 key is worth direct
+            // indexing on long scans. Keep sparse maps for short scans.
+            if *probes >= 8192 {
+                let mut slots = vec![usize::MAX; 65_537];
+                for (&value, &group) in map.iter() {
+                    slots[value] = group;
+                }
+                *self = Self::WideDense(slots);
+            }
+        }
         match self {
             Self::Byte(slots) => (slots[key] != usize::MAX).then_some(slots[key]),
-            Self::WideSparse(map) => map.get(&key).copied(),
+            Self::WideSparse { map, .. } => map.get(&key).copied(),
             Self::WideDense(slots) => (slots[key] != usize::MAX).then_some(slots[key]),
         }
     }
@@ -111,7 +132,7 @@ impl GroupSlots {
         match self {
             Self::Byte(slots) => slots[key] = index,
             Self::WideDense(slots) => slots[key] = index,
-            Self::WideSparse(map) => {
+            Self::WideSparse { map, .. } => {
                 map.insert(key, index);
                 if map.len() >= 2048 {
                     let mut slots = vec![usize::MAX; 65_537];
@@ -366,7 +387,7 @@ pub(super) fn execute<W: Write>(
                 }
                 if *function == AggregateFunction::Count {
                     if !typed::is_null_at(&batch[column_index], row) {
-                        state.update(Number::Unsigned(1))?;
+                        state.increment_count()?;
                     }
                     continue;
                 }
@@ -646,12 +667,12 @@ mod lazy_u16_multi_aggregate_index_tests {
     fn sparse_u16_groups_promote_and_preserve_signed_keys_and_indexes() {
         for kind in ["UInt16", "Int16"] {
             let mut slots = GroupSlots::for_type(kind).unwrap();
-            assert!(matches!(slots, GroupSlots::WideSparse(_)));
+            assert!(matches!(slots, GroupSlots::WideSparse { .. }));
             for key in 0..2047 {
                 assert_eq!(slots.get(key), None);
                 slots.insert(key, key + 17);
             }
-            assert!(matches!(slots, GroupSlots::WideSparse(_)));
+            assert!(matches!(slots, GroupSlots::WideSparse { .. }));
             slots.insert(65_535, 99_999);
             assert!(matches!(slots, GroupSlots::WideDense(_)));
             assert_eq!(slots.get(65_535), Some(99_999));
@@ -701,5 +722,62 @@ mod nullable_numeric_group_slots_tests {
         assert_eq!(slots.get(0), Some(10));
         assert_eq!(slots.get(2047), Some(2057));
         assert_eq!(slots.get(65_535), None);
+    }
+}
+
+#[cfg(test)]
+mod native_conditional_filter_tests {
+    use super::*;
+
+    #[test]
+    fn native_zero_probes_keep_nullable_and_nan_semantics() {
+        let columns = [
+            TypedColumn::Numeric(NumericColumn::UInt8(vec![0, 1, 255])),
+            TypedColumn::Numeric(NumericColumn::Int64(vec![0, -1, i64::MAX])),
+            TypedColumn::Numeric(NumericColumn::Float32(vec![0.0, -0.0, f32::NAN])),
+            TypedColumn::Numeric(NumericColumn::Float64(vec![0.0, -0.0, f64::INFINITY])),
+            TypedColumn::NullableNumeric {
+                values: NumericColumn::UInt8(vec![1, 0, 1]),
+                nulls: vec![1, 0, 0],
+            },
+        ];
+        let expected = [
+            [false, true, true],
+            [false, true, true],
+            [false, false, true],
+            [false, false, true],
+            [false, false, true],
+        ];
+        for (column, expected) in columns.iter().zip(expected) {
+            for (row, enabled) in expected.into_iter().enumerate() {
+                assert_eq!(filter_enabled(column, row).unwrap(), enabled);
+            }
+        }
+        assert!(filter_enabled(
+            &TypedColumn::Numeric(NumericColumn::UInt128(vec![u128::MAX])),
+            0
+        ).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod hot_short_group_promotion_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_short_key_probes_promote_without_changing_group_indexes() {
+        let mut slots = GroupSlots::for_type("Nullable(UInt16)").unwrap();
+        slots.insert(65_536, 0);
+        slots.insert(42, 1);
+        for _ in 0..8191 {
+            assert_eq!(slots.get(42), Some(1));
+        }
+        assert!(matches!(slots, GroupSlots::WideSparse { .. }));
+        assert_eq!(slots.get(42), Some(1));
+        assert!(matches!(slots, GroupSlots::WideDense(_)));
+        assert_eq!(slots.get(65_536), Some(0));
+        assert_eq!(slots.get(43), None);
+        slots.insert(43, 2);
+        assert_eq!(slots.get(43), Some(2));
     }
 }

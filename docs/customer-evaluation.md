@@ -1,17 +1,14 @@
 # RustHouse first-customer evaluation guide
 
-Explore RustHouse with a focused local SQL and immutable-part trial. This guide
-helps teams measure the experience and identify the capabilities their use case
-needs. The server and distributed capabilities are experimental.
+Use this guide to try RustHouse with local SQL and frozen parts. It helps you
+measure the experience and check whether RustHouse fits your needs. The server
+and distributed features are experimental.
 
 ## Who should try it now
 
-1. **Local analytical-tool developers** who need reproducible, bounded SQL
-   against small local data or generated sources.
-2. **ClickHouse part investigators** who possess a safely frozen snapshot and
-   want independent metadata or read-only checks.
-3. **Rust database contributors** who want to extend or measure the SQL,
-   storage and CLI implementation.
+1. **Local tool developers** who want to query small datasets or generated data.
+2. **ClickHouse users** who want to inspect a frozen snapshot.
+3. **Rust contributors** who want to improve or measure SQL, storage, or the CLI.
 
 ## Plan your evaluation
 
@@ -22,7 +19,7 @@ transactions, and ClickHouse wire compatibility are outside the current scope.
 Use frozen snapshots for external parts. Power-loss durability and unattended
 upgrades remain areas for further validation.
 
-## One-hour evaluation, using today's supported CLI
+## Try RustHouse in one hour
 
 ```sh
 cargo build --release --locked -p rusthouse-cli
@@ -50,17 +47,15 @@ Local scripts are not cross-statement transactions.
 - **Integration 10 points:** unambiguous HTTP/CLI contracts and reproducible
   client calls without out-of-band knowledge.
 
-A score of **80+** is a *pilot candidate only*, not a declaration of
-production readiness. Any correctness failure, missing required security
-control or unverified data-loss mode is a no-go regardless of total score.
+A score of **80 or more** means the project may be ready for a pilot. It does
+not mean it is ready for production. A correctness failure, a missing required
+security control, or an unverified data-loss mode blocks the pilot.
 
 ## Commercial learning goals
 
-Interview five pilot teams and record: job-to-be-done, current alternative,
-time lost per month, willingness to pay, blocker preventing adoption,
-and whether a successful second trial was requested. Count **repeat weekly
-usage** and **successful restores**, not only stars, PR counts or launch views.
+Interview five pilot teams. Record what they need, what they use today, how
+much time they lose, and what blocks adoption. Ask whether they would pay and
+try RustHouse again. Track **weekly repeat use** and **successful restores**.
 
-Avoid claiming a valuation, revenue, correctness, or performance result from
-this document. Convert repeated customer blockers into independently testable
-engineering work before extending the surface area.
+This guide does not establish a valuation, revenue, correctness, or performance
+result. Turn repeated blockers into work that can be tested independently.

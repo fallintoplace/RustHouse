@@ -553,15 +553,29 @@ pub(super) fn base58_encode(input: &str) -> Result<String, ParseError> {
 }
 
 
+// Decode each Base58 symbol with one indexed lookup, not a 58-byte search.
+const BASE58_DIGITS: [u8; 256] = {
+    let mut table = [u8::MAX; 256];
+    let alphabet = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut index = 0;
+    while index < alphabet.len() {
+        table[alphabet[index] as usize] = index as u8;
+        index += 1;
+    }
+    table
+};
+
 pub(super) fn base58_decode(input: &str) -> Result<String, ParseError> {
-    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     if input.len() > 4096 {
         return Err(ParseError("base58Decode constant exceeds 4096 bytes".into()));
     }
     let mut decoded = Vec::<u8>::new();
     for symbol in input.bytes() {
-        let mut carry = ALPHABET.iter().position(|&value| value == symbol)
-            .ok_or_else(|| ParseError("base58Decode contains an invalid digit".into()))?;
+        let digit = BASE58_DIGITS[usize::from(symbol)];
+        if digit == u8::MAX {
+            return Err(ParseError("base58Decode contains an invalid digit".into()));
+        }
+        let mut carry = usize::from(digit);
         for byte in &mut decoded {
             carry += usize::from(*byte) * 58;
             *byte = (carry % 256) as u8;
@@ -639,9 +653,12 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
         return Err(ParseError("unhex requires ASCII digits".into()));
     }
     fn digit(value: u8) -> Result<u8, ParseError> {
-        char::from(value).to_digit(16)
-            .map(|value| value as u8)
-            .ok_or_else(|| ParseError("unhex contains a non-hexadecimal digit".into()))
+        match value {
+            b'0'..=b'9' => Ok(value - b'0'),
+            b'a'..=b'f' => Ok(value - b'a' + 10),
+            b'A'..=b'F' => Ok(value - b'A' + 10),
+            _ => Err(ParseError("unhex contains a non-hexadecimal digit".into())),
+        }
     }
     let mut pairs = input.as_bytes().chunks_exact(2);
     let mut bytes = Vec::with_capacity((input.len() + 1) / 2);
@@ -671,5 +688,43 @@ mod percent_decoding_spans_tests {
         for invalid in ["%", "%A", "%GG", "%FF", "%é"] {
             assert!(decode_percent_encoded(invalid, false).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod ascii_unhex_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_mixed_hex_pairs_and_odd_tail() {
+        assert_eq!(unhex_text("48656c6c6f").unwrap(), "Hello");
+        assert_eq!(unhex_text("4a4B4c").unwrap(), "JKL");
+        assert_eq!(unhex_text("41A").unwrap().as_bytes(), &[b'A', 10]);
+        assert_eq!(unhex_text("").unwrap(), "");
+        for invalid in ["GG", "00z", "1é", "ff"] {
+            assert!(unhex_text(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod base58_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn byte_lookup_matches_reference_for_every_input_byte() {
+        let alphabet = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        for byte in 0..=u8::MAX {
+            let expected = alphabet.iter().position(|&value| value == byte);
+            assert_eq!(
+                (BASE58_DIGITS[usize::from(byte)] != u8::MAX)
+                    .then_some(BASE58_DIGITS[usize::from(byte)] as usize),
+                expected
+            );
+        }
+        assert_eq!(base58_decode("111").unwrap().as_bytes(), &[0, 0, 0]);
+        assert_eq!(base58_decode("2").unwrap().as_bytes(), &[1]);
+        assert!(base58_decode("0").is_err());
+        assert!(base58_decode("é").is_err());
     }
 }

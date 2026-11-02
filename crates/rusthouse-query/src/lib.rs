@@ -612,7 +612,25 @@ impl Parser {
             column
         };
         // Resolve ORDER BY sum(value) to the selected aggregate, not a column.
-        let column = if let Projection::GroupedAggregates { items, .. }
+        let column = if let Projection::GroupedAggregate {
+            function,
+            value_column,
+            ..
+        } = projection
+        {
+            if self.take(Token::LParen) {
+                let argument = self.word()?;
+                if !self.take(Token::RParen) {
+                    return Err(ParseError("expected ')' in ORDER BY aggregate".into()));
+                }
+                if !function.name().eq_ignore_ascii_case(&column) || argument != *value_column {
+                    return Err(ParseError("ORDER BY aggregate must match SELECT".into()));
+                }
+                "#aggregate".into()
+            } else {
+                column
+            }
+        } else if let Projection::GroupedAggregates { items, .. }
         | Projection::GroupedMultiAggregates { items, .. } = projection
         {
             if self.take(Token::LParen) {
