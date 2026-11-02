@@ -92,6 +92,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "FRAGMENT"
                 | "DATETRUNC"
                 | "JSON_QUOTE"
+                | "REGEXPQUOTEMETA"
                 | "ISVALIDJSON"
                 | "JSONTYPE"
                 | "JSONARRAYLENGTH"
@@ -600,6 +601,29 @@ fn soundex_ascii(input: &str) -> String {
         code.push('0');
     }
     code
+}
+
+
+fn regexp_quote_meta(input: &str) -> Result<String, ParseError> {
+    let mut output = String::with_capacity(input.len());
+    for character in input.chars() {
+        if character == '\0' {
+            output.push_str("\\0");
+        } else {
+            if matches!(
+                character,
+                '\\' | '|' | '(' | ')' | '^' | '$' | '.' | '[' | ']' | '?' | '*' | '+'
+                    | '{' | ':' | '-'
+            ) {
+                output.push('\\');
+            }
+            output.push(character);
+        }
+        if output.len() > MAX_TEXT_BYTES {
+            return Err(ParseError("regexpQuoteMeta result is too large".into()));
+        }
+    }
+    Ok(output)
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
@@ -5285,6 +5309,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "REGEXPQUOTEMETA" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "regexpQuoteMeta requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(regexp_quote_meta(&input)?),
+                None => ConstantValue::Null,
+            }
+        }
         "JSON_QUOTE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "JSON_QUOTE requires one argument")?;
@@ -6786,5 +6818,41 @@ mod clickhouse_json_array_length_tests {
     fn rejects_wrong_argument_count() {
         assert!(parse_select("SELECT JSONArrayLength()").is_err());
         assert!(parse_select("SELECT JSONArrayLength('[]', 'path')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_regexp_quote_meta_tests {
+    use super::*;
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn escapes_clickhouse_regex_metacharacters() {
+        assert_eq!(
+            regexp_quote_meta("a.b+c|x(y)[z]^-:{*}?").unwrap(),
+            r"a\.b\+c\|x\(y\)\[z\]\^\-\:\{\*}\?"
+        );
+        assert_eq!(regexp_quote_meta("hello é 東京").unwrap(), "hello é 東京");
+        assert_eq!(regexp_quote_meta("\0").unwrap(), r"\0");
+        assert_eq!(regexp_quote_meta("\\").unwrap(), r"\\");
+    }
+
+    #[test]
+    fn accepts_one_nullable_constant_string() {
+        assert_eq!(
+            value("SELECT regexpQuoteMeta('a.b+c')"),
+            ConstantValue::Text(r"a\.b\+c".into())
+        );
+        assert_eq!(value("SELECT regexpQuoteMeta(NULL)"), ConstantValue::Null);
+        assert!(parse_select("SELECT regexpQuoteMeta()").is_err());
+        assert!(parse_select("SELECT regexpQuoteMeta('a', 'b')").is_err());
     }
 }
