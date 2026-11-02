@@ -80,6 +80,43 @@ use predicates::{
     sparse_generated_positions,
 };
 
+/// Bound query operators by a single process-level worker setting.
+/// One worker selects the existing serial path. Invalid settings use the
+/// historical four-worker default.
+fn query_workers(default_limit: usize) -> usize {
+    let available = std::thread::available_parallelism().map_or(1, |count| count.get());
+    let configured = std::env::var("RUSTHOUSE_QUERY_THREADS").ok();
+    choose_query_workers(available, default_limit, configured.as_deref())
+}
+
+fn choose_query_workers(available: usize, default_limit: usize, configured: Option<&str>) -> usize {
+    let requested = configured
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&count| count > 0)
+        .unwrap_or(default_limit.max(1));
+    available.max(1).min(requested)
+}
+
+#[cfg(test)]
+mod query_worker_tests {
+    use super::choose_query_workers;
+
+    #[test]
+    fn respects_cpu_and_configured_limits() {
+        assert_eq!(choose_query_workers(12, 4, None), 4);
+        assert_eq!(choose_query_workers(12, 4, Some("1")), 1);
+        assert_eq!(choose_query_workers(12, 4, Some("8")), 8);
+        assert_eq!(choose_query_workers(2, 4, Some("16")), 2);
+    }
+
+    #[test]
+    fn invalid_settings_keep_safe_defaults() {
+        assert_eq!(choose_query_workers(12, 4, Some("0")), 4);
+        assert_eq!(choose_query_workers(12, 4, Some("abc")), 4);
+        assert_eq!(choose_query_workers(0, 0, None), 1);
+    }
+}
+
 // Charge each shared memory reservation atomically on all supported Rust versions.
 fn try_reserve_shared(budget: &AtomicUsize, amount: usize, limit: usize) -> bool {
     let mut current = budget.load(AtomicOrdering::Acquire);
@@ -552,10 +589,7 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
     }
     let parts = rusthouse_storage::query_parts(source)?;
     const MIN_PARALLEL_PARTS: usize = 32;
-    const MAX_WORKERS: usize = 4;
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |parallelism| parallelism.get())
-        .min(MAX_WORKERS);
+    let workers = query_workers(4);
     if workers < 2 {
         return Ok(None);
     }
@@ -684,9 +718,7 @@ fn parallel_integer_minmax(
         return Ok(None);
     }
     let parts = rusthouse_storage::query_parts(source)?;
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |n| n.get())
-        .min(4);
+    let workers = query_workers(4);
     if parts.len() < 32 || workers < 2 {
         return Ok(None);
     }
@@ -833,9 +865,7 @@ fn parallel_integer_sum(
         return Ok(None);
     }
     let parts = rusthouse_storage::query_parts(source)?;
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |parallelism| parallelism.get())
-        .min(4);
+    let workers = query_workers(4);
     if workers < 2 || (parts.len() < 32 && parts.len() != 1) {
         return Ok(None);
     }
