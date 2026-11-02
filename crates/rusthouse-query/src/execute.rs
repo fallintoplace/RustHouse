@@ -2241,6 +2241,50 @@ fn exact_median_pair(low: Number, high: Number) -> Option<String> {
     }
 }
 
+// CASE branches may produce signed literals and unsigned column values.
+// Keep integer SUM exact instead of rejecting valid mixed-sign input.
+fn checked_aggregate_sum(left: Number, right: Number) -> Result<Number, ExecutionError> {
+    match (left, right) {
+        (Number::Unsigned(a), Number::Unsigned(b)) => a
+            .checked_add(b)
+            .map(Number::Unsigned)
+            .ok_or_else(|| ExecutionError::Invalid("unsigned SUM overflow".into())),
+        (Number::Signed(a), Number::Signed(b)) => a
+            .checked_add(b)
+            .map(Number::Signed)
+            .ok_or_else(|| ExecutionError::Invalid("signed SUM overflow".into())),
+        (Number::Float(a), Number::Float(b)) => Ok(Number::Float(a + b)),
+        (Number::Unsigned(a), Number::Signed(b))
+        | (Number::Signed(b), Number::Unsigned(a)) => {
+            if b >= 0 {
+                return a
+                    .checked_add(b as u128)
+                    .map(Number::Unsigned)
+                    .ok_or_else(|| ExecutionError::Invalid("mixed SUM overflow".into()));
+            }
+            let magnitude = b.unsigned_abs();
+            if a >= magnitude {
+                return Ok(Number::Unsigned(a - magnitude));
+            }
+            let difference = magnitude - a;
+            if difference == 1_u128 << 127 {
+                return Ok(Number::Signed(i128::MIN));
+            }
+            let difference = i128::try_from(difference)
+                .map_err(|_| ExecutionError::Invalid("mixed SUM overflow".into()))?;
+            Ok(Number::Signed(-difference))
+        }
+        (Number::Float(a), other) | (other, Number::Float(a)) => {
+            let b = match other {
+                Number::Unsigned(value) => value as f64,
+                Number::Signed(value) => value as f64,
+                Number::Float(_) => unreachable!("float pair handled above"),
+            };
+            Ok(Number::Float(a + b))
+        }
+    }
+}
+
 struct AggregateState {
     function: AggregateFunction,
     value: Option<Number>,
@@ -2282,20 +2326,9 @@ impl AggregateState {
             .count
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
-        let sum = match (self.value, value) {
-            (None, value) => value,
-            (Some(Number::Unsigned(left)), Number::Unsigned(right)) => {
-                Number::Unsigned(left.checked_add(right).ok_or_else(|| {
-                    ExecutionError::Invalid("unsigned SUM overflow".into())
-                })?)
-            }
-            (Some(Number::Signed(left)), Number::Signed(right)) => {
-                Number::Signed(left.checked_add(right).ok_or_else(|| {
-                    ExecutionError::Invalid("signed SUM overflow".into())
-                })?)
-            }
-            (Some(Number::Float(left)), Number::Float(right)) => Number::Float(left + right),
-            _ => return Err(ExecutionError::Invalid("incompatible types in SUM".into())),
+        let sum = match self.value {
+            None => value,
+            Some(current) => checked_aggregate_sum(current, value)?,
         };
         self.value = Some(sum);
         self.count = next_count;
@@ -2386,21 +2419,9 @@ impl AggregateState {
                 } else {
                     value
                 };
-                let sum = match (self.value, value) {
-                    (None, value) => value,
-                    (Some(Number::Unsigned(a)), Number::Unsigned(b)) => {
-                        Number::Unsigned(a.checked_add(b).ok_or_else(|| {
-                            ExecutionError::Invalid("unsigned SUM overflow".into())
-                        })?)
-                    }
-                    (Some(Number::Signed(a)), Number::Signed(b)) => Number::Signed(
-                        a.checked_add(b)
-                            .ok_or_else(|| ExecutionError::Invalid("signed SUM overflow".into()))?,
-                    ),
-                    (Some(Number::Float(a)), Number::Float(b)) => Number::Float(a + b),
-                    _ => {
-                        return Err(ExecutionError::Invalid("incompatible types in SUM".into()));
-                    }
+                let sum = match self.value {
+                    None => value,
+                    Some(current) => checked_aggregate_sum(current, value)?,
                 };
                 self.value = Some(sum);
             }
