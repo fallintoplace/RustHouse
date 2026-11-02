@@ -1000,6 +1000,7 @@ fn parallel_exact_u32_distinct(part: &Path, column: &str) -> Result<Option<u64>,
             .map(|_| {
                 let names = &names;
                 let cursor = &cursor;
+                let parts = &parts;
                 std::thread::Builder::new()
                     .spawn_scoped(
                         scope,
