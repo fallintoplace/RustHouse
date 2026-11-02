@@ -96,6 +96,12 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
         Ddl::ShowTables => show_tables(catalog, None, false),
         Ddl::ShowTablesLike { pattern } => show_tables(catalog, Some(pattern), false),
         Ddl::ShowTablesNotLike { pattern } => show_tables(catalog, Some(pattern), true),
+        Ddl::ShowTablesILike { pattern } => {
+            show_tables_case_insensitive(catalog, pattern, false)
+        }
+        Ddl::ShowTablesNotILike { pattern } => {
+            show_tables_case_insensitive(catalog, pattern, true)
+        }
         Ddl::ShowCreateTable { name } => show_create_table(catalog, name),
         Ddl::DescribeTable { name } => describe_table(catalog, name),
         Ddl::CreateTable {
@@ -112,7 +118,9 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
             create_table(catalog, name, &source_columns, *if_not_exists)
         }
         Ddl::DropTable { name, if_exists } => drop_table(catalog, name, *if_exists),
-        Ddl::TruncateTable { .. } => Err("TRUNCATE requires --database".into()),
+        Ddl::TruncateTable { .. } | Ddl::TruncateTableIfExists { .. } => {
+            Err("TRUNCATE requires --database".into())
+        },
         Ddl::OptimizeTable { .. } => Err("OPTIMIZE requires --database".into()),
         Ddl::AddColumn {
             table,
@@ -187,12 +195,31 @@ fn show_tables(catalog: &Path, pattern: Option<&str>, negated: bool) -> Result<(
     show_tables_with_entry_limit(catalog, pattern, negated, MAX_CATALOG_DIRECTORY_ENTRIES)
 }
 
+fn show_tables_case_insensitive(
+    catalog: &Path,
+    pattern: &str,
+    negated: bool,
+) -> Result<(), String> {
+    show_tables_internal(catalog, Some(pattern), negated, true, MAX_CATALOG_DIRECTORY_ENTRIES)
+}
+
 fn show_tables_with_entry_limit(
     catalog: &Path,
     pattern: Option<&str>,
     negated: bool,
     max_entries: usize,
 ) -> Result<(), String> {
+    show_tables_internal(catalog, pattern, negated, false, max_entries)
+}
+
+fn show_tables_internal(
+    catalog: &Path,
+    pattern: Option<&str>,
+    negated: bool,
+    insensitive: bool,
+    max_entries: usize,
+) -> Result<(), String> {
+    let insensitive_pattern = insensitive.then(|| pattern.unwrap_or("").to_ascii_lowercase());
     let entries = match fs::read_dir(catalog) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -234,7 +261,12 @@ fn show_tables_with_entry_limit(
         {
             continue;
         }
-        if pattern.is_none_or(|pattern| table_matches_like(name, pattern) != negated) {
+        let matches = if let Some(pattern) = insensitive_pattern.as_deref() {
+            table_matches_like(&name.to_ascii_lowercase(), pattern)
+        } else {
+            pattern.is_none_or(|pattern| table_matches_like(name, pattern))
+        };
+        if matches != negated {
             names.push(name.to_owned());
         }
     }
