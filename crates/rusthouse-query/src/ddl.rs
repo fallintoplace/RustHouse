@@ -210,6 +210,8 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             return Err(ParseError("expected TABLE after OPTIMIZE".into()));
         }
         let name = identifier(&mut parser)?;
+        // The local OPTIMIZE operation already fully compacts active parts.
+        parser.keyword("FINAL");
         finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::OptimizeTable { name }));
     }
