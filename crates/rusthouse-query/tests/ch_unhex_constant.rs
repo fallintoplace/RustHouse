@@ -12,7 +12,8 @@ fn value(sql: &str) -> ConstantValue {
 fn unhex_decodes_even_and_odd_digit_counts() {
     for (query, expected) in [
         ("SELECT unhex('4142')", ConstantValue::Text("AB".into())),
-        ("SELECT unhex('041')", ConstantValue::Text("\0A".into())),
+        ("SELECT unhex('041')", ConstantValue::Text("\u{0004}\u{0001}".into())),
+        ("SELECT unhex('61A')", ConstantValue::Text("a\n".into())),
         ("SELECT unhex('4')", ConstantValue::Text("\u{0004}".into())),
         ("SELECT unhex('c3a9')", ConstantValue::Text("é".into())),
         ("SELECT unhex('')", ConstantValue::Text(String::new())),
