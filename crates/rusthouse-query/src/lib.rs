@@ -1424,6 +1424,14 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     } else {
         None
     };
+    // The single-source SELECT executor addresses unqualified columns by
+    // their physical names; an AS alias does not change that lookup.
+    if parser.keyword("AS") {
+        if source.is_none() {
+            return Err(ParseError("source alias requires FROM".into()));
+        }
+        parser.bounded_word()?;
+    }
     if source.is_none()
         && !matches!(
             projection,
