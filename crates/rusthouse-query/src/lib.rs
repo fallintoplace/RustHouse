@@ -885,7 +885,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         Some(Token::Number(_) | Token::String(_) | Token::LParen | Token::Plus | Token::Minus)
     ) || matches!(
         parser.tokens.get(parser.index),
-        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") || scalar::is_function(word) || text_scalar::is_function(word)
+        Some(Token::Word(word))
+            if word.eq_ignore_ascii_case("NULL")
+                || (parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+                    && (scalar::is_function(word) || text_scalar::is_function(word)))
     ) {
         let mut columns = Vec::new();
         let is_text_scalar = matches!(
