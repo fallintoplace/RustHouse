@@ -319,7 +319,9 @@ pub fn plan_weighted_transfers(
         let length = item
             .deficit
             .min(item.total - item.completed)
-            .min(remaining);
+            .min(remaining)
+            // The receipt replay path accepts at most one quantum per slice.
+            .min(MAX_QUANTUM);
         // Both quantum and weight are positive; an unfinished shard can
         // always make progress until the byte budget is exhausted.
         debug_assert!(length > 0);
@@ -404,5 +406,33 @@ mod weighted_transfer_tests {
         assert_eq!(batch.slices[0].offset, u64::MAX - 2);
         assert_eq!(batch.slices[0].length, 2);
         assert_eq!(batch.next_progress[0].completed, u64::MAX);
+    }
+}
+
+#[cfg(test)]
+mod weighted_replay_slice_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn weighted_plan_emits_slices_accepted_by_verified_replay() {
+        let source = [WeightedShardProgress {
+            shard: "large".into(),
+            completed: 0,
+            total: MAX_QUANTUM * 2,
+            weight: 64,
+            deficit: 0,
+        }];
+        let plan = plan_weighted_transfers(
+            &source, 0, MAX_QUANTUM, MAX_QUANTUM * 2, 2,
+        ).unwrap();
+        assert_eq!(plan.slices.len(), 2);
+        assert!(plan.slices.iter().all(|slice| slice.length <= MAX_QUANTUM));
+        let checkpoint = [ShardProgress {
+            shard: "large".into(),
+            completed: 0,
+            total: MAX_QUANTUM * 2,
+        }];
+        let replayed = replay_verified_transfer_slices(&checkpoint, &plan.slices).unwrap();
+        assert_eq!(replayed[0].completed, plan.next_progress[0].completed);
     }
 }
