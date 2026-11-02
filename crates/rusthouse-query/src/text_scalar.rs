@@ -107,6 +107,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "HASSUBSEQUENCECASEINSENSITIVE"
                 | "HASSUBSEQUENCECASEINSENSITIVEUTF8"
                 | "OVERLAY"
+                | "FORMAT"
                 | "OVERLAYUTF8"
                 | "FORMATREADABLEQUANTITY"
                 | "QUERYSTRING"
@@ -301,6 +302,68 @@ fn decode_percent_encoded(input: &str, form: bool) -> Result<String, ParseError>
         }
     }
     String::from_utf8(decoded).map_err(|_| ParseError("URL decode result is not UTF-8".into()))
+}
+
+// Format a bounded subset of ClickHouse's Python-style constant placeholders.
+fn format_constant_template(pattern: &str, args: &[String]) -> Result<String, ParseError> {
+    let bytes = pattern.as_bytes();
+    let mut result = String::new();
+    let mut index = 0;
+    let mut next_implicit = 0usize;
+    let mut explicit_mode: Option<bool> = None;
+    while index < bytes.len() {
+        let start = index;
+        while index < bytes.len() && !matches!(bytes[index], b'{' | b'}') {
+            index += 1;
+        }
+        if start < index {
+            result.push_str(&pattern[start..index]);
+        }
+        if index == bytes.len() {
+            break;
+        }
+        let brace = bytes[index];
+        index += 1;
+        if bytes.get(index) == Some(&brace) {
+            result.push(char::from(brace));
+            index += 1;
+        } else if brace == b'{' {
+            let start = index;
+            while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+                index += 1;
+            }
+            if bytes.get(index) != Some(&b'}') {
+                return Err(ParseError("FORMAT requires numeric or empty placeholders".into()));
+            }
+            let explicit = index != start;
+            if explicit_mode.is_some_and(|previous| previous != explicit) {
+                return Err(ParseError("FORMAT cannot mix numbered and automatic fields".into()));
+            }
+            explicit_mode = Some(explicit);
+            let argument = if explicit {
+                pattern[start..index]
+                    .parse::<usize>()
+                    .map_err(|_| ParseError("FORMAT placeholder index is too large".into()))?
+            } else {
+                let current = next_implicit;
+                next_implicit += 1;
+                current
+            };
+            result.push_str(args.get(argument).ok_or_else(|| {
+                ParseError("FORMAT placeholder exceeds argument count".into())
+            })?);
+            index += 1;
+        } else {
+            return Err(ParseError("FORMAT has an unmatched closing brace".into()));
+        }
+        if result.len() > MAX_TEXT_BYTES {
+            return Err(ParseError("FORMAT result is too large".into()));
+        }
+    }
+    if result.len() > MAX_TEXT_BYTES {
+        return Err(ParseError("FORMAT result is too large".into()));
+    }
+    Ok(result)
 }
 
 // Compile the reflected IEEE polynomial table once instead of executing
@@ -1129,6 +1192,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(number.unwrap_or(fallback)))
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "FORMAT" => {
+            let pattern = text_arg(parser, depth + 1)?;
+            let mut args = Vec::new();
+            let mut has_null = pattern.is_none();
+            while parser.take(Token::Comma) {
+                if args.len() == 16 {
+                    return Err(ParseError("FORMAT supports at most 16 values".into()));
+                }
+                match constant_arg(parser, depth + 1)? {
+                    ConstantValue::Text(value) => args.push(value),
+                    ConstantValue::Integer(value) => args.push(value.to_string()),
+                    ConstantValue::Null => {
+                        has_null = true;
+                        args.push(String::new());
+                    }
+                }
+            }
+            require(parser, Token::RParen, "expected ')' after FORMAT arguments")?;
+            if has_null {
+                ConstantValue::Null
+            } else {
+                ConstantValue::Text(format_constant_template(
+                    pattern.as_deref().unwrap_or(""),
+                    &args,
+                )?)
             }
         }
         "FORMATREADABLEQUANTITY" => {
