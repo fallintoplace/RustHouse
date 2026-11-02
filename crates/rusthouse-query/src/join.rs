@@ -588,9 +588,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                 "GROUP BY must match the selected JOIN key".into(),
             ));
         }
-        if kind != JoinType::Inner || !steps.is_empty() {
+        if !matches!(kind, JoinType::Inner | JoinType::Left) || !steps.is_empty() {
             return Err(ParseError(
-                "grouped JOIN COUNT requires two-table INNER JOIN".into(),
+                "grouped JOIN COUNT requires a two-table INNER or LEFT JOIN".into(),
             ));
         }
         if order_by
