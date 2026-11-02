@@ -86,7 +86,7 @@ fn reserve_group(
 enum GroupSlots {
     // Each nullable numeric domain adds exactly one extra NULL key.
     Byte(Box<[usize; 257]>),
-    WideSparse(HashMap<usize, usize>),
+    WideSparse { map: HashMap<usize, usize>, probes: usize },
     WideDense(Vec<usize>),
 }
 
@@ -94,15 +94,27 @@ impl GroupSlots {
     fn for_type(kind: &str) -> Option<Self> {
         match typed::base_type(kind) {
             "UInt8" | "Int8" => Some(Self::Byte(Box::new([usize::MAX; 257]))),
-            "UInt16" | "Int16" => Some(Self::WideSparse(HashMap::new())),
+            "UInt16" | "Int16" => Some(Self::WideSparse { map: HashMap::new(), probes: 0 }),
             _ => None,
         }
     }
 
-    fn get(&self, key: usize) -> Option<usize> {
+    fn get(&mut self, key: usize) -> Option<usize> {
+        if let Self::WideSparse { map, probes } = self {
+            *probes += 1;
+            // Even one frequently repeated UInt16 key is worth direct
+            // indexing on long scans. Keep sparse maps for short scans.
+            if *probes >= 8192 {
+                let mut slots = vec![usize::MAX; 65_537];
+                for (&value, &group) in map.iter() {
+                    slots[value] = group;
+                }
+                *self = Self::WideDense(slots);
+            }
+        }
         match self {
             Self::Byte(slots) => (slots[key] != usize::MAX).then_some(slots[key]),
-            Self::WideSparse(map) => map.get(&key).copied(),
+            Self::WideSparse { map, .. } => map.get(&key).copied(),
             Self::WideDense(slots) => (slots[key] != usize::MAX).then_some(slots[key]),
         }
     }
@@ -111,7 +123,7 @@ impl GroupSlots {
         match self {
             Self::Byte(slots) => slots[key] = index,
             Self::WideDense(slots) => slots[key] = index,
-            Self::WideSparse(map) => {
+            Self::WideSparse { map, .. } => {
                 map.insert(key, index);
                 if map.len() >= 2048 {
                     let mut slots = vec![usize::MAX; 65_537];
@@ -701,5 +713,27 @@ mod nullable_numeric_group_slots_tests {
         assert_eq!(slots.get(0), Some(10));
         assert_eq!(slots.get(2047), Some(2057));
         assert_eq!(slots.get(65_535), None);
+    }
+}
+
+#[cfg(test)]
+mod hot_short_group_promotion_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_short_key_probes_promote_without_changing_group_indexes() {
+        let mut slots = GroupSlots::for_type("Nullable(UInt16)").unwrap();
+        slots.insert(65_536, 0);
+        slots.insert(42, 1);
+        for _ in 0..8191 {
+            assert_eq!(slots.get(42), Some(1));
+        }
+        assert!(matches!(slots, GroupSlots::WideSparse { .. }));
+        assert_eq!(slots.get(42), Some(1));
+        assert!(matches!(slots, GroupSlots::WideDense(_)));
+        assert_eq!(slots.get(65_536), Some(0));
+        assert_eq!(slots.get(43), None);
+        slots.insert(43, 2);
+        assert_eq!(slots.get(43), Some(2));
     }
 }
