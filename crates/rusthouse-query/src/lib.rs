@@ -818,6 +818,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
     let mut distinct = parser.keyword("DISTINCT");
+    // ALL is the default bag semantics; accept its explicit SQL spelling.
+    if !distinct {
+        parser.keyword("ALL");
+    }
     let mut literal_alias = None;
 
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
