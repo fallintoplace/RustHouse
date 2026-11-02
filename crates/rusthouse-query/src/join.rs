@@ -567,14 +567,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     }
     if where_comparison.is_some()
         && (kind != JoinType::Inner
-            || !steps.is_empty()
-            || !order_by.is_empty()
+            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || (steps.is_empty() && !order_by.is_empty())
             || aggregate.is_some()
             || grouped_count_projection
             || group_by.is_some())
     {
         return Err(ParseError(
-            "JOIN comparison WHERE supports unordered two-table INNER joins without aggregation"
+            "JOIN comparison WHERE supports INNER joins without aggregation; two-table comparisons require no ORDER BY"
                 .into(),
         ));
     }
