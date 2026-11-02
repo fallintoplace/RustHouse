@@ -111,6 +111,43 @@ pub(super) fn is_safe_distinct_scan(select: &Select) -> bool {
         && select.having.is_none()
 }
 
+/// Global AVG needs both exact SUM and non-NULL COUNT from each shard.
+pub(super) fn is_safe_avg(select: &Select) -> bool {
+    select.alias.is_none()
+        && is_safe_unpaged_projection(select, |projection| {
+            matches!(projection, Projection::Aggregate {
+                function: AggregateFunction::Avg, ..
+            })
+        })
+}
+
+pub(super) fn avg_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    if !is_safe_avg(select) {
+        return None;
+    }
+    let Projection::Aggregate { column, .. } = &select.projection else {
+        return None;
+    };
+    let from = clause_offset(sql, b"FROM")?;
+    let rewritten = format!("SELECT sum({column}), count({column}) {}", &sql[from..]);
+    let mut expected = select.clone();
+    expected.projection = Projection::MultipleAggregates(vec![
+        rusthouse_query::AggregateItem {
+            function: Some(AggregateFunction::Sum),
+            argument: Some(rusthouse_query::ScalarExpr::Column(column.clone())),
+            distinct: false,
+            alias: None,
+        },
+        rusthouse_query::AggregateItem {
+            function: None,
+            argument: Some(rusthouse_query::ScalarExpr::Column(column.clone())),
+            distinct: false,
+            alias: None,
+        },
+    ]);
+    verify_rewritten_select(rewritten, &expected)
+}
+
 /// RANGE needs both extrema from every peer; local ranges do not compose.
 pub(super) fn is_safe_range(select: &Select) -> bool {
     select.alias.is_none()
