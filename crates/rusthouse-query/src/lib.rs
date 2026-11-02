@@ -856,6 +856,12 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 return Err(ParseError("expected ')' after COUNT(*)".into()));
             }
             Projection::Count
+        } else if matches!(parser.tokens.get(parser.index), Some(Token::Number(value)) if value == "1") {
+            parser.index += 1;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after COUNT(1)".into()));
+            }
+            Projection::Count
         } else {
             let column = parser.word()?;
             if !parser.take(Token::RParen) {
