@@ -140,6 +140,47 @@ impl ContentChunker {
     }
 }
 
+/// Validate an untrusted content-defined chunk plan before using its ranges.
+///
+/// Boundaries must exactly cover the object with no gaps or overlaps. Only the
+/// final chunk may be smaller than the minimum. Rolling fingerprints are not
+/// cryptographic checksums and are deliberately not treated as authentication.
+pub fn validate_content_chunk_plan(
+    chunks: &[ContentChunk],
+    object_bytes: u64,
+    min_bytes: usize,
+    max_bytes: usize,
+) -> Result<(), &'static str> {
+    if min_bytes < WINDOW
+        || min_bytes > max_bytes
+        || max_bytes > MAX_CHUNK_BYTES
+        || object_bytes > MAX_OBJECT_BYTES
+        || chunks.len() > MAX_CHUNKS
+    {
+        return Err("invalid content chunk plan limits");
+    }
+    let mut end = 0u64;
+    for (index, chunk) in chunks.iter().enumerate() {
+        if chunk.offset != end
+            || chunk.length == 0
+            || chunk.length > max_bytes as u64
+            || (index + 1 < chunks.len() && chunk.length < min_bytes as u64)
+        {
+            return Err("invalid content chunk range");
+        }
+        end = end
+            .checked_add(chunk.length)
+            .ok_or("content chunk range overflow")?;
+        if end > object_bytes {
+            return Err("content chunk exceeds object size");
+        }
+    }
+    if end != object_bytes {
+        return Err("content chunk plan does not cover object");
+    }
+    Ok(())
+}
+
 /// Convenience API for fully resident immutable object buffers.
 pub fn plan_content_chunks(
     bytes: &[u8],
@@ -219,6 +260,30 @@ mod tests {
         short_bound.position = MAX_OBJECT_BYTES - 1;
         assert!(short_bound.push(&invalid).is_err());
         assert_eq!(chunker.finish().unwrap(), before);
+    }
+
+    #[test]
+    fn validates_streamed_layout_and_rejects_untrusted_ranges() {
+        let bytes = fixture();
+        let plan = plan_content_chunks(&bytes, 128, 512, 4096).unwrap();
+        assert!(validate_content_chunk_plan(&plan, bytes.len() as u64, 128, 4096).is_ok());
+        assert!(validate_content_chunk_plan(&[], 0, 128, 4096).is_ok());
+        assert!(validate_content_chunk_plan(&[], 1, 128, 4096).is_err());
+
+        let mut gap = plan.clone();
+        gap[1].offset += 1;
+        assert!(validate_content_chunk_plan(&gap, bytes.len() as u64, 128, 4096).is_err());
+
+        let mut short = plan.clone();
+        short[0].length = 1;
+        assert!(validate_content_chunk_plan(&short, bytes.len() as u64, 128, 4096).is_err());
+
+        let mut overflow = plan.clone();
+        overflow[0].length = u64::MAX;
+        assert!(validate_content_chunk_plan(&overflow, bytes.len() as u64, 128, 4096).is_err());
+
+        assert!(validate_content_chunk_plan(&plan, bytes.len() as u64 - 1, 128, 4096).is_err());
+        assert!(validate_content_chunk_plan(&plan, bytes.len() as u64, 8, 4096).is_err());
     }
 
     #[test]
