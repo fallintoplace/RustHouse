@@ -2166,6 +2166,101 @@ mod grouped_sum_intermediate_cap_tests {
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
 /// the underlying source rows must be disjoint.
+/// Reduce GROUP BY tuples of up to eight typed dimensions. TSV escapes
+/// are canonicalized for hashing, while the first shard's original encoding
+/// is retained for output. The tuple key never merges NULL with text "\\N".
+fn merge_grouped_multi_counts(
+    shards: &[(usize, Vec<u8>)],
+    columns: &[String],
+    max_rows: usize,
+) -> Result<Vec<u8>, MergeError> {
+    const MAX_GROUPS: usize = 100_000;
+    const MAX_RETAINED_KEYS: usize = 64 * 1024 * 1024;
+    if !(2..=8).contains(&columns.len()) {
+        return Err(MergeError::InvalidGroupedCount);
+    }
+    let header = format!("{}\tcount\n", columns.join("\t"));
+    let mut groups = Vec::<(&[u8], u64)>::new();
+    let mut positions = HashMap::<Vec<NormalizedGroupKey<'_>>, usize>::new();
+    let mut key_bytes = 0usize;
+    for (cap, body) in shards {
+        if *cap == 0 || !body.starts_with(header.as_bytes()) || !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidGroupedCount);
+        }
+        let rows = &body[header.len()..];
+        if rows.is_empty() {
+            continue;
+        }
+        let mut shard_rows = 0usize;
+        for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+            shard_rows = shard_rows
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if shard_rows >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            let fields = row.split(|&byte| byte == b'\t').collect::<Vec<_>>();
+            if fields.len() != columns.len() + 1 {
+                return Err(MergeError::InvalidGroupedCount);
+            }
+            let value = std::str::from_utf8(fields[columns.len()])
+                .map_err(|_| MergeError::InvalidGroupedCount)?;
+            let partial = value
+                .parse::<u64>()
+                .map_err(|_| MergeError::InvalidGroupedCount)?;
+            if partial.to_string() != value {
+                return Err(MergeError::InvalidGroupedCount);
+            }
+            let normalized = fields[..columns.len()]
+                .iter()
+                .map(|field| {
+                    normalized_group_key(field).map_err(|_| MergeError::InvalidGroupedCount)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(&index) = positions.get(&normalized) {
+                groups[index].1 = groups[index]
+                    .1
+                    .checked_add(partial)
+                    .ok_or(MergeError::CountOverflow)?;
+            } else {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                let tuple_len = row
+                    .len()
+                    .checked_sub(value.len() + 1)
+                    .ok_or(MergeError::InvalidGroupedCount)?;
+                key_bytes = key_bytes
+                    .checked_add(tuple_len)
+                    .filter(|&bytes| bytes <= MAX_RETAINED_KEYS)
+                    .ok_or(MergeError::CoordinatorLimit)?;
+                let next = groups.len();
+                positions.insert(normalized, next);
+                groups.push((&row[..tuple_len], partial));
+            }
+        }
+    }
+    if groups.len() > max_rows {
+        return Err(MergeError::CoordinatorLimit);
+    }
+    let mut output = header.into_bytes();
+    for (key, count) in groups {
+        let value = count.to_string();
+        if output
+            .len()
+            .checked_add(key.len() + value.len() + 2)
+            .is_none_or(|bytes| bytes > MAX_RESPONSE_BYTES)
+        {
+            return Err(MergeError::CoordinatorLimit);
+        }
+        output.extend_from_slice(key);
+        output.push(b'\t');
+        output.extend_from_slice(value.as_bytes());
+        output.push(b'\n');
+    }
+    Ok(output)
+}
+
 fn merge_grouped_counts(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -2353,6 +2448,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_sorted_scan(&select)
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
+                || is_safe_grouped_multi_count(&select)
                 || is_safe_grouped_multi_count_column(&select)
                 || is_safe_grouped_multi_bitwise(&select)
                 || is_safe_grouped_multi_product(&select)
@@ -2392,6 +2488,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => None,
     };
     let grouped_count_query = is_safe_grouped_count(&select);
+    let grouped_multi_count_query = is_safe_grouped_multi_count(&select);
     let grouped_multi_count_column_query = is_safe_grouped_multi_count_column(&select);
     let grouped_multi_bitwise_query = is_safe_grouped_multi_bitwise(&select);
     let grouped_multi_product_query = is_safe_grouped_multi_product(&select);
@@ -2830,6 +2927,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multi_count_query {
+        match &select.projection {
+            Projection::GroupedMultiCount { columns } => {
+                merge_grouped_multi_counts(&shards, columns, max_rows.min(250_000))
+            }
+            _ => Err(MergeError::InvalidGroupedCount),
         }
     } else if grouped_multi_bitwise_query {
         match (&select.projection, sum_type.as_deref()) {
@@ -5147,6 +5251,73 @@ mod distributed_uuid_distinct_tests {
         assert_eq!(
             merge_distinct_uuid(&[(5, wire)], "id", false).unwrap(),
             b"count(DISTINCT id)\n1\n"
+        );
+    }
+}
+
+#[cfg(test)]
+mod distributed_multi_key_grouped_count_tests {
+    use super::*;
+
+    #[test]
+    fn merges_composite_keys_across_disjoint_shards() {
+        let sql = "SELECT region, category, count(*) FROM events GROUP BY region, category";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_multi_count(&parsed));
+        let Projection::GroupedMultiCount { columns } = parsed.projection else {
+            panic!("expected grouped multi-count")
+        };
+        let shards = [
+            (10, b"region\tcategory\tcount\nwest\ta\t2\neast\tb\t1\n".to_vec()),
+            (10, b"region\tcategory\tcount\nwest\ta\t3\nwest\tb\t4\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_multi_counts(&shards, &columns, 10).unwrap(),
+            b"region\tcategory\tcount\nwest\ta\t5\neast\tb\t1\nwest\tb\t4\n"
+        );
+    }
+
+    #[test]
+    fn distinguishes_null_from_literal_backslash_n_and_decodes_escapes() {
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        let shards = [
+            (10, b"a\tb\tcount\n\\N\tx\t2\n\\\\N\tx\t1\na\t\\x41\t3\n".to_vec()),
+            (10, b"a\tb\tcount\n\\N\tx\t1\na\tA\t4\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_multi_counts(&shards, &keys, 10).unwrap(),
+            b"a\tb\tcount\n\\N\tx\t3\n\\\\N\tx\t1\na\t\\x41\t7\n"
+        );
+    }
+
+    #[test]
+    fn refuses_wrong_tuple_width_capped_and_overflowing_shard_results() {
+        let keys = vec!["region".to_owned(), "category".to_owned()];
+        for body in [
+            b"region\tcategory\tcount\nwest\t2\n".as_slice(),
+            b"region\tcategory\tcount\nwest\ta\t2\textra\n",
+            b"region\tcategory\tcount\nwest\ta\t-1\n",
+            b"region\tcategory\tcount\nwest\tbad\\q\t2\n",
+        ] {
+            assert_eq!(
+                merge_grouped_multi_counts(&[(10, body.to_vec())], &keys, 10),
+                Err(MergeError::InvalidGroupedCount)
+            );
+        }
+        assert_eq!(
+            merge_grouped_multi_counts(
+                &[(1, b"region\tcategory\tcount\nwest\ta\t1\n".to_vec())],
+                &keys, 10
+            ),
+            Err(MergeError::ShardRowLimit)
+        );
+        let overflow = [
+            (10, b"region\tcategory\tcount\nwest\ta\t18446744073709551615\n".to_vec()),
+            (10, b"region\tcategory\tcount\nwest\ta\t1\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_multi_counts(&overflow, &keys, 10),
+            Err(MergeError::CountOverflow)
         );
     }
 }
