@@ -19,6 +19,14 @@ pub enum ScalarExpr {
     Divide(Box<ScalarExpr>, Box<ScalarExpr>),
     Modulo(Box<ScalarExpr>, Box<ScalarExpr>),
     Compare(Box<ScalarExpr>, Operator, Box<ScalarExpr>),
+    /// String literal comparisons inside CASE WHEN expressions.
+    TextCompare {
+        column: String,
+        operator: Operator,
+        value: String,
+    },
+    And(Box<ScalarExpr>, Box<ScalarExpr>),
+    Or(Box<ScalarExpr>, Box<ScalarExpr>),
     Case {
         branches: Vec<(ScalarExpr, ScalarExpr)>,
         else_expr: Option<Box<ScalarExpr>>,
@@ -39,7 +47,7 @@ impl ScalarExpr {
         seen: &mut Option<HashSet<String>>,
     ) {
         match self {
-            Self::Column(name) | Self::TextLength(name) => {
+            Self::Column(name) | Self::TextLength(name) | Self::TextCompare { column: name, .. } => {
                 if let Some(index) = seen.as_mut() {
                     if index.insert(name.clone()) {
                         out.push(name.clone());
@@ -69,7 +77,9 @@ impl ScalarExpr {
             | Self::Multiply(left, right)
             | Self::Divide(left, right)
             | Self::Modulo(left, right)
-            | Self::Compare(left, _, right) => {
+            | Self::Compare(left, _, right)
+            | Self::And(left, right)
+            | Self::Or(left, right) => {
                 left.collect_unique_referenced_columns(out, seen);
                 right.collect_unique_referenced_columns(out, seen);
             }
@@ -131,7 +141,9 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
             | ScalarExpr::Multiply(left, right)
             | ScalarExpr::Divide(left, right)
             | ScalarExpr::Modulo(left, right)
-            | ScalarExpr::Compare(left, _, right) => {
+            | ScalarExpr::Compare(left, _, right)
+            | ScalarExpr::And(left, right)
+            | ScalarExpr::Or(left, right) => {
                 pending.push((right, depth + 1));
                 pending.push((left, depth + 1));
             }
@@ -148,6 +160,7 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
                 }
             }
             ScalarExpr::Column(_)
+            | ScalarExpr::TextCompare { .. }
             | ScalarExpr::TextLength(_)
             | ScalarExpr::Integer(_)
             | ScalarExpr::Decimal(_) => {}
@@ -156,7 +169,7 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
     Ok(())
 }
 
-fn parse_expression_tokens_at_depth(
+fn parse_comparison_tokens_at_depth(
     parser: &mut Parser,
     depth: usize,
 ) -> Result<ScalarExpr, ParseError> {
@@ -170,6 +183,14 @@ fn parse_expression_tokens_at_depth(
             return Err(ParseError("invalid operator in numeric expression".into()));
         }
         parser.index += 1;
+        if let Some(Token::String(value)) = parser.tokens.get(parser.index) {
+            let ScalarExpr::Column(column) = left else {
+                return Err(ParseError("text comparison requires a column".into()));
+            };
+            let value = value.clone();
+            parser.index += 1;
+            return Ok(ScalarExpr::TextCompare { column, operator, value });
+        }
         let right = parse_arithmetic_tokens(parser, depth)?;
         Ok(ScalarExpr::Compare(
             Box::new(left),
@@ -179,6 +200,37 @@ fn parse_expression_tokens_at_depth(
     } else {
         Ok(left)
     }
+}
+
+fn parse_and_tokens_at_depth(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    let mut result = parse_comparison_tokens_at_depth(parser, depth)?;
+    let mut count = 0;
+    while parser.keyword("AND") {
+        count += 1;
+        if count > 128 {
+            return Err(ParseError("AND expression exceeds complexity budget".into()));
+        }
+        let right = parse_comparison_tokens_at_depth(parser, depth)?;
+        result = ScalarExpr::And(Box::new(result), Box::new(right));
+    }
+    Ok(result)
+}
+
+fn parse_expression_tokens_at_depth(
+    parser: &mut Parser,
+    depth: usize,
+) -> Result<ScalarExpr, ParseError> {
+    let mut result = parse_and_tokens_at_depth(parser, depth)?;
+    let mut count = 0;
+    while parser.keyword("OR") {
+        count += 1;
+        if count > 128 {
+            return Err(ParseError("OR expression exceeds complexity budget".into()));
+        }
+        let right = parse_and_tokens_at_depth(parser, depth)?;
+        result = ScalarExpr::Or(Box::new(result), Box::new(right));
+    }
+    Ok(result)
 }
 
 pub fn parse_scalar_expression(sql: &str) -> Result<ScalarExpr, ParseError> {
