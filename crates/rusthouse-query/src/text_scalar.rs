@@ -3245,7 +3245,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "expected ')' after LTRIM arguments")?;
             match (input, characters) {
                 (Some(input), None) => {
-                    ConstantValue::Text(input.trim_start_matches(' ').to_owned())
+                    ConstantValue::Text(input.trim_start_matches(|ch: char| matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}')).to_owned())
                 }
                 (Some(input), Some(Some(characters))) => ConstantValue::Text(
                     input
