@@ -25,7 +25,7 @@ fn describe_short_forms_return_schema() {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
     ));
     successful(&db, "CREATE TABLE events (id UInt64, label String)");
-    let expected = b"name\\ttype\\nid\\tUInt64\\nlabel\\tString\\n";
+    let expected = b"name\ttype\nid\tUInt64\nlabel\tString\n";
     assert_eq!(successful(&db, "DESCRIBE events").stdout, expected);
     assert_eq!(successful(&db, "DESC events").stdout, expected);
     assert_eq!(successful(&db, "DESC TABLE events").stdout, expected);
