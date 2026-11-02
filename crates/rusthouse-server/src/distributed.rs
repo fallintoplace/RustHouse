@@ -319,6 +319,7 @@ fn shard_row_cap(peer: Peer) -> Result<usize, String> {
 /// column-looking substrings inside malformed JSON or unrelated fields.
 /// Schema identifiers and physical types are ASCII and do not need JSON escapes.
 struct PeerSchema {
+    rows: u64,
     columns: Vec<(String, String)>,
 }
 
@@ -393,7 +394,7 @@ fn parse_peer_schema(bytes: &[u8]) -> Result<PeerSchema, String> {
         return Err("peer schema has no rows".into());
     }
     cursor.byte(b':')?;
-    cursor.unsigned_count()?;
+    let rows = cursor.unsigned_count()?;
     cursor.byte(b',')?;
     if cursor.string()? != "columns" {
         return Err("peer schema has no columns".into());
@@ -438,7 +439,7 @@ fn parse_peer_schema(bytes: &[u8]) -> Result<PeerSchema, String> {
     if cursor.index != bytes.len() || columns.is_empty() {
         return Err("trailing data or empty peer schema".into());
     }
-    Ok(PeerSchema { columns })
+    Ok(PeerSchema { rows, columns })
 }
 
 #[cfg(test)]
@@ -607,6 +608,17 @@ fn read_shard(
     }
     if result.content_type != "text/tab-separated-values; charset=utf-8" {
         return Err("peer did not return TSV".into());
+    }
+    // Check for concurrent schema changes and row-count changes around the
+    // peer query. This catches many torn reads, but is not an atomic
+    // multi-shard snapshot or protection against same-row-count rewrites.
+    let after_response = remote::schema(peer, table)?;
+    let after = schema_signature(&after_response)?;
+    if after != schema
+        || parse_peer_schema(&schema_response.body)?.rows
+            != parse_peer_schema(&after_response.body)?.rows
+    {
+        return Err("peer table changed while distributed query was running".into());
     }
     reserve_shard_bytes(used_bytes, result.body.len())?;
     Ok(ShardResponse {
@@ -3231,5 +3243,33 @@ mod logical_distinct_tsv_equivalence_tests {
             merge_distinct_tsv(&[(16, b"v\nvalid\n\\q\n".to_vec())], 1, 0, Some(1)),
             Err(MergeError::InvalidResponse),
         );
+    }
+}
+
+#[cfg(test)]
+mod peer_preflight_version_checks {
+    use super::*;
+
+    #[test]
+    fn schema_parser_preserves_row_count_for_post_query_consistency_checks() {
+        let first = parse_peer_schema(
+            br#"{"rows":12,"columns":[{"name":"id","type":"UInt64"}]}"#,
+        ).unwrap();
+        let updated = parse_peer_schema(
+            br#"{"rows":13,"columns":[{"name":"id","type":"UInt64"}]}"#,
+        ).unwrap();
+        assert_eq!(first.columns, updated.columns);
+        assert_ne!(first.rows, updated.rows);
+    }
+
+    #[test]
+    fn schema_parser_rejects_unrepresentable_and_noncanonical_row_counts() {
+        for bad in [
+            br#"{"rows":18446744073709551616,"columns":[{"name":"id","type":"UInt64"}]}"#.as_slice(),
+            br#"{"rows":01,"columns":[{"name":"id","type":"UInt64"}]}"#.as_slice(),
+            br#"{"rows":-1,"columns":[{"name":"id","type":"UInt64"}]}"#.as_slice(),
+        ] {
+            assert!(parse_peer_schema(bad).is_err());
+        }
     }
 }
