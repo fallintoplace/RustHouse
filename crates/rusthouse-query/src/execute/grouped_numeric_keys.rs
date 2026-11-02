@@ -108,6 +108,26 @@ pub(super) fn append_group_component(column: &TypedColumn, row: usize, buffer: &
             buffer.push(2);
             buffer.extend_from_slice(values[row].as_bytes());
         }
+        TypedColumn::Numeric(NumericColumn::UInt8(values))
+        | TypedColumn::NullableNumeric { values: NumericColumn::UInt8(values), .. } => {
+            buffer.push(3);
+            buffer.extend_from_slice(&u128::from(values[row]).to_le_bytes());
+        }
+        TypedColumn::Numeric(NumericColumn::Int8(values))
+        | TypedColumn::NullableNumeric { values: NumericColumn::Int8(values), .. } => {
+            buffer.push(4);
+            buffer.extend_from_slice(&i128::from(values[row]).to_le_bytes());
+        }
+        TypedColumn::Numeric(NumericColumn::UInt16(values))
+        | TypedColumn::NullableNumeric { values: NumericColumn::UInt16(values), .. } => {
+            buffer.push(3);
+            buffer.extend_from_slice(&u128::from(values[row]).to_le_bytes());
+        }
+        TypedColumn::Numeric(NumericColumn::Int16(values))
+        | TypedColumn::NullableNumeric { values: NumericColumn::Int16(values), .. } => {
+            buffer.push(4);
+            buffer.extend_from_slice(&i128::from(values[row]).to_le_bytes());
+        }
         TypedColumn::Numeric(values) | TypedColumn::NullableNumeric { values, .. } => {
             match super::number_at(values, row) {
                 Number::Unsigned(value) => {
@@ -690,5 +710,45 @@ mod cached_composite_group_median_order_tests {
         let mut indices = (0..groups.len()).collect::<Vec<_>>();
         indices.sort_by(|&a, &b| typed::compare_order_cells(&medians[a], &medians[b], false, None));
         assert_eq!(indices, [1, 2, 0]);
+    }
+}
+
+#[cfg(test)]
+mod narrow_composite_group_encoding_tests {
+    use super::*;
+
+    #[test]
+    fn narrow_numeric_group_components_use_canonical_wide_encoding() {
+        let cases = [
+            (TypedColumn::Numeric(NumericColumn::UInt8(vec![255])), 3u8, 255u128.to_le_bytes()),
+            (TypedColumn::Numeric(NumericColumn::UInt16(vec![65_535])), 3, 65_535u128.to_le_bytes()),
+        ];
+        for (column, tag, body) in cases {
+            let mut encoded = Vec::new();
+            append_group_component(&column, 0, &mut encoded);
+            assert_eq!(encoded[0], tag);
+            assert_eq!(&encoded[1..], &body);
+        }
+        let signed = [
+            TypedColumn::Numeric(NumericColumn::Int8(vec![-128])),
+            TypedColumn::Numeric(NumericColumn::Int16(vec![-32_768])),
+        ];
+        for (column, expected) in signed.iter().zip([-128i128, -32_768i128]) {
+            let mut encoded = Vec::new();
+            append_group_component(column, 0, &mut encoded);
+            assert_eq!(encoded[0], 4);
+            assert_eq!(&encoded[1..], &expected.to_le_bytes());
+        }
+        let nullable = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt8(vec![7, 7]),
+            nulls: vec![1, 0],
+        };
+        let mut encoded = Vec::new();
+        append_group_component(&nullable, 0, &mut encoded);
+        assert_eq!(encoded, [0]);
+        encoded.clear();
+        append_group_component(&nullable, 1, &mut encoded);
+        assert_eq!(encoded[0], 3);
+        assert_eq!(&encoded[1..], &7u128.to_le_bytes());
     }
 }
