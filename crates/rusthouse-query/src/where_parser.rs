@@ -231,7 +231,21 @@ fn parse_atom(
         // Reuse existing NOT IN, NOT BETWEEN, NOT LIKE and comparison parsing.
         parser.index -= 1;
     }
-    if parser.take(Token::LParen) {
+    // A single parenthesized identifier is a column reference, not a
+    // parenthesized boolean expression.
+    let wrapped_column = matches!(
+        (
+            parser.tokens.get(parser.index),
+            parser.tokens.get(parser.index + 1),
+            parser.tokens.get(parser.index + 2),
+        ),
+        (
+            Some(Token::LParen),
+            Some(Token::Word(_) | Token::QuotedWord(_)),
+            Some(Token::RParen)
+        )
+    );
+    if !wrapped_column && parser.take(Token::LParen) {
         check_parenthesis_depth(depth)?;
         let branches = parse_or(parser, conditions, depth + 1)?;
         if !parser.take(Token::RParen) {
@@ -241,7 +255,13 @@ fn parse_atom(
     }
     let mut predicates = Vec::new();
     let prefix_not = parser.keyword("NOT");
+    if wrapped_column {
+        parser.index += 1;
+    }
     let column = parser.word()?;
+    if wrapped_column && !parser.take(Token::RParen) {
+        return Err(ParseError("WHERE column requires closing ')'".into()));
+    }
     let postfix_not = parser.keyword("NOT");
     let negate_in = prefix_not ^ postfix_not;
     if parser.keyword("IS") {
@@ -766,5 +786,38 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod parenthesized_where_column_tests {
+    use crate::parse_select;
+
+    #[test]
+    fn grouped_column_references_match_plain_predicates() {
+        for (wrapped, plain) in [
+            ("(number) >= 2", "number >= 2"),
+            ("(number) IN (1, 3)", "number IN (1, 3)"),
+            ("(number) IS NOT NULL", "number IS NOT NULL"),
+        ] {
+            let wrapped = parse_select(&format!(
+                "SELECT number FROM numbers(6) WHERE {wrapped}"
+            ))
+            .unwrap();
+            let plain = parse_select(&format!(
+                "SELECT number FROM numbers(6) WHERE {plain}"
+            ))
+            .unwrap();
+            assert_eq!(wrapped, plain);
+        }
+    }
+
+    #[test]
+    fn parenthesized_boolean_groups_still_parse() {
+        let query = "SELECT number FROM numbers(6) WHERE (number = 1 OR number = 2)";
+        assert!(parse_select(query).is_ok());
+        assert!(
+            parse_select("SELECT number FROM numbers(6) WHERE (number)").is_err()
+        );
     }
 }
