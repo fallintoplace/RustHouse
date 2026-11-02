@@ -399,6 +399,24 @@ impl Parser {
     }
 
     fn literal(&mut self) -> Result<String, ParseError> {
+        // Parse parentheses iteratively to avoid recursion on untrusted SQL.
+        let mut depth = 0usize;
+        while self.take(Token::LParen) {
+            depth += 1;
+            if depth > 16 {
+                return Err(ParseError("SQL literal parentheses exceed 16 levels".into()));
+            }
+        }
+        let value = self.unparenthesized_literal()?;
+        for _ in 0..depth {
+            if !self.take(Token::RParen) {
+                return Err(ParseError("expected ')' after SQL literal".into()));
+            }
+        }
+        Ok(value)
+    }
+
+    fn unparenthesized_literal(&mut self) -> Result<String, ParseError> {
         // TPC-H validation SQL commonly expresses date bounds as CAST('...' AS DATE).
         // Resolve only quoted date/timestamp literals; general CAST expressions
         // belong in the typed expression evaluator, not a literal predicate.
@@ -2106,5 +2124,39 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod parenthesized_where_literal_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_nested_constant_bounds_in_comparisons_and_in_lists() {
+        let examples = [
+            "SELECT number FROM numbers(5) WHERE number = ((2))",
+            "SELECT number FROM numbers(5) WHERE number BETWEEN (1) AND (3)",
+            "SELECT number FROM numbers(5) WHERE number IN ((1), (2))",
+            "SELECT number FROM numbers(5) WHERE number = (1 + 1)",
+        ];
+        for sql in examples {
+            assert!(parse_select(sql).is_ok(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_unbalanced_and_excessively_nested_literals() {
+        for sql in [
+            "SELECT number FROM numbers(5) WHERE number = (1",
+            "SELECT number FROM numbers(5) WHERE number = (1))",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+        let deep = format!(
+            "SELECT number FROM numbers(5) WHERE number = {}1{}",
+            "(".repeat(17),
+            ")".repeat(17)
+        );
+        assert!(parse_select(&deep).is_err());
     }
 }
