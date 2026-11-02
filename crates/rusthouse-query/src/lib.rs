@@ -477,6 +477,12 @@ impl Parser {
                     if self.keyword("MONTH") {
                         return literal::add_date_months(&value, amount);
                     }
+                    if self.keyword("WEEK") || self.keyword("WEEKS") {
+                        let days = amount.checked_mul(7).ok_or_else(|| {
+                            ParseError("INTERVAL WEEK count overflow".into())
+                        })?;
+                        return literal::add_date_days(&value, days);
+                    }
                     if self.keyword("DAY") {
                         return literal::add_date_days(&value, amount);
                     }
@@ -2105,6 +2111,37 @@ mod tpch_interval_unit_tests {
                 Predicate::Comparison { operator: Operator::Le | Operator::Lt, value, .. }
                     if value == expected
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod interval_week_literal_tests {
+    use super::*;
+
+    #[test]
+    fn parses_signed_week_bounds_as_checked_day_intervals() {
+        for (source, expected) in [
+            ("DATE '1998-12-01' - INTERVAL '2' WEEK", "1998-11-17"),
+            ("DATE '1998-12-01' + INTERVAL 1 WEEKS", "1998-12-08"),
+        ] {
+            let sql = format!("SELECT COUNT(*) FROM lineitem WHERE l_shipdate < {source}");
+            let selected = parse_select(&sql).unwrap();
+            assert!(matches!(
+                selected.predicates.as_slice(),
+                [Predicate::Comparison { value, .. }] if value == expected
+            ), "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_week_intervals_overflowing_or_preceding_date_range() {
+        for source in [
+            "DATE '1970-01-01' - INTERVAL 1 WEEK",
+            "DATE '1998-12-01' + INTERVAL 9223372036854775807 WEEK",
+        ] {
+            let sql = format!("SELECT COUNT(*) FROM lineitem WHERE l_shipdate < {source}");
+            assert!(parse_select(&sql).is_err(), "{sql}");
         }
     }
 }
