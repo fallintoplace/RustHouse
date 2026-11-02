@@ -14,7 +14,9 @@ fn soundex_encodes_ascii_names() {
         ("SELECT soundex('aksel')", ConstantValue::Text("A240".into())),
         ("SELECT soundex('Robert')", ConstantValue::Text("R163".into())),
         ("SELECT soundex('Rupert')", ConstantValue::Text("R163".into())),
-        ("SELECT soundex('Ashcraft')", ConstantValue::Text("A261".into())),
+        ("SELECT soundex('Ashcraft')", ConstantValue::Text("A226".into())),
+        ("SELECT soundex('1234')", ConstantValue::Text("0000".into())),
+        ("SELECT soundex('')", ConstantValue::Text("0000".into())),
         ("SELECT soundex(NULL)", ConstantValue::Null),
     ] {
         assert_eq!(value(query), expected, "{query}");
