@@ -15,6 +15,9 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "IPV4NUMTOSTRINGCLASSC"
                 | "IPV4STRINGTONUMORDEFAULT"
                 | "CUTWWW"
+                | "FIRSTSIGNIFICANTSUBDOMAIN"
+                | "CUTTOFIRSTSIGNIFICANTSUBDOMAIN"
+                | "CUTTOFIRSTSIGNIFICANTSUBDOMAINWITHWWW"
                 | "DOMAINWITHOUTWWW"
                 | "CUTURLPARAMETER"
                 | "JSONEXTRACTBOOL"
@@ -364,6 +367,62 @@ fn format_constant_template(pattern: &str, args: &[String]) -> Result<String, Pa
         return Err(ParseError("FORMAT result is too large".into()));
     }
     Ok(result)
+}
+
+// ClickHouse's built-in significant-domain heuristic for common multi-label
+// hostnames. It is not a public-suffix-list lookup.
+fn significant_hostname_parts(url: &str) -> Option<(&str, &str, &str)> {
+    let authority = url
+        .split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .split(['/', '?', '#'])
+        .next()?;
+    let host_port = authority.rsplit('@').next()?;
+    // Bracketed IPv6 hosts and numeric IPv4 addresses have no registrable label.
+    if host_port.starts_with('[') {
+        return None;
+    }
+    let host = host_port.split(':').next()?;
+    if host.parse::<std::net::Ipv4Addr>().is_ok() || !host.is_ascii() || host.len() > 253 {
+        return None;
+    }
+    if host.split('.').any(|label| {
+        label.is_empty()
+            || label.len() > 63
+            || !label.as_bytes()[0].is_ascii_alphanumeric()
+            || !label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    }) {
+        return None;
+    }
+    let last_dot = host.rfind('.')?;
+    let before_tld = &host[..last_dot];
+    let second_dot = before_tld.rfind('.');
+    let second = &before_tld[second_dot.map_or(0, |index| index + 1)..];
+    let significant_start = if matches!(
+        second.to_ascii_lowercase().as_str(),
+        "com" | "net" | "org" | "co"
+    ) {
+        let before_second = &before_tld[..second_dot?];
+        before_second.rfind('.').map_or(0, |index| index + 1)
+    } else {
+        second_dot.map_or(0, |index| index + 1)
+    };
+    let significant_end = if matches!(
+        second.to_ascii_lowercase().as_str(),
+        "com" | "net" | "org" | "co"
+    ) {
+        second_dot?
+    } else {
+        last_dot
+    };
+    Some((
+        host,
+        &host[significant_start..significant_end],
+        &host[significant_start..],
+    ))
 }
 
 // Compile the reflected IEEE polynomial table once instead of executing
@@ -958,6 +1017,37 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "FIRSTSIGNIFICANTSUBDOMAIN" | "CUTTOFIRSTSIGNIFICANTSUBDOMAIN"
+        | "CUTTOFIRSTSIGNIFICANTSUBDOMAINWITHWWW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "significant domain functions require one URL",
+            )?;
+            match input {
+                Some(input) => {
+                    let extracted = significant_hostname_parts(&input);
+                    let text = match (name.as_str(), extracted) {
+                        ("FIRSTSIGNIFICANTSUBDOMAIN", Some((_, label, _))) => label.to_owned(),
+                        ("CUTTOFIRSTSIGNIFICANTSUBDOMAIN", Some((_, _, suffix))) => {
+                            suffix.strip_prefix("www.").unwrap_or(suffix).to_owned()
+                        }
+                        ("CUTTOFIRSTSIGNIFICANTSUBDOMAINWITHWWW", Some((host, _, suffix))) => {
+                            let prefix = &host[..host.len() - suffix.len()];
+                            if prefix.ends_with("www.") {
+                                format!("www.{suffix}")
+                            } else {
+                                suffix.to_owned()
+                            }
+                        }
+                        _ => String::new(),
+                    };
+                    ConstantValue::Text(text)
+                }
+                None => ConstantValue::Null,
             }
         }
         "DOMAINWITHOUTWWW" => {
