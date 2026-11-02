@@ -6636,7 +6636,7 @@ mod clickhouse_base58_encode_tests {
         assert_eq!(base58_encode("").unwrap(), "");
         assert_eq!(base58_encode("Hello").unwrap(), "9Ajdvzr");
         assert_eq!(base58_encode("Encoded").unwrap(), "3dc8KtHrwM");
-        assert_eq!(base58_encode("\0\0A").unwrap(), "118");
+        assert_eq!(base58_encode("\0\0A").unwrap(), "1128");
         assert_eq!(base58_encode("\0\0").unwrap(), "11");
     }
 
