@@ -83,6 +83,28 @@ impl FencingLedger {
         Ok(())
     }
 
+    /// Apply a batch only when every shard still has its expected token.
+    ///
+    /// Expectations are positional and correspond to batch claims. None means
+    /// that the shard must not exist yet. All checks and updates are local
+    /// to this ledger; external coordination still issues fencing tokens.
+    pub fn apply_batch_if_tokens_match(
+        &mut self,
+        batch: &[FenceClaim],
+        expected: &[Option<FenceToken>],
+    ) -> Result<(), &'static str> {
+        if batch.len() != expected.len() || batch.len() > MAX_FENCED_SHARDS {
+            return Err("invalid conditional fencing batch");
+        }
+        for (claim, &expected_token) in batch.iter().zip(expected) {
+            let current_token = self.claims.get(&claim.shard).map(|(_, token)| *token);
+            if current_token != expected_token {
+                return Err("fencing claim precondition failed");
+            }
+        }
+        self.apply_batch(batch)
+    }
+
     /// Return the current local holder and token for a known shard.
     pub fn get(&self, shard: &str) -> Option<(&str, FenceToken)> {
         self.claims
@@ -173,6 +195,34 @@ mod tests {
         assert_eq!(snapshot[0].shard, "a");
         assert_eq!(snapshot[1].shard, "z");
         assert_eq!(FencingLedger::restore(&snapshot).unwrap(), ledger);
+    }
+
+    #[test]
+    fn conditional_batches_fail_atomically_on_stale_snapshot() {
+        let mut ledger = FencingLedger::new();
+        ledger.apply_batch(&[claim("alpha", "old", 1, 1)]).unwrap();
+        let initial = FenceToken { epoch: 1, sequence: 1 };
+        let batch = [claim("alpha", "new", 1, 2), claim("beta", "new", 1, 1)];
+
+        let before = ledger.clone();
+        assert!(ledger.apply_batch_if_tokens_match(&batch, &[None, None]).is_err());
+        assert_eq!(ledger, before);
+        assert!(ledger.apply_batch_if_tokens_match(&batch, &[Some(initial)]).is_err());
+        assert_eq!(ledger, before);
+
+        ledger
+            .apply_batch_if_tokens_match(&batch, &[Some(initial), None])
+            .unwrap();
+        assert_eq!(ledger.get("alpha").unwrap().0, "new");
+        assert_eq!(ledger.get("beta").unwrap().0, "new");
+        let after = ledger.clone();
+
+        assert!(ledger
+            .apply_batch_if_tokens_match(&[claim("alpha", "old", 2, 1)], &[Some(initial)])
+            .is_err());
+        assert_eq!(ledger, after);
+        assert!(ledger.apply_batch_if_tokens_match(&batch, &[Some(initial), None]).is_err());
+        assert_eq!(ledger, after);
     }
 
     #[test]
