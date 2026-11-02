@@ -188,6 +188,9 @@ pub(super) fn execute<W: Write>(
         .collect::<HashMap<_, _>>();
     let mut names = vec![column.to_owned()];
     for (function, value_column) in items {
+        if *function == AggregateFunction::Count && value_column == "*" {
+            continue;
+        }
         if !names.contains(value_column) {
             names.push(value_column.clone());
         }
@@ -255,7 +258,13 @@ pub(super) fn execute<W: Write>(
     let group_index = indices[column];
     let item_indices = items
         .iter()
-        .map(|(_, name)| indices[name])
+        .map(|(function, name)| {
+            if *function == AggregateFunction::Count && name == "*" {
+                group_index
+            } else {
+                indices[name]
+            }
+        })
         .collect::<Vec<_>>();
     let filter_indices = filters
         .iter()
@@ -369,7 +378,7 @@ pub(super) fn execute<W: Write>(
                     }
                 }
             };
-            for (metric, ((function, _), (&column_index, state))) in items
+            for (metric, ((function, value_column), (&column_index, state))) in items
                 .iter()
                 .zip(item_indices.iter().zip(groups[index].1.iter_mut()))
                 .enumerate()
@@ -386,7 +395,7 @@ pub(super) fn execute<W: Write>(
                     reserve_median_value(&mut retained_median_bytes)?;
                 }
                 if *function == AggregateFunction::Count {
-                    if !typed::is_null_at(&batch[column_index], row) {
+                    if value_column == "*" || !typed::is_null_at(&batch[column_index], row) {
                         state.increment_count()?;
                     }
                     continue;

@@ -648,7 +648,11 @@ impl Parser {
         | Projection::GroupedMultiAggregates { items, .. } = projection
         {
             if self.take(Token::LParen) {
-                let argument = self.word()?;
+                let argument = if self.take(Token::Star) {
+                    "*".to_owned()
+                } else {
+                    self.word()?
+                };
                 if !self.take(Token::RParen) {
                     return Err(ParseError("expected ')' in ORDER BY aggregate".into()));
                 }
@@ -783,6 +787,23 @@ pub fn split_clickhouse_format(sql: &str) -> Result<(&str, Option<&str>), ParseE
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     parse_select_tokens(tokenize(sql)?)
+}
+
+// Standalone grouped COUNT keeps its specialized execution plan. A following
+// metric switches COUNT(*) to the grouped multi-aggregate path.
+fn grouped_count_has_next_metric(parser: &Parser) -> bool {
+    let mut cursor = parser.index + 2;
+    if parser.tokens.get(cursor) == Some(&Token::Star) {
+        cursor += 1;
+    }
+    if parser.tokens.get(cursor) != Some(&Token::RParen) {
+        return false;
+    }
+    cursor += 1;
+    if matches!(parser.tokens.get(cursor), Some(Token::Word(word)) if word.eq_ignore_ascii_case("AS")) {
+        cursor += 2;
+    }
+    parser.tokens.get(cursor) == Some(&Token::Comma)
 }
 
 fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
@@ -1004,6 +1025,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     parser.tokens.get(parser.index + 2),
                     Some(Token::Word(word)) if !word.eq_ignore_ascii_case("DISTINCT")
                 )
+                && !grouped_count_has_next_metric(&parser)
             {
                 parser.keyword("COUNT");
                 if !parser.take(Token::LParen) {
@@ -1063,7 +1085,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             "SUMIF" | "AVGIF" | "MINIF" | "MAXIF"));
                     parser.index += 1;
                     parser.take(Token::LParen);
-                    let value_column = parser.word()?;
+                    let empty_count =
+                        function == AggregateFunction::Count && parser.take(Token::RParen);
+                    let value_column = if empty_count
+                        || (function == AggregateFunction::Count && parser.take(Token::Star))
+                    {
+                        "*".to_owned()
+                    } else {
+                        parser.word()?
+                    };
                     let filter = if conditional {
                         if !parser.take(Token::Comma) {
                             return Err(ParseError(
@@ -1074,7 +1104,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     } else {
                         None
                     };
-                    if !parser.take(Token::RParen) {
+                    if !empty_count && !parser.take(Token::RParen) {
                         return Err(ParseError("expected ')' after grouped aggregate".into()));
                     }
                     let mut items = vec![(function, value_column)];
@@ -1125,7 +1155,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         if !parser.take(Token::LParen) {
                             return Err(ParseError("expected '(' after aggregate name".into()));
                         }
-                        let value_column = parser.word()?;
+                        let empty_count =
+                            function == AggregateFunction::Count && parser.take(Token::RParen);
+                        let value_column = if empty_count
+                            || (function == AggregateFunction::Count && parser.take(Token::Star))
+                        {
+                            "*".to_owned()
+                        } else {
+                            parser.word()?
+                        };
                         let filter = if conditional {
                             if !parser.take(Token::Comma) {
                                 return Err(ParseError(
@@ -1136,7 +1174,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         } else {
                             None
                         };
-                        if !parser.take(Token::RParen) {
+                        if !empty_count && !parser.take(Token::RParen) {
                             return Err(ParseError("expected ')' after grouped aggregate".into()));
                         }
                         items.push((function, value_column));
@@ -1626,7 +1664,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             // Only a projected metric can be filtered, so an alias never
             // selects a different or previously uncomputed aggregate.
             let selected = if parser.take(Token::LParen) {
-                let column = parser.word()?;
+                let column = if parser.take(Token::Star) {
+                    "*".to_owned()
+                } else {
+                    parser.word()?
+                };
                 if !parser.take(Token::RParen) {
                     return Err(ParseError("expected ')' after HAVING metric".into()));
                 }
