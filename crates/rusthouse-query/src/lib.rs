@@ -487,6 +487,13 @@ impl Parser {
             }
             return Ok(value);
         }
+        if self.take(Token::Plus) {
+            let value = self.number()?;
+            if value.starts_with('-') {
+                return Err(ParseError("expected positive number after '+'".into()));
+            }
+            return Ok(value);
+        }
         let is_number = matches!(self.tokens.get(self.index), Some(Token::Number(_)));
         let value = match self.tokens.get(self.index) {
             Some(Token::Number(value) | Token::String(value)) => value.clone(),
@@ -2106,5 +2113,28 @@ mod tpch_interval_unit_tests {
                     if value == expected
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod where_unary_plus_tests {
+    use super::*;
+
+    #[test]
+    fn unary_plus_is_allowed_before_where_literals() {
+        for (signed, plain) in [
+            ("number = +1", "number = 1"),
+            ("number = + 2", "number = 2"),
+            ("number IN (+1, +2)", "number IN (1, 2)"),
+            ("number BETWEEN +1 AND +2", "number BETWEEN 1 AND 2"),
+        ] {
+            let with_plus = format!("SELECT number FROM numbers(5) WHERE {signed}");
+            let without_plus = format!("SELECT number FROM numbers(5) WHERE {plain}");
+            assert_eq!(
+                parse_select(&with_plus).unwrap(),
+                parse_select(&without_plus).unwrap()
+            );
+        }
+        assert!(parse_select("SELECT number FROM numbers(5) WHERE number = ++1").is_err());
     }
 }
