@@ -195,8 +195,18 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
 }
 
 /// Publish a new empty snapshot without temporarily removing the active table.
-fn truncate_table(database: &Path, name: &str) -> Result<(), String> {
+fn truncate_table(database: &Path, name: &str, if_exists: bool) -> Result<(), String> {
     let _lock = lock(database)?;
+    let schema = database.join(format!("{name}.schema"));
+    if !existing_path(&schema)? {
+        if existing_path(&data_path(database, name))? {
+            return Err(format!("table {name} has orphaned data; refusing TRUNCATE"));
+        }
+        if if_exists {
+            return Ok(());
+        }
+        return Err(format!("unknown database table: {name}"));
+    }
     let cols = columns(database, name)?;
     validated_parts(database, name, &cols)?;
     rewrite::publish_snapshot(database, name, &cols, &[])?;
@@ -260,6 +270,8 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
         Ddl::ShowTables
         | Ddl::ShowTablesLike { .. }
         | Ddl::ShowTablesNotLike { .. }
+        | Ddl::ShowTablesILike { .. }
+        | Ddl::ShowTablesNotILike { .. }
         | Ddl::ShowCreateTable { .. }
         | Ddl::DescribeTable { .. } => {
             // Do not create a new database just to list empty tables.
@@ -296,7 +308,8 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
             create_table_locked(database, name, &source_columns, *if_not_exists)
         }
         Ddl::DropTable { name, if_exists } => drop_table(database, name, *if_exists),
-        Ddl::TruncateTable { name } => truncate_table(database, name),
+        Ddl::TruncateTable { name } => truncate_table(database, name, false),
+        Ddl::TruncateTableIfExists { name } => truncate_table(database, name, true),
         Ddl::OptimizeTable { name } => rewrite::compact_table(database, name),
         Ddl::RenameTable { from, to } => rename_table(database, from, to),
         _ => Err("database mode does not support ALTER yet".into()),

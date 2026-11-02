@@ -197,13 +197,14 @@ impl QueryFormat {
 
 fn query_parameters(
     target: &str,
-) -> Result<(String, Option<String>, Option<QueryFormat>), &'static str> {
+) -> Result<(String, Option<String>, Option<QueryFormat>, Option<QueryFormat>), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" && path != "/explain" {
         return Err("unknown SQL endpoint");
     }
     let mut statement = None;
     let mut format = None;
+    let mut default_format = None;
     for parameter in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = parameter
             .split_once('=')
@@ -221,13 +222,19 @@ fn query_parameters(
                 }
                 format = Some(QueryFormat::parse(&decode_url(value)?)?);
             }
+            "default_format" => {
+                if default_format.is_some() {
+                    return Err("duplicate default_format parameter");
+                }
+                default_format = Some(QueryFormat::parse(&decode_url(value)?)?);
+            }
             _ => return Err("unsupported URL query parameter"),
         }
     }
-    if path == "/explain" && format.is_some() {
+    if path == "/explain" && (format.is_some() || default_format.is_some()) {
         return Err("format is unsupported for EXPLAIN");
     }
-    Ok((path.to_owned(), statement, format))
+    Ok((path.to_owned(), statement, format, default_format))
 }
 
 /// Discover the server's read-only mode and resource limits without opening files.
@@ -341,7 +348,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if body.len() > MAX_QUERY_BYTES || target.len() > MAX_HEADER_BYTES {
         return Response::text("413 Payload Too Large", "SQL statement too large\n");
     }
-    let (path, query, request_format) = match query_parameters(target) {
+    let (path, query, request_format, default_format) = match query_parameters(target) {
         Ok(v) => v,
         Err(message) => return Response::text("400 Bad Request", message),
     };
@@ -398,7 +405,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             Err(message) => return Response::text("400 Bad Request", message),
         }
     } else {
-        request_format.unwrap_or(QueryFormat::Tsv)
+        request_format.or(default_format).unwrap_or(QueryFormat::Tsv)
     };
     let sql = statement.to_owned();
     // DESCRIBE uses the same read lock and schema validation as SQL SELECT.
@@ -415,6 +422,20 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                 return metadata_sql::handle(config, format, &name);
             }
             Ok(_) => return Response::text("400 Bad Request", "unsupported schema SQL\n"),
+            Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+        }
+    }
+    // Discovery SQL uses the same validated schemas and read lock as /tables.
+    if sql
+        .trim_start()
+        .get(..4)
+        .is_some_and(|word| word.eq_ignore_ascii_case("SHOW"))
+    {
+        match rusthouse_query::parse_ddl(&sql) {
+            Ok(Some(rusthouse_query::Ddl::ShowTables)) if path != "/explain" => {
+                return tables::handle_sql(config, format);
+            }
+            Ok(_) => return Response::text("400 Bad Request", "unsupported metadata SQL\n"),
             Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
         }
     }

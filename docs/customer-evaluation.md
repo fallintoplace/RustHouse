@@ -1,8 +1,8 @@
 # RustHouse first-customer evaluation guide
 
-This is an **experiment design**, not a promise of production support.
-RustHouse currently excels as a small local Rust SQL/immutable-part tool.
-Its current server and distributed capabilities remain experimental.
+Explore RustHouse with a focused local SQL and immutable-part trial. This guide
+helps teams measure the experience and identify the capabilities their use case
+needs. The server and distributed capabilities are experimental.
 
 ## Who should try it now
 
@@ -13,13 +13,14 @@ Its current server and distributed capabilities remain experimental.
 3. **Rust database contributors** who want to extend or measure the SQL,
    storage and CLI implementation.
 
-## Who should not migrate yet
+## Plan your evaluation
 
-- Customers requiring high availability, multi-user RBAC, public HTTP access,
-  managed multi-tenancy or cross-statement ACID transactions.
-- Teams needing ClickHouse wire-protocol compatibility or full SQL coverage.
-- Workloads that need live directory reads from another writer.
-- Buyers expecting proven power-loss durability or unattended upgrades.
+The current local database supports single-writer workloads and a SQL subset.
+The HTTP server is read-only and has no built-in authentication. High
+availability, multi-user RBAC, managed multi-tenancy, cross-statement
+transactions, and ClickHouse wire compatibility are outside the current scope.
+Use frozen snapshots for external parts. Power-loss durability and unattended
+upgrades remain areas for further validation.
 
 ## One-hour evaluation, using today's supported CLI
 
