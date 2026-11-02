@@ -115,9 +115,9 @@ class ClickBenchRunnerTests(unittest.TestCase):
         self.assertFalse(matches_reference(b"1\n2\n", b"1\n"))
 
     def test_unordered_reference_checks_duplicate_rows_exactly(self):
-        self.assertTrue(matches_unordered_reference(b"2\\n1\\n2\\n", b"1\\n2\\n2\\n"))
-        self.assertFalse(matches_unordered_reference(b"2\\n1\\n", b"1\\n2\\n2\\n"))
-        self.assertFalse(matches_unordered_reference(b"1.00001\\n", b"1\\n"))
+        self.assertTrue(matches_unordered_reference(b"2\n1\n2\n", b"1\n2\n2\n"))
+        self.assertFalse(matches_unordered_reference(b"2\n1\n", b"1\n2\n2\n"))
+        self.assertFalse(matches_unordered_reference(b"1.00001\n", b"1\n"))
         self.assertEqual(parse_unordered_ids("2,3", [(1, "q"), (2, "q"), (3, "q")]),
                          frozenset({2, 3}))
         for value in ("2,0", "x", "2,", "", "2,999"):
@@ -126,10 +126,10 @@ class ClickBenchRunnerTests(unittest.TestCase):
                     parse_unordered_ids(value, [(2, "q")])
 
     def test_unordered_reference_opt_in_for_benchmark(self):
-        unordered = benchmark_one(1, "q", lambda _: b"2\\n1\\n", 2, 0,
-                                  b"1\\n2\\n", unordered=True)
-        ordered = benchmark_one(1, "q", lambda _: b"2\\n1\\n", 2, 0,
-                                b"1\\n2\\n")
+        unordered = benchmark_one(1, "q", lambda _: b"2\n1\n", 2, 0,
+                                  b"1\n2\n", unordered=True)
+        ordered = benchmark_one(1, "q", lambda _: b"2\n1\n", 2, 0,
+                                b"1\n2\n")
         self.assertEqual(unordered["status"], "passed")
         self.assertEqual(ordered["status"], "mismatch")
 
