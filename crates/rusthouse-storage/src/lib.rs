@@ -15,6 +15,7 @@ pub mod distributed_crc32c;
 pub mod distributed_inventory;
 pub mod distributed_lineage;
 pub mod distributed_membership;
+pub mod distributed_merkle;
 pub mod distributed_object_key;
 pub mod distributed_quorum;
 pub mod distributed_range_read;
