@@ -487,6 +487,13 @@ impl Parser {
             }
             return Ok(value);
         }
+        // ClickHouse-style UInt8 predicates use 1 and 0 for SQL booleans.
+        if self.keyword("TRUE") {
+            return Ok("1".into());
+        }
+        if self.keyword("FALSE") {
+            return Ok("0".into());
+        }
         let is_number = matches!(self.tokens.get(self.index), Some(Token::Number(_)));
         let value = match self.tokens.get(self.index) {
             Some(Token::Number(value) | Token::String(value)) => value.clone(),
