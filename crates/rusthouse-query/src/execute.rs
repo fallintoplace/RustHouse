@@ -467,7 +467,46 @@ pub fn execute<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let mut buffered = BufWriter::new(output);
-    if let Some(literal) = query.grouped_literal {
+    if !query.grouped_affine.is_empty() {
+        let path = part.ok_or_else(|| {
+            ExecutionError::Invalid("grouped arithmetic requires a stored table".into())
+        })?;
+        let column = match &query.projection {
+            Projection::GroupedCount { column } => column,
+            Projection::GroupedAggregates { column, items, .. } if matches!(items.as_slice(), [(crate::AggregateFunction::Count, value)] if value == "*") => {
+                column
+            }
+            _ => {
+                return Err(ExecutionError::Invalid(
+                    "grouped arithmetic requires grouped count".into(),
+                ));
+            }
+        };
+        let metadata = inspect_query_source(path)?;
+        let kind = metadata
+            .columns
+            .iter()
+            .find(|item| item.name == *column)
+            .ok_or_else(|| ExecutionError::Invalid("unknown grouped arithmetic column".into()))?;
+        if !matches!(
+            typed::base_type(&kind.data_type),
+            "UInt8" | "UInt16" | "UInt32" | "UInt64" | "Int8" | "Int16" | "Int32" | "Int64"
+        ) {
+            return Err(ExecutionError::Invalid(
+                "grouped arithmetic requires an integer column up to 64 bits".into(),
+            ));
+        }
+        let mut adapter = GroupedAffineWriter {
+            inner: &mut buffered,
+            expressions: &query.grouped_affine,
+            line: Vec::new(),
+            header: true,
+        };
+        execute_into(query, part, &mut adapter)?;
+        if !adapter.line.is_empty() {
+            return Err(ExecutionError::Invalid("incomplete grouped output".into()));
+        }
+    } else if let Some(literal) = query.grouped_literal {
         let mut prefixed = GroupedLiteralWriter {
             inner: &mut buffered,
             prefix: format!("{literal}\t"),
@@ -479,6 +518,61 @@ pub fn execute<W: Write>(
     }
     buffered.flush()?;
     Ok(())
+}
+
+struct GroupedAffineWriter<'a, W> {
+    inner: &'a mut W,
+    expressions: &'a [crate::GroupedAffineKey],
+    line: Vec<u8>,
+    header: bool,
+}
+impl<W: Write> Write for GroupedAffineWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        for &byte in buf {
+            if byte != b'\n' {
+                let maximum = if self.header { 64 * 1024 } else { 256 };
+                if self.line.len() >= maximum {
+                    return Err(io::Error::other(
+                        "grouped arithmetic output exceeds row bound",
+                    ));
+                }
+                self.line.push(byte);
+                continue;
+            }
+            let split = self
+                .line
+                .iter()
+                .position(|&value| value == b'\t')
+                .ok_or_else(|| io::Error::other("invalid grouped output"))?;
+            let first = std::str::from_utf8(&self.line[..split])
+                .map_err(|_| io::Error::other("invalid grouped key"))?;
+            self.inner.write_all(first.as_bytes())?;
+            for expression in self.expressions {
+                self.inner.write_all(b"\t")?;
+                if self.header {
+                    self.inner.write_all(expression.label.as_bytes())?;
+                } else if first == "\\N" {
+                    self.inner.write_all(b"\\N")?;
+                } else {
+                    let value = first
+                        .parse::<i128>()
+                        .map_err(|_| io::Error::other("invalid grouped integer"))?;
+                    let value = value
+                        .checked_add(i128::from(expression.offset))
+                        .ok_or_else(|| io::Error::other("grouped arithmetic overflow"))?;
+                    write!(self.inner, "{value}")?;
+                }
+            }
+            self.inner.write_all(&self.line[split..])?;
+            self.inner.write_all(b"\n")?;
+            self.line.clear();
+            self.header = false;
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 struct GroupedLiteralWriter<'a, W> {

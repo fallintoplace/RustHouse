@@ -7,6 +7,8 @@ mod delete;
 mod execute;
 mod explain;
 mod expression;
+mod grouped_affine;
+pub use grouped_affine::GroupedAffineKey;
 mod insert;
 mod insert_select;
 mod join;
@@ -401,6 +403,8 @@ pub struct Select {
     pub projection: Projection,
     /// An integer literal projected before the grouped source columns.
     pub grouped_literal: Option<i64>,
+    /// Extra grouping expressions based on the first integer key.
+    pub grouped_affine: Vec<GroupedAffineKey>,
     /// Computed arguments aligned with grouped aggregate metrics, when present.
     pub grouped_expressions: Vec<Option<ScalarExpr>>,
     /// Whether the grouped metric is used only for HAVING.
@@ -948,6 +952,13 @@ pub fn split_clickhouse_format(sql: &str) -> Result<(&str, Option<&str>), ParseE
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     let mut tokens = tokenize(sql)?;
+    if matches!(tokens.as_slice(), [Token::Word(select), Token::Word(key), Token::Comma, Token::Word(again), Token::Minus | Token::Plus, Token::Number(_), ..] if select.eq_ignore_ascii_case("SELECT") && key == again)
+    {
+        return match grouped_affine::parse(tokens.clone())? {
+            Some(grouped) => Ok(grouped),
+            None => parse_select_tokens(tokens),
+        };
+    }
     let literal = match tokens.as_slice() {
         [
             Token::Word(select),
@@ -2692,6 +2703,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     Ok(Select {
         projection,
         grouped_literal: None,
+        grouped_affine: Vec::new(),
         grouped_expressions,
         hidden_aggregate,
         alias,
