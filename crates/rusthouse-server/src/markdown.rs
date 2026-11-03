@@ -189,6 +189,7 @@ fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
         output.write_all(&field[start..])?;
     }
     Ok(())
+}
 
 impl<W: Write> Write for MarkdownWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
