@@ -4,11 +4,61 @@ use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateFunction, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
+
+pub(super) struct DistinctValues {
+    values: HashSet<(usize, usize, typed::Key)>,
+    retained: usize,
+}
+
+impl DistinctValues {
+    pub(super) fn new() -> Self {
+        Self {
+            values: HashSet::new(),
+            retained: 0,
+        }
+    }
+
+    pub(super) fn insert(
+        &mut self,
+        group: usize,
+        metric: usize,
+        key: typed::Key,
+    ) -> Result<bool, ExecutionError> {
+        let entry = (group, metric, key);
+        if self.values.contains(&entry) {
+            return Ok(false);
+        }
+        if self.values.len() >= 200_000 {
+            return Err(ExecutionError::Invalid(
+                "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
+            ));
+        }
+        let dynamic = match &entry.2 {
+            typed::Key::Text(value) => value.len(),
+            typed::Key::Uuid(value) => value.len(),
+            _ => 0,
+        };
+        let charge = std::mem::size_of_val(&entry)
+            .saturating_mul(2)
+            .saturating_add(dynamic);
+        self.retained = self
+            .retained
+            .checked_add(charge)
+            .ok_or_else(|| ExecutionError::Invalid("distinct state memory overflow".into()))?;
+        if self.retained > 64 * 1024 * 1024 {
+            return Err(ExecutionError::Invalid(
+                "grouped distinct values exceed 64 MiB retained budget".into(),
+            ));
+        }
+        self.values.insert(entry);
+        Ok(true)
+    }
+}
 
 fn group_limit_error() -> ExecutionError {
     ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into())
@@ -214,8 +264,10 @@ pub(super) fn execute<W: Write>(
         let selected = types.get(value_column).ok_or_else(|| {
             ExecutionError::Invalid(format!("unknown aggregate column: {value_column}"))
         })?;
-        if *function != AggregateFunction::Count
-            && matches!(typed::base_type(selected), "String" | "UUID")
+        if !matches!(
+            function,
+            AggregateFunction::Count | AggregateFunction::CountDistinct
+        ) && matches!(typed::base_type(selected), "String" | "UUID")
         {
             return Err(numeric_column_error());
         }
@@ -289,6 +341,7 @@ pub(super) fn execute<W: Write>(
         .collect::<Vec<_>>();
     let filter_indices = bind_grouped_filters(filters, &indices, &types)?;
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
+    let mut distinct_values = DistinctValues::new();
     let mut retained_group_bytes = 0usize;
     let mut retained_median_bytes = 0usize;
     // Small groups keep an inexpensive map until direct indexing pays off.
@@ -419,6 +472,19 @@ pub(super) fn execute<W: Write>(
                         }
                         continue;
                     }
+                }
+                if *function == AggregateFunction::CountDistinct {
+                    let column_index = column_index.expect("distinct metric has a column");
+                    if !typed::is_null_at(&batch[column_index], row)
+                        && distinct_values.insert(
+                            index,
+                            metric,
+                            typed::key_at(&batch[column_index], row),
+                        )?
+                    {
+                        state.increment_count()?;
+                    }
+                    continue;
                 }
                 if *function == AggregateFunction::Count {
                     if let Some(column_index) = *column_index {
