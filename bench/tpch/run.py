@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common import cli_sql, emit_json, latency_summary, file_change_time_ns
 from bench.tpch.canonical_integrity import verify as verify_canonical_sql
+from bench.tpch.mismatch_diagnostics import describe_mismatch
 
 QUERY_NAME = re.compile(r"q(\d{1,2})\.sql$", re.IGNORECASE)
 MAX_QUERY_FILE_BYTES = 64 * 1024
@@ -177,7 +178,7 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None, compariso
         # Stop the timer before expensive reference and multiset comparison.
         finished = time.perf_counter() if started is not None else None
         if reference is not None and not compare_reference(output, reference, comparison):
-            status, error = "mismatch", "output differs from reference bytes"
+            status, error = "mismatch", describe_mismatch(output, reference, comparison)
             break
         if finished is not None:
             elapsed.append(finished - started)
