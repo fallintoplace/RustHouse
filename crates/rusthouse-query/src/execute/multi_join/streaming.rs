@@ -3,6 +3,7 @@
 
 use super::*;
 use rusthouse_storage::TypedQueryReader;
+use std::collections::HashSet;
 
 use super::super::join::read_projected_build_rows;
 
@@ -47,13 +48,20 @@ struct Stage {
     any: bool,
 }
 
+type GroupRow = (
+    Vec<typed::Cell>,
+    u64,
+    Option<super::super::Number>,
+    Option<HashSet<typed::Key>>,
+);
+
 #[derive(Default)]
 struct OutputState {
     seen: u64,
     emitted: usize,
     scalar_sum: Option<super::super::Number>,
     formula_sums: Vec<Option<super::super::Number>>,
-    groups: HashMap<Vec<typed::Key>, (Vec<typed::Cell>, u64, Option<super::super::Number>)>,
+    groups: HashMap<Vec<typed::Key>, GroupRow>,
     group_key: Vec<typed::Key>,
     group_bytes: usize,
 }
@@ -69,6 +77,7 @@ struct OutputSpec<'a> {
     sum: Option<&'a BoundSum>,
     scalar_sum: bool,
     formula: Option<&'a BoundFormula>,
+    distinct_index: Option<usize>,
     row_filters: Option<&'a super::row_filters::RowFilters>,
     offset: usize,
     limit: Option<usize>,
@@ -175,16 +184,18 @@ fn visit<W: Write>(
                 }
                 None => None,
             };
-            if let Some((_, count, sum)) = state.groups.get_mut(state.group_key.as_slice()) {
+            if let Some((_, count, sum, _)) = state.groups.get_mut(state.group_key.as_slice()) {
                 if let Some(value) = value {
                     *sum = Some(match *sum {
                         Some(previous) => super::super::checked_aggregate_sum(previous, value)?,
                         None => value,
                     });
                 }
-                *count = count
-                    .checked_add(1)
-                    .ok_or_else(|| invalid("chained JOIN group count overflow"))?;
+                if spec.distinct_index.is_none() {
+                    *count = count
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("chained JOIN group count overflow"))?;
+                }
             } else {
                 if state.groups.len() >= MAX_STREAM_GROUPS {
                     return Err(invalid("chained JOIN supports at most 100000 groups"));
@@ -210,6 +221,7 @@ fn visit<W: Write>(
                             Vec<typed::Cell>,
                             u64,
                             Option<super::super::Number>,
+                            Option<HashSet<typed::Key>>,
                         )>())
                     })
                     .ok_or_else(|| invalid("chained JOIN group size overflow"))?;
@@ -223,10 +235,37 @@ fn visit<W: Write>(
                     state.group_key.clone(),
                     (
                         indices.iter().map(|&index| row[index].clone()).collect(),
-                        1,
+                        if spec.distinct_index.is_some() { 0 } else { 1 },
                         value,
+                        spec.distinct_index.map(|_| HashSet::new()),
                     ),
                 );
+            }
+            if let Some(index) = spec.distinct_index {
+                if !matches!(row[index], typed::Cell::Null) {
+                    let key = row[index].key();
+                    let (_, count, _, distinct) = state
+                        .groups
+                        .get_mut(state.group_key.as_slice())
+                        .expect("group exists");
+                    let distinct = distinct.as_mut().expect("distinct set exists");
+                    if !distinct.contains(&key) {
+                        let charge = std::mem::size_of::<typed::Key>()
+                            .saturating_mul(2)
+                            .saturating_add(64);
+                        state.group_bytes = state
+                            .group_bytes
+                            .checked_add(charge)
+                            .filter(|&bytes| bytes <= MAX_STREAM_GROUP_BYTES)
+                            .ok_or_else(|| {
+                                invalid("chained JOIN grouped memory budget exceeded")
+                            })?;
+                        distinct.insert(key);
+                        *count = count
+                            .checked_add(1)
+                            .ok_or_else(|| invalid("chained JOIN distinct count overflow"))?;
+                    }
+                }
             }
             return Ok(());
         }
@@ -286,6 +325,7 @@ pub(super) fn execute<W: Write>(
     column_comparisons: &[(usize, crate::Operator, usize)],
     sum: Option<&BoundSum>,
     formula: Option<&BoundFormula>,
+    distinct_index: Option<usize>,
     row_filters: Option<&super::row_filters::RowFilters>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
@@ -314,6 +354,7 @@ pub(super) fn execute<W: Write>(
         sum,
         scalar_sum: query.scalar_sum.is_some(),
         formula,
+        distinct_index,
         row_filters,
         group_indices: query
             .grouped_count
@@ -369,6 +410,9 @@ pub(super) fn execute<W: Write>(
                 referenced[index] = true;
             }
         }
+    }
+    if let Some(index) = distinct_index {
+        referenced[index] = true;
     }
     if let Some(filters) = row_filters {
         for &index in &filters.indices {
@@ -538,35 +582,33 @@ pub(super) fn execute<W: Write>(
                 .collect::<Result<Vec<_>, ExecutionError>>()?
         };
         let mut rows = state.groups.into_values().collect::<Vec<_>>();
-        let compare =
-            |left: &(Vec<typed::Cell>, u64, Option<super::super::Number>),
-             right: &(Vec<typed::Cell>, u64, Option<super::super::Number>)| {
-                for &(index, descending, nulls_first) in &ordering {
-                    let result = if let Some(index) = index {
-                        typed::compare_order_cells(
-                            &left.0[index],
-                            &right.0[index],
-                            descending,
-                            nulls_first,
-                        )
+        let compare = |left: &GroupRow, right: &GroupRow| {
+            for &(index, descending, nulls_first) in &ordering {
+                let result = if let Some(index) = index {
+                    typed::compare_order_cells(
+                        &left.0[index],
+                        &right.0[index],
+                        descending,
+                        nulls_first,
+                    )
+                } else {
+                    if sum.is_some() {
+                        compare_sum_values(left.2, right.2, descending, nulls_first)
                     } else {
-                        if sum.is_some() {
-                            compare_sum_values(left.2, right.2, descending, nulls_first)
+                        let count_order = left.1.cmp(&right.1);
+                        if descending {
+                            count_order.reverse()
                         } else {
-                            let count_order = left.1.cmp(&right.1);
-                            if descending {
-                                count_order.reverse()
-                            } else {
-                                count_order
-                            }
+                            count_order
                         }
-                    };
-                    if !result.is_eq() {
-                        return result;
                     }
+                };
+                if !result.is_eq() {
+                    return result;
                 }
-                std::cmp::Ordering::Equal
-            };
+            }
+            std::cmp::Ordering::Equal
+        };
         let bounded = query
             .limit
             .and_then(|limit| query.offset.checked_add(limit))
@@ -602,12 +644,12 @@ pub(super) fn execute<W: Write>(
         };
         if let Some(positions) = bounded {
             for index in positions.into_iter().skip(query.offset) {
-                let (values, count, sum) = &rows[index];
+                let (values, count, sum, _) = &rows[index];
                 write_group(values, *count, *sum)?;
             }
         } else {
             rows.sort_by(compare);
-            for (values, count, sum) in rows
+            for (values, count, sum, _) in rows
                 .iter()
                 .skip(query.offset)
                 .take(query.limit.unwrap_or(usize::MAX))

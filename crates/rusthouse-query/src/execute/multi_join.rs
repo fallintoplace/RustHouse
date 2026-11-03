@@ -703,6 +703,22 @@ pub fn execute_multi_join<W: Write>(
     if query.in_subquery.is_some() {
         return Err(invalid("JOIN IN subquery must be bound before execution"));
     }
+    if query.grouped_distinct.is_some()
+        && (query.grouped_count.is_none()
+            || query.kind != JoinType::Inner
+            || query.steps.iter().any(|step| step.kind != JoinType::Inner)
+            || query.grouped_sum.is_some()
+            || query.aggregate.is_some()
+            || query.scalar_sum.is_some()
+            || query.scalar_formula.is_some()
+            || !query.grouped_case_counts.is_empty()
+            || !query.where_in_filters.is_empty()
+            || !query.where_like_filters.is_empty())
+    {
+        return Err(invalid(
+            "grouped JOIN COUNT DISTINCT requires an INNER grouped plan",
+        ));
+    }
     if paths.len() != query.steps.len() + 2 {
         return Err(invalid("JOIN source count differs from its plan"));
     }
@@ -810,6 +826,32 @@ pub fn execute_multi_join<W: Write>(
             let expression =
                 super::multi_aggregate::BoundExpr::bind(&formula.expression, &indices)?;
             Ok(BoundFormula { sums, expression })
+        })
+        .transpose()?;
+    let distinct_index = query
+        .grouped_distinct
+        .as_ref()
+        .map(|column| {
+            let index = column_index(&relations, column)?;
+            let kind = typed::base_type(column_type(&relations, index));
+            if !matches!(
+                kind,
+                "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+            ) {
+                return Err(invalid(
+                    "grouped JOIN COUNT DISTINCT requires an integer column",
+                ));
+            }
+            Ok(index)
         })
         .transpose()?;
     let count_column = if let Some(crate::JoinAggregate::CountColumn(column)) = &query.aggregate {
@@ -934,6 +976,7 @@ pub fn execute_multi_join<W: Write>(
             &column_comparisons,
             grouped_sum.as_ref(),
             formula.as_ref(),
+            distinct_index,
             row_filters.as_ref(),
             output,
         );
@@ -1303,5 +1346,39 @@ mod grouped_in_binding_tests {
             bind_join_in_subquery(&mut altered, std::path::Path::new("missing-inner"), &paths)
                 .unwrap_err();
         assert!(error.to_string().contains("unsupported shape"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod grouped_distinct_plan_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_ignored_filters_before_reading_sources() {
+        let sql = "SELECT ak, COUNT(DISTINCT value) AS n FROM a JOIN b ON a.ak = b.bk GROUP BY ak";
+        let query = crate::parse_join(sql).unwrap().unwrap();
+        let paths = vec![PathBuf::from("missing-a"), PathBuf::from("missing-b")];
+        let mut altered = query.clone();
+        altered.where_in_filters.push((
+            JoinColumn {
+                relation: String::new(),
+                name: "ak".into(),
+            },
+            vec!["1".into()],
+        ));
+        let error = execute_multi_join(&altered, &paths, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("INNER grouped plan"), "{error}");
+        let mut altered = query;
+        altered.where_like_filters.push((
+            JoinColumn {
+                relation: String::new(),
+                name: "ak".into(),
+            },
+            "%".into(),
+            false,
+            false,
+        ));
+        let error = execute_multi_join(&altered, &paths, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("INNER grouped plan"), "{error}");
     }
 }

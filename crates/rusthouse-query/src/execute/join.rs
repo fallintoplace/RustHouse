@@ -1446,7 +1446,10 @@ pub fn execute_join<W: Write>(
     if query.in_subquery.is_some() {
         return Err(invalid("JOIN IN subquery must be bound before execution"));
     }
-    if query.scalar_sum.is_some() || query.scalar_formula.is_some() {
+    if query.scalar_sum.is_some()
+        || query.scalar_formula.is_some()
+        || query.grouped_distinct.is_some()
+    {
         return super::multi_join::execute_multi_join(
             query,
             &[left_path.to_path_buf(), right_path.to_path_buf()],
