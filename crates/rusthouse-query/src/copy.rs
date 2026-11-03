@@ -50,6 +50,7 @@ fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseErro
     for (keyword, format) in [
         ("CSV", CopyFormat::Csv),
         ("TSV", CopyFormat::Tsv),
+        ("TABSEPARATED", CopyFormat::Tsv),
         ("SSV", CopyFormat::Ssv),
         ("JSONEACHROW", CopyFormat::JsonEachRow),
     ] {
@@ -237,5 +238,19 @@ mod tests {
             parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)")
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod copy_tabseparated_format_tests {
+    use super::{CopyFormat, parse_copy_from};
+
+    #[test]
+    fn tabseparated_uses_tsv_reader() {
+        let parsed = parse_copy_from("COPY events FROM 'rows.tsv' WITH (FORMAT TabSeparated)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.format, CopyFormat::Tsv);
+        assert!(!parsed.header);
     }
 }
