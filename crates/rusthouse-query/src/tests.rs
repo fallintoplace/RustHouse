@@ -20,6 +20,7 @@ fn parses_scalar_and_table_queries() {
     assert_eq!(
         parse_select(" SELECT -42; ").unwrap(),
         Select {
+            grouped_expressions: Vec::new(),
             projection: Projection::Literal(-42),
             alias: None,
             rename: None,
@@ -37,6 +38,7 @@ fn parses_scalar_and_table_queries() {
     assert_eq!(
         parse_select("select id, price from part limit 2;").unwrap(),
         Select {
+            grouped_expressions: Vec::new(),
             projection: Projection::Columns(vec!["id".into(), "price".into()]),
             alias: None,
             rename: None,

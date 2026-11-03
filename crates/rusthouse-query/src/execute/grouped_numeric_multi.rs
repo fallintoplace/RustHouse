@@ -254,7 +254,11 @@ pub(super) fn execute<W: Write>(
         .map(|column| (column.name.clone(), column.data_type.clone()))
         .collect::<HashMap<_, _>>();
     let mut names = vec![column.to_owned()];
-    for (function, value_column) in items {
+    for (metric, (function, value_column)) in items.iter().enumerate() {
+        if let Some(Some(expression)) = query.grouped_expressions.get(metric) {
+            expression.referenced_columns(&mut names);
+            continue;
+        }
         if *function == AggregateFunction::Count && value_column == "*" {
             continue;
         }
@@ -306,6 +310,16 @@ pub(super) fn execute<W: Write>(
     let group_type = types
         .get(column)
         .ok_or_else(|| ExecutionError::Invalid(format!("unknown group column: {column}")))?;
+    let bound_expressions = query
+        .grouped_expressions
+        .iter()
+        .map(|expression| {
+            expression
+                .as_ref()
+                .map(|expr| super::multi_aggregate::BoundExpr::bind(expr, &indices))
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut conditions = vec![typed::compile(&query.predicates, &indices, &types)?];
     for branch in &query.or_predicates {
         conditions.push(typed::compile(branch, &indices, &types)?);
@@ -335,8 +349,13 @@ pub(super) fn execute<W: Write>(
     let group_index = indices[column];
     let item_indices = items
         .iter()
-        .map(|(function, name)| {
-            (*function != AggregateFunction::Count || name != "*").then(|| indices[name])
+        .enumerate()
+        .map(|(metric, (function, name))| {
+            if bound_expressions.get(metric).is_some_and(Option::is_some) {
+                None
+            } else {
+                (*function != AggregateFunction::Count || name != "*").then(|| indices[name])
+            }
         })
         .collect::<Vec<_>>();
     let filter_indices = bind_grouped_filters(filters, &indices, &types)?;
@@ -483,6 +502,21 @@ pub(super) fn execute<W: Write>(
                         )?
                     {
                         state.increment_count()?;
+                    }
+                    continue;
+                }
+                if let Some(Some(expression)) = bound_expressions.get(metric) {
+                    if let Some(value) =
+                        super::multi_aggregate::eval_number(expression, &batch, row)?
+                    {
+                        if *function == AggregateFunction::Median {
+                            reserve_median_value(&mut retained_median_bytes)?;
+                        }
+                        if *function == AggregateFunction::Sum {
+                            state.update_sum(value)?;
+                        } else {
+                            state.update(value)?;
+                        }
                     }
                     continue;
                 }
