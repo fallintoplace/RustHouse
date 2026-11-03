@@ -84,7 +84,9 @@ pub fn verify_absence(trusted_root: [u8; 32], key: &str, proof: &MerkleAbsencePr
                 && before.proof.leaf_index.checked_add(1) == Some(after.proof.leaf_index)
         }
         (None, Some(after)) => {
-            authenticated_neighbor(trusted_root, proof.leaf_count, after) && after.proof.leaf_index == 0 && key < after.object.key.as_str()
+            authenticated_neighbor(trusted_root, proof.leaf_count, after)
+                && after.proof.leaf_index == 0
+                && key < after.object.key.as_str()
         }
         (Some(before), None) => {
             authenticated_neighbor(trusted_root, proof.leaf_count, before)
