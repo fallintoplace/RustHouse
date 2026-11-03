@@ -42,6 +42,16 @@ fn correlated_exists_counts_each_outer_row_once_and_skips_nulls() {
     );
     assert!(exists_only.status.success(), "{exists_only:?}");
     assert_eq!(exists_only.stdout, b"count\n2\n");
+    assert!(
+        sql("CREATE TABLE empty_lines (l_key Nullable(UInt64))")
+            .status
+            .success()
+    );
+    let empty_table = sql(
+        "SELECT COUNT(*) FROM orders WHERE EXISTS (SELECT * FROM empty_lines WHERE l_key = o_orderkey)",
+    );
+    assert!(empty_table.status.success(), "{empty_table:?}");
+    assert_eq!(empty_table.stdout, b"count\n0\n");
     let statement = "CREATE TABLE wrong_type (l_key Int64)";
     assert!(sql(statement).status.success());
     for query in [

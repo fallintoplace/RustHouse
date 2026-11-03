@@ -74,6 +74,7 @@ pub fn parse_correlated_exists(sql: &str) -> Result<Option<CorrelatedExists>, Pa
     if !matches!(inner.source, Some(Source::Table(_)))
         || !matches!(inner.projection, Projection::All)
         || inner.distinct
+        || inner.rename.is_some()
         || !inner.or_predicates.is_empty()
         || inner.order_by.is_some()
         || inner.limit.is_some()
