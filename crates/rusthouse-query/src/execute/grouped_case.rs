@@ -33,6 +33,7 @@ fn integer(kind: &str) -> bool {
             | "Int128"
     )
 }
+
 // Group keys are unique, so a bounded result needs only the prefix ending
 // at OFFSET + LIMIT rather than a full sort of every group.
 fn sort_group_page<K: Ord>(
@@ -232,17 +233,36 @@ mod topk_tests {
             .map(|key| (key, u64::from(key % 9)))
             .collect::<Vec<_>>();
         for descending in [false, true] {
-            for (offset, limit) in [(0, Some(1)), (5, Some(11)), (120, Some(20)), (128, None), (0, None), (0, Some(0))] {
+            for (offset, limit) in [
+                (0, Some(1)),
+                (5, Some(11)),
+                (120, Some(20)),
+                (128, None),
+                (0, None),
+                (0, Some(0)),
+            ] {
                 let mut expected = groups.clone();
                 expected.sort_by(|a, b| {
-                    let cmp = if descending { b.1.cmp(&a.1) } else { a.1.cmp(&b.1) };
+                    let cmp = if descending {
+                        b.1.cmp(&a.1)
+                    } else {
+                        a.1.cmp(&b.1)
+                    };
                     cmp.then_with(|| a.0.cmp(&b.0))
                 });
                 let mut actual = groups.clone();
                 sort_group_page(&mut actual, descending, offset, limit);
                 assert_eq!(
-                    actual.into_iter().skip(offset).take(limit.unwrap_or(usize::MAX)).collect::<Vec<_>>(),
-                    expected.into_iter().skip(offset).take(limit.unwrap_or(usize::MAX)).collect::<Vec<_>>()
+                    actual
+                        .into_iter()
+                        .skip(offset)
+                        .take(limit.unwrap_or(usize::MAX))
+                        .collect::<Vec<_>>(),
+                    expected
+                        .into_iter()
+                        .skip(offset)
+                        .take(limit.unwrap_or(usize::MAX))
+                        .collect::<Vec<_>>()
                 );
             }
         }
