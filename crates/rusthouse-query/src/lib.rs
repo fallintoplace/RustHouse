@@ -32,8 +32,8 @@ pub use expression::{ScalarExpr, parse_scalar_expression};
 pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
 pub use join::{
-    JoinAggregate, JoinColumn, JoinCorrelatedExists, JoinExistsFilter, JoinSelect, JoinStep,
-    JoinType, explain_join, has_implicit_join, parse_join,
+    JoinAggregate, JoinColumn, JoinCorrelatedExists, JoinExistsFilter, JoinExistsKey,
+    JoinExistsLookup, JoinSelect, JoinStep, JoinType, explain_join, has_implicit_join, parse_join,
     parse_join_correlated_exists_with_schema, parse_join_with_schema,
 };
 pub use multi_aggregate::AggregateItem;

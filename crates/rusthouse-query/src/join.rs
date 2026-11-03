@@ -1,6 +1,7 @@
 //! Bounded two-table equi-join syntax for persistent SQL tables.
 
 mod correlated;
+mod exists_lookup;
 mod implicit;
 mod syntax;
 
@@ -15,6 +16,7 @@ use self::syntax::*;
 pub use correlated::{
     JoinCorrelatedExists, JoinExistsFilter, parse_join_correlated_exists_with_schema,
 };
+pub use exists_lookup::{JoinExistsKey, JoinExistsLookup};
 
 use super::{ParseError, Parser, Token, tokenize};
 
