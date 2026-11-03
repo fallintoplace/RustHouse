@@ -55,6 +55,24 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
     }
     let canonical = canonical_type(&name)
         .ok_or_else(|| ParseError(format!("unsupported DDL column type: {name}")))?;
+    if name.eq_ignore_ascii_case("FLOAT") && parser.take(Token::LParen) {
+        let raw = parser.number()?;
+        if !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ParseError("FLOAT precision must be a positive integer".into()));
+        }
+        let precision = raw
+            .parse::<u32>()
+            .map_err(|_| ParseError("FLOAT precision is too large".into()))?;
+        let storage_type = match precision {
+            1..=24 => "Float32",
+            25..=53 => "Float64",
+            _ => return Err(ParseError("FLOAT precision must be between 1 and 53".into())),
+        };
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after FLOAT precision".into()));
+        }
+        return Ok(storage_type.into());
+    }
     if matches!(canonical, "Nullable" | "Array" | "Map") {
         if nesting >= MAX_DDL_TYPE_DEPTH {
             return Err(ParseError("DDL type nesting exceeds 4 levels".into()));
