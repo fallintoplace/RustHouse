@@ -24,6 +24,34 @@ fn chained_sum_groups_nullable_values_and_orders_alias() {
     }
     for (query, expected) in [
         (
+            "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING total = 1 ORDER BY b.category",
+            "b.category\ttotal\nx\t1\n",
+        ),
+        (
+            "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING total != 1 ORDER BY b.category",
+            "b.category\ttotal\ny\t5\n",
+        ),
+        (
+            "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING total < 5 ORDER BY b.category",
+            "b.category\ttotal\nx\t1\n",
+        ),
+        (
+            "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING total >= 5 ORDER BY b.category",
+            "b.category\ttotal\ny\t5\n",
+        ),
+        (
+            "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING SUM(a.amount) > 1 ORDER BY total DESC",
+            "b.category\ttotal\ny\t5\n",
+        ),
+        (
+            "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING total >= -2.5 ORDER BY total DESC LIMIT 1 OFFSET 1",
+            "b.category\ttotal\nx\t1\n",
+        ),
+        (
+            "SELECT b.category, SUM(amount + flag) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING SUM(amount + flag) <= 3 ORDER BY b.category",
+            "b.category\ttotal\nx\t3\n",
+        ),
+        (
             "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category ORDER BY b.category",
             "b.category\ttotal\nx\t1\ny\t5\nz\t\\N\n",
         ),
@@ -85,6 +113,10 @@ fn chained_sum_groups_nullable_values_and_orders_alias() {
         assert_eq!(result.stdout, expected.as_bytes(), "{query}");
     }
     for query in [
+        "SELECT b.category, SUM(a.amount) AS category FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING category > 0",
+        "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING SUM(c.flag) > 0 LIMIT 0",
+        "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING missing > 0 LIMIT 0",
+        "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING total > '3' LIMIT 0",
         "SELECT b.category, SUM(b.category) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category LIMIT 0",
         "SELECT b.category, SUM(missing) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category LIMIT 0",
         "SELECT b.category, SUM(id) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category LIMIT 0",
@@ -101,6 +133,14 @@ fn chained_sum_groups_nullable_values_and_orders_alias() {
         let result = sql(query);
         assert!(!result.status.success(), "{query}: {result:?}");
     }
+    let explained = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .args(["sql", "SELECT b.category, SUM(a.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category HAVING total > 1", "--database"])
+        .arg(&db)
+        .arg("--explain")
+        .output()
+        .unwrap();
+    assert!(explained.status.success(), "{explained:?}");
+    assert!(String::from_utf8_lossy(&explained.stdout).contains("Having: SUM Gt 1"));
     let output = sql("TRUNCATE TABLE c");
     assert!(output.status.success(), "{output:?}");
     let output = sql(
