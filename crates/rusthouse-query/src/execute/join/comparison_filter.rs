@@ -8,11 +8,26 @@ enum FilterTarget {
     Literal(typed::Cell),
     Column(usize),
     Values(Vec<typed::Cell>),
+    Pattern(typed::TextPattern, bool, bool),
 }
 struct BoundFilter {
     column: usize,
     operator: crate::Operator,
     target: FilterTarget,
+}
+
+fn matches_pattern(
+    candidate: &typed::Cell,
+    pattern: &typed::TextPattern,
+    insensitive: bool,
+    negated: bool,
+) -> bool {
+    match candidate {
+        typed::Cell::Text(bytes) => {
+            typed::text_pattern_matches(bytes, pattern, insensitive) != negated
+        }
+        _ => false,
+    }
 }
 
 struct CaseMetric {
@@ -121,6 +136,9 @@ fn prefilter_dimension_rows(
                         FilterTarget::Values(values) => values.iter().any(|value| {
                             typed::matches_comparison(candidate, value, crate::Operator::Eq)
                         }),
+                        FilterTarget::Pattern(pattern, insensitive, negated) => {
+                            matches_pattern(candidate, pattern, *insensitive, *negated)
+                        }
                     }
                 })
         });
@@ -187,7 +205,9 @@ fn scan<W: Write>(
         .flat_map(|filter| {
             std::iter::once(filter.column).chain(match filter.target {
                 FilterTarget::Column(index) => Some(index),
-                FilterTarget::Literal(_) | FilterTarget::Values(_) => None,
+                FilterTarget::Literal(_) | FilterTarget::Values(_) | FilterTarget::Pattern(..) => {
+                    None
+                }
             })
         })
         .collect::<Vec<_>>();
@@ -241,6 +261,9 @@ fn scan<W: Write>(
                         FilterTarget::Values(values) => values.iter().any(|value| {
                             typed::matches_comparison(&candidate, value, crate::Operator::Eq)
                         }),
+                        FilterTarget::Pattern(pattern, insensitive, negated) => {
+                            matches_pattern(&candidate, pattern, *insensitive, *negated)
+                        }
                     }
                 })
             {
@@ -275,6 +298,9 @@ fn scan<W: Write>(
                             FilterTarget::Values(values) => values.iter().any(|value| {
                                 typed::matches_comparison(candidate, value, crate::Operator::Eq)
                             }),
+                            FilterTarget::Pattern(pattern, insensitive, negated) => {
+                                matches_pattern(candidate, pattern, *insensitive, *negated)
+                            }
                         }
                     })
                 {
@@ -435,6 +461,24 @@ pub(super) fn execute<W: Write>(
             column: index,
             operator: crate::Operator::Eq,
             target: FilterTarget::Values(values),
+        });
+    }
+    for (column, text, insensitive, negated) in &query.where_like_filters {
+        let index = resolve(query, column, left_names, right_names)?;
+        let metadata = if index < width {
+            &left_meta
+        } else {
+            &right_meta
+        };
+        let local = if index < width { index } else { index - width };
+        if base_type(&metadata.columns[local].data_type) != "String" {
+            return Err(invalid("JOIN LIKE requires a String column"));
+        }
+        let pattern = typed::compile_text_pattern(text)?;
+        filters.push(BoundFilter {
+            column: index,
+            operator: crate::Operator::Eq,
+            target: FilterTarget::Pattern(pattern, *insensitive, *negated),
         });
     }
     if filters.is_empty() && query.grouped_case_counts.is_empty() {
