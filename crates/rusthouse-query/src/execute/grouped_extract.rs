@@ -19,6 +19,36 @@ impl Write for Bounded {
     }
 }
 
+// The group key order resolves ties, so selecting the requested prefix
+// before sorting gives the same output without sorting all input groups.
+fn sort_group_page<K: Ord>(
+    rows: &mut Vec<(K, u64)>,
+    descending: bool,
+    offset: usize,
+    limit: Option<usize>,
+) {
+    if limit == Some(0) || offset >= rows.len() {
+        rows.clear();
+        return;
+    }
+    let compare = |a: &(K, u64), b: &(K, u64)| {
+        let cmp = if descending {
+            b.1.cmp(&a.1)
+        } else {
+            a.1.cmp(&b.1)
+        };
+        cmp.then_with(|| a.0.cmp(&b.0))
+    };
+    let page_end = offset
+        .saturating_add(limit.unwrap_or(usize::MAX))
+        .min(rows.len());
+    if page_end < rows.len() {
+        rows.select_nth_unstable_by(page_end - 1, &compare);
+        rows.truncate(page_end);
+    }
+    rows.sort_unstable_by(compare);
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     path: Option<&Path>,
@@ -153,14 +183,7 @@ pub(super) fn execute<W: Write>(
         .order_by
         .as_ref()
         .is_some_and(|order| order.descending);
-    rows.sort_by(|a, b| {
-        let cmp = if descending {
-            b.1.cmp(&a.1)
-        } else {
-            a.1.cmp(&b.1)
-        };
-        cmp.then_with(|| a.0.cmp(&b.0))
-    });
+    sort_group_page(&mut rows, descending, query.offset.unwrap_or(0), query.limit);
     output.write_all(header[0])?;
     write!(output, "\t{}\t", extract.label)?;
     output.write_all(header[2])?;
@@ -180,4 +203,50 @@ pub(super) fn execute<W: Write>(
         writeln!(output, "\t{count}")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod topk_tests {
+    use super::sort_group_page;
+
+    #[test]
+    fn bounded_extract_group_pages_match_full_sort_with_ties() {
+        let groups = (0..128u32)
+            .map(|key| (key, u64::from(key % 7)))
+            .collect::<Vec<_>>();
+        for descending in [false, true] {
+            for (offset, limit) in [
+                (0, Some(1)),
+                (3, Some(20)),
+                (120, Some(30)),
+                (128, None),
+                (0, None),
+                (0, Some(0)),
+            ] {
+                let mut expected = groups.clone();
+                expected.sort_by(|a, b| {
+                    let cmp = if descending {
+                        b.1.cmp(&a.1)
+                    } else {
+                        a.1.cmp(&b.1)
+                    };
+                    cmp.then_with(|| a.0.cmp(&b.0))
+                });
+                let mut actual = groups.clone();
+                sort_group_page(&mut actual, descending, offset, limit);
+                assert_eq!(
+                    actual
+                        .into_iter()
+                        .skip(offset)
+                        .take(limit.unwrap_or(usize::MAX))
+                        .collect::<Vec<_>>(),
+                    expected
+                        .into_iter()
+                        .skip(offset)
+                        .take(limit.unwrap_or(usize::MAX))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
 }
