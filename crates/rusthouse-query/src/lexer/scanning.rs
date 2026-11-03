@@ -47,16 +47,30 @@ pub(super) fn scan_radix_number(
     let bytes = sql.as_bytes();
     let start = *index + 2;
     *index = start;
-    while bytes
-        .get(*index)
-        .is_some_and(|&byte| (byte as char).to_digit(radix).is_some())
-    {
+    // Like decimal literals, prefixed integer literals permit underscores
+    // only between two digits of the selected base.
+    while let Some(&byte) = bytes.get(*index) {
+        let is_digit = (byte as char).to_digit(radix).is_some();
+        let separator = byte == b'_'
+            && *index > start
+            && bytes
+                .get(*index + 1)
+                .is_some_and(|&next| (next as char).to_digit(radix).is_some());
+        if !is_digit && !separator {
+            break;
+        }
         *index += 1;
     }
     if *index == start {
         return Err(ParseError("numeric base prefix requires digits".into()));
     }
-    let number = u64::from_str_radix(&sql[start..*index], radix)
+    let digits = &sql[start..*index];
+    let canonical = if digits.contains('_') {
+        digits.replace('_', "")
+    } else {
+        digits.to_owned()
+    };
+    let number = u64::from_str_radix(&canonical, radix)
         .map_err(|_| ParseError("prefixed numeric literal exceeds UInt64".into()))?;
     Ok(Token::Number(number.to_string()))
 }
@@ -485,5 +499,20 @@ mod doubled_equals_tests {
             "SELECT number FROM numbers(4) WHERE number === 2"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod radix_digit_separator_tests {
+    use super::*;
+
+    #[test]
+    fn prefixed_literals_allow_only_separators_between_digits() {
+        assert_eq!(tokenize("0xF_F").unwrap(), vec![Token::Number("255".into())]);
+        assert_eq!(tokenize("0b10_01").unwrap(), vec![Token::Number("9".into())]);
+        assert!(tokenize("0x_FF").is_err());
+        assert!(tokenize("0b_10").is_err());
+        assert!(crate::parse_select("SELECT 0xA__B").is_err());
+        assert!(crate::parse_select("SELECT 0xA_").is_err());
     }
 }
