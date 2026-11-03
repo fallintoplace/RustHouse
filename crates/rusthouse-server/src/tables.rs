@@ -189,7 +189,7 @@ pub(super) fn handle_sql(config: &Config, format: QueryFormat) -> Response {
         }
         QueryFormat::JsonCompactEachRow => {
             let mut compact = JsonCompactEachRowWriter::new(&mut writer);
-            emit(&mut compact).and_then(|()| compact.finish())
+            emit(&mut compact).and_then(|()| compact.finish().map(|_| ()))
         }
         QueryFormat::Json | QueryFormat::JsonPretty => {
             let mut array = if matches!(format, QueryFormat::JsonPretty) {
@@ -197,7 +197,7 @@ pub(super) fn handle_sql(config: &Config, format: QueryFormat) -> Response {
             } else {
                 JsonArraySink::new(&mut writer)
             };
-            emit(&mut JsonlWriter::new(&mut array)).and_then(|()| array.finish())
+            emit(&mut JsonlWriter::new(&mut array)).and_then(|()| array.finish().map(|_| ()))
         }
     };
     match write {
