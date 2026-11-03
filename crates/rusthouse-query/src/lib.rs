@@ -1083,6 +1083,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         let mut grouped_aggregate = None;
         let mut grouped_aggregates = None;
         while parser.take(Token::Comma) {
+            if matches!(parser.tokens.get(parser.index),
+                Some(Token::Word(word)) if word.eq_ignore_ascii_case("FROM"))
+            {
+                break;
+            }
             if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
                 && matches!(
