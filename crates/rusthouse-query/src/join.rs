@@ -426,8 +426,8 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         let column = qualified(&mut parser)?;
         if parser.keyword("IS") {
             let not_null = parser.keyword("NOT");
-            if !parser.keyword("NULL") {
-                return Err(ParseError("JOIN WHERE requires IS [NOT] NULL".into()));
+            if !parser.keyword("NULL") && !parser.keyword("UNKNOWN") {
+                return Err(ParseError("JOIN WHERE requires IS [NOT] NULL or UNKNOWN".into()));
             }
             (Some((column, not_null)), None)
         } else {
