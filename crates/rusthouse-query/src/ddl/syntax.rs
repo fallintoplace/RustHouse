@@ -55,6 +55,24 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
     }
     let canonical = canonical_type(&name)
         .ok_or_else(|| ParseError(format!("unsupported DDL column type: {name}")))?;
+    // The local storage type is String. Accept a bounded SQL length modifier
+    // for familiar character aliases without claiming fixed-width semantics.
+    if ["VARCHAR", "NVARCHAR", "CHAR", "CHARACTER", "NCHAR"]
+        .iter()
+        .any(|kind| name.eq_ignore_ascii_case(kind))
+        && parser.take(Token::LParen)
+    {
+        let width = parser
+            .number()?
+            .parse::<u32>()
+            .map_err(|_| ParseError("character length must be an integer".into()))?;
+        if !(1..=65_535).contains(&width) {
+            return Err(ParseError("character length must be 1..65535".into()));
+        }
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("character length requires closing ')'".into()));
+        }
+    }
     if matches!(canonical, "Nullable" | "Array" | "Map") {
         if nesting >= MAX_DDL_TYPE_DEPTH {
             return Err(ParseError("DDL type nesting exceeds 4 levels".into()));
@@ -260,5 +278,48 @@ mod postgres_float_alias_tests {
         assert_eq!(columns[0].data_type, "Float32");
         assert_eq!(columns[1].data_type, "Float64");
         assert!(parse_ddl("CREATE TABLE metrics (bad FLOAT16)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod sized_character_alias_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn accepts_bounded_character_lengths_as_string_storage() {
+        let parsed = parse_ddl(
+            "CREATE TABLE notes (a VARCHAR(32), b CHAR(1), c CHARACTER VARYING(100), d NVARCHAR(8), e NCHAR(12))",
+        )
+        .unwrap()
+        .unwrap();
+        let Ddl::CreateTable { columns, .. } = parsed else {
+            panic!("expected CREATE TABLE");
+        };
+        assert_eq!(
+            columns
+                .iter()
+                .map(|column| column.data_type.as_str())
+                .collect::<Vec<_>>(),
+            ["String", "String", "String", "String", "String"]
+        );
+        assert!(matches!(
+            parse_ddl("ALTER TABLE notes ADD COLUMN comment Nullable(VARCHAR(16))").unwrap(),
+            Some(Ddl::AddColumn { column, .. }) if column.data_type == "Nullable(String)"
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_or_unsupported_length_modifiers() {
+        for sql in [
+            "CREATE TABLE t (name VARCHAR(0))",
+            "CREATE TABLE t (name CHAR(65536))",
+            "CREATE TABLE t (name NVARCHAR(1.5))",
+            "CREATE TABLE t (name VARCHAR(-1))",
+            "CREATE TABLE t (name VARCHAR(2, 3))",
+            "CREATE TABLE t (name VARCHAR(3)",
+            "CREATE TABLE t (name TEXT(8))",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
     }
 }
