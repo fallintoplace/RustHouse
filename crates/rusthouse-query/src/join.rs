@@ -144,7 +144,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             None
         }
     };
-    let aggregate_alias = if aggregate.is_some() && parser.keyword("AS") {
+    let mut aggregate_alias = if aggregate.is_some() && parser.keyword("AS") {
         Some(parser.word()?)
     } else {
         None
@@ -172,6 +172,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                     return Err(ParseError("grouped JOIN requires COUNT(*)".into()));
                 }
                 grouped_count_projection = true;
+                if parser.keyword("AS") {
+                    aggregate_alias = Some(parser.bounded_word()?);
+                }
                 break;
             }
         }
