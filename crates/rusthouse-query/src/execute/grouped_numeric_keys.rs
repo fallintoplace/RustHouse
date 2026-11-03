@@ -237,7 +237,7 @@ pub(super) fn execute<W: Write>(
         let kind = types.get(column).ok_or_else(|| {
             ExecutionError::Invalid(format!("unknown aggregate column: {column}"))
         })?;
-        if *function != AggregateFunction::Count
+        if !matches!(function, AggregateFunction::Count | AggregateFunction::CountDistinct)
             && matches!(typed::base_type(kind), "String" | "UUID")
         {
             return Err(numeric_column_error());
@@ -330,6 +330,7 @@ pub(super) fn execute<W: Write>(
     let filter_indices = bind_grouped_filters(filters, &indices, &types)?;
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
+    let mut distinct_values = super::grouped_numeric_multi::DistinctValues::new();
     let mut retained_group_bytes = 0usize;
     let mut retained_median_bytes = 0usize;
     let mut dense_slots = (columns.len() == 2
@@ -503,6 +504,15 @@ pub(super) fn execute<W: Write>(
                         }
                         continue;
                     }
+                }
+                if *function == AggregateFunction::CountDistinct {
+                    let index = column_index.expect("distinct metric has a column");
+                    if !typed::is_null_at(&batch[index], row)
+                        && distinct_values.insert(group, metric, typed::key_at(&batch[index], row))?
+                    {
+                        state.increment_count()?;
+                    }
+                    continue;
                 }
                 if *function == AggregateFunction::Count {
                     if let Some(index) = *column_index {

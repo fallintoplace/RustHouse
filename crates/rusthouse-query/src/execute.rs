@@ -1907,6 +1907,11 @@ fn execute_numbers<W: Write>(
         filters,
     } = &query.projection
     {
+        if items.iter().any(|(function, _)| *function == AggregateFunction::CountDistinct) {
+            return Err(ExecutionError::Invalid(
+                "mixed grouped COUNT(DISTINCT) requires a stored table".into(),
+            ));
+        }
         // Generated metrics do not yet implement per-metric FILTER. Never
         // silently ignore a parsed predicate and return incorrect results.
         if filters.iter().any(Option::is_some) {
@@ -2338,7 +2343,7 @@ impl AggregateState {
 
     /// Count a non-NULL grouped row without going through numeric value dispatch.
     fn increment_count(&mut self) -> Result<(), ExecutionError> {
-        debug_assert_eq!(self.function, AggregateFunction::Count);
+        debug_assert!(matches!(self.function, AggregateFunction::Count | AggregateFunction::CountDistinct));
         self.count = self
             .count
             .checked_add(1)
@@ -2417,6 +2422,11 @@ impl AggregateState {
                 }
             }
             AggregateFunction::Count => {}
+            AggregateFunction::CountDistinct => {
+                return Err(ExecutionError::Invalid(
+                    "distinct aggregate requires a stored table".into(),
+                ));
+            }
             AggregateFunction::CountIf => {
                 let truthy = match value {
                     Number::Unsigned(n) => n != 0,
@@ -2623,7 +2633,7 @@ impl AggregateState {
         let nonempty = self.count > 0;
         let sample = self.count > 1;
         let value = match self.function {
-            AggregateFunction::Count => Some(Number::Unsigned(u128::from(self.count))),
+            AggregateFunction::Count | AggregateFunction::CountDistinct => Some(Number::Unsigned(u128::from(self.count))),
             AggregateFunction::CountIf => Some(self.value.unwrap_or(Number::Unsigned(0))),
             AggregateFunction::Sum
             | AggregateFunction::Product
@@ -2669,7 +2679,7 @@ impl AggregateState {
     }
 
     fn render(&self) -> String {
-        if self.function == AggregateFunction::Count {
+        if matches!(self.function, AggregateFunction::Count | AggregateFunction::CountDistinct) {
             return self.count.to_string();
         }
         if self.function == AggregateFunction::CountIf {

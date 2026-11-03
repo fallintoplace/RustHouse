@@ -48,6 +48,7 @@ pub enum AggregateFunction {
     Any,
     CountIf,
     Count,
+    CountDistinct,
     Sum,
     Product,
     Avg,
@@ -73,6 +74,7 @@ impl AggregateFunction {
             Self::Any => "any",
             Self::CountIf => "countIf",
             Self::Count => "count",
+            Self::CountDistinct => "countDistinct",
             Self::Sum => "sum",
             Self::Product => "product",
             Self::Avg => "avg",
@@ -1429,6 +1431,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             "SUMIF" | "AVGIF" | "MINIF" | "MAXIF"));
                     parser.index += 1;
                     parser.take(Token::LParen);
+                    let function = if function == AggregateFunction::Count && parser.keyword("DISTINCT") {
+                        AggregateFunction::CountDistinct
+                    } else {
+                        function
+                    };
                     let (value_column, case_filter) = grouped_metric_value(&mut parser, function)?;
                     let function = if function == AggregateFunction::Sum && value_column == "*" {
                         AggregateFunction::Count
@@ -1499,10 +1506,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         if !parser.take(Token::LParen) {
                             return Err(ParseError("expected '(' after aggregate name".into()));
                         }
-                        let (value_column, case_filter) =
-                            grouped_metric_value(&mut parser, function)?;
-                        let function = if function == AggregateFunction::Sum && value_column == "*"
-                        {
+                        let function = if function == AggregateFunction::Count && parser.keyword("DISTINCT") {
+                            AggregateFunction::CountDistinct
+                        } else {
+                            function
+                        };
+                        let (value_column, case_filter) = grouped_metric_value(&mut parser, function)?;
+                        let function = if function == AggregateFunction::Sum && value_column == "*" {
                             AggregateFunction::Count
                         } else {
                             function
@@ -2702,13 +2712,12 @@ mod tpch_parser_first_stop_4 {
 }
 
 #[cfg(test)]
-mod tpch_parser_first_stop_3 {
+mod mixed_grouped_distinct_parser {
     use super::parse_select;
 
     #[test]
-    fn unsupported_construct_has_specific_error() {
-        let error = parse_select("SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID) FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10").unwrap_err();
-        assert!(error.0.contains("mixed grouped COUNT(DISTINCT)"), "{error}");
+    fn accepts_mixed_distinct_metrics() {
+        parse_select("SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID) FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10").unwrap();
     }
 }
 
