@@ -93,6 +93,8 @@ impl AggregateFunction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstantValue {
     Integer(i64),
+    /// Floating numeric literal. Keep its source spelling for SELECT headers.
+    Decimal(String),
     Text(String),
     Null,
 }
@@ -110,6 +112,7 @@ impl Constant {
         }
         match &self.value {
             ConstantValue::Integer(value) => value.to_string(),
+            ConstantValue::Decimal(value) => value.clone(),
             ConstantValue::Null => "NULL".into(),
             ConstantValue::Text(value) => format!(
                 "'{}'",
@@ -1198,6 +1201,14 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 return Err(ParseError("SELECT supports at most 64 constants".into()));
             }
             let value = match parser.tokens.get(parser.index) {
+                Some(Token::Number(number)) if number.contains('.') || number.contains('e') || number.contains('E') => {
+                    let number = number.clone();
+                    if !number.parse::<f64>().is_ok_and(f64::is_finite) {
+                        return Err(ParseError("SELECT decimal literal must be finite".into()));
+                    }
+                    parser.index += 1;
+                    ConstantValue::Decimal(number)
+                }
                 Some(Token::Number(_) | Token::LParen | Token::Plus | Token::Minus) => {
                     ConstantValue::Integer(scalar::parse(&mut parser)?)
                 }

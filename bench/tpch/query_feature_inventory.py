@@ -10,6 +10,10 @@ from official_coverage import clean_sql
 
 PATTERNS = {
     "with_cte": r"\bWITH\s+[A-Z_][\w]*\s+AS\s*\(",
+    "arithmetic_aggregate": r"\b(?:SUM|AVG|MIN|MAX)\s*\(\s*[A-Z_][A-Z0-9_.]*\s*[-+*/]",
+    "conditional_aggregate": r"\b(?:SUM|AVG)\s*\(\s*CASE\b",
+    "aggregate_ratio": r"\)\s*/\s*(?:SUM|AVG)\s*\(",
+    "decimal_literal": r"(?<![\w.])(?:[0-9]+\.[0-9]+|\.[0-9]+)(?![\w.])",
     "derived_table": r"\b(?:FROM|JOIN)\s*\(\s*SELECT\b",
     "nested_select": r"\(\s*SELECT\b",
     "exists": r"\bEXISTS\s*\(",

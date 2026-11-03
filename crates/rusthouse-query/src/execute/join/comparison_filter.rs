@@ -97,6 +97,11 @@ fn scan<W: Write>(
     // Cache each distinct left projection separately across all dimension
     // matches for this fact row. One shared Cell corrupts multi-column output.
     let mut left_cells = vec![None; width];
+    let mut output_row = if emit {
+        Vec::with_capacity(256)
+    } else {
+        Vec::new()
+    };
     let mut matched = 0u64;
     let mut written = 0usize;
     // A bounded page is still bounded when OFFSET + LIMIT overflows usize.
@@ -141,9 +146,10 @@ fn scan<W: Write>(
                     continue;
                 }
                 if emit {
+                    output_row.clear();
                     for (position, (index, _, fallback)) in selected.iter().enumerate() {
                         if position > 0 {
-                            output.write_all(b"\t")?;
+                            output_row.push(b'\t');
                         }
                         let value: &typed::Cell = if *index < width {
                             left_cells[*index]
@@ -164,9 +170,10 @@ fn scan<W: Write>(
                         } else {
                             value
                         };
-                        typed::write_value(output, value)?;
+                        typed::write_value(&mut output_row, value)?;
                     }
-                    output.write_all(b"\n")?;
+                    output_row.push(b'\n');
+                    output.write_all(&output_row)?;
                 }
                 written += 1;
                 if limit.is_some_and(|limit| written >= limit) {
