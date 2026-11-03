@@ -9,6 +9,8 @@ mod explain;
 mod expression;
 mod grouped_affine;
 mod grouped_case;
+mod grouped_regex;
+pub use grouped_regex::GroupedRegex;
 mod grouped_extract;
 pub use grouped_case::GroupedCaseKey;
 mod grouped_minute;
@@ -417,6 +419,8 @@ pub struct Select {
     pub grouped_extract_minute: Option<GroupedExtractMinute>,
     /// Conditional string key in a five-key grouped count.
     pub grouped_case_key: Option<GroupedCaseKey>,
+    /// REGEXP_REPLACE grouping with length, count and minimum metrics.
+    pub grouped_regex: Option<GroupedRegex>,
     /// Computed arguments aligned with grouped aggregate metrics, when present.
     pub grouped_expressions: Vec<Option<ScalarExpr>>,
     /// Whether the grouped metric is used only for HAVING.
@@ -964,6 +968,14 @@ pub fn split_clickhouse_format(sql: &str) -> Result<(&str, Option<&str>), ParseE
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     let mut tokens = tokenize(sql)?;
+    if matches!(tokens.as_slice(), [Token::Word(select), Token::Word(function), Token::LParen, ..] if select.eq_ignore_ascii_case("SELECT") && function.eq_ignore_ascii_case("REGEXP_REPLACE"))
+    {
+        return match grouped_regex::parse(tokens.clone())? {
+            Some(grouped) => Ok(grouped),
+            None => parse_select_tokens(tokens),
+        };
+    }
+
     if matches!(tokens.as_slice(), [Token::Word(select), Token::Word(_), Token::Comma, Token::Word(_), Token::Comma, Token::Word(_), Token::Comma, Token::Word(case), ..] if select.eq_ignore_ascii_case("SELECT") && case.eq_ignore_ascii_case("CASE"))
     {
         return match grouped_case::parse(tokens.clone())? {
@@ -2742,6 +2754,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         grouped_minute: None,
         grouped_extract_minute: None,
         grouped_case_key: None,
+        grouped_regex: None,
         grouped_expressions,
         hidden_aggregate,
         alias,

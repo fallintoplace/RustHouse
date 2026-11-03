@@ -66,6 +66,7 @@ mod grouped_multi;
 mod grouped_multi_distinct;
 mod grouped_numeric_keys;
 mod grouped_numeric_multi;
+mod grouped_regex;
 mod join;
 mod multi_join;
 mod predicates;
@@ -470,7 +471,9 @@ pub fn execute<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let mut buffered = BufWriter::new(output);
-    if query.grouped_case_key.is_some() {
+    if query.grouped_regex.is_some() {
+        grouped_regex::execute(query, part, &mut buffered)?;
+    } else if query.grouped_case_key.is_some() {
         grouped_case::execute(query, part, &mut buffered)?;
     } else if query.grouped_extract_minute.is_some() {
         grouped_extract::execute(query, part, &mut buffered)?;
