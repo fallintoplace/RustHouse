@@ -95,7 +95,21 @@ pub struct JoinSelect {
 /// Return None for queries without a JOIN keyword after FROM.
 pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let tokens = tokenize(sql)?;
-    let tokens = implicit::rewrite(tokens)?;
+    let tokens = implicit::rewrite(tokens, None)?;
+    parse_join_tokens(tokens)
+}
+
+/// Whether a SELECT has a top-level comma-separated source list.
+pub fn has_implicit_join(sql: &str) -> Result<bool, ParseError> {
+    implicit::has_comma(&tokenize(sql)?)
+}
+
+/// Resolve unqualified comma-join keys with the schemas held by the caller.
+pub fn parse_join_with_schema(
+    sql: &str,
+    mut resolve: impl FnMut(&str) -> Result<Vec<String>, ParseError>,
+) -> Result<Option<JoinSelect>, ParseError> {
+    let tokens = implicit::rewrite(tokenize(sql)?, Some(&mut resolve))?;
     parse_join_tokens(tokens)
 }
 

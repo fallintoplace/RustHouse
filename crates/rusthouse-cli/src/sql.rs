@@ -8,8 +8,9 @@ use crate::{
     sql_values, vertical,
 };
 use rusthouse_query::{
-    Source, execute, explain_join, explain_select, parse_correlated_exists, parse_ddl,
-    parse_delete, parse_insert, parse_join, parse_select, parse_update, split_clickhouse_format,
+    ParseError, Source, execute, explain_join, explain_select, has_implicit_join,
+    parse_correlated_exists, parse_ddl, parse_delete, parse_insert, parse_join,
+    parse_join_with_schema, parse_select, parse_update, split_clickhouse_format,
 };
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -370,7 +371,30 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         }
         return Err("--catalog is only supported for DDL statements".into());
     }
-    if let Some(mut join) = parse_join(&query).map_err(|error| error.to_string())? {
+    let implicit = has_implicit_join(&query).map_err(|error| error.to_string())?;
+    let implicit_lock = if implicit {
+        match database.as_deref() {
+            Some(path) if path.is_dir() => Some(crate::database::read_lock(path)?),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let parsed_join = if implicit {
+        if let Some(directory) = database.as_deref() {
+            parse_join_with_schema(&query, |table| {
+                crate::catalog::read_schema(directory, table)
+                    .map(|columns| columns.into_iter().map(|column| column.name).collect())
+                    .map_err(ParseError)
+            })
+        } else {
+            parse_join(&query)
+        }
+    } else {
+        parse_join(&query)
+    }
+    .map_err(|error| error.to_string())?;
+    if let Some(mut join) = parsed_join {
         let database_dir = database.as_deref().ok_or("JOIN requires --database")?;
         if part.is_some() {
             return Err("JOIN cannot use --part".into());
@@ -401,6 +425,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             format.unwrap_or(SqlOutputFormat::Tsv),
             output_path,
             time,
+            implicit_lock,
         );
     }
     let correlated = parse_correlated_exists(&query).map_err(|error| error.to_string())?;

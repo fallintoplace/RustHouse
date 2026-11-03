@@ -2,6 +2,8 @@
 use super::{ParseError, Parser, Token, alias};
 use crate::Operator;
 
+type SchemaResolver<'a> = &'a mut (dyn FnMut(&str) -> Result<Vec<String>, ParseError> + 'a);
+
 fn keyword(token: &Token, name: &str) -> bool {
     matches!(token, Token::Word(w) if w.eq_ignore_ascii_case(name))
 }
@@ -20,11 +22,30 @@ fn qualifier(token: &Token) -> Option<&str> {
     }
 }
 
-/// Rewrite only qualified equi-joins with AND-connected predicates. Unsupported
-/// forms fail instead of moving a predicate across an OR or an outer join.
-pub(super) fn rewrite(tokens: Vec<Token>) -> Result<Vec<Token>, ParseError> {
+fn unqualified_column(token: &Token) -> Option<&str> {
+    match token {
+        Token::Word(name)
+            if [
+                "CAST",
+                "DATE",
+                "TIMESTAMP",
+                "NULL",
+                "TRUE",
+                "FALSE",
+                "INTERVAL",
+            ]
+            .iter()
+            .any(|keyword| name.eq_ignore_ascii_case(keyword)) =>
+        {
+            None
+        }
+        _ => qualifier(token),
+    }
+}
+
+fn from_bounds(tokens: &[Token]) -> Result<Option<(usize, usize)>, ParseError> {
     if !matches!(tokens.first(), Some(t) if keyword(t, "SELECT")) {
-        return Ok(tokens);
+        return Ok(None);
     }
     let mut depth = 0usize;
     let mut from = None;
@@ -48,10 +69,26 @@ pub(super) fn rewrite(tokens: Vec<Token>) -> Result<Vec<Token>, ParseError> {
         }
     }
     if !has_comma {
-        return Ok(tokens);
+        return Ok(None);
     }
-    let from = from.expect("comma follows FROM");
-    let end = end.unwrap_or(tokens.len());
+    Ok(Some((
+        from.expect("comma follows FROM"),
+        end.unwrap_or(tokens.len()),
+    )))
+}
+
+pub(super) fn has_comma(tokens: &[Token]) -> Result<bool, ParseError> {
+    Ok(from_bounds(tokens)?.is_some())
+}
+
+/// Rewrite AND-connected comma joins into existing inner join plans.
+pub(super) fn rewrite(
+    tokens: Vec<Token>,
+    mut resolve: Option<SchemaResolver<'_>>,
+) -> Result<Vec<Token>, ParseError> {
+    let Some((from, end)) = from_bounds(&tokens)? else {
+        return Ok(tokens);
+    };
     if end == tokens.len() || !keyword(&tokens[end], "WHERE") {
         return Err(ParseError("comma joins require WHERE equality keys".into()));
     }
@@ -110,9 +147,58 @@ pub(super) fn rewrite(tokens: Vec<Token>) -> Result<Vec<Token>, ParseError> {
     if pieces.iter().any(Vec::is_empty) {
         return Err(ParseError("comma join requires complete predicates".into()));
     }
+    let needs_schema = pieces.iter().any(|piece| match piece.as_slice() {
+        [left, Token::Operator(Operator::Eq), right] => {
+            unqualified_column(left).is_some() && unqualified_column(right).is_some()
+        }
+        _ => false,
+    });
+    let schemas = if let (true, Some(resolver)) = (needs_schema, resolve.as_mut()) {
+        Some(
+            tables
+                .iter()
+                .map(|(table, _)| resolver(table))
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    } else {
+        None
+    };
     let mut keys = vec![Vec::<Vec<Token>>::new(); tables.len()];
     let mut remainder = Vec::new();
-    for piece in pieces {
+    for mut piece in pieces {
+        if let (Some(schemas), [left, Token::Operator(Operator::Eq), right]) =
+            (&schemas, piece.as_slice())
+        {
+            if let (Some(left_name), Some(right_name)) =
+                (unqualified_column(left), unqualified_column(right))
+            {
+                let lookup = |name: &str| -> Result<Option<usize>, ParseError> {
+                    let found: Vec<_> = schemas
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, cols)| cols.iter().any(|c| c == name))
+                        .map(|(i, _)| i)
+                        .collect();
+                    if found.len() > 1 {
+                        return Err(ParseError(format!("ambiguous JOIN column: {name}")));
+                    }
+                    Ok(found.first().copied())
+                };
+                if let (Some(a), Some(b)) = (lookup(left_name)?, lookup(right_name)?) {
+                    if a != b {
+                        piece = vec![
+                            Token::Word(tables[a].1.clone()),
+                            Token::Dot,
+                            left.clone(),
+                            Token::Operator(Operator::Eq),
+                            Token::Word(tables[b].1.clone()),
+                            Token::Dot,
+                            right.clone(),
+                        ];
+                    }
+                }
+            }
+        }
         if let [
             a,
             Token::Dot,
@@ -177,6 +263,34 @@ pub(super) fn rewrite(tokens: Vec<Token>) -> Result<Vec<Token>, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::super::parse_join;
+    #[test]
+    fn qualified_join_does_not_require_schema_resolution() {
+        let parsed = super::super::parse_join_with_schema(
+            "SELECT a.id FROM first a, second b WHERE a.id = b.id",
+            |_| panic!("qualified join does not need a schema"),
+        )
+        .unwrap();
+        assert!(parsed.is_some());
+    }
+
+    #[test]
+    fn boolean_literals_are_not_resolved_as_columns() {
+        let resolve = |table: &str| {
+            Ok(if table == "first" {
+                vec!["flag".into()]
+            } else {
+                vec!["TRUE".into()]
+            })
+        };
+        assert!(
+            super::super::parse_join_with_schema(
+                "SELECT count(*) FROM first, second WHERE flag = TRUE",
+                resolve
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn handles_qualified_implicit_joins_without_moving_or_predicates() {
         let parsed = parse_join("SELECT a.id, b.id FROM first a, second b WHERE a.id = b.id")
