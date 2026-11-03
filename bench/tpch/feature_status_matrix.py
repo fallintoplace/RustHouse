@@ -28,7 +28,7 @@ def _index(report, *, is_feature):
                            for feature in features)
                     or len(features) != len(set(features))):
                 raise ValueError("TPC-H features must be unique bounded strings")
-        elif row.get("status") not in ALLOWED_STATUSES:
+        elif not isinstance(row.get("status"), str) or row["status"] not in ALLOWED_STATUSES:
             raise ValueError("unknown TPC-H execution status")
         rows[query] = row
     if rows.keys() != EXPECTED_QUERY_IDS:
