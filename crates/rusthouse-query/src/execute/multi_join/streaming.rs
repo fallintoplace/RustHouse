@@ -61,6 +61,8 @@ struct OutputSpec<'a> {
     /// Physical source types, including projected USING fallbacks.
     types: Vec<&'a str>,
     null_filter: Option<(usize, bool)>,
+    comparisons: &'a [(usize, crate::Operator, typed::Cell)],
+    column_comparisons: &'a [(usize, crate::Operator, usize)],
     group_indices: Option<Vec<usize>>,
     offset: usize,
     limit: Option<usize>,
@@ -84,6 +86,17 @@ fn visit<W: Write>(
             if is_null == not_null {
                 return Ok(());
             }
+        }
+        if !spec.comparisons.iter().all(|(index, operator, literal)| {
+            typed::matches_comparison(&row[*index], literal, *operator)
+        }) || !spec
+            .column_comparisons
+            .iter()
+            .all(|(left, operator, right)| {
+                typed::matches_comparison(&row[*left], &row[*right], *operator)
+            })
+        {
+            return Ok(());
         }
         if let Some(indices) = &spec.group_indices {
             state.group_key.clear();
@@ -185,6 +198,8 @@ pub(super) fn execute<W: Write>(
     paths: &[PathBuf],
     relations: &[Relation],
     initial_step: &JoinStep,
+    comparisons: &[(usize, crate::Operator, typed::Cell)],
+    column_comparisons: &[(usize, crate::Operator, usize)],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if relations[0].names.is_empty() {
@@ -203,6 +218,8 @@ pub(super) fn execute<W: Write>(
             .flat_map(|relation| relation.types.iter().map(String::as_str))
             .collect(),
         null_filter,
+        comparisons,
+        column_comparisons,
         group_indices: query
             .grouped_count
             .as_ref()
@@ -238,6 +255,13 @@ pub(super) fn execute<W: Write>(
     }
     if let Some((index, _)) = null_filter {
         referenced[index] = true;
+    }
+    for (index, _, _) in comparisons {
+        referenced[*index] = true;
+    }
+    for (left, _, right) in column_comparisons {
+        referenced[*left] = true;
+        referenced[*right] = true;
     }
     let projections = relations
         .iter()

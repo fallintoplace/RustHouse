@@ -866,7 +866,6 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     let chained_comparison_filters = !steps.is_empty()
         && kind == JoinType::Inner
         && steps.iter().all(|step| step.kind == JoinType::Inner)
-        && !grouped_count_projection
         && matches!(
             aggregate.as_ref(),
             None | Some(JoinAggregate::CountStar | JoinAggregate::CountColumn(_))
@@ -898,6 +897,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     }
     if grouped_count_projection
         && grouped_case_counts.is_empty()
+        && !chained_comparison_filters
         && (!where_comparisons_extra.is_empty()
             || !where_column_comparisons.is_empty()
             || !where_in_filters.is_empty()

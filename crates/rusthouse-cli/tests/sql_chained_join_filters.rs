@@ -71,6 +71,26 @@ fn chained_inner_join_literal_filters() {
             "SELECT COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE a.qty > c.balance",
             "n\n2\n",
         ),
+        (
+            "SELECT b.label, COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE qty > 1 AND c.price > a.qty GROUP BY b.label ORDER BY b.label",
+            "b.label\tn\nno\t1\nyes\t2\n",
+        ),
+        (
+            "SELECT b.label, COUNT(*) AS n FROM a ANY INNER JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE c.price >= a.threshold GROUP BY b.label ORDER BY b.label",
+            "b.label\tn\nyes\t2\n",
+        ),
+        (
+            "SELECT b.label FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE qty > 1 AND c.price > a.qty LIMIT 2",
+            "b.label\nyes\nno\n",
+        ),
+        (
+            "SELECT b.label, COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE qty > 1 AND c.price > a.qty GROUP BY b.label ORDER BY n DESC LIMIT 1 OFFSET 1",
+            "b.label\tn\nno\t1\n",
+        ),
+        (
+            "SELECT b.label, COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE qty > 100 GROUP BY b.label ORDER BY n DESC",
+            "b.label\tn\n",
+        ),
     ] {
         let result = sql(query);
         assert!(result.status.success(), "{query}: {result:?}");
@@ -80,10 +100,10 @@ fn chained_inner_join_literal_filters() {
         "SELECT COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE missing = 1 LIMIT 0",
         "SELECT COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE qty = 'bad' LIMIT 0",
         "SELECT COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE id = a.qty LIMIT 0",
+        "SELECT b.label, COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE qty > 'bad' GROUP BY b.label LIMIT 0",
         "SELECT COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE a.qty = b.label LIMIT 0",
         "SELECT COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE a.qty = c.missing LIMIT 0",
         "SELECT COUNT(*) FROM a LEFT JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE price = 8",
-        "SELECT a.id, COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE price = 8 GROUP BY a.id",
     ] {
         let result = sql(query);
         assert!(!result.status.success(), "{query}: {result:?}");
