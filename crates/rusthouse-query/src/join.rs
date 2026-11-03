@@ -99,6 +99,8 @@ pub struct JoinSelect {
     pub grouped_sum_position: Option<usize>,
     /// A scalar SUM over a numeric expression in an INNER join.
     pub scalar_sum: Option<crate::ScalarExpr>,
+    /// Bounded OR-of-AND predicates for scalar sums over joins.
+    pub scalar_where: Option<Vec<Vec<crate::Predicate>>>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
@@ -641,108 +643,114 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     let mut where_column_comparisons = Vec::new();
     let mut where_in_filters = Vec::new();
     let mut where_like_filters = Vec::new();
+    let mut scalar_where = None;
     if parser.keyword("WHERE") {
-        let mut count = 0;
-        loop {
-            count += 1;
-            if count > 16 {
-                return Err(ParseError("JOIN supports at most 16 comparisons".into()));
-            }
-            let column = projected(&mut parser)?;
-            if column.name == "*" {
-                return Err(ParseError("JOIN WHERE requires a column".into()));
-            }
-            if parser.keyword("IS") {
-                if count != 1 {
+        let complex = scalar_sum.is_some() && parser.tokens[parser.index..].iter().take_while(|token| !matches!(token, Token::Word(word) if ["GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))).any(|token| matches!(token, Token::Word(word) if ["OR", "IN", "BETWEEN", "LIKE", "ILIKE"].iter().any(|name| word.eq_ignore_ascii_case(name))));
+        if complex {
+            scalar_where = Some(crate::where_parser::parse_where(&mut parser)?);
+        } else {
+            let mut count = 0;
+            loop {
+                count += 1;
+                if count > 16 {
+                    return Err(ParseError("JOIN supports at most 16 comparisons".into()));
+                }
+                let column = projected(&mut parser)?;
+                if column.name == "*" {
+                    return Err(ParseError("JOIN WHERE requires a column".into()));
+                }
+                if parser.keyword("IS") {
+                    if count != 1 {
+                        return Err(ParseError(
+                            "JOIN cannot combine NULL filters with other predicates".into(),
+                        ));
+                    }
+                    let not_null = parser.keyword("NOT");
+                    if !parser.keyword("NULL") && !parser.keyword("UNKNOWN") {
+                        return Err(ParseError(
+                            "JOIN WHERE requires IS [NOT] NULL or UNKNOWN".into(),
+                        ));
+                    }
+                    where_null = Some((column, not_null));
+                } else if parser.keyword("IN") {
+                    if !parser.take(Token::LParen) {
+                        return Err(ParseError("JOIN IN requires '('".into()));
+                    }
+                    let mut values = Vec::new();
+                    loop {
+                        if values.len() == 64 {
+                            return Err(ParseError("JOIN IN supports at most 64 values".into()));
+                        }
+                        values.push(parser.literal()?);
+                        if !parser.take(Token::Comma) {
+                            break;
+                        }
+                    }
+                    if !parser.take(Token::RParen) {
+                        return Err(ParseError("JOIN IN requires ')'".into()));
+                    }
+                    where_in_filters.push((column, values));
+                } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if ["LIKE", "ILIKE", "NOT"].iter().any(|kw| word.eq_ignore_ascii_case(kw)))
+                {
+                    let negated = parser.keyword("NOT");
+                    let case_insensitive = parser.like_keyword().ok_or_else(|| {
+                        ParseError("JOIN WHERE expects LIKE or ILIKE after NOT".into())
+                    })?;
+                    let pattern = parser.literal()?;
+                    where_like_filters.push((column, pattern, case_insensitive, negated));
+                } else {
+                    let operator = parser.operator()?;
+                    if !matches!(
+                        operator,
+                        crate::Operator::Eq
+                            | crate::Operator::Ne
+                            | crate::Operator::Lt
+                            | crate::Operator::Le
+                            | crate::Operator::Gt
+                            | crate::Operator::Ge
+                    ) {
+                        return Err(ParseError(
+                            "JOIN WHERE requires a comparison operator".into(),
+                        ));
+                    }
+                    let is_column = match parser.tokens.get(parser.index) {
+                        Some(Token::QuotedWord(_)) => true,
+                        Some(Token::Word(word)) => ![
+                            "CAST",
+                            "DATE",
+                            "TIMESTAMP",
+                            "NULL",
+                            "TRUE",
+                            "FALSE",
+                            "INTERVAL",
+                        ]
+                        .iter()
+                        .any(|kw| word.eq_ignore_ascii_case(kw)),
+                        _ => false,
+                    };
+                    if is_column {
+                        let other = projected(&mut parser)?;
+                        if other.name == "*" {
+                            return Err(ParseError("JOIN WHERE requires a column".into()));
+                        }
+                        where_column_comparisons.push((column, operator, other));
+                    } else {
+                        let comparison = (column, operator, parser.literal()?);
+                        if where_comparison.is_none() {
+                            where_comparison = Some(comparison);
+                        } else {
+                            where_comparisons_extra.push(comparison);
+                        }
+                    }
+                }
+                if !parser.keyword("AND") {
+                    break;
+                }
+                if where_null.is_some() {
                     return Err(ParseError(
                         "JOIN cannot combine NULL filters with other predicates".into(),
                     ));
                 }
-                let not_null = parser.keyword("NOT");
-                if !parser.keyword("NULL") && !parser.keyword("UNKNOWN") {
-                    return Err(ParseError(
-                        "JOIN WHERE requires IS [NOT] NULL or UNKNOWN".into(),
-                    ));
-                }
-                where_null = Some((column, not_null));
-            } else if parser.keyword("IN") {
-                if !parser.take(Token::LParen) {
-                    return Err(ParseError("JOIN IN requires '('".into()));
-                }
-                let mut values = Vec::new();
-                loop {
-                    if values.len() == 64 {
-                        return Err(ParseError("JOIN IN supports at most 64 values".into()));
-                    }
-                    values.push(parser.literal()?);
-                    if !parser.take(Token::Comma) {
-                        break;
-                    }
-                }
-                if !parser.take(Token::RParen) {
-                    return Err(ParseError("JOIN IN requires ')'".into()));
-                }
-                where_in_filters.push((column, values));
-            } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if ["LIKE", "ILIKE", "NOT"].iter().any(|kw| word.eq_ignore_ascii_case(kw)))
-            {
-                let negated = parser.keyword("NOT");
-                let case_insensitive = parser.like_keyword().ok_or_else(|| {
-                    ParseError("JOIN WHERE expects LIKE or ILIKE after NOT".into())
-                })?;
-                let pattern = parser.literal()?;
-                where_like_filters.push((column, pattern, case_insensitive, negated));
-            } else {
-                let operator = parser.operator()?;
-                if !matches!(
-                    operator,
-                    crate::Operator::Eq
-                        | crate::Operator::Ne
-                        | crate::Operator::Lt
-                        | crate::Operator::Le
-                        | crate::Operator::Gt
-                        | crate::Operator::Ge
-                ) {
-                    return Err(ParseError(
-                        "JOIN WHERE requires a comparison operator".into(),
-                    ));
-                }
-                let is_column = match parser.tokens.get(parser.index) {
-                    Some(Token::QuotedWord(_)) => true,
-                    Some(Token::Word(word)) => ![
-                        "CAST",
-                        "DATE",
-                        "TIMESTAMP",
-                        "NULL",
-                        "TRUE",
-                        "FALSE",
-                        "INTERVAL",
-                    ]
-                    .iter()
-                    .any(|kw| word.eq_ignore_ascii_case(kw)),
-                    _ => false,
-                };
-                if is_column {
-                    let other = projected(&mut parser)?;
-                    if other.name == "*" {
-                        return Err(ParseError("JOIN WHERE requires a column".into()));
-                    }
-                    where_column_comparisons.push((column, operator, other));
-                } else {
-                    let comparison = (column, operator, parser.literal()?);
-                    if where_comparison.is_none() {
-                        where_comparison = Some(comparison);
-                    } else {
-                        where_comparisons_extra.push(comparison);
-                    }
-                }
-            }
-            if !parser.keyword("AND") {
-                break;
-            }
-            if where_null.is_some() {
-                return Err(ParseError(
-                    "JOIN cannot combine NULL filters with other predicates".into(),
-                ));
             }
         }
     }
@@ -1144,6 +1152,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         grouped_sum,
         grouped_sum_position,
         scalar_sum,
+        scalar_where,
         keys,
         using_keys,
         where_null,
@@ -1342,6 +1351,9 @@ pub fn explain_join(query: &JoinSelect) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         plan.push_str(&format!("\nOrder: {terms}"));
+    }
+    if let Some(branches) = &query.scalar_where {
+        plan.push_str(&format!("\nFilter: {} boolean branches", branches.len()));
     }
     if let Some(expression) = &query.scalar_sum {
         plan.push_str(&format!(

@@ -48,6 +48,22 @@ fn scalar_expression_sum_streams_inner_join_rows() {
             "total\n600\n",
         ),
         (
+            "SELECT SUM(price * factor) AS total FROM sales s JOIN items i ON s.id = i.id WHERE (kind IN ('a', 'b') AND price BETWEEN 50 AND 100) OR (kind = 'a' AND price >= 50)",
+            "total\n600\n",
+        ),
+        (
+            "SELECT SUM(price * factor) AS total FROM sales s ANY INNER JOIN items i ON s.id = i.id WHERE kind = 'b' OR kind = 'a'",
+            "total\n500\n",
+        ),
+        (
+            "SELECT SUM(price * factor) AS total FROM sales s JOIN items i ON s.id = i.id WHERE kind NOT IN ('b') AND kind LIKE 'a%'",
+            "total\n500\n",
+        ),
+        (
+            "SELECT SUM(price * factor) AS total FROM sales s JOIN items i ON s.id = i.id WHERE price IS NULL OR kind = 'none'",
+            "total\n\\N\n",
+        ),
+        (
             "SELECT SUM(price * factor) AS total FROM sales s JOIN items i ON s.id = i.id WHERE kind = 'none'",
             "total\n\\N\n",
         ),
@@ -72,9 +88,11 @@ fn scalar_expression_sum_streams_inner_join_rows() {
         "SELECT SUM(price * missing) AS total FROM sales s JOIN items i ON s.id = i.id LIMIT 0",
         "SELECT SUM(id + 1) AS total FROM sales s JOIN items i ON s.id = i.id LIMIT 0",
         "SELECT SUM(price * kind) AS total FROM sales s JOIN items i ON s.id = i.id LIMIT 0",
+        "SELECT SUM(price * factor) AS total FROM sales s JOIN items i ON s.id = i.id WHERE missing IN (1) LIMIT 0",
+        "SELECT SUM(price * factor) AS total FROM sales s JOIN items i ON s.id = i.id WHERE factor NOT BETWEEN 1 AND 2 LIMIT 0",
+        "SELECT SUM(price * factor) AS total FROM sales s JOIN items i ON s.id = i.id WHERE price % 2 = 1 OR kind = 'none' LIMIT 0",
         "SELECT SUM(price / 0) AS total FROM sales s JOIN items i ON s.id = i.id",
         "SELECT SUM(price * factor) AS total FROM sales s LEFT JOIN items i ON s.id = i.id",
-        "SELECT SUM(price * factor) AS total FROM sales s JOIN items i ON s.id = i.id WHERE kind IN ('a')",
     ] {
         let result = sql(query);
         assert!(!result.status.success(), "{query}: {result:?}");
