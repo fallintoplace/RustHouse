@@ -52,6 +52,7 @@ struct OutputState {
     seen: u64,
     emitted: usize,
     scalar_sum: Option<super::super::Number>,
+    formula_sums: Vec<Option<super::super::Number>>,
     groups: HashMap<Vec<typed::Key>, (Vec<typed::Cell>, u64, Option<super::super::Number>)>,
     group_key: Vec<typed::Key>,
     group_bytes: usize,
@@ -67,9 +68,21 @@ struct OutputSpec<'a> {
     group_indices: Option<Vec<usize>>,
     sum: Option<&'a BoundSum>,
     scalar_sum: bool,
+    formula: Option<&'a BoundFormula>,
     row_filters: Option<&'a super::row_filters::RowFilters>,
     offset: usize,
     limit: Option<usize>,
+}
+
+fn evaluate_formula(
+    formula: &BoundFormula,
+    sums: &[Option<super::super::Number>],
+) -> Result<Option<super::super::Number>, ExecutionError> {
+    let row = sums
+        .iter()
+        .map(|value| value.map_or(typed::Cell::Null, typed::Cell::Numeric))
+        .collect::<Vec<_>>();
+    super::super::multi_aggregate::eval_row_arithmetic(&formula.expression, &row)
 }
 
 fn compare_sum_values(
@@ -124,6 +137,19 @@ fn visit<W: Write>(
             return Ok(());
         }
         if spec.row_filters.is_some_and(|filters| !filters.passes(row)) {
+            return Ok(());
+        }
+        if let Some(formula) = spec.formula {
+            for (index, sum) in formula.sums.iter().enumerate() {
+                if let Some(value) =
+                    super::super::multi_aggregate::eval_row_arithmetic(&sum.expression, row)?
+                {
+                    state.formula_sums[index] = Some(match state.formula_sums[index] {
+                        Some(previous) => super::super::checked_aggregate_sum(previous, value)?,
+                        None => value,
+                    });
+                }
+            }
             return Ok(());
         }
         if spec.scalar_sum {
@@ -259,13 +285,14 @@ pub(super) fn execute<W: Write>(
     comparisons: &[(usize, crate::Operator, typed::Cell)],
     column_comparisons: &[(usize, crate::Operator, usize)],
     sum: Option<&BoundSum>,
+    formula: Option<&BoundFormula>,
     row_filters: Option<&super::row_filters::RowFilters>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if relations[0].names.is_empty() {
         return Err(invalid("JOIN requires nonempty table schemas"));
     }
-    let selected = if query.scalar_sum.is_some() {
+    let selected = if query.scalar_sum.is_some() || query.scalar_formula.is_some() {
         Vec::new()
     } else {
         output_columns(query, relations, initial_step)?
@@ -286,6 +313,7 @@ pub(super) fn execute<W: Write>(
         column_comparisons,
         sum,
         scalar_sum: query.scalar_sum.is_some(),
+        formula,
         row_filters,
         group_indices: query
             .grouped_count
@@ -333,6 +361,13 @@ pub(super) fn execute<W: Write>(
     if let Some(sum) = sum {
         for &index in &sum.indices {
             referenced[index] = true;
+        }
+    }
+    if let Some(formula) = formula {
+        for sum in &formula.sums {
+            for &index in &sum.indices {
+                referenced[index] = true;
+            }
         }
     }
     if let Some(filters) = row_filters {
@@ -407,7 +442,7 @@ pub(super) fn execute<W: Write>(
             any: step.any,
         });
     }
-    if spec.group_indices.is_none() && !spec.scalar_sum {
+    if spec.group_indices.is_none() && !spec.scalar_sum && formula.is_none() {
         write_join_header(output, &selected)?;
     }
     // A build can contain physical rows but no legal JOIN keys (only NULL
@@ -416,6 +451,9 @@ pub(super) fn execute<W: Write>(
     if stages.iter().any(|stage| stage.hash.is_empty()) {
         if query.grouped_count.is_some() {
             write_group_header(query, &selected, output)?;
+        } else if let Some(formula) = formula {
+            let value = evaluate_formula(formula, &vec![None; formula.sums.len()])?;
+            write_scalar_sum(query, value, true, output)?;
         } else if spec.scalar_sum {
             write_scalar_sum(query, None, true, output)?;
         }
@@ -435,6 +473,9 @@ pub(super) fn execute<W: Write>(
     let mut reader = TypedQueryReader::open(&paths[0], &projected_names)?;
     let mut scanned = 0u64;
     let mut state = OutputState::default();
+    if let Some(formula) = formula {
+        state.formula_sums.resize(formula.sums.len(), None);
+    }
     // The recursive visitor restores fact row length after each match.
     // Retain this allocation across the entire scan.
     let mut row = vec![typed::Cell::Null; fact_width];
@@ -462,6 +503,10 @@ pub(super) fn execute<W: Write>(
     }
     if scanned != relations[0].rows {
         return Err(invalid("JOIN input row count changed during scan"));
+    }
+    if let Some(formula) = formula {
+        let value = evaluate_formula(formula, &state.formula_sums)?;
+        return write_scalar_sum(query, value, true, output);
     }
     if spec.scalar_sum {
         return write_scalar_sum(query, state.scalar_sum, true, output);
