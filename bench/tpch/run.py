@@ -4,6 +4,7 @@ import argparse
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 import hashlib
+import math
 import os
 import re
 import stat
@@ -269,8 +270,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.require_verified and args.reference_dir is None:
         parser.error("--require-verified needs --reference-dir")
-    if args.runs < 1 or args.warmups < 0 or args.timeout <= 0:
-        parser.error("runs and timeout must be positive; warmups cannot be negative")
+    if (args.runs < 1 or args.warmups < 0
+            or not math.isfinite(args.timeout) or args.timeout <= 0):
+        parser.error("timeout must be finite and positive; runs must be positive; warmups cannot be negative")
     if args.expected_lineitem_rows is not None and args.expected_lineitem_rows < 0:
         parser.error("expected row count must be non-negative")
     try:

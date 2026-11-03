@@ -229,6 +229,19 @@ class RunnerTests(unittest.TestCase):
         canonical = b"q01\x00SELECT 1\x00q06\x00SELECT 6\x00"
         self.assertEqual(query_fingerprint(first), hashlib.sha256(canonical).hexdigest())
 
+    def test_cli_rejects_nonfinite_timeout(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from run import main
+        for value in ("nan", "inf", "-inf"):
+            with self.subTest(timeout=value):
+                errors = StringIO()
+                with redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+                    main(["--binary", "unused", "--database", "unused",
+                          "--queries-dir", "unused", f"--timeout={value}"])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("finite and positive", errors.getvalue())
+
     def test_error_and_timeout(self):
         def broken(_):
             raise RuntimeError("unsupported statement")
