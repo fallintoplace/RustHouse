@@ -12,6 +12,8 @@ cargo run -p rusthouse-cli -- sql "SELECT u.id, t.label FROM users u JOIN teams 
 
 Use qualified names for join columns, such as `u.team_id`. NULL join keys do not match. RustHouse supports INNER, LEFT, RIGHT, and FULL joins, with up to eight tables and eight equality keys per join. Aliases, projections, ORDER BY, LIMIT, and OFFSET are also supported.
 
+You can also write an inner equi-join as `FROM users u, teams t WHERE u.team_id = t.id`. Every added table needs a qualified equality key joined to a previous table. The same join limits apply. Comma joins with `OR` are not supported.
+
 **Limits for two-table joins:**
 
 - An unordered INNER JOIN can build a hash table with up to **262,144 rows** and **32 MiB** of retained cells. It can stream the other input without a fixed row limit.

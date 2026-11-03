@@ -1,5 +1,6 @@
 //! Bounded two-table equi-join syntax for persistent SQL tables.
 
+mod implicit;
 mod syntax;
 
 // Keep explained execution bounds and the executor's actual limits in sync.
@@ -94,6 +95,11 @@ pub struct JoinSelect {
 /// Return None for queries without a JOIN keyword after FROM.
 pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let tokens = tokenize(sql)?;
+    let tokens = implicit::rewrite(tokens)?;
+    parse_join_tokens(tokens)
+}
+
+fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseError> {
     if !matches!(tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT")) {
         return Ok(None);
     }
