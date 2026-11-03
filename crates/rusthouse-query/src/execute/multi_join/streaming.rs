@@ -79,6 +79,7 @@ struct OutputSpec<'a> {
     formula: Option<&'a BoundFormula>,
     distinct_index: Option<usize>,
     row_filters: Option<&'a super::row_filters::RowFilters>,
+    exists: &'a [super::exists::BoundExists],
     offset: usize,
     limit: Option<usize>,
 }
@@ -147,6 +148,11 @@ fn visit<W: Write>(
         }
         if spec.row_filters.is_some_and(|filters| !filters.passes(row)) {
             return Ok(());
+        }
+        for filter in spec.exists {
+            if !filter.passes(row)? {
+                return Ok(());
+            }
         }
         if let Some(formula) = spec.formula {
             for (index, sum) in formula.sums.iter().enumerate() {
@@ -327,6 +333,7 @@ pub(super) fn execute<W: Write>(
     formula: Option<&BoundFormula>,
     distinct_index: Option<usize>,
     row_filters: Option<&super::row_filters::RowFilters>,
+    exists: &[super::exists::BoundExists],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if relations[0].names.is_empty() {
@@ -356,6 +363,7 @@ pub(super) fn execute<W: Write>(
         formula,
         distinct_index,
         row_filters,
+        exists,
         group_indices: query
             .grouped_count
             .as_ref()
@@ -416,6 +424,12 @@ pub(super) fn execute<W: Write>(
     }
     if let Some(filters) = row_filters {
         for &index in &filters.indices {
+            referenced[index] = true;
+        }
+    }
+    for filter in exists {
+        referenced[filter.equality] = true;
+        if let Some(index) = filter.inequality {
             referenced[index] = true;
         }
     }

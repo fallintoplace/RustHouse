@@ -23,6 +23,16 @@ pub struct JoinCorrelatedExists {
     pub filters: Vec<JoinExistsFilter>,
 }
 
+impl JoinCorrelatedExists {
+    /// Outer sources and output settings; execute the complete plan with its filters.
+    pub fn outer(&self) -> &JoinSelect {
+        &self.outer
+    }
+    pub fn cap_rows(&mut self, cap: usize) {
+        self.outer.limit = Some(self.outer.limit.map_or(cap, |limit| limit.min(cap)));
+    }
+}
+
 fn keyword(token: &Token, name: &str) -> bool {
     matches!(token, Token::Word(word) if word.eq_ignore_ascii_case(name))
 }
@@ -252,6 +262,13 @@ mod tests {
             _ => return Err(ParseError("unknown table".into())),
         };
         Ok(names.iter().map(|name| (*name).to_owned()).collect())
+    }
+
+    #[test]
+    fn detects_only_top_level_exists_tokens() {
+        assert!(super::super::has_top_level_exists("SELECT * FROM a JOIN b ON a.id = b.id WHERE NOT EXISTS (SELECT * FROM c WHERE c.id = a.id)").unwrap());
+        assert!(!super::super::has_top_level_exists("SELECT * FROM a JOIN b ON a.id = b.id WHERE a.name = 'EXISTS' -- EXISTS\n ORDER BY a.id").unwrap());
+        assert!(!super::super::has_top_level_exists("SELECT * FROM a JOIN b ON a.id = b.id WHERE a.id IN (SELECT id FROM c WHERE EXISTS (SELECT * FROM d))").unwrap());
     }
 
     #[test]

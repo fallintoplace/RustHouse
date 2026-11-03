@@ -27,6 +27,7 @@ fn streaming_inner_joins_can_emit_more_than_the_materialized_row_cap() {
         formula: None,
         distinct_index: None,
         row_filters: None,
+        exists: &[],
         offset: 0,
         limit: None,
     };
@@ -77,6 +78,7 @@ fn streaming_inner_join_still_respects_explicit_limit() {
         formula: None,
         distinct_index: None,
         row_filters: None,
+        exists: &[],
         offset: 0,
         limit: Some(2),
     };
