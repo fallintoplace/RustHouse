@@ -18,6 +18,15 @@ pub struct MerkleAbsenceProof {
     pub after: Option<ProvenNeighbor>,
 }
 
+fn authenticated_neighbor(
+    trusted_root: [u8; 32],
+    leaf_count: usize,
+    neighbor: &ProvenNeighbor,
+) -> bool {
+    neighbor.proof.leaf_count == leaf_count
+        && MerkleInventory::verify_proof(trusted_root, &neighbor.object, &neighbor.proof)
+}
+
 /// Produce authenticated immediate neighbors of an absent key.
 ///
 /// An existing key cannot be proven absent. Empty inventories have a zero-leaf
@@ -66,23 +75,19 @@ pub fn verify_absence(trusted_root: [u8; 32], key: &str, proof: &MerkleAbsencePr
             && proof.after.is_none()
             && MerkleInventory::new(&[]).is_ok_and(|inventory| inventory.root() == trusted_root);
     }
-    let verified = |neighbor: &ProvenNeighbor| {
-        neighbor.proof.leaf_count == proof.leaf_count
-            && MerkleInventory::verify_proof(trusted_root, &neighbor.object, &neighbor.proof)
-    };
     match (&proof.before, &proof.after) {
         (Some(before), Some(after)) => {
-            verified(before)
-                && verified(after)
+            authenticated_neighbor(trusted_root, proof.leaf_count, before)
+                && authenticated_neighbor(trusted_root, proof.leaf_count, after)
                 && before.object.key.as_str() < key
                 && key < after.object.key.as_str()
                 && before.proof.leaf_index.checked_add(1) == Some(after.proof.leaf_index)
         }
         (None, Some(after)) => {
-            verified(after) && after.proof.leaf_index == 0 && key < after.object.key.as_str()
+            authenticated_neighbor(trusted_root, proof.leaf_count, after) && after.proof.leaf_index == 0 && key < after.object.key.as_str()
         }
         (Some(before), None) => {
-            verified(before)
+            authenticated_neighbor(trusted_root, proof.leaf_count, before)
                 && before.proof.leaf_index.checked_add(1) == Some(proof.leaf_count)
                 && before.object.key.as_str() < key
         }
