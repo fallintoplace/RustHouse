@@ -344,6 +344,47 @@ mod exponent_tests {
 }
 
 #[cfg(test)]
+mod case_negative_literal_tests {
+    use super::*;
+
+    #[test]
+    fn numbers_after_case_keywords_keep_their_unary_minus() {
+        assert_eq!(
+            tokenize("CASE WHEN -1 THEN -2 ELSE -3 END").unwrap(),
+            vec![
+                Token::Word("CASE".into()),
+                Token::Word("WHEN".into()),
+                Token::Number("-1".into()),
+                Token::Word("THEN".into()),
+                Token::Number("-2".into()),
+                Token::Word("ELSE".into()),
+                Token::Number("-3".into()),
+                Token::Word("END".into()),
+            ],
+        );
+        assert_eq!(
+            tokenize("CASE WHEN score-1 THEN value-2 ELSE cost-3 END").unwrap(),
+            vec![
+                Token::Word("CASE".into()),
+                Token::Word("WHEN".into()),
+                Token::Word("score".into()),
+                Token::Minus,
+                Token::Number("1".into()),
+                Token::Word("THEN".into()),
+                Token::Word("value".into()),
+                Token::Minus,
+                Token::Number("2".into()),
+                Token::Word("ELSE".into()),
+                Token::Word("cost".into()),
+                Token::Minus,
+                Token::Number("3".into()),
+                Token::Word("END".into()),
+            ],
+        );
+    }
+}
+
+#[cfg(test)]
 mod quoted_identifier_fast_path_tests {
     use super::*;
 
@@ -491,43 +532,3 @@ mod doubled_equals_tests {
     }
 }
 
-#[cfg(test)]
-mod case_negative_literal_tests {
-    use super::*;
-
-    #[test]
-    fn numbers_after_case_keywords_keep_their_unary_minus() {
-        assert_eq!(
-            tokenize("CASE WHEN -1 THEN -2 ELSE -3 END").unwrap(),
-            vec![
-                Token::Word("CASE".into()),
-                Token::Word("WHEN".into()),
-                Token::Number("-1".into()),
-                Token::Word("THEN".into()),
-                Token::Number("-2".into()),
-                Token::Word("ELSE".into()),
-                Token::Number("-3".into()),
-                Token::Word("END".into()),
-            ],
-        );
-        assert_eq!(
-            tokenize("CASE WHEN score-1 THEN value-2 ELSE cost-3 END").unwrap(),
-            vec![
-                Token::Word("CASE".into()),
-                Token::Word("WHEN".into()),
-                Token::Word("score".into()),
-                Token::Minus,
-                Token::Number("1".into()),
-                Token::Word("THEN".into()),
-                Token::Word("value".into()),
-                Token::Minus,
-                Token::Number("2".into()),
-                Token::Word("ELSE".into()),
-                Token::Word("cost".into()),
-                Token::Minus,
-                Token::Number("3".into()),
-                Token::Word("END".into()),
-            ],
-        );
-    }
-}
