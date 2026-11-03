@@ -4,6 +4,14 @@ use std::collections::HashSet;
 
 const MAX_SOURCES: usize = 20;
 
+fn valid_source_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FragmentSource {
     pub node: String,
@@ -39,18 +47,8 @@ pub fn choose_erasure_sources(
     }
     let mut nodes = HashSet::new();
     for source in sources {
-        if source.node.is_empty()
-            || source.node.len() > 64
-            || source.zone.is_empty()
-            || source.zone.len() > 64
-            || !source
-                .node
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            || !source
-                .zone
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        if !valid_source_label(&source.node)
+            || !valid_source_label(&source.zone)
             || source.fragment >= 128
             || source.transfer_cost == 0
             || !nodes.insert(source.node.as_str())
