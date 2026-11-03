@@ -30,7 +30,8 @@ pub(super) fn bind_grouped_filters(
             })?;
             match filter {
                 GroupedFilter::Truthy(_) => Ok(Some(BoundGroupedFilter::Truthy(index))),
-                GroupedFilter::Comparison { operator, literal, .. } => {
+                GroupedFilter::Comparison { operator, literal, .. }
+                | GroupedFilter::CaseElseZero { operator, literal, .. } => {
                     let data_type = types.get(name).ok_or_else(|| {
                         ExecutionError::Invalid(format!("unknown grouped filter column: {name}"))
                     })?;

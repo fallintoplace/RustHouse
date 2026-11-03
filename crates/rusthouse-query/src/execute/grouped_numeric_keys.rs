@@ -474,6 +474,11 @@ pub(super) fn execute<W: Write>(
             {
                 if let Some(filter) = filter_indices.get(metric).and_then(Option::as_ref) {
                     if !filter.passes(&batch, row, numeric_filter_enabled)? {
+                        // CASE ... ELSE 0 contributes a zero for unmatched rows.
+                        // Plain SUMIF and CASE without ELSE still skip the row.
+                        if matches!(filters.get(metric), Some(Some(crate::GroupedFilter::CaseElseZero { .. }))) {
+                            state.update(Number::Unsigned(0))?;
+                        }
                         continue;
                     }
                 }
