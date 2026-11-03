@@ -74,6 +74,7 @@ struct OutputSpec<'a> {
     comparisons: &'a [(usize, crate::Operator, typed::Cell)],
     column_comparisons: &'a [(usize, crate::Operator, usize)],
     group_indices: Option<Vec<usize>>,
+    group_year: Option<usize>,
     sum: Option<&'a BoundSum>,
     scalar_sum: bool,
     grouped_min: bool,
@@ -116,6 +117,20 @@ fn compare_sum_values(
             nulls_first,
         ),
     }
+}
+
+fn group_value(row: &[typed::Cell], index: usize, year: bool) -> typed::Cell {
+    if !year {
+        return row[index].clone();
+    }
+    let days = match row[index] {
+        typed::Cell::Numeric(super::super::Number::Unsigned(days)) => days as i64,
+        typed::Cell::Numeric(super::super::Number::Signed(days)) => days as i64,
+        _ => return typed::Cell::Null,
+    };
+    typed::Cell::Numeric(super::super::Number::Signed(i128::from(
+        crate::date_scalar::civil_from_days(days).0,
+    )))
 }
 
 fn visit<W: Write>(
@@ -188,8 +203,13 @@ fn visit<W: Write>(
         }
         if let Some(indices) = &spec.group_indices {
             state.group_key.clear();
-            for &index in indices {
-                state.group_key.push(row[index].key());
+            for (position, &index) in indices.iter().enumerate() {
+                let key = if spec.group_year == Some(position) {
+                    group_value(row, index, true).key()
+                } else {
+                    row[index].key()
+                };
+                state.group_key.push(key);
             }
             let value = match spec.sum {
                 Some(sum) => {
@@ -254,7 +274,13 @@ fn visit<W: Write>(
                 state.groups.insert(
                     state.group_key.clone(),
                     (
-                        indices.iter().map(|&index| row[index].clone()).collect(),
+                        indices
+                            .iter()
+                            .enumerate()
+                            .map(|(position, &index)| {
+                                group_value(row, index, spec.group_year == Some(position))
+                            })
+                            .collect(),
                         if spec.distinct_index.is_some() { 0 } else { 1 },
                         value,
                         spec.distinct_index.map(|_| HashSet::new()),
@@ -381,6 +407,7 @@ pub(super) fn execute<W: Write>(
         row_filters,
         exists,
         avg,
+        group_year: query.grouped_year.as_ref().map(|(position, _)| *position),
         group_indices: query
             .grouped_count
             .as_ref()
@@ -716,7 +743,11 @@ pub(super) fn execute<W: Write>(
                 } else {
                     let key = if index < metric { index } else { index - 1 };
                     let source = selected[key].0;
-                    typed::write_typed_value(output, &values[key], spec.types[source])?;
+                    if spec.group_year == Some(key) {
+                        typed::write_value(output, &values[key])?;
+                    } else {
+                        typed::write_typed_value(output, &values[key], spec.types[source])?;
+                    }
                 }
             }
             writeln!(output)?;

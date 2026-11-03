@@ -416,7 +416,7 @@ fn output_columns(
     }
     let mut selected: Vec<(usize, String, Option<usize>)> = Vec::new();
     if let Some(columns) = &query.columns {
-        for column in columns {
+        for (position, column) in columns.iter().enumerate() {
             if column.name == "*" {
                 let relation = relations
                     .iter()
@@ -434,7 +434,13 @@ fn output_columns(
             } else {
                 selected.push((
                     column_index(relations, column)?,
-                    if column.relation.is_empty() {
+                    if let Some((_, alias)) = query
+                        .grouped_year
+                        .as_ref()
+                        .filter(|(index, _)| *index == position)
+                    {
+                        alias.clone()
+                    } else if column.relation.is_empty() {
                         column.name.clone()
                     } else {
                         format!("{}.{}", column.relation, column.name)
@@ -974,6 +980,32 @@ fn execute_multi_join_inner<W: Write>(
     } else {
         None
     };
+
+    if let Some((position, alias)) = &query.grouped_year {
+        if relations.iter().any(|relation| {
+            relation
+                .names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(alias))
+        }) {
+            return Err(invalid("EXTRACT YEAR alias conflicts with a source column"));
+        }
+        let column = query
+            .columns
+            .as_ref()
+            .and_then(|columns| columns.get(*position))
+            .ok_or_else(|| invalid("EXTRACT YEAR requires a projected column"))?;
+        if query.grouped_count.is_none()
+            || query.kind != JoinType::Inner
+            || query.steps.iter().any(|step| step.kind != JoinType::Inner)
+        {
+            return Err(invalid("EXTRACT YEAR requires a grouped INNER join"));
+        }
+        let kind = typed::base_type(column_type(&relations, column_index(&relations, column)?));
+        if !matches!(kind, "Date" | "Date32") {
+            return Err(invalid("EXTRACT YEAR requires Date or Date32"));
+        }
+    }
 
     let initial_step = JoinStep {
         table: query.right.clone(),
