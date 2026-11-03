@@ -1,5 +1,6 @@
 //! Bounded left-deep execution for chained joins over persistent tables.
 
+mod correlated_avg;
 mod exists;
 mod row_filters;
 mod streaming;
@@ -805,7 +806,7 @@ pub fn execute_multi_join<W: Write>(
     paths: &[PathBuf],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    execute_multi_join_inner(query, paths, None, output)
+    execute_multi_join_inner(query, paths, None, None, output)
 }
 
 /// Execute a complete correlated join plan. Callers hold a read lock across all paths.
@@ -819,14 +820,26 @@ pub fn execute_correlated_join<W: Write>(
         plan.outer(),
         paths,
         Some((&plan.filters, inner_paths)),
+        None,
         output,
     )
+}
+
+/// Execute a correlated AVG plan while callers hold the database read lock.
+pub fn execute_correlated_avg<W: Write>(
+    plan: &crate::JoinCorrelatedAvg,
+    paths: &[PathBuf],
+    inner: &std::path::Path,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    execute_multi_join_inner(plan.outer(), paths, None, Some((plan, inner)), output)
 }
 
 fn execute_multi_join_inner<W: Write>(
     query: &JoinSelect,
     paths: &[PathBuf],
     exists_plan: Option<(&[crate::JoinExistsFilter], &[PathBuf])>,
+    avg_plan: Option<(&crate::JoinCorrelatedAvg, &std::path::Path)>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if query
@@ -909,6 +922,18 @@ fn execute_multi_join_inner<W: Write>(
         exists::bind(filters, inner_paths, &relations)?
     } else {
         Vec::new()
+    };
+    let avg = if let Some((plan, path)) = avg_plan {
+        if query.scalar_formula.is_none()
+            || query.grouped_count.is_some()
+            || query.kind != JoinType::Inner
+            || query.steps.iter().any(|step| step.kind != JoinType::Inner)
+        {
+            return Err(invalid("correlated AVG requires scalar INNER JOIN formula"));
+        }
+        Some(correlated_avg::bind(plan, path, &relations)?)
+    } else {
+        None
     };
 
     let initial_step = JoinStep {
@@ -1141,6 +1166,7 @@ fn execute_multi_join_inner<W: Write>(
             distinct_index,
             row_filters.as_ref(),
             &exists,
+            avg.as_ref(),
             output,
         );
     }

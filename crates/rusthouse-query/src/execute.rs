@@ -68,7 +68,8 @@ mod sort;
 mod typed;
 pub use join::execute_join;
 pub use multi_join::{
-    bind_join_having_subquery, bind_join_in_subquery, execute_correlated_join, execute_multi_join,
+    bind_join_having_subquery, bind_join_in_subquery, execute_correlated_avg,
+    execute_correlated_join, execute_multi_join,
 };
 use sort::{MAX_SORTED_ROWS, SortedRows};
 mod multi_aggregate;
