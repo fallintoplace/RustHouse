@@ -377,6 +377,7 @@ fn parallel_grouped_integer_sum(
                                             &mut groups[group].1,
                                             &batch[value_index],
                                             row,
+                                            true,
                                         )?;
                                     }
                                 }
