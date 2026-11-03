@@ -59,6 +59,7 @@ mod derived_join_count;
 mod grouped_distinct;
 mod grouped_filter;
 mod grouped_generated;
+mod grouped_minute;
 mod grouped_multi;
 mod grouped_multi_distinct;
 mod grouped_numeric_keys;
@@ -467,7 +468,9 @@ pub fn execute<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let mut buffered = BufWriter::new(output);
-    if !query.grouped_affine.is_empty() {
+    if query.grouped_minute.is_some() {
+        grouped_minute::execute(query, part, &mut buffered)?;
+    } else if !query.grouped_affine.is_empty() {
         let path = part.ok_or_else(|| {
             ExecutionError::Invalid("grouped arithmetic requires a stored table".into())
         })?;

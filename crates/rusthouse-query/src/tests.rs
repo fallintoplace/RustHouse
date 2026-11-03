@@ -22,6 +22,7 @@ fn parses_scalar_and_table_queries() {
         Select {
             grouped_literal: None,
             grouped_affine: Vec::new(),
+            grouped_minute: None,
             grouped_expressions: Vec::new(),
             hidden_aggregate: false,
             projection: Projection::Literal(-42),
@@ -43,6 +44,7 @@ fn parses_scalar_and_table_queries() {
         Select {
             grouped_literal: None,
             grouped_affine: Vec::new(),
+            grouped_minute: None,
             grouped_expressions: Vec::new(),
             hidden_aggregate: false,
             projection: Projection::Columns(vec!["id".into(), "price".into()]),
