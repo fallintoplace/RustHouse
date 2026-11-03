@@ -1876,26 +1876,31 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
     let mut comma_offset = None;
     let mut limit = if parser.keyword("LIMIT") {
-        let value = parser.number()?;
-        if !value.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(ParseError("LIMIT must be a non-negative integer".into()));
-        }
-        let first = value
-            .parse::<usize>()
-            .map_err(|_| ParseError("LIMIT is too large".into()))?;
-        if parser.take(Token::Comma) {
+        if parser.keyword("ALL") {
+            // PostgreSQL treats LIMIT ALL as no limit, including with OFFSET.
+            None
+        } else {
             let value = parser.number()?;
             if !value.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Err(ParseError("LIMIT must be a non-negative integer".into()));
             }
-            comma_offset = Some(first);
-            Some(
-                value
-                    .parse::<usize>()
-                    .map_err(|_| ParseError("LIMIT is too large".into()))?,
-            )
-        } else {
-            Some(first)
+            let first = value
+                .parse::<usize>()
+                .map_err(|_| ParseError("LIMIT is too large".into()))?;
+            if parser.take(Token::Comma) {
+                let value = parser.number()?;
+                if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(ParseError("LIMIT must be a non-negative integer".into()));
+                }
+                comma_offset = Some(first);
+                Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| ParseError("LIMIT is too large".into()))?,
+                )
+            } else {
+                Some(first)
+            }
         }
     } else {
         None
