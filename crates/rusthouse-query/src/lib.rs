@@ -866,7 +866,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             }
             Projection::Count
         } else {
+            let wrapped = parser.take(Token::LParen);
             let column = parser.word()?;
+            if wrapped && !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after COUNT column grouping".into()));
+            }
             if !parser.take(Token::RParen) {
                 return Err(ParseError("expected ')' after COUNT(column)".into()));
             }
@@ -2134,5 +2138,20 @@ mod where_boolean_literal_tests {
                 parse_select(&numeric_sql).unwrap()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod parenthesized_count_column_tests {
+    use crate::{Projection, parse_select};
+
+    #[test]
+    fn grouping_a_count_column_does_not_change_its_projection() {
+        let query = parse_select("SELECT COUNT((number)) FROM numbers(3)").unwrap();
+        let Projection::CountColumn { column } = query.projection else {
+            panic!("expected COUNT(column)");
+        };
+        assert_eq!(column, "number");
+        assert!(parse_select("SELECT COUNT((number) FROM numbers(3)").is_err());
     }
 }
