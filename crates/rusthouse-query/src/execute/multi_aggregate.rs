@@ -382,6 +382,129 @@ pub(super) fn eval_row_arithmetic(
     row: &[Cell],
 ) -> Result<Option<Number>, ExecutionError> {
     match expression {
+        BoundExpr::Case {
+            branches,
+            else_expr,
+        } => {
+            for (condition, value) in branches {
+                let matched = match eval_row_arithmetic(condition, row)? {
+                    Some(Number::Unsigned(value)) => value != 0,
+                    Some(Number::Signed(value)) => value != 0,
+                    Some(Number::Float(value)) => value != 0.0,
+                    None => false,
+                };
+                if matched {
+                    return eval_row_arithmetic(value, row);
+                }
+            }
+            match else_expr {
+                Some(value) => eval_row_arithmetic(value, row),
+                None => Ok(None),
+            }
+        }
+        BoundExpr::TextCompare {
+            index,
+            operator,
+            value,
+        } => match &row[*index] {
+            Cell::Null => Ok(None),
+            Cell::Text(source) => {
+                let order = source.cmp(value);
+                let result = match operator {
+                    crate::Operator::Eq => order.is_eq(),
+                    crate::Operator::Ne => order.is_ne(),
+                    crate::Operator::Lt => order.is_lt(),
+                    crate::Operator::Le => order.is_le(),
+                    crate::Operator::Gt => order.is_gt(),
+                    crate::Operator::Ge => order.is_ge(),
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unsupported text comparison".into(),
+                        ));
+                    }
+                };
+                Ok(Some(Number::Unsigned(u128::from(result))))
+            }
+            _ => Err(ExecutionError::Invalid(
+                "text expression requires a String column".into(),
+            )),
+        },
+        BoundExpr::TextLike {
+            index,
+            pattern,
+            negated,
+            case_insensitive,
+        } => match &row[*index] {
+            Cell::Null => Ok(None),
+            Cell::Text(source) => Ok(Some(Number::Unsigned(u128::from(
+                typed::text_pattern_matches(source, pattern, *case_insensitive) != *negated,
+            )))),
+            _ => Err(ExecutionError::Invalid(
+                "LIKE expression requires a String column".into(),
+            )),
+        },
+        BoundExpr::TextLength(index) => match &row[*index] {
+            Cell::Null => Ok(None),
+            Cell::Text(source) => Ok(Some(Number::Unsigned(source.len() as u128))),
+            _ => Err(ExecutionError::Invalid(
+                "length requires a String column".into(),
+            )),
+        },
+        BoundExpr::Compare(left, operator, right) => {
+            let Some(left) = eval_row_arithmetic(left, row)? else {
+                return Ok(None);
+            };
+            let Some(right) = eval_row_arithmetic(right, row)? else {
+                return Ok(None);
+            };
+            let order = compare_expression_numbers(left, right);
+            let result = match operator {
+                crate::Operator::Eq => order.is_some_and(|order| order.is_eq()),
+                crate::Operator::Ne => order.is_none_or(|order| order.is_ne()),
+                crate::Operator::Lt => order.is_some_and(|order| order.is_lt()),
+                crate::Operator::Le => order.is_some_and(|order| order.is_le()),
+                crate::Operator::Gt => order.is_some_and(|order| order.is_gt()),
+                crate::Operator::Ge => order.is_some_and(|order| order.is_ge()),
+                _ => {
+                    return Err(ExecutionError::Invalid(
+                        "unsupported numeric comparison".into(),
+                    ));
+                }
+            };
+            Ok(Some(Number::Unsigned(u128::from(result))))
+        }
+        BoundExpr::And(left, right) | BoundExpr::Or(left, right) => {
+            let as_bool = |value: Number| match value {
+                Number::Unsigned(v) => v != 0,
+                Number::Signed(v) => v != 0,
+                Number::Float(v) => v != 0.0,
+            };
+            let is_and = matches!(expression, BoundExpr::And(..));
+            let left = eval_row_arithmetic(left, row)?.map(as_bool);
+            if left == Some(!is_and) {
+                return Ok(Some(Number::Unsigned(u128::from(!is_and))));
+            }
+            let right = eval_row_arithmetic(right, row)?.map(as_bool);
+            let result = match (left, right) {
+                (Some(a), Some(b)) => Some(if is_and { a && b } else { a || b }),
+                (Some(a), None) => {
+                    if a != is_and {
+                        Some(a)
+                    } else {
+                        None
+                    }
+                }
+                (None, Some(b)) => {
+                    if b != is_and {
+                        Some(b)
+                    } else {
+                        None
+                    }
+                }
+                (None, None) => None,
+            };
+            Ok(result.map(|value| Number::Unsigned(u128::from(value))))
+        }
         BoundExpr::Column(index) => match row.get(*index) {
             Some(Cell::Numeric(value)) => Ok(Some(*value)),
             Some(Cell::Null) => Ok(None),
@@ -440,9 +563,6 @@ pub(super) fn eval_row_arithmetic(
                 _ => unreachable!(),
             }
         }
-        _ => Err(ExecutionError::Invalid(
-            "unsupported joined aggregate expression".into(),
-        )),
     }
 }
 
