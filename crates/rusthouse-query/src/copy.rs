@@ -57,6 +57,12 @@ fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseErro
         if parser.keyword(keyword) {
             return Ok(format);
         }
+        if let Some(Token::String(value)) = parser.tokens.get(parser.index) {
+            if value.eq_ignore_ascii_case(keyword) {
+                parser.index += 1;
+                return Ok(format);
+            }
+        }
     }
     Err(ParseError(
         "COPY format must be CSV, TSV, SSV or JSONEachRow".into(),
@@ -285,5 +291,25 @@ mod copy_header_first_tests {
         ] {
             assert!(parse_copy_from(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod quoted_copy_format_tests {
+    use super::*;
+
+    #[test]
+    fn quoted_format_uses_same_allowlist_as_keywords() {
+        let result = parse_copy_from(
+            "COPY data FROM 'input.csv' WITH (FORMAT 'csv', HEADER TRUE)"
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.format, CopyFormat::Csv);
+        assert!(result.header);
+        assert!(parse_copy_from(
+            "COPY data FROM 'input.csv' WITH (FORMAT 'unknown')"
+        )
+        .is_err());
     }
 }
