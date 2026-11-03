@@ -268,6 +268,18 @@ pub(super) fn follows_binary_minus_context(tokens: &[Token]) -> bool {
     }
 }
 
+pub(super) fn scan_signed_radix_number(
+    sql: &str,
+    index: &mut usize,
+    radix: u32,
+) -> Result<Token, ParseError> {
+    *index += 1;
+    let Token::Number(value) = scan_radix_number(sql, index, radix)? else {
+        unreachable!("radix scanner always returns a number")
+    };
+    Ok(Token::Number(format!("-{value}")))
+}
+
 pub(super) fn punctuation_token(byte: u8) -> Token {
     match byte {
         b'*' => Token::Star,
