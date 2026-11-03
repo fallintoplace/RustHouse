@@ -114,7 +114,7 @@ pub struct JoinSelect {
     pub grouped_distinct: Option<JoinColumn>,
     /// SUM(CASE WHEN ... THEN 1 ELSE 0 END) metrics for one grouped key.
     pub grouped_case_counts: Vec<(crate::GroupedFilter, String)>,
-    /// A numeric SUM over a column of a chained INNER join.
+    /// A numeric SUM over an INNER join.
     pub grouped_sum: Option<GroupedSum>,
     /// Position of the grouped SUM in the SELECT list.
     pub grouped_sum_position: Option<usize>,
@@ -1413,7 +1413,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             "JOIN expression SUM requires INNER joins and comparison filters".into(),
         ));
     }
-    let chained_comparison_filters = !steps.is_empty()
+    let chained_comparison_filters = (!steps.is_empty() || grouped_sum.is_some())
         && kind == JoinType::Inner
         && steps.iter().all(|step| step.kind == JoinType::Inner)
         && matches!(
@@ -1475,13 +1475,9 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         ));
     }
     if grouped_sum.is_some()
-        && (steps.is_empty()
-            || kind != JoinType::Inner
-            || steps.iter().any(|step| step.kind != JoinType::Inner))
+        && (kind != JoinType::Inner || steps.iter().any(|step| step.kind != JoinType::Inner))
     {
-        return Err(ParseError(
-            "grouped SUM requires a chained INNER JOIN".into(),
-        ));
+        return Err(ParseError("grouped SUM requires INNER joins".into()));
     }
     let grouped_count = if grouped_count_projection {
         let projected_keys = columns
