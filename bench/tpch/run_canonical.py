@@ -67,7 +67,7 @@ def command(binary, database, queries_dir, reference_dir, report_path,
             "--queries-dir", str(queries_dir),
             "--reference-dir", str(reference_dir),
             "--require-22", "--require-verified",
-            "--comparison", "unordered",
+            "--comparison", "unordered-header",
             "--expected-lineitem-rows", "6001215",
             "--runs", str(runs), "--warmups", str(warmups),
             "--timeout", str(timeout), "--output", str(report_path)]
