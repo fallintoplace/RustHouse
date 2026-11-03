@@ -17,7 +17,9 @@ use self::syntax::*;
 pub use correlated::{
     JoinCorrelatedExists, JoinExistsFilter, parse_join_correlated_exists_with_schema,
 };
-pub use correlated_avg::{JoinCorrelatedAvg, parse_join_correlated_avg_with_schema};
+pub use correlated_avg::{
+    JoinCorrelatedAvg, has_join_correlated_avg, parse_join_correlated_avg_with_schema,
+};
 pub use exists_lookup::{JoinExistsKey, JoinExistsLookup};
 
 use super::{ParseError, Parser, Token, tokenize};

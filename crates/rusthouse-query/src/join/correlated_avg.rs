@@ -26,6 +26,60 @@ fn keyword(token: &Token, name: &str) -> bool {
     matches!(token, Token::Word(word) if word.eq_ignore_ascii_case(name))
 }
 
+/// Detect a top-level comparison to a SELECT containing an AVG call.
+pub fn has_join_correlated_avg(sql: &str) -> Result<bool, ParseError> {
+    let tokens = tokenize(sql)?;
+    let mut depth = 0usize;
+    let mut where_seen = false;
+    for (index, token) in tokens.iter().enumerate() {
+        if depth == 0 && keyword(token, "WHERE") {
+            where_seen = true;
+        }
+        if depth == 0
+            && where_seen
+            && ["GROUP", "ORDER", "LIMIT", "OFFSET"]
+                .iter()
+                .any(|name| keyword(token, name))
+        {
+            break;
+        }
+        if depth == 0
+            && where_seen
+            && *token == Token::Operator(Operator::Lt)
+            && tokens.get(index + 1) == Some(&Token::LParen)
+            && tokens
+                .get(index + 2)
+                .is_some_and(|next| keyword(next, "SELECT"))
+        {
+            let mut inner_depth = 1usize;
+            for i in index + 2..tokens.len() {
+                if inner_depth == 1
+                    && keyword(&tokens[i], "AVG")
+                    && tokens.get(i + 1) == Some(&Token::LParen)
+                {
+                    return Ok(true);
+                }
+                match tokens[i] {
+                    Token::LParen => inner_depth += 1,
+                    Token::RParen => {
+                        inner_depth -= 1;
+                        if inner_depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
 /// Parse one conjunctive comparison to an uncorrelated-per-key AVG lookup.
 pub fn parse_join_correlated_avg_with_schema(
     sql: &str,
@@ -223,5 +277,24 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn detects_avg_subquery_without_matching_literals_or_column_names() {
+        let query = include_str!("../../../../bench/tpch/queries/q17.sql");
+        assert!(has_join_correlated_avg(query).unwrap());
+        assert!(
+            !has_join_correlated_avg(
+                "SELECT a.x FROM a JOIN b ON a.id = b.id WHERE a.x = 'AVG(1)' -- AVG(x)\n"
+            )
+            .unwrap()
+        );
+        assert!(
+            !has_join_correlated_avg(
+                "SELECT a.x FROM a JOIN b ON a.id = b.id WHERE a.x < (SELECT avg FROM t)"
+            )
+            .unwrap()
+        );
+        assert!(!has_join_correlated_avg("SELECT AVG(a) FROM t WHERE a = 1").unwrap());
     }
 }
