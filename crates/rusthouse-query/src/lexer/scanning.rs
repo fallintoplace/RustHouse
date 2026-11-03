@@ -142,6 +142,7 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             (b'\\', Some(b'b')) => Some(8),
             (b'\\', Some(b'f')) => Some(12),
             (b'\\', Some(b'v')) => Some(11),
+            (b'\\', Some(b'e')) => Some(27),
             (b'\'', Some(b'\'')) => Some(b'\''),
             _ => None,
         };
@@ -508,6 +509,24 @@ mod escaped_string_bulk_span_tests {
         }
         for sql in ["'prefix\\nunterminated", "'prefix\\q"] {
             assert!(scan_string(sql, &mut 0).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_escape_character_tests {
+    use super::*;
+
+    #[test]
+    fn reads_escape_control_byte_without_changing_other_escapes() {
+        for (sql, expected) in [
+            (r"'one\etwo'", "one\u{001b}two"),
+            (r"'\e'", "\u{001b}"),
+            (r"'\e\n\_x'", "\u{001b}\n\\_x"),
+        ] {
+            let mut cursor = 0;
+            assert_eq!(scan_string(sql, &mut cursor).unwrap(), Token::String(expected.into()));
+            assert_eq!(cursor, sql.len());
         }
     }
 }
