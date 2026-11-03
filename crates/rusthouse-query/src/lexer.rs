@@ -68,12 +68,12 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
-            b'X' | b'x' if bytes.get(index + 1) == Some(&b'\'') => {
-                scan_hex_string(sql, &mut index)?
-            }
             b'E' | b'e' | b'N' | b'n' if bytes.get(index + 1) == Some(&b'\'') => {
                 index += 1;
                 scan_string(sql, &mut index)?
+            }
+            b'X' | b'x' if bytes.get(index + 1) == Some(&b'\'') => {
+                scan_hex_string(sql, &mut index)?
             }
             b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
