@@ -1,6 +1,7 @@
 //! Bounded left-deep execution for chained joins over persistent tables.
 
 mod correlated_avg;
+mod correlated_min;
 mod exists;
 mod row_filters;
 mod streaming;
@@ -482,6 +483,7 @@ fn required_physical_columns(
     relations: &[Relation],
     initial_step: &JoinStep,
     row_filters: Option<&row_filters::RowFilters>,
+    min_filter: Option<&correlated_min::BoundMin>,
 ) -> Result<Vec<Vec<usize>>, ExecutionError> {
     let mut required = relations
         .iter()
@@ -546,6 +548,10 @@ fn required_physical_columns(
         for &index in &filters.indices {
             retain_absolute(index);
         }
+    }
+    if let Some(filter) = min_filter {
+        retain_absolute(filter.outer_key);
+        retain_absolute(filter.outer_value);
     }
     for (step_index, step) in std::iter::once(initial_step)
         .chain(query.steps.iter())
@@ -824,7 +830,7 @@ pub fn execute_multi_join<W: Write>(
     paths: &[PathBuf],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    execute_multi_join_inner(query, paths, None, None, output)
+    execute_multi_join_inner(query, paths, None, None, None, output)
 }
 
 /// Execute a complete correlated join plan. Callers hold a read lock across all paths.
@@ -839,6 +845,7 @@ pub fn execute_correlated_join<W: Write>(
         paths,
         Some((&plan.filters, inner_paths)),
         None,
+        None,
         output,
     )
 }
@@ -850,7 +857,24 @@ pub fn execute_correlated_avg<W: Write>(
     inner: &std::path::Path,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    execute_multi_join_inner(plan.outer(), paths, None, Some((plan, inner)), output)
+    execute_multi_join_inner(plan.outer(), paths, None, Some((plan, inner)), None, output)
+}
+
+/// Execute a correlated MIN plan while callers hold a database read lock.
+pub fn execute_correlated_min<W: Write>(
+    plan: &crate::JoinCorrelatedMin,
+    paths: &[PathBuf],
+    inner_paths: &[PathBuf],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    execute_multi_join_inner(
+        plan.outer(),
+        paths,
+        None,
+        None,
+        Some((plan, inner_paths)),
+        output,
+    )
 }
 
 fn execute_multi_join_inner<W: Write>(
@@ -858,6 +882,7 @@ fn execute_multi_join_inner<W: Write>(
     paths: &[PathBuf],
     exists_plan: Option<(&[crate::JoinExistsFilter], &[PathBuf])>,
     avg_plan: Option<(&crate::JoinCorrelatedAvg, &std::path::Path)>,
+    min_plan: Option<(&crate::JoinCorrelatedMin, &[PathBuf])>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if query
@@ -1059,6 +1084,26 @@ fn execute_multi_join_inner<W: Write>(
             return Err(invalid("EXTRACT YEAR requires Date or Date32"));
         }
     }
+
+    let min_filter = if let Some((plan, inner_paths)) = min_plan {
+        if query.kind != JoinType::Inner
+            || query.steps.iter().any(|step| step.kind != JoinType::Inner)
+            || query.aggregate.is_some()
+            || query.grouped_count.is_some()
+            || query.scalar_sum.is_some()
+            || query.scalar_formula.is_some()
+        {
+            return Err(invalid("correlated MIN requires an INNER JOIN projection"));
+        }
+        Some(correlated_min::bind(
+            plan,
+            inner_paths,
+            &relations,
+            query.limit == Some(0),
+        )?)
+    } else {
+        None
+    };
 
     let initial_step = JoinStep {
         table: query.right.clone(),
@@ -1284,6 +1329,7 @@ fn execute_multi_join_inner<W: Write>(
         && query.steps.iter().all(|step| step.kind == JoinType::Inner)
         && (query.order_by.is_empty() || query.grouped_count.is_some())
         && query.aggregate.is_none()
+        && min_filter.is_none()
     {
         return streaming::execute(
             query,
@@ -1309,8 +1355,13 @@ fn execute_multi_join_inner<W: Write>(
         .as_ref()
         .map(|(column, not_null)| column_index(&relations, column).map(|index| (index, *not_null)))
         .transpose()?;
-    let required =
-        required_physical_columns(query, &relations, &initial_step, row_filters.as_ref())?;
+    let required = required_physical_columns(
+        query,
+        &relations,
+        &initial_step,
+        row_filters.as_ref(),
+        min_filter.as_ref(),
+    )?;
     let mut rows = read_projected_build_rows(
         &paths[0],
         &relations[0].names,
@@ -1475,7 +1526,11 @@ fn execute_multi_join_inner<W: Write>(
                                 )
                             }) && row_filters
                                 .as_ref()
-                                .is_none_or(|filters| filters.passes(&joined)))
+                                .is_none_or(|filters| filters.passes(&joined))
+                                && match &min_filter {
+                                    Some(filter) => filter.passes(&joined)?,
+                                    None => true,
+                                })
                         {
                             push_visible_row(&mut next, joined, &mut retained, filter)?;
                         }

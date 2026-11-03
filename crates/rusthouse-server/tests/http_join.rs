@@ -861,3 +861,99 @@ fn sql_http_executes_tpch_q8() {
     );
     fs::remove_dir_all(database).unwrap();
 }
+
+#[test]
+fn sql_http_executes_tpch_q2() {
+    let database = std::env::temp_dir().join(format!("rusthouse-http-q2-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    let cols = |values: &[(&str, &str)]| {
+        values
+            .iter()
+            .map(|(name, kind)| Column {
+                name: (*name).into(),
+                data_type: (*kind).into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |values: &[&str]| values.iter().map(|v| Some((*v).into())).collect::<Vec<_>>();
+    table(
+        &database,
+        "part",
+        &cols(&[
+            ("p_partkey", "UInt64"),
+            ("p_size", "UInt64"),
+            ("p_type", "String"),
+            ("p_mfgr", "String"),
+        ]),
+        &[row(&["1", "15", "SMALL BRASS", "M1"])],
+    );
+    table(
+        &database,
+        "region",
+        &cols(&[("r_regionkey", "UInt64"), ("r_name", "String")]),
+        &[row(&["1", "EUROPE"])],
+    );
+    table(
+        &database,
+        "nation",
+        &cols(&[
+            ("n_nationkey", "UInt64"),
+            ("n_regionkey", "UInt64"),
+            ("n_name", "String"),
+        ]),
+        &[row(&["1", "1", "FRANCE"]), row(&["2", "1", "GERMANY"])],
+    );
+    table(
+        &database,
+        "supplier",
+        &cols(&[
+            ("s_suppkey", "UInt64"),
+            ("s_nationkey", "UInt64"),
+            ("s_acctbal", "Float64"),
+            ("s_name", "String"),
+            ("s_address", "String"),
+            ("s_phone", "String"),
+            ("s_comment", "String"),
+        ]),
+        &[
+            row(&["11", "1", "50", "A", "a", "1", "aa"]),
+            row(&["22", "2", "80", "B", "b", "2", "bb"]),
+        ],
+    );
+    table(
+        &database,
+        "partsupp",
+        &cols(&[
+            ("ps_partkey", "UInt64"),
+            ("ps_suppkey", "UInt64"),
+            ("ps_supplycost", "Float64"),
+        ]),
+        &[row(&["1", "11", "10"]), row(&["1", "22", "10"])],
+    );
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let query = include_str!("../../../bench/tpch/queries/q02.sql");
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"s_acctbal\ts_name\tn_name\tp_partkey\tp_mfgr\ts_address\ts_phone\ts_comment\n80\tB\tGERMANY\t1\tM1\tb\t2\tbb\n50\tA\tFRANCE\t1\tM1\ta\t1\taa\n");
+    let limited = handle_request(
+        "POST",
+        "/?format=tsv-no-header",
+        query.as_bytes(),
+        &Config {
+            max_rows: 1,
+            ..config.clone()
+        },
+    );
+    assert_eq!(limited.status, "200 OK", "{:?}", limited.body);
+    assert_eq!(limited.body, b"80\tB\tGERMANY\t1\tM1\tb\t2\tbb\n");
+    let invalid = query.replace("min(ps_supplycost)", "min(missing)");
+    assert_eq!(
+        handle_request("POST", "/", invalid.as_bytes(), &config).status,
+        "400 Bad Request"
+    );
+    fs::remove_dir_all(database).unwrap();
+}
