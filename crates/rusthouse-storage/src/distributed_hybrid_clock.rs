@@ -17,6 +17,24 @@ impl HybridClock {
         Self { current: HybridTimestamp { physical_ms: now_ms, logical: 0, node } }
     }
 
+
+    /// Resume from externally durable clock state after a restart.
+    /// The caller must persist timestamps before publishing their effects.
+    pub fn restore(
+        node: u16,
+        persisted: HybridTimestamp,
+        now_ms: u64,
+        max_skew_ms: u64,
+    ) -> Result<Self, &'static str> {
+        if persisted.node != node {
+            return Err("hybrid clock persisted node mismatch");
+        }
+        if persisted.physical_ms > now_ms.saturating_add(max_skew_ms) {
+            return Err("persisted hybrid clock exceeds allowed clock skew");
+        }
+        Ok(Self { current: persisted })
+    }
+
     pub fn current(&self) -> HybridTimestamp { self.current }
 
     /// Advance even when the local wall clock moves backwards.
@@ -100,5 +118,28 @@ mod tests {
         let remote = HybridTimestamp { physical_ms: 2, logical: u32::MAX, node: 3 };
         assert!(clock.observe(remote, 2, 0).is_err());
         assert_eq!(clock.current(), before);
+    }
+}
+
+#[cfg(test)]
+mod restart_clock_tests {
+    use super::*;
+
+    #[test]
+    fn restored_clock_remains_monotonic_across_wall_clock_rollback() {
+        let mut original = HybridClock::new(7, 100);
+        let previous = original.tick(100).unwrap();
+        let mut restored = HybridClock::restore(7, previous, 90, 20).unwrap();
+        assert_eq!(restored.current(), previous);
+        assert!(restored.tick(90).unwrap() > previous);
+        assert_eq!(restored.current().logical, 2);
+    }
+
+    #[test]
+    fn wrong_node_and_excessive_clock_skew_fail_closed() {
+        let previous = HybridTimestamp { node: 7, physical_ms: 100, logical: 5 };
+        assert!(HybridClock::restore(8, previous, 100, 10).is_err());
+        assert!(HybridClock::restore(7, previous, 70, 20).is_err());
+        assert_eq!(HybridClock::restore(7, previous, 70, 30).unwrap().current(), previous);
     }
 }
