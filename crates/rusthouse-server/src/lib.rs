@@ -455,6 +455,10 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     {
         return response;
     }
+    if let Some(response) = join_query::try_correlated_sum(&sql, path == "/explain", format, config)
+    {
+        return response;
+    }
     if let Some(response) = join_query::try_correlated_min(&sql, path == "/explain", format, config)
     {
         return response;

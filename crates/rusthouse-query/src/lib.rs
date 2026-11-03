@@ -27,8 +27,9 @@ pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
 pub use execute::{
     ExecutionError, RowPredicate, bind_join_having_subquery, bind_join_in_subquery, execute,
-    execute_correlated_avg, execute_correlated_join, execute_correlated_min, execute_cte_max_join,
-    execute_derived_join_count, execute_join, execute_multi_join, merge_uniq_states,
+    execute_correlated_avg, execute_correlated_join, execute_correlated_min,
+    execute_correlated_sum, execute_cte_max_join, execute_derived_join_count, execute_join,
+    execute_multi_join, merge_uniq_states,
 };
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
@@ -36,12 +37,13 @@ pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
 pub use join::{
     DerivedJoinCount, JoinAggregate, JoinColumn, JoinCorrelatedAvg, JoinCorrelatedExists,
-    JoinCorrelatedMin, JoinExistsFilter, JoinExistsKey, JoinExistsLookup, JoinSelect, JoinStep,
-    JoinType, explain_join, has_derived_join_count, has_explicit_join, has_implicit_join,
-    has_join_correlated_avg, has_join_correlated_min, has_top_level_exists,
-    parse_derived_join_count_with_schema, parse_derived_join_sum_with_schema, parse_join,
-    parse_join_correlated_avg_with_schema, parse_join_correlated_exists_with_schema,
-    parse_join_correlated_min_with_schema, parse_join_with_schema,
+    JoinCorrelatedMin, JoinCorrelatedSum, JoinExistsFilter, JoinExistsKey, JoinExistsLookup,
+    JoinSelect, JoinStep, JoinType, explain_join, has_derived_join_count, has_explicit_join,
+    has_implicit_join, has_join_correlated_avg, has_join_correlated_min, has_join_correlated_sum,
+    has_top_level_exists, parse_derived_join_count_with_schema, parse_derived_join_sum_with_schema,
+    parse_join, parse_join_correlated_avg_with_schema, parse_join_correlated_exists_with_schema,
+    parse_join_correlated_min_with_schema, parse_join_correlated_sum_with_schema,
+    parse_join_with_schema,
 };
 pub use multi_aggregate::AggregateItem;
 pub use update::{Update, UpdateValue, parse_update};

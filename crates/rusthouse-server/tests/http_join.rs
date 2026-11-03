@@ -957,3 +957,79 @@ fn sql_http_executes_tpch_q2() {
     );
     fs::remove_dir_all(database).unwrap();
 }
+
+#[test]
+fn sql_http_executes_correlated_pair_sum() {
+    let database =
+        std::env::temp_dir().join(format!("rusthouse-http-pair-sum-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    let cols = |values: &[(&str, &str)]| {
+        values
+            .iter()
+            .map(|(name, kind)| Column {
+                name: (*name).into(),
+                data_type: (*kind).into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |values: &[&str]| values.iter().map(|v| Some((*v).into())).collect::<Vec<_>>();
+    table(
+        &database,
+        "stock",
+        &cols(&[
+            ("part", "UInt64"),
+            ("supplier", "UInt64"),
+            ("available", "Int64"),
+        ]),
+        &[row(&["1", "1", "11"]), row(&["1", "2", "3"])],
+    );
+    table(
+        &database,
+        "parts",
+        &cols(&[("id", "UInt64")]),
+        &[row(&["1"])],
+    );
+    table(
+        &database,
+        "sales",
+        &cols(&[
+            ("part_key", "UInt64"),
+            ("supplier_key", "UInt64"),
+            ("quantity", "Float64"),
+            ("day", "Date"),
+        ]),
+        &[
+            row(&["1", "1", "20", "1994-01-01"]),
+            row(&["1", "2", "4", "1994-01-01"]),
+        ],
+    );
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let query = "SELECT stock.part, stock.supplier, stock.available FROM stock JOIN parts ON stock.part = parts.id WHERE stock.available > (SELECT 0.5 * SUM(s.quantity) FROM sales s WHERE s.part_key = stock.part AND s.supplier_key = stock.supplier AND s.day >= CAST('1994-01-01' AS date) AND s.day < CAST('1995-01-01' AS date)) ORDER BY stock.part, stock.supplier";
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(
+        result.body,
+        b"stock.part\tstock.supplier\tstock.available\n1\t1\t11\n1\t2\t3\n"
+    );
+    let limited = handle_request(
+        "POST",
+        "/?format=tsv-no-header",
+        query.as_bytes(),
+        &Config {
+            max_rows: 1,
+            ..config.clone()
+        },
+    );
+    assert_eq!(limited.status, "200 OK", "{:?}", limited.body);
+    assert_eq!(limited.body, b"1\t1\t11\n");
+    let invalid = query.replace("SUM(s.quantity)", "SUM(s.missing)");
+    assert_eq!(
+        handle_request("POST", "/", invalid.as_bytes(), &config).status,
+        "400 Bad Request"
+    );
+    fs::remove_dir_all(database).unwrap();
+}

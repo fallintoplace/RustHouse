@@ -63,6 +63,14 @@ fn q2_filters_to_minimum_supply_cost_in_region() {
     ] {
         assert!(!sql(&invalid).status.success(), "{invalid}");
     }
+    let filtered = "SELECT p.p_partkey FROM part p JOIN partsupp o ON p.p_partkey = o.ps_partkey WHERE p.p_type LIKE 'NO MATCH%' AND o.ps_supplycost = (SELECT MIN(i.ps_supplycost) FROM partsupp i, supplier s WHERE i.ps_partkey = p.p_partkey AND i.ps_suppkey = s.s_suppkey)";
+    let result = sql(filtered);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(result.stdout, b"p.p_partkey\n");
     let shadowed = "SELECT p.p_partkey FROM part p JOIN partsupp o ON p.p_partkey = o.ps_partkey WHERE o.ps_supplycost = (SELECT MIN(i.ps_supplycost) FROM partsupp i, supplier p WHERE i.ps_partkey = p.p_partkey AND i.ps_suppkey = p.s_suppkey)";
     assert!(!sql(shadowed).status.success(), "{shadowed}");
     fs::remove_dir_all(db).unwrap();

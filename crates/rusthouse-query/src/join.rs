@@ -3,6 +3,7 @@
 mod correlated;
 mod correlated_avg;
 mod correlated_min;
+mod correlated_sum;
 mod derived_count;
 mod derived_ratio;
 mod derived_sum;
@@ -26,6 +27,9 @@ pub use correlated_avg::{
 };
 pub use correlated_min::{
     JoinCorrelatedMin, has_join_correlated_min, parse_join_correlated_min_with_schema,
+};
+pub use correlated_sum::{
+    JoinCorrelatedSum, has_join_correlated_sum, parse_join_correlated_sum_with_schema,
 };
 pub use derived_count::{
     DerivedJoinCount, has_derived_join_count, parse_derived_join_count_with_schema,
