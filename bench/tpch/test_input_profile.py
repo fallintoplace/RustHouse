@@ -49,6 +49,27 @@ class InputProfileTests(unittest.TestCase):
             path.write_bytes(header.encode() + b"1\tEUROPE\tshort\n")
             self.assertEqual(profile_table(path, "region", max_record_bytes=80)["rows"], 1)
 
+    def test_rejects_input_replaced_during_open(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            replacement = Path(root) / "replacement.tsv"
+            header = "\t".join(names("region")) + "\n"
+            path.write_text(header + "1\tEUROPE\tcomment\n")
+            replacement.write_text(header + "1\tASIA\tcomment\n")
+            real_open = os.open
+
+            def replace_during_open(filename, flags):
+                if Path(filename) == path:
+                    path.unlink()
+                    replacement.rename(path)
+                return real_open(filename, flags)
+
+            with patch("input_profile.os.open", side_effect=replace_during_open):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    profile_table(path, "region")
+
     def test_rejects_wrong_schema(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "region.tsv"
