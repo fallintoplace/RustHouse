@@ -38,15 +38,26 @@ fn chained_inner_count_scans_last_bucket_without_retaining_join_product() {
     let mut result = Vec::new();
     execute_multi_join(&query, &paths, &mut result).unwrap();
     assert_eq!(String::from_utf8(result).unwrap(), "count\n4\n");
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn chained_count_rejects_non_inner_and_post_join_null_filters() {
-    for sql in [
-        "SELECT count(*) FROM a JOIN b ON a.id=b.id LEFT JOIN c ON b.id=c.id",
+    let missing = root.join("missing");
+    write_wide_part(&missing, &schema, &[vec![Some("8".into())]]).unwrap();
+    let query = parse_join("SELECT count(*) FROM a JOIN b ON a.id=b.id LEFT JOIN c ON b.id=c.id")
+        .unwrap()
+        .unwrap();
+    let mut result = Vec::new();
+    execute_multi_join(
+        &query,
+        &[paths[0].clone(), paths[1].clone(), missing],
+        &mut result,
+    )
+    .unwrap();
+    assert_eq!(String::from_utf8(result).unwrap(), "count\n4\n");
+    let query = parse_join(
         "SELECT count(*) FROM a JOIN b ON a.id=b.id JOIN c ON b.id=c.id WHERE c.id IS NULL",
-    ] {
-        assert!(parse_join(sql).is_err(), "{sql}");
-    }
+    )
+    .unwrap()
+    .unwrap();
+    let mut result = Vec::new();
+    execute_multi_join(&query, &paths, &mut result).unwrap();
+    assert_eq!(String::from_utf8(result).unwrap(), "count\n0\n");
+    fs::remove_dir_all(root).unwrap();
 }

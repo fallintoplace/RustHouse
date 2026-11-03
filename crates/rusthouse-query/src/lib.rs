@@ -1154,11 +1154,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected COUNT() or COUNT(*)".into()));
         }
-        if !matches!(
+        let all = if !matches!(
             parser.tokens.get(parser.index),
             Some(Token::Word(word)) if word.eq_ignore_ascii_case("DISTINCT")
         ) {
-            parser.keyword("ALL");
+            parser.keyword("ALL")
+        } else {
+            false
+        };
+        if all && parser.tokens.get(parser.index) == Some(&Token::RParen) {
+            return Err(ParseError("COUNT(ALL) requires an argument".into()));
         }
         if parser.keyword("DISTINCT") {
             let column = parser.word()?;
@@ -1808,6 +1813,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 "PREWHERE", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET",
                 "FETCH", "FORMAT", "SETTINGS", "JOIN", "INNER", "LEFT", "RIGHT",
                 "FULL", "CROSS", "ON", "USING", "UNION", "INTERSECT", "EXCEPT",
+                "DISTINCT", "DISTINCTROW", "UNIQUE", "ALL",
             ].iter().any(|keyword| word.eq_ignore_ascii_case(keyword)))
     };
     if source_alias {

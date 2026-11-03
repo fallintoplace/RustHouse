@@ -227,9 +227,7 @@ pub(crate) fn parse_multiple(
         parser.index += 2;
         let distinct = parser.keyword("DISTINCT");
         // ALL is the default quantifier for COUNT arguments.
-        if !distinct && function.is_none() {
-            parser.keyword("ALL");
-        }
+        let all = !distinct && function.is_none() && parser.keyword("ALL");
         if distinct && function.is_some() {
             return Err(ParseError("DISTINCT is only supported for COUNT".into()));
         }
@@ -245,6 +243,9 @@ pub(crate) fn parse_multiple(
         }
         if already_closed && distinct {
             return Err(ParseError("COUNT(DISTINCT) requires a column".into()));
+        }
+        if already_closed && all {
+            return Err(ParseError("COUNT(ALL) requires an argument".into()));
         }
         if !already_closed && !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after aggregate argument".into()));
