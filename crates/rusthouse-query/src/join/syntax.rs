@@ -105,8 +105,38 @@ pub(super) fn equality_group(
         if !parser.keyword("AND") {
             break;
         }
+        if depth == 0 && starts_like_filter(parser) {
+            parser.index -= 1;
+            break;
+        }
     }
     Ok(())
+}
+
+fn starts_like_filter(parser: &Parser) -> bool {
+    let tokens = &parser.tokens;
+    let mut index = parser.index;
+    if !matches!(
+        tokens.get(index),
+        Some(Token::Word(_) | Token::QuotedWord(_))
+    ) {
+        return false;
+    }
+    index += 1;
+    if tokens.get(index) == Some(&Token::Dot) {
+        index += 1;
+        if !matches!(
+            tokens.get(index),
+            Some(Token::Word(_) | Token::QuotedWord(_))
+        ) {
+            return false;
+        }
+        index += 1;
+    }
+    if matches!(tokens.get(index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("NOT")) {
+        index += 1;
+    }
+    matches!(tokens.get(index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("LIKE"))
 }
 
 pub(super) fn bound(parser: &mut Parser, label: &str) -> Result<usize, ParseError> {

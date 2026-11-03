@@ -1443,6 +1443,15 @@ pub fn execute_join<W: Write>(
     right_path: &Path,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query.on_right_like.is_some()
+        && (query.kind != JoinType::Left
+            || query.grouped_count_column.is_none()
+            || !query.steps.is_empty())
+    {
+        return Err(invalid(
+            "JOIN ON LIKE requires grouped LEFT JOIN COUNT(column)",
+        ));
+    }
     if query.grouped_count_column.is_some()
         && (query
             .grouped_count
