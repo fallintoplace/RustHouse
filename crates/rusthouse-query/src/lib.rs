@@ -1388,6 +1388,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         && items[0].0 == AggregateFunction::Count
                         && items[0].1 == "*"
                         && aliases[0].is_none()
+                        && filters[0].is_none()
                     {
                         // Preserve the existing COUNT(*) fast path.
                         grouped_count = true;
