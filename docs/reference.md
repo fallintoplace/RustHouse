@@ -24,6 +24,8 @@ For a two-table INNER JOIN, scalar `COUNT(column)`, `SUM`, `AVG`, `MIN`, and `MA
 
 **Joins with three to eight tables** keep intermediate rows in memory. They have a **64 MiB** retained-row budget and a **131,072 matched-row** limit. This experimental hash join does not spill to disk. See `crates/rusthouse-query/src/join.rs` for the shared limits.
 
+Chained INNER joins support scalar `COUNT(column)` and skip NULL values. This path materializes bounded intermediate rows, so the 131,072 matched-row limit applies.
+
 ## Query frozen parts
 
 ```sh

@@ -745,13 +745,11 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         }
         None
     };
-    // The streaming COUNT(column) executor currently covers exactly two INNER sources.
+    // COUNT(column) can use bounded materialization for an all-INNER chain.
     if matches!(aggregate.as_ref(), Some(JoinAggregate::CountColumn(_)))
-        && (kind != JoinType::Inner || !steps.is_empty())
+        && (kind != JoinType::Inner || steps.iter().any(|step| step.kind != JoinType::Inner))
     {
-        return Err(ParseError(
-            "JOIN COUNT(column) requires a two-table INNER JOIN".into(),
-        ));
+        return Err(ParseError("JOIN COUNT(column) requires INNER joins".into()));
     }
     // Chained numeric/column aggregates and OUTER or filtered chained COUNT
     // lack a matching streaming semantics implementation. Reject them.
@@ -759,10 +757,13 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     // chains. Only the all-INNER case uses the multiplicity-only fast path.
     if !steps.is_empty()
         && aggregate.is_some()
-        && !matches!(aggregate.as_ref(), Some(JoinAggregate::CountStar))
+        && !matches!(
+            aggregate.as_ref(),
+            Some(JoinAggregate::CountStar | JoinAggregate::CountColumn(_))
+        )
     {
         return Err(ParseError(
-            "chained JOIN supports COUNT(*) as its only scalar aggregate".into(),
+            "chained JOIN supports COUNT as its only scalar aggregate".into(),
         ));
     }
     if aggregate.is_some()
