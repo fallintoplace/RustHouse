@@ -129,6 +129,27 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 index += 1;
                 Token::Minus
             }
+            b'-'
+                if bytes.get(index + 1) == Some(&b'0')
+                    && matches!(bytes.get(index + 2), Some(b'x' | b'X' | b'b' | b'B')) =>
+            {
+                index += 1;
+                let radix = if matches!(bytes.get(index + 1), Some(b'x' | b'X')) {
+                    16
+                } else {
+                    2
+                };
+                let Token::Number(value) = scan_radix_number(sql, &mut index, radix)? else {
+                    unreachable!("radix scanner always returns a number");
+                };
+                let magnitude = value
+                    .parse::<u64>()
+                    .map_err(|_| ParseError("invalid prefixed numeric literal".into()))?;
+                if magnitude > i64::MAX as u64 + 1 {
+                    return Err(ParseError("negative prefixed numeric literal exceeds Int64".into()));
+                }
+                Token::Number((-(magnitude as i128)).to_string())
+            }
             b'-' if bytes.get(index + 1) == Some(&b'.') => {
                 if is_ascii_digit_at(bytes, index + 2) {
                     scan_number(sql, &mut index)?
@@ -596,6 +617,35 @@ mod radix_literal_tests {
         );
         for invalid in ["0x", "0b", "0x10000000000000000", "0b2"] {
             assert!(tokenize(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod negative_radix_lexer_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_negative_hex_and_binary_integer_literals() {
+        assert_eq!(
+            tokenize("SELECT -0x80, -0B1011").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("-128".into()),
+                Token::Comma,
+                Token::Number("-11".into()),
+            ]
+        );
+        assert_eq!(
+            tokenize("1-0xA").unwrap(),
+            vec![Token::Number("1".into()), Token::Minus, Token::Number("10".into())]
+        );
+        assert_eq!(
+            tokenize("-0x8000000000000000").unwrap(),
+            vec![Token::Number(i64::MIN.to_string())]
+        );
+        for sql in ["-0x", "-0b2", "-0xffffffffffffffff"] {
+            assert!(tokenize(sql).is_err(), "{sql}");
         }
     }
 }
