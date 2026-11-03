@@ -1493,6 +1493,7 @@ pub fn execute_join<W: Write>(
         || query.grouped_sum.is_some()
         || query.grouped_min.is_some()
         || query.grouped_year.is_some()
+        || !query.grouped_key_aliases.is_empty()
     {
         return super::multi_join::execute_multi_join(
             query,
