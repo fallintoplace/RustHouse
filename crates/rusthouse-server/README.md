@@ -49,8 +49,8 @@ To require a shared bearer token on every HTTP endpoint, set `RUSTHOUSE_HTTP_TOK
 to a 16-128 character ASCII token before starting the server and send the
 `Authorization: Bearer <token>` header. Do not send the token over plaintext
 network links. Distributed peer clients do not yet forward authorization headers.
-Without this setting the server remains unauthenticated,
-or full wire-protocol compatibility.
+Without this setting the server remains unauthenticated. The server does not
+provide full ClickHouse wire-protocol compatibility.
 
 For non-generated SQL, use an immutable wide MergeTree part or snapshot. To query
 persistent tables created by `rusthouse sql ... --database ./mydb`, start the
