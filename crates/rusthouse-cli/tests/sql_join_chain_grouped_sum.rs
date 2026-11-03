@@ -40,6 +40,18 @@ fn chained_sum_groups_nullable_values_and_orders_alias() {
             "b.category\tc.flag\ttotal\nx\t1\t1\nz\t1\t\\N\n",
         ),
         (
+            "SELECT b.category, SUM(amount + flag) AS total, c.flag FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category, c.flag ORDER BY b.category",
+            "b.category\ttotal\tc.flag\nx\t3\t1\ny\t7\t2\nz\t\\N\t1\n",
+        ),
+        (
+            "SELECT b.category, SUM(amount + flag) AS total, c.flag FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category, c.flag LIMIT 0",
+            "b.category\ttotal\tc.flag\n",
+        ),
+        (
+            "SELECT b.category, SUM(amount + flag) AS total, c.flag FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE c.flag = 99 GROUP BY b.category, c.flag",
+            "b.category\ttotal\tc.flag\n",
+        ),
+        (
             "SELECT b.category, SUM(amount * (1 - 0.25)) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category ORDER BY b.category",
             "b.category\ttotal\nx\t0.75\ny\t3.75\nz\t\\N\n",
         ),
@@ -63,11 +75,20 @@ fn chained_sum_groups_nullable_values_and_orders_alias() {
         "SELECT b.category, SUM(a.amount) AS total FROM a LEFT JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category",
         "SELECT b.category, SUM(a.amount + 1) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category",
         "SELECT b.category, SUM(category + 1) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category LIMIT 0",
+        "SELECT b.category, SUM(amount) AS total, c.flag, SUM(flag) AS more FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category, c.flag",
+        "SELECT b.category, SUM(amount) AS total, c.flag, COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category, c.flag",
         "SELECT b.category, SUM(amount / 0) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category",
         "SELECT b.category, SUM(id + 1) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category LIMIT 0",
     ] {
         let result = sql(query);
         assert!(!result.status.success(), "{query}: {result:?}");
     }
+    let output = sql("TRUNCATE TABLE c");
+    assert!(output.status.success(), "{output:?}");
+    let output = sql(
+        "SELECT b.category, SUM(amount) AS total, c.flag FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category, c.flag",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"b.category\ttotal\tc.flag\n");
     fs::remove_dir_all(db).unwrap();
 }

@@ -385,17 +385,7 @@ pub(super) fn execute<W: Write>(
     // so do not read or decode the potentially enormous fact table.
     if stages.iter().any(|stage| stage.hash.is_empty()) {
         if query.grouped_count.is_some() {
-            for (index, (_, name, _)) in selected.iter().enumerate() {
-                if index != 0 {
-                    output.write_all(b"\t")?;
-                }
-                output.write_all(name.as_bytes())?;
-            }
-            writeln!(
-                output,
-                "\t{}",
-                query.aggregate_alias.as_deref().unwrap_or("count")
-            )?;
+            write_group_header(query, &selected, output)?;
         }
         return Ok(());
     }
@@ -502,35 +492,32 @@ pub(super) fn execute<W: Write>(
             .and_then(|limit| query.offset.checked_add(limit))
             .filter(|&end| end < rows.len())
             .map(|end| super::super::sorted_group_positions(&rows, end, compare));
-        for (index, (_, name, _)) in selected.iter().enumerate() {
-            if index != 0 {
-                output.write_all(b"\t")?;
-            }
-            output.write_all(name.as_bytes())?;
-        }
-        writeln!(
-            output,
-            "\t{}",
-            query.aggregate_alias.as_deref().unwrap_or("count")
-        )?;
+        write_group_header(query, &selected, output)?;
         let mut write_group = |values: &[typed::Cell],
                                count: u64,
                                sum: Option<super::super::Number>|
          -> Result<(), ExecutionError> {
-            for (index, value) in values.iter().enumerate() {
+            let metric = query.grouped_sum_position.unwrap_or(values.len());
+            for index in 0..=values.len() {
                 if index > 0 {
                     output.write_all(b"\t")?;
                 }
-                let source = selected[index].0;
-                typed::write_typed_value(output, value, spec.types[source])?;
+                if index == metric {
+                    if spec.sum.is_some() {
+                        typed::write_value(
+                            output,
+                            &sum.map_or(typed::Cell::Null, typed::Cell::Numeric),
+                        )?;
+                    } else {
+                        write!(output, "{count}")?;
+                    }
+                } else {
+                    let key = if index < metric { index } else { index - 1 };
+                    let source = selected[key].0;
+                    typed::write_typed_value(output, &values[key], spec.types[source])?;
+                }
             }
-            output.write_all(b"\t")?;
-            if spec.sum.is_some() {
-                typed::write_value(output, &sum.map_or(typed::Cell::Null, typed::Cell::Numeric))?;
-                writeln!(output)?;
-            } else {
-                writeln!(output, "{count}")?;
-            }
+            writeln!(output)?;
             Ok(())
         };
         if let Some(positions) = bounded {

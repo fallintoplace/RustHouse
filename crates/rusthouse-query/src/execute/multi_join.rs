@@ -65,6 +65,33 @@ fn write_join_header<W: Write>(
     Ok(())
 }
 
+fn write_group_header<W: Write>(
+    query: &JoinSelect,
+    selected: &[(usize, String, Option<usize>)],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let metric = query.grouped_sum_position.unwrap_or(selected.len());
+    for index in 0..=selected.len() {
+        if index > 0 {
+            output.write_all(b"\t")?;
+        }
+        if index == metric {
+            output.write_all(
+                query
+                    .aggregate_alias
+                    .as_deref()
+                    .unwrap_or("count")
+                    .as_bytes(),
+            )?;
+        } else {
+            let key = if index < metric { index } else { index - 1 };
+            output.write_all(selected[key].1.as_bytes())?;
+        }
+    }
+    output.write_all(b"\n")?;
+    Ok(())
+}
+
 fn invalid(message: impl Into<String>) -> ExecutionError {
     ExecutionError::Invalid(message.into())
 }
@@ -626,17 +653,7 @@ pub fn execute_multi_join<W: Write>(
         } else {
             let selected = output_columns(query, &relations, &initial_step)?;
             if query.grouped_count.is_some() {
-                for (index, (_, name, _)) in selected.iter().enumerate() {
-                    if index > 0 {
-                        output.write_all(b"\t")?;
-                    }
-                    output.write_all(name.as_bytes())?;
-                }
-                writeln!(
-                    output,
-                    "\t{}",
-                    query.aggregate_alias.as_deref().unwrap_or("count")
-                )?;
+                write_group_header(query, &selected, output)?;
             } else {
                 write_join_header(output, &selected)?;
             }
