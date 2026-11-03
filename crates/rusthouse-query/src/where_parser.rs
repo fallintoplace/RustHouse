@@ -401,9 +401,7 @@ fn parse_atom(
             parser.operator()?
         };
         if prefix_not {
-            if matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
-                return Err(ParseError("NOT modulo predicates are unsupported".into()));
-            }
+            // Modulo equality already has an inverse, just like ordinary comparisons.
             operator = inverse_comparison_operator(&operator);
         }
         // A bare identifier after a relational operator is another column,
@@ -766,5 +764,24 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod prefix_not_modulo_tests {
+    use crate::{Operator, Predicate, parse_select};
+
+    #[test]
+    fn prefix_not_negates_modulo_equality_and_inequality() {
+        for (operator, expected) in [("=", Operator::ModuloNe(2)), ("!=", Operator::Modulo(2))] {
+            let sql = format!("SELECT number FROM numbers(6) WHERE NOT number % 2 {operator} 0");
+            let query = parse_select(&sql).unwrap();
+            assert_eq!(query.predicates, vec![Predicate::Comparison {
+                column: "number".into(),
+                operator: expected,
+                value: "0".into(),
+            }]);
+        }
+        assert!(parse_select("SELECT number FROM numbers(6) WHERE NOT number % 0 = 0").is_err());
     }
 }
