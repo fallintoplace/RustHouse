@@ -3,6 +3,13 @@ use crate::UuidValue;
 use crate::fixed_width::MAX_BATCH_BYTES;
 use std::io::{self, Write};
 
+fn uuid_disk_bytes(value: &UuidValue) -> [u8; 16] {
+    let mut disk = *value.as_bytes();
+    disk[..8].reverse();
+    disk[8..].reverse();
+    disk
+}
+
 /// Serialize canonical UUIDs as two little-endian UInt64 halves.
 ///
 /// The writer receives at most 16 KiB at a time. Validate the total
@@ -22,10 +29,7 @@ pub fn write_uuid_values<W: Write>(writer: &mut W, values: &[UuidValue]) -> io::
     let mut buffer = [0u8; 16 * 1024];
     for chunk in values.chunks(buffer.len() / 16) {
         for (index, value) in chunk.iter().enumerate() {
-            let mut disk = *value.as_bytes();
-            disk[..8].reverse();
-            disk[8..].reverse();
-            buffer[index * 16..index * 16 + 16].copy_from_slice(&disk);
+            buffer[index * 16..index * 16 + 16].copy_from_slice(&uuid_disk_bytes(value));
         }
         writer.write_all(&buffer[..chunk.len() * 16])?;
     }
