@@ -95,6 +95,23 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
         }
         Ok(result)
     } else {
+        // Width annotations are accepted for character types; storage remains String.
+        if canonical == "String"
+            && ["VARCHAR", "NVARCHAR", "CHAR", "CHARACTER", "NCHAR"]
+                .iter()
+                .any(|alias| name.eq_ignore_ascii_case(alias))
+            && parser.take(Token::LParen)
+        {
+            let width = parser.number()?;
+            if !width.bytes().all(|byte| byte.is_ascii_digit())
+                || width.parse::<u32>().ok().filter(|value| *value > 0).is_none()
+            {
+                return Err(ParseError("character width must be a positive integer".into()));
+            }
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("character width requires closing ')'".into()));
+            }
+        }
         Ok(canonical.into())
     }
 }
