@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from query_feature_inventory import features, inventory, mask_literals
+from run import query_fingerprint
 
 
 class FeatureInventoryTests(unittest.TestCase):
@@ -36,6 +37,9 @@ class FeatureInventoryTests(unittest.TestCase):
             self.assertEqual(result["total_queries"], 22)
             self.assertEqual(len(result["results"]), 22)
             self.assertFalse(result["official_tpch_score"])
+            self.assertEqual(result["query_sha256"], query_fingerprint([
+                (number, "SELECT count(*) FROM trips") for number in range(1, 23)
+            ]))
             (root / "q22.sql").unlink()
             with self.assertRaises(FileNotFoundError):
                 inventory(root)
