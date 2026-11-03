@@ -467,7 +467,17 @@ pub fn execute_multi_join<W: Write>(
             writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
         } else {
             let selected = output_columns(query, &relations, &initial_step)?;
-            write_join_header(output, &selected)?;
+            if query.grouped_count.is_some() {
+                for (index, (_, name, _)) in selected.iter().enumerate() {
+                    if index > 0 {
+                        output.write_all(b"\t")?;
+                    }
+                    output.write_all(name.as_bytes())?;
+                }
+                writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+            } else {
+                write_join_header(output, &selected)?;
+            }
         }
         return Ok(());
     }
@@ -476,7 +486,7 @@ pub fn execute_multi_join<W: Write>(
     // right-hand build table fits the shared chain memory budget.
     if query.kind == JoinType::Inner
         && query.steps.iter().all(|step| step.kind == JoinType::Inner)
-        && query.order_by.is_empty()
+        && (query.order_by.is_empty() || query.grouped_count.is_some())
         && query.aggregate.is_none()
     {
         return streaming::execute(query, paths, &relations, &initial_step, output);
