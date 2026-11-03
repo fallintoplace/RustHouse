@@ -30,9 +30,12 @@ fn handles_bounded_calendar_and_null_values() {
 
 #[test]
 fn rejects_bad_calendar_types_and_ranges() {
+    assert_eq!(
+        value("SELECT dateTrunc('week', '2024-02-29 23:59:59')"),
+        ConstantValue::Text("2024-02-26".into())
+    );
     for sql in [
         "SELECT dateTrunc()",
-        "SELECT dateTrunc('week', '2024-02-29 23:59:59')",
         "SELECT dateTrunc('hour', 'bad')",
         "SELECT dateTrunc('hour', '2024-02-29 23:59:59', 1)",
     ] {

@@ -30,12 +30,15 @@ fn matches_bounded_clickhouse_calendar_behavior() {
 
 #[test]
 fn rejects_invalid_date_inputs() {
+    assert_eq!(
+        value("SELECT toLastDayOfWeek('2023-04-21', 9)"),
+        ConstantValue::Text("2023-04-23".into())
+    );
     for sql in [
         "SELECT toLastDayOfWeek()",
         "SELECT toLastDayOfWeek('2023-02-29')",
         "SELECT toLastDayOfWeek('bad-date')",
         "SELECT toLastDayOfWeek(5)",
-        "SELECT toLastDayOfWeek('2023-04-21', 9)",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }

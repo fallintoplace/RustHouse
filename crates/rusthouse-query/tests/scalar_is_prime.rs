@@ -27,9 +27,19 @@ fn is_prime_identifies_primes_and_composites() {
 
 #[test]
 fn is_prime_rejects_out_of_bound_and_malformed_calls() {
+    assert_eq!(
+        parse_select("SELECT IS_PRIME(1000000000001)")
+            .unwrap()
+            .projection,
+        Projection::Literal(0)
+    );
+    assert_eq!(
+        parse_select("SELECT IS_PRIME(9223372036854775807)")
+            .unwrap()
+            .projection,
+        Projection::Literal(0)
+    );
     for sql in [
-        "SELECT IS_PRIME(1000000000001)",
-        "SELECT IS_PRIME(9223372036854775807)",
         "SELECT IS_PRIME()",
         "SELECT IS_PRIME(1, 2)",
         "SELECT IS_PRIME(1,)",

@@ -3464,6 +3464,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::Comma, "NULLIF requires a second argument")?;
             let right = constant_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "expected ')' after NULLIF arguments")?;
+            if matches!(
+                (&left, &right),
+                (
+                    ConstantValue::Text(_),
+                    ConstantValue::Integer(_) | ConstantValue::Decimal(_)
+                ) | (
+                    ConstantValue::Integer(_) | ConstantValue::Decimal(_),
+                    ConstantValue::Text(_)
+                )
+            ) {
+                return Err(ParseError(
+                    "NULLIF arguments have incompatible types".into(),
+                ));
+            }
             if left == right {
                 ConstantValue::Null
             } else {

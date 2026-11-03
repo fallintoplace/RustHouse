@@ -15,7 +15,7 @@ fn left_reads_bounded_prefixes_of_constant_strings() {
         ("SELECT left('abc', 0)", ""),
         ("SELECT LEFT('abc', 9)", "abc"),
         ("SELECT LEFT('', 2)", ""),
-        ("SELECT LEFT('é😀Z', 2)", "é😀"),
+        ("SELECT LEFTUTF8('é😀Z', 2)", "é😀"),
         ("SELECT LEFT(TRIM(' a '), 1)", "a"),
         ("SELECT LEFT('abc', LENGTH('ab'))", "ab"),
     ] {
@@ -26,11 +26,14 @@ fn left_reads_bounded_prefixes_of_constant_strings() {
 }
 
 #[test]
-fn left_rejects_negative_counts_bad_arity_and_from_clause() {
+fn left_rejects_bad_arity_and_from_clause() {
+    assert_eq!(
+        value("SELECT LEFT('abc', -1)"),
+        ConstantValue::Text("ab".into())
+    );
     for sql in [
         "SELECT LEFT()",
         "SELECT LEFT('abc')",
-        "SELECT LEFT('abc', -1)",
         "SELECT LEFT('abc', '1')",
         "SELECT LEFT('abc', 1, 2)",
         "SELECT LEFT('abc', 1",
@@ -43,11 +46,11 @@ fn left_rejects_negative_counts_bad_arity_and_from_clause() {
 #[test]
 fn left_counts_unicode_codepoints_without_cutting_utf8_bytes() {
     assert_eq!(
-        value("SELECT LEFT('é😀xyz', 2)"),
+        value("SELECT LEFTUTF8('é😀xyz', 2)"),
         ConstantValue::Text("é😀".into())
     );
     assert_eq!(
-        value("SELECT LEFT('é😀xyz', 3)"),
+        value("SELECT LEFTUTF8('é😀xyz', 3)"),
         ConstantValue::Text("é😀x".into())
     );
 }

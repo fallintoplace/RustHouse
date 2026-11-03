@@ -12,7 +12,7 @@ fn nested_text_functions_keep_unicode_and_replacement_semantics() {
             "changed\naXXb\n",
         ),
         (
-            "SELECT CHAR_LENGTH(SUBSTRING('é😀xyz', 2, 3)) AS chars",
+            "SELECT CHAR_LENGTH(SUBSTRINGUTF8('é😀xyz', 2, 3)) AS chars",
             "chars\n3\n",
         ),
         (

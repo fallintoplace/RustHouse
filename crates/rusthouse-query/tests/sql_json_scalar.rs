@@ -51,9 +51,9 @@ fn extracts_string_raw_and_presence_from_nested_json() {
 
 #[test]
 fn rejects_invalid_json_and_argument_shapes() {
+    assert_eq!(value("SELECT JSONHas('[]')"), ConstantValue::Integer(1));
     for sql in [
         "SELECT JSONExtractString('{', 'a')",
-        "SELECT JSONHas('[]')",
         "SELECT JSONExtractRaw('{}', 'a', 'b')",
         "SELECT isValidJSON(123)",
         "SELECT JSONExtractString('{}', 2)",

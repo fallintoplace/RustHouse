@@ -14,10 +14,10 @@ fn lpad_pads_truncates_and_counts_unicode_chars() {
         ("SELECT LPAD('cat', 5, '.')", "..cat"),
         ("SELECT lpad('abc', 6, 'xy')", "xyxabc"),
         ("SELECT LPAD('abcdef', 3, '.')", "abc"),
-        ("SELECT LPAD('猫', 3, '🙂')", "🙂🙂猫"),
+        ("SELECT leftPadUTF8('猫', 3, '🙂')", "🙂🙂猫"),
         ("SELECT LPAD('x', 0, '.')", ""),
         ("SELECT LPAD('x', 3)", "  x"),
-        ("SELECT LPAD('é', 3)", "  é"),
+        ("SELECT leftPadUTF8('é', 3)", "  é"),
         ("SELECT LPAD('abc', 3, '')", "abc"),
         ("SELECT LPAD(UPPER('ab'), 4, '-')", "--AB"),
     ] {

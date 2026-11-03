@@ -15,7 +15,7 @@ fn right_reads_bounded_suffixes_of_constant_strings() {
         ("SELECT right('abc', 0)", ""),
         ("SELECT RIGHT('abc', 9)", "abc"),
         ("SELECT RIGHT('', 2)", ""),
-        ("SELECT RIGHT('é😀Z', 2)", "😀Z"),
+        ("SELECT RIGHTUTF8('é😀Z', 2)", "😀Z"),
         ("SELECT RIGHT(TRIM(' a '), 1)", "a"),
         ("SELECT RIGHT('abc', LENGTH('ab'))", "bc"),
         ("SELECT RIGHT(CONCAT('ab', 'cd'), 2)", "cd"),
@@ -27,11 +27,14 @@ fn right_reads_bounded_suffixes_of_constant_strings() {
 }
 
 #[test]
-fn right_rejects_negative_counts_bad_arity_and_from_clause() {
+fn right_rejects_bad_arity_and_from_clause() {
+    assert_eq!(
+        value("SELECT RIGHT('abc', -1)"),
+        ConstantValue::Text("bc".into())
+    );
     for sql in [
         "SELECT RIGHT()",
         "SELECT RIGHT('abc')",
-        "SELECT RIGHT('abc', -1)",
         "SELECT RIGHT('abc', '1')",
         "SELECT RIGHT('abc', 1, 2)",
         "SELECT RIGHT('abc', 1",
@@ -44,11 +47,11 @@ fn right_rejects_negative_counts_bad_arity_and_from_clause() {
 #[test]
 fn right_counts_unicode_codepoints_without_cutting_utf8_bytes() {
     assert_eq!(
-        value("SELECT RIGHT('é😀xyz', 4)"),
+        value("SELECT RIGHTUTF8('é😀xyz', 4)"),
         ConstantValue::Text("😀xyz".into())
     );
     assert_eq!(
-        value("SELECT RIGHT('é😀xyz', 1)"),
+        value("SELECT RIGHTUTF8('é😀xyz', 1)"),
         ConstantValue::Text("z".into())
     );
 }
