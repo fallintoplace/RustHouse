@@ -3,6 +3,8 @@
 mod correlated_avg;
 mod correlated_min;
 mod correlated_sum;
+mod nested_sum;
+pub use nested_sum::execute_nested_join_sum;
 mod exists;
 mod row_filters;
 mod streaming;
