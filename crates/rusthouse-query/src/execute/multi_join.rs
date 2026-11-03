@@ -587,10 +587,16 @@ pub fn execute_multi_join<W: Write>(
         && query.steps.iter().all(|step| step.kind == JoinType::Inner)
         && (query.order_by.is_empty() || query.grouped_count.is_some())
         && query.aggregate.is_none()
-        && comparisons.is_empty()
-        && column_comparisons.is_empty()
     {
-        return streaming::execute(query, paths, &relations, &initial_step, output);
+        return streaming::execute(
+            query,
+            paths,
+            &relations,
+            &initial_step,
+            &comparisons,
+            &column_comparisons,
+            output,
+        );
     }
 
     // Resolve the WHERE column across all relations before materialization.
