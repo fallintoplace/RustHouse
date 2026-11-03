@@ -167,6 +167,12 @@ fn sql_http_binds_grouped_in_subquery_for_explicit_join() {
     let result = handle_request("POST", "/", scalar.as_bytes(), &config);
     assert_eq!(result.status, "200 OK", "{:?}", result.body);
     assert_eq!(result.body, b"ak\ttotal\n2\t9\n");
+    let qualified_scalar = scalar
+        .replace("total >", "total <")
+        .replace("SUM(amount * 0.5)", "SUM(c.amount)");
+    let result = handle_request("POST", "/", qualified_scalar.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"ak\ttotal\n1\t8\n2\t9\n");
     let plan = handle_request("POST", "/explain", scalar.as_bytes(), &config);
     assert_eq!(plan.status, "200 OK");
     assert!(String::from_utf8_lossy(&plan.body).contains("scalar subquery"));
