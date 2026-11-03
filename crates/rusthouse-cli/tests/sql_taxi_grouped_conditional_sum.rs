@@ -16,7 +16,7 @@ fn grouped_sum_case_matches_taxi_payment_revenue() {
     };
     for statement in [
         "CREATE TABLE trips (passenger_count UInt8, payment_type UInt8, fare_cents UInt64)",
-        "INSERT INTO trips VALUES (1, 1, 1000), (1, 2, 2000), (1, 1, 300), (2, 2, 5000), (2, 1, 800)",
+        "INSERT INTO trips VALUES (1, 1, 1000), (1, 2, 2000), (1, 1, 300), (2, 2, 5000), (2, 1, 800), (3, 2, 250)",
     ] {
         let result = sql(statement);
         assert!(result.status.success(), "{statement}: {result:?}");
@@ -24,12 +24,12 @@ fn grouped_sum_case_matches_taxi_payment_revenue() {
     let query = "SELECT passenger_count, SUM(CASE WHEN payment_type = 1 THEN fare_cents ELSE 0 END) AS revenue FROM trips GROUP BY passenger_count ORDER BY passenger_count";
     let result = sql(query);
     assert!(result.status.success(), "{query}: {result:?}");
-    assert_eq!(result.stdout, b"passenger_count\trevenue\n1\t1300\n2\t800\n");
+    assert_eq!(result.stdout, b"passenger_count\trevenue\n1\t1300\n2\t800\n3\t0\n");
 
     let query = "SELECT passenger_count, payment_type, SUM(CASE WHEN payment_type = 1 THEN fare_cents END) AS revenue FROM trips GROUP BY passenger_count, payment_type ORDER BY passenger_count, payment_type";
     let result = sql(query);
     assert!(result.status.success(), "{query}: {result:?}");
-    assert_eq!(result.stdout, b"passenger_count\tpayment_type\trevenue\n1\t1\t1300\n1\t2\t0\n2\t1\t800\n2\t2\t0\n");
+    assert_eq!(result.stdout, b"passenger_count\tpayment_type\trevenue\n1\t1\t1300\n1\t2\tNULL\n2\t1\t800\n2\t2\tNULL\n3\t2\tNULL\n");
 
     for invalid in [
         "SELECT passenger_count, SUM(CASE WHEN payment_type = 1 THEN fare_cents ELSE 5 END) AS revenue FROM trips GROUP BY passenger_count",
