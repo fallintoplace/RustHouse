@@ -7,6 +7,7 @@ from collections import Counter
 from pathlib import Path
 
 from official_coverage import clean_sql
+from run import query_fingerprint
 
 PATTERNS = {
     "with_cte": r"\bWITH\s+[A-Z_][\w]*\s+AS\s*\(",
@@ -81,14 +82,17 @@ def inventory(queries_dir):
     queries_dir = Path(queries_dir)
     counts = Counter()
     rows = []
+    sql_inputs = []
     for number in range(1, 23):
         path = queries_dir / f"q{number:02d}.sql"
         sql = clean_sql(path)
+        sql_inputs.append((number, sql))
         tags = features(sql)
         counts.update(tags)
         rows.append({"query": number, "features": tags})
     return {"workload": "tpch-sql-feature-inventory", "official_tpch_score": False,
-            "total_queries": 22, "feature_counts": dict(sorted(counts.items())),
+            "total_queries": 22, "query_sha256": query_fingerprint(sql_inputs),
+            "feature_counts": dict(sorted(counts.items())),
             "results": rows}
 
 
