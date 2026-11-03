@@ -2013,6 +2013,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 "cannot combine LIMIT comma syntax with OFFSET".into(),
             ));
         }
+        let parenthesized = parser.take(Token::LParen);
         let value = parser.number()?;
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ParseError("OFFSET must be a non-negative integer".into()));
@@ -2020,6 +2021,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         let offset = value
             .parse::<usize>()
             .map_err(|_| ParseError("OFFSET is too large".into()))?;
+        if parenthesized && !parser.take(Token::RParen) {
+            return Err(ParseError("OFFSET requires closing ')'".into()));
+        }
         if !parser.keyword("ROWS") {
             parser.keyword("ROW");
         }
