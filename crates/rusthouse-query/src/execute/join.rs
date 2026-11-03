@@ -1491,6 +1491,7 @@ pub fn execute_join<W: Write>(
         || query.scalar_formula.is_some()
         || query.grouped_distinct.is_some()
         || query.grouped_sum.is_some()
+        || query.grouped_min.is_some()
     {
         return super::multi_join::execute_multi_join(
             query,
