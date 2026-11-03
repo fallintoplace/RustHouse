@@ -1043,8 +1043,8 @@ fn execute_multi_join_inner<W: Write>(
             rows: metadata.rows,
         });
     }
-    // Reuse the inspected row counts. Correlated plans keep their original scope.
-    if exists_plan.is_none() && avg_plan.is_none() && min_plan.is_none() && sum_plan.is_none() {
+    // EXISTS columns are rebound by relation alias after reordering.
+    if avg_plan.is_none() && min_plan.is_none() && sum_plan.is_none() {
         let sizes = relations
             .iter()
             .map(|relation| relation.rows)
@@ -1057,7 +1057,7 @@ fn execute_multi_join_inner<W: Write>(
             return execute_multi_join_inner(
                 &reordered,
                 &reordered_paths,
-                None,
+                exists_plan,
                 None,
                 None,
                 None,
