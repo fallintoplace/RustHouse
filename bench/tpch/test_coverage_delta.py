@@ -37,6 +37,18 @@ class CoverageDeltaTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     compare(before, bad)
 
+    def test_rejects_unmatched_query_corpora(self):
+        before, after = report("error"), report("passed")
+        before["query_sha256"] = "a" * 64
+        after["query_sha256"] = "b" * 64
+        with self.assertRaisesRegex(ValueError, "fingerprints"):
+            compare(before, after)
+        del after["query_sha256"]
+        with self.assertRaisesRegex(ValueError, "fingerprints"):
+            compare(before, after)
+        after["query_sha256"] = before["query_sha256"]
+        self.assertEqual(compare(before, after)["counts"]["improved"], 22)
+
     def test_incomplete_reports_are_rejected(self):
         partial = {"results": [{"query": 1, "status": "passed"}]}
         with self.assertRaisesRegex(ValueError, "all 22"):
