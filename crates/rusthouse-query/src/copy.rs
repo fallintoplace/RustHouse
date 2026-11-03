@@ -50,6 +50,7 @@ fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseErro
     for (keyword, format) in [
         ("CSV", CopyFormat::Csv),
         ("TSV", CopyFormat::Tsv),
+        ("TABSEPARATED", CopyFormat::Tsv),
         ("SSV", CopyFormat::Ssv),
         ("JSONEACHROW", CopyFormat::JsonEachRow),
     ] {
