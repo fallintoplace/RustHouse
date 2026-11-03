@@ -139,6 +139,8 @@ pub struct JoinSelect {
     pub grouped_sum: Option<GroupedSum>,
     /// A numeric MIN over an INNER join.
     pub grouped_min: Option<JoinColumn>,
+    /// Arithmetic over grouped SUM expressions.
+    pub grouped_formula: Option<JoinAggregateFormula>,
     /// Position and alias of an EXTRACT(YEAR FROM date) grouping key.
     pub grouped_year: Option<(usize, String)>,
     /// Output aliases for grouped source columns.
@@ -506,8 +508,28 @@ fn parse_join_formula(
             if nesting != 0 {
                 return Err(ParseError("JOIN SUM requires ')'".into()));
             }
+            let source = &parser.tokens[begin..cursor - 1];
+            let mut encoded = Vec::new();
+            let mut position = 0;
+            while position < source.len() {
+                let identifier = |token: &Token| match token {
+                    Token::Word(value) | Token::QuotedWord(value) => Some(value.clone()),
+                    _ => None,
+                };
+                if let (Some(left), Some(Token::Dot), Some(right)) = (
+                    source.get(position).and_then(identifier),
+                    source.get(position + 1),
+                    source.get(position + 2).and_then(identifier),
+                ) {
+                    encoded.push(Token::Word(format!("{left}\0{right}")));
+                    position += 3;
+                } else {
+                    encoded.push(source[position].clone());
+                    position += 1;
+                }
+            }
             let mut inner = Parser {
-                tokens: parser.tokens[begin..cursor - 1].to_vec(),
+                tokens: encoded,
                 index: 0,
             };
             let expression = crate::expression::parse_expression_tokens(&mut inner)?;
@@ -817,6 +839,7 @@ fn parse_join_tokens(
     let mut grouped_case_counts = Vec::new();
     let mut grouped_sum = None;
     let mut grouped_min = None;
+    let mut grouped_formula = None;
     let mut grouped_year: Option<(usize, String)> = None;
     let mut grouped_key_aliases: Vec<(usize, String)> = Vec::new();
     let mut grouped_sum_position = None;
@@ -872,7 +895,17 @@ fn parse_join_tokens(
             if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("SUM"))
                 && matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
             {
-                if grouped_sum.is_some() || grouped_min.is_some() {
+                if let Some((formula, name)) = parse_join_formula(&mut parser)? {
+                    if grouped_sum.is_some() || grouped_min.is_some() || grouped_formula.is_some() {
+                        return Err(ParseError("JOIN supports one grouped aggregate".into()));
+                    }
+                    grouped_formula = Some(formula);
+                    aggregate_alias = Some(name);
+                    grouped_sum_position = Some(columns.len());
+                    grouped_count_projection = true;
+                    break;
+                }
+                if grouped_sum.is_some() || grouped_min.is_some() || grouped_formula.is_some() {
                     return Err(ParseError("JOIN supports one grouped aggregate".into()));
                 }
                 parser.keyword("SUM");
@@ -965,7 +998,7 @@ fn parse_join_tokens(
                 && matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
             {
                 parser.keyword("MIN");
-                if grouped_sum.is_some() || grouped_min.is_some() {
+                if grouped_sum.is_some() || grouped_min.is_some() || grouped_formula.is_some() {
                     return Err(ParseError("JOIN supports one grouped aggregate".into()));
                 }
                 if !parser.take(Token::LParen) {
@@ -989,7 +1022,7 @@ fn parse_join_tokens(
                 break;
             }
             if parser.keyword("COUNT") {
-                if grouped_sum.is_some() || grouped_min.is_some() {
+                if grouped_sum.is_some() || grouped_min.is_some() || grouped_formula.is_some() {
                     return Err(ParseError("JOIN supports one grouped aggregate".into()));
                 }
                 if !parser.take(Token::LParen) {
@@ -1588,6 +1621,7 @@ fn parse_join_tokens(
                 && grouped_case_counts.is_empty()
                 && grouped_sum.is_none()
                 && grouped_min.is_none()
+                && grouped_formula.is_none()
                 && grouped_distinct.is_none()
                 && grouped_count_column.is_none()
                 && parser.keyword("COUNT")
@@ -1827,16 +1861,18 @@ fn parse_join_tokens(
             "JOIN expression SUM requires INNER joins and comparison filters".into(),
         ));
     }
-    let chained_comparison_filters =
-        (!steps.is_empty() || grouped_sum.is_some() || grouped_min.is_some())
-            && kind == JoinType::Inner
-            && steps.iter().all(|step| step.kind == JoinType::Inner)
-            && matches!(
-                aggregate.as_ref(),
-                None | Some(JoinAggregate::CountStar | JoinAggregate::CountColumn(_))
-            )
-            && where_in_filters.is_empty()
-            && where_like_filters.is_empty();
+    let chained_comparison_filters = (!steps.is_empty()
+        || grouped_sum.is_some()
+        || grouped_min.is_some()
+        || grouped_formula.is_some())
+        && kind == JoinType::Inner
+        && steps.iter().all(|step| step.kind == JoinType::Inner)
+        && matches!(
+            aggregate.as_ref(),
+            None | Some(JoinAggregate::CountStar | JoinAggregate::CountColumn(_))
+        )
+        && where_in_filters.is_empty()
+        && where_like_filters.is_empty();
     if grouped_case_counts.is_empty()
         && (where_comparison.is_some()
             || !where_column_comparisons.is_empty()
@@ -1905,7 +1941,7 @@ fn parse_join_tokens(
             "JOIN ON LIKE requires grouped LEFT JOIN COUNT(column)".into(),
         ));
     }
-    if (grouped_sum.is_some() || grouped_min.is_some())
+    if (grouped_sum.is_some() || grouped_min.is_some() || grouped_formula.is_some())
         && (kind != JoinType::Inner || steps.iter().any(|step| step.kind != JoinType::Inner))
     {
         return Err(ParseError("grouped SUM or MIN requires INNER joins".into()));
@@ -2080,6 +2116,7 @@ fn parse_join_tokens(
         grouped_case_counts,
         grouped_sum,
         grouped_min,
+        grouped_formula,
         grouped_year,
         grouped_key_aliases,
         grouped_sum_position,
@@ -2348,6 +2385,11 @@ pub fn explain_join(query: &JoinSelect) -> String {
             };
             plan.push_str(&format!(
                 "\nAggregate: GROUP BY {keys} with SUM({expression})"
+            ));
+        } else if let Some(formula) = &query.grouped_formula {
+            plan.push_str(&format!(
+                "\nAggregate: GROUP BY {keys} with {} SUM expressions",
+                formula.sums.len()
             ));
         } else if let Some(column) = &query.grouped_min {
             plan.push_str(&format!(
