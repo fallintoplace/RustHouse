@@ -125,6 +125,42 @@ impl Constant {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupedFilter {
+    Truthy(String),
+    Comparison {
+        column: String,
+        operator: Operator,
+        literal: String,
+    },
+}
+
+impl GroupedFilter {
+    pub(crate) fn column(&self) -> &str {
+        match self {
+            Self::Truthy(column) | Self::Comparison { column, .. } => column,
+        }
+    }
+
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Self::Truthy(column) => column.clone(),
+            Self::Comparison { column, operator, literal } => {
+                let symbol = match operator {
+                    Operator::Eq => "=",
+                    Operator::Ne => "!=",
+                    Operator::Lt => "<",
+                    Operator::Le => "<=",
+                    Operator::Gt => ">",
+                    Operator::Ge => ">=",
+                    _ => "?",
+                };
+                format!("{column} {symbol} {literal}")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Projection {
     Literal(i64),
     Constants(Vec<Constant>),
@@ -171,13 +207,13 @@ pub enum Projection {
         column: String,
         items: Vec<(AggregateFunction, String)>,
         aliases: Vec<Option<String>>,
-        filters: Vec<Option<String>>,
+        filters: Vec<Option<GroupedFilter>>,
     },
     GroupedMultiAggregates {
         columns: Vec<String>,
         items: Vec<(AggregateFunction, String)>,
         aliases: Vec<Option<String>>,
-        filters: Vec<Option<String>>,
+        filters: Vec<Option<GroupedFilter>>,
     },
     Aggregate {
         function: AggregateFunction,
@@ -832,6 +868,21 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
 
 // COUNT(*), COUNT(), and COUNT(non-NULL constants) share a grouped marker.
 // The executor counts rows without reading a synthetic data column.
+fn grouped_metric_filter(parser: &mut Parser) -> Result<GroupedFilter, ParseError> {
+    let column = parser.bounded_word()?;
+    if let Some(Token::Operator(operator)) = parser.tokens.get(parser.index) {
+        let operator = *operator;
+        if !matches!(operator, Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge) {
+            return Err(ParseError("unsupported conditional aggregate comparison".into()));
+        }
+        parser.index += 1;
+        let literal = parser.literal()?;
+        Ok(GroupedFilter::Comparison { column, operator, literal })
+    } else {
+        Ok(GroupedFilter::Truthy(column))
+    }
+}
+
 fn grouped_metric_column(
     parser: &mut Parser,
     function: AggregateFunction,
@@ -1167,7 +1218,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                                 "conditional aggregate requires filter column".into(),
                             ));
                         }
-                        Some(parser.word()?)
+                        Some(grouped_metric_filter(&mut parser)?)
                     } else {
                         None
                     };
@@ -1229,7 +1280,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                                     "conditional aggregate requires filter column".into(),
                                 ));
                             }
-                            Some(parser.word()?)
+                            Some(grouped_metric_filter(&mut parser)?)
                         } else {
                             None
                         };

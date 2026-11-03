@@ -92,8 +92,8 @@ fn describe_projection(projection: &Projection) -> String {
             "Aggregate: GROUP BY {column}, {}",
             format_comma_separated_labels(items.iter().enumerate().map(
                 |(index, (function, value))| {
-                    if let Some(filter) = filters[index].as_deref() {
-                        format!("{}If({value}, {filter})", function.name())
+                    if let Some(filter) = filters[index].as_ref() {
+                        format!("{}If({value}, {})", function.name(), filter.label())
                     } else {
                         format!("{}({value})", function.name())
                     }
@@ -110,8 +110,8 @@ fn describe_projection(projection: &Projection) -> String {
             columns.join(", "),
             format_comma_separated_labels(items.iter().enumerate().map(
                 |(index, (function, value))| {
-                    if let Some(filter) = filters[index].as_deref() {
-                        format!("{}If({value}, {filter})", function.name())
+                    if let Some(filter) = filters[index].as_ref() {
+                        format!("{}If({value}, {})", function.name(), filter.label())
                     } else {
                         format!("{}({value})", function.name())
                     }
