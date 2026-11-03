@@ -9,6 +9,21 @@ pub struct RepairAssignment {
     pub total_cost: u64,
 }
 
+fn reconstruct_assignment(
+    mut mask: usize,
+    predecessor: &[Option<(usize, usize)>],
+    task_count: usize,
+) -> Result<Vec<usize>, &'static str> {
+    let mut chosen = Vec::with_capacity(task_count);
+    while mask != 0 {
+        let (previous, worker) = predecessor[mask].ok_or("broken repair assignment path")?;
+        chosen.push(worker);
+        mask = previous;
+    }
+    chosen.reverse();
+    Ok(chosen)
+}
+
 /// None forbids an assignment. A worker can serve at most one task.
 /// Runs in O(workers * 2^workers) memory and O(tasks * workers * 2^workers)
 /// time, with an explicit 16-worker bound.
@@ -58,18 +73,12 @@ pub fn minimum_cost_assignment(
             }
         }
     }
-    let (mut mask, cost) = (0..states)
+    let (mask, cost) = (0..states)
         .filter(|&mask| mask.count_ones() as usize == costs.len())
         .filter_map(|mask| best[mask].map(|cost| (mask, cost)))
         .min_by_key(|&(mask, cost)| (cost, mask))
         .ok_or("no feasible bounded repair assignment")?;
-    let mut chosen = Vec::with_capacity(costs.len());
-    while mask != 0 {
-        let (previous, worker) = predecessor[mask].ok_or("broken repair assignment path")?;
-        chosen.push(worker);
-        mask = previous;
-    }
-    chosen.reverse();
+    let chosen = reconstruct_assignment(mask, &predecessor, costs.len())?;
     Ok(RepairAssignment {
         workers: chosen,
         total_cost: cost,
