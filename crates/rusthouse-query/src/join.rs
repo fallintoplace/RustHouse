@@ -2,6 +2,7 @@
 
 mod correlated;
 mod correlated_avg;
+mod derived_count;
 mod exists_lookup;
 mod implicit;
 mod syntax;
@@ -19,6 +20,9 @@ pub use correlated::{
 };
 pub use correlated_avg::{
     JoinCorrelatedAvg, has_join_correlated_avg, parse_join_correlated_avg_with_schema,
+};
+pub use derived_count::{
+    DerivedJoinCount, has_derived_join_count, parse_derived_join_count_with_schema,
 };
 pub use exists_lookup::{JoinExistsKey, JoinExistsLookup};
 

@@ -54,6 +54,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
+mod derived_join_count;
 mod grouped_distinct;
 mod grouped_filter;
 mod grouped_generated;
@@ -66,6 +67,7 @@ mod multi_join;
 mod predicates;
 mod sort;
 mod typed;
+pub use derived_join_count::execute_derived_join_count;
 pub use join::execute_join;
 pub use multi_join::{
     bind_join_having_subquery, bind_join_in_subquery, execute_correlated_avg,
