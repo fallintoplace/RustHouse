@@ -45,9 +45,45 @@ fn same_schema_state(before: &fs::Metadata, after: &fs::Metadata) -> bool {
     true
 }
 
+/// Reject explicitly versioned database layouts that this binary cannot read.
+/// Missing markers remain supported for pre-versioned local databases.
+pub fn ensure_database_format_version(database: &Path) -> Result<(), String> {
+    let marker = database.join(".rusthouse-format-version");
+    let before = match fs::symlink_metadata(&marker) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("cannot inspect database format version: {error}")),
+    };
+    if !before.file_type().is_file() || before.len() > 64 {
+        return Err("database format marker must be a bounded regular file".into());
+    }
+    let mut file = open_catalog_schema(&marker)
+        .map_err(|error| format!("cannot open database format version: {error}"))?;
+    let opened = file.metadata()
+        .map_err(|error| format!("cannot read database format metadata: {error}"))?;
+    if !same_schema_state(&before, &opened) {
+        return Err("database format marker changed before read".into());
+    }
+    let mut bytes = Vec::new();
+    (&mut file).take(65).read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read database format version: {error}"))?;
+    let finished = file.metadata()
+        .map_err(|error| format!("cannot verify database format metadata: {error}"))?;
+    let current = fs::symlink_metadata(&marker)
+        .map_err(|error| format!("cannot verify database format marker: {error}"))?;
+    if !same_schema_state(&before, &finished) || !same_schema_state(&before, &current) {
+        return Err("database format marker changed during read".into());
+    }
+    if bytes != b"rusthouse-database-v1\n" {
+        return Err("unsupported database format version".into());
+    }
+    Ok(())
+}
+
 /// Resolve only catalog-visible, on-disk tables. Never expose orphaned
 /// data directories or symlinks that the local database would not accept.
 pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, String> {
+    ensure_database_format_version(database)?;
     let mut chars = table.bytes();
     if table.len() > 128
         || !matches!(chars.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
