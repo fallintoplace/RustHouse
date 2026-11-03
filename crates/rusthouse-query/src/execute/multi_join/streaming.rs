@@ -51,7 +51,7 @@ struct Stage {
 struct OutputState {
     seen: u64,
     emitted: usize,
-    groups: HashMap<Vec<typed::Key>, (Vec<typed::Cell>, u64)>,
+    groups: HashMap<Vec<typed::Key>, (Vec<typed::Cell>, u64, Option<super::super::Number>)>,
     group_key: Vec<typed::Key>,
     group_bytes: usize,
 }
@@ -64,6 +64,7 @@ struct OutputSpec<'a> {
     comparisons: &'a [(usize, crate::Operator, typed::Cell)],
     column_comparisons: &'a [(usize, crate::Operator, usize)],
     group_indices: Option<Vec<usize>>,
+    sum_index: Option<usize>,
     offset: usize,
     limit: Option<usize>,
 }
@@ -103,7 +104,17 @@ fn visit<W: Write>(
             for &index in indices {
                 state.group_key.push(row[index].key());
             }
-            if let Some((_, count)) = state.groups.get_mut(state.group_key.as_slice()) {
+            let value = spec.sum_index.and_then(|index| match row[index] {
+                typed::Cell::Numeric(value) => Some(value),
+                _ => None,
+            });
+            if let Some((_, count, sum)) = state.groups.get_mut(state.group_key.as_slice()) {
+                if let Some(value) = value {
+                    *sum = Some(match *sum {
+                        Some(previous) => super::super::checked_aggregate_sum(previous, value)?,
+                        None => value,
+                    });
+                }
                 *count = count
                     .checked_add(1)
                     .ok_or_else(|| invalid("chained JOIN group count overflow"))?;
@@ -131,6 +142,7 @@ fn visit<W: Write>(
                             Vec<typed::Key>,
                             Vec<typed::Cell>,
                             u64,
+                            Option<super::super::Number>,
                         )>())
                     })
                     .ok_or_else(|| invalid("chained JOIN group size overflow"))?;
@@ -142,7 +154,11 @@ fn visit<W: Write>(
                     .ok_or_else(|| invalid("chained JOIN grouped memory budget exceeded"))?;
                 state.groups.insert(
                     state.group_key.clone(),
-                    (indices.iter().map(|&index| row[index].clone()).collect(), 1),
+                    (
+                        indices.iter().map(|&index| row[index].clone()).collect(),
+                        1,
+                        value,
+                    ),
                 );
             }
             return Ok(());
@@ -193,6 +209,7 @@ fn visit<W: Write>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute<W: Write>(
     query: &JoinSelect,
     paths: &[PathBuf],
@@ -200,6 +217,7 @@ pub(super) fn execute<W: Write>(
     initial_step: &JoinStep,
     comparisons: &[(usize, crate::Operator, typed::Cell)],
     column_comparisons: &[(usize, crate::Operator, usize)],
+    sum_index: Option<usize>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if relations[0].names.is_empty() {
@@ -220,6 +238,7 @@ pub(super) fn execute<W: Write>(
         null_filter,
         comparisons,
         column_comparisons,
+        sum_index,
         group_indices: query
             .grouped_count
             .as_ref()
@@ -262,6 +281,9 @@ pub(super) fn execute<W: Write>(
     for (left, _, right) in column_comparisons {
         referenced[*left] = true;
         referenced[*right] = true;
+    }
+    if let Some(index) = sum_index {
+        referenced[index] = true;
     }
     let projections = relations
         .iter()
@@ -421,29 +443,37 @@ pub(super) fn execute<W: Write>(
                 .collect::<Result<Vec<_>, ExecutionError>>()?
         };
         let mut rows = state.groups.into_values().collect::<Vec<_>>();
-        let compare = |left: &(Vec<typed::Cell>, u64), right: &(Vec<typed::Cell>, u64)| {
-            for &(index, descending, nulls_first) in &ordering {
-                let result = if let Some(index) = index {
-                    typed::compare_order_cells(
-                        &left.0[index],
-                        &right.0[index],
-                        descending,
-                        nulls_first,
-                    )
-                } else {
-                    let count_order = left.1.cmp(&right.1);
-                    if descending {
-                        count_order.reverse()
+        let compare =
+            |left: &(Vec<typed::Cell>, u64, Option<super::super::Number>),
+             right: &(Vec<typed::Cell>, u64, Option<super::super::Number>)| {
+                for &(index, descending, nulls_first) in &ordering {
+                    let result = if let Some(index) = index {
+                        typed::compare_order_cells(
+                            &left.0[index],
+                            &right.0[index],
+                            descending,
+                            nulls_first,
+                        )
                     } else {
-                        count_order
+                        if sum_index.is_some() {
+                            let left = left.2.map_or(typed::Cell::Null, typed::Cell::Numeric);
+                            let right = right.2.map_or(typed::Cell::Null, typed::Cell::Numeric);
+                            typed::compare_order_cells(&left, &right, descending, nulls_first)
+                        } else {
+                            let count_order = left.1.cmp(&right.1);
+                            if descending {
+                                count_order.reverse()
+                            } else {
+                                count_order
+                            }
+                        }
+                    };
+                    if !result.is_eq() {
+                        return result;
                     }
-                };
-                if !result.is_eq() {
-                    return result;
                 }
-            }
-            std::cmp::Ordering::Equal
-        };
+                std::cmp::Ordering::Equal
+            };
         let bounded = query
             .limit
             .and_then(|limit| query.offset.checked_add(limit))
@@ -460,7 +490,10 @@ pub(super) fn execute<W: Write>(
             "\t{}",
             query.aggregate_alias.as_deref().unwrap_or("count")
         )?;
-        let mut write_group = |values: &[typed::Cell], count: u64| -> Result<(), ExecutionError> {
+        let mut write_group = |values: &[typed::Cell],
+                               count: u64,
+                               sum: Option<super::super::Number>|
+         -> Result<(), ExecutionError> {
             for (index, value) in values.iter().enumerate() {
                 if index > 0 {
                     output.write_all(b"\t")?;
@@ -468,22 +501,28 @@ pub(super) fn execute<W: Write>(
                 let source = selected[index].0;
                 typed::write_typed_value(output, value, spec.types[source])?;
             }
-            writeln!(output, "\t{count}")?;
+            output.write_all(b"\t")?;
+            if sum_index.is_some() {
+                typed::write_value(output, &sum.map_or(typed::Cell::Null, typed::Cell::Numeric))?;
+                writeln!(output)?;
+            } else {
+                writeln!(output, "{count}")?;
+            }
             Ok(())
         };
         if let Some(positions) = bounded {
             for index in positions.into_iter().skip(query.offset) {
-                let (values, count) = &rows[index];
-                write_group(values, *count)?;
+                let (values, count, sum) = &rows[index];
+                write_group(values, *count, *sum)?;
             }
         } else {
             rows.sort_by(compare);
-            for (values, count) in rows
+            for (values, count, sum) in rows
                 .iter()
                 .skip(query.offset)
                 .take(query.limit.unwrap_or(usize::MAX))
             {
-                write_group(values, *count)?;
+                write_group(values, *count, *sum)?;
             }
         }
     }

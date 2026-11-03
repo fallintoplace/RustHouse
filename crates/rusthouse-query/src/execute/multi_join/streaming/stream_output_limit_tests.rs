@@ -22,6 +22,7 @@ fn streaming_inner_joins_can_emit_more_than_the_materialized_row_cap() {
         comparisons: &[],
         column_comparisons: &[],
         group_indices: None,
+        sum_index: None,
         offset: 0,
         limit: None,
     };
@@ -67,6 +68,7 @@ fn streaming_inner_join_still_respects_explicit_limit() {
         comparisons: &[],
         column_comparisons: &[],
         group_indices: None,
+        sum_index: None,
         offset: 0,
         limit: Some(2),
     };
