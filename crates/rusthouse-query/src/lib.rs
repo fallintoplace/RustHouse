@@ -1,3 +1,4 @@
+pub mod operator_metrics;
 mod copy;
 mod date_scalar;
 mod ddl;
