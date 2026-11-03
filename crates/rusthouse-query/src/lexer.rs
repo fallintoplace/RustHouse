@@ -621,7 +621,7 @@ mod dollar_quoted_string_tests {
             vec![Token::String("first $wrong$ second".into())]
         );
         assert_eq!(
-            tokenize("$ $").unwrap(),
+            tokenize("$$ $$").unwrap(),
             vec![Token::String(" ".into())]
         );
     }
