@@ -1714,6 +1714,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
         parser.bounded_word()?;
     }
+    if source.is_some() && parser.tokens.get(parser.index) == Some(&Token::Comma) {
+        return Err(ParseError(
+            "comma-separated FROM tables are not yet supported; use explicit JOIN".into(),
+        ));
+    }
     if source.is_none()
         && !matches!(
             projection,
@@ -2494,5 +2499,17 @@ mod parenthesized_predicate_literal_tests {
         }
         let nested = format!("{}1{}", "(".repeat(17), ")".repeat(17));
         assert!(parse_select(&format!("SELECT count(*) FROM t WHERE number = {nested}")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_comma_from_diagnostics {
+    use super::parse_select;
+
+    #[test]
+    fn comma_sources_are_not_reported_as_missing_group_by() {
+        let sql = "SELECT l_shipmode, sum(CASE WHEN priority = 'hi' THEN 1 ELSE 0 END) FROM orders, lineitem GROUP BY l_shipmode";
+        let error = parse_select(sql).unwrap_err();
+        assert!(error.0.contains("comma-separated FROM tables"), "{error}");
     }
 }
