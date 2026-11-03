@@ -1331,11 +1331,40 @@ fn execute_multi_join_inner<W: Write>(
         })
         .collect::<Result<Vec<_>, ExecutionError>>()?;
 
-    let row_filters = query
-        .scalar_where
-        .as_ref()
-        .map(|branches| row_filters::RowFilters::bind(branches, &relations))
-        .transpose()?;
+    // Two-table parsers may store IN and LIKE separately from boolean branches.
+    // Correlated plans also use this executor, so retain those conjuncts here.
+    let row_filters = if query.scalar_where.is_some()
+        || !query.where_in_filters.is_empty()
+        || !query.where_like_filters.is_empty()
+    {
+        let mut branches = query.scalar_where.clone().unwrap_or_else(|| vec![vec![]]);
+        let column_name = |column: &JoinColumn| {
+            if column.relation.is_empty() {
+                column.name.clone()
+            } else {
+                format!("{}\0{}", column.relation, column.name)
+            }
+        };
+        for branch in &mut branches {
+            branch.extend(query.where_in_filters.iter().map(|(column, values)| {
+                crate::Predicate::In {
+                    column: column_name(column),
+                    values: values.clone(),
+                }
+            }));
+            branch.extend(query.where_like_filters.iter().map(
+                |(column, pattern, case_insensitive, negated)| crate::Predicate::Like {
+                    column: column_name(column),
+                    pattern: pattern.clone(),
+                    case_insensitive: *case_insensitive,
+                    negated: *negated,
+                },
+            ));
+        }
+        Some(row_filters::RowFilters::bind(&branches, &relations)?)
+    } else {
+        None
+    };
 
     // Validate the complete output schema without materializing rows.
     if query.limit == Some(0)

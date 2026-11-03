@@ -13,9 +13,9 @@ fn correlated_pair_sum_uses_both_keys_and_filters() {
     };
     for statement in [
         "CREATE TABLE stock (part UInt64, supplier UInt64, available Nullable(Int64))",
-        "CREATE TABLE parts (id UInt64)",
+        "CREATE TABLE parts (id UInt64, label Nullable(String))",
         "CREATE TABLE sales (part_key UInt64, supplier_key UInt64, quantity Nullable(Float64), day Date)",
-        "INSERT INTO parts VALUES (1), (2), (3)",
+        "INSERT INTO parts VALUES (1, 'forest'), (2, 'rock'), (3, NULL)",
         "INSERT INTO stock VALUES (1, 1, 11), (1, 1, 10), (1, 2, 3), (2, 1, 5), (3, 1, NULL)",
         "INSERT INTO sales VALUES (1, 1, 10, '1994-01-01'), (1, 1, 10, '1994-12-31'), (1, 1, 999, '1995-01-01'), (1, 2, 4, '1994-06-01'), (2, 1, NULL, '1994-06-01'), (3, 1, 1, '1994-06-01')",
     ] {
@@ -37,6 +37,35 @@ fn correlated_pair_sum_uses_both_keys_and_filters() {
         result.stdout,
         b"stock.part\tstock.supplier\tstock.available\n1\t1\t11\n1\t2\t3\n"
     );
+    let unordered = query.replace(" ORDER BY stock.part, stock.supplier, stock.available", "");
+    let filtered = unordered.replace(
+        "WHERE stock.available",
+        "WHERE parts.label LIKE 'rock%' AND stock.available",
+    );
+    let result = sql(&filtered);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        result.stdout,
+        b"stock.part\tstock.supplier\tstock.available\n"
+    );
+    let filtered = unordered.replace(
+        "WHERE stock.available",
+        "WHERE stock.supplier IN (2) AND stock.available",
+    );
+    let result = sql(&filtered);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        result.stdout,
+        b"stock.part\tstock.supplier\tstock.available\n1\t2\t3\n"
+    );
     let limited = query.to_owned() + " LIMIT 1 OFFSET 1";
     let result = sql(&limited);
     assert!(
@@ -50,6 +79,35 @@ fn correlated_pair_sum_uses_both_keys_and_filters() {
     );
     let zero = query.to_owned() + " LIMIT 0";
     let result = sql(&zero);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        result.stdout,
+        b"stock.part\tstock.supplier\tstock.available\n"
+    );
+    assert!(sql("INSERT INTO stock VALUES (3, 1, 10)").status.success());
+    let positive = unordered.replace(
+        "WHERE stock.available",
+        "WHERE parts.label LIKE 'forest%' AND stock.available",
+    );
+    let result = sql(&positive);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        result.stdout,
+        b"stock.part\tstock.supplier\tstock.available\n1\t1\t11\n1\t2\t3\n"
+    );
+    let null_filter = unordered.replace(
+        "WHERE stock.available",
+        "WHERE parts.label NOT LIKE 'forest%' AND stock.available",
+    );
+    let result = sql(&null_filter);
     assert!(
         result.status.success(),
         "{}",
