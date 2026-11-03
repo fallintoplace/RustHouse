@@ -52,8 +52,15 @@ def combine(parser_report, execution_report):
         else:
             category = "execution_failed"
         categories[category] += 1
-        rows.append({"query": number, "parser": parse_status,
-                     "execution": run_status, "stage": category})
+        row = {"query": number, "parser": parse_status,
+               "execution": run_status, "stage": category}
+        parse_error = parsed[number].get("error")
+        run_error = executed[number].get("error")
+        if parse_status in ("parse_error", "invalid_query") and isinstance(parse_error, str):
+            row["parse_error"] = parse_error[:500]
+        if run_status not in ("passed", "unverified") and isinstance(run_error, str):
+            row["execution_error"] = run_error[:500]
+        rows.append(row)
     return {"workload": "tpch-stage-coverage", "official_tpch_score": False,
             "total_queries": 22, "categories": categories, "results": rows}
 
