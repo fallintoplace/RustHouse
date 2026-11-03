@@ -8,9 +8,10 @@ use crate::{
     sql_values, vertical,
 };
 use rusthouse_query::{
-    ParseError, Source, execute, explain_join, explain_select, has_explicit_join,
-    has_implicit_join, has_join_correlated_avg, has_top_level_exists, parse_correlated_exists,
-    parse_ddl, parse_delete, parse_insert, parse_join, parse_join_correlated_avg_with_schema,
+    ParseError, Source, execute, explain_join, explain_select, has_derived_join_count,
+    has_explicit_join, has_implicit_join, has_join_correlated_avg, has_top_level_exists,
+    parse_correlated_exists, parse_ddl, parse_delete, parse_derived_join_count_with_schema,
+    parse_insert, parse_join, parse_join_correlated_avg_with_schema,
     parse_join_correlated_exists_with_schema, parse_join_with_schema, parse_select, parse_update,
     split_clickhouse_format,
 };
@@ -374,11 +375,12 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         return Err("--catalog is only supported for DDL statements".into());
     }
     let implicit = has_implicit_join(&query).map_err(|error| error.to_string())?;
+    let derived = has_derived_join_count(&query).map_err(|error| error.to_string())?;
     let possible_join_exists = has_top_level_exists(&query).map_err(|error| error.to_string())?
         && (implicit || has_explicit_join(&query).map_err(|error| error.to_string())?);
     let possible_join_avg = has_join_correlated_avg(&query).map_err(|error| error.to_string())?
         && (implicit || has_explicit_join(&query).map_err(|error| error.to_string())?);
-    let implicit_lock = if implicit || possible_join_exists || possible_join_avg {
+    let implicit_lock = if implicit || derived || possible_join_exists || possible_join_avg {
         match database.as_deref() {
             Some(path) if path.is_dir() => Some(crate::database::read_lock(path)?),
             _ => None,
@@ -386,6 +388,35 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     } else {
         None
     };
+    if derived {
+        if let Some(directory) = database.as_deref() {
+            let plan = parse_derived_join_count_with_schema(&query, |table| {
+                crate::catalog::read_schema(directory, table)
+                    .map(|columns| columns.into_iter().map(|column| column.name).collect())
+                    .map_err(ParseError)
+            })
+            .map_err(|error| error.to_string())?;
+            if let Some(mut plan) = plan {
+                if part.is_some() {
+                    return Err("derived JOIN cannot use --part".into());
+                }
+                if show_ast || explain {
+                    return Err("derived JOIN cannot use --show-ast or --explain yet".into());
+                }
+                if let Some(cap) = max_rows {
+                    plan.cap_rows(cap);
+                }
+                return crate::join::run_derived_count(
+                    directory,
+                    &plan,
+                    format.unwrap_or(SqlOutputFormat::Tsv),
+                    output_path,
+                    time,
+                    implicit_lock,
+                );
+            }
+        }
+    }
     if possible_join_avg {
         if let Some(directory) = database.as_deref() {
             let plan = parse_join_correlated_avg_with_schema(&query, |table| {
