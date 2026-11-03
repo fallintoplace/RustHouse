@@ -245,7 +245,7 @@ pub(super) fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
 
 pub(super) fn follows_binary_minus_context(tokens: &[Token]) -> bool {
     match tokens.last() {
-        Some(Token::Number(_) | Token::RParen) => true,
+        Some(Token::Number(_) | Token::String(_) | Token::RParen) => true,
         Some(Token::QuotedWord(_)) => true,
         Some(Token::Word(word)) => !["SELECT", "BETWEEN", "AND", "OR", "WHERE", "NOT", "IN"]
             .iter()
@@ -485,5 +485,25 @@ mod doubled_equals_tests {
             "SELECT number FROM numbers(4) WHERE number === 2"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod string_subtraction_lexer_tests {
+    use super::*;
+
+    #[test]
+    fn treats_minus_after_string_literals_as_subtraction() {
+        assert_eq!(
+            super::super::tokenize("'value'-2 'more' - 3").unwrap(),
+            vec![
+                Token::String("value".into()),
+                Token::Minus,
+                Token::Number("2".into()),
+                Token::String("more".into()),
+                Token::Minus,
+                Token::Number("3".into()),
+            ]
+        );
     }
 }
