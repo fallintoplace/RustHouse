@@ -454,7 +454,12 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("JOIN GROUP requires BY".into()));
         }
-        Some(qualified(&mut parser)?)
+        let parenthesized = parser.take(Token::LParen);
+        let key = qualified(&mut parser)?;
+        if parenthesized && !parser.take(Token::RParen) {
+            return Err(ParseError("JOIN GROUP BY requires closing ')'".into()));
+        }
+        Some(key)
     } else {
         None
     };
@@ -1438,5 +1443,28 @@ mod join_count_one_tests {
             assert!(matches!(query.aggregate, Some(JoinAggregate::CountStar)), "{sql}");
         }
         assert!(parse_join("SELECT COUNT(2) FROM l JOIN r ON l.id = r.id").is_err());
+    }
+}
+
+#[cfg(test)]
+mod join_group_key_parentheses_tests {
+    use super::*;
+
+    #[test]
+    fn parentheses_preserve_join_grouping_key() {
+        let plain = "SELECT a.id, COUNT(*) FROM a JOIN b ON a.id = b.id GROUP BY a.id";
+        let wrapped = "SELECT a.id, COUNT(*) FROM a JOIN b ON a.id = b.id GROUP BY (a.id)";
+        assert_eq!(parse_join(wrapped).unwrap(), parse_join(plain).unwrap());
+    }
+
+    #[test]
+    fn malformed_grouping_parentheses_are_rejected() {
+        for sql in [
+            "SELECT a.id, COUNT(*) FROM a JOIN b ON a.id = b.id GROUP BY (a.id",
+            "SELECT a.id, COUNT(*) FROM a JOIN b ON a.id = b.id GROUP BY a.id)",
+            "SELECT a.id, COUNT(*) FROM a JOIN b ON a.id = b.id GROUP BY ()",
+        ] {
+            assert!(parse_join(sql).is_err(), "{sql}");
+        }
     }
 }
