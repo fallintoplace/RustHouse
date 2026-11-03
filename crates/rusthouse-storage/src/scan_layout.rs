@@ -8,6 +8,27 @@ fn granule_boundary_mismatch(name: &str) -> PartError {
     PartError::InvalidScan(format!("granule boundaries differ for {name}"))
 }
 
+fn validate_mark_offset(
+    name: &str,
+    mark: &WideMark,
+    previous: Option<(u64, u64)>,
+) -> Result<(u64, u64), PartError> {
+    let current = (mark.compressed_offset, mark.decompressed_offset);
+    if let Some(previous) = previous {
+        if current < previous {
+            return Err(PartError::InvalidScan(format!(
+                "mark offsets are not ordered for {name}"
+            )));
+        }
+        if mark.rows != Some(0) && current == previous {
+            return Err(PartError::InvalidScan(format!(
+                "duplicate live mark offsets for {name}"
+            )));
+        }
+    }
+    Ok(current)
+}
+
 fn validate_mark_rows(
     name: &str,
     marks: &[WideMark],
@@ -30,20 +51,7 @@ fn validate_mark_rows(
                 "zero-row mark is not terminal for {name}"
             )));
         }
-        let current_offset = (mark.compressed_offset, mark.decompressed_offset);
-        if let Some(previous) = previous_offset {
-            if current_offset < previous {
-                return Err(PartError::InvalidScan(format!(
-                    "mark offsets are not ordered for {name}"
-                )));
-            }
-            if mark.rows != Some(0) && current_offset == previous {
-                return Err(PartError::InvalidScan(format!(
-                    "duplicate live mark offsets for {name}"
-                )));
-            }
-        }
-        previous_offset = Some(current_offset);
+        previous_offset = Some(validate_mark_offset(name, mark, previous_offset)?);
         let rows = mark
             .rows
             .ok_or_else(|| PartError::InvalidScan("adaptive wide marks are required".into()))?;
