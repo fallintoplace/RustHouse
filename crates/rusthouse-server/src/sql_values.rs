@@ -229,7 +229,6 @@ mod tests {
         String::from_utf8(output).map_err(|_| invalid("invalid output UTF-8"))
     }
 
-
     #[test]
     fn long_plain_spans_preserve_quotes_backslashes_and_utf8() {
         let input = format!("{}'back\\slash'{}", "café".repeat(256), "東京".repeat(256));
