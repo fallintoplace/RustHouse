@@ -532,6 +532,31 @@ impl Parser {
         Ok(name)
     }
 
+    /// Only output positions can consume an alias without AS. Keep clause
+    /// keywords out so a missing comma cannot swallow FROM, GROUP BY, etc.
+    fn select_output_alias(&mut self) -> Result<Option<String>, ParseError> {
+        if self.keyword("AS") {
+            return Ok(Some(self.bounded_word()?));
+        }
+        let implicit = match self.tokens.get(self.index) {
+            Some(Token::QuotedWord(_)) => true,
+            Some(Token::Word(name)) => ![
+                "FROM", "PREWHERE", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT",
+                "OFFSET", "FETCH", "FORMAT", "SETTINGS", "RENAME", "JOIN", "INNER",
+                "LEFT", "RIGHT", "FULL", "CROSS", "ON", "USING", "UNION", 
+                "INTERSECT", "EXCEPT", "ALL", "DISTINCT",
+            ]
+            .iter()
+            .any(|word| name.eq_ignore_ascii_case(word)),
+            _ => false,
+        };
+        if implicit {
+            Ok(Some(self.bounded_word()?))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn literal(&mut self) -> Result<String, ParseError> {
         let mut depth = 0usize;
         while self.take(Token::LParen) {
@@ -1713,11 +1738,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     let mut expressions = vec![expr];
                     let mut items = vec![(function, value_column)];
                     let mut filters = vec![filter];
-                    let mut aliases = vec![if parser.keyword("AS") {
-                        Some(parser.word()?)
-                    } else {
-                        None
-                    }];
+                    let mut aliases = vec![parser.select_output_alias()?];
                     while parser.take(Token::Comma) {
                         if items.len() >= 16 {
                             return Err(ParseError(
@@ -1792,11 +1813,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         expressions.push(expr);
                         items.push((function, value_column));
                         filters.push(filter);
-                        aliases.push(if parser.keyword("AS") {
-                            Some(parser.word()?)
-                        } else {
-                            None
-                        });
+                        aliases.push(parser.select_output_alias()?);
                     }
                     let mut seen = std::collections::HashSet::new();
                     for alias in aliases.iter().flatten() {
@@ -1916,7 +1933,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
     let alias = if let Some(alias) = literal_alias {
         Some(alias)
-    } else if parser.keyword("AS") {
+    } else {
         let single_result = matches!(
             &projection,
             Projection::Literal(_)
@@ -1933,12 +1950,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::GroupedMultiDistinctCount { .. }
                 | Projection::StringLength { .. }
         ) || matches!(&projection, Projection::Columns(columns) if columns.len() == 1);
-        if !single_result {
+        if single_result {
+            parser.select_output_alias()?
+        } else if parser.keyword("AS") {
             return Err(ParseError("AS supports only a single result column".into()));
+        } else {
+            None
         }
-        Some(parser.word()?)
-    } else {
-        None
     };
 
     let source = if parser.keyword("FROM") {
