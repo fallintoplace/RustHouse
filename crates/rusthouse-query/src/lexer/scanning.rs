@@ -47,16 +47,30 @@ pub(super) fn scan_radix_number(
     let bytes = sql.as_bytes();
     let start = *index + 2;
     *index = start;
-    while bytes
-        .get(*index)
-        .is_some_and(|&byte| (byte as char).to_digit(radix).is_some())
-    {
-        *index += 1;
+    while let Some(&byte) = bytes.get(*index) {
+        if (byte as char).to_digit(radix).is_some() {
+            *index += 1;
+        } else if byte == b'_'
+            && *index > start
+            && bytes
+                .get(*index + 1)
+                .is_some_and(|&next| (next as char).to_digit(radix).is_some())
+        {
+            *index += 1;
+        } else {
+            break;
+        }
     }
     if *index == start {
         return Err(ParseError("numeric base prefix requires digits".into()));
     }
-    let number = u64::from_str_radix(&sql[start..*index], radix)
+    let raw = &sql[start..*index];
+    let canonical = if raw.contains('_') {
+        std::borrow::Cow::Owned(raw.replace('_', ""))
+    } else {
+        std::borrow::Cow::Borrowed(raw)
+    };
+    let number = u64::from_str_radix(&canonical, radix)
         .map_err(|_| ParseError("prefixed numeric literal exceeds UInt64".into()))?;
     Ok(Token::Number(number.to_string()))
 }
@@ -266,6 +280,40 @@ pub(super) fn punctuation_token(byte: u8) -> Token {
         b')' => Token::RParen,
         b';' => Token::Semicolon,
         _ => unreachable!("only supported punctuation reaches this helper"),
+    }
+}
+
+#[cfg(test)]
+mod radix_separator_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_grouped_hexadecimal_and_binary_digits() {
+        for (sql, expected) in [
+            ("0xAB_CD", "43981"),
+            ("0X12_34_56", "1193046"),
+            ("0b1010_0110", "166"),
+            ("0B1_0_1", "5"),
+        ] {
+            let mut cursor = 0;
+            let radix = if sql.as_bytes()[1].eq_ignore_ascii_case(&b'x') {
+                16
+            } else {
+                2
+            };
+            assert_eq!(
+                scan_radix_number(sql, &mut cursor, radix).unwrap(),
+                Token::Number(expected.into()),
+            );
+            assert_eq!(cursor, sql.len());
+        }
+    }
+
+    #[test]
+    fn separators_must_be_between_valid_digits() {
+        for sql in ["0x_FF", "0xFF_", "0xA__B", "0b_1", "0b1_", "0b1_2"] {
+            assert!(crate::parse_select(&format!("SELECT {sql}")).is_err(), "{sql}");
+        }
     }
 }
 
@@ -487,3 +535,4 @@ mod doubled_equals_tests {
         .is_err());
     }
 }
+
