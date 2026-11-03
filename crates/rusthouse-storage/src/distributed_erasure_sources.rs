@@ -45,6 +45,11 @@ pub fn choose_erasure_sources(
             return Err("invalid erasure recovery source");
         }
     }
+    // Canonicalize source enumeration so equal-cost plans do not depend on
+    // the order in which replica metadata arrived.
+    let mut ordered = sources.iter().collect::<Vec<_>>();
+    ordered.sort_unstable_by(|left, right| left.node.cmp(&right.node));
+
     let mut chosen_mask = None;
     let mut chosen_cost = u64::MAX;
     for mask in 1u32..(1u32 << sources.len()) {
@@ -53,7 +58,7 @@ pub fn choose_erasure_sources(
         let mut zones = HashSet::new();
         let mut cost = 0u64;
         let mut good = true;
-        for (index, source) in sources.iter().enumerate() {
+        for (index, source) in ordered.iter().enumerate() {
             if mask & (1u32 << index) == 0 { continue; }
             let bit = 1u128 << source.fragment;
             if !source.healthy || fragments & bit != 0 {
@@ -78,7 +83,7 @@ pub fn choose_erasure_sources(
     let mask = chosen_mask.ok_or("no feasible erasure fragment source set")?;
     let mut nodes = Vec::new();
     let mut fragment_indices = Vec::new();
-    for (index, source) in sources.iter().enumerate() {
+    for (index, source) in ordered.iter().enumerate() {
         if mask & (1u32 << index) != 0 {
             nodes.push(source.node.clone());
             fragment_indices.push(source.fragment);
@@ -122,5 +127,29 @@ mod tests {
         assert!(choose_erasure_sources(&items, 2, 2).is_err());
         items[0].healthy = false;
         assert!(choose_erasure_sources(&items, 2, 2).is_err());
+    }
+}
+
+#[cfg(test)]
+mod stable_source_order_tests {
+    use super::*;
+
+    fn source(node: &str, fragment: u8) -> FragmentSource {
+        FragmentSource {
+            node: node.into(), zone: "zone".into(), fragment,
+            transfer_cost: 1, healthy: true,
+        }
+    }
+
+    #[test]
+    fn tied_recovery_costs_choose_same_nodes_for_every_input_order() {
+        let sources = [source("c", 2), source("a", 0), source("b", 1)];
+        let plan = choose_erasure_sources(&sources, 2, 1).unwrap();
+        assert_eq!(plan.total_cost, 2);
+        assert_eq!(plan.nodes, ["a", "b"]);
+        assert_eq!(plan.fragment_indices, [0, 1]);
+
+        let shuffled = [sources[2].clone(), sources[0].clone(), sources[1].clone()];
+        assert_eq!(choose_erasure_sources(&shuffled, 2, 1).unwrap(), plan);
     }
 }
