@@ -173,6 +173,14 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(compare_reference(b"name\tamount\nb\t2\n",
                                            b"name\tamount\na\t2\n", "numeric"))
 
+    def test_unordered_header_mode_does_not_shuffle_headers_into_data(self):
+        expected = b"id\\n1\\n2\\n"
+        self.assertTrue(compare_reference(b"id\\n2\\n1\\n", expected, "unordered-header"))
+        self.assertFalse(compare_reference(b"1\\nid\\n2\\n", expected, "unordered-header"))
+        self.assertFalse(compare_reference(b"wrong\\n2\\n1\\n", expected, "unordered-header"))
+        self.assertFalse(compare_reference(b"id\\n2\\n2\\n", expected, "unordered-header"))
+        self.assertTrue(compare_reference(b"", b"", "unordered-header"))
+
     def test_unordered_rows_preserve_duplicate_counts(self):
         expected = b"1\n2\n2\n"
         self.assertFalse(compare_reference(b"2\n1\n2\n", expected))
