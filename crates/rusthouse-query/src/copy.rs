@@ -252,6 +252,9 @@ mod copy_jsonlines_format_tests {
             .unwrap();
         assert_eq!(parsed.format, CopyFormat::JsonEachRow);
         assert!(!parsed.header);
-        assert!(parse_copy_from("COPY events FROM 'rows.jsonl' WITH (FORMAT JSONLines, HEADER TRUE)").is_err());
+        assert!(
+            parse_copy_from("COPY events FROM 'rows.jsonl' WITH (FORMAT JSONLines, HEADER TRUE)")
+                .is_err()
+        );
     }
 }
