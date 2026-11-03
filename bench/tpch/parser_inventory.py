@@ -29,11 +29,14 @@ def parse_statement(binary, sql, timeout=10):
         except subprocess.TimeoutExpired:
             return False, "parser timed out"
         output.seek(0, 2)
-        if output.tell() > MAX_AST_BYTES:
+        ast_bytes = output.tell()
+        if ast_bytes > MAX_AST_BYTES:
             return False, "parser output exceeds 2 MiB"
         if completed.returncode:
             errors.seek(0)
             return False, errors.read(500).decode("utf-8", "replace").strip()
+        if ast_bytes == 0:
+            return False, "parser returned success without an AST"
         return True, None
 
 
