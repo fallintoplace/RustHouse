@@ -7,6 +7,7 @@ use rusthouse_storage::TypedQueryReader;
 enum FilterTarget {
     Literal(typed::Cell),
     Column(usize),
+    Values(Vec<typed::Cell>),
 }
 struct BoundFilter {
     column: usize,
@@ -29,15 +30,20 @@ fn prefilter_dimension_rows(
                 .iter()
                 .filter(|filter| filter.column >= left_width)
                 .all(|filter| {
-                    let target = match &filter.target {
-                        FilterTarget::Literal(value) => value,
-                        FilterTarget::Column(index) => &row[*index - left_width],
-                    };
-                    typed::matches_comparison(
-                        &row[filter.column - left_width],
-                        target,
-                        filter.operator,
-                    )
+                    let candidate = &row[filter.column - left_width];
+                    match &filter.target {
+                        FilterTarget::Literal(value) => {
+                            typed::matches_comparison(candidate, value, filter.operator)
+                        }
+                        FilterTarget::Column(index) => typed::matches_comparison(
+                            candidate,
+                            &row[*index - left_width],
+                            filter.operator,
+                        ),
+                        FilterTarget::Values(values) => values.iter().any(|value| {
+                            typed::matches_comparison(candidate, value, crate::Operator::Eq)
+                        }),
+                    }
                 })
         });
     }
@@ -102,7 +108,7 @@ fn scan<W: Write>(
         .flat_map(|filter| {
             std::iter::once(filter.column).chain(match filter.target {
                 FilterTarget::Column(index) => Some(index),
-                FilterTarget::Literal(_) => None,
+                FilterTarget::Literal(_) | FilterTarget::Values(_) => None,
             })
         })
         .collect::<Vec<_>>();
@@ -153,6 +159,9 @@ fn scan<W: Write>(
                             let target = typed::cell(&batch[source_to_batch[*index]], row_index);
                             typed::matches_comparison(&candidate, &target, filter.operator)
                         }
+                        FilterTarget::Values(values) => values.iter().any(|value| {
+                            typed::matches_comparison(&candidate, value, crate::Operator::Eq)
+                        }),
                     }
                 })
             {
@@ -175,11 +184,19 @@ fn scan<W: Write>(
                     .filter(|filter| filter.column >= width)
                     .all(|filter| {
                         let candidate = &right_rows[right_index][filter.column - width];
-                        let target = match &filter.target {
-                            FilterTarget::Literal(value) => value,
-                            FilterTarget::Column(index) => &right_rows[right_index][*index - width],
-                        };
-                        typed::matches_comparison(candidate, target, filter.operator)
+                        match &filter.target {
+                            FilterTarget::Literal(value) => {
+                                typed::matches_comparison(candidate, value, filter.operator)
+                            }
+                            FilterTarget::Column(index) => typed::matches_comparison(
+                                candidate,
+                                &right_rows[right_index][*index - width],
+                                filter.operator,
+                            ),
+                            FilterTarget::Values(values) => values.iter().any(|value| {
+                                typed::matches_comparison(candidate, value, crate::Operator::Eq)
+                            }),
+                        }
                     })
                 {
                     continue;
@@ -309,6 +326,24 @@ pub(super) fn execute<W: Write>(
             column: left_index,
             operator: *operator,
             target: FilterTarget::Column(right_index),
+        });
+    }
+    for (column, texts) in &query.where_in_filters {
+        let index = resolve(query, column, left_names, right_names)?;
+        let metadata = if index < width {
+            &left_meta
+        } else {
+            &right_meta
+        };
+        let local_index = if index < width { index } else { index - width };
+        let values = texts
+            .iter()
+            .map(|text| typed::parse_literal(&metadata.columns[local_index].data_type, text))
+            .collect::<Result<Vec<_>, _>>()?;
+        filters.push(BoundFilter {
+            column: index,
+            operator: crate::Operator::Eq,
+            target: FilterTarget::Values(values),
         });
     }
     if filters.is_empty() {
