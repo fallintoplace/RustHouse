@@ -2,12 +2,14 @@
 """Compare canonical TPC-H parser inventories without claiming executed correctness."""
 import argparse
 import json
+import re
 from pathlib import Path
 
 from feature_gaps import load_report
 
 KNOWN = frozenset(("parsed", "parse_error", "invalid_query", "missing_query"))
 EXPECTED = frozenset(range(1, 23))
+FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _index(report):
@@ -31,6 +33,12 @@ def _index(report):
 def compare(before, after):
     old = _index(before)
     new = _index(after)
+    old_hash, new_hash = before.get("query_sha256"), after.get("query_sha256")
+    if (old_hash is not None or new_hash is not None) and (
+        not isinstance(old_hash, str) or not isinstance(new_hash, str)
+        or not FINGERPRINT.fullmatch(old_hash) or old_hash != new_hash
+    ):
+        raise ValueError("TPC-H parser coverage requires matching SQL fingerprints")
     unblocked, regressed, other_changes, error_transitions = [], [], [], []
     for query in range(1, 23):
         previous, current = old[query]["status"], new[query]["status"]
