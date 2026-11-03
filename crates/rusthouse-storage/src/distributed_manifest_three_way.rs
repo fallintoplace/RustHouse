@@ -27,6 +27,27 @@ fn same(a: Option<&ObjectMetadata>, b: Option<&ObjectMetadata>) -> bool {
     }
 }
 
+enum MergeChoice<'a> {
+    Keep(Option<&'a ObjectMetadata>),
+    Conflict,
+}
+
+fn resolve_record<'a>(
+    base: Option<&'a ObjectMetadata>,
+    local: Option<&'a ObjectMetadata>,
+    remote: Option<&'a ObjectMetadata>,
+) -> MergeChoice<'a> {
+    if same(local, remote) {
+        MergeChoice::Keep(local)
+    } else if same(local, base) {
+        MergeChoice::Keep(remote)
+    } else if same(remote, base) {
+        MergeChoice::Keep(local)
+    } else {
+        MergeChoice::Conflict
+    }
+}
+
 /// Compute a non-destructive merge from a shared immutable base.
 /// CRC32C and size compare stored metadata, not cryptographic byte identity.
 pub fn plan_three_way_manifest_merge(
@@ -59,18 +80,10 @@ pub fn plan_three_way_manifest_merge(
         let base = original.get(key).copied();
         let local = left.get(key).copied();
         let remote = right.get(key).copied();
-        let chosen = if same(local, remote) {
-            local
-        } else if same(local, base) {
-            remote
-        } else if same(remote, base) {
-            local
-        } else {
-            conflicts.push(key.to_owned());
-            None
-        };
-        if let Some(record) = chosen {
-            merged.push(record.clone());
+        match resolve_record(base, local, remote) {
+            MergeChoice::Keep(Some(record)) => merged.push(record.clone()),
+            MergeChoice::Keep(None) => {}
+            MergeChoice::Conflict => conflicts.push(key.to_owned()),
         }
     }
     Ok(ThreeWayManifestPlan { merged, conflicts })
