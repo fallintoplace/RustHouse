@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import file_change_time_ns
 from run import load_queries, official_22_coverage
+from sf1_cardinality import verify as verify_sf1_cardinality
 
 MAX_QUERY_BYTES = 64 * 1024
 MAX_REPORT_BYTES = 2 * 1024 * 1024
@@ -91,11 +92,14 @@ def parse_report(path):
 
 
 def run_full(binary, database, queries_dir, reference_dir, report_path,
-             runs=3, warmups=1, timeout=300, invoke=None):
+             runs=3, warmups=1, timeout=300, invoke=None,
+             verify_sf1_tables=False):
     if invoke is None:
         invoke = lambda cmd: subprocess.run(cmd, check=False)
     cmd = command(binary, database, queries_dir, reference_dir,
                   report_path, runs, warmups, timeout)
+    if verify_sf1_tables:
+        verify_sf1_cardinality(binary, database, timeout=timeout)
     outcome = invoke(cmd)
     if not Path(report_path).is_file():
         raise ValueError("full-query runner did not produce a JSON report")
@@ -140,11 +144,14 @@ def main(argv=None):
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=300)
+    parser.add_argument("--verify-sf1-tables", action="store_true",
+                        help="Check row counts for all eight scale-factor-1 tables")
     args = parser.parse_args(argv)
     try:
         report = run_full(args.binary, args.database, args.queries_dir,
                           args.reference_dir, args.output, args.runs,
-                          args.warmups, args.timeout)
+                          args.warmups, args.timeout,
+                          verify_sf1_tables=args.verify_sf1_tables)
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
         parser.exit(1, f"full TPC-H run failed: {error}\n")
     print(json.dumps(report, indent=2))
