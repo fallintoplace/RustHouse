@@ -16,9 +16,9 @@ pub fn read_ipv6_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<
 }
 
 fn validate_ip_write_batch(rows: usize, width: usize) -> io::Result<()> {
-    let bytes = rows.checked_mul(width).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "IP batch size overflow")
-    })?;
+    let bytes = rows
+        .checked_mul(width)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "IP batch size overflow"))?;
     if bytes > MAX_BATCH_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -35,8 +35,7 @@ pub fn write_ipv4_values<W: Write>(writer: &mut W, addresses: &[Ipv4Addr]) -> io
     let mut buffer = [0u8; 16 * 1024];
     for chunk in addresses.chunks(buffer.len() / 4) {
         for (index, &address) in chunk.iter().enumerate() {
-            buffer[index * 4..index * 4 + 4]
-                .copy_from_slice(&u32::from(address).to_le_bytes());
+            buffer[index * 4..index * 4 + 4].copy_from_slice(&u32::from(address).to_le_bytes());
         }
         writer.write_all(&buffer[..chunk.len() * 4])?;
     }
@@ -165,7 +164,9 @@ mod physical_ip_write_roundtrip_tests {
             self.0.extend_from_slice(&bytes[..count]);
             Ok(count)
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -174,7 +175,10 @@ mod physical_ip_write_roundtrip_tests {
         let mut writer = ShortWriter(Vec::new());
         write_ipv4_values(&mut writer, &values).unwrap();
         assert_eq!(writer.0, [1, 2, 0, 192, 8, 8, 8, 8]);
-        assert_eq!(read_ipv4_values(&mut writer.0.as_slice(), 2).unwrap(), values);
+        assert_eq!(
+            read_ipv4_values(&mut writer.0.as_slice(), 2).unwrap(),
+            values
+        );
     }
 
     #[test]

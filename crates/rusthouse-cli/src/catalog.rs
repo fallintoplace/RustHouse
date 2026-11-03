@@ -96,12 +96,8 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
         Ddl::ShowTables => show_tables(catalog, None, false),
         Ddl::ShowTablesLike { pattern } => show_tables(catalog, Some(pattern), false),
         Ddl::ShowTablesNotLike { pattern } => show_tables(catalog, Some(pattern), true),
-        Ddl::ShowTablesILike { pattern } => {
-            show_tables_case_insensitive(catalog, pattern, false)
-        }
-        Ddl::ShowTablesNotILike { pattern } => {
-            show_tables_case_insensitive(catalog, pattern, true)
-        }
+        Ddl::ShowTablesILike { pattern } => show_tables_case_insensitive(catalog, pattern, false),
+        Ddl::ShowTablesNotILike { pattern } => show_tables_case_insensitive(catalog, pattern, true),
         Ddl::ShowCreateTable { name } => show_create_table(catalog, name),
         Ddl::DescribeTable { name } => describe_table(catalog, name),
         Ddl::CreateTable {
@@ -120,7 +116,7 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
         Ddl::DropTable { name, if_exists } => drop_table(catalog, name, *if_exists),
         Ddl::TruncateTable { .. } | Ddl::TruncateTableIfExists { .. } => {
             Err("TRUNCATE requires --database".into())
-        },
+        }
         Ddl::OptimizeTable { .. } => Err("OPTIMIZE requires --database".into()),
         Ddl::AddColumn {
             table,
@@ -200,7 +196,13 @@ fn show_tables_case_insensitive(
     pattern: &str,
     negated: bool,
 ) -> Result<(), String> {
-    show_tables_internal(catalog, Some(pattern), negated, true, MAX_CATALOG_DIRECTORY_ENTRIES)
+    show_tables_internal(
+        catalog,
+        Some(pattern),
+        negated,
+        true,
+        MAX_CATALOG_DIRECTORY_ENTRIES,
+    )
 }
 
 fn show_tables_with_entry_limit(

@@ -22,7 +22,10 @@ fn describe_short_forms_return_schema() {
     let db = std::env::temp_dir().join(format!(
         "rusthouse-describe_short_forms_return_schema-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     successful(&db, "CREATE TABLE events (id UInt64, label String)");
     let expected = b"name\ttype\nid\tUInt64\nlabel\tString\n";

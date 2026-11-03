@@ -14,7 +14,8 @@ const DEFAULT_SAMPLES: usize = 11;
 const WARMUPS: usize = 3;
 
 const AVG_SQL: &str = "SELECT passenger_count, AVG(trip_distance) FROM part GROUP BY passenger_count ORDER BY passenger_count";
-const COUNT_SQL: &str = "SELECT passenger_count, COUNT(*) FROM part GROUP BY passenger_count ORDER BY passenger_count";
+const COUNT_SQL: &str =
+    "SELECT passenger_count, COUNT(*) FROM part GROUP BY passenger_count ORDER BY passenger_count";
 const MIXED_SQL: &str = "SELECT passenger_count, AVG(trip_distance) AS average_distance, COUNT(*) AS trips, COUNT(trip_distance) AS measured FROM part GROUP BY passenger_count ORDER BY passenger_count";
 
 #[derive(Clone, Copy, Default)]
@@ -154,10 +155,16 @@ fn options() -> (usize, usize, usize) {
                     .unwrap()
             }
             "--samples" => {
-                samples = args.next().expect("--samples needs a value").parse().unwrap()
+                samples = args
+                    .next()
+                    .expect("--samples needs a value")
+                    .parse()
+                    .unwrap()
             }
             "-h" | "--help" => {
-                println!("Usage: passenger_distance [--rows N] [--passenger-groups 1..8] [--samples odd-N]");
+                println!(
+                    "Usage: passenger_distance [--rows N] [--passenger-groups 1..8] [--samples odd-N]"
+                );
                 std::process::exit(0);
             }
             _ => panic!("unexpected benchmark argument: {arg}"),
@@ -200,16 +207,14 @@ fn measure(fixture: &Fixture, rows: usize, samples: usize, kind: &str, sql: &str
 fn main() {
     let (rows, groups, samples) = options();
     let fixture = Fixture::new(rows, groups);
-    println!("RustHouse passenger distances: {rows} rows, {groups} passenger groups, {samples} samples");
+    println!(
+        "RustHouse passenger distances: {rows} rows, {groups} passenger groups, {samples} samples"
+    );
     println!(
         "{:<8} {:>12} {:>12} {:>16}",
         "query", "median ms", "p90 ms", "M rows/s"
     );
-    for (kind, sql) in [
-        ("avg", AVG_SQL),
-        ("count", COUNT_SQL),
-        ("mixed", MIXED_SQL),
-    ] {
+    for (kind, sql) in [("avg", AVG_SQL), ("count", COUNT_SQL), ("mixed", MIXED_SQL)] {
         measure(&fixture, rows, samples, kind, sql);
     }
 }

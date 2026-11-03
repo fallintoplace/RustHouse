@@ -701,13 +701,17 @@ fn parse_bit_test_any(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
     let mut positions = 0usize;
     loop {
         if positions >= 64 {
-            return Err(ParseError("bitTestAny supports at most 64 positions".into()));
+            return Err(ParseError(
+                "bitTestAny supports at most 64 positions".into(),
+            ));
         }
         let index = expression(parser, depth + 1)?;
         let bit = u32::try_from(index)
             .map_err(|_| ParseError("bitTestAny position must be between 0 and 63".into()))?;
         if bit >= 64 {
-            return Err(ParseError("bitTestAny position must be between 0 and 63".into()));
+            return Err(ParseError(
+                "bitTestAny position must be between 0 and 63".into(),
+            ));
         }
         any |= value & (1_u64 << bit) != 0;
         positions += 1;
@@ -776,7 +780,8 @@ fn parse_int_exp2(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     require_token(parser, Token::RParen, "intExp2 requires ')'")?;
     let exponent = u32::try_from(exponent)
         .map_err(|_| ParseError("intExp2 exponent must be nonnegative".into()))?;
-    1_i64.checked_shl(exponent)
+    1_i64
+        .checked_shl(exponent)
         .filter(|result| *result > 0)
         .ok_or_else(overflow)
 }
@@ -999,13 +1004,17 @@ fn parse_bit_test_all(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
     let mut positions = 0usize;
     loop {
         if positions >= 64 {
-            return Err(ParseError("bitTestAll supports at most 64 positions".into()));
+            return Err(ParseError(
+                "bitTestAll supports at most 64 positions".into(),
+            ));
         }
         let index = expression(parser, depth + 1)?;
         let bit = u32::try_from(index)
             .map_err(|_| ParseError("bitTestAll position must be between 0 and 63".into()))?;
         if bit >= 64 {
-            return Err(ParseError("bitTestAll position must be between 0 and 63".into()));
+            return Err(ParseError(
+                "bitTestAll position must be between 0 and 63".into(),
+            ));
         }
         all &= value & (1_u64 << bit) != 0;
         positions += 1;
@@ -1306,7 +1315,27 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected '(' after scalar function".into()));
         }
-        let first = expression(parser, depth + 1)?;
+        let first = if matches!(
+            name.to_ascii_uppercase().as_str(),
+            "TOUINT8" | "TOUINT16" | "TOUINT32"
+        ) {
+            if let Some(Token::String(value)) = parser.tokens.get(parser.index) {
+                let parsed = value
+                    .parse::<u128>()
+                    .map_err(|_| ParseError("invalid unsigned integer string".into()))?;
+                parser.index += 1;
+                match name.to_ascii_uppercase().as_str() {
+                    "TOUINT8" => i64::from(parsed as u8),
+                    "TOUINT16" => i64::from(parsed as u16),
+                    "TOUINT32" => i64::from(parsed as u32),
+                    _ => unreachable!(),
+                }
+            } else {
+                expression(parser, depth + 1)?
+            }
+        } else {
+            expression(parser, depth + 1)?
+        };
         let result = if is_bitwise(&name) {
             if !parser.take(Token::Comma) {
                 return Err(ParseError("bitwise functions require two arguments".into()));

@@ -3,10 +3,7 @@ use std::process::Command;
 
 #[test]
 fn taxi_top_trips_preserve_and_or_precedence_and_tie_order() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-taxi-top-or-{}",
-        std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-taxi-top-or-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])
@@ -22,13 +19,16 @@ fn taxi_top_trips_preserve_and_or_precedence_and_tie_order() {
         assert!(output.status.success(), "{statement}: {output:?}");
     }
     let explicit = sql(
-        "SELECT trip_id, fare_cents FROM trips WHERE (fare_cents >= 5000 AND distance_milli >= 10000) OR pickup_zone = 999 ORDER BY fare_cents DESC, trip_id ASC LIMIT 3 OFFSET 1"
+        "SELECT trip_id, fare_cents FROM trips WHERE (fare_cents >= 5000 AND distance_milli >= 10000) OR pickup_zone = 999 ORDER BY fare_cents DESC, trip_id ASC LIMIT 3 OFFSET 1",
     );
     assert!(explicit.status.success(), "{explicit:?}");
-    assert_eq!(explicit.stdout, b"trip_id\tfare_cents\n3\t9000\n7\t9000\n2\t7000\n");
+    assert_eq!(
+        explicit.stdout,
+        b"trip_id\tfare_cents\n3\t9000\n7\t9000\n2\t7000\n"
+    );
 
     let implicit = sql(
-        "SELECT trip_id, fare_cents FROM trips WHERE fare_cents >= 5000 AND distance_milli >= 10000 OR pickup_zone = 999 ORDER BY fare_cents DESC, trip_id ASC LIMIT 3 OFFSET 1"
+        "SELECT trip_id, fare_cents FROM trips WHERE fare_cents >= 5000 AND distance_milli >= 10000 OR pickup_zone = 999 ORDER BY fare_cents DESC, trip_id ASC LIMIT 3 OFFSET 1",
     );
     assert!(implicit.status.success(), "{implicit:?}");
     assert_eq!(implicit.stdout, explicit.stdout);

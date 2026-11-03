@@ -157,10 +157,15 @@ fn verify_compressed_input_unchanged(
 ) -> Result<(), PartError> {
     let current = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !current.file_type().is_file()
-        || !stored_file_state_unchanged(initial, finished).map_err(|source| io_error(path, source))?
-        || !stored_file_state_unchanged(initial, &current).map_err(|source| io_error(path, source))?
+        || !stored_file_state_unchanged(initial, finished)
+            .map_err(|source| io_error(path, source))?
+        || !stored_file_state_unchanged(initial, &current)
+            .map_err(|source| io_error(path, source))?
     {
-        return Err(invalid(path, "compressed stream changed during hash verification"));
+        return Err(invalid(
+            path,
+            "compressed stream changed during hash verification",
+        ));
     }
     #[cfg(unix)]
     {
@@ -170,7 +175,10 @@ fn verify_compressed_input_unchanged(
             || initial.dev() != finished.dev()
             || initial.ino() != finished.ino()
         {
-            return Err(invalid(path, "compressed stream replaced during hash verification"));
+            return Err(invalid(
+                path,
+                "compressed stream replaced during hash verification",
+            ));
         }
     }
     Ok(())
@@ -181,7 +189,9 @@ fn verify_compressed_input_unchanged(
 fn verify_uncompressed_hash(path: &Path, expected: &UncompressedChecksum) -> Result<(), PartError> {
     const BLOCK_BYTES: usize = 2048;
     let mut reader = CompressedBlockReader::open(path)?;
-    let initial = reader.opened_metadata().map_err(|source| io_error(path, source))?;
+    let initial = reader
+        .opened_metadata()
+        .map_err(|source| io_error(path, source))?;
     let mut hash = U128::new(0, 0);
     let mut chunk = [0u8; BLOCK_BYTES];
     let mut filled = 0usize;
@@ -224,7 +234,9 @@ fn verify_uncompressed_hash(path: &Path, expected: &UncompressedChecksum) -> Res
             "uncompressed file hash differs from checksums.txt",
         ));
     }
-    let finished = reader.opened_metadata().map_err(|source| io_error(path, source))?;
+    let finished = reader
+        .opened_metadata()
+        .map_err(|source| io_error(path, source))?;
     verify_compressed_input_unchanged(path, &initial, &finished)?;
     Ok(())
 }
@@ -775,7 +787,8 @@ mod compressed_hash_identity_tests {
         let original = file.metadata().unwrap();
         fs::rename(&path, root.join("old.bin")).unwrap();
         fs::write(&path, b"new identical-sized bytes").unwrap();
-        let outcome = verify_compressed_input_unchanged(&path, &original, &file.metadata().unwrap());
+        let outcome =
+            verify_compressed_input_unchanged(&path, &original, &file.metadata().unwrap());
         assert!(outcome.is_err());
         fs::remove_dir_all(root).unwrap();
     }

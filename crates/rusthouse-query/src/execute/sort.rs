@@ -750,9 +750,8 @@ impl SortedRows {
                     merged.retained_bytes = updated_sort_bytes(merged.retained_bytes, 0, size)?;
                     merged.rows.push(row);
                 } else if merged.rows.peek().is_some_and(|worst| row < *worst) {
-                    let old_size = retained_row_size(
-                        merged.rows.peek().expect("nonempty Top-K heap"),
-                    )?;
+                    let old_size =
+                        retained_row_size(merged.rows.peek().expect("nonempty Top-K heap"))?;
                     merged.retained_bytes =
                         updated_sort_bytes(merged.retained_bytes, old_size, size)?;
                     *merged.rows.peek_mut().expect("nonempty Top-K heap") = row;
@@ -848,9 +847,17 @@ mod sorted_output_batch_tests {
 
     #[test]
     fn writes_one_complete_call_per_row_with_reused_buffer() {
-        let mut output = CountingWriter { bytes: Vec::new(), calls: 0 };
+        let mut output = CountingWriter {
+            bytes: Vec::new(),
+            calls: 0,
+        };
         let mut scratch = Vec::new();
-        write_numeric_row(&mut output, &[Number::Unsigned(12), Number::Signed(-5)], &mut scratch).unwrap();
+        write_numeric_row(
+            &mut output,
+            &[Number::Unsigned(12), Number::Signed(-5)],
+            &mut scratch,
+        )
+        .unwrap();
         write_numeric_row(&mut output, &[Number::Float(1.5)], &mut scratch).unwrap();
         assert_eq!(output.bytes, b"12\t-5\n1.5\n");
         assert_eq!(output.calls, 2);

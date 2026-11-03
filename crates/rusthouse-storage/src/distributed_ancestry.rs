@@ -60,8 +60,8 @@ impl SnapshotAncestry {
                 jumps[0] = Some(parent_index);
                 depth = nodes[parent_index].depth + 1;
                 for level in 1..JUMP_LEVELS {
-                    jumps[level] = jumps[level - 1]
-                        .and_then(|ancestor| nodes[ancestor].jumps[level - 1]);
+                    jumps[level] =
+                        jumps[level - 1].and_then(|ancestor| nodes[ancestor].jumps[level - 1]);
                 }
             }
             by_generation.insert(key, nodes.len());
@@ -154,12 +154,28 @@ mod tests {
         let right = v(1, 3, 33);
         let left_child = v(1, 4, 44);
         let index = SnapshotAncestry::new(&[
-            SnapshotParent { snapshot: left_child, parent: Some(left) },
-            SnapshotParent { snapshot: right, parent: Some(root) },
-            SnapshotParent { snapshot: root, parent: None },
-            SnapshotParent { snapshot: left, parent: Some(root) },
-        ]).unwrap();
-        assert_eq!(index.common_ancestor(left_child, right).unwrap(), Some(root));
+            SnapshotParent {
+                snapshot: left_child,
+                parent: Some(left),
+            },
+            SnapshotParent {
+                snapshot: right,
+                parent: Some(root),
+            },
+            SnapshotParent {
+                snapshot: root,
+                parent: None,
+            },
+            SnapshotParent {
+                snapshot: left,
+                parent: Some(root),
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            index.common_ancestor(left_child, right).unwrap(),
+            Some(root)
+        );
         assert!(index.is_ancestor(root, right).unwrap());
         assert!(!index.is_ancestor(right, left_child).unwrap());
         assert_eq!(index.common_ancestor(left_child, left).unwrap(), Some(left));
@@ -169,21 +185,52 @@ mod tests {
     fn rejects_conflicts_and_missing_ancestors() {
         let a = v(1, 1, 1);
         let b = v(1, 2, 2);
-        assert!(SnapshotAncestry::new(&[
-            SnapshotParent { snapshot: a, parent: None },
-            SnapshotParent { snapshot: a, parent: None },
-        ]).is_err());
-        assert!(SnapshotAncestry::new(&[
-            SnapshotParent { snapshot: b, parent: Some(a) },
-        ]).is_err());
-        assert!(SnapshotAncestry::new(&[
-            SnapshotParent { snapshot: a, parent: None },
-            SnapshotParent { snapshot: b, parent: Some(v(1, 1, 99)) },
-        ]).is_err());
-        assert!(SnapshotAncestry::new(&[
-            SnapshotParent { snapshot: a, parent: Some(b) },
-            SnapshotParent { snapshot: b, parent: Some(a) },
-        ]).is_err());
+        assert!(
+            SnapshotAncestry::new(&[
+                SnapshotParent {
+                    snapshot: a,
+                    parent: None
+                },
+                SnapshotParent {
+                    snapshot: a,
+                    parent: None
+                },
+            ])
+            .is_err()
+        );
+        assert!(
+            SnapshotAncestry::new(&[SnapshotParent {
+                snapshot: b,
+                parent: Some(a)
+            },])
+            .is_err()
+        );
+        assert!(
+            SnapshotAncestry::new(&[
+                SnapshotParent {
+                    snapshot: a,
+                    parent: None
+                },
+                SnapshotParent {
+                    snapshot: b,
+                    parent: Some(v(1, 1, 99))
+                },
+            ])
+            .is_err()
+        );
+        assert!(
+            SnapshotAncestry::new(&[
+                SnapshotParent {
+                    snapshot: a,
+                    parent: Some(b)
+                },
+                SnapshotParent {
+                    snapshot: b,
+                    parent: Some(a)
+                },
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -192,10 +239,20 @@ mod tests {
         let second = v(2, 1, 9);
         let other = v(1, 3, 9);
         let index = SnapshotAncestry::new(&[
-            SnapshotParent { snapshot: first, parent: None },
-            SnapshotParent { snapshot: second, parent: None },
-            SnapshotParent { snapshot: other, parent: None },
-        ]).unwrap();
+            SnapshotParent {
+                snapshot: first,
+                parent: None,
+            },
+            SnapshotParent {
+                snapshot: second,
+                parent: None,
+            },
+            SnapshotParent {
+                snapshot: other,
+                parent: None,
+            },
+        ])
+        .unwrap();
         assert_eq!(index.common_ancestor(first, second).unwrap(), None);
         assert_eq!(index.common_ancestor(first, other).unwrap(), None);
         assert!(index.common_ancestor(first, v(1, 1, 10)).is_err());
@@ -206,19 +263,19 @@ mod tests {
         let history = (1..=MAX_SNAPSHOTS as u64)
             .map(|generation| SnapshotParent {
                 snapshot: v(1, generation, u128::from(generation)),
-                parent: (generation > 1)
-                    .then(|| v(1, generation - 1, u128::from(generation - 1))),
+                parent: (generation > 1).then(|| v(1, generation - 1, u128::from(generation - 1))),
             })
             .collect::<Vec<_>>();
         let index = SnapshotAncestry::new(&history).unwrap();
         assert_eq!(
-            index.common_ancestor(v(1, 16_384, 16_384), v(1, 400, 400)).unwrap(),
+            index
+                .common_ancestor(v(1, 16_384, 16_384), v(1, 400, 400))
+                .unwrap(),
             Some(v(1, 400, 400))
         );
         assert!(SnapshotAncestry::new(&history[..0]).is_err());
     }
 }
-
 
 /// Two immutable histories after their verified shared ancestor.
 ///
@@ -300,12 +357,28 @@ mod divergence_path_tests {
         let left_head = v(1, 5);
         let right_head = v(1, 4);
         let ancestry = SnapshotAncestry::new(&[
-            SnapshotParent { snapshot: left_head, parent: Some(left) },
-            SnapshotParent { snapshot: right_head, parent: Some(right) },
-            SnapshotParent { snapshot: right, parent: Some(root) },
-            SnapshotParent { snapshot: root, parent: None },
-            SnapshotParent { snapshot: left, parent: Some(root) },
-        ]).unwrap();
+            SnapshotParent {
+                snapshot: left_head,
+                parent: Some(left),
+            },
+            SnapshotParent {
+                snapshot: right_head,
+                parent: Some(right),
+            },
+            SnapshotParent {
+                snapshot: right,
+                parent: Some(root),
+            },
+            SnapshotParent {
+                snapshot: root,
+                parent: None,
+            },
+            SnapshotParent {
+                snapshot: left,
+                parent: Some(root),
+            },
+        ])
+        .unwrap();
 
         let difference = ancestry.divergent_paths(left_head, right_head, 2).unwrap();
         assert_eq!(difference.common, Some(root));
@@ -328,9 +401,16 @@ mod divergence_path_tests {
         let a = v(1, 1);
         let b = v(2, 1);
         let ancestry = SnapshotAncestry::new(&[
-            SnapshotParent { snapshot: a, parent: None },
-            SnapshotParent { snapshot: b, parent: None },
-        ]).unwrap();
+            SnapshotParent {
+                snapshot: a,
+                parent: None,
+            },
+            SnapshotParent {
+                snapshot: b,
+                parent: None,
+            },
+        ])
+        .unwrap();
         let difference = ancestry.divergent_paths(a, b, 1).unwrap();
         assert_eq!(difference.common, None);
         assert_eq!(difference.left_only, vec![a]);
@@ -338,7 +418,10 @@ mod divergence_path_tests {
         assert!(ancestry.divergent_paths(a, b, 0).is_err());
         assert!(ancestry.divergent_paths(a, b, MAX_SNAPSHOTS + 1).is_err());
         assert!(ancestry.divergent_paths(a, v(1, 5), 1).is_err());
-        let forged = SnapshotVersion { fingerprint: 99, ..a };
+        let forged = SnapshotVersion {
+            fingerprint: 99,
+            ..a
+        };
         assert!(ancestry.divergent_paths(forged, b, 1).is_err());
     }
 }

@@ -12,7 +12,10 @@ fn approximate_distinct_matches_uniq() {
     for rows in [0, 1, 5] {
         let standard = format!("SELECT APPROX_COUNT_DISTINCT(number) FROM numbers({rows})");
         let clickhouse = format!("SELECT uniq(number) FROM numbers({rows})");
-        assert_eq!(parse_select(&standard).unwrap(), parse_select(&clickhouse).unwrap());
+        assert_eq!(
+            parse_select(&standard).unwrap(),
+            parse_select(&clickhouse).unwrap()
+        );
         assert_eq!(output(&standard), output(&clickhouse));
     }
 }

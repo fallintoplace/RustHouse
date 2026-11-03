@@ -708,10 +708,42 @@ mod atomic_scrub_report_accounting_tests {
             blocks: 4,
         };
         for (files, bytes, blocks, report) in [
-            (2, 3, 4, ScrubReport { checked_files: usize::MAX, ..initial.clone() }),
-            (2, 3, 4, ScrubReport { checked_bytes: u64::MAX, ..initial.clone() }),
-            (2, 3, 4, ScrubReport { blocks: u64::MAX, ..initial.clone() }),
-            (2, 3, 4, ScrubReport { parts: usize::MAX, ..initial.clone() }),
+            (
+                2,
+                3,
+                4,
+                ScrubReport {
+                    checked_files: usize::MAX,
+                    ..initial.clone()
+                },
+            ),
+            (
+                2,
+                3,
+                4,
+                ScrubReport {
+                    checked_bytes: u64::MAX,
+                    ..initial.clone()
+                },
+            ),
+            (
+                2,
+                3,
+                4,
+                ScrubReport {
+                    blocks: u64::MAX,
+                    ..initial.clone()
+                },
+            ),
+            (
+                2,
+                3,
+                4,
+                ScrubReport {
+                    parts: usize::MAX,
+                    ..initial.clone()
+                },
+            ),
         ] {
             let mut current = report.clone();
             assert!(current.record_part(files, bytes, blocks).is_err());
@@ -781,7 +813,6 @@ mod atomic_scrub_report_tests {
     }
 }
 
-
 /// Part-level work item for read-only snapshot scrubbing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScrubTarget {
@@ -811,7 +842,11 @@ pub fn plan_budgeted_scrub_batch(
     let mut seen = HashSet::with_capacity(targets.len());
     for target in targets {
         crate::distributed_object_key::ObjectKey::new(
-            "scrub", "local", 1, &target.part, "checksums.txt",
+            "scrub",
+            "local",
+            1,
+            &target.part,
+            "checksums.txt",
         )?;
         if target.last_verified_at > now
             || target.priority > 3
@@ -879,24 +914,14 @@ mod budgeted_scrub_scheduler_tests {
     #[test]
     fn rejects_bad_priorities_future_dates_and_portable_name_aliases() {
         let valid = target("good_1", 3, 5, 3);
+        assert!(plan_budgeted_scrub_batch(&[valid.clone(), valid.clone()], 5, 0, 0).is_err());
         assert!(
-            plan_budgeted_scrub_batch(&[valid.clone(), valid.clone()], 5, 0, 0).is_err()
+            plan_budgeted_scrub_batch(&[valid.clone(), target("GOOD_1", 1, 0, 0)], 5, 0, 0)
+                .is_err()
         );
-        assert!(
-            plan_budgeted_scrub_batch(
-                &[valid.clone(), target("GOOD_1", 1, 0, 0)], 5, 0, 0
-            )
-            .is_err()
-        );
-        assert!(
-            plan_budgeted_scrub_batch(&[target("../bad", 1, 0, 0)], 5, 0, 0).is_err()
-        );
-        assert!(
-            plan_budgeted_scrub_batch(&[target("future", 1, 6, 0)], 5, 0, 0).is_err()
-        );
-        assert!(
-            plan_budgeted_scrub_batch(&[target("bad", 1, 0, 4)], 5, 0, 0).is_err()
-        );
+        assert!(plan_budgeted_scrub_batch(&[target("../bad", 1, 0, 0)], 5, 0, 0).is_err());
+        assert!(plan_budgeted_scrub_batch(&[target("future", 1, 6, 0)], 5, 0, 0).is_err());
+        assert!(plan_budgeted_scrub_batch(&[target("bad", 1, 0, 4)], 5, 0, 0).is_err());
         assert!(plan_budgeted_scrub_batch(&[], 5, 0, 257).is_err());
     }
 
@@ -905,8 +930,7 @@ mod budgeted_scrub_scheduler_tests {
         let inventory = (0..16_384)
             .map(|index| target(&format!("part_{index:05}"), 1, index as u64, 2))
             .collect::<Vec<_>>();
-        let selected =
-            plan_budgeted_scrub_batch(&inventory, 20_000, 10_000, 256).unwrap();
+        let selected = plan_budgeted_scrub_batch(&inventory, 20_000, 10_000, 256).unwrap();
         assert_eq!(selected.len(), 256);
         assert_eq!(selected[0], "part_00000");
         assert_eq!(selected[255], "part_00255");

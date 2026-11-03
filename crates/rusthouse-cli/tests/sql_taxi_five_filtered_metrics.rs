@@ -30,7 +30,8 @@ fn taxi_fare_tip_comparison_feeds_five_aggregate_metrics() {
     );
 
     // Equality is deliberately included only by >=, not by >.
-    let equal_or_greater = sql("SELECT COUNT(*) AS matching FROM trips WHERE fare_cents >= tip_cents");
+    let equal_or_greater =
+        sql("SELECT COUNT(*) AS matching FROM trips WHERE fare_cents >= tip_cents");
     assert!(equal_or_greater.status.success(), "{equal_or_greater:?}");
     assert_eq!(equal_or_greater.stdout, b"matching\n5\n");
     fs::remove_dir_all(db).unwrap();

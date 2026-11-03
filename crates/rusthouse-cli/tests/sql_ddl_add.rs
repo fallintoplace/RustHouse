@@ -57,7 +57,12 @@ fn rejects_corrupt_catalogs_and_missing_tables_without_clobbering() {
     let dir = new_catalog();
     let missing = ddl("ALTER TABLE no_table ADD COLUMN age UInt8", &dir);
     assert!(!missing.status.success());
-    assert!(!dir.exists());
+    assert!(
+        !dir.exists()
+            || fs::read_dir(&dir)
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() == ".rusthouse-write.lock")
+    );
 
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("events.schema"), b"corrupt format\n").unwrap();
@@ -67,7 +72,13 @@ fn rejects_corrupt_catalogs_and_missing_tables_without_clobbering() {
         fs::read(dir.join("events.schema")).unwrap(),
         b"corrupt format\n"
     );
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    assert_eq!(
+        fs::read_dir(&dir)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().file_name() != ".rusthouse-write.lock")
+            .count(),
+        1
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }

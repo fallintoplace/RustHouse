@@ -2,12 +2,15 @@ use rusthouse_query::{execute, parse_select};
 
 #[test]
 fn unquoted_group_by_matches_selected_key_case_insensitively() {
-    let query = parse_select(
-        "SELECT number, COUNT(*) FROM numbers(3) GROUP BY NUMBER ORDER BY number"
-    ).unwrap();
+    let query =
+        parse_select("SELECT number, COUNT(*) FROM numbers(3) GROUP BY NUMBER ORDER BY number")
+            .unwrap();
     let mut output = Vec::new();
     execute(&query, None, &mut output).unwrap();
-    assert_eq!(String::from_utf8(output).unwrap(), "number\tcount\n0\t1\n1\t1\n2\t1\n");
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "number\tcount\n0\t1\n1\t1\n2\t1\n"
+    );
     assert!(parse_select("SELECT number, COUNT(*) FROM numbers(3) GROUP BY other").is_err());
 }
 

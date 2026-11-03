@@ -1,0 +1,2 @@
+# Preserve pinned upstream SQL bytes on every platform.
+/bench/tpch/queries/*.sql text eol=lf

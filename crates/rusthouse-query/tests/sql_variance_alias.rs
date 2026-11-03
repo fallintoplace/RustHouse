@@ -9,11 +9,18 @@ fn result(sql: &str) -> Vec<u8> {
 #[test]
 fn variance_uses_sample_variance() {
     for (sql, canonical) in [
-        ("SELECT VARIANCE(number) FROM numbers(4)", "SELECT varSamp(number) FROM numbers(4)"),
-        ("SELECT VARIANCE(number), COUNT(*) FROM numbers(4)",
-         "SELECT varSamp(number), COUNT(*) FROM numbers(4)"),
-        ("SELECT number, VARIANCE(number) FROM numbers(4) GROUP BY number",
-         "SELECT number, varSamp(number) FROM numbers(4) GROUP BY number"),
+        (
+            "SELECT VARIANCE(number) FROM numbers(4)",
+            "SELECT varSamp(number) FROM numbers(4)",
+        ),
+        (
+            "SELECT VARIANCE(number), COUNT(*) FROM numbers(4)",
+            "SELECT varSamp(number), COUNT(*) FROM numbers(4)",
+        ),
+        (
+            "SELECT number, VARIANCE(number) FROM numbers(4) GROUP BY number",
+            "SELECT number, varSamp(number) FROM numbers(4) GROUP BY number",
+        ),
     ] {
         assert_eq!(parse_select(sql).unwrap(), parse_select(canonical).unwrap());
     }

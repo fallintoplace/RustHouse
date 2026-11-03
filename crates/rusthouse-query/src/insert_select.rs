@@ -139,15 +139,12 @@ mod insert_select_trailing_column_comma_tests {
 
     #[test]
     fn accepts_one_trailing_target_column_comma() {
-        let parsed = parse_insert_select(
-            "INSERT INTO events (id,) SELECT number FROM numbers(2)"
-        )
-        .unwrap()
-        .unwrap();
+        let parsed = parse_insert_select("INSERT INTO events (id,) SELECT number FROM numbers(2)")
+            .unwrap()
+            .unwrap();
         assert_eq!(parsed.columns, Some(vec!["id".into()]));
-        assert!(parse_insert_select(
-            "INSERT INTO events (id,,) SELECT number FROM numbers(2)"
-        )
-        .is_err());
+        assert!(
+            parse_insert_select("INSERT INTO events (id,,) SELECT number FROM numbers(2)").is_err()
+        );
     }
 }

@@ -31,6 +31,9 @@ fn grouped_join_count_accepts_a_result_alias() {
     let unaliased = "SELECT z.borough, COUNT(*) FROM trips t JOIN zones z ON t.pickup_zone = z.zone_id GROUP BY z.borough ORDER BY z.borough";
     let actual = sql(unaliased);
     assert!(actual.status.success(), "{unaliased}: {actual:?}");
-    assert_eq!(actual.stdout, b"z.borough\tcount\nBrooklyn\t2\nManhattan\t2\n");
+    assert_eq!(
+        actual.stdout,
+        b"z.borough\tcount\nBrooklyn\t2\nManhattan\t2\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

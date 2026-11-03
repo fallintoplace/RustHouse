@@ -8,12 +8,19 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 #[test]
 fn case_when_string_comparison_with_and_or_aggregates() {
     let root = std::env::temp_dir().join(format!(
-        "rusthouse-case-text-{}-{}", std::process::id(),
+        "rusthouse-case-text-{}-{}",
+        std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let columns = [
-        Column { name: "priority".into(), data_type: "Nullable(String)".into() },
-        Column { name: "score".into(), data_type: "Int64".into() },
+        Column {
+            name: "priority".into(),
+            data_type: "Nullable(String)".into(),
+        },
+        Column {
+            name: "score".into(),
+            data_type: "Int64".into(),
+        },
     ];
     let rows = [
         vec![Some("urgent".into()), Some("0".into())],
@@ -26,7 +33,10 @@ fn case_when_string_comparison_with_and_or_aggregates() {
     let query = "SELECT sum(CASE WHEN priority = 'urgent' OR priority = 'high' AND score >= 2 THEN 1 ELSE 0 END), sum(CASE WHEN priority = 'low' AND score >= 2 THEN 1 ELSE 0 END) FROM part";
     let mut output = Vec::new();
     execute(&parse_select(query).unwrap(), Some(&root), &mut output).unwrap();
-    assert_eq!(String::from_utf8(output).unwrap().lines().last(), Some("2\t1"));
+    assert_eq!(
+        String::from_utf8(output).unwrap().lines().last(),
+        Some("2\t1")
+    );
     fs::remove_dir_all(root).unwrap();
 }
 

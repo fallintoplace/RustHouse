@@ -28,7 +28,8 @@ fn chained_join_with_only_null_build_keys_skips_all_fact_matches() {
         assert!(output.status.success(), "{statement}: {output:?}");
     }
 
-    let query = "SELECT f.id FROM facts f JOIN nullable_dim d ON f.id = d.id JOIN regions r ON d.id = r.id";
+    let query =
+        "SELECT f.id FROM facts f JOIN nullable_dim d ON f.id = d.id JOIN regions r ON d.id = r.id";
     let empty = sql(query);
     assert!(empty.status.success(), "{empty:?}");
     assert_eq!(empty.stdout, b"f.id\n");

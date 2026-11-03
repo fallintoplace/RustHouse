@@ -8,9 +8,10 @@ use std::io::{self, Write};
 /// The writer receives at most 16 KiB at a time. Validate the total
 /// batch size before writing any bytes to avoid partial oversized output.
 pub fn write_uuid_values<W: Write>(writer: &mut W, values: &[UuidValue]) -> io::Result<()> {
-    let bytes = values.len().checked_mul(16).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "UUID batch size overflow")
-    })?;
+    let bytes = values
+        .len()
+        .checked_mul(16)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "UUID batch size overflow"))?;
     if bytes > MAX_BATCH_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -80,8 +81,8 @@ mod tests {
     #[test]
     fn retains_clickhouse_half_order_for_a_known_uuid() {
         let disk = [
-            0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61,
-            0xa0, 0xdb, 0xd3, 0x6a, 0x00, 0xa6, 0x7b, 0x90,
+            0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61, 0xa0, 0xdb, 0xd3, 0x6a, 0x00, 0xa6,
+            0x7b, 0x90,
         ];
         let values = read_uuid_values(&mut disk.as_slice(), 1).unwrap();
         let mut output = Vec::new();

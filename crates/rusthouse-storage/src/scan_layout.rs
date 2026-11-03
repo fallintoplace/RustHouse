@@ -166,7 +166,11 @@ mod tests {
         let mut first = mark(4, 1);
         first.decompressed_offset = 8;
         let next = mark(4, 1);
-        assert!(ScanLayout::default().validate("x", &[first, next], 2).is_err());
+        assert!(
+            ScanLayout::default()
+                .validate("x", &[first, next], 2)
+                .is_err()
+        );
     }
 
     #[test]

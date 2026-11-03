@@ -391,7 +391,6 @@ mod borrowed_canonical_key_tests {
     }
 }
 
-
 /// Parse and sort an immutable object manifest without filesystem-name aliases.
 ///
 /// Every input must be a canonical generation-scoped ObjectKey. The batch
@@ -467,9 +466,7 @@ mod portable_object_key_batch_tests {
     #[test]
     fn checks_many_keys_without_quadratic_duplicate_scans() {
         let owned = (0..4096)
-            .map(|index| PathBuf::from(format!(
-                "cluster/shard/g7/part_{index:05}/data.bin"
-            )))
+            .map(|index| PathBuf::from(format!("cluster/shard/g7/part_{index:05}/data.bin")))
             .collect::<Vec<_>>();
         let refs = owned.iter().map(PathBuf::as_path).collect::<Vec<_>>();
         let result = parse_unique_object_keys(&refs).unwrap();

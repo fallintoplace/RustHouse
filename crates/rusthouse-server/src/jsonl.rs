@@ -1,8 +1,8 @@
 //! Convert bounded TSV query results into newline-delimited JSON objects.
 //! Numeric values remain strings to preserve Int128 and UInt128 precision.
 use super::write_json_string;
-use rusthouse_format::decode_tsv_field_into;
 use rusthouse_format::decode_tsv_field;
+use rusthouse_format::decode_tsv_field_into;
 #[cfg(test)]
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -95,11 +95,9 @@ fn write_json_row_into<W: Write>(
             // Plain UTF-8 fields stay borrowed from the input line.
             let text = if field.contains(&b'\\') {
                 decode_tsv_field_into(field, decoded)?;
-                std::str::from_utf8(decoded)
-                    .map_err(|_| invalid("JSONL field is not UTF-8"))?
+                std::str::from_utf8(decoded).map_err(|_| invalid("JSONL field is not UTF-8"))?
             } else {
-                std::str::from_utf8(field)
-                    .map_err(|_| invalid("JSONL field is not UTF-8"))?
+                std::str::from_utf8(field).map_err(|_| invalid("JSONL field is not UTF-8"))?
             };
             write_json_string(&mut *row, text)?;
         }
@@ -149,8 +147,13 @@ impl<W: Write> JsonlWriter<W> {
             self.line.pop();
         }
         if let Some(headers) = &self.headers {
-            let result =
-                write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded, &mut self.decoded);
+            let result = write_json_row_into(
+                &mut self.output,
+                headers,
+                &self.line,
+                &mut self.encoded,
+                &mut self.decoded,
+            );
             self.line.clear();
             return result;
         }
@@ -193,7 +196,13 @@ impl<W: Write> Write for JsonlWriter<W> {
             // Forward them into the reusable JSON encoder without copying.
             if complete && self.line.is_empty() {
                 if let Some(headers) = self.headers.as_ref() {
-                    write_json_row_into(&mut self.output, headers, fragment, &mut self.encoded, &mut self.decoded)?;
+                    write_json_row_into(
+                        &mut self.output,
+                        headers,
+                        fragment,
+                        &mut self.encoded,
+                        &mut self.decoded,
+                    )?;
                     continue;
                 }
             }
@@ -460,7 +469,10 @@ mod crlf_record_tests {
         writer.write_all(b"bo").unwrap();
         writer.write_all(b"b\r").unwrap();
         writer.write_all(b"\n").unwrap();
-        assert_eq!(writer.output, "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n".as_bytes());
+        assert_eq!(
+            writer.output,
+            "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n".as_bytes()
+        );
     }
 }
 
@@ -481,7 +493,11 @@ mod reusable_tsv_decode_buffer_tests {
         writer.write_all(b"\n").unwrap();
         assert_eq!(writer.decoded.as_ptr(), pointer);
         assert_eq!(writer.decoded.capacity(), capacity);
-        assert!(writer.output.ends_with(b"{\"message\":\"small\\tvalue\"}\n"));
+        assert!(
+            writer
+                .output
+                .ends_with(b"{\"message\":\"small\\tvalue\"}\n")
+        );
         assert!(writer.output.starts_with(b"{\"message\":\"aaaa"));
     }
 
@@ -512,7 +528,11 @@ mod jsonl_reusable_decode_tests {
         }
         assert_eq!(writer.decoded.capacity(), initial_capacity);
         assert_eq!(writer.decoded.as_ptr(), initial_pointer);
-        assert!(writer.output.starts_with(b"{\"column\":\"value\\tname\"}\n"));
+        assert!(
+            writer
+                .output
+                .starts_with(b"{\"column\":\"value\\tname\"}\n")
+        );
         assert_eq!(writer.output.iter().filter(|&&b| b == b'\n').count(), 101);
     }
 

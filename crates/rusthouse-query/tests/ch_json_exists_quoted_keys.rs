@@ -10,8 +10,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn supports_quoted_keys_with_dots_spaces_and_utf8() {
     for (sql, expected) in [
-        (r#"SELECT JSON_EXISTS('{"order.id":{"line items":[7,8]}}', '$[''order.id''][''line items''][1]')"#, 1),
-        (r#"SELECT JSON_EXISTS('{"order.id":{"line items":[7,8]}}', '$[''order.id''][''line items''][2]')"#, 0),
+        (
+            r#"SELECT JSON_EXISTS('{"order.id":{"line items":[7,8]}}', '$[''order.id''][''line items''][1]')"#,
+            1,
+        ),
+        (
+            r#"SELECT JSON_EXISTS('{"order.id":{"line items":[7,8]}}', '$[''order.id''][''line items''][2]')"#,
+            0,
+        ),
         (r#"SELECT JSON_EXISTS('{"cafés":2}', '$[''cafés'']')"#, 1),
         (r#"SELECT JSON_EXISTS('{"":null}', '$['''']')"#, 1),
         (r#"SELECT JSON_EXISTS('{"0":42}', '$[''0'']')"#, 1),

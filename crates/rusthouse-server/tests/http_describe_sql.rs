@@ -8,16 +8,26 @@ fn http_describe_reads_validated_persistent_table_schemas() {
     let db = std::env::temp_dir().join(format!(
         "rusthouse-http-describe-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     fs::create_dir_all(db.join("events.parts")).unwrap();
     fs::write(
         db.join("events.schema"),
         b"rusthouse-schema-v1\nid\tUInt64\nlabel\tString\n",
-    ).unwrap();
+    )
+    .unwrap();
     let columns = [
-        Column { name: "id".into(), data_type: "UInt64".into() },
-        Column { name: "label".into(), data_type: "String".into() },
+        Column {
+            name: "id".into(),
+            data_type: "UInt64".into(),
+        },
+        Column {
+            name: "label".into(),
+            data_type: "String".into(),
+        },
     ];
     write_wide_part(&db.join("events.parts/all_0_0_0"), &columns, &[]).unwrap();
     let config = Config {
@@ -39,7 +49,13 @@ fn http_describe_reads_validated_persistent_table_schemas() {
         "400 Bad Request"
     );
     assert_eq!(
-        handle_request("POST", "/", b"DESCRIBE TABLE events; DROP TABLE events", &config).status,
+        handle_request(
+            "POST",
+            "/",
+            b"DESCRIBE TABLE events; DROP TABLE events",
+            &config
+        )
+        .status,
         "400 Bad Request"
     );
     assert_eq!(

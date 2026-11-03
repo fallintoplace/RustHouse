@@ -696,13 +696,17 @@ mod replica_destination_identity_tests {
         fs::rename(&parent, &old).unwrap();
         fs::create_dir(&parent).unwrap();
         assert_eq!(
-            verify_destination_directory(&parent, &initial).unwrap_err().kind(),
+            verify_destination_directory(&parent, &initial)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData,
         );
         fs::remove_dir(&parent).unwrap();
         symlink(&old, &parent).unwrap();
         assert_eq!(
-            verify_destination_directory(&parent, &initial).unwrap_err().kind(),
+            verify_destination_directory(&parent, &initial)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidData,
         );
         fs::remove_file(&parent).unwrap();

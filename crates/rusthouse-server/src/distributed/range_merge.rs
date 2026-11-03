@@ -45,16 +45,24 @@ pub(super) fn merge_global_range(
             return Err(MergeError::InvalidExtremum);
         }
         if unsigned {
-            let lo = low.parse::<u128>().map_err(|_| MergeError::InvalidExtremum)?;
-            let hi = high.parse::<u128>().map_err(|_| MergeError::InvalidExtremum)?;
+            let lo = low
+                .parse::<u128>()
+                .map_err(|_| MergeError::InvalidExtremum)?;
+            let hi = high
+                .parse::<u128>()
+                .map_err(|_| MergeError::InvalidExtremum)?;
             if lo > hi {
                 return Err(MergeError::InvalidExtremum);
             }
             unsigned_min = Some(unsigned_min.map_or(lo, |old| old.min(lo)));
             unsigned_max = Some(unsigned_max.map_or(hi, |old| old.max(hi)));
         } else {
-            let lo = low.parse::<i128>().map_err(|_| MergeError::InvalidExtremum)?;
-            let hi = high.parse::<i128>().map_err(|_| MergeError::InvalidExtremum)?;
+            let lo = low
+                .parse::<i128>()
+                .map_err(|_| MergeError::InvalidExtremum)?;
+            let hi = high
+                .parse::<i128>()
+                .map_err(|_| MergeError::InvalidExtremum)?;
             if lo > hi {
                 return Err(MergeError::InvalidExtremum);
             }
@@ -86,8 +94,14 @@ mod tests {
     #[test]
     fn full_signed_128_bit_range_across_shards_is_exact() {
         let shards = [
-            (10, format!("min(amount)\tmax(amount)\n{}\t{}\n", i128::MIN, i128::MIN).into_bytes()),
-            (10, format!("min(amount)\tmax(amount)\n{}\t{}\n", i128::MAX, i128::MAX).into_bytes()),
+            (
+                10,
+                format!("min(amount)\tmax(amount)\n{}\t{}\n", i128::MIN, i128::MIN).into_bytes(),
+            ),
+            (
+                10,
+                format!("min(amount)\tmax(amount)\n{}\t{}\n", i128::MAX, i128::MAX).into_bytes(),
+            ),
         ];
         assert_eq!(
             merge_global_range(&shards, "amount", "Int128").unwrap(),

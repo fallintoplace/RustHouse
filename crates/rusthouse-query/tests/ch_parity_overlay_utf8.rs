@@ -22,9 +22,18 @@ fn replaces_unicode_code_points_with_positive_and_negative_positions() {
 
 #[test]
 fn nulls_and_invalid_arguments_are_bounded() {
-    assert_eq!(value("SELECT overlayUTF8(NULL, 'x', 1)"), ConstantValue::Null);
-    assert_eq!(value("SELECT overlayUTF8('x', NULL, 1)"), ConstantValue::Null);
-    assert_eq!(value("SELECT overlayUTF8('x', 'a', NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT overlayUTF8(NULL, 'x', 1)"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT overlayUTF8('x', NULL, 1)"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT overlayUTF8('x', 'a', NULL)"),
+        ConstantValue::Null
+    );
     for sql in [
         "SELECT overlayUTF8('x', 'a', 0)",
         "SELECT overlayUTF8('x', 'a', 1, -1)",

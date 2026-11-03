@@ -1,6 +1,8 @@
 //! Stream validated JSONL objects as one bounded JSON array.
 use super::MAX_RESPONSE_BYTES;
-use rusthouse_format::{validate_json_object, write_pretty_json_row, write_pretty_json_row_prefixed};
+use rusthouse_format::{
+    validate_json_object, write_pretty_json_row, write_pretty_json_row_prefixed,
+};
 use std::io::{self, Write};
 
 fn validate_complete_object(row: &[u8]) -> io::Result<()> {
@@ -304,8 +306,14 @@ mod invalid_json_forwarding_tests {
             b"{\"x\":NaN}\n".as_slice(),
         ] {
             let mut sink = JsonArraySink::new(Vec::new());
-            assert_eq!(sink.write_all(row).unwrap_err().kind(), io::ErrorKind::InvalidData);
-            assert!(sink.output.is_empty(), "invalid object leaked array framing");
+            assert_eq!(
+                sink.write_all(row).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert!(
+                sink.output.is_empty(),
+                "invalid object leaked array framing"
+            );
         }
     }
 

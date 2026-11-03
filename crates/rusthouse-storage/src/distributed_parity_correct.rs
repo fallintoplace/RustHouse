@@ -103,7 +103,10 @@ mod tests {
             b"omega".as_slice(),
         ];
         let parity = encode_double_parity(&originals).unwrap();
-        assert_eq!(correct_one_unknown_corruption(&originals, &parity).unwrap(), None);
+        assert_eq!(
+            correct_one_unknown_corruption(&originals, &parity).unwrap(),
+            None
+        );
         for index in 0..originals.len() {
             if originals[index].is_empty() {
                 continue;
@@ -154,7 +157,11 @@ mod tests {
         let mut bad = parity.clone();
         bad.weighted.pop();
         assert!(correct_one_unknown_corruption(&originals, &bad).is_err());
-        let wrong_width = [b"hello".as_slice(), b"world".as_slice(), b"abcdef".as_slice()];
+        let wrong_width = [
+            b"hello".as_slice(),
+            b"world".as_slice(),
+            b"abcdef".as_slice(),
+        ];
         assert!(correct_one_unknown_corruption(&wrong_width, &parity).is_err());
     }
 }

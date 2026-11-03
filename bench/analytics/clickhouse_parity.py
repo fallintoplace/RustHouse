@@ -237,7 +237,8 @@ def _copy_fixture_to_json(source, target, names, numeric, nullable, expected_cou
     seen = 0
     with source.open("rb") as reader, target.open("w", encoding="utf-8") as writer:
         header = reader.readline(MAX_FIXTURE_LINE_BYTES + 1)
-        if header != ("\t".join(names) + "\n").encode():
+        if (not header.endswith(b"\n") or
+                header.removesuffix(b"\n").removesuffix(b"\r") != "\t".join(names).encode()):
             raise ValueError(f"{source.name}: unexpected TSV column header")
         while True:
             line = reader.readline(MAX_FIXTURE_LINE_BYTES + 1)
@@ -248,7 +249,7 @@ def _copy_fixture_to_json(source, target, names, numeric, nullable, expected_cou
                 raise ValueError(f"{source.name}: too many or oversized fixture rows")
             if not line.endswith(b"\n"):
                 raise ValueError(f"{source.name}: unterminated TSV fixture row")
-            fields = line[:-1].split(b"\t")
+            fields = line[:-1].removesuffix(b"\r").split(b"\t")
             if len(fields) != len(names):
                 raise ValueError(f"{source.name}: fixture row width mismatch")
             record = {}

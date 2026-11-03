@@ -16,8 +16,14 @@ fn hex_accepts_strings_and_int64_constants() {
         ("SELECT hex(255)", ConstantValue::Text("FF".into())),
         ("SELECT hex(256)", ConstantValue::Text("0100".into())),
         ("SELECT hex(65535)", ConstantValue::Text("FFFF".into())),
-        ("SELECT hex('Click')", ConstantValue::Text("436C69636B".into())),
-        ("SELECT hex_encode('Click')", ConstantValue::Text("436C69636B".into())),
+        (
+            "SELECT hex('Click')",
+            ConstantValue::Text("436C69636B".into()),
+        ),
+        (
+            "SELECT hex_encode('Click')",
+            ConstantValue::Text("436C69636B".into()),
+        ),
         ("SELECT hex(NULL)", ConstantValue::Null),
     ] {
         assert_eq!(value(query), expected, "{query}");

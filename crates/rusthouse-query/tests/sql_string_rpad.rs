@@ -14,10 +14,10 @@ fn rpad_pads_truncates_and_counts_unicode_chars() {
         ("SELECT RPAD('cat', 5, '.')", "cat.."),
         ("SELECT rpad('abc', 6, 'xy')", "abcxyx"),
         ("SELECT RPAD('abcdef', 3, '.')", "abc"),
-        ("SELECT RPAD('猫', 3, '🙂')", "猫🙂🙂"),
+        ("SELECT rightPadUTF8('猫', 3, '🙂')", "猫🙂🙂"),
         ("SELECT RPAD('x', 0, '.')", ""),
         ("SELECT RPAD('x', 3)", "x  "),
-        ("SELECT RPAD('é', 3)", "é  "),
+        ("SELECT rightPadUTF8('é', 3)", "é  "),
         ("SELECT RPAD('abc', 3, '')", "abc"),
         ("SELECT RPAD(UPPER('ab'), 4, '-')", "AB--"),
     ] {

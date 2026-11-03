@@ -47,7 +47,6 @@ pub(super) fn valid_key(key: &str) -> bool {
     !segment_start && !previous_dot && !windows_device_segment(&key[segment_offset..])
 }
 
-
 // A case-sensitive source may carry two distinct keys that map to the same
 // filename on a case-insensitive replica. Check aliases across both
 // inventories, including keys that only differ between peers. Lowercase-only

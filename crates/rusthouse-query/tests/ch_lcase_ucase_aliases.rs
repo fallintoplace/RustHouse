@@ -11,8 +11,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn lcase_ucase_use_ascii_only_case_conversion() {
     for (query, expected) in [
-        ("SELECT lcase('HELLO É')", ConstantValue::Text("hello É".into())),
-        ("SELECT UCASE('hello é')", ConstantValue::Text("HELLO é".into())),
+        (
+            "SELECT lcase('HELLO É')",
+            ConstantValue::Text("hello É".into()),
+        ),
+        (
+            "SELECT UCASE('hello é')",
+            ConstantValue::Text("HELLO é".into()),
+        ),
         ("SELECT lcase(NULL)", ConstantValue::Null),
         ("SELECT ucase(NULL)", ConstantValue::Null),
     ] {

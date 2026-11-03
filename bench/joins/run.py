@@ -70,7 +70,7 @@ def write_fixture(directory, probe_rows, build_rows, disjoint=False, duplicate_f
 def fixture_copy_sql(table, path):
     if table not in ("facts", "dimensions"):
         raise ValueError("unsupported fixture table")
-    literal = str(path).replace("'", "''")
+    literal = Path(path).as_posix().replace("'", "''")
     return f"COPY {table} FROM '{literal}' WITH (FORMAT TSV, HEADER TRUE)"
 
 

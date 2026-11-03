@@ -22,10 +22,7 @@ fn parallel_multi_aggregates_merge_signed_integer_extrema() {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    sql(
-        "CREATE TABLE facts (amount Int64, status UInt8)",
-        &root,
-    );
+    sql("CREATE TABLE facts (amount Int64, status UInt8)", &root);
     for i in 0..40 {
         sql(
             &format!(

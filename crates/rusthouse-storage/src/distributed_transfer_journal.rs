@@ -14,7 +14,9 @@ pub struct JournalReceipt {
 }
 
 pub fn encode_transfer_journal(records: &[JournalReceipt]) -> Result<Vec<u8>, &'static str> {
-    if records.len() > MAX_RECORDS { return Err("transfer journal exceeds record bound"); }
+    if records.len() > MAX_RECORDS {
+        return Err("transfer journal exceeds record bound");
+    }
     let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(4 + records.len() * FRAME_SIZE);
     out.extend_from_slice(MAGIC);
@@ -53,11 +55,14 @@ pub fn decode_transfer_journal(input: &[u8]) -> Result<Vec<JournalReceipt>, &'st
         {
             return Err("corrupt, duplicated, or reordered transfer receipt");
         }
-        records.push(JournalReceipt { sequence, chunk_index, payload_crc32c });
+        records.push(JournalReceipt {
+            sequence,
+            chunk_index,
+            payload_crc32c,
+        });
     }
     Ok(records)
 }
-
 
 /// Decode a journal only when its complete receipt count is known independently.
 ///
@@ -86,13 +91,20 @@ mod tests {
         // Frame checksums alone cannot distinguish this from a shorter journal.
         assert!(decode_transfer_journal(truncated).is_ok());
         assert!(decode_transfer_journal_exact(truncated, records.len()).is_err());
-        assert_eq!(decode_transfer_journal_exact(&encoded, records.len()).unwrap(), records);
+        assert_eq!(
+            decode_transfer_journal_exact(&encoded, records.len()).unwrap(),
+            records
+        );
         assert!(decode_transfer_journal_exact(&encoded, MAX_RECORDS + 1).is_err());
     }
 
     use super::*;
     fn entry(sequence: u64, chunk_index: u64) -> JournalReceipt {
-        JournalReceipt { sequence, chunk_index, payload_crc32c: 13 }
+        JournalReceipt {
+            sequence,
+            chunk_index,
+            payload_crc32c: 13,
+        }
     }
     #[test]
     fn roundtrips_out_of_order_chunk_numbers_with_monotonic_journal_sequence() {

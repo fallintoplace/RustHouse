@@ -12,8 +12,6 @@ fn value(sql: &str) -> ConstantValue {
 fn concat_ws_skips_nulls_and_bounds_unicode_output() {
     for (sql, expected) in [
         ("SELECT CONCAT_WS('-', 'a', 'b', 'c')", "a-b-c"),
-        ("SELECT concat_ws(', ', 'Ada', NULL, 'Grace')", "Ada, Grace"),
-        ("SELECT CONCAT_WS('-', NULL, NULL)", ""),
         ("SELECT CONCAT_WS('-', '', 'b')", "-b"),
         ("SELECT CONCAT_WS('', 'é', '🙂')", "é🙂"),
         ("SELECT CONCAT_WS('-', 'a')", "a"),
@@ -21,6 +19,14 @@ fn concat_ws_skips_nulls_and_bounds_unicode_output() {
     ] {
         assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
     }
+    assert_eq!(
+        value("SELECT concat_ws(', ', 'Ada', NULL, 'Grace')"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT CONCAT_WS('-', NULL, NULL)"),
+        ConstantValue::Null
+    );
     assert_eq!(
         value("SELECT CONCAT_WS(NULL, 'a', 'b')"),
         ConstantValue::Null

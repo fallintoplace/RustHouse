@@ -52,7 +52,7 @@ fn prewhere_rejects_misplaced_and_unbounded_filters() {
         .collect::<Vec<_>>()
         .join(" OR ");
     let w = (0..8)
-        .map(|i| format!("number = {i}"))
+        .map(|i| format!("other = {i}"))
         .collect::<Vec<_>>()
         .join(" OR ");
     let too_many = format!("SELECT number FROM numbers(10) PREWHERE ({p}) WHERE ({w})");

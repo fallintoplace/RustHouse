@@ -2,15 +2,16 @@
 use rusthouse_storage::distributed_snapshot_copy::{
     compare_frozen_snapshot_files, copy_frozen_snapshot,
 };
-use rusthouse_storage::{
-    Column, NumericColumn, TypedColumn, TypedPartReader, write_wide_part,
-};
+use rusthouse_storage::{Column, NumericColumn, TypedColumn, TypedPartReader, write_wide_part};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn verified_copy_produces_queryable_identical_replica_without_overwrite() {
-    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let root = std::env::temp_dir().join(format!(
         "rusthouse-offline-replica-{}-{unique}",
         std::process::id()
@@ -34,7 +35,7 @@ fn verified_copy_produces_queryable_identical_replica_without_overwrite() {
     let same = compare_frozen_snapshot_files(&source, &source, 128, 1024 * 1024).unwrap();
     assert_eq!(comparison, same);
 
-    let mut reader = TypedPartReader::open(&replica.join("all_1_1_0"), &["id".into()]).unwrap();
+    let mut reader = TypedPartReader::open(replica.join("all_1_1_0"), &["id".into()]).unwrap();
     let batch = reader.next_batch().unwrap().unwrap();
     let TypedColumn::Numeric(NumericColumn::UInt64(values)) = &batch[0] else {
         panic!("expected UInt64 replica column");

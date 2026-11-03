@@ -126,11 +126,16 @@ fn invalid_snapshot_pointer_fails_closed() {
 
 #[test]
 fn optimize_requires_database_mode() {
+    let db = dir();
     let result = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
-        .args(["sql", "OPTIMIZE TABLE t", "--catalog", "./not-used"])
+        .args(["sql", "OPTIMIZE TABLE t", "--catalog"])
+        .arg(db.join("catalog"))
         .output()
         .unwrap();
     assert!(!result.status.success());
+    if db.exists() {
+        fs::remove_dir_all(db).unwrap();
+    }
 }
 #[test]
 fn optimize_streams_tables_larger_than_mutation_rewrite_limit() {
@@ -157,7 +162,10 @@ fn optimize_streams_tables_larger_than_mutation_rewrite_limit() {
         sql("SELECT count(*) FROM events", &db).stdout,
         b"count\n31500\n"
     );
-    let generation = db.join("events.parts/.rusthouse-versions/g1");
+    let active = fs::read_to_string(db.join("events.parts/.rusthouse-active")).unwrap();
+    let generation = db
+        .join("events.parts/.rusthouse-versions")
+        .join(active.trim());
     let active_parts = fs::read_dir(generation)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())

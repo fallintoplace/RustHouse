@@ -36,8 +36,10 @@ fn map_peers_bounded_impl<T: Send + Sync>(
     // The common one-peer case does not need a new scoped OS thread.
     // Keep the same panic isolation and error slot semantics as workers.
     if let [peer] = peers {
-        return vec![std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(*peer)))
-            .unwrap_or_else(|_| Err("peer query panicked".into()))];
+        return vec![
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(*peer)))
+                .unwrap_or_else(|_| Err("peer query panicked".into())),
+        ];
     }
     let cursor = AtomicUsize::new(0);
     let cancelled = AtomicBool::new(false);

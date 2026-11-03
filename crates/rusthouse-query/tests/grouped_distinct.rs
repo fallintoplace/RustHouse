@@ -82,11 +82,11 @@ fn groups_distinct_values_and_ignores_nulls() {
 
 #[test]
 fn rejects_invalid_grouped_distinct_syntax() {
+    assert!(parse_select("SELECT RegionID, SearchPhrase, COUNT(DISTINCT UserID) FROM part GROUP BY RegionID, SearchPhrase").is_ok());
     for sql in [
         "SELECT RegionID, COUNT(DISTINCT UserID) FROM part",
         "SELECT RegionID, COUNT(DISTINCT) FROM part GROUP BY RegionID",
         "SELECT RegionID, COUNT(DISTINCT UserID) FROM part GROUP BY UserID",
-        "SELECT RegionID, SearchPhrase, COUNT(DISTINCT UserID) FROM part GROUP BY RegionID, SearchPhrase",
         "SELECT RegionID, COUNT(DISTINCT UserID) FROM part GROUP BY RegionID ORDER BY missing",
         "SELECT RegionID, COUNT(DISTINCT UserID) FROM part GROUP BY RegionID HAVING u > 1",
     ] {

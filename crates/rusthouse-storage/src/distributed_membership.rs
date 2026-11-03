@@ -281,23 +281,31 @@ mod apply_membership_delta_tests {
     use super::*;
 
     fn member(node: &str, zone: &str, weight: u16) -> Member {
-        Member { node: node.into(), zone: zone.into(), weight }
+        Member {
+            node: node.into(),
+            zone: zone.into(),
+            weight,
+        }
     }
 
     #[test]
     fn generated_deltas_replay_exactly_in_canonical_order() {
         for count in [1usize, 2, 8, 16, 32, 64] {
-            let before = (0..count).map(|i| {
-                member(&format!("n{i:03}"), "z1", 1)
-            }).collect::<Vec<_>>();
-            let mut after = before.iter().enumerate()
-                .filter_map(|(i, m)| {
-                    (i % 4 != 0).then(|| {
-                        let mut next = m.clone();
-                        if i % 3 == 0 { next.weight = 2; }
-                        next
-                    })
-                }).collect::<Vec<_>>();
+            let before = (0..count)
+                .map(|i| member(&format!("n{i:03}"), "z1", 1))
+                .collect::<Vec<_>>();
+            let mut after = before
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i % 4 != 0)
+                .map(|(i, m)| {
+                    let mut next = m.clone();
+                    if i % 3 == 0 {
+                        next.weight = 2;
+                    }
+                    next
+                })
+                .collect::<Vec<_>>();
             after.push(member("replacement", "z2", 3));
             let changes = membership_changes(&before, &after).unwrap();
             let actual = apply_membership_changes(&before, &changes).unwrap();
@@ -312,31 +320,44 @@ mod apply_membership_delta_tests {
         let before = vec![member("a", "east", 1), member("b", "west", 1)];
         let remove = MembershipChange::Removed(member("a", "east", 1));
         assert!(apply_membership_changes(&before, &[remove.clone(), remove]).is_err());
-        assert!(apply_membership_changes(
-            &before,
-            &[MembershipChange::Removed(member("a", "east", 2))]
-        ).is_err());
-        assert!(apply_membership_changes(
-            &before,
-            &[MembershipChange::Added(member("a", "west", 1))]
-        ).is_err());
-        assert!(apply_membership_changes(
-            &before,
-            &[MembershipChange::Reconfigured {
-                before: member("a", "east", 1),
-                after: member("renamed", "east", 1),
-            }]
-        ).is_err());
-        assert!(apply_membership_changes(
-            &before,
-            &[
-                MembershipChange::Removed(member("a", "east", 1)),
-                MembershipChange::Removed(member("b", "west", 1)),
-            ],
-        ).is_err());
-        assert!(apply_membership_changes(&before, &vec![
-            MembershipChange::Added(member("x", "east", 1)); 129
-        ]).is_err());
+        assert!(
+            apply_membership_changes(
+                &before,
+                &[MembershipChange::Removed(member("a", "east", 2))]
+            )
+            .is_err()
+        );
+        assert!(
+            apply_membership_changes(&before, &[MembershipChange::Added(member("a", "west", 1))])
+                .is_err()
+        );
+        assert!(
+            apply_membership_changes(
+                &before,
+                &[MembershipChange::Reconfigured {
+                    before: member("a", "east", 1),
+                    after: member("renamed", "east", 1),
+                }]
+            )
+            .is_err()
+        );
+        assert!(
+            apply_membership_changes(
+                &before,
+                &[
+                    MembershipChange::Removed(member("a", "east", 1)),
+                    MembershipChange::Removed(member("b", "west", 1)),
+                ],
+            )
+            .is_err()
+        );
+        assert!(
+            apply_membership_changes(
+                &before,
+                &vec![MembershipChange::Added(member("x", "east", 1)); 129]
+            )
+            .is_err()
+        );
         assert_eq!(before[0].node, "a");
     }
 }
@@ -937,7 +958,11 @@ mod stack_zone_capacity_tests {
             }
             let expected = oracle
                 .into_iter()
-                .map(|(zone, (nodes, weight))| ZoneCapacity { zone, nodes, weight })
+                .map(|(zone, (nodes, weight))| ZoneCapacity {
+                    zone,
+                    nodes,
+                    weight,
+                })
                 .collect::<Vec<_>>();
             assert_eq!(membership_capacity_by_zone(&members).unwrap(), expected);
             members.reverse();

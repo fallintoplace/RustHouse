@@ -10,7 +10,10 @@ fn run(sql: &str) -> String {
 fn limit_accepts_parenthesized_integer() {
     let query = parse_select("SELECT number FROM numbers(5) LIMIT (2)").unwrap();
     assert_eq!(query.limit, Some(2));
-    assert_eq!(run("SELECT number FROM numbers(5) LIMIT (2)"), "number\n0\n1\n");
+    assert_eq!(
+        run("SELECT number FROM numbers(5) LIMIT (2)"),
+        "number\n0\n1\n"
+    );
     let page = parse_select("SELECT number FROM numbers(5) LIMIT (2), 1").unwrap();
     assert_eq!((page.offset, page.limit), (Some(2), Some(1)));
 }

@@ -25,8 +25,11 @@ fn maps_multibyte_characters() {
 }
 #[test]
 fn checks_unicode_character_counts_and_arity() {
+    assert_eq!(
+        value("SELECT translateUTF8('a','ab','c')"),
+        ConstantValue::Text("c".into())
+    );
     for sql in [
-        "SELECT translateUTF8('a','ab','c')",
         "SELECT translateUTF8('a', 'a')",
         "SELECT translateUTF8('a', 'b', 'c','d')",
     ] {

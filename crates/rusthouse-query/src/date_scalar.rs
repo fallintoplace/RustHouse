@@ -536,8 +536,18 @@ pub(super) fn parse_after_open(
                 "quarter" => ((month - 1) / 3 + 1).to_string(),
                 "month" => {
                     const MONTHS: &[&str; 12] = &[
-                        "January", "February", "March", "April", "May", "June",
-                        "July", "August", "September", "October", "November", "December",
+                        "January",
+                        "February",
+                        "March",
+                        "April",
+                        "May",
+                        "June",
+                        "July",
+                        "August",
+                        "September",
+                        "October",
+                        "November",
+                        "December",
                     ];
                     MONTHS[(month - 1) as usize].to_owned()
                 }
@@ -546,8 +556,13 @@ pub(super) fn parse_after_open(
                 "day" => day.to_string(),
                 "weekday" => {
                     const WEEKDAYS: &[&str; 7] = &[
-                        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
-                        "Saturday", "Sunday",
+                        "Monday",
+                        "Tuesday",
+                        "Wednesday",
+                        "Thursday",
+                        "Friday",
+                        "Saturday",
+                        "Sunday",
                     ];
                     WEEKDAYS[(days + 3).rem_euclid(7) as usize].to_owned()
                 }

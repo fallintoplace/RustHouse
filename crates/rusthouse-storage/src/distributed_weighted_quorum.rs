@@ -136,18 +136,14 @@ mod tests {
     use super::*;
 
     fn members() -> Vec<Member> {
-        [
-            ("a", "east", 4),
-            ("b", "west", 2),
-            ("c", "central", 1),
-        ]
-        .into_iter()
-        .map(|(node, zone, weight)| Member {
-            node: node.into(),
-            zone: zone.into(),
-            weight,
-        })
-        .collect()
+        [("a", "east", 4), ("b", "west", 2), ("c", "central", 1)]
+            .into_iter()
+            .map(|(node, zone, weight)| Member {
+                node: node.into(),
+                zone: zone.into(),
+                weight,
+            })
+            .collect()
     }
 
     #[test]
@@ -183,9 +179,21 @@ mod tests {
         assert!(diverse.can_read_across_zones);
         assert!(diverse.can_write_across_zones);
 
-        assert!(policy.observe_with_zone_requirement(&members, &[], 0).is_err());
-        assert!(policy.observe_with_zone_requirement(&members, &[], 4).is_err());
-        assert!(policy.observe_with_zone_requirement(&members, &["unknown"], 2).is_err());
+        assert!(
+            policy
+                .observe_with_zone_requirement(&members, &[], 0)
+                .is_err()
+        );
+        assert!(
+            policy
+                .observe_with_zone_requirement(&members, &[], 4)
+                .is_err()
+        );
+        assert!(
+            policy
+                .observe_with_zone_requirement(&members, &["unknown"], 2)
+                .is_err()
+        );
     }
 
     #[test]
@@ -256,7 +264,6 @@ mod tests {
         }
     }
 }
-
 
 /// A joint-config acknowledgement must satisfy both the departing and the
 /// incoming membership. Neither configuration may commit by itself.
@@ -344,14 +351,8 @@ mod joint_quorum_tests {
         assert!(only_new.new.can_write);
         assert!(!only_new.can_write);
 
-        let joint = observe_joint_weighted_quorum(
-            &before,
-            old,
-            &after,
-            new,
-            &["d", "b", "a", "d"],
-        )
-        .unwrap();
+        let joint = observe_joint_weighted_quorum(&before, old, &after, new, &["d", "b", "a", "d"])
+            .unwrap();
         assert_eq!(joint.old.acknowledged_weight, 4);
         assert_eq!(joint.new.acknowledged_weight, 4);
         assert!(joint.can_read && joint.can_write);
@@ -367,20 +368,14 @@ mod joint_quorum_tests {
         assert_eq!(a.old.acknowledged_weight, 3);
         assert_eq!(a.new.acknowledged_weight, 1);
         assert!(!a.can_write);
-        assert!(observe_joint_weighted_quorum(
-            &before,
-            old,
-            &after,
-            new,
-            &["a", "unknown"]
-        )
-        .is_err());
+        assert!(
+            observe_joint_weighted_quorum(&before, old, &after, new, &["a", "unknown"]).is_err()
+        );
         let mut invalid = after.to_vec();
         invalid[1].node = "a".into();
         assert!(observe_joint_weighted_quorum(&before, old, &invalid, new, &[]).is_err());
     }
 }
-
 
 /// Worst-case surviving voting weight after exactly this many independent
 /// failure zones disappear. This assesses availability, not fault consensus.
@@ -468,10 +463,13 @@ mod weighted_zone_failure_tests {
             let min_survivors = (0usize..16)
                 .filter(|mask| mask.count_ones() as usize == count)
                 .map(|mask| {
-                    total - weights.iter().enumerate()
-                        .filter(|(index, _)| mask & (1 << index) != 0)
-                        .map(|(_, weight)| *weight)
-                        .sum::<u64>()
+                    total
+                        - weights
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| mask & (1 << index) != 0)
+                            .map(|(_, weight)| *weight)
+                            .sum::<u64>()
                 })
                 .min()
                 .unwrap();

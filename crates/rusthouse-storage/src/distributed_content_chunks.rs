@@ -295,7 +295,6 @@ mod tests {
     }
 }
 
-
 /// Exact in-memory reuse of source bytes or transfer of target bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChunkDeltaOperation {
@@ -343,8 +342,7 @@ pub fn plan_verified_chunk_delta(
 
     let old_chunks = plan_content_chunks(source, min_bytes, average_bytes, max_bytes)?;
     let new_chunks = plan_content_chunks(target, min_bytes, average_bytes, max_bytes)?;
-    let mut candidates: HashMap<(u64, u64), Vec<u64>> =
-        HashMap::with_capacity(old_chunks.len());
+    let mut candidates: HashMap<(u64, u64), Vec<u64>> = HashMap::with_capacity(old_chunks.len());
     for chunk in old_chunks {
         let begin = chunk.offset as usize;
         let end = (chunk.offset + chunk.length) as usize;

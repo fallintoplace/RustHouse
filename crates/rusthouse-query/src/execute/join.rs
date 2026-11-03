@@ -1,11 +1,11 @@
 //! In-memory, bounded equi-join over validated immutable typed snapshots.
 
 mod aggregate;
+mod build_rows;
 mod comparison_filter;
 mod count_column;
 mod grouped;
 mod keys;
-mod build_rows;
 pub(super) use self::build_rows::*;
 
 use self::keys::*;
@@ -66,6 +66,7 @@ fn initial_join_row_capacity(expected_rows: u64) -> usize {
     expected_rows.min(INITIAL_JOIN_ROW_CAPACITY) as usize
 }
 
+#[cfg(test)]
 pub(super) fn multi_join_row_key(
     row: &[typed::Cell],
     indices: &[usize],
@@ -84,7 +85,6 @@ pub(super) fn multi_join_row_key_into(
 fn invalid(message: impl Into<String>) -> ExecutionError {
     ExecutionError::Invalid(message.into())
 }
-
 
 /// Avoid allocating a heap Vec for the common unique JOIN build key.
 /// Promote to a Vec only when the build side contains duplicate keys.
@@ -251,7 +251,9 @@ fn probe_inner<F>(
 where
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
-    probe_inner_projected(left_path, left_names, left_keys, right_rows, hash, options, None, emit)
+    probe_inner_projected(
+        left_path, left_names, left_keys, right_rows, hash, options, None, emit,
+    )
 }
 
 /// Reconstruct original source positions from the compact typed scan.
@@ -513,14 +515,21 @@ fn join_output_types(
 ) -> Result<Vec<String>, ExecutionError> {
     let left = inspect_query_source(left_path)?;
     let right = inspect_query_source(right_path)?;
-    let types = left.columns.iter().chain(&right.columns)
+    let types = left
+        .columns
+        .iter()
+        .chain(&right.columns)
         .map(|column| column.data_type.as_str())
         .collect::<Vec<_>>();
-    selected.iter().map(|(index, _, _)| {
-        types.get(*index)
-            .map(|data_type| (*data_type).to_owned())
-            .ok_or_else(|| invalid("unknown JOIN projection type"))
-    }).collect()
+    selected
+        .iter()
+        .map(|(index, _, _)| {
+            types
+                .get(*index)
+                .map(|data_type| (*data_type).to_owned())
+                .ok_or_else(|| invalid("unknown JOIN projection type"))
+        })
+        .collect()
 }
 
 fn execute_streaming_right_outer<W: Write>(
@@ -1101,12 +1110,7 @@ fn execute_streaming_ordered_inner<W: Write>(
     )?;
     // Reuse the cardinality-aware build for ordered top-K joins.
     // Preserve source match order and ANY first-match semantics.
-    let hash = build_join_hash(
-        &right_rows,
-        right_keys,
-        query.any,
-        super::query_workers(4),
-    )?;
+    let hash = build_join_hash(&right_rows, right_keys, query.any, super::query_workers(4))?;
     let mut heap = BinaryHeap::<OrderedJoinRow>::with_capacity(requested.min(1024));
     let directions: Arc<[(bool, Option<bool>)]> = order
         .iter()
@@ -1252,9 +1256,9 @@ fn parallel_probe_inner_count(
                 std::thread::Builder::new()
                     .spawn_scoped(scope, || -> Result<usize, ExecutionError> {
                         let mut subtotal = 0usize;
-                        while let Some(part) = parts.get(
-                            next.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-                        ) {
+                        while let Some(part) =
+                            parts.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                        {
                             let count = probe_inner(
                                 part,
                                 left_names,
@@ -1284,9 +1288,9 @@ fn parallel_probe_inner_count(
         handles
             .into_iter()
             .map(|handle| {
-                handle.join().map_err(|_| {
-                    invalid("parallel JOIN probe worker panicked")
-                })?
+                handle
+                    .join()
+                    .map_err(|_| invalid("parallel JOIN probe worker panicked"))?
             })
             .collect::<Result<Vec<_>, _>>()
     })?;
@@ -1315,11 +1319,19 @@ fn execute_streaming_inner_count<W: Write>(
         ..
     } = columns;
     if query.limit == Some(0) || query.offset > 0 {
-        writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+        writeln!(
+            output,
+            "{}",
+            query.aggregate_alias.as_deref().unwrap_or("count")
+        )?;
         return Ok(());
     }
     if left_count == 0 || right_count == 0 {
-        writeln!(output, "{}\n0", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+        writeln!(
+            output,
+            "{}\n0",
+            query.aggregate_alias.as_deref().unwrap_or("count")
+        )?;
         return Ok(());
     }
     let count = if right_count <= MAX_STREAM_BUILD_ROWS
@@ -1335,12 +1347,7 @@ fn execute_streaming_inner_count<W: Write>(
             MAX_STREAM_BUILD_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
-        let hash = build_join_hash(
-            &right_rows,
-            right_keys,
-            query.any,
-            super::query_workers(4),
-        )?;
+        let hash = build_join_hash(&right_rows, right_keys, query.any, super::query_workers(4))?;
         if let Some(count) = parallel_probe_inner_count(
             left_path,
             left_names,
@@ -1379,12 +1386,7 @@ fn execute_streaming_inner_count<W: Write>(
             MAX_STREAM_BUILD_BYTES,
         )?;
         // Preserve every left-side duplicate for the right-side COUNT probe.
-        let hash = build_join_hash(
-            &left_rows,
-            left_keys,
-            false,
-            super::query_workers(4),
-        )?;
+        let hash = build_join_hash(&left_rows, left_keys, false, super::query_workers(4))?;
         probe_right(
             right_path,
             right_names,
@@ -1401,7 +1403,11 @@ fn execute_streaming_inner_count<W: Write>(
             |_, _| Ok(()),
         )?
     };
-    writeln!(output, "{}\n{count}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+    writeln!(
+        output,
+        "{}\n{count}",
+        query.aggregate_alias.as_deref().unwrap_or("count")
+    )?;
     Ok(())
 }
 
@@ -1631,7 +1637,11 @@ pub fn execute_join<W: Write>(
 
     // Scalar COUNT LIMIT 0 has a header-only result, including OUTER joins.
     if query.aggregate == Some(JoinAggregate::CountStar) && query.limit == Some(0) {
-        writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+        writeln!(
+            output,
+            "{}",
+            query.aggregate_alias.as_deref().unwrap_or("count")
+        )?;
         return Ok(());
     }
     // LIMIT 0 needs the validated output schema, but not either input scan.
@@ -1829,7 +1839,11 @@ pub fn execute_join<W: Write>(
         }
     }
     if count_only {
-        writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+        writeln!(
+            output,
+            "{}",
+            query.aggregate_alias.as_deref().unwrap_or("count")
+        )?;
         if query.offset == 0 {
             writeln!(output, "{count}")?;
         }
@@ -2237,11 +2251,7 @@ mod parallel_join_build_tests {
     #[test]
     fn parallel_hash_build_preserves_all_and_any_row_order() {
         let rows = (0..16_384)
-            .map(|index| {
-                vec![typed::Cell::Numeric(Number::Unsigned(
-                    (index % 5) as u128,
-                ))]
-            })
+            .map(|index| vec![typed::Cell::Numeric(Number::Unsigned((index % 5) as u128))])
             .collect::<Vec<_>>();
         let serial = build_join_hash(&rows, &[0], false, 1).unwrap();
         let parallel = build_join_hash(&rows, &[0], false, 4).unwrap();
@@ -2274,15 +2284,12 @@ mod selective_join_probe_tests {
             TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt64(vec![4])),
             TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt64(vec![9])),
         ];
-        let cells = reconstruct_join_projection(
-            &batch,
-            0,
-            &[0, 2],
-            3,
-            &[false, false, true],
-        );
+        let cells = reconstruct_join_projection(&batch, 0, &[0, 2], 3, &[false, false, true]);
         assert!(matches!(cells[0], typed::Cell::Null));
         assert!(matches!(cells[1], typed::Cell::Null));
-        assert!(matches!(cells[2], typed::Cell::Numeric(Number::Unsigned(9))));
+        assert!(matches!(
+            cells[2],
+            typed::Cell::Numeric(Number::Unsigned(9))
+        ));
     }
 }

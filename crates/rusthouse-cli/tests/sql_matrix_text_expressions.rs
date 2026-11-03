@@ -13,7 +13,7 @@ fn run(query: &str) -> Vec<u8> {
 fn evaluates_composed_text_expressions() {
     for (query, expected) in [
         (
-            "SELECT LENGTH('naïve') AS bytes, CHAR_LENGTH('naïve') AS chars, SUBSTRING('naïve', 3, 2) AS middle",
+            "SELECT LENGTH('naïve') AS bytes, CHAR_LENGTH('naïve') AS chars, SUBSTRINGUTF8('naïve', 3, 2) AS middle",
             "bytes\tchars\tmiddle\n6\t5\tïv\n",
         ),
         (

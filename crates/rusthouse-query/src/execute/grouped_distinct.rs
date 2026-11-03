@@ -122,12 +122,22 @@ fn byte_group_slot(column: &TypedColumn, row: usize) -> Option<usize> {
     match column {
         TypedColumn::Numeric(NumericColumn::UInt8(values)) => Some(usize::from(values[row])),
         TypedColumn::Numeric(NumericColumn::Int8(values)) => Some(usize::from(values[row] as u8)),
-        TypedColumn::NullableNumeric { values: NumericColumn::UInt8(values), nulls } => {
-            Some(if nulls[row] != 0 { NULL_SLOT } else { usize::from(values[row]) })
-        }
-        TypedColumn::NullableNumeric { values: NumericColumn::Int8(values), nulls } => {
-            Some(if nulls[row] != 0 { NULL_SLOT } else { usize::from(values[row] as u8) })
-        }
+        TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt8(values),
+            nulls,
+        } => Some(if nulls[row] != 0 {
+            NULL_SLOT
+        } else {
+            usize::from(values[row])
+        }),
+        TypedColumn::NullableNumeric {
+            values: NumericColumn::Int8(values),
+            nulls,
+        } => Some(if nulls[row] != 0 {
+            NULL_SLOT
+        } else {
+            usize::from(values[row] as u8)
+        }),
         _ => None,
     }
 }
@@ -237,9 +247,7 @@ pub(super) fn execute<W: Write>(
             };
             let id = if let Some(slots) = dense_slots.as_mut() {
                 let key = byte_group_slot(&batch[group_index], row).ok_or_else(|| {
-                    ExecutionError::Invalid(
-                        "unexpected byte-width grouped DISTINCT column".into(),
-                    )
+                    ExecutionError::Invalid("unexpected byte-width grouped DISTINCT column".into())
                 })?;
                 let slot = &mut slots[key];
                 if *slot == usize::MAX {
@@ -645,7 +653,9 @@ mod nullable_byte_group_lookup_tests {
             nulls: vec![0, 1, 0, 1],
         };
         assert_eq!(
-            (0..4).map(|row| byte_group_slot(&values, row)).collect::<Vec<_>>(),
+            (0..4)
+                .map(|row| byte_group_slot(&values, row))
+                .collect::<Vec<_>>(),
             vec![Some(0), Some(256), Some(255), Some(256)]
         );
     }
@@ -657,7 +667,9 @@ mod nullable_byte_group_lookup_tests {
             nulls: vec![0, 0, 0, 0, 1],
         };
         assert_eq!(
-            (0..5).map(|row| byte_group_slot(&values, row)).collect::<Vec<_>>(),
+            (0..5)
+                .map(|row| byte_group_slot(&values, row))
+                .collect::<Vec<_>>(),
             vec![Some(128), Some(255), Some(0), Some(127), Some(256)]
         );
     }

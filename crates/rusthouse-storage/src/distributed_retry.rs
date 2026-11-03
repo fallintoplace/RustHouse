@@ -289,9 +289,7 @@ pub fn plan_replica_retry_timeline(
     max_ms: u64,
     deadline: Duration,
 ) -> Result<Vec<ReplicaRetryEvent>, &'static str> {
-    plan_replica_retry_timeline_from(
-        node_seeds, 0, attempts_per_node, base_ms, max_ms, deadline,
-    )
+    plan_replica_retry_timeline_from(node_seeds, 0, attempts_per_node, base_ms, max_ms, deadline)
 }
 
 /// Continue a deterministic multi-node retry schedule from an absolute attempt.
@@ -567,29 +565,25 @@ mod stack_retry_validation_tests {
         assert_eq!(schedule.len(), 64 * 3);
         assert!(schedule.windows(2).all(|pair| {
             pair[0].due_after < pair[1].due_after
-                || (pair[0].due_after == pair[1].due_after
-                    && pair[0].node <= pair[1].node)
+                || (pair[0].due_after == pair[1].due_after && pair[0].node <= pair[1].node)
         }));
         let mut duplicate = members.clone();
         duplicate[63].0 = duplicate[0].0;
-        assert!(plan_replica_retry_timeline(
-            &duplicate, 0, 10, 100, Duration::ZERO
-        )
-        .is_err());
+        assert!(plan_replica_retry_timeline(&duplicate, 0, 10, 100, Duration::ZERO).is_err());
     }
 
     #[test]
     fn too_short_deadlines_skip_heap_work_but_still_validate_inputs() {
         let members = [("one", 1), ("two", 2)];
-        assert!(plan_replica_retry_timeline(
-            &members, 33, 100, 1000, Duration::from_millis(49)
-        ).unwrap().is_empty());
-        assert!(plan_replica_retry_timeline(
-            &members, 0, 0, 1000, Duration::ZERO
-        ).is_err());
-        assert!(plan_replica_retry_timeline(
-            &[("bad/name", 1)], 0, 100, 1000, Duration::ZERO
-        ).is_err());
+        assert!(
+            plan_replica_retry_timeline(&members, 33, 100, 1000, Duration::from_millis(49))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(plan_replica_retry_timeline(&members, 0, 0, 1000, Duration::ZERO).is_err());
+        assert!(
+            plan_replica_retry_timeline(&[("bad/name", 1)], 0, 100, 1000, Duration::ZERO).is_err()
+        );
     }
 }
 
@@ -603,7 +597,12 @@ mod resumed_multi_replica_timeline_tests {
         for first in [0, 1, 5, 16, 31, 32] {
             let attempts = 33 - first;
             let timeline = plan_replica_retry_timeline_from(
-                &peers, first, attempts, 10, 500, Duration::from_secs(60),
+                &peers,
+                first,
+                attempts,
+                10,
+                500,
+                Duration::from_secs(60),
             )
             .unwrap();
             for &(node, seed) in &peers {
@@ -635,15 +634,15 @@ mod resumed_multi_replica_timeline_tests {
             plan_replica_retry_timeline(&peers, 33, 25, 400, deadline),
             plan_replica_retry_timeline_from(&peers, 0, 33, 25, 400, deadline)
         );
-        assert!(plan_replica_retry_timeline_from(
-            &peers, 32, 2, 1, 5, Duration::from_secs(1)
-        ).is_err());
-        assert!(plan_replica_retry_timeline_from(
-            &peers, 34, 0, 1, 5, Duration::ZERO
-        ).is_err());
-        assert!(plan_replica_retry_timeline_from(
-            &peers, 33, 0, 1, 5, Duration::ZERO
-        ).unwrap().is_empty());
+        assert!(
+            plan_replica_retry_timeline_from(&peers, 32, 2, 1, 5, Duration::from_secs(1)).is_err()
+        );
+        assert!(plan_replica_retry_timeline_from(&peers, 34, 0, 1, 5, Duration::ZERO).is_err());
+        assert!(
+            plan_replica_retry_timeline_from(&peers, 33, 0, 1, 5, Duration::ZERO)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
@@ -678,15 +677,13 @@ pub fn plan_replica_retry_timeline_from_checkpoints(
         if checkpoint.next_attempt > attempts_per_node {
             return Err("replica retry checkpoint exceeds attempt budget");
         }
-        let expected = (0..checkpoint.next_attempt).try_fold(
-            Duration::ZERO,
-            |elapsed, attempt| {
+        let expected =
+            (0..checkpoint.next_attempt).try_fold(Duration::ZERO, |elapsed, attempt| {
                 let delay = retry_delay(attempt, base_ms, max_ms, checkpoint.seed)?;
                 elapsed
                     .checked_add(delay)
                     .ok_or("replica retry checkpoint duration overflow")
-            },
-        )?;
+            })?;
         if checkpoint.elapsed != expected {
             return Err("replica retry checkpoint does not match deterministic delays");
         }
@@ -749,7 +746,8 @@ mod resumed_timeline_checkpoint_tests {
             })
             .collect::<Vec<_>>();
         let resumed =
-            plan_replica_retry_timeline_from_checkpoints(&checkpoints, 33, 100, 1000, deadline).unwrap();
+            plan_replica_retry_timeline_from_checkpoints(&checkpoints, 33, 100, 1000, deadline)
+                .unwrap();
         assert_eq!(resumed, expected);
     }
 
@@ -765,11 +763,23 @@ mod resumed_timeline_checkpoint_tests {
             elapsed: valid.elapsed + Duration::from_millis(1),
             ..valid
         };
-        assert!(plan_replica_retry_timeline_from_checkpoints(&[changed], 33, 100, 1000, Duration::MAX).is_err());
-        assert!(plan_replica_retry_timeline_from_checkpoints(&[valid], 3, 100, 1000, Duration::MAX).is_err());
         assert!(
-            plan_replica_retry_timeline_from_checkpoints(&[valid, valid], 33, 100, 1000, Duration::MAX)
+            plan_replica_retry_timeline_from_checkpoints(&[changed], 33, 100, 1000, Duration::MAX)
                 .is_err()
+        );
+        assert!(
+            plan_replica_retry_timeline_from_checkpoints(&[valid], 3, 100, 1000, Duration::MAX)
+                .is_err()
+        );
+        assert!(
+            plan_replica_retry_timeline_from_checkpoints(
+                &[valid, valid],
+                33,
+                100,
+                1000,
+                Duration::MAX
+            )
+            .is_err()
         );
         assert!(
             plan_replica_retry_timeline_from_checkpoints(&[valid], 33, 0, 1000, Duration::MAX)
@@ -800,14 +810,9 @@ mod resumed_timeline_checkpoint_tests {
             next_attempt: 0,
             elapsed: Duration::ZERO,
         };
-        let entire = plan_replica_retry_timeline_from_checkpoints(
-            &[empty],
-            33,
-            100,
-            1000,
-            Duration::MAX,
-        )
-        .unwrap();
+        let entire =
+            plan_replica_retry_timeline_from_checkpoints(&[empty], 33, 100, 1000, Duration::MAX)
+                .unwrap();
         assert_eq!(
             entire,
             plan_replica_retry_timeline(&[("west", 3)], 33, 100, 1000, Duration::MAX).unwrap()
@@ -829,15 +834,16 @@ mod bounded_retry_timeline_allocation_tests {
             .enumerate()
             .map(|(index, name)| (name.as_str(), index as u64))
             .collect::<Vec<_>>();
-        let none =
-            plan_replica_retry_timeline(&nodes, 33, 100, 2000, Duration::ZERO).unwrap();
+        let none = plan_replica_retry_timeline(&nodes, 33, 100, 2000, Duration::ZERO).unwrap();
         assert!(none.is_empty());
         assert_eq!(none.capacity(), 0);
 
-        let full =
-            plan_replica_retry_timeline(&nodes, 33, 1, 2, Duration::MAX).unwrap();
+        let full = plan_replica_retry_timeline(&nodes, 33, 1, 2, Duration::MAX).unwrap();
         assert_eq!(full.len(), 64 * 33);
-        assert!(full.windows(2).all(|pair| pair[0].due_after <= pair[1].due_after));
+        assert!(
+            full.windows(2)
+                .all(|pair| pair[0].due_after <= pair[1].due_after)
+        );
     }
 
     #[test]
@@ -845,7 +851,10 @@ mod bounded_retry_timeline_allocation_tests {
         let owned = (0..64)
             .map(|index| format!("node_{index:02}"))
             .collect::<Vec<_>>();
-        let mut nodes = owned.iter().map(|name| (name.as_str(), 0u64)).collect::<Vec<_>>();
+        let mut nodes = owned
+            .iter()
+            .map(|name| (name.as_str(), 0u64))
+            .collect::<Vec<_>>();
         let duplicate = nodes[0].0;
         nodes[63].0 = duplicate;
         assert!(plan_replica_retry_timeline(&nodes, 0, 1, 10, Duration::ZERO).is_err());
@@ -855,7 +864,6 @@ mod bounded_retry_timeline_allocation_tests {
         assert!(plan_replica_retry_timeline(&nodes, 0, 1, 10, Duration::ZERO).is_ok());
     }
 }
-
 
 /// Admit planned retry events under shared and per-node sliding-window quotas.
 ///
@@ -870,10 +878,7 @@ pub fn admit_retry_events_with_quotas(
 ) -> Result<Vec<ReplicaRetryEvent>, &'static str> {
     use std::collections::{HashMap, HashSet, VecDeque};
 
-    if events.len() > 64 * 33
-        || window.is_zero()
-        || global_per_window == 0
-        || node_per_window == 0
+    if events.len() > 64 * 33 || window.is_zero() || global_per_window == 0 || node_per_window == 0
     {
         return Err("invalid retry admission limits");
     }
@@ -956,7 +961,12 @@ mod retry_admission_window_tests {
             admit_retry_events_with_quotas(&events, Duration::from_millis(100), 2, 1).unwrap();
         assert_eq!(
             selected,
-            [event("a", 0, 0), event("b", 0, 0), event("a", 2, 100), event("b", 2, 100)]
+            [
+                event("a", 0, 0),
+                event("b", 0, 0),
+                event("a", 2, 100),
+                event("b", 2, 100)
+            ]
         );
     }
 
@@ -964,9 +974,8 @@ mod retry_admission_window_tests {
     fn scheduling_is_invariant_under_event_input_order() {
         let mut events = (0..33)
             .flat_map(|attempt| {
-                (0..64).map(move |node| {
-                    event(&format!("node_{node:02}"), attempt, attempt as u64 * 5)
-                })
+                (0..64)
+                    .map(move |node| event(&format!("node_{node:02}"), attempt, attempt as u64 * 5))
             })
             .collect::<Vec<_>>();
         let first =
@@ -999,32 +1008,17 @@ mod retry_admission_window_tests {
                 .is_err()
         );
         assert!(
-            admit_retry_events_with_quotas(
-                &[event("../a", 0, 0)],
-                Duration::from_secs(1),
-                2,
-                1
-            )
-            .is_err()
+            admit_retry_events_with_quotas(&[event("../a", 0, 0)], Duration::from_secs(1), 2, 1)
+                .is_err()
         );
+        assert!(admit_retry_events_with_quotas(&[], Duration::ZERO, 1, 1).is_err());
+        assert!(admit_retry_events_with_quotas(&[], Duration::from_secs(1), 0, 1).is_err());
         assert!(
-            admit_retry_events_with_quotas(&[], Duration::ZERO, 1, 1).is_err()
-        );
-        assert!(
-            admit_retry_events_with_quotas(&[], Duration::from_secs(1), 0, 1).is_err()
-        );
-        assert!(
-            admit_retry_events_with_quotas(
-                &[event("a", 33, 0)],
-                Duration::from_secs(1),
-                1,
-                1
-            )
-            .is_err()
+            admit_retry_events_with_quotas(&[event("a", 33, 0)], Duration::from_secs(1), 1, 1)
+                .is_err()
         );
     }
 }
-
 
 /// Local scheduling state for adaptive replica retry admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1124,8 +1118,8 @@ impl ReplicaCircuitBreaker {
         }
         let failures = self.consecutive_failures.saturating_add(1);
         let trips = self.reopen_count;
-        let open = self.phase == ReplicaCircuitPhase::HalfOpen
-            || failures >= self.failure_threshold;
+        let open =
+            self.phase == ReplicaCircuitPhase::HalfOpen || failures >= self.failure_threshold;
         let retry_at = if open {
             let shift = u32::from(trips.min(63));
             let cooldown = self

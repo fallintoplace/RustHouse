@@ -19,7 +19,7 @@ fn nullif_evaluates_constant_strings() {
     );
     assert_eq!(
         value("SELECT CONCAT_WS(',', NULLIF('x','x'), 'z')"),
-        ConstantValue::Text("z".into())
+        ConstantValue::Null
     );
     assert_eq!(value("SELECT NULLIF('x','x')"), ConstantValue::Null);
     assert_eq!(value("SELECT NULLIF(NULL, 'x')"), ConstantValue::Null);

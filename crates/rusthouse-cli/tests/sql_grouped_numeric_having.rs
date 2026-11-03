@@ -59,10 +59,18 @@ fn filters_grouped_numeric_results_after_aggregation() {
 #[test]
 fn rejects_having_an_unselected_aggregate() {
     let db = std::env::temp_dir().join(format!("rusthouse-having-invalid-{}", std::process::id()));
+    let supported = sql(
+        "SELECT number, median(number) FROM numbers(5) GROUP BY number HAVING median(number) > 1",
+        &db,
+    );
+    assert!(supported.status.success(), "{supported:?}");
+    assert_eq!(
+        supported.stdout,
+        b"number\tmedian(number)\n2\t2\n3\t3\n4\t4\n"
+    );
     for query in [
         "SELECT number, sum(number) FROM numbers(5) GROUP BY number HAVING max(number) > 1",
         "SELECT number, sum(number) FROM numbers(5) GROUP BY number HAVING sum(other) > 1",
-        "SELECT number, median(number) FROM numbers(5) GROUP BY number HAVING median(number) > 1",
     ] {
         let result = sql(query, &db);
         assert!(!result.status.success(), "{query}: {result:?}");

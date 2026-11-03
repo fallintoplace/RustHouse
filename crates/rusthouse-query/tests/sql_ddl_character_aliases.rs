@@ -8,7 +8,10 @@ fn common_character_aliases_use_string_storage() {
         panic!("expected CREATE TABLE");
     };
     assert_eq!(
-        columns.iter().map(|column| column.data_type.as_str()).collect::<Vec<_>>(),
+        columns
+            .iter()
+            .map(|column| column.data_type.as_str())
+            .collect::<Vec<_>>(),
         ["String", "String", "String", "String"]
     );
 }

@@ -56,6 +56,7 @@ fn chained_star_retains_all_columns_and_order_by_reads_unprojected_sort_keys() {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
+    fs::create_dir_all(&root).unwrap();
     let schema = [
         Column {
             name: "id".into(),

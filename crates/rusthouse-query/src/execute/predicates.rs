@@ -1934,7 +1934,9 @@ mod numeric_pair_single_decode_tests {
         ];
         let branches = vec![range];
         assert_eq!(
-            (0..5).map(|row| batch_matches(&batch, row, &branches)).collect::<Vec<_>>(),
+            (0..5)
+                .map(|row| batch_matches(&batch, row, &branches))
+                .collect::<Vec<_>>(),
             vec![false, true, true, true, false]
         );
         assert_eq!(count_batch_matches(&batch, &branches), 3);
@@ -1947,18 +1949,22 @@ mod numeric_pair_single_decode_tests {
             CompiledPredicate {
                 index: 0,
                 test: CompiledTest::Comparison {
-                    operator: Operator::Ge, target: Number::Float(-1.0),
+                    operator: Operator::Ge,
+                    target: Number::Float(-1.0),
                 },
             },
             CompiledPredicate {
                 index: 0,
                 test: CompiledTest::Comparison {
-                    operator: Operator::Le, target: Number::Float(1.0),
+                    operator: Operator::Le,
+                    target: Number::Float(1.0),
                 },
             },
         ]];
         assert_eq!(
-            (0..4).map(|row| batch_matches(&batch, row, &branches)).collect::<Vec<_>>(),
+            (0..4)
+                .map(|row| batch_matches(&batch, row, &branches))
+                .collect::<Vec<_>>(),
             vec![false, true, true, false]
         );
     }

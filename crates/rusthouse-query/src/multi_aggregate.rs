@@ -45,7 +45,11 @@ fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
             output.push_str(name);
             output.push(')');
         }
-        ScalarExpr::TextCompare { column, operator, value } => {
+        ScalarExpr::TextCompare {
+            column,
+            operator,
+            value,
+        } => {
             output.push_str(column);
             let symbol = match operator {
                 crate::Operator::Eq => "=",
@@ -60,7 +64,12 @@ fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
             output.push_str(&value.replace('\'', "''"));
             output.push('\'');
         }
-        ScalarExpr::TextLike { column, pattern, negated, case_insensitive } => {
+        ScalarExpr::TextLike {
+            column,
+            pattern,
+            negated,
+            case_insensitive,
+        } => {
             output.push_str(column);
             output.push_str(match (*negated, *case_insensitive) {
                 (false, false) => " LIKE '",
@@ -74,7 +83,11 @@ fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
         ScalarExpr::And(left, right) | ScalarExpr::Or(left, right) => {
             output.push('(');
             render_expr_into(left, output);
-            output.push_str(if matches!(expr, ScalarExpr::And(..)) { " AND " } else { " OR " });
+            output.push_str(if matches!(expr, ScalarExpr::And(..)) {
+                " AND "
+            } else {
+                " OR "
+            });
             render_expr_into(right, output);
             output.push(')');
         }
@@ -214,9 +227,7 @@ pub(crate) fn parse_multiple(
         parser.index += 2;
         let distinct = parser.keyword("DISTINCT");
         // ALL is the default quantifier for COUNT arguments.
-        if !distinct && function.is_none() {
-            parser.keyword("ALL");
-        }
+        let all = !distinct && function.is_none() && parser.keyword("ALL");
         if distinct && function.is_some() {
             return Err(ParseError("DISTINCT is only supported for COUNT".into()));
         }
@@ -232,6 +243,9 @@ pub(crate) fn parse_multiple(
         }
         if already_closed && distinct {
             return Err(ParseError("COUNT(DISTINCT) requires a column".into()));
+        }
+        if already_closed && all {
+            return Err(ParseError("COUNT(ALL) requires an argument".into()));
         }
         if !already_closed && !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after aggregate argument".into()));

@@ -28,10 +28,13 @@ fn trim_removes_only_surrounding_spaces() {
 
 #[test]
 fn trim_rejects_extra_parameters_and_numbers() {
+    assert_eq!(
+        value("SELECT TRIM('bab', 'b')"),
+        ConstantValue::Text("a".into())
+    );
     for sql in [
         "SELECT TRIM()",
         "SELECT TRIM(1)",
-        "SELECT TRIM('a', 'b')",
         "SELECT TRIM('a'",
         "SELECT TRIM(' a ') FROM numbers(1)",
     ] {

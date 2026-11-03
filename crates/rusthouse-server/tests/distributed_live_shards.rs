@@ -170,8 +170,12 @@ fn live_shards_merge_scans_counts_and_groups_and_fail_closed_on_peer_loss() {
     lines.sort_unstable();
     assert_eq!(lines, ["blue\t2", "red\t2"]);
 
-    let (status, _) = request(coordinator, Some("SELECT DISTINCT id FROM events")).unwrap();
-    assert!(status.contains(" 400 "), "{status}");
+    let (status, distinct) = request(coordinator, Some("SELECT DISTINCT id FROM events")).unwrap();
+    assert!(status.contains(" 200 "), "{status}: {distinct:?}");
+    let distinct = String::from_utf8(distinct).unwrap();
+    let mut ids = distinct.lines().skip(1).collect::<Vec<_>>();
+    ids.sort_unstable();
+    assert_eq!(ids, ["1", "2", "3", "4"]);
 
     let mut stopped = harness.children.remove(1);
     stopped.kill().unwrap();

@@ -19,10 +19,10 @@ fn clickhouse_toint8_wraps_at_target_width() {
 }
 #[test]
 fn clickhouse_toint8_rejects_invalid_arguments() {
+    assert_eq!(value("SELECT toInt8('123')"), 123);
     for sql in [
         "SELECT toInt8()",
         "SELECT toInt8(1, 2)",
-        "SELECT toInt8('123')",
         "SELECT toInt8(1) FROM numbers(1)",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");

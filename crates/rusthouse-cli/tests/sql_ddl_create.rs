@@ -32,7 +32,13 @@ fn persists_schema_without_creating_mergetree_parts() {
         fs::read_to_string(dir.join("events.schema")).unwrap(),
         "rusthouse-schema-v1\nid\tUInt64\npayload\tNullable(String)\n"
     );
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    assert_eq!(
+        fs::read_dir(&dir)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().file_name() != ".rusthouse-write.lock")
+            .count(),
+        1
+    );
 
     let again = ddl("CREATE TABLE events (id UInt64)", &dir);
     assert!(!again.status.success());

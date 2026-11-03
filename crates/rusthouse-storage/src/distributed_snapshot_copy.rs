@@ -68,7 +68,9 @@ fn sync_directory(path: &Path) -> Result<(), PartError> {
     // Windows cannot fsync an ordinary directory, but the target must exist.
     let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
     if !metadata.file_type().is_dir() {
-        return Err(PartError::InvalidScan("snapshot sync target is not a directory".into()));
+        return Err(PartError::InvalidScan(
+            "snapshot sync target is not a directory".into(),
+        ));
     }
     Ok(())
 }
@@ -974,7 +976,6 @@ mod windows_snapshot_directory_sync_tests {
     }
 }
 
-
 /// Compare two offline immutable snapshots by file path, size and stored CRC32C.
 ///
 /// This is symmetric anti-entropy diagnostics, not a copy/delete action.
@@ -1019,8 +1020,7 @@ pub fn compare_frozen_snapshot_files(
     };
     let lhs = convert(&left_files)?;
     let rhs = convert(&right_files)?;
-    compare_replica_inventories(&lhs, &rhs)
-        .map_err(|reason| PartError::InvalidScan(reason.into()))
+    compare_replica_inventories(&lhs, &rhs).map_err(|reason| PartError::InvalidScan(reason.into()))
 }
 
 #[cfg(test)]

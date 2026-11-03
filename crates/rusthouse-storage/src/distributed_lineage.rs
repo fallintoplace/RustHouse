@@ -316,8 +316,7 @@ pub fn newest_consistent_snapshot(
                 return Err("invalid or mismatched snapshot epoch");
             }
             if previous.is_some_and(|prior: SnapshotVersion| {
-                prior.generation == version.generation
-                    && prior.fingerprint != version.fingerprint
+                prior.generation == version.generation && prior.fingerprint != version.fingerprint
             }) {
                 return Err("conflicting snapshot fingerprint");
             }
@@ -1185,9 +1184,15 @@ mod chronological_snapshot_lineage_tests {
             chronological.push(version);
         }
         let expected = *chronological.last().unwrap();
-        assert_eq!(newest_consistent_snapshot(&chronological).unwrap(), expected);
+        assert_eq!(
+            newest_consistent_snapshot(&chronological).unwrap(),
+            expected
+        );
         chronological.reverse();
-        assert_eq!(newest_consistent_snapshot(&chronological).unwrap(), expected);
+        assert_eq!(
+            newest_consistent_snapshot(&chronological).unwrap(),
+            expected
+        );
         chronological[100].fingerprint ^= 1;
         assert!(newest_consistent_snapshot(&chronological).is_err());
         chronological.reverse();
@@ -1196,7 +1201,11 @@ mod chronological_snapshot_lineage_tests {
 
     #[test]
     fn sorted_history_rejects_invalid_epoch_and_generation() {
-        let good = SnapshotVersion { epoch: 1, generation: 2, fingerprint: 11 };
+        let good = SnapshotVersion {
+            epoch: 1,
+            generation: 2,
+            fingerprint: 11,
+        };
         let mut history = vec![good; 32];
         history[16].epoch = 2;
         assert!(newest_consistent_snapshot(&history).is_err());
@@ -1205,7 +1214,6 @@ mod chronological_snapshot_lineage_tests {
         assert!(newest_consistent_snapshot(&history).is_err());
     }
 }
-
 
 /// Deterministic, bounded comparison of two independently recorded snapshot histories.
 ///
@@ -1325,7 +1333,14 @@ mod snapshot_history_merge_diff_tests {
         assert!(compare_snapshot_histories(&good, &[good[0], good[0]]).is_err());
         assert!(compare_snapshot_histories(&good, &[version(0, 0)]).is_err());
         assert!(
-            compare_snapshot_histories(&good, &[SnapshotVersion { epoch: 8, ..good[0] }]).is_err()
+            compare_snapshot_histories(
+                &good,
+                &[SnapshotVersion {
+                    epoch: 8,
+                    ..good[0]
+                }]
+            )
+            .is_err()
         );
         let oversized = vec![good[0]; 4097];
         assert!(compare_snapshot_histories(&oversized, &good).is_err());

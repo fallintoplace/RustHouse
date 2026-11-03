@@ -7,7 +7,10 @@ use super::*;
 /// Remove pagination before sending a scan to shards. Sending the original
 /// LIMIT/OFFSET would drop rows on each shard and produce incorrect results.
 /// Accept only a prefix that reparses to the exact unpaged query AST.
-pub(super) fn merge_distinct_counts(shards: &[(usize, Vec<u8>)], column: &str) -> Result<Vec<u8>, MergeError> {
+pub(super) fn merge_distinct_counts(
+    shards: &[(usize, Vec<u8>)],
+    column: &str,
+) -> Result<Vec<u8>, MergeError> {
     const MAX_KEYS: usize = 100_000;
     let expected_header = format!("{column}\n");
     let mut values: HashSet<Cow<'_, [u8]>> = HashSet::new();
@@ -103,9 +106,7 @@ pub(super) fn merge_distinct_uuid(
         }
         let mut count = 0usize;
         for raw in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
-            count = count
-                .checked_add(1)
-                .ok_or(MergeError::CoordinatorLimit)?;
+            count = count.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
             if *cap == 0 || count >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
@@ -152,9 +153,7 @@ pub(super) fn merge_distinct_wide_integers(
         }
         let mut count = 0usize;
         for raw in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
-            count = count
-                .checked_add(1)
-                .ok_or(MergeError::CoordinatorLimit)?;
+            count = count.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
             if *cap == 0 || count >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
@@ -227,9 +226,7 @@ pub(super) fn merge_distinct_bitmap16(
         }
         let mut count = 0usize;
         for raw in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
-            count = count
-                .checked_add(1)
-                .ok_or(MergeError::CoordinatorLimit)?;
+            count = count.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
             if *cap == 0 || count >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
@@ -240,13 +237,16 @@ pub(super) fn merge_distinct_bitmap16(
             let index = match kind {
                 "Int8" | "Nullable(Int8)" => text
                     .parse::<i8>()
-                    .map_err(|_| MergeError::InvalidDistinctCount)? as u8 as usize,
-                "UInt8" | "Nullable(UInt8)" => text
-                    .parse::<u8>()
-                    .map_err(|_| MergeError::InvalidDistinctCount)? as usize,
+                    .map_err(|_| MergeError::InvalidDistinctCount)?
+                    as u8 as usize,
+                "UInt8" | "Nullable(UInt8)" => {
+                    text.parse::<u8>()
+                        .map_err(|_| MergeError::InvalidDistinctCount)? as usize
+                }
                 "Int16" | "Nullable(Int16)" => text
                     .parse::<i16>()
-                    .map_err(|_| MergeError::InvalidDistinctCount)? as u16 as usize,
+                    .map_err(|_| MergeError::InvalidDistinctCount)?
+                    as u16 as usize,
                 _ => text
                     .parse::<u16>()
                     .map_err(|_| MergeError::InvalidDistinctCount)? as usize,

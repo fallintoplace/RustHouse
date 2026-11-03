@@ -135,7 +135,11 @@ pub fn write_enum_values<W: Write>(
             first_unknown_code::<1024>(codes, &variants)
         }
     } else {
-        codes.iter().copied().enumerate().find(|&(_, code)| !variants.contains_key(&code))
+        codes
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|&(_, code)| !variants.contains_key(&code))
     };
     if invalid.is_some() {
         return Err(io::Error::new(
@@ -511,9 +515,18 @@ mod physical_enum_writer_tests {
         ] {
             let mut bytes = Vec::new();
             write_enum_values(&mut bytes, declaration, &codes).unwrap();
-            let decoded = read_enum_column(&mut bytes.as_slice(), declaration, codes.len()).unwrap();
+            let decoded =
+                read_enum_column(&mut bytes.as_slice(), declaration, codes.len()).unwrap();
             assert_eq!(decoded.codes(), codes.as_slice());
-            assert_eq!(bytes.len(), codes.len() * if declaration.starts_with("Enum8") { 1 } else { 2 });
+            assert_eq!(
+                bytes.len(),
+                codes.len()
+                    * if declaration.starts_with("Enum8") {
+                        1
+                    } else {
+                        2
+                    }
+            );
         }
     }
 
@@ -535,7 +548,8 @@ mod physical_enum_writer_tests {
         let values = vec![0i16; MAX_BATCH_ROWS + 1];
         assert_eq!(
             write_enum_values(&mut output, "Enum8('x'=0)", &values)
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::InvalidInput
         );
         assert!(output.is_empty());

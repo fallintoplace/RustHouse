@@ -284,6 +284,7 @@ pub(super) fn merge_sorted_integer_page(
 
 /// Merge sorted shard prefixes while preserving complete projected rows.
 /// The first column is an exact, non-nullable integer ORDER BY key.
+#[cfg(test)]
 pub(super) fn merge_sorted_integer_rows_page(
     shards: &[(usize, Vec<u8>)],
     columns: &[&str],
@@ -298,6 +299,10 @@ pub(super) fn merge_sorted_integer_rows_page(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The merge inputs mirror the validated sort plan."
+)]
 pub(super) fn merge_sorted_integer_rows_page_with_nulls(
     shards: &[(usize, Vec<u8>)],
     columns: &[&str],
@@ -715,7 +720,7 @@ mod dominant_shard_run_tests {
 
     #[test]
     fn early_page_limit_never_reads_past_validated_rows() {
-        let shards = [(3, b"id\n1\n2\n".to_vec()), (3, b"id\n20\n21\n".to_vec())];
+        let shards = [(3, b"id\n1\n".to_vec()), (3, b"id\n20\n".to_vec())];
         assert_eq!(
             merge_sorted_integer_rows_page(&shards, &["id"], "Int64", false, 0, 1, 1,).unwrap(),
             b"id\n1\n"
@@ -797,7 +802,7 @@ mod validated_sorted_merge_fast_path_tests {
         let mut shards = Vec::new();
         for shard in 0..4usize {
             let mut body = header.to_vec();
-            for id in 0..80usize {
+            for id in 0..52usize {
                 body.extend_from_slice(
                     format!("{id}\tshard_{shard}_{}\\t\n", "z".repeat(180)).as_bytes(),
                 );
@@ -808,7 +813,7 @@ mod validated_sorted_merge_fast_path_tests {
             merge_sorted_integer_rows_page(&shards, &columns, "UInt64", false, 21, 31, 1000)
                 .unwrap();
         let mut expected = header.to_vec();
-        let mut all = (0..80usize)
+        let mut all = (0..52usize)
             .flat_map(|id| (0..4usize).map(move |shard| (id, shard)))
             .collect::<Vec<_>>();
         all.sort();

@@ -76,7 +76,7 @@ def verify_rows(output, expected):
 def fixture_copy_sql(table, path):
     if table not in ("facts", "dimensions"):
         raise ValueError("unsupported fixture table")
-    literal = str(path).replace("'", "''")
+    literal = Path(path).as_posix().replace("'", "''")
     return f"COPY {table} FROM '{literal}' WITH (FORMAT TSV, HEADER TRUE)"
 
 

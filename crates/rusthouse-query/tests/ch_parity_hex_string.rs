@@ -21,7 +21,8 @@ fn clickhouse_constant_function() {
 
 #[test]
 fn invalid_arguments() {
-    for sql in ["SELECT hex()", "SELECT hex(1)", "SELECT hex('x', 'y')"] {
+    assert_eq!(value("SELECT hex(1)"), ConstantValue::Text("01".into()));
+    for sql in ["SELECT hex()", "SELECT hex('x', 'y')"] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }

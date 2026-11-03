@@ -139,8 +139,12 @@ mod tests {
     #[test]
     fn long_updates_match_reencoding_across_all_byte_values() {
         let old = (0..4096).map(|index| index as u8).collect::<Vec<_>>();
-        let other = (0..4096).map(|index| (index * 53) as u8).collect::<Vec<_>>();
-        let replacement = (0..3073).map(|index| (index * 29 + 17) as u8).collect::<Vec<_>>();
+        let other = (0..4096)
+            .map(|index| (index * 53) as u8)
+            .collect::<Vec<_>>();
+        let replacement = (0..3073)
+            .map(|index| (index * 29 + 17) as u8)
+            .collect::<Vec<_>>();
         let initial = encode_double_parity(&[&old, &other]).unwrap();
         let mut updated = initial.clone();
         replace_double_parity_source(&mut updated, 2, 0, &old, &replacement).unwrap();
@@ -179,7 +183,9 @@ mod large_delta_lookup_tests {
         let first = vec![0x55; 4096];
         let second = vec![0xaa; 4096];
         let old = (0..4096).map(|i| (i % 256) as u8).collect::<Vec<_>>();
-        let new = (0..4096).map(|i| ((i * 13 + 7) % 256) as u8).collect::<Vec<_>>();
+        let new = (0..4096)
+            .map(|i| ((i * 13 + 7) % 256) as u8)
+            .collect::<Vec<_>>();
         let original = encode_double_parity(&[&first, &second, &old]).unwrap();
         let mut updated = original;
         replace_double_parity_source(&mut updated, 3, 2, &old, &new).unwrap();

@@ -262,7 +262,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             parsed.assignments,
-            vec![("id".into(), UpdateValue::Literal(Some("3".into())))]
+            vec![("id".into(), UpdateValue::Literal(Some("+3".into())))]
         );
         assert!(parse_update("UPDATE events SET id = +NULL").is_err());
     }
@@ -322,11 +322,9 @@ mod update_boolean_literals_tests {
 
     #[test]
     fn update_accepts_boolean_assignment_values() {
-        let update = parse_update(
-            "UPDATE flags SET active = TRUE, disabled = fAlSe WHERE id = 3"
-        )
-        .unwrap()
-        .unwrap();
+        let update = parse_update("UPDATE flags SET active = TRUE, disabled = fAlSe WHERE id = 3")
+            .unwrap()
+            .unwrap();
         assert_eq!(
             update.assignments,
             vec![
@@ -334,9 +332,7 @@ mod update_boolean_literals_tests {
                 ("disabled".into(), UpdateValue::Literal(Some("0".into()))),
             ]
         );
-        assert!(
-            parse_update("UPDATE flags SET active = TRUTH").is_err()
-        );
+        assert!(parse_update("UPDATE flags SET active = TRUTH").is_err());
     }
 }
 

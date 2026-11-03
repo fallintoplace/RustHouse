@@ -24,17 +24,28 @@ fn filters_narrow_numeric_groups_across_many_parts() {
     ));
     sql("CREATE TABLE facts (bucket Int32, flag UInt8)", &db);
     for i in 0..40 {
-        sql(&format!(
-            "INSERT INTO facts VALUES ({}, 1), ({}, 0), ({}, 1)",
-            i % 4 - 2, i % 4 - 2, i % 4 - 2
-        ), &db);
+        sql(
+            &format!(
+                "INSERT INTO facts VALUES ({}, 1), ({}, 0), ({}, 1)",
+                i % 4 - 2,
+                i % 4 - 2,
+                i % 4 - 2
+            ),
+            &db,
+        );
     }
     assert_eq!(
-        sql("SELECT bucket, count(*) FROM facts WHERE flag = 1 GROUP BY bucket ORDER BY bucket", &db),
+        sql(
+            "SELECT bucket, count(*) FROM facts WHERE flag = 1 GROUP BY bucket ORDER BY bucket",
+            &db
+        ),
         "bucket\tcount\n-2\t20\n-1\t20\n0\t20\n1\t20\n"
     );
     assert_eq!(
-        sql("SELECT bucket, count(*) FROM facts WHERE flag = 0 GROUP BY bucket ORDER BY bucket", &db),
+        sql(
+            "SELECT bucket, count(*) FROM facts WHERE flag = 0 GROUP BY bucket ORDER BY bucket",
+            &db
+        ),
         "bucket\tcount\n-2\t10\n-1\t10\n0\t10\n1\t10\n"
     );
     fs::remove_dir_all(db).unwrap();

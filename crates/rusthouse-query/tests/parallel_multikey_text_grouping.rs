@@ -54,7 +54,7 @@ fn parallel_text_groups_preserve_null_empty_utf8_and_tuple_boundaries() {
 
     let mut all = vec![
         "\tbc\t24",
-        "NULL\tbc\t24",
+        "\\N\tbc\t24",
         "a\tbc\t48",
         "ab\tc\t24",
         "é\tß\t24",
@@ -68,7 +68,7 @@ fn parallel_text_groups_preserve_null_empty_utf8_and_tuple_boundaries() {
         all
     );
 
-    let mut filtered = vec!["\tbc\t24", "NULL\tbc\t24", "a\tbc\t24", "é\tß\t24"];
+    let mut filtered = vec!["\tbc\t24", "\\N\tbc\t24", "a\tbc\t24", "é\tß\t24"];
     filtered.sort_unstable();
     assert_eq!(
         groups(

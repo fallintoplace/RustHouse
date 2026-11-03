@@ -154,7 +154,11 @@ enum BoundExpr {
     Divide(Box<Self>, Box<Self>),
     Modulo(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
-    TextCompare { index: usize, operator: crate::Operator, value: Vec<u8> },
+    TextCompare {
+        index: usize,
+        operator: crate::Operator,
+        value: Vec<u8>,
+    },
     TextLike {
         index: usize,
         pattern: typed::TextPattern,
@@ -198,19 +202,26 @@ impl BoundExpr {
             },
             ScalarExpr::Column(name) => Self::Column(index(name)?),
             ScalarExpr::TextLength(name) => Self::TextLength(index(name)?),
-            ScalarExpr::TextCompare { column, operator, value } => Self::TextCompare {
+            ScalarExpr::TextCompare {
+                column,
+                operator,
+                value,
+            } => Self::TextCompare {
                 index: index(column)?,
                 operator: *operator,
                 value: value.as_bytes().to_vec(),
             },
-            ScalarExpr::TextLike { column, pattern, negated, case_insensitive } => {
-                Self::TextLike {
-                    index: index(column)?,
-                    pattern: typed::compile_text_pattern(pattern)?,
-                    negated: *negated,
-                    case_insensitive: *case_insensitive,
-                }
-            }
+            ScalarExpr::TextLike {
+                column,
+                pattern,
+                negated,
+                case_insensitive,
+            } => Self::TextLike {
+                index: index(column)?,
+                pattern: typed::compile_text_pattern(pattern)?,
+                negated: *negated,
+                case_insensitive: *case_insensitive,
+            },
             ScalarExpr::And(left, right) => Self::And(
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
@@ -388,16 +399,20 @@ fn eval_number(
                 None => Ok(None),
             }
         }
-        BoundExpr::TextCompare { index, operator, value } => {
+        BoundExpr::TextCompare {
+            index,
+            operator,
+            value,
+        } => {
             let source = match &batch[*index] {
                 TypedColumn::Text(values) => values.get(row),
-                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
-                    values.get(row)
-                }
+                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
                 TypedColumn::NullableText { .. } => None,
-                _ => return Err(ExecutionError::Invalid(
-                    "text expression comparison requires a String column".into(),
-                )),
+                _ => {
+                    return Err(ExecutionError::Invalid(
+                        "text expression comparison requires a String column".into(),
+                    ));
+                }
             };
             Ok(source.map(|source| {
                 let ordering = source.cmp(value.as_slice());
@@ -413,14 +428,21 @@ fn eval_number(
                 Number::Unsigned(u128::from(matched))
             }))
         }
-        BoundExpr::TextLike { index, pattern, negated, case_insensitive } => {
+        BoundExpr::TextLike {
+            index,
+            pattern,
+            negated,
+            case_insensitive,
+        } => {
             let source = match &batch[*index] {
                 TypedColumn::Text(values) => values.get(row),
                 TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
                 TypedColumn::NullableText { .. } => None,
-                _ => return Err(ExecutionError::Invalid(
-                    "LIKE expression requires a String column".into(),
-                )),
+                _ => {
+                    return Err(ExecutionError::Invalid(
+                        "LIKE expression requires a String column".into(),
+                    ));
+                }
             };
             Ok(source.map(|source| {
                 let result = typed::text_pattern_matches(source, pattern, *case_insensitive);
@@ -440,12 +462,22 @@ fn eval_number(
             }
             let right_result = eval_number(right, batch, row)?.map(as_bool);
             let result = match (left_result, right_result) {
-                (Some(left), Some(right)) => Some(if is_and { left && right } else { left || right }),
+                (Some(left), Some(right)) => {
+                    Some(if is_and { left && right } else { left || right })
+                }
                 (Some(left), None) => {
-                    if left == !is_and { Some(left) } else { None }
+                    if left != is_and {
+                        Some(left)
+                    } else {
+                        None
+                    }
                 }
                 (None, Some(right)) => {
-                    if right == !is_and { Some(right) } else { None }
+                    if right != is_and {
+                        Some(right)
+                    } else {
+                        None
+                    }
                 }
                 (None, None) => None,
             };
@@ -915,8 +947,8 @@ pub(super) fn execute<W: Write>(
                 (
                     Some(
                         crate::AggregateFunction::Sum
-                            | crate::AggregateFunction::Min
-                            | crate::AggregateFunction::Max
+                        | crate::AggregateFunction::Min
+                        | crate::AggregateFunction::Max,
                     ),
                     Some(crate::ScalarExpr::Column(column)),
                     false,

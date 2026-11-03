@@ -17,9 +17,13 @@ impl ChunkReceipts {
         if total == 0 || window == 0 || window > 4096 {
             return Err("invalid replica receive window");
         }
-        Ok(Self { total, next: 0, window, buffered: BTreeMap::new() })
+        Ok(Self {
+            total,
+            next: 0,
+            window,
+            buffered: BTreeMap::new(),
+        })
     }
-
 
     /// Rebuild receive progress from an independently verified receipt journal.
     ///
@@ -43,9 +47,15 @@ impl ChunkReceipts {
         Ok(restored)
     }
 
-    pub fn contiguous_received(&self) -> u64 { self.next }
-    pub fn complete(&self) -> bool { self.next == self.total }
-    pub fn buffered_receipts(&self) -> usize { self.buffered.len() }
+    pub fn contiguous_received(&self) -> u64 {
+        self.next
+    }
+    pub fn complete(&self) -> bool {
+        self.next == self.total
+    }
+    pub fn buffered_receipts(&self) -> usize {
+        self.buffered.len()
+    }
 
     /// A matching duplicate inside the active window is idempotent.
     /// An old, already-finalized index cannot be revalidated from the compact
@@ -139,10 +149,7 @@ mod sparse_receipt_gap_tests {
         window.acknowledge(3, 30).unwrap();
         window.acknowledge(2000, 20).unwrap();
         window.acknowledge(4095, 40).unwrap();
-        assert_eq!(
-            window.missing_ranges(),
-            vec![0..3, 4..2000, 2001..4095],
-        );
+        assert_eq!(window.missing_ranges(), vec![0..3, 4..2000, 2001..4095],);
         for index in 0..3 {
             window.acknowledge(index, index as u32).unwrap();
         }
@@ -158,9 +165,21 @@ mod journal_replay_tests {
     #[test]
     fn replay_preserves_contiguous_cursor_and_missing_ranges() {
         let records = [
-            JournalReceipt { sequence: 1, chunk_index: 2, payload_crc32c: 22 },
-            JournalReceipt { sequence: 2, chunk_index: 0, payload_crc32c: 10 },
-            JournalReceipt { sequence: 3, chunk_index: 1, payload_crc32c: 11 },
+            JournalReceipt {
+                sequence: 1,
+                chunk_index: 2,
+                payload_crc32c: 22,
+            },
+            JournalReceipt {
+                sequence: 2,
+                chunk_index: 0,
+                payload_crc32c: 10,
+            },
+            JournalReceipt {
+                sequence: 3,
+                chunk_index: 1,
+                payload_crc32c: 11,
+            },
         ];
         let mut restored = ChunkReceipts::restore(5, 3, &records).unwrap();
         assert_eq!(restored.contiguous_received(), 3);
@@ -173,16 +192,28 @@ mod journal_replay_tests {
     #[test]
     fn corrupted_or_out_of_window_journals_fail_closed() {
         let bad_sequence = [JournalReceipt {
-            sequence: 2, chunk_index: 0, payload_crc32c: 0,
+            sequence: 2,
+            chunk_index: 0,
+            payload_crc32c: 0,
         }];
         assert!(ChunkReceipts::restore(3, 2, &bad_sequence).is_err());
         let out_of_window = [JournalReceipt {
-            sequence: 1, chunk_index: 2, payload_crc32c: 0,
+            sequence: 1,
+            chunk_index: 2,
+            payload_crc32c: 0,
         }];
         assert!(ChunkReceipts::restore(3, 2, &out_of_window).is_err());
         let duplicate = [
-            JournalReceipt { sequence: 1, chunk_index: 1, payload_crc32c: 7 },
-            JournalReceipt { sequence: 2, chunk_index: 1, payload_crc32c: 8 },
+            JournalReceipt {
+                sequence: 1,
+                chunk_index: 1,
+                payload_crc32c: 7,
+            },
+            JournalReceipt {
+                sequence: 2,
+                chunk_index: 1,
+                payload_crc32c: 8,
+            },
         ];
         assert!(ChunkReceipts::restore(3, 2, &duplicate).is_err());
     }

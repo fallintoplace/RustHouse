@@ -91,7 +91,8 @@ fn visit<W: Write>(
                 state.group_key.push(row[index].key());
             }
             if let Some((_, count)) = state.groups.get_mut(state.group_key.as_slice()) {
-                *count = count.checked_add(1)
+                *count = count
+                    .checked_add(1)
                     .ok_or_else(|| invalid("chained JOIN group count overflow"))?;
             } else {
                 if state.groups.len() >= MAX_STREAM_GROUPS {
@@ -103,15 +104,25 @@ fn visit<W: Write>(
                         typed::Cell::Uuid(value) => value.len(),
                         _ => 0,
                     };
-                    len.checked_mul(2).and_then(|bytes| total.checked_add(bytes))
+                    len.checked_mul(2)
+                        .and_then(|bytes| total.checked_add(bytes))
                         .ok_or_else(|| invalid("chained JOIN grouped key size overflow"))
                 })?;
-                let fixed = indices.len().checked_mul(
-                    std::mem::size_of::<typed::Key>() + std::mem::size_of::<typed::Cell>()
-                ).and_then(|bytes| bytes.checked_add(
-                    std::mem::size_of::<(Vec<typed::Key>, Vec<typed::Cell>, u64)>()
-                )).ok_or_else(|| invalid("chained JOIN group size overflow"))?;
-                state.group_bytes = state.group_bytes
+                let fixed = indices
+                    .len()
+                    .checked_mul(
+                        std::mem::size_of::<typed::Key>() + std::mem::size_of::<typed::Cell>(),
+                    )
+                    .and_then(|bytes| {
+                        bytes.checked_add(std::mem::size_of::<(
+                            Vec<typed::Key>,
+                            Vec<typed::Cell>,
+                            u64,
+                        )>())
+                    })
+                    .ok_or_else(|| invalid("chained JOIN group size overflow"))?;
+                state.group_bytes = state
+                    .group_bytes
                     .checked_add(fixed)
                     .and_then(|bytes| bytes.checked_add(variable))
                     .filter(|&bytes| bytes <= MAX_STREAM_GROUP_BYTES)
@@ -192,9 +203,10 @@ pub(super) fn execute<W: Write>(
             .flat_map(|relation| relation.types.iter().map(String::as_str))
             .collect(),
         null_filter,
-        group_indices: query.grouped_count.as_ref().map(|_| {
-            selected.iter().map(|(index, _, _)| *index).collect()
-        }),
+        group_indices: query
+            .grouped_count
+            .as_ref()
+            .map(|_| selected.iter().map(|(index, _, _)| *index).collect()),
         offset: query.offset,
         limit: query.limit,
     };
@@ -268,7 +280,8 @@ pub(super) fn execute<W: Write>(
         }
         // A skewed build can contain far fewer distinct keys than input
         // rows. Reserve a small table, then charge each retained key.
-        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len().min(4096));
+        let mut hash =
+            HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len().min(4096));
         let mut scratch_key = Vec::with_capacity(right_keys.len());
         for (index, row) in right_rows.iter().enumerate() {
             if !row_key_into(row, &right_keys, &mut scratch_key) {
@@ -307,7 +320,11 @@ pub(super) fn execute<W: Write>(
                 }
                 output.write_all(name.as_bytes())?;
             }
-            writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+            writeln!(
+                output,
+                "\t{}",
+                query.aggregate_alias.as_deref().unwrap_or("count")
+            )?;
         }
         return Ok(());
     }
@@ -355,28 +372,47 @@ pub(super) fn execute<W: Write>(
     }
     if let Some(group_columns) = &query.grouped_count {
         let ordering = if query.order_by.is_empty() {
-            (0..group_columns.len()).map(|index| (Some(index), false, Some(false))).collect::<Vec<_>>()
+            (0..group_columns.len())
+                .map(|index| (Some(index), false, Some(false)))
+                .collect::<Vec<_>>()
         } else {
-            query.order_by.iter().map(|(column, descending, nulls)| {
-                let index = if column.is_count_order() {
-                    None
-                } else {
-                    Some(group_columns.iter().position(|group| group == column)
-                        .ok_or_else(|| invalid("grouped JOIN ORDER BY must use a key or count"))?)
-                };
-                Ok((index, *descending, *nulls))
-            }).collect::<Result<Vec<_>, ExecutionError>>()?
+            query
+                .order_by
+                .iter()
+                .map(|(column, descending, nulls)| {
+                    let index = if column.is_count_order() {
+                        None
+                    } else {
+                        Some(
+                            group_columns
+                                .iter()
+                                .position(|group| group == column)
+                                .ok_or_else(|| {
+                                    invalid("grouped JOIN ORDER BY must use a key or count")
+                                })?,
+                        )
+                    };
+                    Ok((index, *descending, *nulls))
+                })
+                .collect::<Result<Vec<_>, ExecutionError>>()?
         };
         let mut rows = state.groups.into_values().collect::<Vec<_>>();
         let compare = |left: &(Vec<typed::Cell>, u64), right: &(Vec<typed::Cell>, u64)| {
             for &(index, descending, nulls_first) in &ordering {
                 let result = if let Some(index) = index {
                     typed::compare_order_cells(
-                        &left.0[index], &right.0[index], descending, nulls_first,
+                        &left.0[index],
+                        &right.0[index],
+                        descending,
+                        nulls_first,
                     )
                 } else {
                     let count_order = left.1.cmp(&right.1);
-                    if descending { count_order.reverse() } else { count_order }
+                    if descending {
+                        count_order.reverse()
+                    } else {
+                        count_order
+                    }
                 };
                 if !result.is_eq() {
                     return result;
@@ -388,14 +424,18 @@ pub(super) fn execute<W: Write>(
             .limit
             .and_then(|limit| query.offset.checked_add(limit))
             .filter(|&end| end < rows.len())
-            .map(|end| super::super::sorted_group_positions(&rows, end, &compare));
+            .map(|end| super::super::sorted_group_positions(&rows, end, compare));
         for (index, (_, name, _)) in selected.iter().enumerate() {
             if index != 0 {
                 output.write_all(b"\t")?;
             }
             output.write_all(name.as_bytes())?;
         }
-        writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+        writeln!(
+            output,
+            "\t{}",
+            query.aggregate_alias.as_deref().unwrap_or("count")
+        )?;
         let mut write_group = |values: &[typed::Cell], count: u64| -> Result<(), ExecutionError> {
             for (index, value) in values.iter().enumerate() {
                 if index > 0 {

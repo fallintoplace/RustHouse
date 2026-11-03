@@ -91,11 +91,7 @@ pub fn crc32c_parallel(bytes: &[u8]) -> u32 {
 // A thread limit can be exhausted while dispatching a large checksum job.
 // Finish the remaining bytes on the calling thread and preserve the original
 // chunk-combination order, rather than panicking or rereading completed work.
-fn crc32c_parallel_with_workers(
-    bytes: &[u8],
-    workers: usize,
-    fail_spawn_at: Option<usize>,
-) -> u32 {
+fn crc32c_parallel_with_workers(bytes: &[u8], workers: usize, fail_spawn_at: Option<usize>) -> u32 {
     if workers <= 1 || bytes.is_empty() {
         return crc32c(bytes);
     }
@@ -105,7 +101,9 @@ fn crc32c_parallel_with_workers(
         let mut dispatched_bytes = 0usize;
         for (index, chunk) in bytes.chunks(chunk_size).enumerate() {
             let spawned = if fail_spawn_at == Some(index) {
-                Err(std::io::Error::other("injected CRC32C worker spawn failure"))
+                Err(std::io::Error::other(
+                    "injected CRC32C worker spawn failure",
+                ))
             } else {
                 std::thread::Builder::new().spawn_scoped(scope, move || crc32c(chunk))
             };
@@ -519,11 +517,7 @@ mod virtual_zero_range_crc_tests {
         }
         let hi = 1u64 << 63;
         assert_eq!(
-            crc32c_combine(
-                crc32c_zero_bytes(hi),
-                crc32c_zero_bytes(hi - 1),
-                hi - 1,
-            ),
+            crc32c_combine(crc32c_zero_bytes(hi), crc32c_zero_bytes(hi - 1), hi - 1,),
             crc32c_zero_bytes(u64::MAX),
         );
         assert_eq!(crc32c_zero_bytes(0), 0);
@@ -1021,19 +1015,17 @@ mod positioned_parallel_crc32c_tests {
                         input.len() as u64,
                         workers,
                         Some(fail_at),
-                    ).unwrap(),
+                    )
+                    .unwrap(),
                     (input.len() as u64, crc32c(&input)),
                     "workers={workers}, fail_at={fail_at}"
                 );
                 assert_eq!(file.stream_position().unwrap(), 39);
             }
         }
-        assert!(crc32c_file_parallel_with_workers(
-            &file,
-            input.len() as u64 + 1,
-            4,
-            Some(0),
-        ).is_err());
+        assert!(
+            crc32c_file_parallel_with_workers(&file, input.len() as u64 + 1, 4, Some(0),).is_err()
+        );
         fs::remove_file(path).unwrap();
     }
 }
@@ -1203,7 +1195,10 @@ mod crc_shift_cached_matrix_reference_tests {
     #[test]
     fn cached_matrix_composition_matches_independent_iterated_squaring() {
         for length in [0, 1, 2, 7, 8, 63, 64, 4096, 65_535, 1 << 32, u64::MAX] {
-            assert_eq!(Crc32cShift::new(length).operator, iterative_reference(length));
+            assert_eq!(
+                Crc32cShift::new(length).operator,
+                iterative_reference(length)
+            );
         }
         for bit in 0..64 {
             assert_eq!(
@@ -1216,12 +1211,14 @@ mod crc_shift_cached_matrix_reference_tests {
     #[test]
     fn concurrent_shift_construction_is_deterministic() {
         std::thread::scope(|scope| {
-            let threads = (0..8).map(|worker| {
-                scope.spawn(move || {
-                    let len = (1u64 << (worker + 32)) | 65_537;
-                    Crc32cShift::new(len).operator
+            let threads = (0..8)
+                .map(|worker| {
+                    scope.spawn(move || {
+                        let len = (1u64 << (worker + 32)) | 65_537;
+                        Crc32cShift::new(len).operator
+                    })
                 })
-            }).collect::<Vec<_>>();
+                .collect::<Vec<_>>();
             for (worker, thread) in threads.into_iter().enumerate() {
                 let len = (1u64 << (worker + 32)) | 65_537;
                 assert_eq!(thread.join().unwrap(), iterative_reference(len));
@@ -1255,7 +1252,10 @@ mod checksum_spawn_fallback_tests {
     fn empty_and_tiny_buffers_keep_sequential_semantics() {
         for size in [0usize, 1, 2, 3, 7, 15] {
             let bytes = vec![0xAB; size];
-            assert_eq!(crc32c_parallel_with_workers(&bytes, 4, Some(1)), crc32c(&bytes));
+            assert_eq!(
+                crc32c_parallel_with_workers(&bytes, 4, Some(1)),
+                crc32c(&bytes)
+            );
         }
     }
 }

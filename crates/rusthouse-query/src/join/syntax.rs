@@ -120,9 +120,7 @@ mod bounded_join_column_tests {
     fn reject_oversized_qualified_column_names() {
         let allowed = "a".repeat(128);
         let oversized = "a".repeat(129);
-        let query = format!(
-            "SELECT l.{allowed} FROM lefts l JOIN rights r ON l.id = r.id"
-        );
+        let query = format!("SELECT l.{allowed} FROM lefts l JOIN rights r ON l.id = r.id");
         assert!(parse_join(&query).is_ok());
         for query in [
             format!("SELECT l.{oversized} FROM lefts l JOIN rights r ON l.id = r.id"),

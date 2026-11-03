@@ -112,7 +112,10 @@ pub fn write_decimal_values<W: Write>(
         _ => return Err(io::Error::other("unsupported Decimal storage width")),
     };
     let bytes = values.len().checked_mul(width).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "Decimal batch byte size overflow")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Decimal batch byte size overflow",
+        )
     })?;
     if bytes > crate::fixed_width::MAX_BATCH_BYTES {
         return Err(io::Error::new(
@@ -121,7 +124,10 @@ pub fn write_decimal_values<W: Write>(
         ));
     }
     let limit = 10i128.pow(u32::from(precision));
-    if values.iter().any(|&value| value <= -limit || value >= limit) {
+    if values
+        .iter()
+        .any(|&value| value <= -limit || value >= limit)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Decimal value exceeds declared precision",
@@ -133,20 +139,17 @@ pub fn write_decimal_values<W: Write>(
         match storage {
             "Int32" => {
                 for (index, &value) in chunk.iter().enumerate() {
-                    buffer[index * 4..index * 4 + 4]
-                        .copy_from_slice(&(value as i32).to_le_bytes());
+                    buffer[index * 4..index * 4 + 4].copy_from_slice(&(value as i32).to_le_bytes());
                 }
             }
             "Int64" => {
                 for (index, &value) in chunk.iter().enumerate() {
-                    buffer[index * 8..index * 8 + 8]
-                        .copy_from_slice(&(value as i64).to_le_bytes());
+                    buffer[index * 8..index * 8 + 8].copy_from_slice(&(value as i64).to_le_bytes());
                 }
             }
             "Int128" => {
                 for (index, &value) in chunk.iter().enumerate() {
-                    buffer[index * 16..index * 16 + 16]
-                        .copy_from_slice(&value.to_le_bytes());
+                    buffer[index * 16..index * 16 + 16].copy_from_slice(&value.to_le_bytes());
                 }
             }
             _ => unreachable!("Decimal storage was validated"),
@@ -470,7 +473,9 @@ mod physical_decimal_writer_tests {
             self.0.extend_from_slice(&bytes[..count]);
             Ok(count)
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -484,10 +489,15 @@ mod physical_decimal_writer_tests {
             let mut output = PartialSink(Vec::new());
             write_decimal_values(&mut output, declaration, &values).unwrap();
             assert_eq!(output.0.len(), values.len() * width);
-            let decoded = read_decimal_column(&mut output.0.as_slice(), declaration, values.len()).unwrap();
+            let decoded =
+                read_decimal_column(&mut output.0.as_slice(), declaration, values.len()).unwrap();
             match decoded.unscaled_values() {
-                NumericColumn::Int32(inner) => assert!(inner.iter().all(|&v| i128::from(v) == value)),
-                NumericColumn::Int64(inner) => assert!(inner.iter().all(|&v| i128::from(v) == value)),
+                NumericColumn::Int32(inner) => {
+                    assert!(inner.iter().all(|&v| i128::from(v) == value))
+                }
+                NumericColumn::Int64(inner) => {
+                    assert!(inner.iter().all(|&v| i128::from(v) == value))
+                }
                 NumericColumn::Int128(inner) => assert!(inner.iter().all(|&v| v == value)),
                 _ => panic!("unexpected physical Decimal type"),
             }
@@ -498,7 +508,11 @@ mod physical_decimal_writer_tests {
     fn precision_limits_fail_before_any_partial_column_output() {
         for (declaration, valid, invalid) in [
             ("Decimal32(3)", 999_999_999i128, 1_000_000_000),
-            ("Decimal64(4)", -999_999_999_999_999_999i128, 1_000_000_000_000_000_000),
+            (
+                "Decimal64(4)",
+                -999_999_999_999_999_999i128,
+                1_000_000_000_000_000_000,
+            ),
             ("Decimal128(0)", 10i128.pow(38) - 1, 10i128.pow(38)),
         ] {
             let mut output = Vec::new();
@@ -506,7 +520,8 @@ mod physical_decimal_writer_tests {
             output.clear();
             assert_eq!(
                 write_decimal_values(&mut output, declaration, &[valid, invalid])
-                    .unwrap_err().kind(),
+                    .unwrap_err()
+                    .kind(),
                 io::ErrorKind::InvalidData
             );
             assert!(output.is_empty());

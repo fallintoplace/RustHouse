@@ -9,7 +9,11 @@ import csv
 import os
 import secrets
 import stat
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import file_change_time_ns
 
 
 ESCAPE_TRANSLATION = str.maketrans({
@@ -99,7 +103,7 @@ def convert(source, destination, *, header=False, empty_as_null=False,
             after = source.lstat()
             identity = lambda metadata: (
                 metadata.st_dev, metadata.st_ino, metadata.st_size,
-                metadata.st_mtime_ns, metadata.st_ctime_ns,
+                metadata.st_mtime_ns, file_change_time_ns(metadata),
             )
             if identity(before) != identity(opened) or (
                 identity(opened) != identity(finished)

@@ -144,14 +144,15 @@ pub(super) fn is_safe_multi_grouped_distinct(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
-pub(super) fn multi_grouped_distinct_shard_sql(
-    sql: &str,
-    select: &Select,
-) -> Option<String> {
+pub(super) fn multi_grouped_distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
     if !is_safe_multi_grouped_distinct(select) {
         return None;
     }
-    let Projection::GroupedMultiDistinctCount { columns, value_column } = &select.projection else {
+    let Projection::GroupedMultiDistinctCount {
+        columns,
+        value_column,
+    } = &select.projection
+    else {
         return None;
     };
     let from = clause_offset(sql, b"FROM")?;
@@ -175,7 +176,11 @@ pub(super) fn grouped_distinct_shard_sql(sql: &str, select: &Select) -> Option<S
     if !is_safe_grouped_distinct(select) {
         return None;
     }
-    let Projection::GroupedDistinctCount { column, value_column } = &select.projection else {
+    let Projection::GroupedDistinctCount {
+        column,
+        value_column,
+    } = &select.projection
+    else {
         return None;
     };
     let from = clause_offset(sql, b"FROM")?;
@@ -194,9 +199,13 @@ pub(super) fn grouped_distinct_shard_sql(sql: &str, select: &Select) -> Option<S
 pub(super) fn is_safe_rms(select: &Select) -> bool {
     select.alias.is_none()
         && is_safe_unpaged_projection(select, |projection| {
-            matches!(projection, Projection::Aggregate {
-                function: AggregateFunction::Rms, ..
-            })
+            matches!(
+                projection,
+                Projection::Aggregate {
+                    function: AggregateFunction::Rms,
+                    ..
+                }
+            )
         })
 }
 
@@ -231,9 +240,13 @@ pub(super) fn rms_shard_sql(sql: &str, select: &Select) -> Option<String> {
 pub(super) fn is_safe_avg(select: &Select) -> bool {
     select.alias.is_none()
         && is_safe_unpaged_projection(select, |projection| {
-            matches!(projection, Projection::Aggregate {
-                function: AggregateFunction::Avg, ..
-            })
+            matches!(
+                projection,
+                Projection::Aggregate {
+                    function: AggregateFunction::Avg,
+                    ..
+                }
+            )
         })
 }
 
@@ -268,9 +281,13 @@ pub(super) fn avg_shard_sql(sql: &str, select: &Select) -> Option<String> {
 pub(super) fn is_safe_range(select: &Select) -> bool {
     select.alias.is_none()
         && is_safe_unpaged_projection(select, |projection| {
-            matches!(projection, Projection::Aggregate {
-                function: AggregateFunction::Range, ..
-            })
+            matches!(
+                projection,
+                Projection::Aggregate {
+                    function: AggregateFunction::Range,
+                    ..
+                }
+            )
         })
 }
 
@@ -904,7 +921,3 @@ mod rewrite_sql_clause_scanner_tests {
         assert!(clause_offset("SELECT 'FROM' /* WHERE */", b"WHERE").is_none());
     }
 }
-
-
-
-

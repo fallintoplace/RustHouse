@@ -104,10 +104,9 @@ fn grouped_avg_and_counts_keep_row_and_non_null_counts_separate() {
         ),
         "region\tcount\neast\t4\nwest\t4\n"
     );
-    assert!(parse_select(
-        "SELECT region, AVG(distance), COUNT(1) FROM part GROUP BY region"
-    )
-    .is_err());
+    assert!(
+        parse_select("SELECT region, AVG(distance), COUNT(1) FROM part GROUP BY region").is_ok()
+    );
 }
 
 #[test]

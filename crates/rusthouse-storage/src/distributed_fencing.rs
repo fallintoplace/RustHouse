@@ -60,9 +60,7 @@ impl FencingLedger {
             }
             match self.claims.get(&claim.shard) {
                 Some((holder, token)) => {
-                    if claim.token < *token
-                        || (claim.token == *token && claim.holder != *holder)
-                    {
+                    if claim.token < *token || (claim.token == *token && claim.holder != *holder) {
                         return Err("stale or conflicting fencing token");
                     }
                 }
@@ -75,10 +73,8 @@ impl FencingLedger {
         // All validation is complete before the first write. No request from
         // the failed batch can change the ledger.
         for claim in batch {
-            self.claims.insert(
-                claim.shard.clone(),
-                (claim.holder.clone(), claim.token),
-            );
+            self.claims
+                .insert(claim.shard.clone(), (claim.holder.clone(), claim.token));
         }
         Ok(())
     }
@@ -155,15 +151,39 @@ mod tests {
     #[test]
     fn only_monotonic_claims_can_change_owner() {
         let mut ledger = FencingLedger::new();
-        ledger.apply_batch(&[claim("alpha", "node1", 1, 7)]).unwrap();
-        ledger.apply_batch(&[claim("alpha", "node1", 1, 7)]).unwrap();
-        assert!(ledger.apply_batch(&[claim("alpha", "node2", 1, 7)]).is_err());
-        assert!(ledger.apply_batch(&[claim("alpha", "node2", 1, 6)]).is_err());
-        ledger.apply_batch(&[claim("alpha", "node2", 1, 8)]).unwrap();
-        assert!(ledger.apply_batch(&[claim("alpha", "node1", 1, 7)]).is_err());
-        ledger.apply_batch(&[claim("alpha", "node3", 2, 1)]).unwrap();
+        ledger
+            .apply_batch(&[claim("alpha", "node1", 1, 7)])
+            .unwrap();
+        ledger
+            .apply_batch(&[claim("alpha", "node1", 1, 7)])
+            .unwrap();
+        assert!(
+            ledger
+                .apply_batch(&[claim("alpha", "node2", 1, 7)])
+                .is_err()
+        );
+        assert!(
+            ledger
+                .apply_batch(&[claim("alpha", "node2", 1, 6)])
+                .is_err()
+        );
+        ledger
+            .apply_batch(&[claim("alpha", "node2", 1, 8)])
+            .unwrap();
+        assert!(
+            ledger
+                .apply_batch(&[claim("alpha", "node1", 1, 7)])
+                .is_err()
+        );
+        ledger
+            .apply_batch(&[claim("alpha", "node3", 2, 1)])
+            .unwrap();
         assert_eq!(ledger.get("alpha").unwrap().0, "node3");
-        assert!(ledger.apply_batch(&[claim("alpha", "node4", 1, u64::MAX)]).is_err());
+        assert!(
+            ledger
+                .apply_batch(&[claim("alpha", "node4", 1, u64::MAX)])
+                .is_err()
+        );
     }
 
     #[test]
@@ -171,26 +191,30 @@ mod tests {
         let mut ledger = FencingLedger::new();
         ledger.apply_batch(&[claim("a", "n", 1, 1)]).unwrap();
         let before = ledger.clone();
-        assert!(ledger.apply_batch(&[
-            claim("a", "new", 2, 1),
-            claim("b", "n", 1, 1),
-            claim("a", "again", 3, 1),
-        ]).is_err());
+        assert!(
+            ledger
+                .apply_batch(&[
+                    claim("a", "new", 2, 1),
+                    claim("b", "n", 1, 1),
+                    claim("a", "again", 3, 1),
+                ])
+                .is_err()
+        );
         assert_eq!(ledger, before);
-        assert!(ledger.apply_batch(&[
-            claim("b", "n", 1, 1),
-            claim("a", "new", 1, 1),
-        ]).is_err());
+        assert!(
+            ledger
+                .apply_batch(&[claim("b", "n", 1, 1), claim("a", "new", 1, 1),])
+                .is_err()
+        );
         assert_eq!(ledger, before);
     }
 
     #[test]
     fn snapshot_and_restore_are_canonical() {
         let mut ledger = FencingLedger::new();
-        ledger.apply_batch(&[
-            claim("z", "replica", 4, 20),
-            claim("a", "replica", 1, 1),
-        ]).unwrap();
+        ledger
+            .apply_batch(&[claim("z", "replica", 4, 20), claim("a", "replica", 1, 1)])
+            .unwrap();
         let snapshot = ledger.snapshot();
         assert_eq!(snapshot[0].shard, "a");
         assert_eq!(snapshot[1].shard, "z");
@@ -201,13 +225,24 @@ mod tests {
     fn conditional_batches_fail_atomically_on_stale_snapshot() {
         let mut ledger = FencingLedger::new();
         ledger.apply_batch(&[claim("alpha", "old", 1, 1)]).unwrap();
-        let initial = FenceToken { epoch: 1, sequence: 1 };
+        let initial = FenceToken {
+            epoch: 1,
+            sequence: 1,
+        };
         let batch = [claim("alpha", "new", 1, 2), claim("beta", "new", 1, 1)];
 
         let before = ledger.clone();
-        assert!(ledger.apply_batch_if_tokens_match(&batch, &[None, None]).is_err());
+        assert!(
+            ledger
+                .apply_batch_if_tokens_match(&batch, &[None, None])
+                .is_err()
+        );
         assert_eq!(ledger, before);
-        assert!(ledger.apply_batch_if_tokens_match(&batch, &[Some(initial)]).is_err());
+        assert!(
+            ledger
+                .apply_batch_if_tokens_match(&batch, &[Some(initial)])
+                .is_err()
+        );
         assert_eq!(ledger, before);
 
         ledger
@@ -217,11 +252,17 @@ mod tests {
         assert_eq!(ledger.get("beta").unwrap().0, "new");
         let after = ledger.clone();
 
-        assert!(ledger
-            .apply_batch_if_tokens_match(&[claim("alpha", "old", 2, 1)], &[Some(initial)])
-            .is_err());
+        assert!(
+            ledger
+                .apply_batch_if_tokens_match(&[claim("alpha", "old", 2, 1)], &[Some(initial)])
+                .is_err()
+        );
         assert_eq!(ledger, after);
-        assert!(ledger.apply_batch_if_tokens_match(&batch, &[Some(initial), None]).is_err());
+        assert!(
+            ledger
+                .apply_batch_if_tokens_match(&batch, &[Some(initial), None])
+                .is_err()
+        );
         assert_eq!(ledger, after);
     }
 
@@ -235,7 +276,6 @@ mod tests {
         assert!(ledger.is_empty());
     }
 }
-
 
 /// Optimistic, externally authorized replacement of a local fencing claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,10 +304,7 @@ impl FencingLedger {
             if !seen.insert(update.next.shard.as_str()) {
                 return Err("duplicate checked fencing shard");
             }
-            let matches_current = match (
-                self.get(&update.next.shard),
-                update.expected.as_ref(),
-            ) {
+            let matches_current = match (self.get(&update.next.shard), update.expected.as_ref()) {
                 (None, None) => true,
                 (Some((holder, token)), Some(expected)) => {
                     expected.shard == update.next.shard
@@ -344,7 +381,11 @@ mod checked_fencing_tests {
             expected: None,
             next: claim("new", "owner", 2),
         };
-        assert!(ledger.apply_checked_batch(&[good.clone(), duplicate]).is_err());
+        assert!(
+            ledger
+                .apply_checked_batch(&[good.clone(), duplicate])
+                .is_err()
+        );
         assert_eq!(ledger, before);
 
         ledger.apply_checked_batch(&[good]).unwrap();

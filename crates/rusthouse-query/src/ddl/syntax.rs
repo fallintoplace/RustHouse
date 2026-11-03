@@ -38,6 +38,7 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "STRING" => "String",
         "UUID" => "UUID",
         "DATE" => "Date",
+        "DATE32" => "Date32",
         "DATETIME" => "DateTime",
         "BOOL" => "Bool",
         "NULLABLE" => "Nullable",
@@ -65,7 +66,9 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
     if name.eq_ignore_ascii_case("FLOAT") && parser.take(Token::LParen) {
         let raw = parser.number()?;
         if !raw.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(ParseError("FLOAT precision must be a positive integer".into()));
+            return Err(ParseError(
+                "FLOAT precision must be a positive integer".into(),
+            ));
         }
         let precision = raw
             .parse::<u32>()
@@ -73,7 +76,11 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
         let storage_type = match precision {
             1..=24 => "Float32",
             25..=53 => "Float64",
-            _ => return Err(ParseError("FLOAT precision must be between 1 and 53".into())),
+            _ => {
+                return Err(ParseError(
+                    "FLOAT precision must be between 1 and 53".into(),
+                ));
+            }
         };
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after FLOAT precision".into()));
@@ -129,9 +136,15 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
         {
             let width = parser.number()?;
             if !width.bytes().all(|byte| byte.is_ascii_digit())
-                || width.parse::<u32>().ok().filter(|value| *value > 0).is_none()
+                || width
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .is_none()
             {
-                return Err(ParseError("character width must be a positive integer".into()));
+                return Err(ParseError(
+                    "character width must be a positive integer".into(),
+                ));
             }
             if !parser.take(Token::RParen) {
                 return Err(ParseError("character width requires closing ')'".into()));
@@ -307,7 +320,6 @@ mod postgres_float_alias_tests {
         assert!(parse_ddl("CREATE TABLE metrics (bad FLOAT16)").is_err());
     }
 }
-
 
 #[cfg(test)]
 mod create_column_trailing_comma_tests {

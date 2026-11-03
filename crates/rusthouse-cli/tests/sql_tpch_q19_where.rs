@@ -12,9 +12,8 @@ fn run(database: &Path, sql: &str) -> Output {
 
 #[test]
 fn canonical_q19_disjunctive_filter_matches_on_joined_row_shape() {
-    let database = std::env::temp_dir().join(format!(
-        "rusthouse-tpch-q19-filters-{}", std::process::id()
-    ));
+    let database =
+        std::env::temp_dir().join(format!("rusthouse-tpch-q19-filters-{}", std::process::id()));
     fs::create_dir_all(&database).unwrap();
     for sql in [
         "CREATE TABLE fused (p_partkey UInt64, l_partkey UInt64, p_brand String, p_container String, l_quantity UInt64, p_size UInt64, l_shipmode String, l_shipinstruct String)",

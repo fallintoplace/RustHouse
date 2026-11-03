@@ -3,7 +3,8 @@ use rusthouse_query::{Ddl, parse_ddl};
 #[test]
 fn national_character_types_use_string_storage() {
     let Some(Ddl::CreateTable { columns, .. }) =
-        parse_ddl("CREATE TABLE names (first NATIONAL CHARACTER, last NATIONAL CHAR VARYING)").unwrap()
+        parse_ddl("CREATE TABLE names (first NATIONAL CHARACTER, last NATIONAL CHAR VARYING)")
+            .unwrap()
     else {
         panic!("expected CREATE TABLE");
     };

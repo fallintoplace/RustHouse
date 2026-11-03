@@ -20,7 +20,8 @@ fn grouped_count_literals_match_count_star() {
 
 #[test]
 fn grouped_count_literal_aliases_match_count_star_aliases() {
-    let literal = "SELECT number, COUNT(1) AS total FROM numbers(4) GROUP BY number ORDER BY number";
+    let literal =
+        "SELECT number, COUNT(1) AS total FROM numbers(4) GROUP BY number ORDER BY number";
     let star = "SELECT number, COUNT(*) AS total FROM numbers(4) GROUP BY number ORDER BY number";
     assert_eq!(run(literal), run(star));
 }

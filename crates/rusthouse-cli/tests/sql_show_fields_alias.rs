@@ -16,7 +16,10 @@ fn show_columns_and_fields_aliases_match() {
     let db = std::env::temp_dir().join(format!(
         "rusthouse-show-fields-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     let created = sql(&db, "CREATE TABLE events (id UInt64, label String)");
     assert!(created.status.success(), "{created:?}");

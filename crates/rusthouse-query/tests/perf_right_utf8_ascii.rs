@@ -33,11 +33,14 @@ fn ascii_fast_path_retains_unicode_and_null_results() {
 
 #[test]
 fn rejects_bad_argument_counts_and_types() {
+    assert_eq!(
+        value("SELECT rightUTF8('a', -1)"),
+        ConstantValue::Text("".into())
+    );
     for sql in [
         "SELECT rightUTF8()",
         "SELECT rightUTF8('a', 2, 3)",
         "SELECT rightUTF8(123, 2)",
-        "SELECT rightUTF8('a', -1)",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }

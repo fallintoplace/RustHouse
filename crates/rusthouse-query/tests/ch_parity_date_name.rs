@@ -10,10 +10,16 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn extracts_clickhouse_date_name_components() {
     for (part, expected) in [
-        ("year", "2021"), ("quarter", "2"), ("month", "April"),
-        ("week", "15"), ("dayofyear", "104"), ("day", "14"),
-        ("weekday", "Wednesday"), ("hour", "11"),
-        ("minute", "22"), ("second", "33"),
+        ("year", "2021"),
+        ("quarter", "2"),
+        ("month", "April"),
+        ("week", "15"),
+        ("dayofyear", "104"),
+        ("day", "14"),
+        ("weekday", "Wednesday"),
+        ("hour", "11"),
+        ("minute", "22"),
+        ("second", "33"),
     ] {
         let sql = format!("SELECT dateName('{part}', '2021-04-14 11:22:33')");
         assert_eq!(value(&sql), ConstantValue::Text(expected.into()), "{sql}");
@@ -30,7 +36,10 @@ fn extracts_clickhouse_date_name_components() {
 
 #[test]
 fn rejects_invalid_date_parts_and_non_utc_timezones() {
-    assert_eq!(value("SELECT dateName(NULL, '2024-01-01')"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT dateName(NULL, '2024-01-01')"),
+        ConstantValue::Null
+    );
     assert_eq!(value("SELECT dateName('month', NULL)"), ConstantValue::Null);
     for sql in [
         "SELECT dateName('nonsense', '2024-01-01')",

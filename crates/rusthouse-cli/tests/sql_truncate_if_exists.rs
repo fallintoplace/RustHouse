@@ -16,7 +16,10 @@ fn truncate_if_exists_does_not_create_unknown_tables() {
     let db = std::env::temp_dir().join(format!(
         "rusthouse-truncate-if-exists-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     let missing = sql(&db, "TRUNCATE TABLE IF EXISTS events");
     assert!(missing.status.success(), "{missing:?}");

@@ -616,7 +616,11 @@ mod multi_replica_reservation_finalization_tests {
     fn node(name: &str, total: u64, used: u64, reserved: u64) -> ReplicaNodeCapacity {
         ReplicaNodeCapacity {
             node: name.into(),
-            capacity: Capacity { total, used, reserved },
+            capacity: Capacity {
+                total,
+                used,
+                reserved,
+            },
         }
     }
 
@@ -629,12 +633,24 @@ mod multi_replica_reservation_finalization_tests {
         ];
         let requests = [("east", 10), ("west", 7), ("east", 20), ("west", 13)];
         let committed = commit_replica_capacity_plan(&original, &requests).unwrap();
-        assert_eq!(committed[0].capacity, original[0].capacity.commit(20).unwrap());
-        assert_eq!(committed[1].capacity, original[1].capacity.commit(30).unwrap());
+        assert_eq!(
+            committed[0].capacity,
+            original[0].capacity.commit(20).unwrap()
+        );
+        assert_eq!(
+            committed[1].capacity,
+            original[1].capacity.commit(30).unwrap()
+        );
         assert_eq!(committed[2], original[2]);
         let released = release_replica_capacity_plan(&original, &requests).unwrap();
-        assert_eq!(released[0].capacity, original[0].capacity.release(20).unwrap());
-        assert_eq!(released[1].capacity, original[1].capacity.release(30).unwrap());
+        assert_eq!(
+            released[0].capacity,
+            original[0].capacity.release(20).unwrap()
+        );
+        assert_eq!(
+            released[1].capacity,
+            original[1].capacity.release(30).unwrap()
+        );
         assert_eq!(original[0].capacity.reserved, 40);
     }
 
@@ -646,21 +662,29 @@ mod multi_replica_reservation_finalization_tests {
         assert!(commit_replica_capacity_plan(&before, &[("missing", 0)]).is_err());
         assert!(commit_replica_capacity_plan(&before, &[("a", u64::MAX), ("a", 1)]).is_err());
         assert!(release_replica_capacity_plan(&before, &vec![("a", 0); 65_537]).is_err());
-        assert!(commit_replica_capacity_plan(&[before[0].clone(), before[0].clone()], &[]).is_err());
+        assert!(
+            commit_replica_capacity_plan(&[before[0].clone(), before[0].clone()], &[]).is_err()
+        );
         assert_eq!(before[0].capacity.reserved, 15);
     }
 
     #[test]
     fn full_node_membership_uses_binary_search_without_aliasing() {
-        let nodes = (0..64).map(|i| node(&format!("n{i:02}"), 100, 0, 100))
+        let nodes = (0..64)
+            .map(|i| node(&format!("n{i:02}"), 100, 0, 100))
             .collect::<Vec<_>>();
-        let requests = (0..64).rev().flat_map(|i| {
-            let name = nodes[i].node.as_str();
-            [(name, 1u64), (name, 2u64)]
-        }).collect::<Vec<_>>();
+        let requests = (0..64)
+            .rev()
+            .flat_map(|i| {
+                let name = nodes[i].node.as_str();
+                [(name, 1u64), (name, 2u64)]
+            })
+            .collect::<Vec<_>>();
         let next = commit_replica_capacity_plan(&nodes, &requests).unwrap();
-        assert!(next.iter().all(|node| node.capacity.used == 3
-            && node.capacity.reserved == 97));
+        assert!(
+            next.iter()
+                .all(|node| node.capacity.used == 3 && node.capacity.reserved == 97)
+        );
     }
 }
 
@@ -1095,7 +1119,11 @@ mod gray_code_exact_capacity_tests {
         sizes[0] = u64::MAX;
         sizes[1] = u64::MAX - 1;
         let planned = plan_capacity_optimal_objects(
-            Capacity { total: u64::MAX - 1, used: 0, reserved: 0 },
+            Capacity {
+                total: u64::MAX - 1,
+                used: 0,
+                reserved: 0,
+            },
             &sizes,
         )
         .unwrap();
@@ -1107,10 +1135,19 @@ mod gray_code_exact_capacity_tests {
         let mut sizes = vec![0u64; 24];
         sizes[..4].copy_from_slice(&[3, 4, 5, 2]);
         let planned = plan_capacity_optimal_objects(
-            Capacity { total: 7, used: 0, reserved: 0 },
+            Capacity {
+                total: 7,
+                used: 0,
+                reserved: 0,
+            },
             &sizes,
         )
         .unwrap();
-        assert_eq!(planned, (0..24).filter(|&i| i < 2 || i >= 4).collect::<Vec<_>>());
+        assert_eq!(
+            planned,
+            (0..24)
+                .filter(|&i| !(2..4).contains(&i))
+                .collect::<Vec<_>>()
+        );
     }
 }

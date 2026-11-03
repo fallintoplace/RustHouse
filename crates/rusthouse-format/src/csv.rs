@@ -576,12 +576,7 @@ mod direct_sparse_csv_span_tests {
 
     #[test]
     fn long_spans_are_forwarded_directly_between_sparse_quotes() {
-        let field = [
-            vec![b'a'; 200_000],
-            b"\"".to_vec(),
-            vec![b'b'; 200_000],
-        ]
-        .concat();
+        let field = [vec![b'a'; 200_000], b"\"".to_vec(), vec![b'b'; 200_000]].concat();
         let mut out = Output::default();
         write_quoted_csv_field(&mut out, &field).unwrap();
         assert!(out.writes <= 5, "unexpected writes: {}", out.writes);

@@ -8,8 +8,11 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
+#[cfg(test)]
+use super::join::multi_join_row_key as row_key;
+
 use super::join::{
-    MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key,
+    MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES,
     multi_join_row_key_into as row_key_into, read_projected_build_rows,
 };
 
@@ -461,10 +464,16 @@ pub fn execute_multi_join<W: Write>(
             column_index(&relations, column)?;
         }
         for (column, _, _) in &query.order_by {
-            column_index(&relations, column)?;
+            if !(column.is_count_order() && query.grouped_count.is_some()) {
+                column_index(&relations, column)?;
+            }
         }
         if query.aggregate == Some(crate::JoinAggregate::CountStar) {
-            writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+            writeln!(
+                output,
+                "{}",
+                query.aggregate_alias.as_deref().unwrap_or("count")
+            )?;
         } else {
             let selected = output_columns(query, &relations, &initial_step)?;
             if query.grouped_count.is_some() {
@@ -474,7 +483,11 @@ pub fn execute_multi_join<W: Write>(
                     }
                     output.write_all(name.as_bytes())?;
                 }
-                writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+                writeln!(
+                    output,
+                    "\t{}",
+                    query.aggregate_alias.as_deref().unwrap_or("count")
+                )?;
             } else {
                 write_join_header(output, &selected)?;
             }
@@ -603,7 +616,11 @@ pub fn execute_multi_join<W: Write>(
                     }
                 }
             }
-            writeln!(output, "{}\n{count}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+            writeln!(
+                output,
+                "{}\n{count}",
+                query.aggregate_alias.as_deref().unwrap_or("count")
+            )?;
             return Ok(());
         }
         // Most fact-to-dimension joins preserve the incoming row count.
@@ -693,7 +710,11 @@ pub fn execute_multi_join<W: Write>(
         });
     }
     if query.aggregate == Some(crate::JoinAggregate::CountStar) {
-        writeln!(output, "{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+        writeln!(
+            output,
+            "{}",
+            query.aggregate_alias.as_deref().unwrap_or("count")
+        )?;
         if query.offset == 0 {
             writeln!(output, "{}", rows.len())?;
         }
@@ -715,9 +736,7 @@ pub fn execute_multi_join<W: Write>(
             } else {
                 *index
             };
-            typed::write_typed_value(
-                output, &row[source], column_type(&relations, source)
-            )?;
+            typed::write_typed_value(output, &row[source], column_type(&relations, source))?;
         }
         output.write_all(b"\n")?;
     }

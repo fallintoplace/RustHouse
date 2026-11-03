@@ -24,16 +24,23 @@ pub fn plan_repair_waves(
     max_parallel: usize,
     max_wave_bytes: u64,
 ) -> Result<Vec<RepairWave>, &'static str> {
-    if tasks.len() > MAX_TASKS || max_parallel == 0 || max_parallel > MAX_TASKS
+    if tasks.len() > MAX_TASKS
+        || max_parallel == 0
+        || max_parallel > MAX_TASKS
         || max_wave_bytes == 0
     {
         return Err("invalid repair scheduler bounds");
     }
     let mut by_id = HashMap::with_capacity(tasks.len());
     for (index, task) in tasks.iter().enumerate() {
-        if task.id.is_empty() || task.id.len() > 64
-            || !task.id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-            || task.bytes == 0 || task.bytes > max_wave_bytes
+        if task.id.is_empty()
+            || task.id.len() > 64
+            || !task
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            || task.bytes == 0
+            || task.bytes > max_wave_bytes
             || by_id.insert(task.id.as_str(), index).is_some()
         {
             return Err("invalid repair task identity or size");
@@ -45,7 +52,9 @@ pub fn plan_repair_waves(
     for (index, task) in tasks.iter().enumerate() {
         let mut seen = HashSet::new();
         for dep in &task.depends_on {
-            let parent = *by_id.get(dep.as_str()).ok_or("unknown repair prerequisite")?;
+            let parent = *by_id
+                .get(dep.as_str())
+                .ok_or("unknown repair prerequisite")?;
             if parent == index || !seen.insert(parent) {
                 return Err("self-dependent or repeated repair prerequisite");
             }
@@ -69,12 +78,17 @@ pub fn plan_repair_waves(
             return Err("cycle in replica repair dependencies");
         }
         ready.sort_unstable_by(|&a, &b| {
-            tasks[b].bytes.cmp(&tasks[a].bytes).then_with(|| tasks[a].id.cmp(&tasks[b].id))
+            tasks[b]
+                .bytes
+                .cmp(&tasks[a].bytes)
+                .then_with(|| tasks[a].id.cmp(&tasks[b].id))
         });
         let mut chosen = Vec::new();
         let mut remaining = max_wave_bytes;
         for index in ready {
-            if chosen.len() == max_parallel { break; }
+            if chosen.len() == max_parallel {
+                break;
+            }
             if tasks[index].bytes <= remaining {
                 remaining -= tasks[index].bytes;
                 chosen.push(index);
@@ -84,7 +98,10 @@ pub fn plan_repair_waves(
             return Err("repair task exceeds remaining wave budget");
         }
         let bytes = max_wave_bytes - remaining;
-        let task_ids = chosen.iter().map(|&index| tasks[index].id.clone()).collect();
+        let task_ids = chosen
+            .iter()
+            .map(|&index| tasks[index].id.clone())
+            .collect();
         for index in chosen {
             completed[index] = true;
             count += 1;
@@ -102,7 +119,11 @@ mod tests {
     use super::*;
 
     fn task(id: &str, bytes: u64, deps: &[&str]) -> RepairTask {
-        RepairTask { id: id.into(), bytes, depends_on: deps.iter().map(|s| (*s).into()).collect() }
+        RepairTask {
+            id: id.into(),
+            bytes,
+            depends_on: deps.iter().map(|s| (*s).into()).collect(),
+        }
     }
 
     #[test]

@@ -4,7 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn missing_and_v1_markers_are_compatible_but_future_versions_are_rejected() {
-    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let root = std::env::temp_dir().join(format!(
         "rusthouse-format-compat-{}-{unique}",
         std::process::id()
@@ -25,7 +28,10 @@ fn missing_and_v1_markers_are_compatible_but_future_versions_are_rejected() {
 #[test]
 fn marker_symlinks_are_not_accepted() {
     use std::os::unix::fs::symlink;
-    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let root = std::env::temp_dir().join(format!("rusthouse-format-link-{unique}"));
     fs::create_dir(&root).unwrap();
     fs::write(root.join("actual"), b"rusthouse-database-v1\n").unwrap();

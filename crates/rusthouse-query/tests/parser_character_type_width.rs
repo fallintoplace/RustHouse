@@ -2,12 +2,16 @@ use rusthouse_query::{Ddl, parse_ddl};
 
 #[test]
 fn character_width_annotations_use_string_storage() {
-    let sql = "CREATE TABLE labels (a VARCHAR(255), b CHAR(8), c NVARCHAR(64), d CHARACTER VARYING(128))";
+    let sql =
+        "CREATE TABLE labels (a VARCHAR(255), b CHAR(8), c NVARCHAR(64), d CHARACTER VARYING(128))";
     let Some(Ddl::CreateTable { columns, .. }) = parse_ddl(sql).unwrap() else {
         panic!("expected CREATE TABLE");
     };
     assert_eq!(
-        columns.iter().map(|column| column.data_type.as_str()).collect::<Vec<_>>(),
+        columns
+            .iter()
+            .map(|column| column.data_type.as_str())
+            .collect::<Vec<_>>(),
         ["String", "String", "String", "String"]
     );
     let Some(Ddl::AddColumn { column, .. }) =
@@ -20,7 +24,14 @@ fn character_width_annotations_use_string_storage() {
 
 #[test]
 fn character_width_must_be_a_positive_integer() {
-    for decl in ["VARCHAR(0)", "CHAR(-1)", "NVARCHAR(1.5)", "VARCHAR(x)", "CHAR(2, 3)", "VARCHAR(4294967296)"] {
+    for decl in [
+        "VARCHAR(0)",
+        "CHAR(-1)",
+        "NVARCHAR(1.5)",
+        "VARCHAR(x)",
+        "CHAR(2, 3)",
+        "VARCHAR(4294967296)",
+    ] {
         let sql = format!("CREATE TABLE bad (name {decl})");
         assert!(parse_ddl(&sql).is_err(), "{sql}");
     }

@@ -9,7 +9,6 @@ pub struct ThreeWayManifestPlan {
     pub conflicts: Vec<String>,
 }
 
-
 impl ThreeWayManifestPlan {
     /// Return a complete merged inventory only when every key was resolved.
     pub fn publishable_objects(&self) -> Result<&[ObjectMetadata], &'static str> {
@@ -39,7 +38,7 @@ pub fn plan_three_way_manifest_merge(
     for inventory in [base, local, remote] {
         plan_replica_copies(inventory, &[])?;
     }
-    fn index<'a>(records: &'a [ObjectMetadata]) -> BTreeMap<&'a str, &'a ObjectMetadata> {
+    fn index(records: &[ObjectMetadata]) -> BTreeMap<&str, &ObjectMetadata> {
         records
             .iter()
             .map(|record| (record.key.as_str(), record))
@@ -48,8 +47,12 @@ pub fn plan_three_way_manifest_merge(
     let original = index(base);
     let left = index(local);
     let right = index(remote);
-    let keys = original.keys().chain(left.keys()).chain(right.keys())
-        .copied().collect::<BTreeSet<_>>();
+    let keys = original
+        .keys()
+        .chain(left.keys())
+        .chain(right.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
     let mut merged = Vec::new();
     let mut conflicts = Vec::new();
     for key in keys {
@@ -66,7 +69,9 @@ pub fn plan_three_way_manifest_merge(
             conflicts.push(key.to_owned());
             None
         };
-        if let Some(record) = chosen { merged.push(record.clone()); }
+        if let Some(record) = chosen {
+            merged.push(record.clone());
+        }
     }
     Ok(ThreeWayManifestPlan { merged, conflicts })
 }
@@ -75,7 +80,11 @@ pub fn plan_three_way_manifest_merge(
 mod tests {
     use super::*;
     fn obj(key: &str, checksum: u32) -> ObjectMetadata {
-        ObjectMetadata { key: key.into(), bytes: 8, crc32c: checksum }
+        ObjectMetadata {
+            key: key.into(),
+            bytes: 8,
+            crc32c: checksum,
+        }
     }
     #[test]
     fn merges_disjoint_changes_and_deletions() {
@@ -84,8 +93,13 @@ mod tests {
         let remote = [obj("old", 1), obj("untouched", 2), obj("remote", 4)];
         let plan = plan_three_way_manifest_merge(&base, &local, &remote).unwrap();
         assert!(plan.conflicts.is_empty());
-        assert_eq!(plan.merged.iter().map(|x| x.key.as_str()).collect::<Vec<_>>(),
-            ["local", "remote", "untouched"]);
+        assert_eq!(
+            plan.merged
+                .iter()
+                .map(|x| x.key.as_str())
+                .collect::<Vec<_>>(),
+            ["local", "remote", "untouched"]
+        );
     }
     #[test]
     fn concurrent_edits_and_delete_modify_are_conflicts() {
@@ -106,24 +120,27 @@ mod publishable_manifest_tests {
     use super::*;
 
     fn object(key: &str, crc32c: u32) -> ObjectMetadata {
-        ObjectMetadata { key: key.into(), bytes: 10, crc32c }
+        ObjectMetadata {
+            key: key.into(),
+            bytes: 10,
+            crc32c,
+        }
     }
 
     #[test]
     fn unresolved_conflicts_cannot_produce_publishable_manifest() {
         let base = [object("a", 1)];
-        let conflict = plan_three_way_manifest_merge(
-            &base, &[object("a", 2)], &[object("a", 3)],
-        ).unwrap();
+        let conflict =
+            plan_three_way_manifest_merge(&base, &[object("a", 2)], &[object("a", 3)]).unwrap();
         assert_eq!(conflict.conflicts, ["a"]);
         assert!(conflict.publishable_objects().is_err());
     }
 
     #[test]
     fn conflict_free_plan_can_be_published() {
-        let plan = plan_three_way_manifest_merge(
-            &[], &[object("local", 1)], &[object("remote", 2)],
-        ).unwrap();
+        let plan =
+            plan_three_way_manifest_merge(&[], &[object("local", 1)], &[object("remote", 2)])
+                .unwrap();
         assert_eq!(plan.publishable_objects().unwrap(), plan.merged.as_slice());
     }
 }

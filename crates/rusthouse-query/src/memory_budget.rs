@@ -1,6 +1,6 @@
 //! Logical memory accounting for operators that explicitly reserve buffers.
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone, Debug)]
 pub struct QueryMemoryBudget {
@@ -39,7 +39,12 @@ impl QueryMemoryBudget {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(MemoryReservation { budget: self.clone(), bytes }),
+                Ok(_) => {
+                    return Ok(MemoryReservation {
+                        budget: self.clone(),
+                        bytes,
+                    });
+                }
                 Err(observed) => current = observed,
             }
         }

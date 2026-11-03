@@ -18,11 +18,7 @@ pub struct HeartbeatDetector {
 impl HeartbeatDetector {
     /// A larger history smooths jitter while retaining a bounded memory cost.
     pub fn new(window: usize, minimum_samples: usize) -> Result<Self, &'static str> {
-        if window == 0
-            || window > MAX_WINDOW
-            || minimum_samples == 0
-            || minimum_samples > window
-        {
+        if window == 0 || window > MAX_WINDOW || minimum_samples == 0 || minimum_samples > window {
             return Err("invalid heartbeat detector window");
         }
         Ok(Self {
@@ -86,11 +82,7 @@ impl HeartbeatDetector {
     }
 
     /// Evaluate a finite, positive caller threshold without deciding elections.
-    pub fn suspicious(
-        &self,
-        now_ms: u64,
-        threshold: f64,
-    ) -> Result<Option<bool>, &'static str> {
+    pub fn suspicious(&self, now_ms: u64, threshold: f64) -> Result<Option<bool>, &'static str> {
         if !threshold.is_finite() || threshold <= 0.0 || threshold > 100.0 {
             return Err("invalid heartbeat suspicion threshold");
         }
@@ -202,15 +194,34 @@ mod tests {
         for index in 0..=4 {
             detector.observe(index * 100).unwrap();
         }
-        let remaining = detector.remaining_until_suspicion_ms(400, 1.0).unwrap().unwrap();
+        let remaining = detector
+            .remaining_until_suspicion_ms(400, 1.0)
+            .unwrap()
+            .unwrap();
         assert!((remaining - 100.0 * LN_10).abs() < 1e-9);
-        assert!(detector.remaining_until_suspicion_ms(630, 1.0).unwrap().unwrap() < 1.0);
-        assert_eq!(detector.remaining_until_suspicion_ms(631, 1.0).unwrap(), Some(0.0));
+        assert!(
+            detector
+                .remaining_until_suspicion_ms(630, 1.0)
+                .unwrap()
+                .unwrap()
+                < 1.0
+        );
+        assert_eq!(
+            detector.remaining_until_suspicion_ms(631, 1.0).unwrap(),
+            Some(0.0)
+        );
         assert!(detector.remaining_until_suspicion_ms(399, 1.0).is_err());
-        assert!(detector.remaining_until_suspicion_ms(631, f64::NAN).is_err());
+        assert!(
+            detector
+                .remaining_until_suspicion_ms(631, f64::NAN)
+                .is_err()
+        );
         assert!(detector.remaining_until_suspicion_ms(631, 0.0).is_err());
         detector.reset();
-        assert_eq!(detector.remaining_until_suspicion_ms(700, 1.0).unwrap(), None);
+        assert_eq!(
+            detector.remaining_until_suspicion_ms(700, 1.0).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -222,7 +233,6 @@ mod tests {
         assert!(detector.phi(u64::MAX).unwrap().unwrap().is_finite());
     }
 }
-
 
 impl HeartbeatDetector {
     /// Return a robust empirical heartbeat deadline without altering history.
@@ -332,8 +342,13 @@ mod quantile_selection_equivalence_tests {
             detector.observe(ms).unwrap();
         }
         for (percentile, expected_interval) in [
-            (0.01, 100), (0.2, 100), (0.4, 100), (0.5, 200),
-            (0.6, 200), (0.8, 300), (1.0, 400),
+            (0.01, 100),
+            (0.2, 100),
+            (0.4, 100),
+            (0.5, 200),
+            (0.6, 200),
+            (0.8, 300),
+            (1.0, 400),
         ] {
             assert_eq!(
                 detector.quantile_deadline_ms(percentile, 2).unwrap(),

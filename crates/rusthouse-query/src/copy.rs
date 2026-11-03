@@ -118,7 +118,9 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
             options.header = parse_copy_header(parser)?;
             if parser.take(Token::Comma) {
                 if !parser.keyword("FORMAT") {
-                    return Err(ParseError("COPY HEADER option requires FORMAT after comma".into()));
+                    return Err(ParseError(
+                        "COPY HEADER option requires FORMAT after comma".into(),
+                    ));
                 }
                 options.format = parse_copy_format_option(parser)?;
             }
@@ -188,7 +190,7 @@ mod tests {
         assert_eq!(parsed.path, "/tmp/data's.csv");
         assert_eq!(parsed.columns, Some(vec!["name".into(), "id".into()]));
         assert!(parsed.header);
-        assert!(!parse_copy_from("SELECT 1").unwrap().is_some());
+        assert!(parse_copy_from("SELECT 1").unwrap().is_none());
     }
 
     #[test]
@@ -280,14 +282,17 @@ mod copy_header_first_tests {
             assert_eq!(parsed.format, CopyFormat::Csv);
             assert!(parsed.header);
         }
-        let tsv = parse_copy_from(
-            "COPY events FROM 'rows.tsv' WITH (HEADER TRUE, FORMAT TSV)"
-        ).unwrap().unwrap();
+        let tsv = parse_copy_from("COPY events FROM 'rows.tsv' WITH (HEADER TRUE, FORMAT TSV)")
+            .unwrap()
+            .unwrap();
         assert!(tsv.header);
         assert_eq!(tsv.format, CopyFormat::Tsv);
-        assert!(!parse_copy_from(
-            "COPY events FROM 'rows.csv' WITH (HEADER FALSE)"
-        ).unwrap().unwrap().header);
+        assert!(
+            !parse_copy_from("COPY events FROM 'rows.csv' WITH (HEADER FALSE)")
+                .unwrap()
+                .unwrap()
+                .header
+        );
         for invalid in [
             "COPY events FROM 'rows.csv' WITH (HEADER TRUE, HEADER FALSE)",
             "COPY events FROM 'rows.csv' WITH (HEADER TRUE, FORMAT JSONEACHROW)",
@@ -296,7 +301,6 @@ mod copy_header_first_tests {
         }
     }
 }
-
 
 #[cfg(test)]
 mod copy_column_trailing_comma_tests {

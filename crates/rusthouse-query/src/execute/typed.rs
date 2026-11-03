@@ -1,9 +1,9 @@
 //! Bounded typed SELECT path for String, UUID and Nullable wide-part columns.
 //! Keep the numeric-only executor unchanged for its optimized fast paths.
 
+mod cells;
 mod like;
 mod spill;
-mod cells;
 pub(super) use self::cells::*;
 
 use self::like::*;
@@ -110,7 +110,6 @@ fn remember_distinct_text(
     Ok(())
 }
 
-
 fn is_typed(data_type: &str) -> bool {
     matches!(
         data_type,
@@ -121,7 +120,12 @@ fn is_typed(data_type: &str) -> bool {
 }
 
 pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, ExecutionError> {
-    if query.predicates.iter().chain(query.or_predicates.iter().flatten()).any(|p| p.other_column().is_some()) {
+    if query
+        .predicates
+        .iter()
+        .chain(query.or_predicates.iter().flatten())
+        .any(|p| p.other_column().is_some())
+    {
         return Ok(true);
     }
     let metadata = inspect_query_source(path)?;
@@ -451,7 +455,10 @@ fn order_compiled_conditions(conditions: &mut [Condition]) {
         | Test::ByteInSet(..)
         | Test::ShortInSet(..) => 1,
         Test::Compare(Operator::Modulo(_) | Operator::ModuloNe(_), _) => 4,
-        Test::Compare(..) | Test::NotBetween(..) | Test::NumericBetween(..) | Test::UuidNotBetween(..) => 2,
+        Test::Compare(..)
+        | Test::NotBetween(..)
+        | Test::NumericBetween(..)
+        | Test::UuidNotBetween(..) => 2,
         Test::ColumnCompare(..) => 3,
         Test::In(values, _) if values.len() <= 4 => 2,
         Test::In(..)
@@ -479,24 +486,40 @@ pub(super) fn compile(
                 .get(name)
                 .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
             let test = match pred {
-                Predicate::ColumnComparison { operator, other, .. } => {
+                Predicate::ColumnComparison {
+                    operator, other, ..
+                } => {
                     let other_index = *indices.get(other).ok_or_else(|| {
                         ExecutionError::Invalid(format!("unknown WHERE column: {other}"))
                     })?;
                     let other_type = types.get(other).ok_or_else(|| {
                         ExecutionError::Invalid(format!("unknown WHERE column: {other}"))
                     })?;
-                    let is_numeric = |kind: &str| matches!(
-                        base_type(kind),
-                        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-                            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-                            | "Float32" | "Float64" | "Date" | "Date32" | "DateTime"
-                    );
+                    let is_numeric = |kind: &str| {
+                        matches!(
+                            base_type(kind),
+                            "UInt8"
+                                | "UInt16"
+                                | "UInt32"
+                                | "UInt64"
+                                | "UInt128"
+                                | "Int8"
+                                | "Int16"
+                                | "Int32"
+                                | "Int64"
+                                | "Int128"
+                                | "Float32"
+                                | "Float64"
+                                | "Date"
+                                | "Date32"
+                                | "DateTime"
+                        )
+                    };
                     if base_type(kind) != base_type(other_type)
                         && !(is_numeric(kind) && is_numeric(other_type))
                     {
                         return Err(ExecutionError::Invalid(
-                            "WHERE column comparison requires compatible types".into()
+                            "WHERE column comparison requires compatible types".into(),
                         ));
                     }
                     Test::ColumnCompare(*operator, other_index)
@@ -513,8 +536,12 @@ pub(super) fn compile(
                     if matches!(base_type(kind), "UInt8" | "Int8")
                         && matches!(
                             operator,
-                            Operator::Eq | Operator::Ne | Operator::Lt
-                                | Operator::Le | Operator::Gt | Operator::Ge
+                            Operator::Eq
+                                | Operator::Ne
+                                | Operator::Lt
+                                | Operator::Le
+                                | Operator::Gt
+                                | Operator::Ge
                         )
                     {
                         let native = match &target {
@@ -572,10 +599,14 @@ pub(super) fn compile(
     while index + 1 < conditions.len() {
         let between = if conditions[index].index == conditions[index + 1].index {
             match (&conditions[index].test, &conditions[index + 1].test) {
-                (Test::Compare(Operator::Ge, Cell::Numeric(lower)),
-                 Test::Compare(Operator::Le, Cell::Numeric(upper))) => Some((*lower, *upper)),
-                (Test::Compare(Operator::Le, Cell::Numeric(upper)),
-                 Test::Compare(Operator::Ge, Cell::Numeric(lower))) => Some((*lower, *upper)),
+                (
+                    Test::Compare(Operator::Ge, Cell::Numeric(lower)),
+                    Test::Compare(Operator::Le, Cell::Numeric(upper)),
+                ) => Some((*lower, *upper)),
+                (
+                    Test::Compare(Operator::Le, Cell::Numeric(upper)),
+                    Test::Compare(Operator::Ge, Cell::Numeric(lower)),
+                ) => Some((*lower, *upper)),
                 _ => None,
             }
         } else {
@@ -754,10 +785,12 @@ fn numeric_nan_at(column: &TypedColumn, row: usize) -> bool {
         TypedColumn::Numeric(NumericColumn::Float32(values)) => values[row].is_nan(),
         TypedColumn::Numeric(NumericColumn::Float64(values)) => values[row].is_nan(),
         TypedColumn::NullableNumeric {
-            values: NumericColumn::Float32(values), nulls
+            values: NumericColumn::Float32(values),
+            nulls,
         } => nulls[row] == 0 && values[row].is_nan(),
         TypedColumn::NullableNumeric {
-            values: NumericColumn::Float64(values), nulls
+            values: NumericColumn::Float64(values),
+            nulls,
         } => nulls[row] == 0 && values[row].is_nan(),
         _ => false,
     }
@@ -1014,7 +1047,9 @@ pub(super) fn compile_text_pattern(pattern: &str) -> Result<TextPattern, Executi
 }
 
 pub(super) fn text_pattern_matches(
-    text: &[u8], pattern: &TextPattern, case_insensitive: bool
+    text: &[u8],
+    pattern: &TextPattern,
+    case_insensitive: bool,
 ) -> bool {
     like_matches(text, &pattern.0, case_insensitive)
 }
@@ -1184,9 +1219,9 @@ fn parallel_exact_u32_distinct(part: &Path, column: &str) -> Result<Option<u64>,
                         scope,
                         move || -> Result<BitmapDistinct32, ExecutionError> {
                             let mut bitmap = BitmapDistinct32::new();
-                            while let Some(path) = parts.get(
-                                cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-                            ) {
+                            while let Some(path) =
+                                parts.get(cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                            {
                                 let mut scan = TypedPartReader::open(path, names)?;
                                 while let Some(batch) = scan.next_batch()? {
                                     let values = &batch[0];
@@ -3249,7 +3284,9 @@ mod native_distinct_nan_tests {
         }]];
         let batch = [column];
         assert_eq!(
-            (0..4).map(|row| passes(&batch, row, &branches)).collect::<Vec<_>>(),
+            (0..4)
+                .map(|row| passes(&batch, row, &branches))
+                .collect::<Vec<_>>(),
             [false, true, true, true]
         );
         let not_distinct = vec![vec![Condition {
@@ -3257,7 +3294,9 @@ mod native_distinct_nan_tests {
             test: Test::DistinctFrom(Cell::Numeric(Number::Float(f64::NAN)), true),
         }]];
         assert_eq!(
-            (0..4).map(|row| passes(&batch, row, &not_distinct)).collect::<Vec<_>>(),
+            (0..4)
+                .map(|row| passes(&batch, row, &not_distinct))
+                .collect::<Vec<_>>(),
             [true, false, false, false]
         );
     }
@@ -3273,8 +3312,12 @@ mod direct_byte_compare_tests {
             let indices = HashMap::from([("status".to_owned(), 0usize)]);
             let types = HashMap::from([("status".to_owned(), format!("Nullable({kind})"))]);
             for op in [
-                Operator::Eq, Operator::Ne, Operator::Lt,
-                Operator::Le, Operator::Gt, Operator::Ge,
+                Operator::Eq,
+                Operator::Ne,
+                Operator::Lt,
+                Operator::Le,
+                Operator::Gt,
+                Operator::Ge,
             ] {
                 let predicate = Predicate::Comparison {
                     column: "status".into(),
@@ -3289,7 +3332,8 @@ mod direct_byte_compare_tests {
                     NumericColumn::UInt8(vec![0, 1, 127, 255])
                 };
                 let batch = [TypedColumn::NullableNumeric {
-                    values, nulls: vec![0, 0, 1, 0],
+                    values,
+                    nulls: vec![0, 0, 1, 0],
                 }];
                 let target = Cell::Numeric(if kind == "Int8" {
                     Number::Signed(0)
@@ -3297,7 +3341,8 @@ mod direct_byte_compare_tests {
                     Number::Unsigned(0)
                 });
                 let old = vec![Condition {
-                    index: 0, test: Test::Compare(op, target),
+                    index: 0,
+                    test: Test::Compare(op, target),
                 }];
                 for row in 0..4 {
                     assert_eq!(
@@ -3375,7 +3420,11 @@ mod fused_numeric_between_tests {
         let types = HashMap::from([("x".to_owned(), "Float64".to_owned())]);
         let conditions = compile(&predicates, &indices, &types).unwrap();
         let batch = [TypedColumn::Numeric(NumericColumn::Float64(vec![
-            f64::NAN, -1.0, 0.0, 1.0, 2.0,
+            f64::NAN,
+            -1.0,
+            0.0,
+            1.0,
+            2.0,
         ]))];
         let results = (0..5)
             .map(|row| passes(&batch, row, std::slice::from_ref(&conditions)))

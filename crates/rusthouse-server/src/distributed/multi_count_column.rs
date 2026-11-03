@@ -39,21 +39,25 @@ pub(super) fn merge_multi_key_count_column(
             }
             let digits = std::str::from_utf8(fields[columns.len()])
                 .map_err(|_| MergeError::InvalidGroupedCount)?;
-            let partial = digits.parse::<u128>()
+            let partial = digits
+                .parse::<u128>()
                 .map_err(|_| MergeError::InvalidGroupedCount)?;
             if partial.to_string() != digits {
                 return Err(MergeError::InvalidGroupedCount);
             }
             let tuple = fields[..columns.len()]
                 .iter()
-                .map(|field| normalized_group_key(field)
-                    .map_err(|_| MergeError::InvalidGroupedCount))
+                .map(|field| {
+                    normalized_group_key(field).map_err(|_| MergeError::InvalidGroupedCount)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
-            let tuple_len = row.len()
+            let tuple_len = row
+                .len()
                 .checked_sub(digits.len() + 1)
                 .ok_or(MergeError::InvalidGroupedCount)?;
             if let Some(&id) = lookup.get(&tuple) {
-                groups[id].1 = groups[id].1
+                groups[id].1 = groups[id]
+                    .1
                     .checked_add(partial)
                     .ok_or(MergeError::CountOverflow)?;
             } else {
@@ -102,8 +106,14 @@ mod tests {
     #[test]
     fn merges_non_null_string_counts_across_composite_keys() {
         let shards = [
-            (10, b"region\tcategory\tcount(label)\nwest\ta\t2\neast\tb\t0\n".to_vec()),
-            (10, b"region\tcategory\tcount(label)\nwest\ta\t3\nwest\tb\t1\n".to_vec()),
+            (
+                10,
+                b"region\tcategory\tcount(label)\nwest\ta\t2\neast\tb\t0\n".to_vec(),
+            ),
+            (
+                10,
+                b"region\tcategory\tcount(label)\nwest\ta\t3\nwest\tb\t1\n".to_vec(),
+            ),
         ];
         assert_eq!(
             merge_multi_key_count_column(&shards, &dimensions(), "label", 10).unwrap(),
@@ -114,11 +124,18 @@ mod tests {
     #[test]
     fn rejects_negative_counts_corrupt_tuples_and_row_cap() {
         let prefix = "region\tcategory\tcount(label)\n";
-        for suffix in ["west\ta\t-1\n", "west\ta\tNULL\n", "west\ta\t01\n", "west\t2\n"] {
+        for suffix in [
+            "west\ta\t-1\n",
+            "west\ta\tNULL\n",
+            "west\ta\t01\n",
+            "west\t2\n",
+        ] {
             assert_eq!(
                 merge_multi_key_count_column(
                     &[(10, format!("{prefix}{suffix}").into_bytes())],
-                    &dimensions(), "label", 10
+                    &dimensions(),
+                    "label",
+                    10
                 ),
                 Err(MergeError::InvalidGroupedCount)
             );
@@ -126,7 +143,9 @@ mod tests {
         assert_eq!(
             merge_multi_key_count_column(
                 &[(1, format!("{prefix}west\ta\t1\n").into_bytes())],
-                &dimensions(), "label", 10
+                &dimensions(),
+                "label",
+                10
             ),
             Err(MergeError::ShardRowLimit)
         );

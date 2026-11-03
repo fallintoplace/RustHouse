@@ -33,9 +33,12 @@ fn formats_bounded_epoch_ticks_in_utc() {
 
 #[test]
 fn invalid_arguments_and_date_range_are_rejected() {
+    assert_eq!(
+        value("SELECT fromUnixTimestamp64Nano(-1)"),
+        ConstantValue::Text("1969-12-31 23:59:59.999999999".into())
+    );
     for sql in [
         "SELECT fromUnixTimestamp64Nano()",
-        "SELECT fromUnixTimestamp64Nano(-1)",
         "SELECT fromUnixTimestamp64Nano('2022-01-01')",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");

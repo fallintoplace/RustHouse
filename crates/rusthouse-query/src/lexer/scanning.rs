@@ -48,13 +48,12 @@ pub(super) fn scan_radix_number(
     let start = *index + 2;
     *index = start;
     while let Some(&byte) = bytes.get(*index) {
-        if (byte as char).to_digit(radix).is_some() {
-            *index += 1;
-        } else if byte == b'_'
-            && *index > start
-            && bytes
-                .get(*index + 1)
-                .is_some_and(|&next| (next as char).to_digit(radix).is_some())
+        if (byte as char).is_digit(radix)
+            || (byte == b'_'
+                && *index > start
+                && bytes
+                    .get(*index + 1)
+                    .is_some_and(|&next| (next as char).is_digit(radix)))
         {
             *index += 1;
         } else {
@@ -122,7 +121,9 @@ pub(super) fn scan_heredoc(sql: &str, index: &mut usize) -> Result<Token, ParseE
         end += 1;
     }
     if bytes.get(end) != Some(&b'$') {
-        return Err(ParseError("invalid dollar-quoted SQL string delimiter".into()));
+        return Err(ParseError(
+            "invalid dollar-quoted SQL string delimiter".into(),
+        ));
     }
     let delimiter = &sql[start..=end];
     let content_start = end + 1;
@@ -387,7 +388,10 @@ mod radix_separator_tests {
     #[test]
     fn separators_must_be_between_valid_digits() {
         for sql in ["0x_FF", "0xFF_", "0xA__B", "0b_1", "0b1_", "0b1_2"] {
-            assert!(crate::parse_select(&format!("SELECT {sql}")).is_err(), "{sql}");
+            assert!(
+                crate::parse_select(&format!("SELECT {sql}")).is_err(),
+                "{sql}"
+            );
         }
     }
 }
@@ -531,7 +535,10 @@ mod reserved_null_escape_tests {
             (r"'a\_b'", r"a\_b"),
         ] {
             let mut index = 0;
-            assert_eq!(scan_string(sql, &mut index).unwrap(), Token::String(expected.into()));
+            assert_eq!(
+                scan_string(sql, &mut index).unwrap(),
+                Token::String(expected.into())
+            );
             assert_eq!(index, sql.len());
         }
     }
@@ -639,7 +646,10 @@ mod clickhouse_escape_character_tests {
             (r"'\e\n\_x'", "\u{001b}\n\\_x"),
         ] {
             let mut cursor = 0;
-            assert_eq!(scan_string(sql, &mut cursor).unwrap(), Token::String(expected.into()));
+            assert_eq!(
+                scan_string(sql, &mut cursor).unwrap(),
+                Token::String(expected.into())
+            );
             assert_eq!(cursor, sql.len());
         }
     }
@@ -681,19 +691,11 @@ mod clickhouse_escape_character_sequence_tests {
 mod doubled_equals_tests {
     #[test]
     fn accepts_clickhouse_double_equals_for_numeric_predicates() {
-        let ordinary = crate::parse_select(
-            "SELECT number FROM numbers(4) WHERE number = 2",
-        )
-        .unwrap();
-        let doubled = crate::parse_select(
-            "SELECT number FROM numbers(4) WHERE number == 2",
-        )
-        .unwrap();
+        let ordinary =
+            crate::parse_select("SELECT number FROM numbers(4) WHERE number = 2").unwrap();
+        let doubled =
+            crate::parse_select("SELECT number FROM numbers(4) WHERE number == 2").unwrap();
         assert_eq!(doubled, ordinary);
-        assert!(crate::parse_select(
-            "SELECT number FROM numbers(4) WHERE number === 2"
-        )
-        .is_err());
+        assert!(crate::parse_select("SELECT number FROM numbers(4) WHERE number === 2").is_err());
     }
 }
-

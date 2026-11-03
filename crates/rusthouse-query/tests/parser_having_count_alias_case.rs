@@ -13,8 +13,10 @@ fn grouped_count_having_alias_ignores_case() {
         .unwrap();
         assert_eq!(query, canonical);
     }
-    assert!(parse_select(
-        "SELECT number, COUNT(*) AS Total FROM numbers(5) GROUP BY number HAVING Missing > 0"
-    )
-    .is_err());
+    assert!(
+        parse_select(
+            "SELECT number, COUNT(*) AS Total FROM numbers(5) GROUP BY number HAVING Missing > 0"
+        )
+        .is_err()
+    );
 }

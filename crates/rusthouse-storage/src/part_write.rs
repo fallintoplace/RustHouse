@@ -39,7 +39,6 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
-
 // Part files and the final checksums manifest are each synced before
 // publication. Windows standard file handles cannot flush a directory, so
 // require a real directory without following reparse points. The caller's

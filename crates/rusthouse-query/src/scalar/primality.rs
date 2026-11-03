@@ -1,5 +1,3 @@
-use super::*;
-
 /// Binary exponentiation with exact UInt128 intermediates for 64-bit residues.
 pub(super) fn pow_mod(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
     // Most scalar inputs fit in 32 bits. Multiplying two residues of a

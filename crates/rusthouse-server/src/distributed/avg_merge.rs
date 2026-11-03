@@ -9,7 +9,8 @@ pub(super) fn merge_global_avg(
     kind: &str,
 ) -> Result<Vec<u8>, MergeError> {
     // Keep a safe exact integer accumulation domain before final f64 rounding.
-    let kind = kind.strip_prefix("Nullable(")
+    let kind = kind
+        .strip_prefix("Nullable(")
         .and_then(|name| name.strip_suffix(')'))
         .unwrap_or(kind);
     let unsigned = match kind {
@@ -39,7 +40,9 @@ pub(super) fn merge_global_avg(
             return Err(MergeError::InvalidSum);
         }
         let count_text = std::str::from_utf8(raw_count).map_err(|_| MergeError::InvalidSum)?;
-        let count = count_text.parse::<u128>().map_err(|_| MergeError::InvalidSum)?;
+        let count = count_text
+            .parse::<u128>()
+            .map_err(|_| MergeError::InvalidSum)?;
         if count.to_string() != count_text || (count == 0) != (raw_sum == b"NULL") {
             return Err(MergeError::InvalidSum);
         }
@@ -50,7 +53,9 @@ pub(super) fn merge_global_avg(
         let digits = std::str::from_utf8(raw_sum).map_err(|_| MergeError::InvalidSum)?;
         if unsigned {
             let value = digits.parse::<u128>().map_err(|_| MergeError::InvalidSum)?;
-            unsigned_sum = unsigned_sum.checked_add(value).ok_or(MergeError::SumOverflow)?;
+            unsigned_sum = unsigned_sum
+                .checked_add(value)
+                .ok_or(MergeError::SumOverflow)?;
         } else {
             let value = digits.parse::<i128>().map_err(|_| MergeError::InvalidSum)?;
             if let Some(previous) = &mut signed_sum {
@@ -104,8 +109,10 @@ mod tests {
         assert_eq!(
             merge_global_avg(
                 &[(10, b"sum(x)\tcount(x)\nNULL\t0\n".to_vec())],
-                "x", "Int64",
-            ).unwrap(),
+                "x",
+                "Int64",
+            )
+            .unwrap(),
             b"avg(x)\nNULL\n"
         );
     }
@@ -116,15 +123,14 @@ mod tests {
             assert_eq!(
                 merge_global_avg(
                     &[(10, format!("sum(x)\tcount(x)\n{row}\n").into_bytes())],
-                    "x", "Int64"
+                    "x",
+                    "Int64"
                 ),
                 Err(MergeError::InvalidSum),
             );
         }
         assert_eq!(
-            merge_global_avg(
-                &[(10, b"sum(x)\tcount(x)\n5\t1\n".to_vec())], "x", "Int128"
-            ),
+            merge_global_avg(&[(10, b"sum(x)\tcount(x)\n5\t1\n".to_vec())], "x", "Int128"),
             Err(MergeError::InvalidSum)
         );
     }

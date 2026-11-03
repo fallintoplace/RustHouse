@@ -1,6 +1,6 @@
-use rusthouse_format::decode_tsv_field_into;
 #[cfg(test)]
 use rusthouse_format::decode_tsv_field;
+use rusthouse_format::decode_tsv_field_into;
 #[cfg(test)]
 use std::borrow::Cow;
 use std::io::{self, Write};
@@ -54,7 +54,13 @@ impl<W: Write> MarkdownWriter<W> {
         if self.line.last() == Some(&b'\r') {
             self.line.pop();
         }
-        finish_complete_line(&mut self.output, &mut self.columns, &self.line, &mut self.encoded, &mut self.decoded)?;
+        finish_complete_line(
+            &mut self.output,
+            &mut self.columns,
+            &self.line,
+            &mut self.encoded,
+            &mut self.decoded,
+        )?;
         self.line.clear();
         Ok(())
     }
@@ -213,7 +219,13 @@ impl<W: Write> Write for MarkdownWriter<W> {
                 ));
             }
             if complete && self.line.is_empty() {
-                finish_complete_line(&mut self.output, &mut self.columns, fragment, &mut self.encoded, &mut self.decoded)?;
+                finish_complete_line(
+                    &mut self.output,
+                    &mut self.columns,
+                    fragment,
+                    &mut self.encoded,
+                    &mut self.decoded,
+                )?;
                 continue;
             }
             self.line.extend_from_slice(fragment);
@@ -337,7 +349,7 @@ mod tests {
         writer.write_all(b"<tag>\t&value\r\n").unwrap();
         assert_eq!(
             writer.output,
-            b"| &lt;tag&gt; | &amp;value&#13; |\n| --- | --- |\n"
+            b"| &lt;tag&gt; | &amp;value |\n| --- | --- |\n"
         );
     }
 
@@ -518,7 +530,10 @@ mod crlf_record_tests {
         writer.write_all(b"bo").unwrap();
         writer.write_all(b"b\r").unwrap();
         writer.write_all(b"\n").unwrap();
-        assert_eq!(writer.output, "| name |\n| --- |\n| alice |\n| bob |\n".as_bytes());
+        assert_eq!(
+            writer.output,
+            "| name |\n| --- |\n| alice |\n| bob |\n".as_bytes()
+        );
     }
 }
 
@@ -543,18 +558,28 @@ mod reusable_markdown_escaping_tests {
         assert_eq!(writer.decoded.capacity(), decoded_capacity);
         assert_eq!(writer.encoded.as_ptr(), encoded_ptr);
         assert_eq!(writer.encoded.capacity(), encoded_capacity);
-        assert!(writer.output.starts_with(b"| value |\n| --- |\n| one&#9;value |\n"));
+        assert!(
+            writer
+                .output
+                .starts_with(b"| value |\n| --- |\n| one&#9;value |\n")
+        );
     }
 
     #[test]
     fn failed_late_markdown_escape_does_not_write_a_partial_row() {
         let mut writer = MarkdownWriter::new(Vec::new());
         writer.write_all(b"left\tright\n").unwrap();
-        writer.write_all(b"first\\tvalue\tsecond\\nvalue\n").unwrap();
+        writer
+            .write_all(b"first\\tvalue\tsecond\\nvalue\n")
+            .unwrap();
         let previous = writer.output.clone();
         assert!(writer.write_all(b"valid\\tfirst\tinvalid\\q\n").is_err());
         assert_eq!(writer.output, previous);
         writer.write_all(b"again\\tvalue\tlast\\nvalue\n").unwrap();
-        assert!(writer.output.ends_with(b"| again&#9;value | last&#10;value |\n"));
+        assert!(
+            writer
+                .output
+                .ends_with(b"| again&#9;value | last&#10;value |\n")
+        );
     }
 }

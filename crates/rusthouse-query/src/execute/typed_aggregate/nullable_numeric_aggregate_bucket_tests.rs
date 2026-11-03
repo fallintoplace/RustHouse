@@ -42,7 +42,7 @@ fn same_dense_bucket_reuses_group_state_for_nullable_sum() {
                 AggregateState::new(AggregateFunction::Sum),
             ));
         }
-        update_group_numeric(&mut groups[slots[bucket]].1, &amounts, row).unwrap();
+        update_group_numeric(&mut groups[slots[bucket]].1, &amounts, row, true).unwrap();
     }
     assert_eq!(groups.len(), 3);
     assert_eq!(groups[slots[1]].1.render(), "90");

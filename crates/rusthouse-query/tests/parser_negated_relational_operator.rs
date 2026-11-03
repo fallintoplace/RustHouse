@@ -9,10 +9,13 @@ fn negated_relational_operators_map_to_standard_comparisons() {
     ] {
         let sql = format!("SELECT number FROM numbers(5) WHERE number {symbol} 2");
         let select = parse_select(&sql).unwrap();
-        assert!(matches!(
-            &select.predicates[0],
-            Predicate::Comparison { operator, .. } if *operator == expected
-        ), "{sql}");
+        assert!(
+            matches!(
+                &select.predicates[0],
+                Predicate::Comparison { operator, .. } if *operator == expected
+            ),
+            "{sql}"
+        );
     }
     assert!(parse_select("SELECT number FROM numbers(5) WHERE number ! 2").is_err());
 }

@@ -24,7 +24,10 @@ fn grouped_sum_case_matches_taxi_payment_revenue() {
     let query = "SELECT passenger_count, SUM(CASE WHEN payment_type = 1 THEN fare_cents ELSE 0 END) AS revenue FROM trips GROUP BY passenger_count ORDER BY passenger_count";
     let result = sql(query);
     assert!(result.status.success(), "{query}: {result:?}");
-    assert_eq!(result.stdout, b"passenger_count\trevenue\n1\t1300\n2\t800\n3\t0\n");
+    assert_eq!(
+        result.stdout,
+        b"passenger_count\trevenue\n1\t1300\n2\t800\n3\t0\n"
+    );
 
     let query = "SELECT passenger_count, payment_type, SUM(CASE WHEN payment_type = 1 THEN fare_cents END) AS revenue FROM trips GROUP BY passenger_count, payment_type ORDER BY passenger_count, payment_type";
     let result = sql(query);

@@ -10,7 +10,10 @@ fn run(sql: &str) -> String {
 #[test]
 fn position_in_syntax_finds_substring_one_based() {
     assert_eq!(run("SELECT POSITION('na' IN 'banana') AS pos"), "pos\n3\n");
-    assert_eq!(run("SELECT POSITION('missing' IN 'banana') AS pos"), "pos\n0\n");
+    assert_eq!(
+        run("SELECT POSITION('missing' IN 'banana') AS pos"),
+        "pos\n0\n"
+    );
     assert_eq!(run("SELECT POSITION('' IN 'banana') AS pos"), "pos\n1\n");
 }
 

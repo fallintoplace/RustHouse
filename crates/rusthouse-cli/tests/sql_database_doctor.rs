@@ -73,7 +73,7 @@ fn full_hashes_validates_healthy_database_without_creating_files() {
         "{output}"
     );
     assert!(
-        output.contains("Validation includes stored file hashes"),
+        output.contains("Validation includes stored and uncompressed hashes"),
         "{output}"
     );
     assert_eq!(fs::read_dir(&dir).unwrap().count(), before);

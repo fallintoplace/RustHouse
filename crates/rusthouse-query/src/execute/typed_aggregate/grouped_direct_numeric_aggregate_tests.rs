@@ -8,10 +8,10 @@ fn direct_grouped_sum_skips_nulls_and_preserves_signed_values() {
     };
     let mut aggregate = AggregateState::new(AggregateFunction::Sum);
     for row in 0..column.len() {
-        update_group_numeric(&mut aggregate, &column, row).unwrap();
+        update_group_numeric(&mut aggregate, &column, row, true).unwrap();
     }
     assert_eq!(aggregate.render(), "6");
     let more_signed = TypedColumn::Numeric(NumericColumn::Int64(vec![4]));
-    update_group_numeric(&mut aggregate, &more_signed, 0).unwrap();
+    update_group_numeric(&mut aggregate, &more_signed, 0, true).unwrap();
     assert_eq!(aggregate.render(), "10");
 }

@@ -13,7 +13,8 @@ fn run(db: &Path, query: &str) -> Output {
 #[test]
 fn tpch_q16_grouped_distinct_metric_alias() {
     let db = std::env::temp_dir().join(format!(
-        "rusthouse-tpch-q16-distinct-alias-{}", std::process::id()
+        "rusthouse-tpch-q16-distinct-alias-{}",
+        std::process::id()
     ));
     fs::create_dir_all(&db).unwrap();
     for query in [

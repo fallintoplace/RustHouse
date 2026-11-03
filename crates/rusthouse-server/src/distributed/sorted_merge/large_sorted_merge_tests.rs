@@ -23,7 +23,7 @@ fn merges_large_high_fanout_prefixes_without_row_materialization() {
 fn validates_all_shards_before_returning_even_when_page_is_empty() {
     let bad = [(5, b"id\n1\n".to_vec()), (5, b"id\n9\n3\n".to_vec())];
     assert_eq!(
-        merge_sorted_integer_page(&bad, "id", "UInt64", false, 0, 0, 100),
+        merge_sorted_integer_page(&bad, "id", "UInt64", false, 0, 2, 100),
         Err(MergeError::InvalidSortedScan)
     );
 }

@@ -33,10 +33,14 @@ pub fn plan_hedged_reads(
     hedge_after_ms: u64,
     max_attempts: usize,
 ) -> Result<Vec<HedgedAttempt>, &'static str> {
-    if replicas.is_empty() || replicas.len() > 64
-        || snapshot.epoch == 0 || snapshot.generation == 0
-        || deadline_ms == 0 || hedge_after_ms == 0
-        || max_attempts == 0 || max_attempts > 8
+    if replicas.is_empty()
+        || replicas.len() > 64
+        || snapshot.epoch == 0
+        || snapshot.generation == 0
+        || deadline_ms == 0
+        || hedge_after_ms == 0
+        || max_attempts == 0
+        || max_attempts > 8
     {
         return Err("invalid hedged read limits or snapshot");
     }
@@ -44,8 +48,10 @@ pub fn plan_hedged_reads(
     for replica in replicas {
         if !valid_replica_label(&replica.node)
             || !valid_replica_label(&replica.zone)
-            || replica.p95_latency_ms == 0 || !names.insert(&replica.node)
-            || replica.snapshot.epoch == 0 || replica.snapshot.generation == 0
+            || replica.p95_latency_ms == 0
+            || !names.insert(&replica.node)
+            || replica.snapshot.epoch == 0
+            || replica.snapshot.generation == 0
         {
             return Err("invalid or duplicate hedged replica");
         }
@@ -57,11 +63,14 @@ pub fn plan_hedged_reads(
             return Err("conflicting replica snapshot fingerprint");
         }
     }
-    let mut eligible = replicas.iter()
+    let mut eligible = replicas
+        .iter()
         .filter(|replica| replica.healthy && replica.snapshot == snapshot)
         .collect::<Vec<_>>();
     eligible.sort_unstable_by(|a, b| {
-        a.p95_latency_ms.cmp(&b.p95_latency_ms).then_with(|| a.node.cmp(&b.node))
+        a.p95_latency_ms
+            .cmp(&b.p95_latency_ms)
+            .then_with(|| a.node.cmp(&b.node))
     });
     if eligible.is_empty() {
         return Err("no healthy replica at required snapshot");
@@ -70,18 +79,32 @@ pub fn plan_hedged_reads(
     let mut used = HashSet::new();
     let mut attempts = Vec::new();
     for index in 0..eligible.len().min(max_attempts) {
-        let Some(at_ms) = hedge_after_ms.checked_mul(index as u64) else { break; };
-        if at_ms >= deadline_ms { break; }
+        let Some(at_ms) = hedge_after_ms.checked_mul(index as u64) else {
+            break;
+        };
+        if at_ms >= deadline_ms {
+            break;
+        }
         // Use the fastest unseen zone while it exists. Once each zone is
         // represented, pick the fastest remaining replica.
-        let pick = eligible.iter()
-            .find(|candidate| !used.contains(candidate.node.as_str())
-                && !seen_zones.contains(candidate.zone.as_str()))
-            .or_else(|| eligible.iter().find(|candidate| !used.contains(candidate.node.as_str())))
+        let pick = eligible
+            .iter()
+            .find(|candidate| {
+                !used.contains(candidate.node.as_str())
+                    && !seen_zones.contains(candidate.zone.as_str())
+            })
+            .or_else(|| {
+                eligible
+                    .iter()
+                    .find(|candidate| !used.contains(candidate.node.as_str()))
+            })
             .expect("at least one candidate remains");
         used.insert(pick.node.as_str());
         seen_zones.insert(pick.zone.as_str());
-        attempts.push(HedgedAttempt { node: pick.node.clone(), at_ms });
+        attempts.push(HedgedAttempt {
+            node: pick.node.clone(),
+            at_ms,
+        });
     }
     Ok(attempts)
 }
@@ -91,12 +114,19 @@ mod tests {
     use super::*;
 
     fn version(fingerprint: u128) -> SnapshotVersion {
-        SnapshotVersion { epoch: 1, generation: 8, fingerprint }
+        SnapshotVersion {
+            epoch: 1,
+            generation: 8,
+            fingerprint,
+        }
     }
     fn candidate(node: &str, zone: &str, ms: u64, hash: u128) -> HedgedReplica {
         HedgedReplica {
-            node: node.into(), zone: zone.into(), healthy: true,
-            p95_latency_ms: ms, snapshot: version(hash)
+            node: node.into(),
+            zone: zone.into(),
+            healthy: true,
+            p95_latency_ms: ms,
+            snapshot: version(hash),
         }
     }
 
@@ -108,22 +138,42 @@ mod tests {
             candidate("c", "west", 15, 9),
         ];
         let plan = plan_hedged_reads(&replicas, version(9), 100, 20, 3).unwrap();
-        assert_eq!(plan, [
-            HedgedAttempt { node: "a".into(), at_ms: 0 },
-            HedgedAttempt { node: "c".into(), at_ms: 20 },
-            HedgedAttempt { node: "b".into(), at_ms: 40 },
-        ]);
+        assert_eq!(
+            plan,
+            [
+                HedgedAttempt {
+                    node: "a".into(),
+                    at_ms: 0
+                },
+                HedgedAttempt {
+                    node: "c".into(),
+                    at_ms: 20
+                },
+                HedgedAttempt {
+                    node: "b".into(),
+                    at_ms: 40
+                },
+            ]
+        );
     }
 
     #[test]
     fn deadline_truncates_hedges() {
         let replicas = [candidate("a", "east", 10, 9), candidate("b", "west", 12, 9)];
-        assert_eq!(plan_hedged_reads(&replicas, version(9), 20, 20, 2).unwrap().len(), 1);
+        assert_eq!(
+            plan_hedged_reads(&replicas, version(9), 20, 20, 2)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
     fn conflicting_fingerprint_rejected_even_if_other_peer_matches() {
-        let replicas = [candidate("a", "east", 10, 9), candidate("b", "west", 10, 10)];
+        let replicas = [
+            candidate("a", "east", 10, 9),
+            candidate("b", "west", 10, 10),
+        ];
         assert!(plan_hedged_reads(&replicas, version(9), 100, 10, 2).is_err());
     }
 }
@@ -134,7 +184,11 @@ mod hedged_replica_identity_tests {
 
     #[test]
     fn rejects_control_characters_and_path_like_replica_labels() {
-        let version = SnapshotVersion { epoch: 1, generation: 1, fingerprint: 7 };
+        let version = SnapshotVersion {
+            epoch: 1,
+            generation: 1,
+            fingerprint: 7,
+        };
         for (node, zone) in [
             ("node\nother", "zone"),
             ("node/other", "zone"),
@@ -158,6 +212,9 @@ mod hedged_replica_identity_tests {
             p95_latency_ms: 10,
             snapshot: version,
         }];
-        assert_eq!(plan_hedged_reads(&valid, version, 50, 10, 1).unwrap().len(), 1);
+        assert_eq!(
+            plan_hedged_reads(&valid, version, 50, 10, 1).unwrap().len(),
+            1
+        );
     }
 }

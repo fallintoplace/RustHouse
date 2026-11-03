@@ -525,9 +525,19 @@ mod active_pointer_stack_decoder_tests {
             assert_eq!(parse_canonical_generation_pointer(&bytes), Some(value));
         }
         for invalid in [
-            "".as_bytes(), b"g", b"g\n", b"g0\n", b"g01\n", b"g+1\n",
-            b"g-1\n", b"g1\r\n", b"g1", b"g1\nextra",
-            b"g18446744073709551616\n", b"G1\n", b"g1\0\n",
+            "".as_bytes(),
+            b"g",
+            b"g\n",
+            b"g0\n",
+            b"g01\n",
+            b"g+1\n",
+            b"g-1\n",
+            b"g1\r\n",
+            b"g1",
+            b"g1\nextra",
+            b"g18446744073709551616\n",
+            b"G1\n",
+            b"g1\0\n",
         ] {
             assert_eq!(parse_canonical_generation_pointer(invalid), None);
         }
@@ -551,7 +561,6 @@ mod active_pointer_stack_decoder_tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
-
 
 /// Read-only verification result for a possible follower generation promotion.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -585,18 +594,14 @@ pub fn preview_verified_generation_activation(
     let candidate = root
         .join(".rusthouse-versions")
         .join(format!("g{generation}"));
-    let metadata =
-        fs::symlink_metadata(&candidate).map_err(|error| io_error(&candidate, error))?;
+    let metadata = fs::symlink_metadata(&candidate).map_err(|error| io_error(&candidate, error))?;
     if !metadata.file_type().is_dir() {
         return Err(PartError::InvalidScan(
             "activation candidate is not a real directory".into(),
         ));
     }
     let copy_requirements = crate::distributed_snapshot_copy::preview_frozen_snapshot(
-        &candidate,
-        max_parts,
-        max_files,
-        max_bytes,
+        &candidate, max_parts, max_files, max_bytes,
     )?;
     if read_active_generation(root)? != current_generation {
         return Err(PartError::InvalidScan(
@@ -660,16 +665,14 @@ mod conditional_activation_preflight_tests {
         let _ = fs::remove_dir_all(&root);
         create_generation(&root, 1, 10);
         create_generation(&root, 2, 20);
-        let preview =
-            preview_verified_generation_activation(&root, 1, 2, 64, 1_000_000).unwrap();
+        let preview = preview_verified_generation_activation(&root, 1, 2, 64, 1_000_000).unwrap();
         assert_eq!(preview.current_generation, None);
         assert_eq!(preview.candidate_generation, 1);
         assert_eq!(preview.copy_requirements.parts, 1);
         assert!(!root.join(".rusthouse-active").exists());
         activate_verified_generation_if_current(&root, None, 1).unwrap();
 
-        let next =
-            preview_verified_generation_activation(&root, 2, 2, 64, 1_000_000).unwrap();
+        let next = preview_verified_generation_activation(&root, 2, 2, 64, 1_000_000).unwrap();
         assert_eq!(next.current_generation, Some(1));
         assert!(activate_verified_generation_if_current(&root, None, 2).is_err());
         assert_eq!(read_active_generation(&root).unwrap(), Some(1));
@@ -693,9 +696,7 @@ mod conditional_activation_preflight_tests {
         assert!(preview_verified_generation_activation(&root, 0, 2, 64, 1_000_000).is_err());
         fs::write(candidate.join("all_0_0_0/extra.bin"), b"unknown").unwrap();
         fs::write(candidate.join("all_0_0_0/extra.mrk2"), b"bad-mark").unwrap();
-        assert!(
-            preview_verified_generation_activation(&root, 1, 2, 64, 1_000_000).is_err()
-        );
+        assert!(preview_verified_generation_activation(&root, 1, 2, 64, 1_000_000).is_err());
         assert!(!root.join(".rusthouse-active").exists());
         fs::remove_dir_all(root).unwrap();
     }

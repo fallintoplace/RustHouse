@@ -22,9 +22,15 @@ fn create_as_clones_schema_without_copying_data() {
     let db = std::env::temp_dir().join(format!(
         "rusthouse-create-as-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
-    successful(&db, "CREATE TABLE original (id UInt64, message Nullable(String))");
+    successful(
+        &db,
+        "CREATE TABLE original (id UInt64, message Nullable(String))",
+    );
     successful(&db, "INSERT INTO original VALUES (1, 'source')");
     successful(&db, "CREATE TABLE cloned AS original");
     assert_eq!(

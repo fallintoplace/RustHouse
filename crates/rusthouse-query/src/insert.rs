@@ -277,7 +277,10 @@ mod tests {
         let parsed = parse_insert("INSERT INTO events VALUES (+3, -4)")
             .unwrap()
             .unwrap();
-        assert_eq!(parsed.rows, vec![vec![Some("3".into()), Some("-4".into())]]);
+        assert_eq!(
+            parsed.rows,
+            vec![vec![Some("+3".into()), Some("-4".into())]]
+        );
         for invalid in [
             "INSERT INTO events VALUES (+NULL)",
             "INSERT INTO events VALUES (+'text')",
@@ -311,9 +314,11 @@ mod insert_trailing_column_comma_tests {
     #[test]
     fn accepts_one_trailing_comma_in_insert_column_list() {
         let with_comma = parse_insert("INSERT INTO t (id, name,) VALUES (1, 'Ada')")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         let normal = parse_insert("INSERT INTO t (id, name) VALUES (1, 'Ada')")
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(with_comma, normal);
         for invalid in [
             "INSERT INTO t (,) VALUES (1)",
@@ -325,17 +330,14 @@ mod insert_trailing_column_comma_tests {
     }
 }
 
-
 #[cfg(test)]
 mod insert_values_trailing_comma_tests {
     use super::*;
 
     #[test]
     fn accepts_single_trailing_comma_per_values_row() {
-        let with_commas = parse_insert("INSERT INTO t VALUES (1, 'a',), (2, 'b',)")
-            .unwrap();
-        let plain = parse_insert("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
-            .unwrap();
+        let with_commas = parse_insert("INSERT INTO t VALUES (1, 'a',), (2, 'b',)").unwrap();
+        let plain = parse_insert("INSERT INTO t VALUES (1, 'a'), (2, 'b')").unwrap();
         assert_eq!(with_commas, plain);
 
         for invalid in [

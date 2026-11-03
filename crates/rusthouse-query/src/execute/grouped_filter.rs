@@ -35,22 +35,39 @@ pub(super) fn bind_grouped_filters(
             })?;
             match filter {
                 GroupedFilter::Truthy(_) => Ok(Some(BoundGroupedFilter::Truthy(index))),
-                GroupedFilter::CaseElseZeroCombined { comparisons, all, .. } => {
+                GroupedFilter::CaseElseZeroCombined {
+                    comparisons, all, ..
+                } => {
                     let data_type = types.get(name).ok_or_else(|| {
                         ExecutionError::Invalid(format!("unknown grouped filter column: {name}"))
                     })?;
-                    let comparisons = comparisons.iter().map(|(operator, literal)| {
-                        Ok((*operator, typed::parse_literal(data_type, literal)?))
-                    }).collect::<Result<Vec<_>, ExecutionError>>()?;
-                    Ok(Some(BoundGroupedFilter::Combined { index, comparisons, all: *all }))
+                    let comparisons = comparisons
+                        .iter()
+                        .map(|(operator, literal)| {
+                            Ok((*operator, typed::parse_literal(data_type, literal)?))
+                        })
+                        .collect::<Result<Vec<_>, ExecutionError>>()?;
+                    Ok(Some(BoundGroupedFilter::Combined {
+                        index,
+                        comparisons,
+                        all: *all,
+                    }))
                 }
-                GroupedFilter::Comparison { operator, literal, .. }
-                | GroupedFilter::CaseElseZero { operator, literal, .. } => {
+                GroupedFilter::Comparison {
+                    operator, literal, ..
+                }
+                | GroupedFilter::CaseElseZero {
+                    operator, literal, ..
+                } => {
                     let data_type = types.get(name).ok_or_else(|| {
                         ExecutionError::Invalid(format!("unknown grouped filter column: {name}"))
                     })?;
                     let literal = typed::parse_literal(data_type, literal)?;
-                    Ok(Some(BoundGroupedFilter::Comparison { index, operator: *operator, literal }))
+                    Ok(Some(BoundGroupedFilter::Comparison {
+                        index,
+                        operator: *operator,
+                        literal,
+                    }))
                 }
             }
         })
@@ -66,15 +83,27 @@ impl BoundGroupedFilter {
     ) -> Result<bool, ExecutionError> {
         match self {
             Self::Truthy(index) => truthy(&batch[*index], row),
-            Self::Combined { index, comparisons, all } => {
+            Self::Combined {
+                index,
+                comparisons,
+                all,
+            } => {
                 let value = typed::cell(&batch[*index], row);
                 Ok(if *all {
-                    comparisons.iter().all(|(operator, literal)| typed::matches_comparison(&value, literal, *operator))
+                    comparisons.iter().all(|(operator, literal)| {
+                        typed::matches_comparison(&value, literal, *operator)
+                    })
                 } else {
-                    comparisons.iter().any(|(operator, literal)| typed::matches_comparison(&value, literal, *operator))
+                    comparisons.iter().any(|(operator, literal)| {
+                        typed::matches_comparison(&value, literal, *operator)
+                    })
                 })
-            },
-            Self::Comparison { index, operator, literal } => Ok(typed::matches_comparison(
+            }
+            Self::Comparison {
+                index,
+                operator,
+                literal,
+            } => Ok(typed::matches_comparison(
                 &typed::cell(&batch[*index], row),
                 literal,
                 *operator,

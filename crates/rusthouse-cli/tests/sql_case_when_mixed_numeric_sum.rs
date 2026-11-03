@@ -3,10 +3,7 @@ use std::process::Command;
 
 #[test]
 fn case_when_sum_combines_unsigned_fares_with_signed_defaults() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-case-mixed-sum-{}",
-        std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-case-mixed-sum-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])
@@ -34,10 +31,7 @@ fn case_when_sum_combines_unsigned_fares_with_signed_defaults() {
             "SELECT SUM(CASE WHEN paid = 1 THEN -2 ELSE amount END) FROM trips",
             "46",
         ),
-        (
-            "SELECT SUM(amount) FROM trips",
-            "100",
-        ),
+        ("SELECT SUM(amount) FROM trips", "100"),
     ] {
         let actual = sql(query);
         assert!(actual.status.success(), "{query}: {actual:?}");

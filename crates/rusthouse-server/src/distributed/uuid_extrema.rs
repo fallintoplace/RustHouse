@@ -67,6 +67,9 @@ pub(super) fn merge_uuid_extrema(
         } else {
             header = Some(next_header);
         }
+        if split + 1 >= body.len() {
+            return Err(MergeError::InvalidExtremum);
+        }
         let raw = &body[split + 1..body.len() - 1];
         if raw == b"NULL" {
             continue;
@@ -95,8 +98,14 @@ mod tests {
     #[test]
     fn combines_uuid_extrema_by_binary_value_across_shards() {
         let shards = [
-            (10, b"min(id)\n550E8400-E29B-41D4-A716-446655440000\n".to_vec()),
-            (10, b"min(id)\n00000000-0000-0000-0000-000000000001\n".to_vec()),
+            (
+                10,
+                b"min(id)\n550E8400-E29B-41D4-A716-446655440000\n".to_vec(),
+            ),
+            (
+                10,
+                b"min(id)\n00000000-0000-0000-0000-000000000001\n".to_vec(),
+            ),
             (10, b"min(id)\nNULL\n".to_vec()),
         ];
         assert_eq!(
@@ -104,8 +113,14 @@ mod tests {
             b"min(id)\n00000000-0000-0000-0000-000000000001\n"
         );
         let max = [
-            (10, b"max(id)\nffffffff-ffff-ffff-ffff-ffffffffffff\n".to_vec()),
-            (10, b"max(id)\n00000000-0000-0000-0000-000000000001\n".to_vec()),
+            (
+                10,
+                b"max(id)\nffffffff-ffff-ffff-ffff-ffffffffffff\n".to_vec(),
+            ),
+            (
+                10,
+                b"max(id)\n00000000-0000-0000-0000-000000000001\n".to_vec(),
+            ),
         ];
         assert_eq!(
             merge_uuid_extrema(&max, AggregateFunction::Max).unwrap(),
@@ -115,7 +130,10 @@ mod tests {
 
     #[test]
     fn all_null_shards_keep_the_single_empty_aggregate_result() {
-        let shards = [(10, b"min(id)\nNULL\n".to_vec()), (10, b"min(id)\nNULL\n".to_vec())];
+        let shards = [
+            (10, b"min(id)\nNULL\n".to_vec()),
+            (10, b"min(id)\nNULL\n".to_vec()),
+        ];
         assert_eq!(
             merge_uuid_extrema(&shards, AggregateFunction::Min).unwrap(),
             b"min(id)\nNULL\n"

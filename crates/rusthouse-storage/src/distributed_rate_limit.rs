@@ -108,8 +108,7 @@ impl TokenBucket {
 
         // Before the threshold, elapsed * rate < capacity * 1000.
         // This is bounded in u128 even for maximum u64 inputs.
-        let earned = u128::from(elapsed)
-            * u128::from(self.rate_bytes_per_second)
+        let earned = u128::from(elapsed) * u128::from(self.rate_bytes_per_second)
             + u128::from(self.remainder);
         let bytes = (earned / 1000) as u64;
         let remainder = (earned % 1000) as u16;
@@ -142,11 +141,11 @@ impl TokenBucket {
         if requested <= self.tokens {
             return Ok(self.last_ms);
         }
-        let missing_thousandths = u128::from(requested - self.tokens) * 1000
-            - u128::from(self.remainder);
+        let missing_thousandths =
+            u128::from(requested - self.tokens) * 1000 - u128::from(self.remainder);
         let elapsed = missing_thousandths.div_ceil(u128::from(self.rate_bytes_per_second));
-        let elapsed = u64::try_from(elapsed)
-            .map_err(|_| "replica token-bucket grant deadline overflow")?;
+        let elapsed =
+            u64::try_from(elapsed).map_err(|_| "replica token-bucket grant deadline overflow")?;
         self.last_ms
             .checked_add(elapsed)
             .ok_or("replica token-bucket grant deadline overflow")
@@ -281,7 +280,6 @@ mod tests {
         assert_eq!(uninterrupted, resumed);
     }
 }
-
 
 /// One peer's durable limiter and requested transfer size.
 #[derive(Debug, Clone, PartialEq, Eq)]

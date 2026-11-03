@@ -33,10 +33,7 @@ pub(super) fn decode_compressed_checksums(
     let mut decoded = Vec::new();
     let mut blocks = CompressedBlockReader::new(Cursor::new(payload), path)?;
     let mut scratch = Vec::new();
-    loop {
-        let Some(block) = blocks.next_decoded_reusing(scratch) else {
-            break;
-        };
+    while let Some(block) = blocks.next_decoded_reusing(scratch) {
         let data = block?.data;
         if data.len() > MAX_CHECKSUMS_BYTES as usize - decoded.len() {
             return Err(invalid(path, "decoded checksums exceed 64 MiB"));
