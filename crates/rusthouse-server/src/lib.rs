@@ -448,6 +448,10 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     }
     // Join queries need multiple resolved table sources and an independent
     // bounded executor. Delegate before the single-source SELECT parser.
+    if let Some(response) = join_query::try_derived_count(&sql, path == "/explain", format, config)
+    {
+        return response;
+    }
     if let Some(response) = join_query::try_correlated_avg(&sql, path == "/explain", format, config)
     {
         return response;
