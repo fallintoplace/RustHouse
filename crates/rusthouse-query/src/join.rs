@@ -563,7 +563,11 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let offset = if let Some(offset) = comma_offset {
         offset
     } else if parser.keyword("OFFSET") {
-        bound(&mut parser, "OFFSET")?
+        let offset = bound(&mut parser, "OFFSET")?;
+        if !parser.keyword("ROWS") {
+            parser.keyword("ROW");
+        }
+        offset
     } else {
         0
     };
@@ -1420,5 +1424,20 @@ mod tests {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
         assert!(parse_join("SELECT a.*, b.id FROM lefts a JOIN rights b ON a.id = b.id").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod join_offset_rows_tests {
+    use super::*;
+
+    #[test]
+    fn optional_offset_suffix_matches_plain_join_offset() {
+        for suffix in ["OFFSET 3", "OFFSET 3 ROW", "OFFSET 3 ROWS"] {
+            let query = parse_join(&format!("SELECT * FROM l JOIN r ON l.id = r.id {suffix}"))
+                .unwrap().unwrap();
+            assert_eq!(query.offset, 3, "{suffix}");
+        }
+        assert!(parse_join("SELECT * FROM l JOIN r USING (id) OFFSET 3 ROWS ROWS").is_err());
     }
 }
