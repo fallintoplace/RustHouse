@@ -1,5 +1,6 @@
 //! Bounded left-deep execution for chained joins over persistent tables.
 
+mod row_filters;
 mod streaming;
 use super::{ExecutionError, typed};
 use crate::{JoinColumn, JoinSelect, JoinStep, JoinType};
@@ -653,6 +654,12 @@ pub fn execute_multi_join<W: Write>(
         })
         .collect::<Result<Vec<_>, ExecutionError>>()?;
 
+    let row_filters = query
+        .scalar_where
+        .as_ref()
+        .map(|branches| row_filters::RowFilters::bind(branches, &relations))
+        .transpose()?;
+
     // Validate the complete output schema without materializing rows.
     if query.limit == Some(0)
         || ((query.aggregate.is_some() || query.scalar_sum.is_some()) && query.offset > 0)
@@ -708,6 +715,7 @@ pub fn execute_multi_join<W: Write>(
             &comparisons,
             &column_comparisons,
             grouped_sum.as_ref(),
+            row_filters.as_ref(),
             output,
         );
     }

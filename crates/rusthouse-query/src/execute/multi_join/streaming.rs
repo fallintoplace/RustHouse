@@ -67,6 +67,7 @@ struct OutputSpec<'a> {
     group_indices: Option<Vec<usize>>,
     sum: Option<&'a BoundSum>,
     scalar_sum: bool,
+    row_filters: Option<&'a super::row_filters::RowFilters>,
     offset: usize,
     limit: Option<usize>,
 }
@@ -120,6 +121,9 @@ fn visit<W: Write>(
                 typed::matches_comparison(&row[*left], &row[*right], *operator)
             })
         {
+            return Ok(());
+        }
+        if spec.row_filters.is_some_and(|filters| !filters.passes(row)) {
             return Ok(());
         }
         if spec.scalar_sum {
@@ -255,6 +259,7 @@ pub(super) fn execute<W: Write>(
     comparisons: &[(usize, crate::Operator, typed::Cell)],
     column_comparisons: &[(usize, crate::Operator, usize)],
     sum: Option<&BoundSum>,
+    row_filters: Option<&super::row_filters::RowFilters>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if relations[0].names.is_empty() {
@@ -281,6 +286,7 @@ pub(super) fn execute<W: Write>(
         column_comparisons,
         sum,
         scalar_sum: query.scalar_sum.is_some(),
+        row_filters,
         group_indices: query
             .grouped_count
             .as_ref()
@@ -326,6 +332,11 @@ pub(super) fn execute<W: Write>(
     }
     if let Some(sum) = sum {
         for &index in &sum.indices {
+            referenced[index] = true;
+        }
+    }
+    if let Some(filters) = row_filters {
+        for &index in &filters.indices {
             referenced[index] = true;
         }
     }
