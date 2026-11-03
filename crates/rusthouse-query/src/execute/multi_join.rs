@@ -1,5 +1,6 @@
 //! Bounded left-deep execution for chained joins over persistent tables.
 
+mod exists;
 mod row_filters;
 mod streaming;
 use super::{ExecutionError, typed};
@@ -804,6 +805,30 @@ pub fn execute_multi_join<W: Write>(
     paths: &[PathBuf],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    execute_multi_join_inner(query, paths, None, output)
+}
+
+/// Execute a complete correlated join plan. Callers hold a read lock across all paths.
+pub fn execute_correlated_join<W: Write>(
+    plan: &crate::JoinCorrelatedExists,
+    paths: &[PathBuf],
+    inner_paths: &[PathBuf],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    execute_multi_join_inner(
+        plan.outer(),
+        paths,
+        Some((&plan.filters, inner_paths)),
+        output,
+    )
+}
+
+fn execute_multi_join_inner<W: Write>(
+    query: &JoinSelect,
+    paths: &[PathBuf],
+    exists_plan: Option<(&[crate::JoinExistsFilter], &[PathBuf])>,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
     if query
         .grouped_sum_having
         .as_ref()
@@ -868,6 +893,23 @@ pub fn execute_multi_join<W: Write>(
             rows: metadata.rows,
         });
     }
+    let exists = if let Some((filters, inner_paths)) = exists_plan {
+        if query.grouped_count.is_none()
+            || query.aggregate.is_some()
+            || query.grouped_sum.is_some()
+            || query.grouped_distinct.is_some()
+            || !query.grouped_case_counts.is_empty()
+            || query.kind != JoinType::Inner
+            || query.steps.iter().any(|step| step.kind != JoinType::Inner)
+        {
+            return Err(invalid(
+                "correlated JOIN EXISTS requires grouped INNER COUNT",
+            ));
+        }
+        exists::bind(filters, inner_paths, &relations)?
+    } else {
+        Vec::new()
+    };
 
     let initial_step = JoinStep {
         table: query.right.clone(),
@@ -1098,6 +1140,7 @@ pub fn execute_multi_join<W: Write>(
             formula.as_ref(),
             distinct_index,
             row_filters.as_ref(),
+            &exists,
             output,
         );
     }

@@ -220,6 +220,34 @@ pub fn parse_join_with_schema(
     parse_join_resolved(tokenize(sql)?, Some(&mut resolve))
 }
 
+/// Whether the outer SELECT has an explicit JOIN.
+pub fn has_explicit_join(sql: &str) -> Result<bool, ParseError> {
+    let tokens = tokenize(sql)?;
+    let mut depth = 0usize;
+    let mut from = false;
+    for token in &tokens {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("FROM") => from = true,
+            Token::Word(word) if depth == 0 && from && word.eq_ignore_ascii_case("JOIN") => {
+                return Ok(true);
+            }
+            Token::Word(word)
+                if depth == 0
+                    && from
+                    && ["WHERE", "GROUP", "ORDER", "LIMIT", "OFFSET"]
+                        .iter()
+                        .any(|clause| word.eq_ignore_ascii_case(clause)) =>
+            {
+                break;
+            }
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
 type SchemaResolver<'a> = &'a mut dyn FnMut(&str) -> Result<Vec<String>, ParseError>;
 
 fn parse_join_resolved(

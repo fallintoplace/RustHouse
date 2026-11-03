@@ -23,6 +23,16 @@ pub struct JoinCorrelatedExists {
     pub filters: Vec<JoinExistsFilter>,
 }
 
+impl JoinCorrelatedExists {
+    /// Outer sources and output settings; execute the complete plan with its filters.
+    pub fn outer(&self) -> &JoinSelect {
+        &self.outer
+    }
+    pub fn cap_rows(&mut self, cap: usize) {
+        self.outer.limit = Some(self.outer.limit.map_or(cap, |limit| limit.min(cap)));
+    }
+}
+
 fn keyword(token: &Token, name: &str) -> bool {
     matches!(token, Token::Word(word) if word.eq_ignore_ascii_case(name))
 }

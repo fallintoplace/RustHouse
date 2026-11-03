@@ -25,7 +25,7 @@ pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
 pub use execute::{
     ExecutionError, RowPredicate, bind_join_having_subquery, bind_join_in_subquery, execute,
-    execute_join, execute_multi_join, merge_uniq_states,
+    execute_correlated_join, execute_join, execute_multi_join, merge_uniq_states,
 };
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
@@ -33,8 +33,9 @@ pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
 pub use join::{
     JoinAggregate, JoinColumn, JoinCorrelatedExists, JoinExistsFilter, JoinExistsKey,
-    JoinExistsLookup, JoinSelect, JoinStep, JoinType, explain_join, has_implicit_join, parse_join,
-    parse_join_correlated_exists_with_schema, parse_join_with_schema,
+    JoinExistsLookup, JoinSelect, JoinStep, JoinType, explain_join, has_explicit_join,
+    has_implicit_join, parse_join, parse_join_correlated_exists_with_schema,
+    parse_join_with_schema,
 };
 pub use multi_aggregate::AggregateItem;
 pub use update::{Update, UpdateValue, parse_update};
