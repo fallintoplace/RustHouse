@@ -67,9 +67,9 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
     if !parser.keyword("HEADER") {
         return Err(ParseError("expected HEADER after CSV".into()));
     }
-    if parser.keyword("TRUE") {
+    if parser.keyword("TRUE") || parser.keyword("YES") {
         Ok(true)
-    } else if parser.keyword("FALSE") {
+    } else if parser.keyword("FALSE") || parser.keyword("NO") {
         Ok(false)
     } else if parser.tokens.get(parser.index) == Some(&Token::RParen) {
         Ok(true)
