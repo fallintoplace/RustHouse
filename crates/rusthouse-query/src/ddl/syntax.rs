@@ -49,8 +49,14 @@ fn canonical_type(name: &str) -> Option<&'static str> {
 }
 
 pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, ParseError> {
-    let name = parser.word()?;
-    if name.eq_ignore_ascii_case("CHARACTER") {
+    let mut name = parser.word()?;
+    if name.eq_ignore_ascii_case("NATIONAL") {
+        if !parser.keyword("CHARACTER") && !parser.keyword("CHAR") {
+            return Err(ParseError("NATIONAL requires CHARACTER or CHAR".into()));
+        }
+        parser.keyword("VARYING");
+        name = "NCHAR".into();
+    } else if name.eq_ignore_ascii_case("CHARACTER") {
         parser.keyword("VARYING");
     }
     let canonical = canonical_type(&name)
@@ -242,5 +248,24 @@ mod complex_type_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod national_character_type_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn accepts_national_character_spellings() {
+        let parsed = parse_ddl(
+            "CREATE TABLE t (a NATIONAL CHARACTER, b NATIONAL CHARACTER VARYING, c NATIONAL CHAR)",
+        )
+        .unwrap()
+        .unwrap();
+        let Ddl::CreateTable { columns, .. } = parsed else {
+            panic!("expected CREATE TABLE");
+        };
+        assert!(columns.iter().all(|column| column.data_type == "String"));
+        assert!(parse_ddl("CREATE TABLE t (a NATIONAL INTEGER)").is_err());
     }
 }
