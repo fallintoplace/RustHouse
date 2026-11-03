@@ -60,6 +60,13 @@ fn q11_compares_grouped_sum_to_scalar_join_subquery() {
         result.stdout,
         b"outer_a.id\ttotal\n1\t1000000000000000100\n"
     );
+    let plain = precision.replace("SUM(v * 1)", "SUM(v)");
+    let result = sql(&plain);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        result.stdout,
+        b"outer_a.id\ttotal\n1\t1000000000000000100\n"
+    );
     for statement in [
         "CREATE TABLE x (x_id UInt64, amount UInt64)",
         "CREATE TABLE y (y_id UInt64)",
@@ -72,5 +79,43 @@ fn q11_compares_grouped_sum_to_scalar_join_subquery() {
     let result = sql(nested_comma);
     assert!(result.status.success(), "{result:?}");
     assert_eq!(result.stdout, b"x.x_id\ttotal\n2\t4\n");
+    let plain_comma = nested_comma
+        .replace("total >", "total <")
+        .replace("SUM(amount * 0.5)", "SUM(amount)");
+    let result = sql(&plain_comma);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"x.x_id\ttotal\n1\t2\n2\t4\n");
+    let no_rows = plain_comma.replace("x_id = y_id)", "x_id = y_id AND y_id = 99)");
+    let result = sql(&no_rows);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"x.x_id\ttotal\n");
+    assert!(
+        !sql(&plain_comma.replace("SUM(amount)", "SUM(missing)"))
+            .status
+            .success()
+    );
+    assert!(
+        !sql(&plain_comma.replace("SUM(amount)", "SUM(x.amount)"))
+            .status
+            .success()
+    );
+    for statement in [
+        "CREATE TABLE ambiguous_y (y_id UInt64, amount UInt64)",
+        "CREATE TABLE nullable_x (x_id UInt64, amount Nullable(UInt64))",
+        "CREATE TABLE text_x (x_id UInt64, amount String)",
+        "INSERT INTO ambiguous_y VALUES (1, 2)",
+        "INSERT INTO nullable_x VALUES (1, NULL), (2, 4)",
+        "INSERT INTO text_x VALUES (1, 'bad')",
+    ] {
+        assert!(sql(statement).status.success(), "{statement}");
+    }
+    let ambiguous = plain_comma.replace("FROM x, y WHERE", "FROM x, ambiguous_y WHERE");
+    assert!(!sql(&ambiguous).status.success());
+    let text = plain_comma.replace("FROM x, y WHERE", "FROM text_x, y WHERE");
+    assert!(!sql(&text).status.success());
+    let nullable = plain_comma.replace("FROM x, y WHERE", "FROM nullable_x, y WHERE");
+    let result = sql(&nullable);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"x.x_id\ttotal\n1\t2\n");
     fs::remove_dir_all(db).unwrap();
 }
