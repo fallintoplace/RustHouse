@@ -1547,7 +1547,7 @@ pub fn execute_join<W: Write>(
         right_keys.push(right_index);
     }
 
-    if query.where_comparison.is_some() {
+    if query.where_comparison.is_some() && query.grouped_count.is_none() {
         return comparison_filter::execute(
             query,
             left_path,
