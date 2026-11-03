@@ -282,6 +282,28 @@ pub(super) fn scan_word(sql: &str, index: &mut usize) -> Token {
     Token::Word(sql[start..*index].into())
 }
 
+pub(super) fn scan_hex_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
+    let bytes = sql.as_bytes();
+    let mut cursor = *index + 2;
+    let start = cursor;
+    while bytes.get(cursor).is_some_and(u8::is_ascii_hexdigit) {
+        cursor += 1;
+    }
+    if bytes.get(cursor) != Some(&b'\'') || (cursor - start) % 2 != 0 {
+        return Err(ParseError("invalid SQL hexadecimal string literal".into()));
+    }
+    let mut decoded = Vec::with_capacity((cursor - start) / 2);
+    for pair in bytes[start..cursor].chunks_exact(2) {
+        let high = (pair[0] as char).to_digit(16).expect("validated hex digit") as u8;
+        let low = (pair[1] as char).to_digit(16).expect("validated hex digit") as u8;
+        decoded.push((high << 4) | low);
+    }
+    let value = String::from_utf8(decoded)
+        .map_err(|_| ParseError("hexadecimal string requires valid UTF-8".into()))?;
+    *index = cursor + 1;
+    Ok(Token::String(value))
+}
+
 pub(super) fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
     let (operator, width) = match (bytes[*index], bytes.get(*index + 1)) {
         (b'<', Some(b'=')) => (Operator::Le, 2),
