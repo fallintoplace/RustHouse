@@ -70,10 +70,18 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
         Ok(true)
     } else if parser.keyword("FALSE") {
         Ok(false)
+    } else if let Some(Token::Number(value)) = parser.tokens.get(parser.index) {
+        let enabled = match value.as_str() {
+            "1" => true,
+            "0" => false,
+            _ => return Err(ParseError("HEADER numeric value must be 0 or 1".into())),
+        };
+        parser.index += 1;
+        Ok(enabled)
     } else if parser.tokens.get(parser.index) == Some(&Token::RParen) {
         Ok(true)
     } else {
-        Err(ParseError("HEADER must be TRUE or FALSE".into()))
+        Err(ParseError("HEADER must be TRUE, FALSE, 0 or 1".into()))
     }
 }
 
