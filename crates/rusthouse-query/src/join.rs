@@ -21,6 +21,14 @@ pub struct JoinColumn {
 }
 
 impl JoinColumn {
+    pub(crate) fn display_name(&self) -> String {
+        if self.relation.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}.{}", self.relation, self.name)
+        }
+    }
+
     fn count_order() -> Self {
         Self {
             relation: String::new(),
@@ -155,7 +163,11 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             parser.index += 1;
             JoinAggregate::CountStar
         } else {
-            JoinAggregate::CountColumn(qualified(&mut parser)?)
+            let column = projected(&mut parser)?;
+            if column.name == "*" {
+                return Err(ParseError("JOIN COUNT requires a column".into()));
+            }
+            JoinAggregate::CountColumn(column)
         };
         if !parser.take(Token::RParen) {
             return Err(ParseError("JOIN COUNT requires ')'".into()));
@@ -177,7 +189,10 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             if !parser.take(Token::LParen) {
                 return Err(ParseError("JOIN aggregate requires '('".into()));
             }
-            let column = qualified(&mut parser)?;
+            let column = projected(&mut parser)?;
+            if column.name == "*" {
+                return Err(ParseError("JOIN aggregate requires a column".into()));
+            }
             if !parser.take(Token::RParen) {
                 return Err(ParseError("JOIN aggregate requires ')'".into()));
             }
@@ -599,7 +614,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     if let Some(JoinAggregate::CountColumn(column) | JoinAggregate::Numeric { column, .. }) =
         &aggregate
     {
-        if !known_qualifier(&column.relation) {
+        if !column.relation.is_empty() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}",
                 column.relation
@@ -852,10 +867,10 @@ pub fn explain_join(query: &JoinSelect) -> String {
             match aggregate {
                 JoinAggregate::CountStar => "count(*)".to_owned(),
                 JoinAggregate::CountColumn(column) => {
-                    format!("count({}.{})", column.relation, column.name)
+                    format!("count({})", column.display_name())
                 }
                 JoinAggregate::Numeric { function, column } => {
-                    format!("{}({}.{})", function.name(), column.relation, column.name)
+                    format!("{}({})", function.name(), column.display_name())
                 }
             }
         } else {
