@@ -20,8 +20,8 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "BIGINT" => "Int64",
         "TEXT" | "VARCHAR" | "CHARACTER" | "CHAR" | "NCHAR" | "NVARCHAR" => "String",
         "TIMESTAMP" => "DateTime",
-        "REAL" | "FLOAT" => "Float32",
-        "DOUBLE" => "Float64",
+        "REAL" | "FLOAT" | "FLOAT4" => "Float32",
+        "DOUBLE" | "FLOAT8" => "Float64",
         "BOOLEAN" => "Bool",
         "UINT8" => "UInt8",
         "UINT16" => "UInt16",
@@ -242,5 +242,23 @@ mod complex_type_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod postgres_float_alias_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn float4_and_float8_map_to_exact_storage_widths() {
+        let parsed = parse_ddl("CREATE TABLE metrics (small FLOAT4, large FLOAT8)")
+            .unwrap()
+            .unwrap();
+        let Ddl::CreateTable { columns, .. } = parsed else {
+            panic!("expected CREATE TABLE");
+        };
+        assert_eq!(columns[0].data_type, "Float32");
+        assert_eq!(columns[1].data_type, "Float64");
+        assert!(parse_ddl("CREATE TABLE metrics (bad FLOAT16)").is_err());
     }
 }
