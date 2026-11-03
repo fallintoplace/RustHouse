@@ -96,6 +96,8 @@ pub struct JoinSelect {
     pub where_comparisons_extra: Vec<(JoinColumn, crate::Operator, String)>,
     /// Column-to-column comparisons for two-table INNER joins.
     pub where_column_comparisons: Vec<(JoinColumn, crate::Operator, JoinColumn)>,
+    /// Small IN lists for two-table INNER join filters.
+    pub where_in_filters: Vec<(JoinColumn, Vec<String>)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
@@ -493,6 +495,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     let mut where_comparison = None;
     let mut where_comparisons_extra = Vec::new();
     let mut where_column_comparisons = Vec::new();
+    let mut where_in_filters = Vec::new();
     if parser.keyword("WHERE") {
         let mut count = 0;
         loop {
@@ -517,6 +520,24 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                     ));
                 }
                 where_null = Some((column, not_null));
+            } else if parser.keyword("IN") {
+                if !parser.take(Token::LParen) {
+                    return Err(ParseError("JOIN IN requires '('".into()));
+                }
+                let mut values = Vec::new();
+                loop {
+                    if values.len() == 64 {
+                        return Err(ParseError("JOIN IN supports at most 64 values".into()));
+                    }
+                    values.push(parser.literal()?);
+                    if !parser.take(Token::Comma) {
+                        break;
+                    }
+                }
+                if !parser.take(Token::RParen) {
+                    return Err(ParseError("JOIN IN requires ')'".into()));
+                }
+                where_in_filters.push((column, values));
             } else {
                 let operator = parser.operator()?;
                 if !matches!(
@@ -711,6 +732,14 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             }
         }
     }
+    for (column, _) in &where_in_filters {
+        if !column.relation.is_empty() && !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
+        }
+    }
     if let Some((column, _)) = &where_null {
         if !column.relation.is_empty() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
@@ -763,7 +792,9 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
-    if (where_comparison.is_some() || !where_column_comparisons.is_empty())
+    if (where_comparison.is_some()
+        || !where_column_comparisons.is_empty()
+        || !where_in_filters.is_empty())
         && (kind != JoinType::Inner
             || !steps.is_empty()
             || (grouped_count_projection
@@ -782,7 +813,9 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         ));
     }
     if grouped_count_projection
-        && (!where_comparisons_extra.is_empty() || !where_column_comparisons.is_empty())
+        && (!where_comparisons_extra.is_empty()
+            || !where_column_comparisons.is_empty()
+            || !where_in_filters.is_empty())
     {
         return Err(ParseError(
             "grouped JOIN supports one comparison filter".into(),
@@ -873,6 +906,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         where_comparison,
         where_comparisons_extra,
         where_column_comparisons,
+        where_in_filters,
         order_by,
         limit,
         offset,
@@ -1014,6 +1048,13 @@ pub fn explain_join(query: &JoinSelect) -> String {
             left.display_name(),
             operator,
             right.display_name()
+        ));
+    }
+    for (column, values) in &query.where_in_filters {
+        plan.push_str(&format!(
+            "\nFilter: {} IN ({} values)",
+            column.display_name(),
+            values.len()
         ));
     }
     if !query.order_by.is_empty() {
