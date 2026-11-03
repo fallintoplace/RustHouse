@@ -123,13 +123,16 @@ where
     let filter_batch = null_filter.and_then(|(column, _)| {
         (column < width).then(|| retained.binary_search(&column).expect("filter retained"))
     });
+    let comparison_batch = comparison_filter
+        .as_ref()
+        .map(|(column, _, _)| retained.binary_search(column).expect("comparison retained"));
     let mut reader = TypedQueryReader::open(left_path, &names)?;
     let mut key = Vec::with_capacity(left_keys.len());
     let null = typed::Cell::Null;
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if let Some((column, operator, literal)) = comparison_filter {
-                let batch_index = retained.binary_search(&column).expect("comparison retained");
+            if let Some((_, operator, literal)) = comparison_filter {
+                let batch_index = comparison_batch.expect("comparison batch index bound");
                 let value = typed::cell(&batch[batch_index], row);
                 if !typed::matches_comparison(&value, literal, operator) {
                     continue;
