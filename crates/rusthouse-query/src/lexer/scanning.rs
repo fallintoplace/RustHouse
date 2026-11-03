@@ -284,6 +284,40 @@ pub(super) fn punctuation_token(byte: u8) -> Token {
 }
 
 #[cfg(test)]
+mod radix_separator_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_grouped_hexadecimal_and_binary_digits() {
+        for (sql, expected) in [
+            ("0xAB_CD", "43981"),
+            ("0X12_34_56", "1193046"),
+            ("0b1010_0110", "166"),
+            ("0B1_0_1", "5"),
+        ] {
+            let mut cursor = 0;
+            let radix = if sql.as_bytes()[1].eq_ignore_ascii_case(&b'x') {
+                16
+            } else {
+                2
+            };
+            assert_eq!(
+                scan_radix_number(sql, &mut cursor, radix).unwrap(),
+                Token::Number(expected.into()),
+            );
+            assert_eq!(cursor, sql.len());
+        }
+    }
+
+    #[test]
+    fn separators_must_be_between_valid_digits() {
+        for sql in ["0x_FF", "0xFF_", "0xA__B", "0b_1", "0b1_", "0b1_2"] {
+            assert!(crate::parse_select(&format!("SELECT {sql}")).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod exponent_tests {
     use super::*;
 
@@ -502,36 +536,3 @@ mod doubled_equals_tests {
     }
 }
 
-#[cfg(test)]
-mod radix_separator_tests {
-    use super::*;
-
-    #[test]
-    fn accepts_grouped_hexadecimal_and_binary_digits() {
-        for (sql, expected) in [
-            ("0xAB_CD", "43981"),
-            ("0X12_34_56", "1193046"),
-            ("0b1010_0110", "166"),
-            ("0B1_0_1", "5"),
-        ] {
-            let mut cursor = 0;
-            let radix = if sql.as_bytes()[1].eq_ignore_ascii_case(&b'x') {
-                16
-            } else {
-                2
-            };
-            assert_eq!(
-                scan_radix_number(sql, &mut cursor, radix).unwrap(),
-                Token::Number(expected.into()),
-            );
-            assert_eq!(cursor, sql.len());
-        }
-    }
-
-    #[test]
-    fn separators_must_be_between_valid_digits() {
-        for sql in ["0x_FF", "0xFF_", "0xA__B", "0b_1", "0b1_", "0b1_2"] {
-            assert!(crate::parse_select(&format!("SELECT {sql}")).is_err(), "{sql}");
-        }
-    }
-}
