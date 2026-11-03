@@ -471,7 +471,10 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         });
     }
     let (where_null, where_comparison) = if parser.keyword("WHERE") {
-        let column = qualified(&mut parser)?;
+        let column = projected(&mut parser)?;
+        if column.name == "*" {
+            return Err(ParseError("JOIN WHERE requires a column".into()));
+        }
         if parser.keyword("IS") {
             let not_null = parser.keyword("NOT");
             if !parser.keyword("NULL") && !parser.keyword("UNKNOWN") {
@@ -607,7 +610,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         }
     }
     if let Some((column, _, _)) = &where_comparison {
-        if !known_qualifier(&column.relation) {
+        if !column.relation.is_empty() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}",
                 column.relation
@@ -615,7 +618,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         }
     }
     if let Some((column, _)) = &where_null {
-        if !known_qualifier(&column.relation) {
+        if !column.relation.is_empty() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}",
                 column.relation
@@ -869,16 +872,25 @@ pub fn explain_join(query: &JoinSelect) -> String {
     }
     if let Some((column, not_null)) = &query.where_null {
         plan.push_str(&format!(
-            "\nFilter: {}.{} IS {}NULL",
-            column.relation,
-            column.name,
+            "\nFilter: {} IS {}NULL",
+            if column.relation.is_empty() {
+                column.name.clone()
+            } else {
+                format!("{}.{}", column.relation, column.name)
+            },
             if *not_null { "NOT " } else { "" }
         ));
     }
     if let Some((column, operator, value)) = &query.where_comparison {
         plan.push_str(&format!(
-            "\nFilter: {}.{} {:?} literal({})",
-            column.relation, column.name, operator, value
+            "\nFilter: {} {:?} literal({})",
+            if column.relation.is_empty() {
+                column.name.clone()
+            } else {
+                format!("{}.{}", column.relation, column.name)
+            },
+            operator,
+            value
         ));
     }
     if !query.order_by.is_empty() {
