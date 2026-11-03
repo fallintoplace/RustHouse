@@ -26,6 +26,14 @@ fn grouped_arithmetic_handles_null_and_multiple_keys() {
         output.stdout,
         b"category\tkind\trevenue\tn\n1\t1\t25\t2\n1\t2\tNULL\t1\n2\t1\t2\t1\n"
     );
+    let unaliased = sql(
+        "SELECT category, SUM(price * (1 - discount)) FROM items GROUP BY category ORDER BY category",
+    );
+    assert!(unaliased.status.success(), "{unaliased:?}");
+    assert_eq!(
+        unaliased.stdout,
+        b"category\tsum(price * (1 - discount))\n1\t25\n2\t2\n"
+    );
     let query = "SELECT category, SUM(price * (1 - discount)) AS revenue, COUNT(*) AS n FROM items GROUP BY category ORDER BY category";
     let output = sql(query);
     assert!(output.status.success(), "{query}: {output:?}");

@@ -28,7 +28,7 @@ impl AggregateItem {
     }
 }
 
-fn render_expr(expr: &ScalarExpr) -> String {
+pub(crate) fn render_expr(expr: &ScalarExpr) -> String {
     let mut output = String::new();
     render_expr_into(expr, &mut output);
     output

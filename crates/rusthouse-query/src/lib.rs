@@ -1004,7 +1004,7 @@ fn grouped_metric_with_expression(
     {
         let expression = expression::parse_expression_tokens(parser)?;
         if !matches!(expression, ScalarExpr::Column(_)) {
-            return Ok(("<expression>".into(), None, Some(expression)));
+            return Ok((multi_aggregate::render_expr(&expression), None, Some(expression)));
         }
         parser.index = start;
     }
@@ -1577,13 +1577,6 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         } else {
                             None
                         });
-                    }
-                    for (expression, alias) in expressions.iter().zip(&aliases) {
-                        if expression.is_some() && alias.is_none() {
-                            return Err(ParseError(
-                                "grouped aggregate expressions require an alias".into(),
-                            ));
-                        }
                     }
                     let mut seen = std::collections::HashSet::new();
                     for alias in aliases.iter().flatten() {
@@ -2778,8 +2771,7 @@ mod tpch_parser_first_stop_2 {
 
     #[test]
     fn unsupported_construct_has_specific_error() {
-        let error = parse_select("SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category").unwrap_err();
-        assert!(error.0.contains("require an alias"), "{error}");
+        parse_select("SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category").unwrap();
         parse_select("SELECT category, SUM(price * (1 - discount)) AS total FROM sales GROUP BY category").unwrap();
     }
 }
