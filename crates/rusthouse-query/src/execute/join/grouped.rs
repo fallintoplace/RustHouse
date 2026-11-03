@@ -513,6 +513,22 @@ pub(super) fn execute<W: Write>(
             Ok((index, *operator, literal))
         })
         .transpose()?;
+    let right_meta = inspect_query_source(right_path)?;
+    let on_like = query
+        .on_right_like
+        .as_ref()
+        .map(|(column, pattern, negated)| {
+            let index = resolve(query, column, left_names, right_names)?;
+            if index < width {
+                return Err(invalid("JOIN ON LIKE must use the right input"));
+            }
+            let local = index - width;
+            if typed::base_type(&right_meta.columns[local].data_type) != "String" {
+                return Err(invalid("JOIN ON LIKE requires a String column"));
+            }
+            Ok((local, typed::compile_text_pattern(pattern)?, *negated))
+        })
+        .transpose()?;
     if query.limit == Some(0) {
         writeln!(
             output,
@@ -522,14 +538,18 @@ pub(super) fn execute<W: Write>(
         return Ok(());
     }
     let selected = [(index, group_name.clone(), None)];
-    let right_meta = inspect_query_source(right_path)?;
     let mut keep = retained_build_columns(right_names, right_keys, &selected, null_filter, width);
     if let Some(column) = count_index.filter(|index| *index >= width) {
         keep.push(column - width);
         keep.sort_unstable();
         keep.dedup();
     }
-    let right_rows = read_projected_build_rows(
+    if let Some((index, _, _)) = &on_like {
+        keep.push(*index);
+        keep.sort_unstable();
+        keep.dedup();
+    }
+    let mut right_rows = read_projected_build_rows(
         right_path,
         right_names,
         &keep,
@@ -537,6 +557,14 @@ pub(super) fn execute<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
+    if let Some((index, pattern, negated)) = &on_like {
+        right_rows.retain(|row| match &row[*index] {
+            typed::Cell::Text(value) => {
+                typed::text_pattern_matches(value, pattern, false) != *negated
+            }
+            _ => false,
+        });
+    }
     let hash = build_grouped_join_hash(&right_rows, right_keys, query.any);
     // Store one representative display Cell and an exact count per group.
     let mut groups: HashMap<typed::Key, (typed::Cell, u64)> = HashMap::new();

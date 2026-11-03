@@ -123,6 +123,8 @@ pub struct JoinSelect {
     pub grouped_count: Option<Vec<JoinColumn>>,
     /// Count non-NULL values of this column in grouped joins.
     pub grouped_count_column: Option<JoinColumn>,
+    /// Right-side LIKE predicate applied before a grouped LEFT JOIN matches.
+    pub on_right_like: Option<(JoinColumn, String, bool)>,
     /// Integer COUNT(DISTINCT column) grouped over INNER joins.
     pub grouped_distinct: Option<JoinColumn>,
     /// SUM(CASE WHEN ... THEN 1 ELSE 0 END) metrics for one grouped key.
@@ -1005,6 +1007,7 @@ fn parse_join_tokens(
     if left_alias == right_alias {
         return Err(ParseError("joined tables require distinct aliases".into()));
     }
+    let mut on_right_like = None;
     let (keys, using_keys) = if cross {
         (Vec::new(), Vec::new())
     } else if parser.keyword("USING") {
@@ -1043,6 +1046,21 @@ fn parse_join_tokens(
     } else if parser.keyword("ON") {
         let mut keys = Vec::new();
         equality_group(&mut parser, &mut keys, 0)?;
+        if parser.keyword("AND") {
+            let column = projected(&mut parser)?;
+            let negated = parser.keyword("NOT");
+            if !parser.keyword("LIKE") {
+                return Err(ParseError(
+                    "JOIN ON supports a right-side LIKE filter".into(),
+                ));
+            }
+            let pattern = match parser.tokens.get(parser.index) {
+                Some(Token::String(value)) => value.clone(),
+                _ => return Err(ParseError("JOIN ON LIKE requires a string literal".into())),
+            };
+            parser.index += 1;
+            on_right_like = Some((column, pattern, negated));
+        }
         let mut unique: Vec<(JoinColumn, JoinColumn)> = Vec::with_capacity(keys.len());
         for (first, second) in keys {
             if !unique.iter().any(|(left, right)| {
@@ -1536,6 +1554,11 @@ fn parse_join_tokens(
             )));
         }
     }
+    if let Some((column, _, _)) = &on_right_like {
+        if !column.relation.is_empty() && column.relation != right_alias {
+            return Err(ParseError("JOIN ON LIKE must use the right input".into()));
+        }
+    }
     if let Some(JoinAggregate::CountColumn(column) | JoinAggregate::Numeric { column, .. }) =
         &aggregate
     {
@@ -1747,6 +1770,13 @@ fn parse_join_tokens(
             "grouped COUNT(column) requires one key and two INNER or LEFT inputs".into(),
         ));
     }
+    if on_right_like.is_some()
+        && (kind != JoinType::Left || grouped_count_column.is_none() || !steps.is_empty())
+    {
+        return Err(ParseError(
+            "JOIN ON LIKE requires grouped LEFT JOIN COUNT(column)".into(),
+        ));
+    }
     if grouped_sum.is_some()
         && (kind != JoinType::Inner || steps.iter().any(|step| step.kind != JoinType::Inner))
     {
@@ -1869,6 +1899,7 @@ fn parse_join_tokens(
         aggregate_alias,
         grouped_count,
         grouped_count_column,
+        on_right_like,
         grouped_distinct,
         grouped_case_counts,
         grouped_sum,
@@ -2088,6 +2119,14 @@ pub fn explain_join(query: &JoinSelect) -> String {
     }
     if let Some(branches) = &query.scalar_where {
         plan.push_str(&format!("\nFilter: {} boolean branches", branches.len()));
+    }
+    if let Some((column, pattern, negated)) = &query.on_right_like {
+        plan.push_str(&format!(
+            "\nJoin filter: {} {}LIKE '{}'",
+            column.display_name(),
+            if *negated { "NOT " } else { "" },
+            pattern.replace('\'', "''")
+        ));
     }
     if let Some(having) = &query.grouped_sum_having {
         let value = if having.subquery.is_some() {

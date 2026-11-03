@@ -842,6 +842,11 @@ fn execute_multi_join_inner<W: Write>(
     avg_plan: Option<(&crate::JoinCorrelatedAvg, &std::path::Path)>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query.on_right_like.is_some() {
+        return Err(invalid(
+            "JOIN ON LIKE requires the two-table LEFT JOIN executor",
+        ));
+    }
     if query.grouped_count_column.is_some() {
         return Err(invalid(
             "grouped COUNT(column) requires the two-table JOIN executor",
