@@ -52,12 +52,31 @@ fn correlated_exists_counts_each_outer_row_once_and_skips_nulls() {
     );
     assert!(empty_table.status.success(), "{empty_table:?}");
     assert_eq!(empty_table.stdout, b"count\n0\n");
+    let anti = sql(
+        "SELECT COUNT(*) FROM orders WHERE NOT EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey AND l_commitdate < l_receiptdate)",
+    );
+    assert!(anti.status.success(), "{anti:?}");
+    assert_eq!(anti.stdout, b"count\n3\n");
+    let filtered_anti = sql(
+        "SELECT COUNT(*) FROM orders WHERE o_orderdate < DATE '1994-01-01' AND NOT EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey AND l_commitdate < l_receiptdate)",
+    );
+    assert!(filtered_anti.status.success(), "{filtered_anti:?}");
+    assert_eq!(filtered_anti.stdout, b"count\n3\n");
+    let grouped_anti = sql(
+        "SELECT o_orderpriority, COUNT(*) AS n FROM orders WHERE NOT EXISTS (SELECT * FROM lineitem WHERE o_orderkey = l_orderkey AND l_commitdate < l_receiptdate) AND o_orderdate < DATE '1994-01-01' GROUP BY o_orderpriority ORDER BY o_orderpriority",
+    );
+    assert!(grouped_anti.status.success(), "{grouped_anti:?}");
+    assert_eq!(grouped_anti.stdout, b"o_orderpriority\tn\nA\t1\nB\t2\n");
+    let empty_anti = sql(
+        "SELECT COUNT(*) FROM orders WHERE NOT EXISTS (SELECT * FROM empty_lines WHERE l_key = o_orderkey)",
+    );
+    assert!(empty_anti.status.success(), "{empty_anti:?}");
+    assert_eq!(empty_anti.stdout, b"count\n5\n");
     let statement = "CREATE TABLE wrong_type (l_key Int64)";
     assert!(sql(statement).status.success());
     for query in [
         "SELECT count(*) FROM orders WHERE o_orderkey = 1 AND EXISTS (SELECT * FROM wrong_type WHERE l_key = o_orderkey)",
         "SELECT count(*) FROM orders WHERE o_orderkey = 1 OR o_orderkey = 2 AND EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey)",
-        "SELECT count(*) FROM orders WHERE o_orderkey = 1 AND NOT EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey)",
         "SELECT count(*) FROM orders WHERE o_orderkey = 1 AND EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey LIMIT 0)",
     ] {
         let result = sql(query);
