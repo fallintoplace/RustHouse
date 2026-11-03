@@ -73,6 +73,9 @@ fn parse_insert_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, Pars
         if !parser.take(Token::Comma) {
             break;
         }
+        if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+            break;
+        }
     }
     if !parser.take(Token::RParen) {
         return Err(ParseError("expected ')' after INSERT columns".into()));
@@ -295,5 +298,26 @@ mod boolean_values_tests {
             vec![vec![Some("1".into()), Some("0".into()), None]]
         );
         assert!(parse_insert("INSERT INTO flags VALUES (TRUTH)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod insert_trailing_column_comma_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_one_trailing_comma_in_insert_column_list() {
+        let with_comma = parse_insert("INSERT INTO t (id, name,) VALUES (1, 'Ada')")
+            .unwrap().unwrap();
+        let normal = parse_insert("INSERT INTO t (id, name) VALUES (1, 'Ada')")
+            .unwrap().unwrap();
+        assert_eq!(with_comma, normal);
+        for invalid in [
+            "INSERT INTO t (,) VALUES (1)",
+            "INSERT INTO t (id,,) VALUES (1)",
+            "INSERT INTO t (id,id,) VALUES (1,2)",
+        ] {
+            assert!(parse_insert(invalid).is_err(), "{invalid}");
+        }
     }
 }
