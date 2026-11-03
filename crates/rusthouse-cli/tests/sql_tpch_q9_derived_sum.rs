@@ -43,6 +43,19 @@ fn q9_groups_profit_from_a_derived_join() {
         result.stdout,
         b"nation\to_year\tsum_profit\nCANADA\t1994\t50\nUSA\t1995\t80\n"
     );
+    let sum_key = query
+        .replace("    nation,", "    sum,")
+        .replace("n_name AS nation", "n_name AS sum");
+    let result = sql(&sum_key);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        result.stdout,
+        b"sum\to_year\tsum_profit\nCANADA\t1994\t50\nUSA\t1995\t80\n"
+    );
     let limited = query.trim_end().trim_end_matches(';').to_owned() + " LIMIT 1 OFFSET 1";
     let result = sql(&limited);
     assert!(
