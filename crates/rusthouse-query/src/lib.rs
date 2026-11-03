@@ -856,7 +856,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     if !parser.keyword("SELECT") {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
-    let mut distinct = parser.keyword("DISTINCT") || parser.keyword("DISTINCTROW");
+    let mut distinct = parser.keyword("DISTINCT")
+        || parser.keyword("DISTINCTROW")
+        || parser.keyword("UNIQUE");
     if !distinct {
         parser.keyword("ALL");
     }
