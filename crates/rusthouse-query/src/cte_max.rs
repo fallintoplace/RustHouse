@@ -27,6 +27,16 @@ impl CteMaxJoin {
     }
 }
 
+fn parse_page_number(parser: &mut Parser) -> Result<usize, ParseError> {
+    let value = parser.number()?;
+    if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(ParseError("LIMIT or OFFSET requires an integer".into()));
+    }
+    value
+        .parse()
+        .map_err(|_| ParseError("LIMIT or OFFSET is too large".into()))
+}
+
 /// Whether a statement starts with WITH. Unsupported CTE shapes are rejected.
 pub fn has_cte_max_join(sql: &str) -> Result<bool, ParseError> {
     Ok(
@@ -215,22 +225,13 @@ pub fn parse_cte_max_join(sql: &str) -> Result<Option<CteMaxJoin>, ParseError> {
     } else {
         None
     };
-    let number = |parser: &mut Parser| -> Result<usize, ParseError> {
-        let value = parser.number()?;
-        if !value.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(ParseError("LIMIT or OFFSET requires an integer".into()));
-        }
-        value
-            .parse()
-            .map_err(|_| ParseError("LIMIT or OFFSET is too large".into()))
-    };
     let limit = if parser.keyword("LIMIT") {
-        Some(number(&mut parser)?)
+        Some(parse_page_number(&mut parser)?)
     } else {
         None
     };
     let offset = if parser.keyword("OFFSET") {
-        number(&mut parser)?
+        parse_page_number(&mut parser)?
     } else {
         0
     };
