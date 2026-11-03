@@ -74,6 +74,13 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             }
             b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
+            b'+' if !follows_binary_minus_context(&tokens)
+                && (is_ascii_digit_at(bytes, index + 1)
+                    || (bytes.get(index + 1) == Some(&b'.')
+                        && is_ascii_digit_at(bytes, index + 2))) =>
+            {
+                scan_number(sql, &mut index)?
+            }
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 // Track nested block comments without recursively parsing
                 // user-supplied SQL or stopping at an inner close marker.
@@ -570,6 +577,43 @@ mod line_comment_scanning_tests {
         assert_eq!(
             tokenize("SELECT 1 # ignored\r\nFROM numbers(2)").unwrap(),
             plain
+        );
+    }
+}
+
+#[cfg(test)]
+mod unary_plus_number_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_signed_positive_literals_without_changing_binary_addition() {
+        assert_eq!(
+            tokenize("SELECT +12, +.5, +1e2").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("+12".into()),
+                Token::Comma,
+                Token::Number("+.5".into()),
+                Token::Comma,
+                Token::Number("+1e2".into()),
+            ]
+        );
+        assert_eq!(
+            tokenize("1+2 (3)+4 WHERE n >= +5").unwrap(),
+            vec![
+                Token::Number("1".into()),
+                Token::Plus,
+                Token::Number("2".into()),
+                Token::LParen,
+                Token::Number("3".into()),
+                Token::RParen,
+                Token::Plus,
+                Token::Number("4".into()),
+                Token::Word("WHERE".into()),
+                Token::Word("n".into()),
+                Token::Operator(Operator::Ge),
+                Token::Number("+5".into()),
+            ]
         );
     }
 }

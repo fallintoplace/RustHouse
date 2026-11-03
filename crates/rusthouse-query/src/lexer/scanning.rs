@@ -78,14 +78,20 @@ pub(super) fn scan_radix_number(
 pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
     let start = *index;
-    if bytes[*index] == b'-' {
+    let sign = matches!(bytes[*index], b'-' | b'+');
+    if sign {
+        let message = if bytes[*index] == b'-' {
+            "expected digits after '-'"
+        } else {
+            "expected digits after '+'"
+        };
         *index += 1;
         if bytes.get(*index) != Some(&b'.') {
-            require_digit(bytes, *index, "expected digits after '-'")?;
+            require_digit(bytes, *index, message)?;
         }
     }
     advance_ascii_digits(bytes, index);
-    let has_whole_digits = *index > start + usize::from(bytes[start] == b'-');
+    let has_whole_digits = *index > start + usize::from(sign);
     if bytes.get(*index) == Some(&b'.') {
         *index += 1;
         if !has_whole_digits {
