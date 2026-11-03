@@ -35,6 +35,7 @@ name = "parallel_queries"
 harness = false
 
 [dependencies]
+regex = "1.12.3"
 rusthouse-storage = { path = "../rusthouse-storage" }
 
 [dev-dependencies]

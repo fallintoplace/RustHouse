@@ -191,6 +191,12 @@ pub fn explain_select(query: &Select) -> String {
     }
 
     steps.push(describe_projection(&query.projection));
+    if let Some(regex) = &query.grouped_regex {
+        steps.push(format!(
+            "Group REGEXP_REPLACE: {} as {}",
+            regex.column, regex.key_label
+        ));
+    }
     if let Some(case) = &query.grouped_case_key {
         steps.push(format!("Group conditional string key: {}", case.case_label));
     }
