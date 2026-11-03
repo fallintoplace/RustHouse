@@ -92,6 +92,8 @@ pub struct JoinSelect {
     pub where_null: Option<(JoinColumn, bool)>,
     /// One typed comparison after a two-table unordered INNER JOIN.
     pub where_comparison: Option<(JoinColumn, crate::Operator, String)>,
+    /// Additional conjunctive literal comparisons for two-table INNER joins.
+    pub where_comparisons_extra: Vec<(JoinColumn, crate::Operator, String)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
@@ -518,6 +520,36 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     } else {
         (None, None)
     };
+    let mut where_comparisons_extra = Vec::new();
+    while parser.keyword("AND") {
+        if where_comparison.is_none() {
+            return Err(ParseError(
+                "JOIN cannot combine NULL filters with other predicates".into(),
+            ));
+        }
+        if where_comparisons_extra.len() >= 15 {
+            return Err(ParseError("JOIN supports at most 16 comparisons".into()));
+        }
+        let column = projected(&mut parser)?;
+        if column.name == "*" {
+            return Err(ParseError("JOIN WHERE requires a column".into()));
+        }
+        let operator = parser.operator()?;
+        if !matches!(
+            operator,
+            crate::Operator::Eq
+                | crate::Operator::Ne
+                | crate::Operator::Lt
+                | crate::Operator::Le
+                | crate::Operator::Gt
+                | crate::Operator::Ge
+        ) {
+            return Err(ParseError(
+                "JOIN WHERE requires a comparison operator".into(),
+            ));
+        }
+        where_comparisons_extra.push((column, operator, parser.literal()?));
+    }
     let group_by = if parser.keyword("GROUP") {
         if !parser.keyword("BY") {
             return Err(ParseError("JOIN GROUP requires BY".into()));
@@ -639,6 +671,14 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             )));
         }
     }
+    for (column, _, _) in &where_comparisons_extra {
+        if !column.relation.is_empty() && !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
+        }
+    }
     if let Some((column, _)) = &where_null {
         if !column.relation.is_empty() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
@@ -707,6 +747,11 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         return Err(ParseError(
             "JOIN comparison WHERE requires an unordered two-table INNER JOIN, or grouped COUNT(*) with a fact-side filter"
                 .into(),
+        ));
+    }
+    if grouped_count_projection && !where_comparisons_extra.is_empty() {
+        return Err(ParseError(
+            "grouped JOIN supports one comparison filter".into(),
         ));
     }
     let grouped_count = if grouped_count_projection {
@@ -792,6 +837,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         using_keys,
         where_null,
         where_comparison,
+        where_comparisons_extra,
         order_by,
         limit,
         offset,
@@ -915,6 +961,14 @@ pub fn explain_join(query: &JoinSelect) -> String {
             } else {
                 format!("{}.{}", column.relation, column.name)
             },
+            operator,
+            value
+        ));
+    }
+    for (column, operator, value) in &query.where_comparisons_extra {
+        plan.push_str(&format!(
+            "\nFilter: {} {:?} literal({})",
+            column.display_name(),
             operator,
             value
         ));

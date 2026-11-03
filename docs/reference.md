@@ -16,6 +16,8 @@ You can also write an inner equi-join as `FROM users u, teams t WHERE u.team_id 
 
 For a two-table INNER JOIN, scalar `COUNT(column)`, `SUM`, `AVG`, `MIN`, and `MAX` accept an unqualified argument when the column name is unique.
 
+An unordered two-table INNER JOIN supports up to 16 AND-connected column-to-literal comparisons in `WHERE`. This path supports projections and `COUNT(*)`; grouped queries support one fact-side comparison. `IS NULL` filters cannot be combined with comparisons in this form.
+
 **Limits for two-table joins:**
 
 - An unordered INNER JOIN can build a hash table with up to **262,144 rows** and **32 MiB** of retained cells. It can stream the other input without a fixed row limit.

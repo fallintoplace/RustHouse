@@ -15,14 +15,22 @@ struct BoundFilter {
 // key even if that row later fails the predicate.
 fn prefilter_dimension_rows(
     rows: &mut Vec<Vec<typed::Cell>>,
-    filter: &BoundFilter,
+    filters: &[BoundFilter],
     left_width: usize,
     any: bool,
 ) {
-    if !any && filter.column >= left_width {
-        let column = filter.column - left_width;
+    if !any {
         rows.retain(|row| {
-            typed::matches_comparison(&row[column], &filter.literal, filter.operator)
+            filters
+                .iter()
+                .filter(|filter| filter.column >= left_width)
+                .all(|filter| {
+                    typed::matches_comparison(
+                        &row[filter.column - left_width],
+                        &filter.literal,
+                        filter.operator,
+                    )
+                })
         });
     }
 }
@@ -38,14 +46,17 @@ fn paged_match_limit(offset: usize, limit: Option<usize>) -> Option<u64> {
 fn fact_probe_columns(
     width: usize,
     keys: &[usize],
-    filter_column: usize,
+    filter_columns: &[usize],
     selected: &[(usize, String, Option<usize>)],
     emit: bool,
 ) -> Vec<usize> {
     let mut columns = keys.to_vec();
-    if filter_column < width {
-        columns.push(filter_column);
-    }
+    columns.extend(
+        filter_columns
+            .iter()
+            .copied()
+            .filter(|column| *column < width),
+    );
     if emit {
         columns.extend(
             selected
@@ -68,7 +79,7 @@ fn scan<W: Write>(
     left_keys: &[usize],
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Bucket>,
-    filter: &BoundFilter,
+    filters: &[BoundFilter],
     selected: &[(usize, String, Option<usize>)],
     any: bool,
     offset: usize,
@@ -78,7 +89,11 @@ fn scan<W: Write>(
     output: &mut W,
 ) -> Result<u64, ExecutionError> {
     let width = left_names.len();
-    let columns = fact_probe_columns(width, left_keys, filter.column, selected, emit);
+    let filter_columns = filters
+        .iter()
+        .map(|filter| filter.column)
+        .collect::<Vec<_>>();
+    let columns = fact_probe_columns(width, left_keys, &filter_columns, selected, emit);
     let mut source_to_batch = vec![usize::MAX; width];
     let names = columns
         .iter()
@@ -112,11 +127,15 @@ fn scan<W: Write>(
         for row_index in 0..batch[0].len() {
             // INNER JOIN predicates referencing only the fact side are safe
             // to evaluate before hashing, including for ANY joins.
-            if filter.column < width {
-                let candidate = typed::cell(&batch[source_to_batch[filter.column]], row_index);
-                if !typed::matches_comparison(&candidate, &filter.literal, filter.operator) {
-                    continue;
-                }
+            if !filters
+                .iter()
+                .filter(|filter| filter.column < width)
+                .all(|filter| {
+                    let candidate = typed::cell(&batch[source_to_batch[filter.column]], row_index);
+                    typed::matches_comparison(&candidate, &filter.literal, filter.operator)
+                })
+            {
+                continue;
             }
             if !batch_key_into(&batch, row_index, &key_columns, &mut key) {
                 continue;
@@ -130,11 +149,15 @@ fn scan<W: Write>(
             for &right_index in matches.iter().take(if any { 1 } else { usize::MAX }) {
                 // Dimension predicates must stay after ANY match selection.
                 // Filtering build rows first would change first-match semantics.
-                if filter.column >= width {
-                    let candidate = &right_rows[right_index][filter.column - width];
-                    if !typed::matches_comparison(candidate, &filter.literal, filter.operator) {
-                        continue;
-                    }
+                if !filters
+                    .iter()
+                    .filter(|filter| filter.column >= width)
+                    .all(|filter| {
+                        let candidate = &right_rows[right_index][filter.column - width];
+                        typed::matches_comparison(candidate, &filter.literal, filter.operator)
+                    })
+                {
+                    continue;
                 }
                 matched = matched
                     .checked_add(1)
@@ -198,27 +221,38 @@ pub(super) fn execute<W: Write>(
     right_keys: &[usize],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    let (column, operator, text) = query
-        .where_comparison
-        .as_ref()
-        .ok_or_else(|| invalid("JOIN comparison filter missing"))?;
     let width = left_names.len();
-    let index = resolve(query, column, left_names, right_names)?;
-    let metadata = if index < width {
-        inspect_query_source(left_path)?
-    } else {
-        inspect_query_source(right_path)?
-    };
-    let local_index = if index < width { index } else { index - width };
-    let literal = typed::parse_literal(&metadata.columns[local_index].data_type, text)?;
-    let filter = BoundFilter {
-        column: index,
-        operator: *operator,
-        literal,
-    };
+    let left_meta = inspect_query_source(left_path)?;
+    let right_meta = inspect_query_source(right_path)?;
+    let filters = query
+        .where_comparison
+        .iter()
+        .chain(&query.where_comparisons_extra)
+        .map(|(column, operator, text)| {
+            let index = resolve(query, column, left_names, right_names)?;
+            let metadata = if index < width {
+                &left_meta
+            } else {
+                &right_meta
+            };
+            let local_index = if index < width { index } else { index - width };
+            let literal = typed::parse_literal(&metadata.columns[local_index].data_type, text)?;
+            Ok(BoundFilter {
+                column: index,
+                operator: *operator,
+                literal,
+            })
+        })
+        .collect::<Result<Vec<_>, ExecutionError>>()?;
+    if filters.is_empty() {
+        return Err(invalid("JOIN comparison filter missing"));
+    }
     let count_only = query.aggregate == Some(JoinAggregate::CountStar);
     let mut header = if count_only {
-        "count".to_owned()
+        query
+            .aggregate_alias
+            .clone()
+            .unwrap_or_else(|| "count".to_owned())
     } else {
         String::new()
     };
@@ -235,15 +269,16 @@ pub(super) fn execute<W: Write>(
         return Ok(());
     }
 
-    let right_meta = inspect_query_source(right_path)?;
     // Aggregates must not retain unused JOIN projection columns.
     let mut kept = if count_only {
         Vec::new()
     } else {
         selected.to_vec()
     };
-    if index >= width {
-        kept.push((index, String::new(), None));
+    for filter in &filters {
+        if filter.column >= width {
+            kept.push((filter.column, String::new(), None));
+        }
     }
     let columns = retained_build_columns(right_names, right_keys, &kept, None, width);
     let mut right_rows = read_projected_build_rows(
@@ -254,7 +289,7 @@ pub(super) fn execute<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    prefilter_dimension_rows(&mut right_rows, &filter, width, query.any);
+    prefilter_dimension_rows(&mut right_rows, &filters, width, query.any);
     // Preserve the dimension predicate before building. The shared builder
     // retains source order for ALL matches and the first match for ANY.
     let hash = build_join_hash(
@@ -275,7 +310,7 @@ pub(super) fn execute<W: Write>(
                 left_keys,
                 &right_rows,
                 &hash,
-                &filter,
+                &filters,
                 &[],
                 query.any,
                 0,
@@ -285,7 +320,7 @@ pub(super) fn execute<W: Write>(
                 &mut std::io::sink(),
             )?
         };
-        writeln!(output, "count\n{count}")?;
+        writeln!(output, "{header}\n{count}")?;
         return Ok(());
     }
     if !hash.is_empty() {
@@ -296,7 +331,7 @@ pub(super) fn execute<W: Write>(
             left_keys,
             &right_rows,
             &hash,
-            &filter,
+            &filters,
             selected,
             query.any,
             query.offset,
@@ -316,7 +351,7 @@ pub(super) fn execute<W: Write>(
         left_keys,
         &right_rows,
         &hash,
-        &filter,
+        &filters,
         selected,
         query.any,
         query.offset,
@@ -347,7 +382,7 @@ mod prefilter_right_comparison_tests {
             literal: typed::Cell::Numeric(Number::Signed(10)),
         };
         let mut all = rows.clone();
-        prefilter_dimension_rows(&mut all, &filter, 2, false);
+        prefilter_dimension_rows(&mut all, std::slice::from_ref(&filter), 2, false);
         let values = |rows: &[Vec<typed::Cell>]| {
             rows.iter()
                 .map(|row| match &row[1] {
@@ -359,7 +394,7 @@ mod prefilter_right_comparison_tests {
         assert_eq!(values(&all), vec![15, 20]);
 
         let mut any = rows.clone();
-        prefilter_dimension_rows(&mut any, &filter, 2, true);
+        prefilter_dimension_rows(&mut any, std::slice::from_ref(&filter), 2, true);
         assert_eq!(values(&any), vec![5, 15, 20], "ANY preserves first match");
 
         let mut fact_filter = rows.clone();
@@ -367,7 +402,12 @@ mod prefilter_right_comparison_tests {
             column: 0,
             ..filter
         };
-        prefilter_dimension_rows(&mut fact_filter, &left_filter, 2, false);
+        prefilter_dimension_rows(
+            &mut fact_filter,
+            std::slice::from_ref(&left_filter),
+            2,
+            false,
+        );
         assert_eq!(values(&fact_filter), vec![5, 15, 20]);
     }
 }
@@ -405,14 +445,17 @@ mod fact_probe_column_tests {
             (5, String::new(), None),
         ];
         assert_eq!(
-            fact_probe_columns(6, &[1, 3], 4, &projected, false),
+            fact_probe_columns(6, &[1, 3], &[4], &projected, false),
             vec![1, 3, 4]
         );
         assert_eq!(
-            fact_probe_columns(6, &[1, 3], 4, &projected, true),
+            fact_probe_columns(6, &[1, 3], &[4], &projected, true),
             vec![1, 3, 4, 5]
         );
-        assert_eq!(fact_probe_columns(6, &[1], 8, &projected, false), vec![1]);
-        assert_eq!(fact_probe_columns(6, &[], 8, &projected, false), vec![0]);
+        assert_eq!(
+            fact_probe_columns(6, &[1], &[8], &projected, false),
+            vec![1]
+        );
+        assert_eq!(fact_probe_columns(6, &[], &[8], &projected, false), vec![0]);
     }
 }
