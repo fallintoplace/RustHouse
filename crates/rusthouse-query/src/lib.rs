@@ -1335,7 +1335,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
     let source = if parser.keyword("FROM") {
         let name = parser.word()?;
-        if name.eq_ignore_ascii_case("numbers") {
+        if name.eq_ignore_ascii_case("DUAL")
+            && matches!(projection, Projection::Literal(_) | Projection::Constants(_))
+        {
+            None
+        } else if name.eq_ignore_ascii_case("numbers") {
             if !parser.take(Token::LParen) {
                 return Err(ParseError("numbers requires a row count".into()));
             }
