@@ -556,12 +556,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             )));
         }
     }
-    if let Some(column) = &group_by {
-        if !known_qualifier(&column.relation) {
-            return Err(ParseError(format!(
-                "unknown JOIN qualifier: {}",
-                column.relation
-            )));
+    if let Some(columns) = &group_by {
+        for column in columns {
+            if !known_qualifier(&column.relation) {
+                return Err(ParseError(format!(
+                    "unknown JOIN qualifier: {}",
+                    column.relation
+                )));
+            }
         }
     }
     for (column, _, _) in &order_by {
