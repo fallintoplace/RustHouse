@@ -1715,6 +1715,12 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         parser.bounded_word()?;
     }
     if source.is_none()
+        && matches!(projection, Projection::Aggregate { .. } | Projection::MultipleAggregates(_))
+        && matches!(parser.tokens.get(parser.index), Some(Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Percent))
+    {
+        return Err(ParseError("arithmetic on aggregate results is not yet supported".into()));
+    }
+    if source.is_none()
         && !matches!(
             projection,
             Projection::Literal(_) | Projection::Constants(_)
@@ -2494,5 +2500,16 @@ mod parenthesized_predicate_literal_tests {
         }
         let nested = format!("{}1{}", "(".repeat(17), ")".repeat(17));
         assert!(parse_select(&format!("SELECT count(*) FROM t WHERE number = {nested}")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_6 {
+    use super::parse_select;
+
+    #[test]
+    fn reports_the_unsupported_sql_feature() {
+        let err = parse_select("SELECT sum(l_extendedprice) / 7.0 AS avg_yearly FROM lineitem").unwrap_err();
+        assert!(err.0.contains("arithmetic on aggregate results"), "{err}");
     }
 }
