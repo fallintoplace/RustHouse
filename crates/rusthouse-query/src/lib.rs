@@ -1829,6 +1829,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         } else {
             let first = parser.order_term(&projection)?;
             while parser.take(Token::Comma) {
+                let trailing = parser.tokens.get(parser.index).is_none_or(|token| {
+                    matches!(token, Token::Semicolon)
+                        || matches!(token, Token::Word(word)
+                            if ["LIMIT", "OFFSET", "FETCH"]
+                                .iter()
+                                .any(|keyword| word.eq_ignore_ascii_case(keyword)))
+                });
+                if trailing {
+                    break;
+                }
                 if order_by_extra.len() >= 7 {
                     return Err(ParseError("ORDER BY supports at most 8 columns".into()));
                 }
