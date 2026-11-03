@@ -95,6 +95,26 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
         }
         Ok(result)
     } else {
+        // Character widths are accepted for SQL compatibility; storage remains String.
+        if matches!(
+            name.to_ascii_uppercase().as_str(),
+            "VARCHAR" | "NVARCHAR" | "CHAR" | "CHARACTER" | "NCHAR"
+        ) && parser.take(Token::LParen)
+        {
+            let length = match parser.tokens.get(parser.index) {
+                Some(Token::Number(value)) => value.parse::<u32>().ok().filter(|&n| n > 0),
+                _ => None,
+            };
+            if length.is_none() {
+                return Err(ParseError(
+                    "character type length must be a positive UInt32".into(),
+                ));
+            }
+            parser.index += 1;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after character type length".into()));
+            }
+        }
         Ok(canonical.into())
     }
 }
@@ -260,5 +280,44 @@ mod postgres_float_alias_tests {
         assert_eq!(columns[0].data_type, "Float32");
         assert_eq!(columns[1].data_type, "Float64");
         assert!(parse_ddl("CREATE TABLE metrics (bad FLOAT16)").is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod character_type_length_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn accepts_bounded_character_type_syntax_without_changing_storage() {
+        let ddl = parse_ddl(
+            "CREATE TABLE t (a VARCHAR(255), b CHAR(1), c CHARACTER VARYING(32), d NVARCHAR(64), e NCHAR(16))",
+        )
+        .unwrap()
+        .unwrap();
+        let Ddl::CreateTable { columns, .. } = ddl else {
+            panic!("expected CREATE TABLE");
+        };
+        assert!(columns.iter().all(|column| column.data_type == "String"));
+
+        let add = parse_ddl("ALTER TABLE t ADD COLUMN title VARCHAR(128)")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(add, Ddl::AddColumn { column, .. } if column.data_type == "String"));
+    }
+
+    #[test]
+    fn rejects_bad_character_widths_and_non_character_arguments() {
+        for sql in [
+            "CREATE TABLE t (a VARCHAR(0))",
+            "CREATE TABLE t (a VARCHAR())",
+            "CREATE TABLE t (a VARCHAR(-1))",
+            "CREATE TABLE t (a VARCHAR(1.5))",
+            "CREATE TABLE t (a VARCHAR(1,2))",
+            "CREATE TABLE t (a VARCHAR(4294967296))",
+            "CREATE TABLE t (a Int32(4))",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
     }
 }
