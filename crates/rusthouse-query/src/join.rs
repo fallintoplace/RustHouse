@@ -507,12 +507,15 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         if !parser.keyword("BY") {
             return Err(ParseError("JOIN GROUP requires BY".into()));
         }
-        let mut keys = vec![qualified(&mut parser)?];
+        let mut keys = vec![projected(&mut parser)?];
         while parser.take(Token::Comma) {
             if keys.len() >= 8 {
                 return Err(ParseError("grouped JOIN supports at most 8 keys".into()));
             }
-            keys.push(qualified(&mut parser)?);
+            keys.push(projected(&mut parser)?);
+        }
+        if keys.iter().any(|key| key.name == "*") {
+            return Err(ParseError("JOIN GROUP BY requires columns".into()));
         }
         Some(keys)
     } else {
@@ -548,7 +551,11 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                 }
                 JoinColumn::count_order()
             } else {
-                qualified(&mut parser)?
+                let key = projected(&mut parser)?;
+                if key.name == "*" {
+                    return Err(ParseError("JOIN ORDER BY requires a column".into()));
+                }
+                key
             };
             let descending = if parser.keyword("USING") {
                 match parser.operator()? {
@@ -627,7 +634,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     }
     if let Some(columns) = &group_by {
         for column in columns {
-            if !known_qualifier(&column.relation) {
+            if !column.relation.is_empty() && !known_qualifier(&column.relation) {
                 return Err(ParseError(format!(
                     "unknown JOIN qualifier: {}",
                     column.relation
@@ -636,7 +643,10 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         }
     }
     for (column, _, _) in &order_by {
-        if !column.is_count_order() && !known_qualifier(&column.relation) {
+        if !column.is_count_order()
+            && !column.relation.is_empty()
+            && !known_qualifier(&column.relation)
+        {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}",
                 column.relation
@@ -671,9 +681,9 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             || !steps.is_empty()
             || (grouped_count_projection
                 && (columns.as_ref().is_none_or(|keys| keys.len() != 1)
-                    || where_comparison
-                        .as_ref()
-                        .is_some_and(|(column, _, _)| column.relation != left_alias)))
+                    || where_comparison.as_ref().is_some_and(|(column, _, _)| {
+                        !column.relation.is_empty() && column.relation != left_alias
+                    })))
             || (!grouped_count_projection
                 && (!order_by.is_empty()
                     || !matches!(aggregate.as_ref(), None | Some(JoinAggregate::CountStar))
@@ -910,7 +920,11 @@ pub fn explain_join(query: &JoinSelect) -> String {
                         .unwrap_or("count")
                         .to_owned()
                 } else {
-                    format!("{}.{}", column.relation, column.name)
+                    if column.relation.is_empty() {
+                        column.name.clone()
+                    } else {
+                        format!("{}.{}", column.relation, column.name)
+                    }
                 };
                 format!(
                     "{name} {}{}",
