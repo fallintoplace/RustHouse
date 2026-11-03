@@ -68,6 +68,10 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
+            b'E' | b'e' | b'N' | b'n' if bytes.get(index + 1) == Some(&b'\'') => {
+                index += 1;
+                scan_string(sql, &mut index)?
+            }
             b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
@@ -334,6 +338,28 @@ mod tests {
                 Token::Word("t2".into()),
             ]
         );
+    }
+
+    #[test]
+    fn reads_escape_and_national_string_literal_prefixes() {
+        assert_eq!(
+            tokenize(r"SELECT E'line\nnext', N'café', e'it''s', n'ø'").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("line\nnext".into()),
+                Token::Comma,
+                Token::String("café".into()),
+                Token::Comma,
+                Token::String("it's".into()),
+                Token::Comma,
+                Token::String("ø".into()),
+            ]
+        );
+        assert_eq!(
+            crate::parse_select("SELECT N'café'").unwrap(),
+            crate::parse_select("SELECT 'café'").unwrap(),
+        );
+        assert!(tokenize("SELECT N'unterminated").is_err());
     }
 
     #[test]
