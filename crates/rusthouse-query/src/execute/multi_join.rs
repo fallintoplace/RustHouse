@@ -80,10 +80,14 @@ fn write_scalar_sum<W: Write>(
     });
     writeln!(output, "{name}")?;
     if write_row {
-        typed::write_value(
-            output,
-            &value.map_or(typed::Cell::Null, typed::Cell::Numeric),
-        )?;
+        if let (true, Some(super::Number::Float(float))) = (query.scalar_result_typed, value) {
+            write!(output, "{float:?}")?;
+        } else {
+            typed::write_value(
+                output,
+                &value.map_or(typed::Cell::Null, typed::Cell::Numeric),
+            )?;
+        }
         writeln!(output)?;
     }
     Ok(())
@@ -573,6 +577,61 @@ impl Write for SubqueryOutput {
     }
 }
 
+/// Evaluate an uncorrelated HAVING scalar while the caller holds the database read lock.
+pub fn bind_join_having_subquery(
+    query: &mut JoinSelect,
+    paths: &[PathBuf],
+) -> Result<(), ExecutionError> {
+    let having = query
+        .grouped_sum_having
+        .as_mut()
+        .ok_or_else(|| invalid("missing HAVING"))?;
+    let inner = having
+        .subquery
+        .as_ref()
+        .ok_or_else(|| invalid("missing HAVING subquery"))?;
+    if (inner.scalar_sum.is_none() && inner.scalar_formula.is_none())
+        || inner.grouped_count.is_some()
+        || inner.limit.is_some()
+        || inner.offset != 0
+        || inner.in_subquery.is_some()
+        || inner.grouped_sum_having.is_some()
+    {
+        return Err(invalid("HAVING subquery requires an ungrouped scalar SUM"));
+    }
+    let mut output = SubqueryOutput(Vec::new());
+    let mut inner = (**inner).clone();
+    inner.scalar_result_typed = true;
+    execute_multi_join(&inner, paths, &mut output)?;
+    let text =
+        std::str::from_utf8(&output.0).map_err(|_| invalid("invalid HAVING scalar output"))?;
+    let mut lines = text.lines();
+    let _header = lines
+        .next()
+        .ok_or_else(|| invalid("missing HAVING scalar header"))?;
+    let value = lines
+        .next()
+        .ok_or_else(|| invalid("missing HAVING scalar value"))?;
+    if lines.next().is_some() || value.contains('\t') {
+        return Err(invalid("HAVING subquery must return one scalar"));
+    }
+    if value != "\\N" {
+        let valid = if value.contains(['.', 'e', 'E']) {
+            value.parse::<f64>().is_ok_and(f64::is_finite)
+        } else if value.starts_with('-') {
+            value.parse::<i128>().is_ok()
+        } else {
+            value.parse::<u128>().is_ok()
+        };
+        if !valid {
+            return Err(invalid("invalid HAVING scalar value"));
+        }
+    }
+    having.value = value.to_owned();
+    having.subquery = None;
+    Ok(())
+}
+
 /// Bind one supported uncorrelated IN subquery while callers hold a database read lock.
 pub fn bind_join_in_subquery(
     query: &mut JoinSelect,
@@ -745,6 +804,15 @@ pub fn execute_multi_join<W: Write>(
     paths: &[PathBuf],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query
+        .grouped_sum_having
+        .as_ref()
+        .is_some_and(|having| having.subquery.is_some())
+    {
+        return Err(invalid(
+            "JOIN HAVING subquery must be bound before execution",
+        ));
+    }
     if query.in_subquery.is_some() {
         return Err(invalid("JOIN IN subquery must be bound before execution"));
     }

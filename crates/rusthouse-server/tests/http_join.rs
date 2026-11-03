@@ -163,6 +163,13 @@ fn sql_http_binds_grouped_in_subquery_for_explicit_join() {
     let result = handle_request("POST", "/", query.as_bytes(), &config);
     assert_eq!(result.status, "200 OK", "{:?}", result.body);
     assert_eq!(result.body, b"ak\ttotal\n1\t8\n");
+    let scalar = "SELECT ak, SUM(amount) AS total FROM a JOIN b ON a.ak = b.bk JOIN c ON b.bk = c.ck GROUP BY ak HAVING total > (SELECT SUM(amount * 0.5) FROM a JOIN b ON a.ak = b.bk JOIN c ON b.bk = c.ck) ORDER BY ak";
+    let result = handle_request("POST", "/", scalar.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"ak\ttotal\n2\t9\n");
+    let plan = handle_request("POST", "/explain", scalar.as_bytes(), &config);
+    assert_eq!(plan.status, "200 OK");
+    assert!(String::from_utf8_lossy(&plan.body).contains("scalar subquery"));
     fs::remove_dir_all(database).unwrap();
 }
 

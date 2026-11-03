@@ -24,8 +24,8 @@ pub use correlated_exists::{CorrelatedExists, parse_correlated_exists};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
 pub use execute::{
-    ExecutionError, RowPredicate, bind_join_in_subquery, execute, execute_join, execute_multi_join,
-    merge_uniq_states,
+    ExecutionError, RowPredicate, bind_join_having_subquery, bind_join_in_subquery, execute,
+    execute_join, execute_multi_join, merge_uniq_states,
 };
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};

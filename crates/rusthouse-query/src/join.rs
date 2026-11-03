@@ -79,6 +79,7 @@ pub enum GroupedSum {
 pub struct GroupedSumHaving {
     pub operator: crate::Operator,
     pub value: String,
+    pub subquery: Option<Box<JoinSelect>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +122,8 @@ pub struct JoinSelect {
     pub grouped_sum_having: Option<GroupedSumHaving>,
     /// A scalar SUM over a numeric expression in an INNER join.
     pub scalar_sum: Option<crate::ScalarExpr>,
+    /// Preserve floating-point type when binding an internal scalar result.
+    pub scalar_result_typed: bool,
     /// Arithmetic over scalar SUM results.
     pub scalar_formula: Option<JoinAggregateFormula>,
     /// Bounded OR-of-AND predicates for scalar sums over joins.
@@ -152,9 +155,7 @@ pub struct JoinSelect {
 
 /// Return None for queries without a JOIN keyword after FROM.
 pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
-    let tokens = tokenize(sql)?;
-    let tokens = implicit::rewrite(tokens, None)?;
-    parse_join_tokens(tokens)
+    parse_join_resolved(tokenize(sql)?, None)
 }
 
 /// Whether a SELECT has a top-level comma-separated source list.
@@ -167,8 +168,119 @@ pub fn parse_join_with_schema(
     sql: &str,
     mut resolve: impl FnMut(&str) -> Result<Vec<String>, ParseError>,
 ) -> Result<Option<JoinSelect>, ParseError> {
-    let tokens = implicit::rewrite(tokenize(sql)?, Some(&mut resolve))?;
-    parse_join_tokens(tokens)
+    parse_join_resolved(tokenize(sql)?, Some(&mut resolve))
+}
+
+type SchemaResolver<'a> = &'a mut dyn FnMut(&str) -> Result<Vec<String>, ParseError>;
+
+fn parse_join_resolved(
+    mut tokens: Vec<Token>,
+    mut resolve: Option<SchemaResolver<'_>>,
+) -> Result<Option<JoinSelect>, ParseError> {
+    // Capture only a top-level HAVING comparison against one scalar SELECT.
+    let mut depth = 0usize;
+    let mut having = false;
+    let mut subquery = None;
+    let mut i = 0;
+    while i < tokens.len() {
+        if depth == 0
+            && matches!(&tokens[i], Token::Word(word) if ["ORDER", "LIMIT", "OFFSET", "FORMAT"].iter().any(|clause| word.eq_ignore_ascii_case(clause)))
+        {
+            having = false;
+        }
+        if depth == 0
+            && matches!(&tokens[i], Token::Word(word) if word.eq_ignore_ascii_case("HAVING"))
+        {
+            having = true;
+        }
+        if having
+            && depth == 0
+            && tokens[i] == Token::LParen
+            && i > 0
+            && matches!(tokens[i - 1], Token::Operator(_))
+            && matches!(tokens.get(i + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT"))
+        {
+            let start = i + 1;
+            let mut end = start;
+            let mut nesting = 1usize;
+            while end < tokens.len() && nesting > 0 {
+                match tokens[end] {
+                    Token::LParen => nesting += 1,
+                    Token::RParen => nesting -= 1,
+                    _ => {}
+                }
+                end += 1;
+            }
+            if nesting != 0 {
+                return Err(ParseError("HAVING subquery requires ')'".into()));
+            }
+            let mut inner = tokens[start..end - 1].to_vec();
+            let mut level = 0usize;
+            let mut from = None;
+            let mut alias = false;
+            for (index, token) in inner.iter().enumerate() {
+                match token {
+                    Token::LParen => level += 1,
+                    Token::RParen => level = level.saturating_sub(1),
+                    Token::Word(word) if level == 0 && word.eq_ignore_ascii_case("FROM") => {
+                        from = Some(index);
+                        break;
+                    }
+                    Token::Word(word) if level == 0 && word.eq_ignore_ascii_case("AS") => {
+                        alias = true
+                    }
+                    _ => {}
+                }
+            }
+            let from = from.ok_or_else(|| ParseError("HAVING subquery requires FROM".into()))?;
+            if !alias {
+                inner.splice(
+                    from..from,
+                    [
+                        Token::Word("AS".into()),
+                        Token::Word("__having_scalar".into()),
+                    ],
+                );
+            }
+            let rewritten = if let Some(resolver) = resolve.as_mut() {
+                let mut proxy = |table: &str| (**resolver)(table);
+                implicit::rewrite(inner, Some(&mut proxy))?
+            } else {
+                implicit::rewrite(inner, None)?
+            };
+            let inner = parse_join_tokens(rewritten)?
+                .ok_or_else(|| ParseError("HAVING subquery requires a JOIN".into()))?;
+            if (inner.scalar_sum.is_none() && inner.scalar_formula.is_none())
+                || inner.grouped_count.is_some()
+                || inner.limit.is_some()
+                || inner.offset != 0
+                || inner.in_subquery.is_some()
+            {
+                return Err(ParseError(
+                    "HAVING subquery requires an ungrouped scalar SUM".into(),
+                ));
+            }
+            subquery = Some(Box::new(inner));
+            tokens.splice(i..end, [Token::Number("0".into())]);
+            break;
+        }
+        match tokens[i] {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    let rewritten = implicit::rewrite(tokens, resolve)?;
+    let mut query = parse_join_tokens(rewritten)?;
+    if let Some(inner) = subquery {
+        let having = query
+            .as_mut()
+            .and_then(|query| query.grouped_sum_having.as_mut())
+            .ok_or_else(|| ParseError("scalar subquery requires grouped SUM HAVING".into()))?;
+        having.subquery = Some(inner);
+    }
+    Ok(query)
 }
 
 fn numeric_join_expression(expression: &crate::ScalarExpr) -> bool {
@@ -1187,7 +1299,11 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         if !valid {
             return Err(ParseError("invalid JOIN HAVING number".into()));
         }
-        Some(GroupedSumHaving { operator, value })
+        Some(GroupedSumHaving {
+            operator,
+            value,
+            subquery: None,
+        })
     } else {
         None
     };
@@ -1601,6 +1717,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         grouped_sum_position,
         grouped_sum_having,
         scalar_sum,
+        scalar_result_typed: false,
         scalar_formula,
         scalar_where,
         in_subquery,
@@ -1814,10 +1931,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
         plan.push_str(&format!("\nFilter: {} boolean branches", branches.len()));
     }
     if let Some(having) = &query.grouped_sum_having {
-        plan.push_str(&format!(
-            "\nHaving: SUM {:?} {}",
-            having.operator, having.value
-        ));
+        let value = if having.subquery.is_some() {
+            "scalar subquery"
+        } else {
+            &having.value
+        };
+        plan.push_str(&format!("\nHaving: SUM {:?} {value}", having.operator));
     }
     if let Some(expression) = &query.scalar_sum {
         plan.push_str(&format!(
