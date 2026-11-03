@@ -1155,6 +1155,17 @@ fn execute_into<W: Write>(
                     crate::ConstantValue::Integer(value) => {
                         typed::Cell::Numeric(Number::Signed(i128::from(*value)))
                     }
+                    crate::ConstantValue::Decimal(value) => {
+                        let number = value.parse::<f64>().map_err(|_| {
+                            ExecutionError::Invalid("invalid decimal SELECT literal".into())
+                        })?;
+                        if !number.is_finite() {
+                            return Err(ExecutionError::Invalid(
+                                "SELECT decimal literal must be finite".into(),
+                            ));
+                        }
+                        typed::Cell::Numeric(Number::Float(number))
+                    }
                     crate::ConstantValue::Text(value) => {
                         typed::Cell::Text(value.as_bytes().to_vec())
                     }
