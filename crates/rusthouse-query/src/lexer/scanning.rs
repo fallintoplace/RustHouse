@@ -47,16 +47,25 @@ pub(super) fn scan_radix_number(
     let bytes = sql.as_bytes();
     let start = *index + 2;
     *index = start;
-    while bytes
-        .get(*index)
-        .is_some_and(|&byte| (byte as char).to_digit(radix).is_some())
-    {
-        *index += 1;
+    while let Some(&byte) = bytes.get(*index) {
+        if (byte as char).to_digit(radix).is_some()
+            || (byte == b'_'
+                && *index > start
+                && bytes
+                    .get(*index + 1)
+                    .is_some_and(|&next| (next as char).to_digit(radix).is_some()))
+        {
+            *index += 1;
+        } else {
+            break;
+        }
     }
     if *index == start {
         return Err(ParseError("numeric base prefix requires digits".into()));
     }
-    let number = u64::from_str_radix(&sql[start..*index], radix)
+    let raw = &sql[start..*index];
+    let normalized = raw.contains('_').then(|| raw.replace('_', ""));
+    let number = u64::from_str_radix(normalized.as_deref().unwrap_or(raw), radix)
         .map_err(|_| ParseError("prefixed numeric literal exceeds UInt64".into()))?;
     Ok(Token::Number(number.to_string()))
 }
@@ -336,6 +345,31 @@ mod exponent_tests {
         assert_eq!(index, 6);
         for invalid in ["2e", "2e+", "2e-"] {
             assert!(scan_number(invalid, &mut 0).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod radix_digit_separator_tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_separators_inside_binary_and_hex_literals() {
+        for (sql, expected) in [
+            ("0xDE_AD_BE_EF", "3735928559"),
+            ("0X1_0", "16"),
+            ("0b1010_0101", "165"),
+            ("0B1_1", "3"),
+        ] {
+            let mut index = 0;
+            assert_eq!(
+                scan_radix_number(sql, &mut index, if sql.as_bytes()[1] == b'b' || sql.as_bytes()[1] == b'B' { 2 } else { 16 }).unwrap(),
+                Token::Number(expected.into())
+            );
+            assert_eq!(index, sql.len());
+        }
+        for invalid in ["0x_1", "0x1__2", "0b1_", "0b2"] {
+            assert!(crate::parse_select(&format!("SELECT {invalid}")).is_err());
         }
     }
 }
