@@ -19,6 +19,7 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "INTEGER" | "INT" => "Int32",
         "BIGINT" => "Int64",
         "TEXT" | "VARCHAR" | "CHARACTER" | "CHAR" | "NCHAR" | "NVARCHAR" | "CLOB" => "String",
+        "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => "String",
         "TIMESTAMP" => "DateTime",
         "REAL" | "FLOAT" | "FLOAT4" => "Float32",
         "DOUBLE" | "FLOAT8" => "Float64",
@@ -260,5 +261,22 @@ mod postgres_float_alias_tests {
         assert_eq!(columns[0].data_type, "Float32");
         assert_eq!(columns[1].data_type, "Float64");
         assert!(parse_ddl("CREATE TABLE metrics (bad FLOAT16)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod mysql_text_type_alias_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn mysql_text_types_use_string_storage() {
+        let Ddl::CreateTable { columns, .. } = parse_ddl(
+            "CREATE TABLE notes (a TINYTEXT, b MEDIUMTEXT, c LONGTEXT)"
+        )
+        .unwrap()
+        .unwrap() else {
+            panic!("expected CREATE TABLE");
+        };
+        assert!(columns.iter().all(|column| column.data_type == "String"));
     }
 }
