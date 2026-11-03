@@ -86,6 +86,27 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
     }
 }
 
+fn parse_copy_format_with_header(
+    parser: &mut Parser,
+) -> Result<(CopyFormat, bool), ParseError> {
+    let with_names = match parser.tokens.get(parser.index) {
+        Some(Token::Word(name) | Token::String(name)) => {
+            match name.to_ascii_uppercase().as_str() {
+                "CSVWITHNAMES" => Some(CopyFormat::Csv),
+                "TSVWITHNAMES" | "TABSEPARATEDWITHNAMES" => Some(CopyFormat::Tsv),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    if let Some(format) = with_names {
+        parser.index += 1;
+        Ok((format, true))
+    } else {
+        Ok((parse_copy_format_option(parser)?, false))
+    }
+}
+
 struct CopyOptions {
     format: CopyFormat,
     header: bool,
@@ -101,9 +122,15 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
             return Err(ParseError("COPY WITH requires '('".into()));
         }
         if parser.keyword("FORMAT") {
-            options.format = parse_copy_format_option(parser)?;
+            let (format, implied_header) = parse_copy_format_with_header(parser)?;
+            options.format = format;
+            options.header = implied_header;
             if parser.take(Token::Comma) {
-                options.header = parse_copy_header(parser)?;
+                let header = parse_copy_header(parser)?;
+                if implied_header && !header {
+                    return Err(ParseError("COPY WithNames format requires HEADER".into()));
+                }
+                options.header = header;
             }
         } else {
             options.header = parse_copy_header(parser)?;
@@ -111,7 +138,11 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
                 if !parser.keyword("FORMAT") {
                     return Err(ParseError("COPY HEADER option requires FORMAT after comma".into()));
                 }
-                options.format = parse_copy_format_option(parser)?;
+                let (format, implied_header) = parse_copy_format_with_header(parser)?;
+                if implied_header && !options.header {
+                    return Err(ParseError("COPY WithNames format requires HEADER".into()));
+                }
+                options.format = format;
             }
         }
         if options.format == CopyFormat::JsonEachRow && options.header {
@@ -285,5 +316,34 @@ mod copy_header_first_tests {
         ] {
             assert!(parse_copy_from(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod copy_with_names_format_tests {
+    use super::*;
+
+    #[test]
+    fn with_names_formats_require_a_header() {
+        let csv = parse_copy_from(
+            "COPY events FROM 'events.csv' WITH (FORMAT CSVWithNames)"
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(csv.format, CopyFormat::Csv);
+        assert!(csv.header);
+
+        let tsv = parse_copy_from(
+            "COPY events FROM 'events.tsv' WITH (HEADER TRUE, FORMAT TSVWithNames)"
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(tsv.format, CopyFormat::Tsv);
+        assert!(tsv.header);
+
+        assert!(parse_copy_from(
+            "COPY events FROM 'events.csv' WITH (FORMAT CSVWithNames, HEADER FALSE)"
+        )
+        .is_err());
     }
 }
