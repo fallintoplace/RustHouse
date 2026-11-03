@@ -1504,6 +1504,24 @@ pub fn execute_join<W: Write>(
     }
     let left_meta = inspect_query_source(left_path)?;
     let right_meta = inspect_query_source(right_path)?;
+    // Grouped CASE aggregates do not depend on input order. Stream the large
+    // side when the other side fits the existing bounded hash build. ANY and
+    // USING retain their original ordering and projection semantics.
+    if !query.grouped_case_counts.is_empty()
+        && query.kind == JoinType::Inner
+        && !query.any
+        && !query.left_alias.eq_ignore_ascii_case(&query.right_alias)
+        && query.using_keys.is_empty()
+        && query.columns.is_some()
+        && query.steps.is_empty()
+        && right_meta.rows > MAX_STREAM_BUILD_ROWS
+        && left_meta.rows <= MAX_STREAM_BUILD_ROWS
+    {
+        let mut swapped = query.clone();
+        std::mem::swap(&mut swapped.left, &mut swapped.right);
+        std::mem::swap(&mut swapped.left_alias, &mut swapped.right_alias);
+        return execute_join(&swapped, right_path, left_path, output);
+    }
     let left_names = left_meta
         .columns
         .iter()
