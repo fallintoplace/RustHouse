@@ -6,6 +6,7 @@ mod correlated_sum;
 mod nested_sum;
 pub use nested_sum::execute_nested_join_sum;
 mod exists;
+mod reorder;
 mod row_filters;
 mod streaming;
 use super::{ExecutionError, typed};
@@ -1041,6 +1042,28 @@ fn execute_multi_join_inner<W: Write>(
             start: width - metadata.columns.len(),
             rows: metadata.rows,
         });
+    }
+    // Reuse the inspected row counts. Correlated plans keep their original scope.
+    if exists_plan.is_none() && avg_plan.is_none() && min_plan.is_none() && sum_plan.is_none() {
+        let sizes = relations
+            .iter()
+            .map(|relation| relation.rows)
+            .collect::<Vec<_>>();
+        if let Some((reordered, order)) = reorder::plan(query, &sizes) {
+            let reordered_paths = order
+                .into_iter()
+                .map(|index| paths[index].clone())
+                .collect::<Vec<_>>();
+            return execute_multi_join_inner(
+                &reordered,
+                &reordered_paths,
+                None,
+                None,
+                None,
+                None,
+                output,
+            );
+        }
     }
     let exists = if let Some((filters, inner_paths)) = exists_plan {
         if query.grouped_count.is_none()
