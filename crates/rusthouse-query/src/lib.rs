@@ -1,3 +1,4 @@
+pub mod memory_budget;
 mod copy;
 mod date_scalar;
 mod ddl;
