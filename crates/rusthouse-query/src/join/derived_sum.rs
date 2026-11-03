@@ -24,6 +24,9 @@ pub fn parse_derived_join_sum_with_schema(
     sql: &str,
     mut resolve: impl FnMut(&str) -> Result<Vec<String>, ParseError>,
 ) -> Result<Option<JoinSelect>, ParseError> {
+    if let Some(plan) = super::derived_ratio::parse(sql, &mut resolve)? {
+        return Ok(Some(plan));
+    }
     let tokens = tokenize(sql)?;
     let Some(from) = top_from(&tokens) else {
         return Ok(None);
