@@ -373,6 +373,9 @@ fn required_physical_columns(
             }
         }
     }
+    if let Some(crate::JoinAggregate::CountColumn(column)) = &query.aggregate {
+        retain_absolute(column_index(relations, column)?);
+    }
     if let Some((column, _)) = &query.where_null {
         retain_absolute(column_index(relations, column)?);
     }
@@ -464,10 +467,18 @@ pub fn execute_multi_join<W: Write>(
         keys: query.keys.clone(),
         using_keys: query.using_keys.clone(),
     };
+    let count_column = if let Some(crate::JoinAggregate::CountColumn(column)) = &query.aggregate {
+        let index = column_index(&relations, column)?;
+        let header = query
+            .aggregate_alias
+            .clone()
+            .unwrap_or_else(|| format!("count({})", column.display_name()));
+        Some((index, header))
+    } else {
+        None
+    };
     // Validate the complete output schema without materializing rows.
-    if query.limit == Some(0)
-        || (query.aggregate == Some(crate::JoinAggregate::CountStar) && query.offset > 0)
-    {
+    if query.limit == Some(0) || (query.aggregate.is_some() && query.offset > 0) {
         for (index, join) in std::iter::once(&initial_step)
             .chain(query.steps.iter())
             .enumerate()
@@ -483,7 +494,9 @@ pub fn execute_multi_join<W: Write>(
                 column_index(&relations, column)?;
             }
         }
-        if query.aggregate == Some(crate::JoinAggregate::CountStar) {
+        if let Some((_, header)) = &count_column {
+            writeln!(output, "{header}")?;
+        } else if query.aggregate == Some(crate::JoinAggregate::CountStar) {
             writeln!(
                 output,
                 "{}",
@@ -733,6 +746,14 @@ pub fn execute_multi_join<W: Write>(
         if query.offset == 0 {
             writeln!(output, "{}", rows.len())?;
         }
+        return Ok(());
+    }
+    if let Some((index, header)) = count_column {
+        let count = rows
+            .iter()
+            .filter(|row| !matches!(row[index], typed::Cell::Null))
+            .count();
+        writeln!(output, "{header}\n{count}")?;
         return Ok(());
     }
     let selected = output_columns(query, &relations, &initial_step)?;
