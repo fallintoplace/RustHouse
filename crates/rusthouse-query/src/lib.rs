@@ -1587,6 +1587,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     };
 
     let source = if parser.keyword("FROM") {
+        if parser.tokens.get(parser.index) == Some(&Token::LParen) {
+            return Err(ParseError("derived tables in FROM are not yet supported".into()));
+        }
         let name = parser.word()?;
         if name.eq_ignore_ascii_case("DUAL")
             && matches!(projection, Projection::Literal(_) | Projection::Constants(_))
@@ -2516,6 +2519,17 @@ mod parenthesized_predicate_literal_tests {
         }
         let nested = format!("{}1{}", "(".repeat(17), ")".repeat(17));
         assert!(parse_select(&format!("SELECT count(*) FROM t WHERE number = {nested}")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_5 {
+    use super::parse_select;
+
+    #[test]
+    fn reports_the_unsupported_sql_feature() {
+        let err = parse_select("SELECT nation FROM (SELECT n_name AS nation FROM nation) AS x").unwrap_err();
+        assert!(err.0.contains("derived tables in FROM"), "{err}");
     }
 }
 
