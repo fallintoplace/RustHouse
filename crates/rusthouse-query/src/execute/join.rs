@@ -1443,6 +1443,13 @@ pub fn execute_join<W: Write>(
     right_path: &Path,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query.scalar_sum.is_some() {
+        return super::multi_join::execute_multi_join(
+            query,
+            &[left_path.to_path_buf(), right_path.to_path_buf()],
+            output,
+        );
+    }
     let left_meta = inspect_query_source(left_path)?;
     let right_meta = inspect_query_source(right_path)?;
     let left_names = left_meta

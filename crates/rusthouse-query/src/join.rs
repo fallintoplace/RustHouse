@@ -97,6 +97,8 @@ pub struct JoinSelect {
     pub grouped_sum: Option<GroupedSum>,
     /// Position of the grouped SUM in the SELECT list.
     pub grouped_sum_position: Option<usize>,
+    /// A scalar SUM over a numeric expression in an INNER join.
+    pub scalar_sum: Option<crate::ScalarExpr>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
@@ -141,6 +143,22 @@ pub fn parse_join_with_schema(
     parse_join_tokens(tokens)
 }
 
+fn numeric_join_expression(expression: &crate::ScalarExpr) -> bool {
+    match expression {
+        crate::ScalarExpr::Column(_)
+        | crate::ScalarExpr::Integer(_)
+        | crate::ScalarExpr::Decimal(_) => true,
+        crate::ScalarExpr::Add(a, b)
+        | crate::ScalarExpr::Subtract(a, b)
+        | crate::ScalarExpr::Multiply(a, b)
+        | crate::ScalarExpr::Divide(a, b)
+        | crate::ScalarExpr::Modulo(a, b) => {
+            numeric_join_expression(a) && numeric_join_expression(b)
+        }
+        _ => false,
+    }
+}
+
 fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseError> {
     if !matches!(tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT")) {
         return Ok(None);
@@ -170,6 +188,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     let mut parser = Parser { tokens, index: 0 };
     parser.keyword("SELECT");
     parser.keyword("ALL");
+    let mut scalar_sum = None;
     let aggregate = if parser.keyword("COUNT") {
         if !parser.take(Token::LParen) {
             return Err(ParseError("JOIN COUNT requires '('".into()));
@@ -209,28 +228,41 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             if !parser.take(Token::LParen) {
                 return Err(ParseError("JOIN aggregate requires '('".into()));
             }
-            let column = projected(&mut parser)?;
-            if column.name == "*" {
+            let start = parser.index;
+            let column = projected(&mut parser).ok().filter(|column| {
+                column.name != "*" && parser.tokens.get(parser.index) == Some(&Token::RParen)
+            });
+            if let Some(column) = column {
+                parser.take(Token::RParen);
+                Some(JoinAggregate::Numeric { function, column })
+            } else if function == crate::AggregateFunction::Sum {
+                parser.index = start;
+                let expression = crate::expression::parse_expression_tokens(&mut parser)?;
+                if !numeric_join_expression(&expression) || !parser.take(Token::RParen) {
+                    return Err(ParseError(
+                        "JOIN SUM requires a numeric arithmetic expression".into(),
+                    ));
+                }
+                scalar_sum = Some(expression);
+                None
+            } else {
                 return Err(ParseError("JOIN aggregate requires a column".into()));
             }
-            if !parser.take(Token::RParen) {
-                return Err(ParseError("JOIN aggregate requires ')'".into()));
-            }
-            Some(JoinAggregate::Numeric { function, column })
         } else {
             None
         }
     };
-    let mut aggregate_alias = if aggregate.is_some() && parser.keyword("AS") {
-        Some(parser.word()?)
-    } else {
-        None
-    };
+    let mut aggregate_alias =
+        if (aggregate.is_some() || scalar_sum.is_some()) && parser.keyword("AS") {
+            Some(parser.word()?)
+        } else {
+            None
+        };
     let mut grouped_count_projection = false;
     let mut grouped_case_counts = Vec::new();
     let mut grouped_sum = None;
     let mut grouped_sum_position = None;
-    let columns = if aggregate.is_some() || parser.take(Token::Star) {
+    let columns = if aggregate.is_some() || scalar_sum.is_some() || parser.take(Token::Star) {
         None
     } else {
         let mut columns = Vec::new();
@@ -266,20 +298,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                     } else {
                         parser.index = start;
                         let expression = crate::expression::parse_expression_tokens(&mut parser)?;
-                        fn arithmetic(expression: &crate::ScalarExpr) -> bool {
-                            match expression {
-                                crate::ScalarExpr::Column(_)
-                                | crate::ScalarExpr::Integer(_)
-                                | crate::ScalarExpr::Decimal(_) => true,
-                                crate::ScalarExpr::Add(a, b)
-                                | crate::ScalarExpr::Subtract(a, b)
-                                | crate::ScalarExpr::Multiply(a, b)
-                                | crate::ScalarExpr::Divide(a, b)
-                                | crate::ScalarExpr::Modulo(a, b) => arithmetic(a) && arithmetic(b),
-                                _ => false,
-                            }
-                        }
-                        if !arithmetic(&expression) {
+                        if !numeric_join_expression(&expression) {
                             return Err(ParseError(
                                 "JOIN SUM requires a numeric arithmetic expression".into(),
                             ));
@@ -947,6 +966,17 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
+    if scalar_sum.is_some()
+        && (kind != JoinType::Inner
+            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || !order_by.is_empty()
+            || !where_in_filters.is_empty()
+            || !where_like_filters.is_empty())
+    {
+        return Err(ParseError(
+            "JOIN expression SUM requires INNER joins and comparison filters".into(),
+        ));
+    }
     let chained_comparison_filters = !steps.is_empty()
         && kind == JoinType::Inner
         && steps.iter().all(|step| step.kind == JoinType::Inner)
@@ -1113,6 +1143,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         grouped_case_counts,
         grouped_sum,
         grouped_sum_position,
+        scalar_sum,
         keys,
         using_keys,
         where_null,
@@ -1311,6 +1342,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         plan.push_str(&format!("\nOrder: {terms}"));
+    }
+    if let Some(expression) = &query.scalar_sum {
+        plan.push_str(&format!(
+            "\nAggregate: SUM({})",
+            crate::multi_aggregate::render_expr(expression)
+        ));
     }
     if let Some(columns) = &query.grouped_count {
         let keys = columns

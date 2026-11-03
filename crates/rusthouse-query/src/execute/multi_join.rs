@@ -65,6 +65,29 @@ fn write_join_header<W: Write>(
     Ok(())
 }
 
+fn write_scalar_sum<W: Write>(
+    query: &JoinSelect,
+    value: Option<super::Number>,
+    write_row: bool,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let name = query.aggregate_alias.clone().unwrap_or_else(|| {
+        format!(
+            "sum({})",
+            crate::multi_aggregate::render_expr(query.scalar_sum.as_ref().expect("scalar SUM"))
+        )
+    });
+    writeln!(output, "{name}")?;
+    if write_row {
+        typed::write_value(
+            output,
+            &value.map_or(typed::Cell::Null, typed::Cell::Numeric),
+        )?;
+        writeln!(output)?;
+    }
+    Ok(())
+}
+
 fn write_group_header<W: Write>(
     query: &JoinSelect,
     selected: &[(usize, String, Option<usize>)],
@@ -510,9 +533,14 @@ pub fn execute_multi_join<W: Write>(
         keys: query.keys.clone(),
         using_keys: query.using_keys.clone(),
     };
+    let scalar_metric = query
+        .scalar_sum
+        .clone()
+        .map(crate::join::GroupedSum::Expression);
     let grouped_sum = query
         .grouped_sum
         .as_ref()
+        .or(scalar_metric.as_ref())
         .map(|metric| {
             let (expression, names) = match metric {
                 crate::join::GroupedSum::Column(column) => {
@@ -626,7 +654,9 @@ pub fn execute_multi_join<W: Write>(
         .collect::<Result<Vec<_>, ExecutionError>>()?;
 
     // Validate the complete output schema without materializing rows.
-    if query.limit == Some(0) || (query.aggregate.is_some() && query.offset > 0) {
+    if query.limit == Some(0)
+        || ((query.aggregate.is_some() || query.scalar_sum.is_some()) && query.offset > 0)
+    {
         for (index, join) in std::iter::once(&initial_step)
             .chain(query.steps.iter())
             .enumerate()
@@ -642,7 +672,9 @@ pub fn execute_multi_join<W: Write>(
                 column_index(&relations, column)?;
             }
         }
-        if let Some((_, header)) = &count_column {
+        if query.scalar_sum.is_some() {
+            write_scalar_sum(query, None, false, output)?;
+        } else if let Some((_, header)) = &count_column {
             writeln!(output, "{header}")?;
         } else if query.aggregate == Some(crate::JoinAggregate::CountStar) {
             writeln!(
