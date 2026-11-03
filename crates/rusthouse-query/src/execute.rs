@@ -58,6 +58,7 @@ mod grouped_distinct;
 mod grouped_generated;
 mod grouped_multi;
 mod grouped_multi_distinct;
+mod grouped_filter;
 mod grouped_numeric_keys;
 mod grouped_numeric_multi;
 mod join;
