@@ -366,7 +366,9 @@ fn parse_atom(
                 return Err(ParseError("IN supports at most 4096 values".into()));
             }
             values.push(parser.literal()?);
-            if !parser.take(Token::Comma) {
+            if !parser.take(Token::Comma)
+                || parser.tokens.get(parser.index) == Some(&Token::RParen)
+            {
                 break;
             }
         }
@@ -766,5 +768,26 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod in_list_trailing_comma_tests {
+    use crate::{Predicate, parse_select};
+
+    #[test]
+    fn final_comma_does_not_add_an_empty_in_value() {
+        let parsed = parse_select("SELECT number FROM numbers(3) WHERE number IN (0, 1,)")
+            .unwrap();
+        let Predicate::In { values, .. } = &parsed.predicates[0] else {
+            panic!("expected IN predicate");
+        };
+        assert_eq!(values, &["0".to_string(), "1".to_string()]);
+        for sql in [
+            "SELECT number FROM numbers(3) WHERE number IN ()",
+            "SELECT number FROM numbers(3) WHERE number IN (0,,)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
