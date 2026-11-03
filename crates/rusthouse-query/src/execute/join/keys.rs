@@ -73,14 +73,6 @@ fn join_key(value: &typed::Cell) -> typed::Key {
     }
 }
 
-fn key_eligible(value: &typed::Cell) -> bool {
-    match value {
-        typed::Cell::Null => false,
-        typed::Cell::Numeric(Number::Float(number)) => !number.is_nan(),
-        _ => true,
-    }
-}
-
 pub(super) fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
     let mut key = Vec::with_capacity(indices.len());
     row_key_into(row, indices, &mut key).then_some(key)
@@ -94,11 +86,15 @@ pub(super) fn row_key_into(
     // Preserve the backing allocation of repeated text probe keys. Rebuilding
     // the key vector for every fact row is especially costly in skewed joins.
     for (position, &index) in indices.iter().enumerate() {
-        if !key_eligible(&row[index]) {
-            result.clear();
-            return false;
-        }
         match &row[index] {
+            typed::Cell::Null => {
+                result.clear();
+                return false;
+            }
+            typed::Cell::Numeric(Number::Float(value)) if value.is_nan() => {
+                result.clear();
+                return false;
+            }
             typed::Cell::Text(value) => put_text_key(result, position, value),
             value => put_key(result, position, join_key(value)),
         }
