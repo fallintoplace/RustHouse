@@ -1,6 +1,17 @@
 //! Read-only DESCRIBE of persistent tables using validated snapshot schemas.
 use super::*;
-use rusthouse_storage::acquire_database_lock;
+use rusthouse_storage::{PartMetadata, acquire_database_lock};
+
+fn write_schema_rows(output: &mut dyn Write, schema: &PartMetadata) -> io::Result<()> {
+    output.write_all(b"name\ttype\n")?;
+    for column in &schema.columns {
+        output.write_all(column.name.as_bytes())?;
+        output.write_all(b"\t")?;
+        output.write_all(column.data_type.as_bytes())?;
+        output.write_all(b"\n")?;
+    }
+    Ok(())
+}
 
 pub(super) fn handle(config: &Config, format: QueryFormat, table: &str) -> Response {
     if config.part.is_some() {
@@ -21,16 +32,7 @@ pub(super) fn handle(config: &Config, format: QueryFormat, table: &str) -> Respo
         Ok(schema) => schema,
         Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
     };
-    let emit = |output: &mut dyn Write| -> io::Result<()> {
-        output.write_all(b"name\ttype\n")?;
-        for column in &schema.columns {
-            output.write_all(column.name.as_bytes())?;
-            output.write_all(b"\t")?;
-            output.write_all(column.data_type.as_bytes())?;
-            output.write_all(b"\n")?;
-        }
-        Ok(())
-    };
+    let emit = |output: &mut dyn Write| write_schema_rows(output, &schema);
     let mut writer = LimitedWriter::new();
     let result = match format {
         QueryFormat::Tsv => emit(&mut writer),
