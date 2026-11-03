@@ -52,6 +52,7 @@ fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseErro
         ("TSV", CopyFormat::Tsv),
         ("SSV", CopyFormat::Ssv),
         ("JSONEACHROW", CopyFormat::JsonEachRow),
+        ("JSONLINES", CopyFormat::JsonEachRow),
     ] {
         if parser.keyword(keyword) {
             return Ok(format);
@@ -237,5 +238,20 @@ mod tests {
             parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)")
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod copy_jsonlines_format_tests {
+    use super::{CopyFormat, parse_copy_from};
+
+    #[test]
+    fn jsonlines_uses_json_each_row_reader() {
+        let parsed = parse_copy_from("COPY events FROM 'rows.jsonl' WITH (FORMAT JSONLines)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.format, CopyFormat::JsonEachRow);
+        assert!(!parsed.header);
+        assert!(parse_copy_from("COPY events FROM 'rows.jsonl' WITH (FORMAT JSONLines, HEADER TRUE)").is_err());
     }
 }
