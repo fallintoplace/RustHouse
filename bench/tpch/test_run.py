@@ -238,7 +238,7 @@ class RunnerTests(unittest.TestCase):
                 errors = StringIO()
                 with redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
                     main(["--binary", "unused", "--database", "unused",
-                          "--queries-dir", "unused", "--timeout", value])
+                          "--queries-dir", "unused", f"--timeout={value}"])
                 self.assertEqual(raised.exception.code, 2)
                 self.assertIn("finite and positive", errors.getvalue())
 
