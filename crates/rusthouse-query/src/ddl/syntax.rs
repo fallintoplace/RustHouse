@@ -43,7 +43,7 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "NULLABLE" => "Nullable",
         "ARRAY" => "Array",
         "MAP" => "Map",
-        "JSON" => "JSON",
+        "JSON" | "JSONB" => "JSON",
         _ => return None,
     })
 }
