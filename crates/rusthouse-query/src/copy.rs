@@ -101,6 +101,7 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
             return Err(ParseError("COPY WITH requires '('".into()));
         }
         if parser.keyword("FORMAT") {
+            parser.take(Token::Operator(crate::Operator::Eq));
             options.format = parse_copy_format_option(parser)?;
             if parser.take(Token::Comma) {
                 options.header = parse_copy_header(parser)?;
@@ -111,6 +112,7 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
                 if !parser.keyword("FORMAT") {
                     return Err(ParseError("COPY HEADER option requires FORMAT after comma".into()));
                 }
+                parser.take(Token::Operator(crate::Operator::Eq));
                 options.format = parse_copy_format_option(parser)?;
             }
         }
@@ -282,6 +284,32 @@ mod copy_header_first_tests {
         for invalid in [
             "COPY events FROM 'rows.csv' WITH (HEADER TRUE, HEADER FALSE)",
             "COPY events FROM 'rows.csv' WITH (HEADER TRUE, FORMAT JSONEACHROW)",
+        ] {
+            assert!(parse_copy_from(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod copy_format_assignment_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_optional_equals_after_copy_format() {
+        let csv = parse_copy_from("COPY t FROM 'rows.csv' WITH (FORMAT = CSV)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(csv.format, CopyFormat::Csv);
+        let tsv = parse_copy_from("COPY t FROM 'rows.tsv' WITH (HEADER FALSE, FORMAT = TSV)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(tsv.format, CopyFormat::Tsv);
+        assert!(!tsv.header);
+
+        for invalid in [
+            "COPY t FROM 'rows.csv' WITH (FORMAT =)",
+            "COPY t FROM 'rows.csv' WITH (FORMAT = UNKNOWN)",
         ] {
             assert!(parse_copy_from(invalid).is_err(), "{invalid}");
         }
