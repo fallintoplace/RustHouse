@@ -931,7 +931,15 @@ fn grouped_metric_value(
     if !parser.keyword("THEN") {
         return Err(ParseError("grouped CASE requires THEN".into()));
     }
-    let metric = parser.bounded_word()?;
+    // SUM(CASE ... THEN 1 ELSE 0 END) counts matching rows, including
+    // groups with zero matches. Reuse the filtered COUNT(*) state.
+    let unit_count = matches!(parser.tokens.get(parser.index), Some(Token::Number(value)) if value == "1");
+    let metric = if unit_count {
+        parser.index += 1;
+        "*".to_string()
+    } else {
+        parser.bounded_word()?
+    };
     let mut else_zero = false;
     if parser.keyword("ELSE") && !parser.keyword("NULL") {
         let else_value = parser.literal()?;
@@ -944,6 +952,9 @@ fn grouped_metric_value(
     }
     if !parser.keyword("END") {
         return Err(ParseError("grouped CASE requires END".into()));
+    }
+    if unit_count && !else_zero {
+        return Err(ParseError("SUM(CASE ... THEN 1) requires ELSE 0".into()));
     }
     let filter = if else_zero {
         GroupedFilter::CaseElseZero { column, operator, literal }
@@ -1262,6 +1273,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     parser.index += 1;
                     parser.take(Token::LParen);
                     let (value_column, case_filter) = grouped_metric_value(&mut parser, function)?;
+                    let function = if function == AggregateFunction::Sum && value_column == "*" {
+                        AggregateFunction::Count
+                    } else {
+                        function
+                    };
                     if conditional && case_filter.is_some() {
                         return Err(ParseError("SUMIF cannot nest a CASE filter".into()));
                     }
@@ -1327,6 +1343,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             return Err(ParseError("expected '(' after aggregate name".into()));
                         }
                         let (value_column, case_filter) = grouped_metric_value(&mut parser, function)?;
+                        let function = if function == AggregateFunction::Sum && value_column == "*" {
+                            AggregateFunction::Count
+                        } else {
+                            function
+                        };
                         if conditional && case_filter.is_some() {
                             return Err(ParseError("SUMIF cannot nest a CASE filter".into()));
                         }
