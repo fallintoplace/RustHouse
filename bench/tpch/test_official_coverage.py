@@ -7,6 +7,20 @@ from official_coverage import coverage, clean_sql
 
 
 class CoverageTests(unittest.TestCase):
+    def test_optional_canonical_check_rejects_changed_sql_before_execution(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            (folder / "q01.sql").write_text("SELECT 1")
+            invoked = []
+            with patch("official_coverage.verify_canonical_sql",
+                       side_effect=ValueError("canonical hash mismatch")) as check:
+                with self.assertRaisesRegex(ValueError, "canonical hash"):
+                    coverage("unused", "db", folder, runs=1, warmups=0,
+                             execute=lambda sql: invoked.append(sql),
+                             require_canonical=True)
+            check.assert_called_once_with(folder)
+            self.assertEqual(invoked, [])
+
     def test_refuses_symlinked_sql_without_execution(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
