@@ -83,7 +83,14 @@ pub fn validate_joint_quorums(
         .map(|member| u64::from(member.weight))
         .sum();
     Ok(JointQuorumSafety {
-        writes_intersect: intersect(&shared, before_only, after_only, old.writes, new.writes, false),
+        writes_intersect: intersect(
+            &shared,
+            before_only,
+            after_only,
+            old.writes,
+            new.writes,
+            false,
+        ),
         old_reads_intersect_new_writes: intersect(
             &shared,
             before_only,
