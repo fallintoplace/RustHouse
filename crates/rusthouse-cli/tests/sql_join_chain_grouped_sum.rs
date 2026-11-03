@@ -40,6 +40,14 @@ fn chained_sum_groups_nullable_values_and_orders_alias() {
             "b.category\tc.flag\ttotal\nx\t1\t1\nz\t1\t\\N\n",
         ),
         (
+            "SELECT b.category, SUM(amount * (1 - 0.25)) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category ORDER BY b.category",
+            "b.category\ttotal\nx\t0.75\ny\t3.75\nz\t\\N\n",
+        ),
+        (
+            "SELECT b.category, SUM(amount + flag) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category ORDER BY b.category",
+            "b.category\ttotal\nx\t3\ny\t7\nz\t\\N\n",
+        ),
+        (
             "SELECT b.category, SUM(a.amount) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE c.flag = 99 GROUP BY b.category",
             "b.category\tsum(a.amount)\n",
         ),
@@ -54,6 +62,9 @@ fn chained_sum_groups_nullable_values_and_orders_alias() {
         "SELECT b.category, SUM(id) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category LIMIT 0",
         "SELECT b.category, SUM(a.amount) AS total FROM a LEFT JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category",
         "SELECT b.category, SUM(a.amount + 1) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category",
+        "SELECT b.category, SUM(category + 1) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category LIMIT 0",
+        "SELECT b.category, SUM(amount / 0) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category",
+        "SELECT b.category, SUM(id + 1) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category LIMIT 0",
     ] {
         let result = sql(query);
         assert!(!result.status.success(), "{query}: {result:?}");

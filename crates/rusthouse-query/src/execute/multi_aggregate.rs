@@ -376,6 +376,76 @@ pub(super) fn compare_expression_numbers(
     }
 }
 
+// Evaluate the numeric arithmetic subset against an already joined row.
+pub(super) fn eval_row_arithmetic(
+    expression: &BoundExpr,
+    row: &[Cell],
+) -> Result<Option<Number>, ExecutionError> {
+    match expression {
+        BoundExpr::Column(index) => match row.get(*index) {
+            Some(Cell::Numeric(value)) => Ok(Some(*value)),
+            Some(Cell::Null) => Ok(None),
+            _ => Err(ExecutionError::Invalid(
+                "aggregate expression requires numeric columns".into(),
+            )),
+        },
+        BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
+        BoundExpr::Float(value) => Ok(Some(Number::Float(*value))),
+        BoundExpr::AffineColumn {
+            index,
+            constant,
+            subtract,
+        } => match eval_row_arithmetic(&BoundExpr::Column(*index), row)? {
+            Some(value) => {
+                checked_binary(value, Number::Signed(i128::from(*constant)), *subtract).map(Some)
+            }
+            None => Ok(None),
+        },
+        BoundExpr::Add(left, right)
+        | BoundExpr::Subtract(left, right)
+        | BoundExpr::Multiply(left, right)
+        | BoundExpr::Divide(left, right)
+        | BoundExpr::Modulo(left, right) => {
+            let Some(left) = eval_row_arithmetic(left, row)? else {
+                return Ok(None);
+            };
+            let Some(right) = eval_row_arithmetic(right, row)? else {
+                return Ok(None);
+            };
+            match expression {
+                BoundExpr::Add(..) => checked_binary(left, right, false).map(Some),
+                BoundExpr::Subtract(..) => checked_binary(left, right, true).map(Some),
+                BoundExpr::Multiply(..) => checked_multiply(left, right).map(Some),
+                BoundExpr::Modulo(..) => checked_remainder(left, right).map(Some),
+                BoundExpr::Divide(..) => {
+                    let as_float = |value| match value {
+                        Number::Unsigned(value) => value as f64,
+                        Number::Signed(value) => value as f64,
+                        Number::Float(value) => value,
+                    };
+                    let divisor = as_float(right);
+                    if divisor == 0.0 {
+                        return Err(ExecutionError::Invalid(
+                            "division by zero in aggregate expression".into(),
+                        ));
+                    }
+                    let result = as_float(left) / divisor;
+                    if !result.is_finite() {
+                        return Err(ExecutionError::Invalid(
+                            "non-finite aggregate division".into(),
+                        ));
+                    }
+                    Ok(Some(Number::Float(result)))
+                }
+                _ => unreachable!(),
+            }
+        }
+        _ => Err(ExecutionError::Invalid(
+            "unsupported joined aggregate expression".into(),
+        )),
+    }
+}
+
 pub(super) fn eval_number(
     expression: &BoundExpr,
     batch: &[TypedColumn],
