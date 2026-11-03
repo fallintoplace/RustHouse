@@ -1437,9 +1437,7 @@ mod join_using_trailing_comma_tests {
             .unwrap();
         assert_eq!(first.using_keys, ["id"]);
 
-        let chain = parse_join(
-            "SELECT * FROM a JOIN b ON a.id = b.id JOIN c USING (id,)",
-        )
+        let chain = parse_join("SELECT * FROM a JOIN b ON a.id = b.id JOIN c USING (id,)")
         .unwrap()
         .unwrap();
         assert_eq!(chain.steps[0].using_keys, ["id"]);
