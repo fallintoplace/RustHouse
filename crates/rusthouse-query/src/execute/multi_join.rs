@@ -382,6 +382,13 @@ fn required_physical_columns(
     for (column, _, _) in &query.order_by {
         retain_absolute(column_index(relations, column)?);
     }
+    for (column, _, _) in query
+        .where_comparison
+        .iter()
+        .chain(&query.where_comparisons_extra)
+    {
+        retain_absolute(column_index(relations, column)?);
+    }
     for (step_index, step) in std::iter::once(initial_step)
         .chain(query.steps.iter())
         .enumerate()
@@ -477,6 +484,18 @@ pub fn execute_multi_join<W: Write>(
     } else {
         None
     };
+    // Bind predicates before early returns, including LIMIT 0.
+    let comparisons = query
+        .where_comparison
+        .iter()
+        .chain(&query.where_comparisons_extra)
+        .map(|(column, operator, literal)| {
+            let index = column_index(&relations, column)?;
+            let value = typed::parse_literal(column_type(&relations, index), literal)?;
+            Ok((index, *operator, value))
+        })
+        .collect::<Result<Vec<_>, ExecutionError>>()?;
+
     // Validate the complete output schema without materializing rows.
     if query.limit == Some(0) || (query.aggregate.is_some() && query.offset > 0) {
         for (index, join) in std::iter::once(&initial_step)
@@ -529,6 +548,7 @@ pub fn execute_multi_join<W: Write>(
         && query.steps.iter().all(|step| step.kind == JoinType::Inner)
         && (query.order_by.is_empty() || query.grouped_count.is_some())
         && query.aggregate.is_none()
+        && comparisons.is_empty()
     {
         return streaming::execute(query, paths, &relations, &initial_step, output);
     }
@@ -597,6 +617,7 @@ pub fn execute_multi_join<W: Write>(
             && query.kind == JoinType::Inner
             && query.steps.iter().all(|step| step.kind == JoinType::Inner)
             && step_index == query.steps.len()
+            && comparisons.is_empty()
         {
             let mut count = 0u64;
             let mut count_key = Vec::with_capacity(left_keys.len());
@@ -691,7 +712,13 @@ pub fn execute_multi_join<W: Write>(
                             Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
                         joined.extend_from_slice(&right_rows[match_index]);
-                        push_visible_row(&mut next, joined, &mut retained, filter)?;
+                        if step_index != query.steps.len()
+                            || comparisons.iter().all(|(index, operator, literal)| {
+                                typed::matches_comparison(&joined[*index], literal, *operator)
+                            })
+                        {
+                            push_visible_row(&mut next, joined, &mut retained, filter)?;
+                        }
                     }
                 }
             }
