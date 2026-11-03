@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from official_coverage import TPCH_QUERY_COUNT, clean_sql
+from run import query_fingerprint
 from canonical_integrity import verify as verify_canonical_sql
 
 MAX_AST_BYTES = 2 * 1024 * 1024
@@ -48,6 +49,7 @@ def inventory(binary, queries_dir, *, parse=None, require_canonical=False):
     if parse is None:
         parse = lambda sql: parse_statement(binary, sql)
     results = []
+    loaded_sql = []
     for query in range(1, TPCH_QUERY_COUNT + 1):
         path = Path(queries_dir) / f"q{query:02d}.sql"
         if not path.is_file():
@@ -57,6 +59,7 @@ def inventory(binary, queries_dir, *, parse=None, require_canonical=False):
             sql = clean_sql(path)
             if not sql:
                 raise ValueError("empty query")
+            loaded_sql.append((query, sql))
             parsed, error = parse(sql)
         except (OSError, UnicodeError, ValueError) as exc:
             results.append({"query": query, "status": "invalid_query", "error": str(exc)[:500]})
@@ -78,6 +81,7 @@ def inventory(binary, queries_dir, *, parse=None, require_canonical=False):
         "official_tpch_score": False,
         "parsed_queries": passed,
         "total_queries": TPCH_QUERY_COUNT,
+        "query_sha256": query_fingerprint(loaded_sql),
         "first_error_groups": error_groups,
         "results": results,
     }
