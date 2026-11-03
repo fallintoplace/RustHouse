@@ -10,6 +10,36 @@ use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
 
+struct MetricState {
+    numeric: AggregateState,
+    text_value: Option<Vec<u8>>,
+}
+impl MetricState {
+    fn new(function: AggregateFunction) -> Self {
+        Self {
+            numeric: AggregateState::new(function),
+            text_value: None,
+        }
+    }
+    fn sort_cell(&self) -> Cell {
+        self.text_value.as_ref().map_or_else(
+            || self.numeric.sort_cell(),
+            |value| Cell::Text(value.clone()),
+        )
+    }
+}
+impl std::ops::Deref for MetricState {
+    type Target = AggregateState;
+    fn deref(&self) -> &Self::Target {
+        &self.numeric
+    }
+}
+impl std::ops::DerefMut for MetricState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.numeric
+    }
+}
+
 pub(super) struct DistinctValues {
     values: HashSet<(usize, usize, typed::Key)>,
     retained: usize,
@@ -118,11 +148,11 @@ fn reserve_group(
     metric_count: usize,
     variable_bytes: usize,
 ) -> Result<(), ExecutionError> {
-    let fixed = std::mem::size_of::<(Cell, Vec<AggregateState>)>()
+    let fixed = std::mem::size_of::<(Cell, Vec<MetricState>)>()
         .checked_add(std::mem::size_of::<typed::Key>())
         .and_then(|v| {
             metric_count
-                .checked_mul(std::mem::size_of::<AggregateState>())
+                .checked_mul(std::mem::size_of::<MetricState>())
                 .and_then(|states| v.checked_add(states))
         })
         .ok_or_else(|| ExecutionError::Invalid("group memory estimate overflow".into()))?;
@@ -272,9 +302,50 @@ pub(super) fn execute<W: Write>(
             function,
             AggregateFunction::Count | AggregateFunction::CountDistinct
         ) && matches!(typed::base_type(selected), "String" | "UUID")
+            && !(typed::base_type(selected) == "String"
+                && matches!(function, AggregateFunction::Min | AggregateFunction::Max))
         {
             return Err(numeric_column_error());
         }
+    }
+    let text_metrics = items
+        .iter()
+        .enumerate()
+        .map(|(index, (function, column))| {
+            !query
+                .grouped_expressions
+                .get(index)
+                .is_some_and(Option::is_some)
+                && matches!(function, AggregateFunction::Min | AggregateFunction::Max)
+                && types
+                    .get(column)
+                    .is_some_and(|kind| typed::base_type(kind) == "String")
+        })
+        .collect::<Vec<_>>();
+    for (metric, is_text) in text_metrics.iter().enumerate() {
+        if *is_text
+            && matches!(
+                filters.get(metric),
+                Some(Some(
+                    crate::GroupedFilter::CaseElseZero { .. }
+                        | crate::GroupedFilter::CaseElseZeroCombined { .. }
+                ))
+            )
+        {
+            return Err(ExecutionError::Invalid(
+                "text extrema with numeric CASE fallback are unsupported".into(),
+            ));
+        }
+    }
+    if query
+        .having
+        .as_ref()
+        .and_then(|having| having.aggregate_index)
+        .is_some_and(|index| text_metrics.get(index) == Some(&true))
+    {
+        return Err(ExecutionError::Invalid(
+            "HAVING on text aggregates is unsupported".into(),
+        ));
     }
     for filter in filters.iter().flatten() {
         let name = filter.column();
@@ -300,6 +371,11 @@ pub(super) fn execute<W: Write>(
         let name = predicate.column();
         if !names.iter().any(|column| column == name) {
             names.push(name.to_owned());
+        }
+        if let Some(other) = predicate.other_column() {
+            if !names.iter().any(|column| column == other) {
+                names.push(other.to_owned());
+            }
         }
     }
     let indices = names
@@ -359,7 +435,7 @@ pub(super) fn execute<W: Write>(
         })
         .collect::<Vec<_>>();
     let filter_indices = bind_grouped_filters(filters, &indices, &types)?;
-    let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
+    let mut groups = Vec::<(Cell, Vec<MetricState>)>::new();
     let mut distinct_values = DistinctValues::new();
     let mut retained_group_bytes = 0usize;
     let mut retained_median_bytes = 0usize;
@@ -390,7 +466,7 @@ pub(super) fn execute<W: Write>(
                         typed::cell(&batch[group_index], row),
                         items
                             .iter()
-                            .map(|(function, _)| AggregateState::new(*function))
+                            .map(|(function, _)| MetricState::new(*function))
                             .collect(),
                     ));
                     slots.insert(key, index);
@@ -422,7 +498,7 @@ pub(super) fn execute<W: Write>(
                             typed::cell(&batch[group_index], row),
                             items
                                 .iter()
-                                .map(|(function, _)| AggregateState::new(*function))
+                                .map(|(function, _)| MetricState::new(*function))
                                 .collect(),
                         ));
                         group
@@ -441,7 +517,7 @@ pub(super) fn execute<W: Write>(
                             Cell::Text(key.to_vec()),
                             items
                                 .iter()
-                                .map(|(function, _)| AggregateState::new(*function))
+                                .map(|(function, _)| MetricState::new(*function))
                                 .collect(),
                         ));
                         group
@@ -460,7 +536,7 @@ pub(super) fn execute<W: Write>(
                                 key,
                                 items
                                     .iter()
-                                    .map(|(function, _)| AggregateState::new(*function))
+                                    .map(|(function, _)| MetricState::new(*function))
                                     .collect(),
                             ));
                             groups.len() - 1
@@ -491,6 +567,43 @@ pub(super) fn execute<W: Write>(
                         }
                         continue;
                     }
+                }
+                if text_metrics[metric] {
+                    let column_index = column_index.expect("text metric has a column");
+                    let candidate = match &batch[column_index] {
+                        TypedColumn::Text(values) => values.get(row),
+                        TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
+                            values.get(row)
+                        }
+                        TypedColumn::NullableText { .. } => None,
+                        _ => return Err(numeric_column_error()),
+                    };
+                    if let Some(candidate) = candidate {
+                        let replace = state.text_value.as_deref().is_none_or(|current| {
+                            if *function == AggregateFunction::Min {
+                                candidate < current
+                            } else {
+                                candidate > current
+                            }
+                        });
+                        if replace {
+                            let old = state.text_value.as_ref().map_or(0, Vec::len);
+                            let new_total = retained_group_bytes
+                                .checked_sub(old)
+                                .and_then(|size| size.checked_add(candidate.len()))
+                                .ok_or_else(|| {
+                                    ExecutionError::Invalid("group memory estimate overflow".into())
+                                })?;
+                            if new_total > MAX_GROUP_STATE_BYTES {
+                                return Err(ExecutionError::Invalid(
+                                    "GROUP BY exceeds 64 MiB group-state budget".into(),
+                                ));
+                            }
+                            state.text_value = Some(candidate.to_vec());
+                            retained_group_bytes = new_total;
+                        }
+                    }
+                    continue;
                 }
                 if *function == AggregateFunction::CountDistinct {
                     let column_index = column_index.expect("distinct metric has a column");
@@ -590,7 +703,7 @@ pub(super) fn execute<W: Write>(
                 (metric, order.descending, order.nulls_first)
             })
             .collect::<Vec<_>>();
-        let compare = |left: &(Cell, Vec<AggregateState>), right: &(Cell, Vec<AggregateState>)| {
+        let compare = |left: &(Cell, Vec<MetricState>), right: &(Cell, Vec<MetricState>)| {
             for &(metric, descending, nulls_first) in &terms {
                 let ordering = if let Some(index) = metric {
                     typed::compare_order_cells(
@@ -683,9 +796,14 @@ pub(super) fn execute<W: Write>(
         }
     }
     let write_group =
-        |key: &Cell, states: &[AggregateState], output: &mut W| -> Result<(), ExecutionError> {
+        |key: &Cell, states: &[MetricState], output: &mut W| -> Result<(), ExecutionError> {
             typed::write_typed_value(output, key, group_type)?;
-            for (state, (function, column)) in states.iter().zip(items) {
+            for (metric, (state, (function, column))) in states.iter().zip(items).enumerate() {
+                if text_metrics[metric] {
+                    write!(output, "\t")?;
+                    typed::write_value(output, &state.sort_cell())?;
+                    continue;
+                }
                 let value = if matches!(function, AggregateFunction::Min | AggregateFunction::Max) {
                     typed::format_temporal_aggregate(state.render(), &types[column])
                 } else {

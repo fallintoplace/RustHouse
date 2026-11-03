@@ -444,6 +444,35 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
         .ok_or_else(|| {
             ExecutionError::Invalid(format!("unknown aggregate column: {value_column}"))
         })?;
+    if typed::base_type(&selected.data_type) == "String"
+        && matches!(function, AggregateFunction::Min | AggregateFunction::Max)
+        && !query.hidden_aggregate
+    {
+        if query.having.is_some() {
+            return Err(ExecutionError::Invalid(
+                "HAVING on text aggregates is unsupported".into(),
+            ));
+        }
+        let mut grouped = query.clone();
+        for order in grouped
+            .order_by
+            .iter_mut()
+            .chain(grouped.order_by_extra.iter_mut())
+        {
+            if order.column == "#aggregate" {
+                order.column = "#aggregate0".into();
+            }
+        }
+        return super::grouped_numeric_multi::execute(
+            &grouped,
+            part,
+            column,
+            &[(*function, value_column.clone())],
+            &[None],
+            &[None],
+            output,
+        );
+    }
     if *function != AggregateFunction::Count
         && matches!(typed::base_type(&selected.data_type), "String" | "UUID")
     {
