@@ -10,6 +10,7 @@ mod derived_sum;
 mod exists_lookup;
 mod implicit;
 mod nested_sum;
+mod substring_antijoin;
 mod syntax;
 
 // Keep explained execution bounds and the executor's actual limits in sync.
@@ -38,6 +39,9 @@ pub use derived_count::{
 pub use derived_sum::parse_derived_join_sum_with_schema;
 pub use exists_lookup::{JoinExistsKey, JoinExistsLookup};
 pub use nested_sum::{NestedJoinSum, has_nested_join_sum, parse_nested_join_sum_with_schema};
+pub use substring_antijoin::{
+    SubstringAntiJoin, has_substring_antijoin, parse_substring_antijoin_with_schema,
+};
 
 use super::{ParseError, Parser, Token, tokenize};
 

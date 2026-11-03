@@ -380,6 +380,8 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     let implicit = has_implicit_join(&query).map_err(|error| error.to_string())?;
     let cte = has_cte_max_join(&query).map_err(|error| error.to_string())?;
     let derived = has_derived_join_count(&query).map_err(|error| error.to_string())?;
+    let substring_antijoin =
+        rusthouse_query::has_substring_antijoin(&query).map_err(|error| error.to_string())?;
     let possible_join_exists = has_top_level_exists(&query).map_err(|error| error.to_string())?
         && (implicit || has_explicit_join(&query).map_err(|error| error.to_string())?);
     let possible_join_avg = has_join_correlated_avg(&query).map_err(|error| error.to_string())?
@@ -393,6 +395,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     let implicit_lock = if implicit
         || cte
         || derived
+        || substring_antijoin
         || possible_join_exists
         || possible_join_avg
         || possible_join_min
@@ -420,6 +423,35 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                     plan.cap_rows(cap);
                 }
                 return crate::join::run_cte_max(
+                    directory,
+                    &plan,
+                    format.unwrap_or(SqlOutputFormat::Tsv),
+                    output_path,
+                    time,
+                    implicit_lock,
+                );
+            }
+        }
+    }
+    if substring_antijoin {
+        if let Some(directory) = database.as_deref() {
+            let plan = rusthouse_query::parse_substring_antijoin_with_schema(&query, |table| {
+                crate::catalog::read_schema(directory, table)
+                    .map(|columns| columns.into_iter().map(|column| column.name).collect())
+                    .map_err(ParseError)
+            })
+            .map_err(|error| error.to_string())?;
+            if let Some(mut plan) = plan {
+                if part.is_some() {
+                    return Err("substring anti-join cannot use --part".into());
+                }
+                if show_ast || explain {
+                    return Err("substring anti-join cannot use --show-ast or --explain yet".into());
+                }
+                if let Some(cap) = max_rows {
+                    plan.cap_rows(cap);
+                }
+                return crate::join::run_substring_antijoin(
                     directory,
                     &plan,
                     format.unwrap_or(SqlOutputFormat::Tsv),
