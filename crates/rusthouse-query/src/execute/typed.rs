@@ -663,7 +663,24 @@ pub(super) fn matches_comparison(value: &Cell, target: &Cell, operator: Operator
         return false;
     }
     if let (Cell::Numeric(left), Cell::Numeric(right)) = (value, target) {
-        return super::predicates::number_matches(*left, *right, operator);
+        if matches!(
+            (left, right),
+            (Number::Unsigned(_), Number::Unsigned(_))
+                | (Number::Signed(_), Number::Signed(_))
+                | (Number::Float(_), Number::Float(_))
+        ) {
+            return super::predicates::number_matches(*left, *right, operator);
+        }
+        let order = super::multi_aggregate::compare_expression_numbers(*left, *right);
+        return match operator {
+            Operator::Eq => order.is_some_and(|order| order.is_eq()),
+            Operator::Ne => order.is_none_or(|order| order.is_ne()),
+            Operator::Lt => order.is_some_and(|order| order.is_lt()),
+            Operator::Le => order.is_some_and(|order| order.is_le()),
+            Operator::Gt => order.is_some_and(|order| order.is_gt()),
+            Operator::Ge => order.is_some_and(|order| order.is_ge()),
+            _ => false,
+        };
     }
     if !matches!(
         operator,
@@ -3430,5 +3447,40 @@ mod fused_numeric_between_tests {
             .map(|row| passes(&batch, row, std::slice::from_ref(&conditions)))
             .collect::<Vec<_>>();
         assert_eq!(results, vec![false, true, true, true, false]);
+    }
+}
+
+#[cfg(test)]
+mod mixed_numeric_join_comparisons {
+    use super::*;
+
+    #[test]
+    fn compares_mixed_values_without_losing_precision() {
+        let unsigned = |value| Cell::Numeric(Number::Unsigned(value));
+        let signed = |value| Cell::Numeric(Number::Signed(value));
+        let float = |value| Cell::Numeric(Number::Float(value));
+        assert!(matches_comparison(&unsigned(0), &signed(-1), Operator::Gt));
+        assert!(matches_comparison(&signed(-1), &unsigned(0), Operator::Lt));
+        assert!(matches_comparison(
+            &unsigned((1 << 53) + 1),
+            &float((1u64 << 53) as f64),
+            Operator::Gt
+        ));
+        assert!(matches_comparison(
+            &unsigned(u128::MAX),
+            &float(f64::INFINITY),
+            Operator::Lt
+        ));
+        assert!(!matches_comparison(
+            &unsigned(1),
+            &float(f64::NAN),
+            Operator::Eq
+        ));
+        assert!(matches_comparison(
+            &unsigned(1),
+            &float(f64::NAN),
+            Operator::Ne
+        ));
+        assert!(!matches_comparison(&Cell::Null, &signed(-1), Operator::Ne));
     }
 }

@@ -13,9 +13,9 @@ fn cross_input_comparisons_filter_after_any_selection() {
     };
     for statement in [
         "CREATE TABLE facts (id UInt64, qty Nullable(UInt64), word String)",
-        "CREATE TABLE dims (id UInt64, threshold Nullable(UInt64), word String)",
+        "CREATE TABLE dims (id UInt64, threshold Nullable(UInt64), word String, balance Int64, ratio Float64)",
         "INSERT INTO facts VALUES (1, 5, 'a'), (2, 3, 'b'), (3, NULL, 'c'), (4, 9, 'd')",
-        "INSERT INTO dims VALUES (1, 3, 'b'), (1, 8, 'a'), (2, 4, 'a'), (3, 9, 'c'), (4, NULL, 'd')",
+        "INSERT INTO dims VALUES (1, 3, 'b', -1, 5.5), (1, 8, 'a', 6, 4.0), (2, 4, 'a', 4, 3.0), (3, 9, 'c', -1, 1.0), (4, NULL, 'd', -1, 10.0)",
     ] {
         let output = sql(statement);
         assert!(output.status.success(), "{statement}: {output:?}");
@@ -40,6 +40,18 @@ fn cross_input_comparisons_filter_after_any_selection() {
         (
             "SELECT f.qty FROM facts f JOIN dims d ON f.id = d.id WHERE f.qty < d.threshold LIMIT 1",
             "f.qty\n5\n",
+        ),
+        (
+            "SELECT COUNT(*) AS n FROM facts f JOIN dims d ON f.id = d.id WHERE f.qty > d.balance",
+            "n\n2\n",
+        ),
+        (
+            "SELECT COUNT(*) AS n FROM facts f JOIN dims d ON f.id = d.id WHERE d.balance < f.qty",
+            "n\n2\n",
+        ),
+        (
+            "SELECT COUNT(*) AS n FROM facts f JOIN dims d ON f.id = d.id WHERE f.qty < d.ratio",
+            "n\n2\n",
         ),
         (
             "SELECT COUNT(*) AS n FROM facts f JOIN dims d ON f.id = d.id WHERE f.qty < d.threshold LIMIT 0",
