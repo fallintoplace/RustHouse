@@ -926,7 +926,16 @@ fn grouped_metric_column(
             return Ok("*".into());
         }
     }
-    parser.word()
+    let column = parser.word()?;
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Star | Token::Slash | Token::Percent | Token::Plus | Token::Minus)
+    ) {
+        return Err(ParseError(
+            "computed grouped aggregate arguments are not yet supported".into(),
+        ));
+    }
+    Ok(column)
 }
 
 // SUM(CASE WHEN ... THEN metric ELSE 0 END) is equivalent to a
@@ -2494,5 +2503,16 @@ mod parenthesized_predicate_literal_tests {
         }
         let nested = format!("{}1{}", "(".repeat(17), ")".repeat(17));
         assert!(parse_select(&format!("SELECT count(*) FROM t WHERE number = {nested}")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_2 {
+    use super::parse_select;
+
+    #[test]
+    fn unsupported_construct_has_specific_error() {
+        let error = parse_select("SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category").unwrap_err();
+        assert!(error.0.contains("computed grouped aggregate arguments"), "{error}");
     }
 }
