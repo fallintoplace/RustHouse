@@ -19,6 +19,16 @@ pub struct JoinColumn {
     pub name: String,
 }
 
+impl JoinColumn {
+    fn count_order() -> Self {
+        Self { relation: String::new(), name: "#count".into() }
+    }
+
+    pub(crate) fn is_count_order(&self) -> bool {
+        self.relation.is_empty() && self.name == "#count"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinType {
     Inner,
@@ -480,7 +490,24 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             if terms.len() == 8 {
                 return Err(ParseError("JOIN ORDER BY supports at most 8 keys".into()));
             }
-            let key = qualified(&mut parser)?;
+            let next_is_count_alias = grouped_count_projection
+                && matches!(parser.tokens.get(parser.index), Some(Token::Word(name))
+                    if name.eq_ignore_ascii_case(aggregate_alias.as_deref().unwrap_or("count")))
+                && parser.tokens.get(parser.index + 1) != Some(&Token::Dot);
+            let key = if next_is_count_alias {
+                parser.index += 1;
+                JoinColumn::count_order()
+            } else if grouped_count_projection && parser.keyword("COUNT") {
+                if !parser.take(Token::LParen)
+                    || !parser.take(Token::Star)
+                    || !parser.take(Token::RParen)
+                {
+                    return Err(ParseError("grouped JOIN ORDER BY COUNT requires COUNT(*)".into()));
+                }
+                JoinColumn::count_order()
+            } else {
+                qualified(&mut parser)?
+            };
             let descending = if parser.keyword("USING") {
                 match parser.operator()? {
                     crate::Operator::Lt => false,
@@ -565,7 +592,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
     }
     for (column, _, _) in &order_by {
-        if !known_qualifier(&column.relation) {
+        if !column.is_count_order() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}",
                 column.relation
@@ -631,7 +658,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
         if order_by
             .iter()
-            .any(|(column, _, _)| !projected_keys.contains(column))
+            .any(|(column, _, _)| !column.is_count_order() && !projected_keys.contains(column))
         {
             return Err(ParseError(
                 "grouped JOIN ORDER BY must use a group key".into(),
@@ -814,10 +841,13 @@ pub fn explain_join(query: &JoinSelect) -> String {
                     Some(false) => " NULLS LAST",
                     None => "",
                 };
+                let name = if column.is_count_order() {
+                    query.aggregate_alias.as_deref().unwrap_or("count").to_owned()
+                } else {
+                    format!("{}.{}", column.relation, column.name)
+                };
                 format!(
-                    "{}.{} {}{}",
-                    column.relation,
-                    column.name,
+                    "{name} {}{}",
                     if *descending { "DESC" } else { "ASC" },
                     placement
                 )
