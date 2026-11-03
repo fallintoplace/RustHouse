@@ -106,6 +106,8 @@ def summarize(report, min_queries=1, min_geomean=None, min_worst_p90=None):
             samples[engine] = (median, p90)
         ratio = samples["clickhouse"][0] / samples["rusthouse"][0]
         tail = samples["clickhouse"][1] / samples["rusthouse"][1]
+        if not finite_positive(ratio) or not finite_positive(tail):
+            raise ValueError(f"query {number}: timing ratio is not finite and positive")
         if not accurate(result.get("clickhouse_over_rusthouse"), ratio):
             raise ValueError(f"query {number}: incorrect median ratio")
         if not accurate(result.get("clickhouse_p90_over_rusthouse"), tail):
