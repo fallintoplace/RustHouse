@@ -2,7 +2,7 @@
 //! Tokens are issued by an external authority; this is not consensus.
 use crate::distributed_fencing::FenceToken;
 use crate::distributed_lineage::SnapshotVersion;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 const MAX_PINS: usize = 4096;
 
@@ -68,6 +68,30 @@ impl ReaderPinLedger {
         self.last_clock_ms = now_ms;
         self.highest.insert(pin.reader.clone(), pin.token);
         self.active.insert(pin.reader.clone(), pin);
+        Ok(())
+    }
+
+
+    /// Apply a set of reader pins atomically to this local ledger.
+    /// External fencing authority and durable persistence remain required.
+    pub fn pin_batch(
+        &mut self,
+        pins: &[ReaderPin],
+        now_ms: u64,
+        ttl_limit: u64,
+    ) -> Result<(), &'static str> {
+        if pins.len() > MAX_PINS {
+            return Err("reader pin batch is too large");
+        }
+        let mut seen = HashSet::new();
+        if pins.iter().any(|pin| !seen.insert(pin.reader.as_str())) {
+            return Err("duplicate reader in pin batch");
+        }
+        let mut staged = self.clone();
+        for pin in pins {
+            staged.pin(pin.clone(), now_ms, ttl_limit)?;
+        }
+        *self = staged;
         Ok(())
     }
 
@@ -157,5 +181,46 @@ mod expired_pin_token_tests {
         assert!(ledger.pin(make_pin(8, 2, 300), 200, 100).is_err());
         ledger.pin(make_pin(9, 3, 300), 200, 100).unwrap();
         assert_eq!(ledger.pinned_versions(201).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod pin_batch_tests {
+    use super::*;
+
+    fn make_pin(reader: &str, token: u64, generation: u64, expiry: u64) -> ReaderPin {
+        ReaderPin {
+            reader: reader.into(),
+            snapshot: SnapshotVersion { epoch: 1, generation, fingerprint: generation as u128 },
+            token: FenceToken { epoch: 1, sequence: token },
+            expires_at_ms: expiry,
+        }
+    }
+
+    #[test]
+    fn rejected_batch_does_not_install_any_reader_pins() {
+        let mut ledger = ReaderPinLedger::new();
+        ledger.pin(make_pin("first", 1, 1, 130), 100, 50).unwrap();
+        let before = ledger.clone();
+        let new_pin = make_pin("second", 1, 2, 125);
+        let conflicting = make_pin("first", 1, 2, 140);
+        assert!(ledger.pin_batch(&[new_pin.clone(), conflicting], 110, 50).is_err());
+        assert_eq!(ledger.active, before.active);
+        assert_eq!(ledger.highest, before.highest);
+        assert_eq!(ledger.last_clock_ms, before.last_clock_ms);
+
+        ledger.pin_batch(&[new_pin, make_pin("first", 2, 2, 145)], 110, 50).unwrap();
+        assert_eq!(ledger.active.len(), 2);
+        assert_eq!(ledger.pinned_versions(111).len(), 1);
+    }
+
+    #[test]
+    fn duplicate_reader_in_batch_is_rejected() {
+        let mut ledger = ReaderPinLedger::new();
+        assert!(ledger.pin_batch(&[
+            make_pin("reader", 1, 1, 20),
+            make_pin("reader", 2, 2, 30),
+        ], 10, 30).is_err());
+        assert!(ledger.active.is_empty());
     }
 }
