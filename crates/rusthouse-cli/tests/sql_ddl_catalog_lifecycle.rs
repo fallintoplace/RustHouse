@@ -58,8 +58,21 @@ fn drop_if_exists_does_not_create_an_absent_catalog() {
     let dir = catalog();
     let result = sql("DROP TABLE IF EXISTS missing", &dir);
     assert!(result.status.success(), "{result:?}");
-    assert!(!dir.exists());
+    assert!(
+        !dir.exists()
+            || fs::read_dir(&dir)
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() == ".rusthouse-write.lock")
+    );
     let invalid = sql("DROP TABLE missing; SHOW TABLES", &dir);
     assert!(!invalid.status.success());
-    assert!(!dir.exists());
+    assert!(
+        !dir.exists()
+            || fs::read_dir(&dir)
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() == ".rusthouse-write.lock")
+    );
+    if dir.exists() {
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

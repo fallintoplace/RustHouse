@@ -464,7 +464,9 @@ pub fn execute_multi_join<W: Write>(
             column_index(&relations, column)?;
         }
         for (column, _, _) in &query.order_by {
-            column_index(&relations, column)?;
+            if !(column.is_count_order() && query.grouped_count.is_some()) {
+                column_index(&relations, column)?;
+            }
         }
         if query.aggregate == Some(crate::JoinAggregate::CountStar) {
             writeln!(

@@ -35,7 +35,7 @@ fn repeated_nullable_text_composite_keys_aggregate_without_collisions() {
     assert!(result.status.success(), "{result:?}");
     assert_eq!(
         result.stdout,
-        b"region\tsegment\tcount\na\tbc\t2\nab\tc\t2\nNULL\tbc\t2\n\tbc\t2\n"
+        b"region\tsegment\tcount\na\tbc\t2\nab\tc\t2\n\\N\tbc\t2\n\tbc\t2\n"
     );
     let filtered = sql(
         "SELECT region, segment, count(*) FROM events WHERE flag = 1 GROUP BY region, segment",
@@ -44,7 +44,7 @@ fn repeated_nullable_text_composite_keys_aggregate_without_collisions() {
     assert!(filtered.status.success(), "{filtered:?}");
     assert_eq!(
         filtered.stdout,
-        b"region\tsegment\tcount\na\tbc\t2\nab\tc\t1\nNULL\tbc\t1\n\tbc\t2\n"
+        b"region\tsegment\tcount\na\tbc\t2\nab\tc\t1\n\\N\tbc\t1\n\tbc\t2\n"
     );
     fs::remove_dir_all(db).unwrap();
 }

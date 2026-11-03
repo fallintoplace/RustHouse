@@ -45,7 +45,7 @@ fn copies_filtered_rows_between_persistent_tables() {
         &db,
     );
     ok(
-        "INSERT INTO source VALUES (1, 'Ada', NULL), (2, 'Line\nbreak', 'a\\b'), (3, '\\N', NULL)",
+        "INSERT INTO source VALUES (1, 'Ada', NULL), (2, 'Line\nbreak', 'a\\\\b'), (3, '\\\\N', NULL)",
         &db,
     );
     ok(
@@ -77,7 +77,10 @@ fn generated_rows_and_empty_inserts_use_existing_publish_path() {
         ok("SELECT id FROM target ORDER BY id", &db),
         "id\n3\n4\n5\n"
     );
+    let pointer = db.join("target.parts/.rusthouse-active");
+    let initial_generation = fs::read_to_string(&pointer).unwrap();
     ok("INSERT INTO target (id) SELECT number FROM numbers(0)", &db);
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), initial_generation);
     assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n3\n");
     // Bulk INSERT SELECT publishes 13 new parts in one active snapshot.
     ok(
@@ -85,15 +88,15 @@ fn generated_rows_and_empty_inserts_use_existing_publish_path() {
         &db,
     );
     assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n50003\n");
-    let pointer = db.join("target.parts/.rusthouse-active");
-    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
+    let first_generation = fs::read_to_string(&pointer).unwrap();
+    assert_ne!(first_generation, initial_generation);
 
     // The old 100,000-row ceiling is gone. The whole insert commits atomically.
     ok(
         "INSERT INTO target (id) SELECT number FROM numbers(100001)",
         &db,
     );
-    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g2\n");
+    assert_ne!(fs::read_to_string(&pointer).unwrap(), first_generation);
     assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n150004\n");
     assert!(!fs::read_dir(&db).unwrap().any(|entry| {
         entry

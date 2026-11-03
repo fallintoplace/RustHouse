@@ -37,7 +37,13 @@ fn add_nested_column_keeps_a_versioned_schema_without_temp_files() {
         String::from_utf8(result.stdout).unwrap(),
         "name\ttype\nid\tUInt64\ndetail\tNullable(Array(UInt128))\n"
     );
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    assert_eq!(
+        fs::read_dir(&dir)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().file_name() != ".rusthouse-write.lock")
+            .count(),
+        1
+    );
     fs::remove_dir_all(dir).unwrap();
 }
 

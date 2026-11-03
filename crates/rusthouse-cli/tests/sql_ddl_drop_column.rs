@@ -56,7 +56,12 @@ fn rejects_dropping_last_column_and_missing_tables() {
     let dir = new_catalog();
     let nonexistent = ddl("ALTER TABLE missing DROP COLUMN id", &dir);
     assert!(!nonexistent.status.success());
-    assert!(!dir.exists());
+    assert!(
+        !dir.exists()
+            || fs::read_dir(&dir)
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() == ".rusthouse-write.lock")
+    );
 
     let created = ddl("CREATE TABLE events (id UInt64)", &dir);
     assert!(created.status.success(), "{created:?}");

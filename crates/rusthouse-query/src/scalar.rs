@@ -1315,7 +1315,27 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected '(' after scalar function".into()));
         }
-        let first = expression(parser, depth + 1)?;
+        let first = if matches!(
+            name.to_ascii_uppercase().as_str(),
+            "TOUINT8" | "TOUINT16" | "TOUINT32"
+        ) {
+            if let Some(Token::String(value)) = parser.tokens.get(parser.index) {
+                let parsed = value
+                    .parse::<u128>()
+                    .map_err(|_| ParseError("invalid unsigned integer string".into()))?;
+                parser.index += 1;
+                match name.to_ascii_uppercase().as_str() {
+                    "TOUINT8" => i64::from(parsed as u8),
+                    "TOUINT16" => i64::from(parsed as u16),
+                    "TOUINT32" => i64::from(parsed as u32),
+                    _ => unreachable!(),
+                }
+            } else {
+                expression(parser, depth + 1)?
+            }
+        } else {
+            expression(parser, depth + 1)?
+        };
         let result = if is_bitwise(&name) {
             if !parser.take(Token::Comma) {
                 return Err(ParseError("bitwise functions require two arguments".into()));

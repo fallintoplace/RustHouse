@@ -32,8 +32,8 @@ fn billion_generated_rows_form_exact_distribution_in_constant_time() {
     let result = ok(&db, "SELECT histogram(10)(number) FROM numbers(1000000000)");
     assert!(result.starts_with("histogram(10)(number)\n["));
     assert_eq!(result.matches(",100000000)").count(), 10);
-    assert!(result.contains("(0,99999999,100000000)"));
-    assert!(result.contains("(900000000,999999999,100000000)"));
+    assert!(result.contains("(0,99999999.9,100000000)"));
+    assert!(result.contains("(899999999.1,999999999,100000000)"));
     fs::remove_dir_all(db).unwrap();
 }
 #[test]

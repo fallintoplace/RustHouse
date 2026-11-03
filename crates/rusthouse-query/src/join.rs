@@ -507,7 +507,10 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             let next_is_count_alias = grouped_count_projection
                 && matches!(parser.tokens.get(parser.index), Some(Token::Word(name))
                     if name.eq_ignore_ascii_case(aggregate_alias.as_deref().unwrap_or("count")))
-                && parser.tokens.get(parser.index + 1) != Some(&Token::Dot);
+                && !matches!(
+                    parser.tokens.get(parser.index + 1),
+                    Some(Token::Dot | Token::LParen)
+                );
             let key = if next_is_count_alias {
                 parser.index += 1;
                 JoinColumn::count_order()

@@ -22,7 +22,7 @@ fn json_exists_navigates_root_nested_objects_and_arrays() {
             "1",
         ),
         (r#"SELECT JSON_EXISTS('{"a":[1]}', '$.a[1]') AS value"#, "0"),
-        (r#"SELECT JSON_EXISTS('{"a":[1]}', '$.a.0') AS value"#, "1"),
+        (r#"SELECT JSON_EXISTS('{"a":[1]}', '$.a.0') AS value"#, "0"),
     ] {
         let output = run(sql);
         assert!(

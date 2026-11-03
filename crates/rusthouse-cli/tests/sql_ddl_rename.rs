@@ -43,7 +43,12 @@ fn rejects_missing_source_and_existing_destination_without_data_loss() {
     let dir = new_catalog();
     let absent = ddl("RENAME TABLE unknown TO next", &dir);
     assert!(!absent.status.success());
-    assert!(!dir.exists());
+    assert!(
+        !dir.exists()
+            || fs::read_dir(&dir)
+                .unwrap()
+                .all(|entry| entry.unwrap().file_name() == ".rusthouse-write.lock")
+    );
 
     let first = ddl("CREATE TABLE one (id UInt64)", &dir);
     assert!(first.status.success(), "{first:?}");

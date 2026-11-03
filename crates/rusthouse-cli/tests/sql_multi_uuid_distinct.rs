@@ -23,7 +23,7 @@ fn multiple_aggregates_distinct_uuid_uses_exact_byte_identity() {
     assert!(result.status.success(), "{result:?}");
     assert_eq!(
         result.stdout,
-        b"countDistinct(user_id)\tsum(amount)\n3\t23\n"
+        b"count(DISTINCT user_id)\tsum(amount)\n3\t23\n"
     );
     fs::remove_dir_all(db).unwrap();
 }

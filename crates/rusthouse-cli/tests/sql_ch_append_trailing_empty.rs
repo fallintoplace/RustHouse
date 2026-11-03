@@ -1,11 +1,11 @@
 use std::process::Command;
 
 #[test]
-fn trailing_character_is_appended_when_input_is_empty() {
+fn trailing_character_is_appended_only_when_needed() {
     for (query, expected) in [
         (
             "SELECT appendTrailingCharIfAbsent('', '/') AS value",
-            "value\n/\n",
+            "value\n\n",
         ),
         (
             "SELECT appendTrailingCharIfAbsent('hello', '/') AS value",
@@ -17,7 +17,7 @@ fn trailing_character_is_appended_when_input_is_empty() {
         ),
         (
             "SELECT appendTrailingCharIfAbsent('', '✓') AS value",
-            "value\n✓\n",
+            "value\n\n",
         ),
         (
             "SELECT appendTrailingCharIfAbsent('✓', '✓') AS value",

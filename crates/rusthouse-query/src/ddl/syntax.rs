@@ -38,6 +38,7 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "STRING" => "String",
         "UUID" => "UUID",
         "DATE" => "Date",
+        "DATE32" => "Date32",
         "DATETIME" => "DateTime",
         "BOOL" => "Bool",
         "NULLABLE" => "Nullable",
