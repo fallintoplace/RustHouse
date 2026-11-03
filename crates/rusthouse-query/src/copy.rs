@@ -36,7 +36,9 @@ fn parse_copy_column_list(parser: &mut Parser) -> Result<Option<Vec<String>>, Pa
             return Err(ParseError(format!("duplicate COPY column: {column}")));
         }
         columns.push(column);
-        if !parser.take(Token::Comma) {
+        if !parser.take(Token::Comma)
+            || parser.tokens.get(parser.index) == Some(&Token::RParen)
+        {
             break;
         }
     }
@@ -237,5 +239,25 @@ mod tests {
             parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)")
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod copy_trailing_column_comma_tests {
+    use super::parse_copy_from;
+
+    #[test]
+    fn accepts_one_final_column_separator() {
+        let parsed = parse_copy_from("COPY t (id, name,) FROM 'rows.csv'")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.columns, Some(vec!["id".into(), "name".into()]));
+        for sql in [
+            "COPY t (,) FROM 'rows.csv'",
+            "COPY t (id,,) FROM 'rows.csv'",
+            "COPY t (id, id,) FROM 'rows.csv'",
+        ] {
+            assert!(parse_copy_from(sql).is_err(), "{sql}");
+        }
     }
 }
