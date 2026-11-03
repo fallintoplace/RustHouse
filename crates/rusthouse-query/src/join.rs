@@ -87,6 +87,8 @@ pub struct JoinSelect {
     pub grouped_count: Option<Vec<JoinColumn>>,
     /// SUM(CASE WHEN ... THEN 1 ELSE 0 END) metrics for one grouped key.
     pub grouped_case_counts: Vec<(crate::GroupedFilter, String)>,
+    /// A numeric SUM over a column of a chained INNER join.
+    pub grouped_sum: Option<JoinColumn>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
@@ -218,6 +220,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     };
     let mut grouped_count_projection = false;
     let mut grouped_case_counts = Vec::new();
+    let mut grouped_sum = None;
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
     } else {
@@ -236,6 +239,26 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                 && matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
             {
                 parser.keyword("SUM");
+                if !matches!(parser.tokens.get(parser.index + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE"))
+                {
+                    if !parser.take(Token::LParen) {
+                        return Err(ParseError("JOIN SUM requires '('".into()));
+                    }
+                    let column = projected(&mut parser)?;
+                    if column.name == "*" || !parser.take(Token::RParen) {
+                        return Err(ParseError(
+                            "JOIN grouped SUM requires a numeric column".into(),
+                        ));
+                    }
+                    aggregate_alias = if parser.keyword("AS") {
+                        Some(parser.bounded_word()?)
+                    } else {
+                        Some(format!("sum({})", column.display_name()))
+                    };
+                    grouped_sum = Some(column);
+                    grouped_count_projection = true;
+                    break;
+                }
                 loop {
                     if grouped_case_counts.len() == 8 {
                         return Err(ParseError(
@@ -692,6 +715,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                 JoinColumn::count_order()
             } else if grouped_count_projection
                 && grouped_case_counts.is_empty()
+                && grouped_sum.is_none()
                 && parser.keyword("COUNT")
             {
                 if !parser.take(Token::LParen)
@@ -778,6 +802,14 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         }
     }
     for (column, _, _) in &where_comparisons_extra {
+        if !column.relation.is_empty() && !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
+        }
+    }
+    if let Some(column) = &grouped_sum {
         if !column.relation.is_empty() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}",
@@ -917,6 +949,15 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             "JOIN grouped CASE requires one key and two INNER inputs".into(),
         ));
     }
+    if grouped_sum.is_some()
+        && (steps.is_empty()
+            || kind != JoinType::Inner
+            || steps.iter().any(|step| step.kind != JoinType::Inner))
+    {
+        return Err(ParseError(
+            "grouped SUM requires a chained INNER JOIN".into(),
+        ));
+    }
     let grouped_count = if grouped_count_projection {
         let projected_keys = columns
             .as_ref()
@@ -997,6 +1038,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         aggregate_alias,
         grouped_count,
         grouped_case_counts,
+        grouped_sum,
         keys,
         using_keys,
         where_null,
@@ -1202,7 +1244,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
             .map(JoinColumn::display_name)
             .collect::<Vec<_>>()
             .join(", ");
-        if query.grouped_case_counts.is_empty() {
+        if let Some(column) = &query.grouped_sum {
+            plan.push_str(&format!(
+                "\nAggregate: GROUP BY {keys} with SUM({})",
+                column.display_name()
+            ));
+        } else if query.grouped_case_counts.is_empty() {
             plan.push_str(&format!("\nAggregate: GROUP BY {keys} with COUNT(*)"));
         } else {
             let aliases = query
@@ -1844,6 +1891,13 @@ mod tests {
 #[cfg(test)]
 mod join_count_one_tests {
     use super::*;
+
+    #[test]
+    fn explains_chained_grouped_sum() {
+        let query = parse_join("SELECT a.id, SUM(c.amount) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.id = c.id GROUP BY a.id").unwrap().unwrap();
+        let plan = explain_join(&query);
+        assert!(plan.contains("GROUP BY a.id with SUM(c.amount)"), "{plan}");
+    }
 
     #[test]
     fn counts_joined_rows_for_literal_one() {

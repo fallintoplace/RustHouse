@@ -478,6 +478,32 @@ pub fn execute_multi_join<W: Write>(
         keys: query.keys.clone(),
         using_keys: query.using_keys.clone(),
     };
+    let grouped_sum = query
+        .grouped_sum
+        .as_ref()
+        .map(|column| {
+            let index = column_index(&relations, column)?;
+            let kind = typed::base_type(column_type(&relations, index));
+            if !matches!(
+                kind,
+                "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+                    | "Float32"
+                    | "Float64"
+            ) {
+                return Err(invalid("grouped SUM requires a numeric column"));
+            }
+            Ok(index)
+        })
+        .transpose()?;
     let count_column = if let Some(crate::JoinAggregate::CountColumn(column)) = &query.aggregate {
         let index = column_index(&relations, column)?;
         let header = query
@@ -595,6 +621,7 @@ pub fn execute_multi_join<W: Write>(
             &initial_step,
             &comparisons,
             &column_comparisons,
+            grouped_sum,
             output,
         );
     }
