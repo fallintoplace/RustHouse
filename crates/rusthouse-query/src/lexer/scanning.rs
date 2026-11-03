@@ -206,6 +206,20 @@ fn valid_quoted_identifier(bytes: &[u8]) -> bool {
         && characters.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+/// Quoted names with spaces are only valid in output alias positions.
+fn valid_quoted_output_alias(bytes: &[u8]) -> bool {
+    bytes.contains(&b' ')
+        && bytes
+            .first()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        && bytes
+            .last()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b' ')
+}
+
 /// Parse quoted identifiers without treating reserved words as SQL keywords.
 /// Database identifiers must keep the same bounded ASCII rules as unquoted
 /// names so quoted DDL cannot bypass storage path validation.
@@ -225,14 +239,18 @@ pub(super) fn scan_quoted_identifier(sql: &str, index: &mut usize) -> Result<Tok
             if candidate.len() > 128 {
                 return Err(ParseError("quoted identifier exceeds 128 bytes".into()));
             }
-            let valid = valid_quoted_identifier(candidate);
-            if !valid {
+            let identifier = valid_quoted_identifier(candidate);
+            if !identifier && !valid_quoted_output_alias(candidate) {
                 return Err(ParseError(
                     "quoted identifiers require a simple ASCII identifier".into(),
                 ));
             }
             *index = end + 1;
-            return Ok(Token::QuotedWord(sql[start..end].into()));
+            return Ok(if identifier {
+                Token::QuotedWord(sql[start..end].into())
+            } else {
+                Token::QuotedAlias(sql[start..end].into())
+            });
         }
     }
     let mut cursor = start;
@@ -258,15 +276,18 @@ pub(super) fn scan_quoted_identifier(sql: &str, index: &mut usize) -> Result<Tok
             return Err(ParseError("quoted identifier exceeds 128 bytes".into()));
         }
     }
-    let valid = valid_quoted_identifier(&decoded);
-    if !valid {
+    let identifier = valid_quoted_identifier(&decoded);
+    if !identifier && !valid_quoted_output_alias(&decoded) {
         return Err(ParseError(
             "quoted identifiers require a simple ASCII identifier".into(),
         ));
     }
-    Ok(Token::QuotedWord(
-        String::from_utf8(decoded).expect("validated ASCII quoted identifier"),
-    ))
+    let name = String::from_utf8(decoded).expect("validated ASCII quoted name");
+    Ok(if identifier {
+        Token::QuotedWord(name)
+    } else {
+        Token::QuotedAlias(name)
+    })
 }
 
 pub(super) fn scan_word(sql: &str, index: &mut usize) -> Token {
