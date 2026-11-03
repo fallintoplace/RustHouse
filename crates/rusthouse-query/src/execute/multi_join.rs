@@ -842,6 +842,11 @@ fn execute_multi_join_inner<W: Write>(
     avg_plan: Option<(&crate::JoinCorrelatedAvg, &std::path::Path)>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query.grouped_count_column.is_some() {
+        return Err(invalid(
+            "grouped COUNT(column) requires the two-table JOIN executor",
+        ));
+    }
     if query
         .grouped_sum_having
         .as_ref()
@@ -911,6 +916,7 @@ fn execute_multi_join_inner<W: Write>(
             || query.aggregate.is_some()
             || query.grouped_sum.is_some()
             || query.grouped_distinct.is_some()
+            || query.grouped_count_column.is_some()
             || !query.grouped_case_counts.is_empty()
             || query.kind != JoinType::Inner
             || query.steps.iter().any(|step| step.kind != JoinType::Inner)

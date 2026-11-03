@@ -1443,6 +1443,29 @@ pub fn execute_join<W: Write>(
     right_path: &Path,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query.grouped_count_column.is_some()
+        && (query
+            .grouped_count
+            .as_ref()
+            .is_none_or(|keys| keys.len() != 1)
+            || !matches!(query.kind, JoinType::Inner | JoinType::Left)
+            || !query.steps.is_empty()
+            || query.aggregate.is_some()
+            || query.grouped_sum.is_some()
+            || query.grouped_distinct.is_some()
+            || !query.grouped_case_counts.is_empty()
+            || query.scalar_sum.is_some()
+            || query.scalar_formula.is_some()
+            || query.scalar_where.is_some()
+            || !query.where_comparisons_extra.is_empty()
+            || !query.where_column_comparisons.is_empty()
+            || !query.where_in_filters.is_empty()
+            || !query.where_like_filters.is_empty())
+    {
+        return Err(invalid(
+            "grouped COUNT(column) requires one key and two INNER or LEFT inputs",
+        ));
+    }
     if query
         .grouped_sum_having
         .as_ref()
@@ -2325,5 +2348,30 @@ mod selective_join_probe_tests {
             cells[2],
             typed::Cell::Numeric(Number::Unsigned(9))
         ));
+    }
+}
+
+#[cfg(test)]
+mod grouped_count_column_guard_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_manually_modified_outer_join_plans_before_reading() {
+        let mut query = crate::parse_join(
+            "SELECT a.k, COUNT(b.v) AS n FROM a LEFT JOIN b ON a.k = b.k GROUP BY a.k",
+        )
+        .unwrap()
+        .unwrap();
+        query.kind = JoinType::Full;
+        let mut output = Vec::new();
+        let error = execute_join(
+            &query,
+            Path::new("missing"),
+            Path::new("missing"),
+            &mut output,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("grouped COUNT(column)"));
+        assert!(output.is_empty());
     }
 }
