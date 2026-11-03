@@ -18,7 +18,8 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "SMALLINT" => "Int16",
         "INTEGER" | "INT" => "Int32",
         "BIGINT" => "Int64",
-        "TEXT" | "VARCHAR" | "CHARACTER" | "CHAR" | "NCHAR" | "NVARCHAR" => "String",
+        "TEXT" | "VARCHAR" | "VARCHAR2" | "NVARCHAR2" | "CHARACTER" | "CHAR" | "NCHAR"
+        | "NVARCHAR" => "String",
         "TIMESTAMP" => "DateTime",
         "REAL" | "FLOAT" => "Float32",
         "DOUBLE" => "Float64",
@@ -242,5 +243,22 @@ mod complex_type_tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod varchar2_type_alias_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn maps_oracle_varchar_aliases_to_existing_string_storage() {
+        let parsed = parse_ddl("CREATE TABLE t (a VARCHAR2, b NVARCHAR2)")
+            .unwrap()
+            .unwrap();
+        let Ddl::CreateTable { columns, .. } = parsed else {
+            panic!("expected CREATE TABLE");
+        };
+        assert_eq!(columns[0].data_type, "String");
+        assert_eq!(columns[1].data_type, "String");
     }
 }
