@@ -386,6 +386,26 @@ mod quoted_identifier_fast_path_tests {
 }
 
 #[cfg(test)]
+mod reserved_null_escape_tests {
+    use super::*;
+
+    #[test]
+    fn clickhouse_reserved_uppercase_n_escape_contributes_no_characters() {
+        for (sql, expected) in [
+            (r"'a\Nb'", "ab"),
+            (r"'\N'", ""),
+            (r"'pre\Npost''fix'", "prepost'fix"),
+            (r"'a\nb'", "a\nb"),
+            (r"'a\_b'", r"a\_b"),
+        ] {
+            let mut index = 0;
+            assert_eq!(scan_string(sql, &mut index).unwrap(), Token::String(expected.into()));
+            assert_eq!(index, sql.len());
+        }
+    }
+}
+
+#[cfg(test)]
 mod plain_string_literal_fast_path_tests {
     use super::*;
 
@@ -495,22 +515,3 @@ mod doubled_equals_tests {
     }
 }
 
-#[cfg(test)]
-mod reserved_null_escape_tests {
-    use super::*;
-
-    #[test]
-    fn clickhouse_reserved_uppercase_n_escape_contributes_no_characters() {
-        for (sql, expected) in [
-            (r"'a\Nb'", "ab"),
-            (r"'\N'", ""),
-            (r"'pre\Npost''fix'", "prepost'fix"),
-            (r"'a\nb'", "a\nb"),
-            (r"'a\_b'", r"a\_b"),
-        ] {
-            let mut index = 0;
-            assert_eq!(scan_string(sql, &mut index).unwrap(), Token::String(expected.into()));
-            assert_eq!(index, sql.len());
-        }
-    }
-}
