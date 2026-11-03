@@ -51,6 +51,17 @@ fn value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
                 _ => Err(ParseError("INSERT + requires a numeric literal".into())),
             }
         }
+        Some(Token::Minus) => {
+            parser.index += 1;
+            match parser.tokens.get(parser.index) {
+                Some(Token::Number(value)) if !value.starts_with('-') => {
+                    let value = format!("-{value}");
+                    parser.index += 1;
+                    Ok(Some(value))
+                }
+                _ => Err(ParseError("INSERT - requires a numeric literal".into())),
+            }
+        }
         _ => Err(ParseError("INSERT values must be literals or NULL".into())),
     }
 }
@@ -319,5 +330,19 @@ mod insert_trailing_column_comma_tests {
         ] {
             assert!(parse_insert(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod insert_spaced_negative_tests {
+    use super::*;
+
+    #[test]
+    fn negative_literal_may_have_whitespace_after_sign() {
+        let parsed = parse_insert("INSERT INTO readings VALUES (- 12)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.rows, vec![vec![Some("-12".into())]]);
+        assert!(parse_insert("INSERT INTO readings VALUES (- - 12)").is_err());
     }
 }
