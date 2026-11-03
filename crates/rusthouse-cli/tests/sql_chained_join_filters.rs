@@ -12,12 +12,12 @@ fn chained_inner_join_literal_filters() {
             .unwrap()
     };
     for statement in [
-        "CREATE TABLE a (id UInt64, qty Nullable(UInt64))",
+        "CREATE TABLE a (id UInt64, qty Nullable(UInt64), threshold UInt64)",
         "CREATE TABLE b (id UInt64, next UInt64, label String)",
-        "CREATE TABLE c (id UInt64, price UInt64, day Date)",
-        "INSERT INTO a VALUES (1, 2), (2, 5), (3, NULL)",
+        "CREATE TABLE c (id UInt64, price UInt64, day Date, balance Int64)",
+        "INSERT INTO a VALUES (1, 2, 9), (2, 5, 8), (3, NULL, 8)",
         "INSERT INTO b VALUES (1, 10, 'yes'), (1, 11, 'no'), (2, 10, 'yes'), (3, 10, 'yes')",
-        "INSERT INTO c VALUES (10, 8, '1994-01-01'), (11, 9, '1995-01-01')",
+        "INSERT INTO c VALUES (10, 8, '1994-01-01', -1), (11, 9, '1995-01-01', 4)",
     ] {
         let result = sql(statement);
         assert!(result.status.success(), "{statement}: {result:?}");
@@ -51,6 +51,26 @@ fn chained_inner_join_literal_filters() {
             "SELECT COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE day >= DATE '1995-01-01'",
             "n\n1\n",
         ),
+        (
+            "SELECT COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE a.qty < c.price AND b.label = 'yes'",
+            "n\n2\n",
+        ),
+        (
+            "SELECT COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE c.price > a.qty AND b.id < b.next",
+            "n\n3\n",
+        ),
+        (
+            "SELECT COUNT(*) AS n FROM a ANY INNER JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE b.next = c.id AND b.next > c.price",
+            "n\n3\n",
+        ),
+        (
+            "SELECT COUNT(*) AS n FROM a ANY INNER JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE c.price >= a.threshold AND a.id = 1",
+            "n\n0\n",
+        ),
+        (
+            "SELECT COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE a.qty > c.balance",
+            "n\n2\n",
+        ),
     ] {
         let result = sql(query);
         assert!(result.status.success(), "{query}: {result:?}");
@@ -59,6 +79,9 @@ fn chained_inner_join_literal_filters() {
     for query in [
         "SELECT COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE missing = 1 LIMIT 0",
         "SELECT COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE qty = 'bad' LIMIT 0",
+        "SELECT COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE id = a.qty LIMIT 0",
+        "SELECT COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE a.qty = b.label LIMIT 0",
+        "SELECT COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE a.qty = c.missing LIMIT 0",
         "SELECT COUNT(*) FROM a LEFT JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE price = 8",
         "SELECT a.id, COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id WHERE price = 8 GROUP BY a.id",
     ] {
