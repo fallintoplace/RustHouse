@@ -15,6 +15,84 @@ struct BoundFilter {
     target: FilterTarget,
 }
 
+struct CaseMetric {
+    tests: Vec<(crate::Operator, typed::Cell)>,
+    all: bool,
+}
+
+struct CaseGroups {
+    metrics: Vec<CaseMetric>,
+    groups: HashMap<typed::Key, (typed::Cell, Vec<u64>)>,
+    bytes: usize,
+}
+impl CaseGroups {
+    fn add(&mut self, values: &[typed::Cell]) -> Result<(), ExecutionError> {
+        let key = values[0].key();
+        if !self.groups.contains_key(&key) {
+            if self.groups.len() >= 100_000 {
+                return Err(invalid("too many JOIN groups"));
+            }
+            let variable = match &values[0] {
+                typed::Cell::Text(bytes) => bytes.len().saturating_mul(2),
+                typed::Cell::Uuid(value) => value.len().saturating_mul(2),
+                _ => 0,
+            };
+            let size = std::mem::size_of::<(typed::Key, typed::Cell, Vec<u64>)>()
+                .saturating_add(
+                    self.metrics
+                        .len()
+                        .saturating_mul(std::mem::size_of::<u64>()),
+                )
+                .saturating_add(variable);
+            self.bytes = self
+                .bytes
+                .checked_add(size)
+                .ok_or_else(|| invalid("JOIN group memory overflow"))?;
+            if self.bytes > 64 * 1024 * 1024 {
+                return Err(invalid("JOIN grouped hash memory budget exceeded"));
+            }
+            self.groups.insert(
+                key.clone(),
+                (values[0].clone(), vec![0; self.metrics.len()]),
+            );
+        }
+        let counts = &mut self.groups.get_mut(&key).expect("group inserted").1;
+        for (i, metric) in self.metrics.iter().enumerate() {
+            let matches = |(operator, literal): &(crate::Operator, typed::Cell)| {
+                typed::matches_comparison(&values[i + 1], literal, *operator)
+            };
+            let matches = if metric.all {
+                metric.tests.iter().all(matches)
+            } else {
+                metric.tests.iter().any(matches)
+            };
+            if matches {
+                counts[i] = counts[i]
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("JOIN grouped count overflow"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn write_case_header<W: Write>(
+    query: &JoinSelect,
+    selected: &[(usize, String, Option<usize>)],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let name = &selected
+        .first()
+        .ok_or_else(|| invalid("JOIN group key missing"))?
+        .1;
+    write!(output, "{name}")?;
+    for (_, alias) in &query.grouped_case_counts {
+        write!(output, "\t{alias}")?;
+    }
+    writeln!(output)?;
+    Ok(())
+}
+
 // ALL INNER JOINs may discard dimension rows that fail a dimension-only
 // predicate before building the hash table. ANY must keep the first matching
 // key even if that row later fails the predicate.
@@ -100,6 +178,7 @@ fn scan<W: Write>(
     limit: Option<usize>,
     emit: bool,
     count_only: bool,
+    mut grouped: Option<&mut CaseGroups>,
     output: &mut W,
 ) -> Result<u64, ExecutionError> {
     let width = left_names.len();
@@ -210,7 +289,19 @@ fn scan<W: Write>(
                 if matched <= offset as u64 {
                     continue;
                 }
-                if emit {
+                if let Some(groups) = grouped.as_deref_mut() {
+                    let values = selected
+                        .iter()
+                        .map(|(index, _, _)| {
+                            if *index < width {
+                                typed::cell(&batch[source_to_batch[*index]], row_index)
+                            } else {
+                                right_rows[right_index][*index - width].clone()
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    groups.add(&values)?;
+                } else if emit {
                     output_row.clear();
                     for (position, (index, _, fallback)) in selected.iter().enumerate() {
                         if position > 0 {
@@ -346,7 +437,7 @@ pub(super) fn execute<W: Write>(
             target: FilterTarget::Values(values),
         });
     }
-    if filters.is_empty() {
+    if filters.is_empty() && query.grouped_case_counts.is_empty() {
         return Err(invalid("JOIN comparison filter missing"));
     }
     let count_only = query.aggregate == Some(JoinAggregate::CountStar);
@@ -366,16 +457,64 @@ pub(super) fn execute<W: Write>(
             header.push_str(name);
         }
     }
-    if query.limit == Some(0) || (count_only && query.offset != 0) {
+    if query.grouped_case_counts.is_empty()
+        && (query.limit == Some(0) || (count_only && query.offset != 0))
+    {
         writeln!(output, "{header}")?;
         return Ok(());
     }
 
+    let mut case_selected = selected.to_vec();
+    let mut case_metrics = Vec::new();
+    for (filter, _) in &query.grouped_case_counts {
+        let (column, comparisons, all) = match filter {
+            crate::GroupedFilter::CaseElseZero {
+                column,
+                operator,
+                literal,
+            } => (column, vec![(*operator, literal.clone())], true),
+            crate::GroupedFilter::CaseElseZeroCombined {
+                column,
+                comparisons,
+                all,
+            } => (column, comparisons.clone(), *all),
+            _ => return Err(invalid("unsupported JOIN CASE metric")),
+        };
+        let index = resolve(
+            query,
+            &crate::JoinColumn {
+                relation: String::new(),
+                name: column.clone(),
+            },
+            left_names,
+            right_names,
+        )?;
+        let metadata = if index < width {
+            &left_meta
+        } else {
+            &right_meta
+        };
+        let local = if index < width { index } else { index - width };
+        let tests = comparisons
+            .into_iter()
+            .map(|(operator, literal)| {
+                Ok((
+                    operator,
+                    typed::parse_literal(&metadata.columns[local].data_type, &literal)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, ExecutionError>>()?;
+        case_selected.push((index, String::new(), None));
+        case_metrics.push(CaseMetric { tests, all });
+    }
+    if !query.grouped_case_counts.is_empty() && query.limit == Some(0) {
+        return write_case_header(query, selected, output);
+    }
     // Aggregates must not retain unused JOIN projection columns.
     let mut kept = if count_only {
         Vec::new()
     } else {
-        selected.to_vec()
+        case_selected.clone()
     };
     for filter in &filters {
         if filter.column >= width {
@@ -405,6 +544,57 @@ pub(super) fn execute<W: Write>(
         query.any,
         super::super::query_workers(4),
     )?;
+    if !query.grouped_case_counts.is_empty() {
+        let group_index = selected
+            .first()
+            .ok_or_else(|| invalid("JOIN group key missing"))?
+            .0;
+        let group_type = if group_index < width {
+            &left_meta.columns[group_index].data_type
+        } else {
+            &right_meta.columns[group_index - width].data_type
+        };
+        let mut groups = CaseGroups {
+            metrics: case_metrics,
+            groups: HashMap::new(),
+            bytes: 0,
+        };
+        if query.limit != Some(0) && !hash.is_empty() {
+            scan(
+                left_path,
+                left_names,
+                left_keys,
+                &right_rows,
+                &hash,
+                &filters,
+                &case_selected,
+                query.any,
+                0,
+                None,
+                true,
+                true,
+                Some(&mut groups),
+                &mut std::io::sink(),
+            )?;
+        }
+        write_case_header(query, selected, output)?;
+        let mut rows = groups.groups.into_values().collect::<Vec<_>>();
+        if let Some((_, descending, nulls_first)) = query.order_by.first() {
+            rows.sort_by(|a, b| typed::compare_order_cells(&a.0, &b.0, *descending, *nulls_first));
+        }
+        for (key, counts) in rows
+            .iter()
+            .skip(query.offset)
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            typed::write_typed_value(output, key, group_type)?;
+            for count in counts {
+                write!(output, "\t{count}")?;
+            }
+            writeln!(output)?;
+        }
+        return Ok(());
+    }
     if count_only {
         // Scalar COUNT(*) counts every passing pair without the materialized
         // result-row cap, and LIMIT applies to its single result row.
@@ -424,6 +614,7 @@ pub(super) fn execute<W: Write>(
                 None,
                 false,
                 true,
+                None,
                 &mut std::io::sink(),
             )?
         };
@@ -445,6 +636,7 @@ pub(super) fn execute<W: Write>(
             query.limit,
             false,
             false,
+            None,
             &mut std::io::sink(),
         )?;
     }
@@ -465,6 +657,7 @@ pub(super) fn execute<W: Write>(
         query.limit,
         true,
         false,
+        None,
         output,
     )
     .map(|_| ())
@@ -564,5 +757,71 @@ mod fact_probe_column_tests {
             vec![1]
         );
         assert_eq!(fact_probe_columns(6, &[], &[8], &projected, false), vec![0]);
+    }
+}
+
+#[cfg(test)]
+mod grouped_case_budget_tests {
+    use super::*;
+
+    fn groups() -> CaseGroups {
+        CaseGroups {
+            metrics: vec![CaseMetric {
+                tests: vec![(
+                    crate::Operator::Eq,
+                    typed::Cell::Numeric(Number::Unsigned(1)),
+                )],
+                all: true,
+            }],
+            groups: HashMap::new(),
+            bytes: 0,
+        }
+    }
+
+    #[test]
+    fn grouped_case_enforces_group_and_byte_limits() {
+        let mut groups = groups();
+        for value in 0..100_000u128 {
+            groups
+                .add(&[
+                    typed::Cell::Numeric(Number::Unsigned(value)),
+                    typed::Cell::Numeric(Number::Unsigned(1)),
+                ])
+                .unwrap();
+        }
+        assert!(
+            groups
+                .add(&[
+                    typed::Cell::Numeric(Number::Unsigned(100_000)),
+                    typed::Cell::Numeric(Number::Unsigned(1))
+                ])
+                .is_err()
+        );
+        assert_eq!(groups.groups.len(), 100_000);
+        let mut byte_limited = self::groups();
+        byte_limited.bytes = 64 * 1024 * 1024;
+        assert!(
+            byte_limited
+                .add(&[
+                    typed::Cell::Numeric(Number::Unsigned(1)),
+                    typed::Cell::Numeric(Number::Unsigned(1))
+                ])
+                .is_err()
+        );
+        assert!(byte_limited.groups.is_empty());
+    }
+
+    #[test]
+    fn grouped_case_rejects_count_overflow() {
+        let mut groups = groups();
+        let key = typed::Cell::Numeric(Number::Unsigned(1));
+        groups
+            .groups
+            .insert(key.key(), (key.clone(), vec![u64::MAX]));
+        assert!(
+            groups
+                .add(&[key, typed::Cell::Numeric(Number::Unsigned(1))])
+                .is_err()
+        );
     }
 }

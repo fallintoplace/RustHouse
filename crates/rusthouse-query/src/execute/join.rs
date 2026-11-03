@@ -1562,10 +1562,11 @@ pub fn execute_join<W: Write>(
         right_keys.push(right_index);
     }
 
-    if (query.where_comparison.is_some()
-        || !query.where_column_comparisons.is_empty()
-        || !query.where_in_filters.is_empty())
-        && query.grouped_count.is_none()
+    if !query.grouped_case_counts.is_empty()
+        || ((query.where_comparison.is_some()
+            || !query.where_column_comparisons.is_empty()
+            || !query.where_in_filters.is_empty())
+            && query.grouped_count.is_none())
     {
         return comparison_filter::execute(
             query,
