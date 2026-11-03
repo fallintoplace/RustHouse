@@ -120,6 +120,7 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
         cursor += distance;
         let escaped = match (bytes[cursor], bytes.get(cursor + 1)) {
             (b'\\', Some(b'\'' | b'\\')) => Some(bytes[cursor + 1]),
+            (b'\\', Some(b'"')) => Some(b'"'),
             (b'\\', Some(b'n')) => Some(b'\n'),
             (b'\\', Some(b'r')) => Some(b'\r'),
             (b'\\', Some(b't')) => Some(b'\t'),
@@ -375,6 +376,22 @@ mod quoted_identifier_fast_path_tests {
             scan_quoted_identifier("`ok_42`", &mut 0).unwrap(),
             Token::QuotedWord("ok_42".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_escaped_double_quote_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_double_quotes_without_ending_single_quoted_string() {
+        let sql = r#"'a\"b'"#;
+        let mut index = 0;
+        assert_eq!(
+            scan_string(sql, &mut index).unwrap(),
+            Token::String("a\"b".into())
+        );
+        assert_eq!(index, sql.len());
     }
 }
 
