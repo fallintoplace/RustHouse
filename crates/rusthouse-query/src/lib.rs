@@ -803,17 +803,24 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     parse_select_tokens(tokenize(sql)?)
 }
 
-// COUNT(*) and COUNT() use a marker in grouped metric lists.
+// COUNT(*), COUNT(), and COUNT(non-NULL constants) share a grouped marker.
 // The executor counts rows without reading a synthetic data column.
 fn grouped_metric_column(
     parser: &mut Parser,
     function: AggregateFunction,
 ) -> Result<String, ParseError> {
-    if function == AggregateFunction::Count
-        && (parser.take(Token::Star)
-            || parser.tokens.get(parser.index) == Some(&Token::RParen))
-    {
-        return Ok("*".into());
+    if function == AggregateFunction::Count {
+        if parser.take(Token::Star) || parser.tokens.get(parser.index) == Some(&Token::RParen) {
+            return Ok("*".into());
+        }
+        if matches!(
+            parser.tokens.get(parser.index),
+            Some(Token::Number(_) | Token::String(_))
+        ) {
+            // COUNT(non-NULL constant) is equivalent to counting each row.
+            parser.index += 1;
+            return Ok("*".into());
+        }
     }
     parser.word()
 }
