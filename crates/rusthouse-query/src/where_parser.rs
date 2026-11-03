@@ -366,7 +366,9 @@ fn parse_atom(
                 return Err(ParseError("IN supports at most 4096 values".into()));
             }
             values.push(parser.literal()?);
-            if !parser.take(Token::Comma) {
+            if !parser.take(Token::Comma)
+                || parser.tokens.get(parser.index) == Some(&Token::RParen)
+            {
                 break;
             }
         }
