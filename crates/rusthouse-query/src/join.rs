@@ -158,9 +158,50 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     parse_join_resolved(tokenize(sql)?, None)
 }
 
-/// Whether a SELECT has a top-level comma-separated source list.
+/// Whether a SELECT or its scalar HAVING subquery has a comma-separated source list.
 pub fn has_implicit_join(sql: &str) -> Result<bool, ParseError> {
-    implicit::has_comma(&tokenize(sql)?)
+    let tokens = tokenize(sql)?;
+    if implicit::has_comma(&tokens)? {
+        return Ok(true);
+    }
+    let mut depth = 0usize;
+    let mut having = false;
+    for (index, token) in tokens.iter().enumerate() {
+        if depth == 0 {
+            if matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("HAVING")) {
+                having = true;
+            }
+            if matches!(token, Token::Word(word) if ["ORDER", "LIMIT", "OFFSET", "FORMAT"].iter().any(|name| word.eq_ignore_ascii_case(name)))
+            {
+                having = false;
+            }
+            if having
+                && *token == Token::LParen
+                && index > 0
+                && matches!(tokens[index - 1], Token::Operator(_))
+                && matches!(tokens.get(index + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT"))
+            {
+                let mut nesting = 1usize;
+                for end in index + 1..tokens.len() {
+                    match tokens[end] {
+                        Token::LParen => nesting += 1,
+                        Token::RParen => nesting -= 1,
+                        _ => {}
+                    }
+                    if nesting == 0 {
+                        return implicit::has_comma(&tokens[index + 1..end]);
+                    }
+                }
+                return Err(ParseError("HAVING subquery requires ')'".into()));
+            }
+        }
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(false)
 }
 
 /// Resolve unqualified comma-join keys with the schemas held by the caller.
@@ -2640,5 +2681,23 @@ mod join_count_zero_tests {
             .unwrap();
         assert_eq!(query.aggregate, Some(JoinAggregate::CountStar));
         assert!(parse_join("SELECT COUNT(0, 1) FROM l JOIN r ON l.id = r.id").is_err());
+    }
+}
+
+#[cfg(test)]
+mod nested_implicit_join_tests {
+    use super::*;
+
+    #[test]
+    fn detects_only_scalar_having_comma_joins() {
+        assert!(has_implicit_join("SELECT a.id, SUM(a.v) FROM a JOIN b ON a.id = b.id GROUP BY a.id HAVING SUM(a.v) > (SELECT SUM(v * 1) FROM c, d WHERE c.id = d.id)").unwrap());
+        assert!(!has_implicit_join("SELECT a.id, SUM(a.v) FROM a JOIN b ON a.id = b.id GROUP BY a.id HAVING SUM(a.v) > (SELECT SUM(v * 1) FROM c JOIN d ON c.id = d.id)").unwrap());
+        assert!(
+            !has_implicit_join(
+                "SELECT a.id FROM a JOIN b ON a.id = b.id ORDER BY a.id LIMIT (SELECT x FROM c, d)"
+            )
+            .unwrap()
+        );
+        assert!(has_implicit_join("SELECT a.id, SUM(a.v) FROM a JOIN b ON a.id = b.id GROUP BY a.id HAVING SUM(a.v) > (SELECT SUM(v * 1) FROM c, d").is_err());
     }
 }
