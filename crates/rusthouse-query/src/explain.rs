@@ -191,6 +191,9 @@ pub fn explain_select(query: &Select) -> String {
     }
 
     steps.push(describe_projection(&query.projection));
+    if let Some(case) = &query.grouped_case_key {
+        steps.push(format!("Group conditional string key: {}", case.case_label));
+    }
     if let Some(extract) = &query.grouped_extract_minute {
         steps.push(format!(
             "Group by extracted UTC minute: {} as {}",
