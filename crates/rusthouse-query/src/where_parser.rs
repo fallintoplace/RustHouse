@@ -369,6 +369,9 @@ fn parse_atom(
             if !parser.take(Token::Comma) {
                 break;
             }
+            if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+                break;
+            }
         }
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after IN list".into()));
@@ -766,5 +769,24 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod in_list_trailing_comma_tests {
+    use crate::parse_select;
+
+    #[test]
+    fn trailing_comma_preserves_in_and_not_in_predicates() {
+        for keyword in ["IN", "NOT IN"] {
+            let original = parse_select(&format!("SELECT number FROM numbers(6) WHERE number {keyword} (1, 3)"))
+                .unwrap();
+            let trailing = parse_select(&format!("SELECT number FROM numbers(6) WHERE number {keyword} (1, 3,)"))
+                .unwrap();
+            assert_eq!(original.predicates, trailing.predicates);
+        }
+        for values in ["(,)", "(1,,)"] {
+            assert!(parse_select(&format!("SELECT number FROM numbers(6) WHERE number IN {values}")).is_err());
+        }
     }
 }
