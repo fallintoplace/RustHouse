@@ -843,8 +843,8 @@ fn parse_join_tokens(
     }
     let mut aggregate_alias = if let Some((_, alias)) = parsed_formula {
         Some(alias)
-    } else if (aggregate.is_some() || scalar_sum.is_some()) && parser.keyword("AS") {
-        Some(parser.word()?)
+    } else if aggregate.is_some() || scalar_sum.is_some() {
+        parser.select_output_alias()?
     } else {
         None
     };
@@ -896,11 +896,11 @@ fn parse_join_tokens(
                 columns.push(column);
             } else {
                 let column = projected(&mut parser)?;
-                if parser.keyword("AS") {
+                if let Some(alias) = parser.select_output_alias()? {
                     if column.name == "*" {
                         return Err(ParseError("JOIN group alias requires a column".into()));
                     }
-                    grouped_key_aliases.push((columns.len(), parser.bounded_word()?));
+                    grouped_key_aliases.push((columns.len(), alias));
                 }
                 columns.push(column);
             }
@@ -955,11 +955,7 @@ fn parse_join_tokens(
                             crate::multi_aggregate::render_expr(expression)
                         }
                     };
-                    aggregate_alias = if parser.keyword("AS") {
-                        Some(parser.bounded_word()?)
-                    } else {
-                        Some(format!("sum({name})"))
-                    };
+                    aggregate_alias = Some(parser.select_output_alias()?.unwrap_or_else(|| format!("sum({name})")));
                     grouped_sum = Some(metric);
                     grouped_sum_position = Some(columns.len());
                     grouped_count_projection = true;
@@ -1023,11 +1019,7 @@ fn parse_join_tokens(
                 if column.name == "*" || !parser.take(Token::RParen) {
                     return Err(ParseError("grouped JOIN MIN requires one column".into()));
                 }
-                aggregate_alias = if parser.keyword("AS") {
-                    Some(parser.bounded_word()?)
-                } else {
-                    Some(format!("min({})", column.display_name()))
-                };
+                aggregate_alias = Some(parser.select_output_alias()?.unwrap_or_else(|| format!("min({})", column.display_name())));
                 grouped_min = Some(column);
                 grouped_sum_position = Some(columns.len());
                 grouped_count_projection = true;
@@ -1065,8 +1057,8 @@ fn parse_join_tokens(
                     grouped_count_column = Some(column);
                 }
                 grouped_count_projection = true;
-                if parser.keyword("AS") {
-                    aggregate_alias = Some(parser.bounded_word()?);
+                if let Some(alias) = parser.select_output_alias()? {
+                    aggregate_alias = Some(alias);
                 }
                 break;
             }
