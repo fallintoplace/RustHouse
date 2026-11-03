@@ -136,6 +136,7 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             (b'\\', Some(b'\'' | b'\\')) => Some(bytes[cursor + 1]),
             (b'\\', Some(b'n')) => Some(b'\n'),
             (b'\\', Some(b'r')) => Some(b'\r'),
+            (b'\\', Some(b'e')) => Some(27),
             (b'\\', Some(b't')) => Some(b'\t'),
             (b'\\', Some(b'0')) => Some(0),
             (b'\\', Some(b'a')) => Some(7),
@@ -544,6 +545,22 @@ mod clickhouse_control_escape_tests {
             Token::String("one\u{0007}two\u{000b}three\\_four".into())
         );
         assert_eq!(cursor, sql.len());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_escape_character_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_escape_character_without_losing_following_text() {
+        let sql = r"'a\eb'";
+        let mut index = 0;
+        assert_eq!(
+            scan_string(sql, &mut index).unwrap(),
+            Token::String("a\u{1b}b".into())
+        );
+        assert_eq!(index, sql.len());
     }
 }
 
