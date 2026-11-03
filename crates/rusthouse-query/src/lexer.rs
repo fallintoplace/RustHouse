@@ -144,6 +144,12 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             b'!' if bytes.get(index + 1) == Some(&b'=') => {
                 Token::Operator(scan_comparison(bytes, &mut index))
             }
+            b'0' if matches!(bytes.get(index + 1), Some(b'x' | b'X')) => {
+                scan_radix_number(sql, &mut index, 16)?
+            }
+            b'0' if matches!(bytes.get(index + 1), Some(b'b' | b'B')) => {
+                scan_radix_number(sql, &mut index, 2)?
+            }
             b'0'..=b'9' | b'-' => scan_number(sql, &mut index)?,
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => scan_word(sql, &mut index),
             _ => {
@@ -561,5 +567,35 @@ mod bulk_comment_span_tests {
         }
         let deep = format!("SELECT {} 1 {}", "/*".repeat(33), "*/".repeat(33));
         assert!(tokenize(&deep).is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod radix_literal_tests {
+    use super::*;
+
+    #[test]
+    fn tokenizes_hexadecimal_and_binary_integer_literals() {
+        assert_eq!(
+            tokenize("SELECT 0xFF, 0X10, 0b1010, 0B11").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("255".into()),
+                Token::Comma,
+                Token::Number("16".into()),
+                Token::Comma,
+                Token::Number("10".into()),
+                Token::Comma,
+                Token::Number("3".into()),
+            ]
+        );
+        assert_eq!(
+            tokenize("0xffffffffffffffff").unwrap(),
+            vec![Token::Number(u64::MAX.to_string())],
+        );
+        for invalid in ["0x", "0b", "0x10000000000000000", "0b2"] {
+            assert!(tokenize(invalid).is_err(), "{invalid}");
+        }
     }
 }
