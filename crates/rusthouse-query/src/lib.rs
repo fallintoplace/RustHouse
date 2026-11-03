@@ -1,3 +1,4 @@
+pub mod execution_control;
 mod copy;
 mod date_scalar;
 mod ddl;
