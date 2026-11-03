@@ -67,9 +67,9 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
     if !parser.keyword("HEADER") {
         return Err(ParseError("expected HEADER after CSV".into()));
     }
-    if parser.keyword("TRUE") || parser.keyword("YES") {
+    if parser.keyword("TRUE") || parser.keyword("YES") || parser.keyword("ON") {
         Ok(true)
-    } else if parser.keyword("FALSE") || parser.keyword("NO") {
+    } else if parser.keyword("FALSE") || parser.keyword("NO") || parser.keyword("OFF") {
         Ok(false)
     } else if let Some(Token::Number(value)) = parser.tokens.get(parser.index) {
         let enabled = match value.as_str() {
@@ -285,5 +285,25 @@ mod copy_header_first_tests {
         ] {
             assert!(parse_copy_from(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+
+#[cfg(test)]
+mod copy_header_on_off_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_on_and_off_in_copy_header() {
+        let enabled = parse_copy_from("COPY t FROM 'rows.csv' WITH (FORMAT CSV, HEADER ON)")
+            .unwrap()
+            .unwrap();
+        assert!(enabled.header);
+        let disabled = parse_copy_from("COPY t FROM 'rows.tsv' WITH (HEADER off, FORMAT TSV)")
+            .unwrap()
+            .unwrap();
+        assert!(!disabled.header);
+        assert_eq!(disabled.format, CopyFormat::Tsv);
+        assert!(parse_copy_from("COPY t FROM 'rows.csv' WITH (HEADER ONN)").is_err());
     }
 }
