@@ -137,6 +137,8 @@ pub struct JoinSelect {
     pub grouped_sum: Option<GroupedSum>,
     /// A numeric MIN over an INNER join.
     pub grouped_min: Option<JoinColumn>,
+    /// Position and alias of an EXTRACT(YEAR FROM date) grouping key.
+    pub grouped_year: Option<(usize, String)>,
     /// Position of the grouped aggregate in the SELECT list.
     pub grouped_sum_position: Option<usize>,
     pub grouped_sum_having: Option<GroupedSumHaving>,
@@ -811,6 +813,7 @@ fn parse_join_tokens(
     let mut grouped_case_counts = Vec::new();
     let mut grouped_sum = None;
     let mut grouped_min = None;
+    let mut grouped_year: Option<(usize, String)> = None;
     let mut grouped_sum_position = None;
     let columns = if aggregate.is_some()
         || scalar_sum.is_some()
@@ -826,7 +829,31 @@ fn parse_join_tokens(
                     "JOIN supports at most 64 projected columns".into(),
                 ));
             }
-            columns.push(projected(&mut parser)?);
+            if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("EXTRACT"))
+                && matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
+            {
+                parser.keyword("EXTRACT");
+                if grouped_year.is_some()
+                    || !parser.take(Token::LParen)
+                    || !parser.keyword("YEAR")
+                    || !parser.keyword("FROM")
+                {
+                    return Err(ParseError(
+                        "JOIN supports one EXTRACT(YEAR FROM column)".into(),
+                    ));
+                }
+                let column = projected(&mut parser)?;
+                if column.name == "*" || !parser.take(Token::RParen) || !parser.keyword("AS") {
+                    return Err(ParseError(
+                        "JOIN EXTRACT YEAR requires a column and alias".into(),
+                    ));
+                }
+                let alias = parser.bounded_word()?;
+                grouped_year = Some((columns.len(), alias));
+                columns.push(column);
+            } else {
+                columns.push(projected(&mut parser)?);
+            }
             if !parser.take(Token::Comma) {
                 break;
             }
@@ -1437,6 +1464,18 @@ fn parse_join_tokens(
             }
             keys.push(projected(&mut parser)?);
         }
+        if let Some((position, alias)) = &grouped_year {
+            let source = &columns.as_ref().expect("year projection")[*position];
+            for key in &mut keys {
+                if key.relation.is_empty() && key.name.eq_ignore_ascii_case(alias) {
+                    *key = source.clone();
+                } else if key == source {
+                    return Err(ParseError(
+                        "GROUP BY must use the EXTRACT YEAR alias".into(),
+                    ));
+                }
+            }
+        }
         if keys.iter().any(|key| key.name == "*") {
             return Err(ParseError("JOIN GROUP BY requires columns".into()));
         }
@@ -1541,9 +1580,19 @@ fn parse_join_tokens(
                 }
                 JoinColumn::count_order()
             } else {
-                let key = projected(&mut parser)?;
+                let mut key = projected(&mut parser)?;
                 if key.name == "*" {
                     return Err(ParseError("JOIN ORDER BY requires a column".into()));
+                }
+                if let Some((position, alias)) = &grouped_year {
+                    let source = &columns.as_ref().expect("year projection")[*position];
+                    if key.relation.is_empty() && key.name.eq_ignore_ascii_case(alias) {
+                        key = source.clone();
+                    } else if &key == source {
+                        return Err(ParseError(
+                            "ORDER BY must use the EXTRACT YEAR alias".into(),
+                        ));
+                    }
                 }
                 key
             };
@@ -1831,6 +1880,27 @@ fn parse_join_tokens(
     {
         return Err(ParseError("grouped SUM or MIN requires INNER joins".into()));
     }
+    if let Some((position, alias)) = &grouped_year {
+        let keys = columns.as_ref().expect("year projection");
+        if !grouped_count_projection
+            || kind != JoinType::Inner
+            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || keys.iter().enumerate().any(|(index, key)| {
+                index != *position
+                    && (key == &keys[*position] || key.name.eq_ignore_ascii_case(alias))
+            })
+            || aggregate_alias
+                .as_deref()
+                .unwrap_or("count")
+                .eq_ignore_ascii_case(alias)
+            || !grouped_case_counts.is_empty()
+            || grouped_count_column.is_some()
+        {
+            return Err(ParseError(
+                "EXTRACT YEAR requires an unambiguous grouped INNER join".into(),
+            ));
+        }
+    }
     let grouped_count = if grouped_count_projection {
         let projected_keys = columns
             .as_ref()
@@ -1953,6 +2023,7 @@ fn parse_join_tokens(
         grouped_case_counts,
         grouped_sum,
         grouped_min,
+        grouped_year,
         grouped_sum_position,
         grouped_sum_having,
         scalar_sum,
@@ -2191,6 +2262,18 @@ pub fn explain_join(query: &JoinSelect) -> String {
             "\nAggregate: SUM({})",
             crate::multi_aggregate::render_expr(expression)
         ));
+    }
+    if let Some((position, alias)) = &query.grouped_year {
+        if let Some(column) = query
+            .columns
+            .as_ref()
+            .and_then(|columns| columns.get(*position))
+        {
+            plan.push_str(&format!(
+                "\nGroup key: EXTRACT(YEAR FROM {}) AS {alias}",
+                column.display_name()
+            ));
+        }
     }
     if let Some(columns) = &query.grouped_count {
         let keys = columns
