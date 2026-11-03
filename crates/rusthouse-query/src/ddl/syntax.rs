@@ -55,6 +55,22 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
     }
     let canonical = canonical_type(&name)
         .ok_or_else(|| ParseError(format!("unsupported DDL column type: {name}")))?;
+    let canonical = if parser.keyword("UNSIGNED") {
+        match canonical {
+            "Int8" => "UInt8",
+            "Int16" => "UInt16",
+            "Int32" => "UInt32",
+            "Int64" => "UInt64",
+            "Int128" => "UInt128",
+            _ => {
+                return Err(ParseError(
+                    "UNSIGNED requires a signed integer column type".into(),
+                ));
+            }
+        }
+    } else {
+        canonical
+    };
     if matches!(canonical, "Nullable" | "Array" | "Map") {
         if nesting >= MAX_DDL_TYPE_DEPTH {
             return Err(ParseError("DDL type nesting exceeds 4 levels".into()));
@@ -260,5 +276,26 @@ mod postgres_float_alias_tests {
         assert_eq!(columns[0].data_type, "Float32");
         assert_eq!(columns[1].data_type, "Float64");
         assert!(parse_ddl("CREATE TABLE metrics (bad FLOAT16)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod unsigned_integer_modifier_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn maps_unsigned_integer_widths_and_rejects_other_types() {
+        let Ddl::CreateTable { columns, .. } = parse_ddl(
+            "CREATE TABLE samples (a TINYINT UNSIGNED, b SMALLINT UNSIGNED, c INT UNSIGNED, d BIGINT UNSIGNED)"
+        )
+        .unwrap()
+        .unwrap() else {
+            panic!("expected CREATE TABLE");
+        };
+        assert_eq!(
+            columns.iter().map(|col| col.data_type.as_str()).collect::<Vec<_>>(),
+            vec!["UInt8", "UInt16", "UInt32", "UInt64"]
+        );
+        assert!(parse_ddl("CREATE TABLE samples (a TEXT UNSIGNED)").is_err());
     }
 }
