@@ -92,7 +92,7 @@ pub fn execute_nested_join_sum<W: Write>(
         inner.cap_rows(0);
     }
     let mut result = LimitedRows(Vec::new());
-    super::execute_correlated_sum(&inner, inner_paths, sum_path, &mut result)?;
+    super::execute_nested_correlated_sum(&inner, inner_paths, sum_path, &mut result)?;
     let text = std::str::from_utf8(&result.0).map_err(|_| invalid("invalid nested IN output"))?;
     let mut lines = text.lines();
     lines

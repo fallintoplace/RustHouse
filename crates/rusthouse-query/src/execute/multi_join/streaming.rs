@@ -85,6 +85,7 @@ struct OutputSpec<'a> {
     row_filters: Option<&'a super::row_filters::RowFilters>,
     exists: &'a [super::exists::BoundExists],
     avg: Option<&'a super::correlated_avg::BoundAvg>,
+    correlated_sum: Option<&'a super::correlated_sum::BoundSum>,
     offset: usize,
     limit: Option<usize>,
 }
@@ -175,6 +176,11 @@ fn visit<W: Write>(
         }
         if let Some(avg) = spec.avg {
             if !avg.passes(row)? {
+                return Ok(());
+            }
+        }
+        if let Some(sum) = spec.correlated_sum {
+            if !sum.passes(row)? {
                 return Ok(());
             }
         }
@@ -412,6 +418,7 @@ pub(super) fn execute<W: Write>(
     row_filters: Option<&super::row_filters::RowFilters>,
     exists: &[super::exists::BoundExists],
     avg: Option<&super::correlated_avg::BoundAvg>,
+    correlated_sum: Option<&super::correlated_sum::BoundSum>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if relations[0].names.is_empty() {
@@ -453,6 +460,7 @@ pub(super) fn execute<W: Write>(
         row_filters,
         exists,
         avg,
+        correlated_sum,
         group_year: query.grouped_year.as_ref().map(|(position, _)| *position),
         group_indices: query
             .grouped_count
@@ -526,6 +534,12 @@ pub(super) fn execute<W: Write>(
     if let Some(avg) = avg {
         referenced[avg.outer_key] = true;
         referenced[avg.outer_value] = true;
+    }
+    if let Some(sum) = correlated_sum {
+        for &index in &sum.outer_keys {
+            referenced[index] = true;
+        }
+        referenced[sum.outer_value] = true;
     }
     let projections = relations
         .iter()
