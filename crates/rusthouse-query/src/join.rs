@@ -468,7 +468,13 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                 return Err(ParseError("JOIN ORDER BY supports at most 8 keys".into()));
             }
             let key = qualified(&mut parser)?;
-            let descending = if parser.keyword("DESC") {
+            let descending = if parser.keyword("USING") {
+                match parser.operator()? {
+                    crate::Operator::Lt => false,
+                    crate::Operator::Gt => true,
+                    _ => return Err(ParseError("JOIN ORDER BY USING expects '<' or '>'".into())),
+                }
+            } else if parser.keyword("DESC") {
                 true
             } else {
                 parser.keyword("ASC");
