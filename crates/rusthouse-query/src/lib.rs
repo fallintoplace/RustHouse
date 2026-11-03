@@ -39,8 +39,8 @@ pub use join::{
     JoinExistsFilter, JoinExistsKey, JoinExistsLookup, JoinSelect, JoinStep, JoinType,
     explain_join, has_derived_join_count, has_explicit_join, has_implicit_join,
     has_join_correlated_avg, has_top_level_exists, parse_derived_join_count_with_schema,
-    parse_join, parse_join_correlated_avg_with_schema, parse_join_correlated_exists_with_schema,
-    parse_join_with_schema,
+    parse_derived_join_sum_with_schema, parse_join, parse_join_correlated_avg_with_schema,
+    parse_join_correlated_exists_with_schema, parse_join_with_schema,
 };
 pub use multi_aggregate::AggregateItem;
 pub use update::{Update, UpdateValue, parse_update};

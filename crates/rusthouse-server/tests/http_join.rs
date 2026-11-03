@@ -580,3 +580,98 @@ fn sql_http_filters_grouped_distinct_with_not_in_subquery() {
     assert_eq!(result.body, b"brand\tn\nA\t1\n");
     fs::remove_dir_all(database).unwrap();
 }
+
+#[test]
+fn sql_http_executes_tpch_q9() {
+    let database = std::env::temp_dir().join(format!("rusthouse-http-q9-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    let cols = |values: &[(&str, &str)]| {
+        values
+            .iter()
+            .map(|(name, kind)| Column {
+                name: (*name).into(),
+                data_type: (*kind).into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |values: &[&str]| values.iter().map(|v| Some((*v).into())).collect::<Vec<_>>();
+    table(
+        &database,
+        "part",
+        &cols(&[("p_partkey", "UInt64"), ("p_name", "String")]),
+        &[row(&["1", "green part"])],
+    );
+    table(
+        &database,
+        "supplier",
+        &cols(&[("s_suppkey", "UInt64"), ("s_nationkey", "UInt64")]),
+        &[row(&["10", "100"])],
+    );
+    table(
+        &database,
+        "nation",
+        &cols(&[("n_nationkey", "UInt64"), ("n_name", "String")]),
+        &[row(&["100", "USA"])],
+    );
+    table(
+        &database,
+        "partsupp",
+        &cols(&[
+            ("ps_suppkey", "UInt64"),
+            ("ps_partkey", "UInt64"),
+            ("ps_supplycost", "Float64"),
+        ]),
+        &[row(&["10", "1", "20"])],
+    );
+    table(
+        &database,
+        "orders",
+        &cols(&[("o_orderkey", "UInt64"), ("o_orderdate", "Date")]),
+        &[row(&["1000", "1995-01-01"]), row(&["1001", "1994-01-01"])],
+    );
+    table(
+        &database,
+        "lineitem",
+        &cols(&[
+            ("l_suppkey", "UInt64"),
+            ("l_partkey", "UInt64"),
+            ("l_orderkey", "UInt64"),
+            ("l_extendedprice", "Float64"),
+            ("l_discount", "Float64"),
+            ("l_quantity", "Float64"),
+        ]),
+        &[
+            row(&["10", "1", "1000", "100", "0.1", "2"]),
+            row(&["10", "1", "1001", "50", "0", "1"]),
+        ],
+    );
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let query = include_str!("../../../bench/tpch/queries/q09.sql");
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(
+        result.body,
+        b"nation\to_year\tsum_profit\nUSA\t1995\t50\nUSA\t1994\t30\n"
+    );
+    let limited = handle_request(
+        "POST",
+        "/?format=tsv-no-header",
+        query.as_bytes(),
+        &Config {
+            max_rows: 1,
+            ..config.clone()
+        },
+    );
+    assert_eq!(limited.status, "200 OK", "{:?}", limited.body);
+    assert_eq!(limited.body, b"USA\t1995\t50\n");
+    let invalid = query.replace("p_name LIKE", "p_partkey LIKE");
+    assert_eq!(
+        handle_request("POST", "/", invalid.as_bytes(), &config).status,
+        "400 Bad Request"
+    );
+    fs::remove_dir_all(database).unwrap();
+}

@@ -86,6 +86,51 @@ pub(super) fn try_derived_count(
         Ok(lock) => lock,
         Err(error) => return Some(Response::text("409 Conflict", &format!("{error}\n"))),
     };
+    let sum = rusthouse_query::parse_derived_join_sum_with_schema(sql, |table| {
+        let path = resolve_database_table(database, table).map_err(rusthouse_query::ParseError)?;
+        rusthouse_storage::inspect_query_source(&path)
+            .map(|metadata| {
+                metadata
+                    .columns
+                    .into_iter()
+                    .map(|column| column.name)
+                    .collect()
+            })
+            .map_err(|error| rusthouse_query::ParseError(error.to_string()))
+    });
+    match sum {
+        Ok(Some(mut query)) => {
+            if explain {
+                return Some(Response::text(
+                    "400 Bad Request",
+                    "derived JOIN cannot use --explain yet\n",
+                ));
+            }
+            let cap = config.max_rows.min(250_000);
+            query.limit = Some(query.limit.map_or(cap, |limit| limit.min(cap)));
+            let tables = [&query.left, &query.right]
+                .into_iter()
+                .chain(query.steps.iter().map(|step| &step.table));
+            let paths = match tables
+                .map(|table| resolve_database_table(database, table))
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(paths) => paths,
+                Err(error) => {
+                    return Some(Response::text("400 Bad Request", &format!("{error}\n")));
+                }
+            };
+            return Some(format_response(format, |mut output| {
+                if paths.len() == 2 {
+                    execute_join(&query, &paths[0], &paths[1], &mut output)
+                } else {
+                    execute_multi_join(&query, &paths, &mut output)
+                }
+            }));
+        }
+        Ok(None) => {}
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    }
     let plan = rusthouse_query::parse_derived_join_count_with_schema(sql, |table| {
         let path = resolve_database_table(database, table).map_err(rusthouse_query::ParseError)?;
         rusthouse_storage::inspect_query_source(&path)

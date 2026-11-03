@@ -11,8 +11,8 @@ use rusthouse_query::{
     ParseError, Source, execute, explain_join, explain_select, has_cte_max_join,
     has_derived_join_count, has_explicit_join, has_implicit_join, has_join_correlated_avg,
     has_top_level_exists, parse_correlated_exists, parse_cte_max_join, parse_ddl, parse_delete,
-    parse_derived_join_count_with_schema, parse_insert, parse_join,
-    parse_join_correlated_avg_with_schema, parse_join_correlated_exists_with_schema,
+    parse_derived_join_count_with_schema, parse_derived_join_sum_with_schema, parse_insert,
+    parse_join, parse_join_correlated_avg_with_schema, parse_join_correlated_exists_with_schema,
     parse_join_with_schema, parse_select, parse_update, split_clickhouse_format,
 };
 use std::ffi::OsString;
@@ -415,6 +415,31 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     }
     if derived {
         if let Some(directory) = database.as_deref() {
+            let sum = parse_derived_join_sum_with_schema(&query, |table| {
+                crate::catalog::read_schema(directory, table)
+                    .map(|columns| columns.into_iter().map(|column| column.name).collect())
+                    .map_err(ParseError)
+            })
+            .map_err(|error| error.to_string())?;
+            if let Some(mut join) = sum {
+                if part.is_some() {
+                    return Err("derived JOIN cannot use --part".into());
+                }
+                if show_ast || explain {
+                    return Err("derived JOIN cannot use --show-ast or --explain yet".into());
+                }
+                if let Some(cap) = max_rows {
+                    join.limit = Some(join.limit.map_or(cap, |limit| limit.min(cap)));
+                }
+                return crate::join::run(
+                    directory,
+                    &join,
+                    format.unwrap_or(SqlOutputFormat::Tsv),
+                    output_path,
+                    time,
+                    implicit_lock,
+                );
+            }
             let plan = parse_derived_join_count_with_schema(&query, |table| {
                 crate::catalog::read_schema(directory, table)
                     .map(|columns| columns.into_iter().map(|column| column.name).collect())
