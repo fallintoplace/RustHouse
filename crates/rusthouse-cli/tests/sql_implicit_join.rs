@@ -91,10 +91,13 @@ fn implicit_inner_join_matches_explicit_join() {
             .status
             .success()
     );
+    let filtered =
+        sql("SELECT l.id FROM lefts l, rights r WHERE l.id = r.id AND r.id = 1 AND r.k = 10");
+    assert!(filtered.status.success(), "{filtered:?}");
+    assert_eq!(filtered.stdout, b"l.id\n1\n");
     for query in [
         "SELECT l.id FROM lefts l, rights r WHERE l.id = r.id OR l.id = 1",
         "SELECT l.id FROM lefts l, rights r WHERE l.id = 1",
-        "SELECT l.id FROM lefts l, rights r WHERE l.id = r.id AND r.id = 1 AND r.k = 10",
     ] {
         assert!(!sql(query).status.success(), "{query}");
     }
