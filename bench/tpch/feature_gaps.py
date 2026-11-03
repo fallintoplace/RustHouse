@@ -10,6 +10,16 @@ from collections import defaultdict
 from pathlib import Path
 
 RULES = (
+    # These are first-stop parser diagnostics, not proof of root cause.
+    ("grouped_aggregate_expression", re.compile(r"expected .* after grouped aggregate", re.I)),
+    ("statement_suffix", re.compile(r"unexpected tokens after SELECT statement", re.I)),
+    ("identifier_or_expression", re.compile(r"expected an identifier", re.I)),
+    ("grouped_aggregate_shape", re.compile(r"grouped aggregates require GROUP BY", re.I)),
+    ("source_or_projection", re.compile(r"a table source is required", re.I)),
+    ("comparison_predicate", re.compile(r"expected a comparison operator", re.I)),
+    ("conditional_aggregate", re.compile(r"grouped CASE requires THEN", re.I)),
+    ("constant_numeric", re.compile(r"SELECT literals must be signed 64-bit integers", re.I)),
+    ("statement_type", re.compile(r"only SELECT statements are supported", re.I)),
     ("join_capacity", re.compile(r"JOIN (?:supports at most|exceeds its|input row limit)", re.I)),
     ("join_syntax", re.compile(r"JOIN columns must|unknown JOIN qualifier|JOIN key types differ", re.I)),
     ("sql_size", re.compile(r"(?:SQL|statement).*(?:4096|4.?KiB|size limit|too long|exceeds)", re.I)),

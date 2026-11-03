@@ -123,7 +123,10 @@ def run_full(binary, database, queries_dir, reference_dir, report_path,
         if status == "passed":
             verified.append(number)
         else:
-            failed.append({"query": number, "status": status})
+            failure = {"query": number, "status": status}
+            if isinstance(record.get("error"), str) and record["error"]:
+                failure["error"] = record["error"][:500]
+            failed.append(failure)
     verified.sort()
     complete = (outcome.returncode == 0 and report.get("reference_checked") is True
                 and verified == list(range(1, 23)) and len(records) == 22)

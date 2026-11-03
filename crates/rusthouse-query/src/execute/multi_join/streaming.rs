@@ -3,7 +3,6 @@
 
 use super::*;
 use rusthouse_storage::TypedQueryReader;
-use std::collections::hash_map::Entry;
 
 use super::super::join::read_projected_build_rows;
 
@@ -269,22 +268,22 @@ pub(super) fn execute<W: Write>(
         }
         // A skewed build can contain far fewer distinct keys than input
         // rows. Reserve a small table, then charge each retained key.
-        let mut hash = HashMap::with_capacity(right_rows.len().min(4096));
+        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len().min(4096));
+        let mut scratch_key = Vec::with_capacity(right_keys.len());
         for (index, row) in right_rows.iter().enumerate() {
-            if let Some(key) = row_key(row, &right_keys) {
-                match hash.entry(key) {
-                    Entry::Vacant(entry) => {
-                        charge_hash_build(&mut retained, hash_key_bytes(entry.key())?)?;
-                        entry.insert(Bucket::One(index));
-                    }
-                    Entry::Occupied(mut entry) if !step.any => {
-                        // Count a duplicate index and conservative Vec growth
-                        // overhead. ANY only needs its first matching index.
-                        charge_hash_build(&mut retained, std::mem::size_of::<usize>() * 2)?;
-                        entry.get_mut().push(index);
-                    }
-                    Entry::Occupied(_) => {}
+            if !row_key_into(row, &right_keys, &mut scratch_key) {
+                continue;
+            }
+            if let Some(bucket) = hash.get_mut(scratch_key.as_slice()) {
+                if !step.any {
+                    // Count a duplicate index and conservative Vec growth
+                    // overhead. ANY only needs its first matching index.
+                    charge_hash_build(&mut retained, std::mem::size_of::<usize>() * 2)?;
+                    bucket.push(index);
                 }
+            } else {
+                charge_hash_build(&mut retained, hash_key_bytes(&scratch_key)?)?;
+                hash.insert(scratch_key.clone(), Bucket::One(index));
             }
         }
         stages.push(Stage {
@@ -369,7 +368,7 @@ pub(super) fn execute<W: Write>(
             }).collect::<Result<Vec<_>, ExecutionError>>()?
         };
         let mut rows = state.groups.into_values().collect::<Vec<_>>();
-        rows.sort_by(|left, right| {
+        let compare = |left: &(Vec<typed::Cell>, u64), right: &(Vec<typed::Cell>, u64)| {
             for &(index, descending, nulls_first) in &ordering {
                 let result = if let Some(index) = index {
                     typed::compare_order_cells(
@@ -384,7 +383,12 @@ pub(super) fn execute<W: Write>(
                 }
             }
             std::cmp::Ordering::Equal
-        });
+        };
+        let bounded = query
+            .limit
+            .and_then(|limit| query.offset.checked_add(limit))
+            .filter(|&end| end < rows.len())
+            .map(|end| super::super::sorted_group_positions(&rows, end, &compare));
         for (index, (_, name, _)) in selected.iter().enumerate() {
             if index != 0 {
                 output.write_all(b"\t")?;
@@ -392,7 +396,7 @@ pub(super) fn execute<W: Write>(
             output.write_all(name.as_bytes())?;
         }
         writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
-        for (values, count) in rows.iter().skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+        let mut write_group = |values: &[typed::Cell], count: u64| -> Result<(), ExecutionError> {
             for (index, value) in values.iter().enumerate() {
                 if index > 0 {
                     output.write_all(b"\t")?;
@@ -401,6 +405,22 @@ pub(super) fn execute<W: Write>(
                 typed::write_typed_value(output, value, spec.types[source])?;
             }
             writeln!(output, "\t{count}")?;
+            Ok(())
+        };
+        if let Some(positions) = bounded {
+            for index in positions.into_iter().skip(query.offset) {
+                let (values, count) = &rows[index];
+                write_group(values, *count)?;
+            }
+        } else {
+            rows.sort_by(compare);
+            for (values, count) in rows
+                .iter()
+                .skip(query.offset)
+                .take(query.limit.unwrap_or(usize::MAX))
+            {
+                write_group(values, *count)?;
+            }
         }
     }
     Ok(())

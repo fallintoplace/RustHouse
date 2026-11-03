@@ -35,6 +35,9 @@ def compare(before, after):
     older = _statuses(before)
     newer = _statuses(after)
     changes = []
+    error_transitions = []
+    older_errors = {row["query"]: row.get("error") for row in before["results"]}
+    newer_errors = {row["query"]: row.get("error") for row in after["results"]}
     counts = {"improved": 0, "regressed": 0, "changed": 0, "unchanged": 0}
     for number in range(1, 23):
         prev, curr = older[number], newer[number]
@@ -45,10 +48,21 @@ def compare(before, after):
         if kind != "unchanged":
             changes.append({"query": number, "before": prev,
                             "after": curr, "change": kind})
+        elif prev == curr == "error":
+            previous_error, current_error = older_errors[number], newer_errors[number]
+            if (isinstance(previous_error, str) and isinstance(current_error, str)
+                    and previous_error != current_error):
+                error_transitions.append({
+                    "query": number,
+                    "before_error": previous_error[:500],
+                    "after_error": current_error[:500],
+                })
     return {"workload": "tpch-coverage-delta", "official_tpch_score": False,
             "counts": counts, "verified_before": sum(v == "passed" for v in older.values()),
             "verified_after": sum(v == "passed" for v in newer.values()),
-            "changes": changes}
+            "changes": changes,
+            "error_transitions": error_transitions,
+            "error_transition_count": len(error_transitions)}
 
 
 def main(argv=None):

@@ -64,11 +64,21 @@ def inventory(binary, queries_dir, *, parse=None, require_canonical=False):
         results.append({"query": query, "status": "parsed" if parsed else "parse_error",
                         **({"error": str(error or "unknown parser error")[:500]} if not parsed else {})})
     passed = sum(item["status"] == "parsed" for item in results)
+    first_errors = {}
+    for item in results:
+        if item["status"] == "parse_error":
+            first_errors.setdefault(item["error"], []).append(item["query"])
+    error_groups = [
+        {"error": error, "count": len(queries), "queries": queries}
+        for error, queries in sorted(first_errors.items(),
+                                     key=lambda pair: (-len(pair[1]), pair[0]))
+    ]
     return {
         "workload": "tpch-canonical-parser-inventory",
         "official_tpch_score": False,
         "parsed_queries": passed,
         "total_queries": TPCH_QUERY_COUNT,
+        "first_error_groups": error_groups,
         "results": results,
     }
 

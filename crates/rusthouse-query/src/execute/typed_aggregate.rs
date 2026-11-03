@@ -239,18 +239,23 @@ fn update_group_numeric(
     state: &mut AggregateState,
     column: &TypedColumn,
     row: usize,
+    is_sum: bool,
 ) -> Result<(), ExecutionError> {
-    match column {
-        TypedColumn::Numeric(values) => state.update(super::number_at(values, row)),
+    let value = match column {
+        TypedColumn::Numeric(values) => Some(super::number_at(values, row)),
         TypedColumn::NullableNumeric { values, nulls } => {
-            if nulls[row] == 0 {
-                state.update(super::number_at(values, row))?;
-            }
-            Ok(())
+            (nulls[row] == 0).then(|| super::number_at(values, row))
         }
-        _ => Err(ExecutionError::Invalid(
-            "numeric aggregates require a numeric column".into(),
-        )),
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "numeric aggregates require a numeric column".into(),
+            ));
+        }
+    };
+    match value {
+        Some(value) if is_sum => state.update_sum(value),
+        Some(value) => state.update(value),
+        None => Ok(()),
     }
 }
 
@@ -372,6 +377,7 @@ fn parallel_grouped_integer_sum(
                                             &mut groups[group].1,
                                             &batch[value_index],
                                             row,
+                                            true,
                                         )?;
                                     }
                                 }
@@ -627,7 +633,12 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
             }
             // Numeric aggregate inputs are already native column vectors.
             // Do not construct a Cell for each GROUP BY input row.
-            update_group_numeric(&mut groups[group].1, &batch[value_index], row)?;
+            update_group_numeric(
+                &mut groups[group].1,
+                &batch[value_index],
+                row,
+                *function == AggregateFunction::Sum,
+            )?;
         }
     }
     if let Some(having) = &query.having {
