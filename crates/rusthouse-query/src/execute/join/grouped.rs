@@ -248,10 +248,12 @@ fn execute_multi<W: Write>(
             Some(&left_columns),
             |left, right| {
                 probe_key.clear();
-                let values = indices.iter().map(|&index| {
-                    if index < width { &left[index] } else { &right[index - width] }
-                }).collect::<Vec<_>>();
-                for value in &values {
+                for &index in &indices {
+                    let value = if index < width {
+                        &left[index]
+                    } else {
+                        &right[index - width]
+                    };
                     probe_key.push(value.key());
                 }
                 if let Some(group) = groups.get_mut(probe_key.as_slice()) {
@@ -261,7 +263,12 @@ fn execute_multi<W: Write>(
                     if groups.len() >= MAX_JOIN_GROUPS {
                         return Err(invalid("too many JOIN groups"));
                     }
-                    let variable = values.iter().try_fold(0usize, |used, value| {
+                    let variable = indices.iter().try_fold(0usize, |used, &index| {
+                        let value = if index < width {
+                            &left[index]
+                        } else {
+                            &right[index - width]
+                        };
                         used.checked_add(group_value_bytes(value))
                             .ok_or_else(|| invalid("JOIN group key size overflow"))
                     })?;
@@ -274,7 +281,17 @@ fn execute_multi<W: Write>(
                     if retained > MAX_JOIN_GROUP_BYTES {
                         return Err(invalid("JOIN grouped hash memory budget exceeded"));
                     }
-                    groups.insert(probe_key.clone(), (values.into_iter().cloned().collect(), 1));
+                    let display = indices
+                        .iter()
+                        .map(|&index| {
+                            if index < width {
+                                left[index].clone()
+                            } else {
+                                right[index - width].clone()
+                            }
+                        })
+                        .collect();
+                    groups.insert(probe_key.clone(), (display, 1));
                 }
                 Ok(())
             },
