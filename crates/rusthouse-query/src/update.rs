@@ -96,6 +96,13 @@ fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, UpdateValue)>, 
         if !parser.take(Token::Comma) {
             break;
         }
+        let trailing = parser.tokens.get(parser.index).is_none_or(|token| {
+            matches!(token, Token::Semicolon)
+                || matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("WHERE"))
+        });
+        if trailing {
+            break;
+        }
     }
     Ok(assignments)
 }
@@ -326,5 +333,42 @@ mod update_boolean_literals_tests {
         assert!(
             parse_update("UPDATE flags SET active = TRUTH").is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod update_assignment_trailing_comma_tests {
+    use super::*;
+
+    #[test]
+    fn final_set_comma_preserves_assignment_and_where_semantics() {
+        for (with_comma, plain) in [
+            (
+                "UPDATE t SET id = 1, WHERE id > 0",
+                "UPDATE t SET id = 1 WHERE id > 0",
+            ),
+            (
+                "UPDATE t SET id = 1, active = TRUE,;",
+                "UPDATE t SET id = 1, active = TRUE;",
+            ),
+            ("UPDATE t SET id = 1,", "UPDATE t SET id = 1"),
+        ] {
+            assert_eq!(
+                parse_update(with_comma).unwrap(),
+                parse_update(plain).unwrap(),
+                "{with_comma}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_assignment_lists_still_fail() {
+        for sql in [
+            "UPDATE t SET id = 1,, WHERE id = 1",
+            "UPDATE t SET id = 1, active = TRUE,,",
+            "UPDATE t SET id = 1, WHERE",
+        ] {
+            assert!(parse_update(sql).is_err(), "{sql}");
+        }
     }
 }
