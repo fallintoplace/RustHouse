@@ -863,11 +863,23 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
+    let chained_literal_filters = !steps.is_empty()
+        && kind == JoinType::Inner
+        && steps.iter().all(|step| step.kind == JoinType::Inner)
+        && !grouped_count_projection
+        && matches!(
+            aggregate.as_ref(),
+            None | Some(JoinAggregate::CountStar | JoinAggregate::CountColumn(_))
+        )
+        && where_column_comparisons.is_empty()
+        && where_in_filters.is_empty()
+        && where_like_filters.is_empty();
     if grouped_case_counts.is_empty()
         && (where_comparison.is_some()
             || !where_column_comparisons.is_empty()
             || !where_in_filters.is_empty()
             || !where_like_filters.is_empty())
+        && !chained_literal_filters
         && (kind != JoinType::Inner
             || !steps.is_empty()
             || (grouped_count_projection
