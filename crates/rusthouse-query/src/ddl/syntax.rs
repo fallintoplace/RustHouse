@@ -53,6 +53,9 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
     if name.eq_ignore_ascii_case("CHARACTER") || name.eq_ignore_ascii_case("CHAR") {
         parser.keyword("VARYING");
     }
+    if name.eq_ignore_ascii_case("DOUBLE") {
+        parser.keyword("PRECISION");
+    }
     let canonical = canonical_type(&name)
         .ok_or_else(|| ParseError(format!("unsupported DDL column type: {name}")))?;
     if matches!(canonical, "Nullable" | "Array" | "Map") {
@@ -260,5 +263,29 @@ mod postgres_float_alias_tests {
         assert_eq!(columns[0].data_type, "Float32");
         assert_eq!(columns[1].data_type, "Float64");
         assert!(parse_ddl("CREATE TABLE metrics (bad FLOAT16)").is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod double_precision_alias_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn accepts_double_precision_in_create_and_alter() {
+        let parsed = parse_ddl("CREATE TABLE metrics (value DOUBLE PRECISION, other DOUBLE)")
+            .unwrap()
+            .unwrap();
+        let Ddl::CreateTable { columns, .. } = parsed else {
+            panic!("expected CREATE TABLE");
+        };
+        assert_eq!(columns[0].data_type, "Float64");
+        assert_eq!(columns[1].data_type, "Float64");
+
+        let altered = parse_ddl("ALTER TABLE metrics ADD COLUMN score double precision")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(altered, Ddl::AddColumn { column, .. } if column.data_type == "Float64"));
+        assert!(parse_ddl("CREATE TABLE t (bad DOUBLE PRECISION EXTRA)").is_err());
     }
 }
