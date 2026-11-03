@@ -95,6 +95,8 @@ pub struct JoinSelect {
     pub grouped_case_counts: Vec<(crate::GroupedFilter, String)>,
     /// A numeric SUM over a column of a chained INNER join.
     pub grouped_sum: Option<GroupedSum>,
+    /// Position of the grouped SUM in the SELECT list.
+    pub grouped_sum_position: Option<usize>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
@@ -227,6 +229,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     let mut grouped_count_projection = false;
     let mut grouped_case_counts = Vec::new();
     let mut grouped_sum = None;
+    let mut grouped_sum_position = None;
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
     } else {
@@ -244,6 +247,9 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("SUM"))
                 && matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
             {
+                if grouped_sum.is_some() {
+                    return Err(ParseError("JOIN supports one grouped SUM".into()));
+                }
                 parser.keyword("SUM");
                 if !matches!(parser.tokens.get(parser.index + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE"))
                 {
@@ -295,7 +301,11 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                         Some(format!("sum({name})"))
                     };
                     grouped_sum = Some(metric);
+                    grouped_sum_position = Some(columns.len());
                     grouped_count_projection = true;
+                    if parser.take(Token::Comma) {
+                        continue;
+                    }
                     break;
                 }
                 loop {
@@ -340,6 +350,9 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                 break;
             }
             if parser.keyword("COUNT") {
+                if grouped_sum.is_some() {
+                    return Err(ParseError("JOIN supports one grouped aggregate".into()));
+                }
                 if !parser.take(Token::LParen)
                     || !parser.take(Token::Star)
                     || !parser.take(Token::RParen)
@@ -1078,6 +1091,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         grouped_count,
         grouped_case_counts,
         grouped_sum,
+        grouped_sum_position,
         keys,
         using_keys,
         where_null,
