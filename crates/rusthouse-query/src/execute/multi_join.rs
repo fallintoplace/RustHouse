@@ -556,6 +556,143 @@ fn required_physical_columns(
     Ok(indices)
 }
 
+const MAX_IN_SUBQUERY_BYTES: usize = 16 * 1024 * 1024;
+const MAX_IN_SUBQUERY_KEYS: usize = 100_000;
+
+struct SubqueryOutput(Vec<u8>);
+impl Write for SubqueryOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.0.len().saturating_add(bytes.len()) > MAX_IN_SUBQUERY_BYTES {
+            return Err(std::io::Error::other("JOIN IN subquery exceeds 16 MiB"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Bind one uncorrelated grouped SUM subquery while callers hold a database read lock.
+pub fn bind_join_in_subquery(
+    query: &mut JoinSelect,
+    inner_path: &std::path::Path,
+    outer_paths: &[PathBuf],
+) -> Result<(), ExecutionError> {
+    let subquery = query
+        .in_subquery
+        .as_ref()
+        .ok_or_else(|| invalid("JOIN IN subquery is missing"))?;
+    if query.scalar_where.is_some()
+        || query.grouped_sum.is_none()
+        || query.grouped_count.is_none()
+        || query.aggregate.is_some()
+        || query.scalar_sum.is_some()
+        || query.scalar_formula.is_some()
+        || !query.grouped_case_counts.is_empty()
+        || !query.where_in_filters.is_empty()
+        || !query.where_like_filters.is_empty()
+        || query.steps.is_empty()
+        || query.kind != JoinType::Inner
+        || query.steps.iter().any(|step| step.kind != JoinType::Inner)
+        || query.where_null.is_some()
+        || !subquery.column.relation.is_empty()
+        || outer_paths.len() != query.steps.len() + 2
+    {
+        return Err(invalid("JOIN IN subquery has an unsupported shape"));
+    }
+    let inner = &subquery.inner;
+    let crate::Projection::GroupedAggregate {
+        column: inner_key,
+        function: crate::AggregateFunction::Sum,
+        ..
+    } = &inner.projection
+    else {
+        return Err(invalid("JOIN IN subquery requires grouped SUM"));
+    };
+    if !inner.hidden_aggregate
+        || !matches!(inner.source, Some(crate::Source::Table(_)))
+        || inner
+            .predicates
+            .iter()
+            .chain(inner.or_predicates.iter().flatten())
+            .any(|predicate| matches!(predicate, crate::Predicate::ColumnComparison { .. }))
+    {
+        return Err(invalid("JOIN IN subquery requires a stored table"));
+    }
+    let inner_metadata = inspect_query_source(inner_path)?;
+    let inner_column = inner_metadata
+        .columns
+        .iter()
+        .find(|candidate| candidate.name == *inner_key)
+        .ok_or_else(|| invalid("JOIN IN subquery key is missing"))?;
+    let mut outer_type = None;
+    for path in outer_paths {
+        let metadata = inspect_query_source(path)?;
+        if let Some(column) = metadata
+            .columns
+            .iter()
+            .find(|column| column.name == subquery.column.name)
+        {
+            if outer_type.replace(column.data_type.clone()).is_some() {
+                return Err(invalid("ambiguous JOIN IN column"));
+            }
+        }
+    }
+    let outer_type = outer_type.ok_or_else(|| invalid("unknown JOIN IN column"))?;
+    let kind = typed::base_type(&inner_column.data_type);
+    if kind != typed::base_type(&outer_type)
+        || !matches!(
+            kind,
+            "UInt8"
+                | "UInt16"
+                | "UInt32"
+                | "UInt64"
+                | "UInt128"
+                | "Int8"
+                | "Int16"
+                | "Int32"
+                | "Int64"
+                | "Int128"
+        )
+    {
+        return Err(invalid(
+            "JOIN IN subquery requires matching integer key types",
+        ));
+    }
+    let mut inner = (**inner).clone();
+    inner.source = Some(crate::Source::Table("part".into()));
+    let mut output = SubqueryOutput(Vec::new());
+    super::execute(&inner, Some(inner_path), &mut output)?;
+    let text =
+        std::str::from_utf8(&output.0).map_err(|_| invalid("invalid JOIN IN subquery output"))?;
+    let mut values = Vec::new();
+    for value in text.lines().skip(1) {
+        if value == "\\N" {
+            continue;
+        }
+        if value.is_empty()
+            || !value
+                .bytes()
+                .enumerate()
+                .all(|(i, byte)| byte.is_ascii_digit() || (i == 0 && byte == b'-'))
+        {
+            return Err(invalid("invalid JOIN IN subquery integer"));
+        }
+        if values.len() >= MAX_IN_SUBQUERY_KEYS {
+            return Err(invalid("JOIN IN subquery supports at most 100000 keys"));
+        }
+        values.push(value.to_owned());
+    }
+    let name = subquery.column.name.clone();
+    query.scalar_where = Some(vec![vec![crate::Predicate::In {
+        column: name,
+        values,
+    }]]);
+    query.in_subquery = None;
+    Ok(())
+}
+
 /// Execute a chain of three or more bounded joins. No output is written before
 /// all input validation, row-limit checks, and final ordering have succeeded.
 pub fn execute_multi_join<W: Write>(
@@ -563,6 +700,9 @@ pub fn execute_multi_join<W: Write>(
     paths: &[PathBuf],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query.in_subquery.is_some() {
+        return Err(invalid("JOIN IN subquery must be bound before execution"));
+    }
     if paths.len() != query.steps.len() + 2 {
         return Err(invalid("JOIN source count differs from its plan"));
     }
@@ -1119,5 +1259,49 @@ mod reusable_chain_keys_tests {
             }
         }
         assert!(count > rows.len(), "duplicates increase ALL JOIN count");
+    }
+}
+
+#[cfg(test)]
+mod grouped_in_binding_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unbound_and_mutated_join_filters_before_reading_files() {
+        let sql = "SELECT ak, SUM(value) AS total FROM a JOIN b ON a.ak = b.bk JOIN c ON b.bk = c.ck WHERE ak IN (SELECT ik FROM keys GROUP BY ik HAVING SUM(quantity) > 3) GROUP BY ak";
+        let query = crate::parse_join(sql).unwrap().unwrap();
+        let paths = vec![
+            PathBuf::from("missing-a"),
+            PathBuf::from("missing-b"),
+            PathBuf::from("missing-c"),
+        ];
+        let error = execute_multi_join(&query, &paths, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("must be bound"), "{error}");
+        let mut altered = query.clone();
+        altered.where_in_filters.push((
+            JoinColumn {
+                relation: String::new(),
+                name: "ak".into(),
+            },
+            vec!["1".into()],
+        ));
+        let error =
+            bind_join_in_subquery(&mut altered, std::path::Path::new("missing-inner"), &paths)
+                .unwrap_err();
+        assert!(error.to_string().contains("unsupported shape"), "{error}");
+        let mut altered = query;
+        altered.where_like_filters.push((
+            JoinColumn {
+                relation: String::new(),
+                name: "ak".into(),
+            },
+            "%".into(),
+            false,
+            false,
+        ));
+        let error =
+            bind_join_in_subquery(&mut altered, std::path::Path::new("missing-inner"), &paths)
+                .unwrap_err();
+        assert!(error.to_string().contains("unsupported shape"), "{error}");
     }
 }

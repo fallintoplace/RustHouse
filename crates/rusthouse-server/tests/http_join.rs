@@ -109,3 +109,59 @@ fn sql_http_executes_bounded_three_table_joins_and_explain() {
     assert_eq!(unavailable.status, "400 Bad Request");
     fs::remove_dir_all(database).unwrap();
 }
+
+#[test]
+fn sql_http_binds_grouped_in_subquery_for_explicit_join() {
+    let database =
+        std::env::temp_dir().join(format!("rusthouse-http-join-in-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    let columns = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| Column {
+                name: (*name).into(),
+                data_type: "UInt64".into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    table(
+        &database,
+        "a",
+        &columns(&["ak"]),
+        &[vec![Some("1".into())], vec![Some("2".into())]],
+    );
+    table(
+        &database,
+        "b",
+        &columns(&["bk"]),
+        &[vec![Some("1".into())], vec![Some("2".into())]],
+    );
+    table(
+        &database,
+        "c",
+        &columns(&["ck", "amount"]),
+        &[
+            vec![Some("1".into()), Some("8".into())],
+            vec![Some("2".into()), Some("9".into())],
+        ],
+    );
+    table(
+        &database,
+        "inner_keys",
+        &columns(&["ik", "quantity"]),
+        &[
+            vec![Some("1".into()), Some("301".into())],
+            vec![Some("2".into()), Some("2".into())],
+        ],
+    );
+    let query = "SELECT ak, SUM(amount) AS total FROM a JOIN b ON a.ak = b.bk JOIN c ON b.bk = c.ck WHERE ak IN (SELECT ik FROM inner_keys GROUP BY ik HAVING SUM(quantity) > 300) GROUP BY ak ORDER BY ak";
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"ak\ttotal\n1\t8\n");
+    fs::remove_dir_all(database).unwrap();
+}
