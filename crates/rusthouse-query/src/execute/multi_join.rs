@@ -143,6 +143,75 @@ impl Bucket {
     }
 }
 
+fn validate_sum_expression(
+    expression: &super::multi_aggregate::BoundExpr,
+    relations: &[Relation],
+) -> Result<(), ExecutionError> {
+    use super::multi_aggregate::BoundExpr;
+    let check = |index: usize, text: bool| {
+        let kind = typed::base_type(column_type(relations, index));
+        let valid = if text {
+            kind == "String"
+        } else {
+            matches!(
+                kind,
+                "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+                    | "Float32"
+                    | "Float64"
+            )
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(invalid(if text {
+                "SUM text condition requires a String column"
+            } else {
+                "SUM expression requires numeric columns"
+            }))
+        }
+    };
+    match expression {
+        BoundExpr::Column(index) | BoundExpr::AffineColumn { index, .. } => check(*index, false),
+        BoundExpr::TextLength(index)
+        | BoundExpr::TextCompare { index, .. }
+        | BoundExpr::TextLike { index, .. } => check(*index, true),
+        BoundExpr::Integer(_) | BoundExpr::Float(_) => Ok(()),
+        BoundExpr::Add(a, b)
+        | BoundExpr::Subtract(a, b)
+        | BoundExpr::Multiply(a, b)
+        | BoundExpr::Divide(a, b)
+        | BoundExpr::Modulo(a, b)
+        | BoundExpr::Compare(a, _, b)
+        | BoundExpr::And(a, b)
+        | BoundExpr::Or(a, b) => {
+            validate_sum_expression(a, relations)?;
+            validate_sum_expression(b, relations)
+        }
+        BoundExpr::Case {
+            branches,
+            else_expr,
+        } => {
+            for (condition, value) in branches {
+                validate_sum_expression(condition, relations)?;
+                validate_sum_expression(value, relations)?;
+            }
+            if let Some(value) = else_expr {
+                validate_sum_expression(value, relations)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 struct BoundSum {
     expression: super::multi_aggregate::BoundExpr,
     indices: Vec<usize>,
@@ -542,7 +611,7 @@ pub fn execute_multi_join<W: Write>(
         .grouped_sum
         .as_ref()
         .or(scalar_metric.as_ref())
-        .map(|metric| {
+        .map(|metric| -> Result<BoundSum, ExecutionError> {
             let (expression, names) = match metric {
                 crate::join::GroupedSum::Column(column) => {
                     let index = column_index(&relations, column)?;
@@ -571,26 +640,7 @@ pub fn execute_multi_join<W: Write>(
                     )
                 }
             };
-            for &index in &names {
-                let kind = typed::base_type(column_type(&relations, index));
-                if !matches!(
-                    kind,
-                    "UInt8"
-                        | "UInt16"
-                        | "UInt32"
-                        | "UInt64"
-                        | "UInt128"
-                        | "Int8"
-                        | "Int16"
-                        | "Int32"
-                        | "Int64"
-                        | "Int128"
-                        | "Float32"
-                        | "Float64"
-                ) {
-                    return Err(invalid("grouped SUM requires numeric columns"));
-                }
-            }
+            validate_sum_expression(&expression, &relations)?;
             Ok(BoundSum {
                 expression,
                 indices: names,

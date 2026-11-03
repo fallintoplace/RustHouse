@@ -150,6 +150,22 @@ fn numeric_join_expression(expression: &crate::ScalarExpr) -> bool {
         crate::ScalarExpr::Column(_)
         | crate::ScalarExpr::Integer(_)
         | crate::ScalarExpr::Decimal(_) => true,
+        crate::ScalarExpr::TextLength(_)
+        | crate::ScalarExpr::TextCompare { .. }
+        | crate::ScalarExpr::TextLike { .. } => true,
+        crate::ScalarExpr::Case {
+            branches,
+            else_expr,
+        } => {
+            branches.iter().all(|(condition, value)| {
+                numeric_join_expression(condition) && numeric_join_expression(value)
+            }) && else_expr
+                .as_ref()
+                .is_none_or(|value| numeric_join_expression(value))
+        }
+        crate::ScalarExpr::Compare(a, _, b)
+        | crate::ScalarExpr::And(a, b)
+        | crate::ScalarExpr::Or(a, b) => numeric_join_expression(a) && numeric_join_expression(b),
         crate::ScalarExpr::Add(a, b)
         | crate::ScalarExpr::Subtract(a, b)
         | crate::ScalarExpr::Multiply(a, b)
@@ -157,7 +173,6 @@ fn numeric_join_expression(expression: &crate::ScalarExpr) -> bool {
         | crate::ScalarExpr::Modulo(a, b) => {
             numeric_join_expression(a) && numeric_join_expression(b)
         }
-        _ => false,
     }
 }
 
