@@ -580,7 +580,7 @@ pub(super) fn execute<W: Write>(
                 relation.rows,
                 crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
                 available.min(MAX_STREAM_BUILD_BYTES),
-                (index - relation.start, *operator, value),
+                (*index - relation.start, *operator, value),
             )?
         } else {
             read_projected_build_rows(
