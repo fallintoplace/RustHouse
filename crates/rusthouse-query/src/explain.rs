@@ -191,6 +191,17 @@ pub fn explain_select(query: &Select) -> String {
     }
 
     steps.push(describe_projection(&query.projection));
+    if !query.grouped_affine.is_empty() {
+        steps.push(format!(
+            "Project grouped expressions: {}",
+            query
+                .grouped_affine
+                .iter()
+                .map(|value| value.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if let Some(literal) = query.grouped_literal {
         steps.push(format!("Project grouped constant: {literal}"));
     }
