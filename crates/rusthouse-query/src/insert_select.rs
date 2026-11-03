@@ -27,6 +27,9 @@ fn parse_insert_target_columns(parser: &mut Parser) -> Result<Option<Vec<String>
         if !parser.take(Token::Comma) {
             break;
         }
+        if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+            break;
+        }
     }
     if !parser.take(Token::RParen) {
         return Err(ParseError("expected ')' after INSERT columns".into()));
@@ -109,7 +112,7 @@ mod tests {
             "INSERT INTO events () SELECT number FROM numbers(2)",
             "INSERT INTO events SELECT number FROM numbers(2); DROP TABLE events",
             "INSERT INTO events (id) SELECT FROM numbers(2)",
-            "INSERT INTO events (id,) SELECT number FROM numbers(2)",
+            "INSERT INTO events (,id) SELECT number FROM numbers(2)",
         ] {
             assert!(parse_insert_select(sql).is_err(), "{sql}");
         }
@@ -127,5 +130,24 @@ mod moved_select_tokens_tests {
             .unwrap();
         assert_eq!(parsed.table, "destination");
         assert!(parsed.columns.is_none());
+    }
+}
+
+#[cfg(test)]
+mod insert_select_trailing_column_comma_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_one_trailing_target_column_comma() {
+        let parsed = parse_insert_select(
+            "INSERT INTO events (id,) SELECT number FROM numbers(2)"
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.columns, Some(vec!["id".into()]));
+        assert!(parse_insert_select(
+            "INSERT INTO events (id,,) SELECT number FROM numbers(2)"
+        )
+        .is_err());
     }
 }
