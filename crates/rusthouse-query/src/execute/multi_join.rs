@@ -212,6 +212,11 @@ fn validate_sum_expression(
     }
 }
 
+struct BoundFormula {
+    sums: Vec<BoundSum>,
+    expression: super::multi_aggregate::BoundExpr,
+}
+
 struct BoundSum {
     expression: super::multi_aggregate::BoundExpr,
     indices: Vec<usize>,
@@ -607,44 +612,64 @@ pub fn execute_multi_join<W: Write>(
         .scalar_sum
         .clone()
         .map(crate::join::GroupedSum::Expression);
+    let bind_sum = |metric: &crate::join::GroupedSum| -> Result<BoundSum, ExecutionError> {
+        let (expression, names) = match metric {
+            crate::join::GroupedSum::Column(column) => {
+                let index = column_index(&relations, column)?;
+                (
+                    super::multi_aggregate::BoundExpr::Column(index),
+                    vec![index],
+                )
+            }
+            crate::join::GroupedSum::Expression(expression) => {
+                let mut columns = Vec::new();
+                expression.referenced_columns(&mut columns);
+                let mut indices = HashMap::new();
+                let mut names = Vec::new();
+                for name in columns {
+                    let column = JoinColumn {
+                        relation: String::new(),
+                        name: name.clone(),
+                    };
+                    let index = column_index(&relations, &column)?;
+                    indices.insert(name, index);
+                    names.push(index);
+                }
+                (
+                    super::multi_aggregate::BoundExpr::bind(expression, &indices)?,
+                    names,
+                )
+            }
+        };
+        validate_sum_expression(&expression, &relations)?;
+        Ok(BoundSum {
+            expression,
+            indices: names,
+        })
+    };
     let grouped_sum = query
         .grouped_sum
         .as_ref()
         .or(scalar_metric.as_ref())
-        .map(|metric| -> Result<BoundSum, ExecutionError> {
-            let (expression, names) = match metric {
-                crate::join::GroupedSum::Column(column) => {
-                    let index = column_index(&relations, column)?;
-                    (
-                        super::multi_aggregate::BoundExpr::Column(index),
-                        vec![index],
-                    )
-                }
-                crate::join::GroupedSum::Expression(expression) => {
-                    let mut columns = Vec::new();
-                    expression.referenced_columns(&mut columns);
-                    let mut indices = HashMap::new();
-                    let mut names = Vec::new();
-                    for name in columns {
-                        let column = JoinColumn {
-                            relation: String::new(),
-                            name: name.clone(),
-                        };
-                        let index = column_index(&relations, &column)?;
-                        indices.insert(name, index);
-                        names.push(index);
-                    }
-                    (
-                        super::multi_aggregate::BoundExpr::bind(expression, &indices)?,
-                        names,
-                    )
-                }
-            };
-            validate_sum_expression(&expression, &relations)?;
-            Ok(BoundSum {
-                expression,
-                indices: names,
-            })
+        .map(bind_sum)
+        .transpose()?;
+    let formula = query
+        .scalar_formula
+        .as_ref()
+        .map(|formula| -> Result<BoundFormula, ExecutionError> {
+            let sums = formula
+                .sums
+                .iter()
+                .map(|expression| {
+                    bind_sum(&crate::join::GroupedSum::Expression(expression.clone()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let indices = (0..sums.len())
+                .map(|index| (format!("__join_sum_{index}"), index))
+                .collect::<HashMap<_, _>>();
+            let expression =
+                super::multi_aggregate::BoundExpr::bind(&formula.expression, &indices)?;
+            Ok(BoundFormula { sums, expression })
         })
         .transpose()?;
     let count_column = if let Some(crate::JoinAggregate::CountColumn(column)) = &query.aggregate {
@@ -712,7 +737,10 @@ pub fn execute_multi_join<W: Write>(
 
     // Validate the complete output schema without materializing rows.
     if query.limit == Some(0)
-        || ((query.aggregate.is_some() || query.scalar_sum.is_some()) && query.offset > 0)
+        || ((query.aggregate.is_some()
+            || query.scalar_sum.is_some()
+            || query.scalar_formula.is_some())
+            && query.offset > 0)
     {
         for (index, join) in std::iter::once(&initial_step)
             .chain(query.steps.iter())
@@ -729,7 +757,7 @@ pub fn execute_multi_join<W: Write>(
                 column_index(&relations, column)?;
             }
         }
-        if query.scalar_sum.is_some() {
+        if query.scalar_sum.is_some() || query.scalar_formula.is_some() {
             write_scalar_sum(query, None, false, output)?;
         } else if let Some((_, header)) = &count_column {
             writeln!(output, "{header}")?;
@@ -765,6 +793,7 @@ pub fn execute_multi_join<W: Write>(
             &comparisons,
             &column_comparisons,
             grouped_sum.as_ref(),
+            formula.as_ref(),
             row_filters.as_ref(),
             output,
         );

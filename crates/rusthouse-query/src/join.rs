@@ -76,6 +76,12 @@ pub enum GroupedSum {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinAggregateFormula {
+    pub sums: Vec<crate::ScalarExpr>,
+    pub expression: crate::ScalarExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinSelect {
     pub left: String,
     pub right: String,
@@ -99,6 +105,8 @@ pub struct JoinSelect {
     pub grouped_sum_position: Option<usize>,
     /// A scalar SUM over a numeric expression in an INNER join.
     pub scalar_sum: Option<crate::ScalarExpr>,
+    /// Arithmetic over scalar SUM results.
+    pub scalar_formula: Option<JoinAggregateFormula>,
     /// Bounded OR-of-AND predicates for scalar sums over joins.
     pub scalar_where: Option<Vec<Vec<crate::Predicate>>>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
@@ -176,6 +184,136 @@ fn numeric_join_expression(expression: &crate::ScalarExpr) -> bool {
     }
 }
 
+fn parse_join_formula(
+    parser: &mut Parser,
+) -> Result<Option<(JoinAggregateFormula, String)>, ParseError> {
+    let start = parser.index;
+    let mut end = start;
+    let mut depth = 0usize;
+    let mut has_operator = false;
+    let mut has_sum = false;
+    let mut has_comma = false;
+    while let Some(token) = parser.tokens.get(end) {
+        match token {
+            Token::Word(word)
+                if depth == 0
+                    && (word.eq_ignore_ascii_case("AS") || word.eq_ignore_ascii_case("FROM")) =>
+            {
+                break;
+            }
+            Token::Word(word)
+                if word.eq_ignore_ascii_case("SUM")
+                    && parser.tokens.get(end + 1) == Some(&Token::LParen) =>
+            {
+                has_sum = true
+            }
+            Token::Comma if depth == 0 => has_comma = true,
+            Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Percent
+                if depth == 0 =>
+            {
+                has_operator = true
+            }
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        end += 1;
+    }
+    if !has_sum || !has_operator || has_comma {
+        return Ok(None);
+    }
+    let mut rewritten = Vec::new();
+    let mut sums = Vec::new();
+    let mut index = start;
+    while index < end {
+        if matches!(&parser.tokens[index], Token::Word(word) if word.eq_ignore_ascii_case("SUM"))
+            && parser.tokens.get(index + 1) == Some(&Token::LParen)
+        {
+            if sums.len() >= 8 {
+                return Err(ParseError(
+                    "JOIN aggregate formula supports at most 8 SUMs".into(),
+                ));
+            }
+            let begin = index + 2;
+            let mut cursor = begin;
+            let mut nesting = 1usize;
+            while cursor < end && nesting > 0 {
+                match &parser.tokens[cursor] {
+                    Token::LParen => nesting += 1,
+                    Token::RParen => nesting -= 1,
+                    _ => {}
+                }
+                cursor += 1;
+            }
+            if nesting != 0 {
+                return Err(ParseError("JOIN SUM requires ')'".into()));
+            }
+            let mut inner = Parser {
+                tokens: parser.tokens[begin..cursor - 1].to_vec(),
+                index: 0,
+            };
+            let expression = crate::expression::parse_expression_tokens(&mut inner)?;
+            if inner.index != inner.tokens.len() || !numeric_join_expression(&expression) {
+                return Err(ParseError("invalid JOIN SUM expression".into()));
+            }
+            rewritten.push(Token::Word(format!("__join_sum_{}", sums.len())));
+            sums.push(expression);
+            index = cursor;
+        } else {
+            if matches!(&parser.tokens[index], Token::Word(word) if word.starts_with("__join_sum_"))
+            {
+                return Err(ParseError(
+                    "JOIN aggregate formula uses a reserved name".into(),
+                ));
+            }
+            rewritten.push(parser.tokens[index].clone());
+            index += 1;
+        }
+    }
+    let mut formula_parser = Parser {
+        tokens: rewritten,
+        index: 0,
+    };
+    let expression = crate::expression::parse_expression_tokens(&mut formula_parser)?;
+    fn arithmetic(expression: &crate::ScalarExpr) -> bool {
+        match expression {
+            crate::ScalarExpr::Column(_)
+            | crate::ScalarExpr::Integer(_)
+            | crate::ScalarExpr::Decimal(_) => true,
+            crate::ScalarExpr::Add(a, b)
+            | crate::ScalarExpr::Subtract(a, b)
+            | crate::ScalarExpr::Multiply(a, b)
+            | crate::ScalarExpr::Divide(a, b)
+            | crate::ScalarExpr::Modulo(a, b) => arithmetic(a) && arithmetic(b),
+            _ => false,
+        }
+    }
+    if !arithmetic(&expression) {
+        return Err(ParseError(
+            "JOIN aggregate formula requires arithmetic".into(),
+        ));
+    }
+    let mut columns = Vec::new();
+    expression.referenced_columns(&mut columns);
+    if formula_parser.index != formula_parser.tokens.len()
+        || columns
+            .iter()
+            .any(|name| !(0..sums.len()).any(|index| name == &format!("__join_sum_{index}")))
+    {
+        return Err(ParseError(
+            "JOIN aggregate formula can only use SUM results and numeric constants".into(),
+        ));
+    }
+    parser.index = end;
+    if !parser.keyword("AS") {
+        return Err(ParseError(
+            "JOIN aggregate formula requires an alias".into(),
+        ));
+    }
+    let alias = parser.bounded_word()?;
+    Ok(Some((JoinAggregateFormula { sums, expression }, alias)))
+}
+
 fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseError> {
     if !matches!(tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT")) {
         return Ok(None);
@@ -206,7 +344,11 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     parser.keyword("SELECT");
     parser.keyword("ALL");
     let mut scalar_sum = None;
-    let aggregate = if parser.keyword("COUNT") {
+    let parsed_formula = parse_join_formula(&mut parser)?;
+    let scalar_formula = parsed_formula.as_ref().map(|(formula, _)| formula.clone());
+    let aggregate = if scalar_formula.is_some() {
+        None
+    } else if parser.keyword("COUNT") {
         if !parser.take(Token::LParen) {
             return Err(ParseError("JOIN COUNT requires '('".into()));
         }
@@ -269,17 +411,22 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             None
         }
     };
-    let mut aggregate_alias =
-        if (aggregate.is_some() || scalar_sum.is_some()) && parser.keyword("AS") {
-            Some(parser.word()?)
-        } else {
-            None
-        };
+    let mut aggregate_alias = if let Some((_, alias)) = parsed_formula {
+        Some(alias)
+    } else if (aggregate.is_some() || scalar_sum.is_some()) && parser.keyword("AS") {
+        Some(parser.word()?)
+    } else {
+        None
+    };
     let mut grouped_count_projection = false;
     let mut grouped_case_counts = Vec::new();
     let mut grouped_sum = None;
     let mut grouped_sum_position = None;
-    let columns = if aggregate.is_some() || scalar_sum.is_some() || parser.take(Token::Star) {
+    let columns = if aggregate.is_some()
+        || scalar_sum.is_some()
+        || scalar_formula.is_some()
+        || parser.take(Token::Star)
+    {
         None
     } else {
         let mut columns = Vec::new();
@@ -660,7 +807,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     let mut where_like_filters = Vec::new();
     let mut scalar_where = None;
     if parser.keyword("WHERE") {
-        let complex = scalar_sum.is_some() && parser.tokens[parser.index..].iter().take_while(|token| !matches!(token, Token::Word(word) if ["GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))).any(|token| matches!(token, Token::Word(word) if ["OR", "IN", "BETWEEN", "LIKE", "ILIKE"].iter().any(|name| word.eq_ignore_ascii_case(name))));
+        let complex = (scalar_sum.is_some() || scalar_formula.is_some()) && parser.tokens[parser.index..].iter().take_while(|token| !matches!(token, Token::Word(word) if ["GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))).any(|token| matches!(token, Token::Word(word) if ["OR", "IN", "BETWEEN", "LIKE", "ILIKE"].iter().any(|name| word.eq_ignore_ascii_case(name))));
         if complex {
             scalar_where = Some(crate::where_parser::parse_where(&mut parser)?);
         } else {
@@ -989,7 +1136,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
-    if scalar_sum.is_some()
+    if (scalar_sum.is_some() || scalar_formula.is_some())
         && (kind != JoinType::Inner
             || steps.iter().any(|step| step.kind != JoinType::Inner)
             || !order_by.is_empty()
@@ -1167,6 +1314,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         grouped_sum,
         grouped_sum_position,
         scalar_sum,
+        scalar_formula,
         scalar_where,
         keys,
         using_keys,

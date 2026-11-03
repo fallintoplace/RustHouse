@@ -1443,7 +1443,7 @@ pub fn execute_join<W: Write>(
     right_path: &Path,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    if query.scalar_sum.is_some() {
+    if query.scalar_sum.is_some() || query.scalar_formula.is_some() {
         return super::multi_join::execute_multi_join(
             query,
             &[left_path.to_path_buf(), right_path.to_path_buf()],
