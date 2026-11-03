@@ -1443,6 +1443,15 @@ pub fn execute_join<W: Write>(
     right_path: &Path,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query
+        .grouped_sum_having
+        .as_ref()
+        .is_some_and(|having| having.subquery.is_some())
+    {
+        return Err(invalid(
+            "JOIN HAVING subquery must be bound before execution",
+        ));
+    }
     if query.in_subquery.is_some() {
         return Err(invalid("JOIN IN subquery must be bound before execution"));
     }

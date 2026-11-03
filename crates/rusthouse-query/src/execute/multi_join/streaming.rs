@@ -584,44 +584,48 @@ pub(super) fn execute<W: Write>(
         let mut rows = state.groups.into_values().collect::<Vec<_>>();
         if let Some(having) = &query.grouped_sum_having {
             use super::super::Number;
-            let value = if having.value.contains(['.', 'e', 'E']) {
-                Number::Float(
-                    having
-                        .value
-                        .parse()
-                        .map_err(|_| invalid("invalid JOIN HAVING number"))?,
-                )
-            } else if having.value.starts_with('-') {
-                Number::Signed(
-                    having
-                        .value
-                        .parse()
-                        .map_err(|_| invalid("invalid JOIN HAVING number"))?,
-                )
+            if having.value == "\\N" {
+                rows.clear();
             } else {
-                Number::Unsigned(
-                    having
-                        .value
-                        .parse()
-                        .map_err(|_| invalid("invalid JOIN HAVING number"))?,
-                )
-            };
-            rows.retain(|row| {
-                let Some(order) = row.2.and_then(|sum| {
-                    super::super::multi_aggregate::compare_expression_numbers(sum, value)
-                }) else {
-                    return false;
+                let value = if having.value.contains(['.', 'e', 'E']) {
+                    Number::Float(
+                        having
+                            .value
+                            .parse()
+                            .map_err(|_| invalid("invalid JOIN HAVING number"))?,
+                    )
+                } else if having.value.starts_with('-') {
+                    Number::Signed(
+                        having
+                            .value
+                            .parse()
+                            .map_err(|_| invalid("invalid JOIN HAVING number"))?,
+                    )
+                } else {
+                    Number::Unsigned(
+                        having
+                            .value
+                            .parse()
+                            .map_err(|_| invalid("invalid JOIN HAVING number"))?,
+                    )
                 };
-                match having.operator {
-                    crate::Operator::Eq => order.is_eq(),
-                    crate::Operator::Ne => order.is_ne(),
-                    crate::Operator::Lt => order.is_lt(),
-                    crate::Operator::Le => order.is_le(),
-                    crate::Operator::Gt => order.is_gt(),
-                    crate::Operator::Ge => order.is_ge(),
-                    _ => false,
-                }
-            });
+                rows.retain(|row| {
+                    let Some(order) = row.2.and_then(|sum| {
+                        super::super::multi_aggregate::compare_expression_numbers(sum, value)
+                    }) else {
+                        return false;
+                    };
+                    match having.operator {
+                        crate::Operator::Eq => order.is_eq(),
+                        crate::Operator::Ne => order.is_ne(),
+                        crate::Operator::Lt => order.is_lt(),
+                        crate::Operator::Le => order.is_le(),
+                        crate::Operator::Gt => order.is_gt(),
+                        crate::Operator::Ge => order.is_ge(),
+                        _ => false,
+                    }
+                });
+            }
         }
         let compare = |left: &GroupRow, right: &GroupRow| {
             for &(index, descending, nulls_first) in &ordering {

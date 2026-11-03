@@ -2,8 +2,8 @@
 
 use super::*;
 use rusthouse_query::{
-    ExecutionError, JoinSelect, Source, bind_join_in_subquery, execute_join, execute_multi_join,
-    explain_join,
+    ExecutionError, JoinSelect, Source, bind_join_having_subquery, bind_join_in_subquery,
+    execute_join, execute_multi_join, explain_join,
 };
 
 fn finish_output<T>(
@@ -50,6 +50,25 @@ pub(super) fn handle(
         match resolve_database_table(database, table) {
             Ok(path) => paths.push(path),
             Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+        }
+    }
+    if let Some(inner) = query
+        .grouped_sum_having
+        .as_ref()
+        .and_then(|having| having.subquery.as_ref())
+    {
+        let tables = [&inner.left, &inner.right]
+            .into_iter()
+            .chain(inner.steps.iter().map(|step| &step.table));
+        let inner_paths = match tables
+            .map(|table| resolve_database_table(database, table))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(paths) => paths,
+            Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+        };
+        if let Err(error) = bind_join_having_subquery(query, &inner_paths) {
+            return Response::text("400 Bad Request", &format!("{error}\n"));
         }
     }
     if let Some(subquery) = &query.in_subquery {

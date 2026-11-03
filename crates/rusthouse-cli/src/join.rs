@@ -5,7 +5,8 @@ use crate::{
     sql_values, vertical,
 };
 use rusthouse_query::{
-    JoinSelect, Source, bind_join_in_subquery, execute_join, execute_multi_join,
+    JoinSelect, Source, bind_join_having_subquery, bind_join_in_subquery, execute_join,
+    execute_multi_join,
 };
 use std::path::{Path, PathBuf};
 
@@ -140,6 +141,19 @@ pub(super) fn run(
     }
     let query_started_at = std::time::Instant::now();
     let mut bound = query.clone();
+    if let Some(inner) = bound
+        .grouped_sum_having
+        .as_ref()
+        .and_then(|having| having.subquery.as_ref())
+    {
+        let tables = [&inner.left, &inner.right]
+            .into_iter()
+            .chain(inner.steps.iter().map(|step| &step.table));
+        let inner_paths = tables
+            .map(|table| crate::database::select_source(database, table))
+            .collect::<Result<Vec<_>, _>>()?;
+        bind_join_having_subquery(&mut bound, &inner_paths).map_err(|error| error.to_string())?;
+    }
     if let Some(subquery) = &bound.in_subquery {
         let Some(Source::Table(table)) = &subquery.inner.source else {
             return Err("JOIN IN subquery requires a stored table".into());
