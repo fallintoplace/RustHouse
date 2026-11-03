@@ -3,7 +3,12 @@
 import argparse
 import hashlib
 import json
+import os
+import stat
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import file_change_time_ns
 from schema import TABLES, names
 
 MAX_RECORD_BYTES = 8 * 1024 * 1024
@@ -25,13 +30,25 @@ def profile_table(path, table, *, max_record_bytes=MAX_RECORD_BYTES):
             not 1 <= max_record_bytes <= MAX_RECORD_BYTES):
         raise ValueError("max_record_bytes must be in 1..8388608")
     path = Path(path)
-    if not path.is_file() or path.is_symlink():
+    try:
+        before = path.lstat()
+    except OSError as error:
+        raise ValueError("expected a regular, non-symlinked TPC-H input file") from error
+    if not stat.S_ISREG(before.st_mode):
         raise ValueError("expected a regular, non-symlinked TPC-H input file")
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, file_change_time_ns(info))
     digest = hashlib.sha256()
     rows, bytes_read, q6_matches = 0, 0, 0
     min_shipdate = max_shipdate = None
     column_names = names(table)
-    with Path(path).open("rb") as stream:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(path, flags), "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened):
+            raise ValueError(f"{table}: TSV source changed while opening")
         header = stream.readline(max_record_bytes + 1)
         if len(header) > max_record_bytes or not header.endswith(b"\n"):
             raise ValueError(f"{table}: oversized or truncated TSV header")
@@ -60,6 +77,10 @@ def profile_table(path, table, *, max_record_bytes=MAX_RECORD_BYTES):
                 max_shipdate = date if max_shipdate is None else max(date, max_shipdate)
                 if matches_q6(parts, indexes):
                     q6_matches += 1
+        if identity(opened) != identity(os.fstat(stream.fileno())):
+            raise ValueError(f"{table}: TSV source changed during profiling")
+    if identity(before) != identity(path.lstat()):
+        raise ValueError(f"{table}: TSV source changed during profiling")
     result = {"table": table, "rows": rows, "size_bytes": bytes_read,
               "sha256": digest.hexdigest()}
     if table == "lineitem":
