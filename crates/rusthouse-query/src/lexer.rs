@@ -172,6 +172,39 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
 }
 
 #[cfg(test)]
+mod sql_hexadecimal_string_literal_tests {
+    use super::*;
+
+    #[test]
+    fn parses_standard_hex_encoded_strings() {
+        assert_eq!(
+            tokenize("SELECT X'4142', x'c3a9', X'', X'00'").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("AB".into()),
+                Token::Comma,
+                Token::String("é".into()),
+                Token::Comma,
+                Token::String("".into()),
+                Token::Comma,
+                Token::String("\0".into()),
+            ],
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_hex_strings_without_misreading_tokens() {
+        for sql in ["X'1'", "X'0G'", "X'12", "X'FF'", "X'123'"] {
+            assert!(tokenize(sql).is_err(), "{sql}");
+        }
+        assert_eq!(
+            tokenize("xvalue X'41'").unwrap(),
+            vec![Token::Word("xvalue".into()), Token::String("A".into())],
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -603,35 +636,3 @@ mod radix_literal_tests {
     }
 }
 
-#[cfg(test)]
-mod sql_hexadecimal_string_literal_tests {
-    use super::*;
-
-    #[test]
-    fn parses_standard_hex_encoded_strings() {
-        assert_eq!(
-            tokenize("SELECT X'4142', x'c3a9', X'', X'00'").unwrap(),
-            vec![
-                Token::Word("SELECT".into()),
-                Token::String("AB".into()),
-                Token::Comma,
-                Token::String("é".into()),
-                Token::Comma,
-                Token::String("".into()),
-                Token::Comma,
-                Token::String("\0".into()),
-            ],
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_hex_strings_without_misreading_tokens() {
-        for sql in ["X'1'", "X'0G'", "X'12", "X'FF'", "X'123'"] {
-            assert!(tokenize(sql).is_err(), "{sql}");
-        }
-        assert_eq!(
-            tokenize("xvalue X'41'").unwrap(),
-            vec![Token::Word("xvalue".into()), Token::String("A".into())],
-        );
-    }
-}
