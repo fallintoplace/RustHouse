@@ -469,6 +469,7 @@ fn required_physical_columns(
     query: &JoinSelect,
     relations: &[Relation],
     initial_step: &JoinStep,
+    row_filters: Option<&row_filters::RowFilters>,
 ) -> Result<Vec<Vec<usize>>, ExecutionError> {
     let mut required = relations
         .iter()
@@ -528,6 +529,11 @@ fn required_physical_columns(
     for (left, _, right) in &query.where_column_comparisons {
         retain_absolute(column_index(relations, left)?);
         retain_absolute(column_index(relations, right)?);
+    }
+    if let Some(filters) = row_filters {
+        for &index in &filters.indices {
+            retain_absolute(index);
+        }
     }
     for (step_index, step) in std::iter::once(initial_step)
         .chain(query.steps.iter())
@@ -842,6 +848,12 @@ fn execute_multi_join_inner<W: Write>(
     avg_plan: Option<(&crate::JoinCorrelatedAvg, &std::path::Path)>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query.scalar_where.is_some()
+        && (query.kind != JoinType::Inner
+            || query.steps.iter().any(|step| step.kind != JoinType::Inner))
+    {
+        return Err(invalid("JOIN boolean filters require INNER joins"));
+    }
     if query.on_right_like.is_some() {
         return Err(invalid(
             "JOIN ON LIKE requires the two-table LEFT JOIN executor",
@@ -1189,7 +1201,8 @@ fn execute_multi_join_inner<W: Write>(
         .as_ref()
         .map(|(column, not_null)| column_index(&relations, column).map(|index| (index, *not_null)))
         .transpose()?;
-    let required = required_physical_columns(query, &relations, &initial_step)?;
+    let required =
+        required_physical_columns(query, &relations, &initial_step, row_filters.as_ref())?;
     let mut rows = read_projected_build_rows(
         &paths[0],
         &relations[0].names,
@@ -1248,6 +1261,7 @@ fn execute_multi_join_inner<W: Write>(
             && step_index == query.steps.len()
             && comparisons.is_empty()
             && column_comparisons.is_empty()
+            && row_filters.is_none()
         {
             let mut count = 0u64;
             let mut count_key = Vec::with_capacity(left_keys.len());
@@ -1351,7 +1365,9 @@ fn execute_multi_join_inner<W: Write>(
                                     &joined[*right],
                                     *operator,
                                 )
-                            }))
+                            }) && row_filters
+                                .as_ref()
+                                .is_none_or(|filters| filters.passes(&joined)))
                         {
                             push_visible_row(&mut next, joined, &mut retained, filter)?;
                         }

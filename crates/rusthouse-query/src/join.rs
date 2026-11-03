@@ -1229,7 +1229,12 @@ fn parse_join_tokens(
     let mut scalar_where = None;
     let mut in_subquery = None;
     if parser.keyword("WHERE") {
-        let complex = grouped_distinct.is_some() || (scalar_sum.is_some() || scalar_formula.is_some()) && parser.tokens[parser.index..].iter().take_while(|token| !matches!(token, Token::Word(word) if ["GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))).any(|token| matches!(token, Token::Word(word) if ["OR", "IN", "BETWEEN", "LIKE", "ILIKE"].iter().any(|name| word.eq_ignore_ascii_case(name))));
+        let where_tokens = parser.tokens[parser.index..].iter().take_while(|token| !matches!(token, Token::Word(word) if ["GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))).collect::<Vec<_>>();
+        let chained_like = !steps.is_empty() && kind == JoinType::Inner
+            && steps.iter().all(|step| step.kind == JoinType::Inner)
+            && where_tokens.iter().any(|token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("LIKE") || word.eq_ignore_ascii_case("ILIKE")))
+            && !where_tokens.iter().any(|token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("SELECT")));
+        let complex = grouped_distinct.is_some() || chained_like || (scalar_sum.is_some() || scalar_formula.is_some()) && where_tokens.iter().any(|token| matches!(token, Token::Word(word) if ["OR", "IN", "BETWEEN", "LIKE", "ILIKE"].iter().any(|name| word.eq_ignore_ascii_case(name))));
         if grouped_distinct.is_some() {
             if let Some((subquery, branches)) = parse_distinct_not_in(&mut parser)? {
                 in_subquery = Some(subquery);
