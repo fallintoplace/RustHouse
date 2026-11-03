@@ -21,6 +21,7 @@ fn parses_scalar_and_table_queries() {
         parse_select(" SELECT -42; ").unwrap(),
         Select {
             grouped_expressions: Vec::new(),
+            hidden_aggregate: false,
             projection: Projection::Literal(-42),
             alias: None,
             rename: None,
@@ -39,6 +40,7 @@ fn parses_scalar_and_table_queries() {
         parse_select("select id, price from part limit 2;").unwrap(),
         Select {
             grouped_expressions: Vec::new(),
+            hidden_aggregate: false,
             projection: Projection::Columns(vec!["id".into(), "price".into()]),
             alias: None,
             rename: None,
