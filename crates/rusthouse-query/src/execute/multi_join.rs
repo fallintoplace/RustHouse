@@ -877,10 +877,17 @@ pub fn execute_multi_join<W: Write>(
         keys: query.keys.clone(),
         using_keys: query.using_keys.clone(),
     };
-    let scalar_metric = query
-        .scalar_sum
-        .clone()
-        .map(crate::join::GroupedSum::Expression);
+    let scalar_metric = match (&query.scalar_sum, &query.scalar_sum_qualifier) {
+        (Some(crate::ScalarExpr::Column(name)), Some(relation)) => {
+            Some(crate::join::GroupedSum::Column(JoinColumn {
+                relation: relation.clone(),
+                name: name.clone(),
+            }))
+        }
+        (Some(expression), None) => Some(crate::join::GroupedSum::Expression(expression.clone())),
+        (None, None) => None,
+        _ => return Err(invalid("invalid qualified scalar SUM")),
+    };
     let bind_sum = |metric: &crate::join::GroupedSum| -> Result<BoundSum, ExecutionError> {
         let (expression, names) = match metric {
             crate::join::GroupedSum::Column(column) => {

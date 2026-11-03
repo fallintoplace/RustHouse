@@ -122,6 +122,8 @@ pub struct JoinSelect {
     pub grouped_sum_having: Option<GroupedSumHaving>,
     /// A scalar SUM over a numeric expression in an INNER join.
     pub scalar_sum: Option<crate::ScalarExpr>,
+    /// Qualified source for a scalar SUM(column) in a HAVING subquery.
+    pub scalar_sum_qualifier: Option<String>,
     /// Preserve floating-point type when binding an internal scalar result.
     pub scalar_result_typed: bool,
     /// Arithmetic over scalar SUM results.
@@ -636,6 +638,7 @@ fn parse_join_tokens(
     parser.keyword("SELECT");
     parser.keyword("ALL");
     let mut scalar_sum = None;
+    let mut scalar_sum_qualifier = None;
     let parsed_formula = parse_join_formula(&mut parser)?;
     let scalar_formula = parsed_formula.as_ref().map(|(formula, _)| formula.clone());
     let mut aggregate = if scalar_formula.is_some() {
@@ -709,10 +712,11 @@ fn parse_join_tokens(
             column,
         }) = &aggregate
         {
-            if column.relation.is_empty() {
-                scalar_sum = Some(crate::ScalarExpr::Column(column.name.clone()));
-                aggregate = None;
+            scalar_sum = Some(crate::ScalarExpr::Column(column.name.clone()));
+            if !column.relation.is_empty() {
+                scalar_sum_qualifier = Some(column.relation.clone());
             }
+            aggregate = None;
         }
     }
     let mut aggregate_alias = if let Some((_, alias)) = parsed_formula {
@@ -1773,6 +1777,7 @@ fn parse_join_tokens(
         grouped_sum_position,
         grouped_sum_having,
         scalar_sum,
+        scalar_sum_qualifier,
         scalar_result_typed: false,
         scalar_formula,
         scalar_where,

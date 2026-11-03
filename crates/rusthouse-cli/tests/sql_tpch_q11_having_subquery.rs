@@ -94,8 +94,16 @@ fn q11_compares_grouped_sum_to_scalar_join_subquery() {
             .status
             .success()
     );
+    let qualified = sql(&plain_comma.replace("SUM(amount)", "SUM(x.amount)"));
+    assert!(qualified.status.success(), "{qualified:?}");
+    assert_eq!(qualified.stdout, b"x.x_id\ttotal\n1\t2\n2\t4\n");
     assert!(
-        !sql(&plain_comma.replace("SUM(amount)", "SUM(x.amount)"))
+        !sql(&plain_comma.replace("SUM(amount)", "SUM(unknown.amount)"))
+            .status
+            .success()
+    );
+    assert!(
+        !sql(&plain_comma.replace("SUM(amount)", "SUM(x.missing)"))
             .status
             .success()
     );
@@ -111,10 +119,22 @@ fn q11_compares_grouped_sum_to_scalar_join_subquery() {
     }
     let ambiguous = plain_comma.replace("FROM x, y WHERE", "FROM x, ambiguous_y WHERE");
     assert!(!sql(&ambiguous).status.success());
+    let qualified_ambiguous = ambiguous
+        .replace("SUM(amount)", "SUM(x.amount)")
+        .replace("total <", "total >");
+    let result = sql(&qualified_ambiguous);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"x.x_id\ttotal\n2\t4\n");
     let text = plain_comma.replace("FROM x, y WHERE", "FROM text_x, y WHERE");
     assert!(!sql(&text).status.success());
     let nullable = plain_comma.replace("FROM x, y WHERE", "FROM nullable_x, y WHERE");
     let result = sql(&nullable);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"x.x_id\ttotal\n1\t2\n");
+    let shadowed = plain_comma
+        .replace("FROM x, y WHERE", "FROM nullable_x x, y WHERE")
+        .replace("SUM(amount)", "SUM(x.amount)");
+    let result = sql(&shadowed);
     assert!(result.status.success(), "{result:?}");
     assert_eq!(result.stdout, b"x.x_id\ttotal\n1\t2\n");
     fs::remove_dir_all(db).unwrap();
