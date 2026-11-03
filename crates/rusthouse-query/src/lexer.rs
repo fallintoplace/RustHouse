@@ -43,7 +43,11 @@ fn skip_line_comment(bytes: &[u8], index: &mut usize) {
         .unwrap_or(remaining.len());
 }
 
-fn scan_negative_radix_number(sql: &str, index: &mut usize, radix: u32) -> Result<Token, ParseError> {
+fn scan_negative_radix_number(
+    sql: &str,
+    index: &mut usize,
+    radix: u32,
+) -> Result<Token, ParseError> {
     // A unary minus applies to the same magnitude that the unsigned scanner
     // already validates, but the signed result must fit in Int64.
     *index += 1;
