@@ -18,7 +18,7 @@ fn top_from(tokens: &[Token]) -> Option<usize> {
     None
 }
 
-/// Flatten a grouped SUM over two projected keys and one arithmetic expression.
+/// Flatten a grouped SUM over two or three projected keys and one arithmetic expression.
 /// Other derived-table shapes are left to their own parser.
 pub fn parse_derived_join_sum_with_schema(
     sql: &str,
@@ -42,18 +42,27 @@ pub fn parse_derived_join_sum_with_schema(
     if !outer.keyword("SELECT") {
         return Ok(None);
     }
-    let first = match outer.word() {
-        Ok(word) => word,
-        Err(_) => return Ok(None),
-    };
-    if !outer.take(Token::Comma) {
-        return Ok(None);
+    let mut keys = Vec::new();
+    loop {
+        if matches!(outer.tokens.get(outer.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SUM"))
+            && outer.tokens.get(outer.index + 1) == Some(&Token::LParen)
+        {
+            outer.keyword("SUM");
+            break;
+        }
+        if keys.len() == 3 {
+            return Ok(None);
+        }
+        let key = match outer.bounded_word() {
+            Ok(word) => word,
+            Err(_) => return Ok(None),
+        };
+        keys.push(key);
+        if !outer.take(Token::Comma) {
+            return Ok(None);
+        }
     }
-    let second = match outer.word() {
-        Ok(word) => word,
-        Err(_) => return Ok(None),
-    };
-    if !outer.take(Token::Comma) || !outer.keyword("SUM") {
+    if !(2..=3).contains(&keys.len()) {
         return Ok(None);
     }
     if !outer.take(Token::LParen) {
@@ -67,11 +76,13 @@ pub fn parse_derived_join_sum_with_schema(
     }
     let aggregate_alias = outer.bounded_word()?;
     if outer.index != outer.tokens.len()
-        || first.eq_ignore_ascii_case(&second)
-        || first.eq_ignore_ascii_case(&value)
-        || second.eq_ignore_ascii_case(&value)
-        || first.eq_ignore_ascii_case(&aggregate_alias)
-        || second.eq_ignore_ascii_case(&aggregate_alias)
+        || keys.iter().enumerate().any(|(index, key)| {
+            keys[..index]
+                .iter()
+                .any(|other| key.eq_ignore_ascii_case(other))
+                || key.eq_ignore_ascii_case(&value)
+                || key.eq_ignore_ascii_case(&aggregate_alias)
+        })
     {
         return Err(ParseError("invalid derived SUM output columns".into()));
     }
@@ -106,13 +117,13 @@ pub fn parse_derived_join_sum_with_schema(
         }
     }
     parts.push(&inner[start..inner_from]);
-    if parts.len() != 3 {
+    if parts.len() != keys.len() + 1 {
         return Err(ParseError(
-            "derived SUM requires three projected columns".into(),
+            "derived SUM projected column count differs".into(),
         ));
     }
     let mut expressions = Vec::new();
-    for (part, expected) in parts.iter().zip([&first, &second, &value]) {
+    for (part, expected) in parts.iter().zip(keys.iter().chain(std::iter::once(&value))) {
         if part.len() < 3
             || !keyword(&part[part.len() - 2], "AS")
             || !matches!(&part[part.len()-1], Token::Word(name) | Token::QuotedWord(name) if name.eq_ignore_ascii_case(expected))
@@ -123,16 +134,18 @@ pub fn parse_derived_join_sum_with_schema(
         }
         expressions.push(&part[..part.len() - 2]);
     }
-    let mut key = Parser {
-        tokens: expressions[0].to_vec(),
-        index: 0,
-    };
-    let column = projected(&mut key)?;
-    if column.name == "*" || key.index != key.tokens.len() {
-        return Err(ParseError("derived SUM first key must be a column".into()));
+    for expression in &expressions[..keys.len() - 1] {
+        let mut key = Parser {
+            tokens: expression.to_vec(),
+            index: 0,
+        };
+        let column = projected(&mut key)?;
+        if column.name == "*" || key.index != key.tokens.len() {
+            return Err(ParseError("derived SUM group key must be a column".into()));
+        }
     }
     let mut year = Parser {
-        tokens: expressions[1].to_vec(),
+        tokens: expressions[keys.len() - 1].to_vec(),
         index: 0,
     };
     if !year.keyword("EXTRACT")
@@ -140,9 +153,7 @@ pub fn parse_derived_join_sum_with_schema(
         || !year.keyword("YEAR")
         || !year.keyword("FROM")
     {
-        return Err(ParseError(
-            "derived SUM second key must extract YEAR".into(),
-        ));
+        return Err(ParseError("derived SUM last key must extract YEAR".into()));
     }
     let date = projected(&mut year)?;
     if date.name == "*" || !year.take(Token::RParen) || year.index != year.tokens.len() {
@@ -162,14 +173,27 @@ pub fn parse_derived_join_sum_with_schema(
     if !suffix.keyword("GROUP") || !suffix.keyword("BY") {
         return Err(ParseError("derived SUM requires GROUP BY".into()));
     }
-    let group1 = suffix.bounded_word()?;
-    if !suffix.take(Token::Comma) {
-        return Err(ParseError("derived SUM requires two group keys".into()));
+    let mut groups = Vec::new();
+    loop {
+        if groups.len() == keys.len() {
+            return Err(ParseError("derived SUM has too many group keys".into()));
+        }
+        let name = suffix.bounded_word()?;
+        if !keys.iter().any(|key| key.eq_ignore_ascii_case(&name))
+            || groups
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(&name))
+        {
+            return Err(ParseError(
+                "derived SUM group keys must match projected keys".into(),
+            ));
+        }
+        groups.push(name);
+        if !suffix.take(Token::Comma) {
+            break;
+        }
     }
-    let group2 = suffix.bounded_word()?;
-    if !((group1.eq_ignore_ascii_case(&first) && group2.eq_ignore_ascii_case(&second))
-        || (group1.eq_ignore_ascii_case(&second) && group2.eq_ignore_ascii_case(&first)))
-    {
+    if groups.len() != keys.len() {
         return Err(ParseError(
             "derived SUM group keys must match projected keys".into(),
         ));
@@ -180,8 +204,9 @@ pub fn parse_derived_join_sum_with_schema(
         }
         loop {
             let name = suffix.bounded_word()?;
-            if ![&first, &second, &aggregate_alias]
+            if !keys
                 .iter()
+                .chain(std::iter::once(&aggregate_alias))
                 .any(|key| name.eq_ignore_ascii_case(key))
             {
                 return Err(ParseError(
@@ -211,12 +236,12 @@ pub fn parse_derived_join_sum_with_schema(
     }
     let w = |word: &str| Token::Word(word.to_owned());
     let mut flat = vec![w("SELECT")];
-    flat.extend_from_slice(parts[0]);
-    flat.push(Token::Comma);
-    flat.extend_from_slice(parts[1]);
-    flat.push(Token::Comma);
+    for part in &parts[..keys.len()] {
+        flat.extend_from_slice(part);
+        flat.push(Token::Comma);
+    }
     flat.extend([w("SUM"), Token::LParen]);
-    flat.extend_from_slice(expressions[2]);
+    flat.extend_from_slice(expressions[keys.len()]);
     flat.extend([Token::RParen, w("AS"), w(&aggregate_alias)]);
     flat.extend_from_slice(&inner[inner_from..]);
     flat.extend_from_slice(&tokens[end + suffix_start..]);

@@ -675,3 +675,84 @@ fn sql_http_executes_tpch_q9() {
     );
     fs::remove_dir_all(database).unwrap();
 }
+
+#[test]
+fn sql_http_executes_tpch_q7() {
+    let database = std::env::temp_dir().join(format!("rusthouse-http-q7-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    let cols = |values: &[(&str, &str)]| {
+        values
+            .iter()
+            .map(|(name, kind)| Column {
+                name: (*name).into(),
+                data_type: (*kind).into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |values: &[&str]| values.iter().map(|v| Some((*v).into())).collect::<Vec<_>>();
+    table(
+        &database,
+        "nation",
+        &cols(&[("n_nationkey", "UInt64"), ("n_name", "String")]),
+        &[row(&["1", "FRANCE"]), row(&["2", "GERMANY"])],
+    );
+    table(
+        &database,
+        "supplier",
+        &cols(&[("s_suppkey", "UInt64"), ("s_nationkey", "UInt64")]),
+        &[row(&["11", "1"]), row(&["22", "2"])],
+    );
+    table(
+        &database,
+        "customer",
+        &cols(&[("c_custkey", "UInt64"), ("c_nationkey", "UInt64")]),
+        &[row(&["101", "1"]), row(&["102", "2"])],
+    );
+    table(
+        &database,
+        "orders",
+        &cols(&[("o_orderkey", "UInt64"), ("o_custkey", "UInt64")]),
+        &[row(&["1", "101"]), row(&["2", "102"])],
+    );
+    table(
+        &database,
+        "lineitem",
+        &cols(&[
+            ("l_suppkey", "UInt64"),
+            ("l_orderkey", "UInt64"),
+            ("l_shipdate", "Date"),
+            ("l_extendedprice", "Float64"),
+            ("l_discount", "Float64"),
+        ]),
+        &[
+            row(&["11", "2", "1995-01-01", "100", "0.1"]),
+            row(&["22", "1", "1996-12-31", "80", "0.25"]),
+        ],
+    );
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let query = include_str!("../../../bench/tpch/queries/q07.sql");
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"supp_nation\tcust_nation\tl_year\trevenue\nFRANCE\tGERMANY\t1995\t90\nGERMANY\tFRANCE\t1996\t60\n");
+    let limited = handle_request(
+        "POST",
+        "/?format=tsv-no-header",
+        query.as_bytes(),
+        &Config {
+            max_rows: 1,
+            ..config.clone()
+        },
+    );
+    assert_eq!(limited.status, "200 OK", "{:?}", limited.body);
+    assert_eq!(limited.body, b"FRANCE\tGERMANY\t1995\t90\n");
+    let invalid = query.replace("l_shipdate BETWEEN", "s_suppkey BETWEEN");
+    assert_eq!(
+        handle_request("POST", "/", invalid.as_bytes(), &config).status,
+        "400 Bad Request"
+    );
+    fs::remove_dir_all(database).unwrap();
+}
