@@ -1014,7 +1014,24 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         let projected_keys = columns
             .as_ref()
             .ok_or_else(|| ParseError("grouped JOIN requires projected keys".into()))?;
-        if group_by.as_ref() != Some(projected_keys) {
+        let matching_groups = if !steps.is_empty() {
+            group_by.as_ref().is_some_and(|groups| {
+                groups == projected_keys
+                    || (groups.len() == projected_keys.len()
+                        && groups.iter().all(|key| projected_keys.contains(key))
+                        && groups
+                            .iter()
+                            .enumerate()
+                            .all(|(index, key)| !groups[..index].contains(key))
+                        && projected_keys
+                            .iter()
+                            .enumerate()
+                            .all(|(index, key)| !projected_keys[..index].contains(key)))
+            })
+        } else {
+            group_by.as_ref() == Some(projected_keys)
+        };
+        if !matching_groups {
             return Err(ParseError(
                 "GROUP BY must match the selected JOIN keys".into(),
             ));
@@ -1037,7 +1054,11 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                 "grouped JOIN ORDER BY must use a group key".into(),
             ));
         }
-        group_by
+        if steps.is_empty() {
+            group_by
+        } else {
+            Some(projected_keys.clone())
+        }
     } else {
         if group_by.is_some() {
             return Err(ParseError(

@@ -40,6 +40,22 @@ fn chained_sum_groups_nullable_values_and_orders_alias() {
             "b.category\tc.flag\ttotal\nx\t1\t1\nz\t1\t\\N\n",
         ),
         (
+            "SELECT b.category, b.category, COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category, b.category ORDER BY b.category",
+            "b.category\tb.category\tn\nx\tx\t2\ny\ty\t1\nz\tz\t1\n",
+        ),
+        (
+            "SELECT b.category, c.flag, COUNT(*) AS n FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY c.flag, b.category ORDER BY n DESC, b.category",
+            "b.category\tc.flag\tn\nx\t1\t2\ny\t2\t1\nz\t1\t1\n",
+        ),
+        (
+            "SELECT b.category, SUM(amount + flag) AS total, c.flag FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY c.flag, b.category ORDER BY total DESC NULLS LAST LIMIT 1",
+            "b.category\ttotal\tc.flag\ny\t7\t2\n",
+        ),
+        (
+            "SELECT b.category, SUM(amount + flag) AS total, c.flag FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY c.flag, b.category ORDER BY b.category",
+            "b.category\ttotal\tc.flag\nx\t3\t1\ny\t7\t2\nz\t\\N\t1\n",
+        ),
+        (
             "SELECT b.category, SUM(amount + flag) AS total, c.flag FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category, c.flag ORDER BY b.category",
             "b.category\ttotal\tc.flag\nx\t3\t1\ny\t7\t2\nz\t\\N\t1\n",
         ),
@@ -75,6 +91,8 @@ fn chained_sum_groups_nullable_values_and_orders_alias() {
         "SELECT b.category, SUM(a.amount) AS total FROM a LEFT JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category",
         "SELECT b.category, SUM(a.amount + 1) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category",
         "SELECT b.category, SUM(category + 1) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category LIMIT 0",
+        "SELECT b.category, SUM(amount) AS total, c.flag FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category, b.category",
+        "SELECT b.category, SUM(amount) AS total, c.flag FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY c.flag",
         "SELECT b.category, SUM(amount) AS total, c.flag, SUM(flag) AS more FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category, c.flag",
         "SELECT b.category, SUM(amount) AS total, c.flag, COUNT(*) FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category, c.flag",
         "SELECT b.category, SUM(amount / 0) AS total FROM a JOIN b ON a.id = b.id JOIN c ON b.next = c.id GROUP BY b.category",
