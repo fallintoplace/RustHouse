@@ -1723,6 +1723,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
         parser.bounded_word()?;
     }
+    if source.is_some() && parser.tokens.get(parser.index) == Some(&Token::Comma) {
+        return Err(ParseError(
+            "comma-separated FROM tables are not yet supported; use explicit JOIN".into(),
+        ));
+    }
     if source.is_none()
         && !matches!(
             projection,
@@ -2514,5 +2519,17 @@ mod tpch_parser_first_stop_2 {
     fn unsupported_construct_has_specific_error() {
         let error = parse_select("SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category").unwrap_err();
         assert!(error.0.contains("computed grouped aggregate arguments"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod tpch_comma_from_diagnostics {
+    use super::parse_select;
+
+    #[test]
+    fn comma_sources_are_not_reported_as_missing_group_by() {
+        let sql = "SELECT l_shipmode, sum(CASE WHEN priority = 'hi' THEN 1 ELSE 0 END) FROM orders, lineitem GROUP BY l_shipmode";
+        let error = parse_select(sql).unwrap_err();
+        assert!(error.0.contains("comma-separated FROM tables"), "{error}");
     }
 }
