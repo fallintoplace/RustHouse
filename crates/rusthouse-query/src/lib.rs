@@ -1493,7 +1493,17 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     };
     // The single-source SELECT executor addresses unqualified columns by
     // their physical names; an AS alias does not change that lookup.
-    if parser.keyword("AS") {
+    let source_alias = if parser.keyword("AS") {
+        true
+    } else {
+        matches!(parser.tokens.get(parser.index), Some(Token::QuotedWord(_)))
+            || matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if ![
+                "PREWHERE", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET",
+                "FETCH", "FORMAT", "SETTINGS", "JOIN", "INNER", "LEFT", "RIGHT",
+                "FULL", "CROSS", "ON", "USING", "UNION", "INTERSECT", "EXCEPT",
+            ].iter().any(|keyword| word.eq_ignore_ascii_case(keyword)))
+    };
+    if source_alias {
         if source.is_none() {
             return Err(ParseError("source alias requires FROM".into()));
         }
