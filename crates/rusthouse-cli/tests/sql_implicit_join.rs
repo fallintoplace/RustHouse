@@ -32,6 +32,18 @@ fn implicit_inner_join_matches_explicit_join() {
             "SELECT l.id, r.name, t.label FROM lefts l JOIN rights r ON l.id = r.id JOIN thirds t ON t.id = r.id ORDER BY l.id",
         ),
         (
+            "SELECT l.id, r.name, t.label FROM lefts l, rights r, thirds t WHERE l.id = t.id AND r.id = t.id ORDER BY l.id",
+            "SELECT l.id, r.name, t.label FROM lefts l JOIN thirds t ON l.id = t.id JOIN rights r ON r.id = t.id ORDER BY l.id",
+        ),
+        (
+            "SELECT l.*, r.*, t.* FROM lefts l, rights r, thirds t WHERE l.id = t.id AND r.id = t.id ORDER BY l.id",
+            "SELECT l.*, r.*, t.* FROM lefts l JOIN thirds t ON l.id = t.id JOIN rights r ON r.id = t.id ORDER BY l.id",
+        ),
+        (
+            "SELECT count(*) FROM lefts l, rights r, thirds t WHERE l.id = t.id AND r.id = t.id",
+            "SELECT count(*) FROM lefts l JOIN thirds t ON l.id = t.id JOIN rights r ON r.id = t.id",
+        ),
+        (
             "SELECT count(*) FROM lefts l, rights r WHERE l.id = r.id AND l.id > 1",
             "SELECT count(*) FROM lefts l JOIN rights r ON l.id = r.id WHERE l.id > 1",
         ),
@@ -54,9 +66,31 @@ fn implicit_inner_join_matches_explicit_join() {
     let unqualified = sql("SELECT count(*) FROM orders, lineitem WHERE o_orderkey = l_orderkey");
     assert!(unqualified.status.success(), "{unqualified:?}");
     assert_eq!(unqualified.stdout, b"count\n2\n");
+    for statement in [
+        "CREATE TABLE part (p_key UInt64)",
+        "CREATE TABLE supplier (s_key UInt64)",
+        "CREATE TABLE partsupp (ps_part UInt64, ps_supplier UInt64)",
+        "INSERT INTO part VALUES (1), (2)",
+        "INSERT INTO supplier VALUES (3), (4)",
+        "INSERT INTO partsupp VALUES (1, 3), (1, 4), (2, 3)",
+    ] {
+        let result = sql(statement);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let connected = sql(
+        "SELECT count(*) FROM part, supplier, partsupp WHERE p_key = ps_part AND s_key = ps_supplier",
+    );
+    assert!(connected.status.success(), "{connected:?}");
+    assert_eq!(connected.stdout, b"count\n3\n");
     let ambiguous = sql("SELECT count(*) FROM lefts, rights WHERE id = id");
     assert!(!ambiguous.status.success(), "{ambiguous:?}");
     assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("ambiguous JOIN column"));
+    // Reordering must not change the column order of an unqualified star.
+    assert!(
+        !sql("SELECT * FROM lefts l, rights r, thirds t WHERE l.id = t.id AND r.id = t.id")
+            .status
+            .success()
+    );
     for query in [
         "SELECT l.id FROM lefts l, rights r WHERE l.id = r.id OR l.id = 1",
         "SELECT l.id FROM lefts l, rights r WHERE l.id = 1",
