@@ -9,6 +9,17 @@ pub struct ThreeWayManifestPlan {
     pub conflicts: Vec<String>,
 }
 
+
+impl ThreeWayManifestPlan {
+    /// Return a complete merged inventory only when every key was resolved.
+    pub fn publishable_objects(&self) -> Result<&[ObjectMetadata], &'static str> {
+        if !self.conflicts.is_empty() {
+            return Err("manifest merge contains unresolved conflicts");
+        }
+        Ok(&self.merged)
+    }
+}
+
 fn same(a: Option<&ObjectMetadata>, b: Option<&ObjectMetadata>) -> bool {
     match (a, b) {
         (None, None) => true,
@@ -87,5 +98,32 @@ mod tests {
     #[test]
     fn duplicate_inventory_keys_fail_closed() {
         assert!(plan_three_way_manifest_merge(&[obj("a", 1), obj("a", 1)], &[], &[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod publishable_manifest_tests {
+    use super::*;
+
+    fn object(key: &str, crc32c: u32) -> ObjectMetadata {
+        ObjectMetadata { key: key.into(), bytes: 10, crc32c }
+    }
+
+    #[test]
+    fn unresolved_conflicts_cannot_produce_publishable_manifest() {
+        let base = [object("a", 1)];
+        let conflict = plan_three_way_manifest_merge(
+            &base, &[object("a", 2)], &[object("a", 3)],
+        ).unwrap();
+        assert_eq!(conflict.conflicts, ["a"]);
+        assert!(conflict.publishable_objects().is_err());
+    }
+
+    #[test]
+    fn conflict_free_plan_can_be_published() {
+        let plan = plan_three_way_manifest_merge(
+            &[], &[object("local", 1)], &[object("remote", 2)],
+        ).unwrap();
+        assert_eq!(plan.publishable_objects().unwrap(), plan.merged.as_slice());
     }
 }
