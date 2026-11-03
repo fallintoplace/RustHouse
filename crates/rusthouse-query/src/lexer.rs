@@ -167,6 +167,9 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             b'0' if matches!(bytes.get(index + 1), Some(b'b' | b'B')) => {
                 scan_radix_number(sql, &mut index, 2)?
             }
+            b'0' if matches!(bytes.get(index + 1), Some(b'o' | b'O')) => {
+                scan_radix_number(sql, &mut index, 8)?
+            }
             b'0'..=b'9' | b'-' => scan_number(sql, &mut index)?,
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => scan_word(sql, &mut index),
             _ => {
