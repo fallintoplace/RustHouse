@@ -1,5 +1,6 @@
 //! Bounded two-table equi-join syntax for persistent SQL tables.
 
+mod correlated;
 mod implicit;
 mod syntax;
 
@@ -11,6 +12,9 @@ pub(crate) const MAX_JOIN_BUILD_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const MAX_JOIN_CHAIN_BYTES: usize = 64 * 1024 * 1024;
 
 use self::syntax::*;
+pub use correlated::{
+    JoinCorrelatedExists, JoinExistsFilter, parse_join_correlated_exists_with_schema,
+};
 
 use super::{ParseError, Parser, Token, tokenize};
 
