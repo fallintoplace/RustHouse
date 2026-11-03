@@ -1019,6 +1019,9 @@ fn grouped_metric_value(
 fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     if !parser.keyword("SELECT") {
+        if matches!(parser.tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("WITH")) {
+            return Err(ParseError("WITH common table expressions are not yet supported".into()));
+        }
         return Err(ParseError("only SELECT statements are supported".into()));
     }
     let mut distinct = parser.keyword("DISTINCT")
@@ -2494,5 +2497,16 @@ mod parenthesized_predicate_literal_tests {
         }
         let nested = format!("{}1{}", "(".repeat(17), ")".repeat(17));
         assert!(parse_select(&format!("SELECT count(*) FROM t WHERE number = {nested}")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_4 {
+    use super::parse_select;
+
+    #[test]
+    fn unsupported_construct_has_specific_error() {
+        let error = parse_select("WITH revenue AS (SELECT supplier_no FROM supplier) SELECT supplier_no FROM revenue").unwrap_err();
+        assert!(error.0.contains("WITH common table expressions"), "{error}");
     }
 }
