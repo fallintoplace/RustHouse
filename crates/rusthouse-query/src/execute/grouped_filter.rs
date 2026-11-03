@@ -11,6 +11,10 @@ pub(super) enum BoundGroupedFilter {
         operator: Operator,
         literal: typed::Cell,
     },
+    Like {
+        index: usize,
+        pattern: typed::TextPattern,
+    },
 }
 
 pub(super) fn bind_grouped_filters(
@@ -30,6 +34,20 @@ pub(super) fn bind_grouped_filters(
             })?;
             match filter {
                 GroupedFilter::Truthy(_) => Ok(Some(BoundGroupedFilter::Truthy(index))),
+                GroupedFilter::CaseLike { pattern, .. } => {
+                    let data_type = types.get(name).ok_or_else(|| {
+                        ExecutionError::Invalid(format!("unknown grouped filter column: {name}"))
+                    })?;
+                    if typed::base_type(data_type) != "String" {
+                        return Err(ExecutionError::Invalid(
+                            "grouped CASE LIKE requires a String column".into(),
+                        ));
+                    }
+                    Ok(Some(BoundGroupedFilter::Like {
+                        index,
+                        pattern: typed::compile_text_pattern(pattern)?,
+                    }))
+                }
                 GroupedFilter::Comparison { operator, literal, .. }
                 | GroupedFilter::CaseElseZero { operator, literal, .. } => {
                     let data_type = types.get(name).ok_or_else(|| {
@@ -52,6 +70,10 @@ impl BoundGroupedFilter {
     ) -> Result<bool, ExecutionError> {
         match self {
             Self::Truthy(index) => truthy(&batch[*index], row),
+            Self::Like { index, pattern } => Ok(match typed::cell(&batch[*index], row) {
+                typed::Cell::Text(value) => typed::text_pattern_matches(&value, pattern, false),
+                _ => false,
+            }),
             Self::Comparison { index, operator, literal } => Ok(typed::matches_comparison(
                 &typed::cell(&batch[*index], row),
                 literal,

@@ -93,6 +93,8 @@ impl AggregateFunction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstantValue {
     Integer(i64),
+    /// Floating numeric literal. Keep its source spelling for SELECT headers.
+    Decimal(String),
     Text(String),
     Null,
 }
@@ -110,6 +112,7 @@ impl Constant {
         }
         match &self.value {
             ConstantValue::Integer(value) => value.to_string(),
+            ConstantValue::Decimal(value) => value.clone(),
             ConstantValue::Null => "NULL".into(),
             ConstantValue::Text(value) => format!(
                 "'{}'",
@@ -137,18 +140,28 @@ pub enum GroupedFilter {
         operator: Operator,
         literal: String,
     },
+    /// LIKE condition evaluated before grouped SUM(CASE ...).
+    CaseLike {
+        column: String,
+        pattern: String,
+        else_zero: bool,
+    },
 }
 
 impl GroupedFilter {
     pub(crate) fn column(&self) -> &str {
         match self {
-            Self::Truthy(column) | Self::Comparison { column, .. } | Self::CaseElseZero { column, .. } => column,
+            Self::Truthy(column) | Self::Comparison { column, .. } | Self::CaseElseZero { column, .. }
+            | Self::CaseLike { column, .. } => column,
         }
     }
 
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Truthy(column) => column.clone(),
+            Self::CaseLike { column, pattern, .. } => {
+                format!("{column} LIKE '{}'", pattern.replace('\'', "''"))
+            }
             Self::Comparison { column, operator, literal }
             | Self::CaseElseZero { column, operator, literal } => {
                 let symbol = match operator {
@@ -923,11 +936,20 @@ fn grouped_metric_value(
         return Err(ParseError("grouped CASE requires SUM(CASE WHEN ...)".into()));
     }
     let column = parser.bounded_word()?;
-    let operator = parser.operator()?;
-    if !matches!(operator, Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge) {
-        return Err(ParseError("grouped CASE requires a comparison condition".into()));
-    }
-    let literal = parser.literal()?;
+    let (operator, literal, like_pattern) = if parser.keyword("LIKE") {
+        let Some(Token::String(pattern)) = parser.tokens.get(parser.index) else {
+            return Err(ParseError("grouped CASE LIKE requires a string pattern".into()));
+        };
+        let pattern = pattern.clone();
+        parser.index += 1;
+        (None, None, Some(pattern))
+    } else {
+        let operator = parser.operator()?;
+        if !matches!(operator, Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge) {
+            return Err(ParseError("grouped CASE requires a comparison condition".into()));
+        }
+        (Some(operator), Some(parser.literal()?), None)
+    };
     if !parser.keyword("THEN") {
         return Err(ParseError("grouped CASE requires THEN".into()));
     }
@@ -945,10 +967,16 @@ fn grouped_metric_value(
     if !parser.keyword("END") {
         return Err(ParseError("grouped CASE requires END".into()));
     }
-    let filter = if else_zero {
-        GroupedFilter::CaseElseZero { column, operator, literal }
+    let filter = if let Some(pattern) = like_pattern {
+        GroupedFilter::CaseLike { column, pattern, else_zero }
     } else {
-        GroupedFilter::Comparison { column, operator, literal }
+        let operator = operator.expect("non-LIKE CASE has operator");
+        let literal = literal.expect("non-LIKE CASE has literal");
+        if else_zero {
+            GroupedFilter::CaseElseZero { column, operator, literal }
+        } else {
+            GroupedFilter::Comparison { column, operator, literal }
+        }
     };
     Ok((metric, Some(filter)))
 }
@@ -1138,6 +1166,14 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 return Err(ParseError("SELECT supports at most 64 constants".into()));
             }
             let value = match parser.tokens.get(parser.index) {
+                Some(Token::Number(number)) if number.contains('.') || number.contains('e') || number.contains('E') => {
+                    let number = number.clone();
+                    if !number.parse::<f64>().is_ok_and(f64::is_finite) {
+                        return Err(ParseError("SELECT decimal literal must be finite".into()));
+                    }
+                    parser.index += 1;
+                    ConstantValue::Decimal(number)
+                }
                 Some(Token::Number(_) | Token::LParen | Token::Plus | Token::Minus) => {
                     ConstantValue::Integer(scalar::parse(&mut parser)?)
                 }

@@ -384,8 +384,15 @@ pub(super) fn execute<W: Write>(
                     if !filter.passes(&batch, row, filter_enabled)? {
                         // CASE ... ELSE 0 contributes a zero for unmatched rows.
                         // Plain SUMIF and CASE without ELSE still skip the row.
-                        if matches!(filters.get(metric), Some(Some(crate::GroupedFilter::CaseElseZero { .. }))) {
-                            state.update(Number::Unsigned(0))?;
+                        if matches!(filters.get(metric), Some(Some(
+                            crate::GroupedFilter::CaseElseZero { .. }
+                            | crate::GroupedFilter::CaseLike { else_zero: true, .. }
+                        ))) {
+                            if *function == AggregateFunction::Sum {
+                                state.update_sum(Number::Unsigned(0))?;
+                            } else {
+                                state.update(Number::Unsigned(0))?;
+                            }
                         }
                         continue;
                     }
@@ -410,11 +417,21 @@ pub(super) fn execute<W: Write>(
                 // for each aggregate value and every matching input row.
                 match &batch[column_index] {
                     TypedColumn::Numeric(values) => {
-                        state.update(super::number_at(values, row))?;
+                        let value = super::number_at(values, row);
+                        if *function == AggregateFunction::Sum {
+                            state.update_sum(value)?;
+                        } else {
+                            state.update(value)?;
+                        }
                     }
                     TypedColumn::NullableNumeric { values, nulls } => {
                         if nulls[row] == 0 {
-                            state.update(super::number_at(values, row))?;
+                            let value = super::number_at(values, row);
+                            if *function == AggregateFunction::Sum {
+                                state.update_sum(value)?;
+                            } else {
+                                state.update(value)?;
+                            }
                         }
                     }
                     column => match typed::cell(column, row) {
