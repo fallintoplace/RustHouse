@@ -8,6 +8,29 @@ pub struct GroupedAffineKey {
     pub offset: i64,
 }
 
+// Ordering by original positional expressions requires separate binding.
+fn has_positional_order(tokens: &[Token], group_end: usize) -> bool {
+    let mut depth = 0usize;
+    for i in group_end..tokens.len().saturating_sub(2) {
+        match &tokens[i] {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(word)
+                if depth == 0
+                    && word.eq_ignore_ascii_case("ORDER")
+                    && matches!(tokens.get(i+1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
+            {
+                return tokens[i + 2..]
+                    .iter()
+                    .take_while(|token| !matches!(token, Token::Word(word) if ["LIMIT", "OFFSET", "FETCH", "FORMAT"].iter().any(|end| word.eq_ignore_ascii_case(end))) && !matches!(token, Token::Semicolon))
+                    .any(|token| matches!(token, Token::Number(_)));
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError> {
     let key = match tokens.as_slice() {
         [
@@ -97,30 +120,10 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
     if matches!(tokens.get(group_end), Some(Token::Comma)) {
         return Ok(None);
     }
-    // Ordering by original positional expressions requires separate binding.
-    let mut depth = 0usize;
-    for i in group_end..tokens.len().saturating_sub(2) {
-        match &tokens[i] {
-            Token::LParen => depth += 1,
-            Token::RParen => depth = depth.saturating_sub(1),
-            Token::Word(word)
-                if depth == 0
-                    && word.eq_ignore_ascii_case("ORDER")
-                    && matches!(tokens.get(i+1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
-            {
-                if tokens[i + 2..]
-                    .iter()
-                    .take_while(|token| !matches!(token, Token::Word(word) if ["LIMIT", "OFFSET", "FETCH", "FORMAT"].iter().any(|end| word.eq_ignore_ascii_case(end))) && !matches!(token, Token::Semicolon))
-                    .any(|token| matches!(token, Token::Number(_)))
-                {
-                    return Err(ParseError(
-                        "positional ordering with grouped expressions is unsupported".into(),
-                    ));
-                }
-                break;
-            }
-            _ => {}
-        }
+    if has_positional_order(&tokens, group_end) {
+        return Err(ParseError(
+            "positional ordering with grouped expressions is unsupported".into(),
+        ));
     }
     tokens.drain(group + 3..group_end);
     tokens.drain(2..end);
