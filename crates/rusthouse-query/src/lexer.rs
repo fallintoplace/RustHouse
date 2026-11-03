@@ -517,6 +517,46 @@ mod tests {
 }
 
 #[cfg(test)]
+mod signed_radix_literal_tests {
+    use super::*;
+
+    #[test]
+    fn reads_negative_hex_and_binary_literals_as_single_numbers() {
+        assert_eq!(
+            tokenize("SELECT -0x10, -0XFF, -0b101, -0B11").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("-16".into()),
+                Token::Comma,
+                Token::Number("-255".into()),
+                Token::Comma,
+                Token::Number("-5".into()),
+                Token::Comma,
+                Token::Number("-3".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn subtraction_before_radix_literals_remains_binary() {
+        assert_eq!(
+            tokenize("1-0x10 3-0b11").unwrap(),
+            vec![
+                Token::Number("1".into()),
+                Token::Minus,
+                Token::Number("16".into()),
+                Token::Number("3".into()),
+                Token::Minus,
+                Token::Number("3".into()),
+            ]
+        );
+        for sql in ["-0x", "-0b", "-0x10000000000000000"] {
+            assert!(tokenize(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod line_comment_scanning_tests {
     use super::*;
 
@@ -610,42 +650,3 @@ mod radix_literal_tests {
     }
 }
 
-#[cfg(test)]
-mod signed_radix_literal_tests {
-    use super::*;
-
-    #[test]
-    fn reads_negative_hex_and_binary_literals_as_single_numbers() {
-        assert_eq!(
-            tokenize("SELECT -0x10, -0XFF, -0b101, -0B11").unwrap(),
-            vec![
-                Token::Word("SELECT".into()),
-                Token::Number("-16".into()),
-                Token::Comma,
-                Token::Number("-255".into()),
-                Token::Comma,
-                Token::Number("-5".into()),
-                Token::Comma,
-                Token::Number("-3".into()),
-            ]
-        );
-    }
-
-    #[test]
-    fn subtraction_before_radix_literals_remains_binary() {
-        assert_eq!(
-            tokenize("1-0x10 3-0b11").unwrap(),
-            vec![
-                Token::Number("1".into()),
-                Token::Minus,
-                Token::Number("16".into()),
-                Token::Number("3".into()),
-                Token::Minus,
-                Token::Number("3".into()),
-            ]
-        );
-        for sql in ["-0x", "-0b", "-0x10000000000000000"] {
-            assert!(tokenize(sql).is_err(), "{sql}");
-        }
-    }
-}
