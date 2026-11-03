@@ -58,8 +58,38 @@ pub fn decode_transfer_journal(input: &[u8]) -> Result<Vec<JournalReceipt>, &'st
     Ok(records)
 }
 
+
+/// Decode a journal only when its complete receipt count is known independently.
+///
+/// Per-frame CRCs cannot detect truncation at a whole-frame boundary. The
+/// expected count must come from separately trusted transfer metadata.
+pub fn decode_transfer_journal_exact(
+    input: &[u8],
+    expected_records: usize,
+) -> Result<Vec<JournalReceipt>, &'static str> {
+    if expected_records > MAX_RECORDS {
+        return Err("expected transfer journal length exceeds bound");
+    }
+    if input.len() != MAGIC.len() + expected_records * FRAME_SIZE {
+        return Err("transfer journal receipt count mismatch");
+    }
+    decode_transfer_journal(input)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expected_count_catches_whole_frame_truncation() {
+        let records = [entry(1, 8), entry(2, 3), entry(3, 4)];
+        let encoded = encode_transfer_journal(&records).unwrap();
+        let truncated = &encoded[..encoded.len() - FRAME_SIZE];
+        // Frame checksums alone cannot distinguish this from a shorter journal.
+        assert!(decode_transfer_journal(truncated).is_ok());
+        assert!(decode_transfer_journal_exact(truncated, records.len()).is_err());
+        assert_eq!(decode_transfer_journal_exact(&encoded, records.len()).unwrap(), records);
+        assert!(decode_transfer_journal_exact(&encoded, MAX_RECORDS + 1).is_err());
+    }
+
     use super::*;
     fn entry(sequence: u64, chunk_index: u64) -> JournalReceipt {
         JournalReceipt { sequence, chunk_index, payload_crc32c: 13 }
