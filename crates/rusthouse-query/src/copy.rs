@@ -53,6 +53,8 @@ fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseErro
         ("TABSEPARATED", CopyFormat::Tsv),
         ("SSV", CopyFormat::Ssv),
         ("JSONEACHROW", CopyFormat::JsonEachRow),
+        ("JSONL", CopyFormat::JsonEachRow),
+        ("NDJSON", CopyFormat::JsonEachRow),
     ] {
         if parser.keyword(keyword) {
             return Ok(format);
