@@ -100,6 +100,16 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     parser.keyword("SELECT");
     parser.keyword("ALL");
+    let top_limit = if parser.keyword("TOP") {
+        let parenthesized = parser.take(Token::LParen);
+        let count = bound(&mut parser, "TOP")?;
+        if parenthesized && !parser.take(Token::RParen) {
+            return Err(ParseError("TOP requires closing ')'".into()));
+        }
+        Some(count)
+    } else {
+        None
+    };
     let aggregate = if parser.keyword("COUNT") {
         if !parser.take(Token::LParen) {
             return Err(ParseError("JOIN COUNT requires '('".into()));
@@ -553,7 +563,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             )));
         }
     }
-    let (limit, comma_offset) = if parser.keyword("LIMIT") {
+    let (mut limit, comma_offset) = if parser.keyword("LIMIT") {
         let first = bound(&mut parser, "LIMIT")?;
         if parser.take(Token::Comma) {
             (Some(bound(&mut parser, "LIMIT")?), Some(first))
@@ -563,13 +573,20 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         (None, None)
     };
+    let has_offset = comma_offset.is_none() && parser.keyword("OFFSET");
     let offset = if let Some(offset) = comma_offset {
         offset
-    } else if parser.keyword("OFFSET") {
+    } else if has_offset {
         bound(&mut parser, "OFFSET")?
     } else {
         0
     };
+    if let Some(top) = top_limit {
+        if limit.is_some() || has_offset {
+            return Err(ParseError("TOP cannot be combined with LIMIT or OFFSET".into()));
+        }
+        limit = Some(top);
+    }
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
         return Err(ParseError(
@@ -1438,5 +1455,44 @@ mod join_count_one_tests {
             assert!(matches!(query.aggregate, Some(JoinAggregate::CountStar)), "{sql}");
         }
         assert!(parse_join("SELECT COUNT(2) FROM l JOIN r ON l.id = r.id").is_err());
+    }
+}
+
+#[cfg(test)]
+mod join_top_limit_tests {
+    use super::*;
+
+    #[test]
+    fn top_matches_join_limit_with_and_without_parentheses() {
+        let suffix = "a.id FROM a JOIN b ON a.id = b.id ORDER BY a.id";
+        let expected = parse_join(&format!("SELECT {suffix} LIMIT 3"))
+            .unwrap()
+            .unwrap();
+        for prefix in ["SELECT TOP 3", "SELECT TOP (3)"] {
+            let query = parse_join(&format!("{prefix} {suffix}"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(query, expected);
+        }
+        assert_eq!(
+            parse_join("SELECT TOP 0 a.id FROM a JOIN b ON a.id = b.id")
+                .unwrap()
+                .unwrap()
+                .limit,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn top_rejects_invalid_counts_and_pagination_combinations() {
+        for sql in [
+            "SELECT TOP -1 a.id FROM a JOIN b ON a.id = b.id",
+            "SELECT TOP (3 a.id FROM a JOIN b ON a.id = b.id",
+            "SELECT TOP 2 a.id FROM a JOIN b ON a.id = b.id LIMIT 2",
+            "SELECT TOP 2 a.id FROM a JOIN b ON a.id = b.id OFFSET 0",
+            "SELECT TOP 2 a.id FROM a JOIN b ON a.id = b.id LIMIT 2, 1",
+        ] {
+            assert!(parse_join(sql).is_err(), "{sql}");
+        }
     }
 }
