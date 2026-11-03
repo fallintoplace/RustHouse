@@ -1,6 +1,6 @@
 //! Multiple grouped numeric aggregates over one typed scan.
 use super::typed::{self, Cell};
-use super::grouped_filter::{BoundGroupedFilter, bind_grouped_filters};
+use super::grouped_filter::bind_grouped_filters;
 use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateFunction, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
