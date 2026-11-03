@@ -132,19 +132,25 @@ pub enum GroupedFilter {
         operator: Operator,
         literal: String,
     },
+    CaseElseZero {
+        column: String,
+        operator: Operator,
+        literal: String,
+    },
 }
 
 impl GroupedFilter {
     pub(crate) fn column(&self) -> &str {
         match self {
-            Self::Truthy(column) | Self::Comparison { column, .. } => column,
+            Self::Truthy(column) | Self::Comparison { column, .. } | Self::CaseElseZero { column, .. } => column,
         }
     }
 
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Truthy(column) => column.clone(),
-            Self::Comparison { column, operator, literal } => {
+            Self::Comparison { column, operator, literal }
+            | Self::CaseElseZero { column, operator, literal } => {
                 let symbol = match operator {
                     Operator::Eq => "=",
                     Operator::Ne => "!=",
@@ -926,6 +932,7 @@ fn grouped_metric_value(
         return Err(ParseError("grouped CASE requires THEN".into()));
     }
     let metric = parser.bounded_word()?;
+    let mut else_zero = false;
     if parser.keyword("ELSE") && !parser.keyword("NULL") {
         let else_value = parser.literal()?;
         if else_value != "0" && else_value != "0.0" {
@@ -933,11 +940,17 @@ fn grouped_metric_value(
                 "grouped SUM(CASE ...) requires ELSE 0 or NULL".into(),
             ));
         }
+        else_zero = true;
     }
     if !parser.keyword("END") {
         return Err(ParseError("grouped CASE requires END".into()));
     }
-    Ok((metric, Some(GroupedFilter::Comparison { column, operator, literal })))
+    let filter = if else_zero {
+        GroupedFilter::CaseElseZero { column, operator, literal }
+    } else {
+        GroupedFilter::Comparison { column, operator, literal }
+    };
+    Ok((metric, Some(filter)))
 }
 
 fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
