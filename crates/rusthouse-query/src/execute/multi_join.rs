@@ -1501,12 +1501,20 @@ fn execute_multi_join_inner<W: Write>(
         min_filter.as_ref(),
         sum_filter.as_ref(),
     )?;
+    // Correlated MIN needs a materialized ordered result. Its projected inputs
+    // can use the same bounded build-row cap as streaming joins; retained
+    // bytes and intermediate matches are still checked independently.
+    let input_row_limit = if min_filter.is_some() {
+        crate::join::MAX_STREAM_JOIN_BUILD_ROWS
+    } else {
+        MAX_INPUT_ROWS
+    };
     let mut rows = read_projected_build_rows(
         &paths[0],
         &relations[0].names,
         &required[0],
         relations[0].rows,
-        MAX_INPUT_ROWS,
+        input_row_limit,
         MAX_STREAM_BUILD_BYTES,
     )?;
     for (step_index, step) in std::iter::once(&initial_step)
@@ -1519,9 +1527,9 @@ fn execute_multi_join_inner<W: Write>(
         // INNER and LEFT cannot create rows from an empty intermediate.
         // Keep the source row limit even when its payload is not needed.
         if rows.is_empty() && matches!(step.kind, JoinType::Inner | JoinType::Left) {
-            if right_relation.rows > MAX_INPUT_ROWS {
+            if right_relation.rows > input_row_limit {
                 return Err(invalid(format!(
-                    "JOIN supports at most {MAX_INPUT_ROWS} input rows per table"
+                    "JOIN supports at most {input_row_limit} input rows per table"
                 )));
             }
             continue;
@@ -1531,7 +1539,7 @@ fn execute_multi_join_inner<W: Write>(
             &right_relation.names,
             &required[step_index + 1],
             right_relation.rows,
-            MAX_INPUT_ROWS,
+            input_row_limit,
             MAX_STREAM_BUILD_BYTES,
         )?;
         let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::new();
