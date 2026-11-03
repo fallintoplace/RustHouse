@@ -1472,7 +1472,12 @@ pub fn execute_join<W: Write>(
                 }));
             } else {
                 let index = resolve(query, col, &left_names, &right_names)?;
-                selected.push((index, format!("{}.{}", col.relation, col.name), None));
+                let label = if col.relation.is_empty() {
+                    col.name.clone()
+                } else {
+                    format!("{}.{}", col.relation, col.name)
+                };
+                selected.push((index, label, None));
             }
         }
         selected

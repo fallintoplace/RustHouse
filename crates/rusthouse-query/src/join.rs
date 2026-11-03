@@ -598,7 +598,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     }
     if let Some(columns) = &columns {
         for column in columns {
-            if !known_qualifier(&column.relation) {
+            if !column.relation.is_empty() && !known_qualifier(&column.relation) {
                 return Err(ParseError(format!(
                     "unknown JOIN qualifier: {}",
                     column.relation
@@ -849,7 +849,13 @@ pub fn explain_join(query: &JoinSelect) -> String {
             query.columns.as_ref().map_or("*".to_owned(), |columns| {
                 columns
                     .iter()
-                    .map(|col| format!("{}.{}", col.relation, col.name))
+                    .map(|col| {
+                        if col.relation.is_empty() {
+                            col.name.clone()
+                        } else {
+                            format!("{}.{}", col.relation, col.name)
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             })
@@ -1369,7 +1375,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["*", "label", "*"]
         );
-        assert!(parse_join("SELECT id, r.* FROM lefts l JOIN rights r ON l.id = r.id").is_err());
+        assert!(
+            parse_join("SELECT id, r.* FROM lefts l JOIN rights r ON l.id = r.id")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1516,7 +1526,6 @@ mod tests {
         for sql in [
             "SELECT * FROM users JOIN users ON users.id = users.id",
             "SELECT * FROM a JOIN b ON a.id > b.id",
-            "SELECT id FROM a JOIN b ON a.id = b.id",
             "SELECT * FROM a JOIN b ON a.id = b.id OR a.id = b.id",
         ] {
             assert!(parse_join(sql).is_err(), "{sql}");
