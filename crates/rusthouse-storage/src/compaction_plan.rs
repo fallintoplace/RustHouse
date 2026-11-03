@@ -175,6 +175,46 @@ fn plan_compaction_pairs_with_ratio(
     Ok(planned)
 }
 
+
+/// Decide whether local part pressure justifies scheduling compaction.
+/// This only triggers planning; it never deletes or publishes a part.
+pub fn needs_auto_compaction(
+    active_parts: usize,
+    max_parts: usize,
+    trigger_percent: u8,
+) -> Result<bool, &'static str> {
+    if max_parts == 0
+        || max_parts > MAX_PARTS
+        || active_parts > max_parts
+        || !(1..=100).contains(&trigger_percent)
+    {
+        return Err("invalid automatic compaction threshold");
+    }
+    let threshold = max_parts
+        .saturating_mul(usize::from(trigger_percent))
+        .div_ceil(100);
+    Ok(active_parts >= threshold)
+}
+
+#[cfg(test)]
+mod auto_compaction_trigger_tests {
+    use super::*;
+
+    #[test]
+    fn triggers_only_at_or_above_rounded_part_pressure() {
+        assert!(!needs_auto_compaction(14_745, 16_384, 90).unwrap());
+        assert!(needs_auto_compaction(14_746, 16_384, 90).unwrap());
+        assert!(needs_auto_compaction(16_384, 16_384, 90).unwrap());
+    }
+
+    #[test]
+    fn rejects_invalid_thresholds_and_part_counts() {
+        for (active, max, percent) in [(0, 0, 90), (5, 4, 90), (2, 8, 0), (2, 8, 101), (0, 16_385, 90)] {
+            assert!(needs_auto_compaction(active, max, percent).is_err());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
