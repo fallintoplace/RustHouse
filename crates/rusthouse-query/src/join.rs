@@ -289,7 +289,7 @@ fn parse_join_resolved(
             } else {
                 implicit::rewrite(inner, None)?
             };
-            let inner = parse_join_tokens(rewritten)?
+            let inner = parse_join_tokens(rewritten, true)?
                 .ok_or_else(|| ParseError("HAVING subquery requires a JOIN".into()))?;
             if (inner.scalar_sum.is_none() && inner.scalar_formula.is_none())
                 || inner.grouped_count.is_some()
@@ -313,7 +313,7 @@ fn parse_join_resolved(
         i += 1;
     }
     let rewritten = implicit::rewrite(tokens, resolve)?;
-    let mut query = parse_join_tokens(rewritten)?;
+    let mut query = parse_join_tokens(rewritten, false)?;
     if let Some(inner) = subquery {
         let having = query
             .as_mut()
@@ -603,7 +603,10 @@ fn parse_distinct_not_in(parser: &mut Parser) -> Result<Option<JoinedSubqueryFil
     Ok(Some((subquery, branches)))
 }
 
-fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseError> {
+fn parse_join_tokens(
+    tokens: Vec<Token>,
+    scalar_subquery: bool,
+) -> Result<Option<JoinSelect>, ParseError> {
     if !matches!(tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT")) {
         return Ok(None);
     }
@@ -635,7 +638,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     let mut scalar_sum = None;
     let parsed_formula = parse_join_formula(&mut parser)?;
     let scalar_formula = parsed_formula.as_ref().map(|(formula, _)| formula.clone());
-    let aggregate = if scalar_formula.is_some() {
+    let mut aggregate = if scalar_formula.is_some() {
         None
     } else if parser.keyword("COUNT") {
         if !parser.take(Token::LParen) {
@@ -700,6 +703,18 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             None
         }
     };
+    if scalar_subquery {
+        if let Some(JoinAggregate::Numeric {
+            function: crate::AggregateFunction::Sum,
+            column,
+        }) = &aggregate
+        {
+            if column.relation.is_empty() {
+                scalar_sum = Some(crate::ScalarExpr::Column(column.name.clone()));
+                aggregate = None;
+            }
+        }
+    }
     let mut aggregate_alias = if let Some((_, alias)) = parsed_formula {
         Some(alias)
     } else if (aggregate.is_some() || scalar_sum.is_some()) && parser.keyword("AS") {
