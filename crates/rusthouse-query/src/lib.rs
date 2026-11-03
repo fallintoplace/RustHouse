@@ -1974,6 +1974,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             // PostgreSQL treats LIMIT ALL as no limit, including with OFFSET.
             None
         } else {
+            let parenthesized = parser.take(Token::LParen);
             let value = parser.number()?;
             if !value.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Err(ParseError("LIMIT must be a non-negative integer".into()));
@@ -1981,6 +1982,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             let first = value
                 .parse::<usize>()
                 .map_err(|_| ParseError("LIMIT is too large".into()))?;
+            if parenthesized && !parser.take(Token::RParen) {
+                return Err(ParseError("LIMIT requires closing ')'".into()));
+            }
             if parser.take(Token::Comma) {
                 let value = parser.number()?;
                 if !value.bytes().all(|byte| byte.is_ascii_digit()) {
