@@ -1613,6 +1613,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 if !parser.take(Token::Comma) {
                     break;
                 }
+                let trailing = parser.tokens.get(parser.index).is_none_or(|token| {
+                    matches!(token, Token::Semicolon)
+                        || matches!(token, Token::Word(word)
+                            if ["HAVING", "ORDER", "LIMIT", "OFFSET", "FETCH"]
+                                .iter()
+                                .any(|keyword| word.eq_ignore_ascii_case(keyword)))
+                });
+                if trailing {
+                    break;
+                }
             }
             match &projection {
                 Projection::GroupedMultiCount { columns }
