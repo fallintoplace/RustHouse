@@ -50,6 +50,9 @@ fn canonical_type(name: &str) -> Option<&'static str> {
 
 pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, ParseError> {
     let name = parser.word()?;
+    if name.eq_ignore_ascii_case("DOUBLE") {
+        parser.keyword("PRECISION");
+    }
     if name.eq_ignore_ascii_case("CHARACTER") || name.eq_ignore_ascii_case("CHAR") {
         parser.keyword("VARYING");
     }
