@@ -1,4 +1,5 @@
 mod copy;
+mod correlated_exists;
 mod date_scalar;
 mod ddl;
 mod delete;
@@ -19,6 +20,7 @@ mod text_scalar;
 mod update;
 mod where_parser;
 pub use copy::{CopyFormat, CopyFrom, parse_copy_from};
+pub use correlated_exists::{CorrelatedExists, parse_correlated_exists};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
 pub use execute::{
