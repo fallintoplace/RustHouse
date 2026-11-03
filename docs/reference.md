@@ -16,7 +16,7 @@ You can also write an inner equi-join as `FROM users u, teams t WHERE u.team_id 
 
 For a two-table INNER JOIN, scalar `COUNT(column)`, `SUM`, `AVG`, `MIN`, and `MAX` accept an unqualified argument when the column name is unique.
 
-An unordered two-table INNER JOIN supports up to 16 AND-connected filters in `WHERE`: comparisons against literals, comparisons between two columns from the same input table, and `IN` lists of up to 64 non-NULL literals. This path supports projections and `COUNT(*)`; grouped queries support one fact-side literal comparison. `IS NULL` filters cannot be combined with comparisons in this form.
+An unordered two-table INNER JOIN supports up to 16 AND-connected filters in `WHERE`: comparisons against literals, comparisons between two columns from the same input table, `IN` lists of up to 64 non-NULL literals, and `LIKE`/`ILIKE` patterns (including `NOT LIKE`/`NOT ILIKE`) on string columns. This path supports projections and `COUNT(*)`; grouped queries support one fact-side literal comparison. `IS NULL` filters cannot be combined with comparisons in this form.
 
 Two-table INNER joins also support one grouping key with up to eight `SUM(CASE WHEN ... THEN 1 ELSE 0 END)` metrics. Each CASE condition compares one unqualified column against literals with AND or OR, and each metric needs an alias. The result is bounded to 100,000 groups and 64 MiB of retained group data.
 

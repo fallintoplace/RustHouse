@@ -100,6 +100,8 @@ pub struct JoinSelect {
     pub where_column_comparisons: Vec<(JoinColumn, crate::Operator, JoinColumn)>,
     /// Small IN lists for two-table INNER join filters.
     pub where_in_filters: Vec<(JoinColumn, Vec<String>)>,
+    /// LIKE filters: column, pattern, case-insensitive, negated.
+    pub where_like_filters: Vec<(JoinColumn, String, bool, bool)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
@@ -544,6 +546,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     let mut where_comparisons_extra = Vec::new();
     let mut where_column_comparisons = Vec::new();
     let mut where_in_filters = Vec::new();
+    let mut where_like_filters = Vec::new();
     if parser.keyword("WHERE") {
         let mut count = 0;
         loop {
@@ -586,6 +589,14 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                     return Err(ParseError("JOIN IN requires ')'".into()));
                 }
                 where_in_filters.push((column, values));
+            } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if ["LIKE", "ILIKE", "NOT"].iter().any(|kw| word.eq_ignore_ascii_case(kw)))
+            {
+                let negated = parser.keyword("NOT");
+                let case_insensitive = parser.like_keyword().ok_or_else(|| {
+                    ParseError("JOIN WHERE expects LIKE or ILIKE after NOT".into())
+                })?;
+                let pattern = parser.literal()?;
+                where_like_filters.push((column, pattern, case_insensitive, negated));
             } else {
                 let operator = parser.operator()?;
                 if !matches!(
@@ -792,6 +803,14 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             )));
         }
     }
+    for (column, _, _, _) in &where_like_filters {
+        if !column.relation.is_empty() && !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
+        }
+    }
     if let Some((column, _)) = &where_null {
         if !column.relation.is_empty() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
@@ -847,7 +866,8 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     if grouped_case_counts.is_empty()
         && (where_comparison.is_some()
             || !where_column_comparisons.is_empty()
-            || !where_in_filters.is_empty())
+            || !where_in_filters.is_empty()
+            || !where_like_filters.is_empty())
         && (kind != JoinType::Inner
             || !steps.is_empty()
             || (grouped_count_projection
@@ -869,7 +889,8 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         && grouped_case_counts.is_empty()
         && (!where_comparisons_extra.is_empty()
             || !where_column_comparisons.is_empty()
-            || !where_in_filters.is_empty())
+            || !where_in_filters.is_empty()
+            || !where_like_filters.is_empty())
     {
         return Err(ParseError(
             "grouped JOIN supports one comparison filter".into(),
@@ -972,6 +993,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         where_comparisons_extra,
         where_column_comparisons,
         where_in_filters,
+        where_like_filters,
         order_by,
         limit,
         offset,
@@ -1120,6 +1142,14 @@ pub fn explain_join(query: &JoinSelect) -> String {
             "\nFilter: {} IN ({} values)",
             column.display_name(),
             values.len()
+        ));
+    }
+    for (column, _, case_insensitive, negated) in &query.where_like_filters {
+        plan.push_str(&format!(
+            "\nFilter: {} {}{} pattern",
+            column.display_name(),
+            if *negated { "NOT " } else { "" },
+            if *case_insensitive { "ILIKE" } else { "LIKE" }
         ));
     }
     if !query.order_by.is_empty() {
