@@ -19,7 +19,7 @@ pub(super) fn execute<W: Write>(
     let header = query
         .aggregate_alias
         .clone()
-        .unwrap_or_else(|| format!("count({}.{})", column.relation, column.name));
+        .unwrap_or_else(|| format!("count({})", column.display_name()));
     if query.limit == Some(0) || query.offset > 0 {
         writeln!(output, "{header}")?;
         return Ok(());

@@ -40,7 +40,7 @@ pub(super) fn execute_numeric<W: Write>(
     let header = query
         .aggregate_alias
         .clone()
-        .unwrap_or_else(|| format!("{}({}.{})", function.name(), column.relation, column.name));
+        .unwrap_or_else(|| format!("{}({})", function.name(), column.display_name()));
     if query.limit == Some(0) || query.offset != 0 {
         writeln!(output, "{header}")?;
         return Ok(());

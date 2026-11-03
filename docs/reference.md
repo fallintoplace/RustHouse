@@ -14,6 +14,8 @@ Use qualified names for join keys, such as `u.team_id`. Projection, grouping, so
 
 You can also write an inner equi-join as `FROM users u, teams t WHERE u.team_id = t.id`. The equality keys must connect all tables. RustHouse can reorder the joins to connect them; use explicit projections if reordering is needed. In CLI database mode, an equality with two unqualified keys is resolved from the table schemas when each name is unique. Other join keys still need qualified names. The same join limits apply. Comma joins with `OR` are not supported.
 
+For a two-table INNER JOIN, scalar `COUNT(column)`, `SUM`, `AVG`, `MIN`, and `MAX` accept an unqualified argument when the column name is unique.
+
 **Limits for two-table joins:**
 
 - An unordered INNER JOIN can build a hash table with up to **262,144 rows** and **32 MiB** of retained cells. It can stream the other input without a fixed row limit.
