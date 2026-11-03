@@ -1558,15 +1558,18 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
             }
             match &projection {
-                Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
+                Projection::GroupedMultiCount { columns }
+                    if columns.len() == group_columns.len()
+                        && columns.iter().zip(&group_columns).all(|(a, b)| a.eq_ignore_ascii_case(b)) => {}
                 Projection::GroupedMultiAggregates { columns, .. }
                 | Projection::GroupedMultiDistinctCount { columns, .. }
-                    if columns == &group_columns => {}
+                    if columns.len() == group_columns.len()
+                        && columns.iter().zip(&group_columns).all(|(a, b)| a.eq_ignore_ascii_case(b)) => {}
                 Projection::GroupedCount { column }
                 | Projection::GroupedDistinctCount { column, .. }
                 | Projection::GroupedAggregate { column, .. }
                 | Projection::GroupedAggregates { column, .. }
-                    if group_columns.len() == 1 && column == &group_columns[0] => {}
+                    if group_columns.len() == 1 && column.eq_ignore_ascii_case(&group_columns[0]) => {}
                 Projection::GroupedCount { .. }
                 | Projection::GroupedDistinctCount { .. }
                 | Projection::GroupedMultiDistinctCount { .. }
