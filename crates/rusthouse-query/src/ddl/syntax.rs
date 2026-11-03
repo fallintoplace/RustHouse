@@ -15,8 +15,8 @@ pub(super) fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
 fn canonical_type(name: &str) -> Option<&'static str> {
     Some(match name.to_ascii_uppercase().as_str() {
         "TINYINT" => "Int8",
-        "SMALLINT" => "Int16",
-        "INTEGER" | "INT" => "Int32",
+        "SMALLINT" | "INT2" => "Int16",
+        "INTEGER" | "INT" | "INT4" => "Int32",
         "BIGINT" => "Int64",
         "TEXT" | "VARCHAR" | "CHARACTER" | "CHAR" | "NCHAR" | "NVARCHAR" | "CLOB" => "String",
         "TIMESTAMP" => "DateTime",
@@ -260,5 +260,24 @@ mod postgres_float_alias_tests {
         assert_eq!(columns[0].data_type, "Float32");
         assert_eq!(columns[1].data_type, "Float64");
         assert!(parse_ddl("CREATE TABLE metrics (bad FLOAT16)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod postgres_integer_type_alias_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn int2_and_int4_preserve_clickhouse_int8() {
+        let Ddl::CreateTable { columns, .. } = parse_ddl(
+            "CREATE TABLE events (a INT2, b INT4, c INT8)"
+        )
+        .unwrap()
+        .unwrap() else {
+            panic!("expected CREATE TABLE");
+        };
+        assert_eq!(columns[0].data_type, "Int16");
+        assert_eq!(columns[1].data_type, "Int32");
+        assert_eq!(columns[2].data_type, "Int8");
     }
 }
