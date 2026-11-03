@@ -65,10 +65,8 @@ impl TransferCreditWindow {
         Ok(frame)
     }
 
-    /// Release credits only after validating the whole contiguous ACK prefix.
-    /// A mismatched ACK does not mutate the flight window.
-    pub fn acknowledge_verified(
-        &mut self,
+    fn verified_prefix_bytes(
+        &self,
         acknowledgements: &[(u64, u32)],
     ) -> Result<u64, &'static str> {
         if acknowledgements.len() > self.frames.len() {
@@ -81,6 +79,16 @@ impl TransferCreditWindow {
             }
             bytes += expected.bytes;
         }
+        Ok(bytes)
+    }
+
+    /// Release credits only after validating the whole contiguous ACK prefix.
+    /// A mismatched ACK does not mutate the flight window.
+    pub fn acknowledge_verified(
+        &mut self,
+        acknowledgements: &[(u64, u32)],
+    ) -> Result<u64, &'static str> {
+        let bytes = self.verified_prefix_bytes(acknowledgements)?;
         for _ in acknowledgements {
             self.frames.pop_front();
         }
