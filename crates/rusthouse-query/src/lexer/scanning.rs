@@ -56,6 +56,9 @@ pub(super) fn scan_radix_number(
     if *index == start {
         return Err(ParseError("numeric base prefix requires digits".into()));
     }
+    if bytes.get(*index).is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') {
+        return Err(ParseError("invalid digit or suffix in prefixed numeric literal".into()));
+    }
     let number = u64::from_str_radix(&sql[start..*index], radix)
         .map_err(|_| ParseError("prefixed numeric literal exceeds UInt64".into()))?;
     Ok(Token::Number(number.to_string()))
@@ -485,5 +488,21 @@ mod doubled_equals_tests {
             "SELECT number FROM numbers(4) WHERE number === 2"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod malformed_radix_suffix_tests {
+    use super::*;
+
+    #[test]
+    fn does_not_split_invalid_prefixed_numbers_into_valid_tokens() {
+        for sql in ["0b102", "0b1a", "0xFG", "0x1g", "0x1_", "0b10__11"] {
+            assert!(super::super::tokenize(sql).is_err(), "{sql}");
+        }
+        assert_eq!(
+            super::super::tokenize("0x1F + 0b11").unwrap(),
+            vec![Token::Number("31".into()), Token::Plus, Token::Number("3".into())]
+        );
     }
 }
