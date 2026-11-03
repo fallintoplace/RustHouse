@@ -89,9 +89,25 @@ pub(super) fn execute<W: Write>(
             typed::Cell::Numeric(Number::Unsigned(u128::from(n)))
         })
     };
-    rows.sort_by(|a, b| {
+    // Only order the prefix needed by LIMIT/OFFSET. Sorting every group
+    // is unnecessary for a bounded page over a large input.
+    let compare = |a: &(Option<u32>, u64), b: &(Option<u32>, u64)| {
         typed::compare_order_cells(&cell(a.0), &cell(b.0), descending, nulls_first)
-    });
+    };
+    let page_end = query
+        .offset
+        .unwrap_or(0)
+        .saturating_add(query.limit.unwrap_or(usize::MAX))
+        .min(rows.len());
+    if page_end < rows.len() {
+        if page_end == 0 {
+            rows.clear();
+        } else {
+            rows.select_nth_unstable_by(page_end - 1, &compare);
+            rows.truncate(page_end);
+        }
+    }
+    rows.sort_by(compare);
     writeln!(output, "{}\t{}", minute.label, header.1)?;
     for (value, count) in rows
         .into_iter()
