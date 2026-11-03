@@ -914,6 +914,11 @@ fn grouped_metric_column(
     function: AggregateFunction,
 ) -> Result<String, ParseError> {
     if function == AggregateFunction::Count {
+        if parser.keyword("DISTINCT") {
+            return Err(ParseError(
+                "mixed grouped COUNT(DISTINCT) is not yet supported".into(),
+            ));
+        }
         if parser.take(Token::Star) || parser.tokens.get(parser.index) == Some(&Token::RParen) {
             return Ok("*".into());
         }
@@ -926,7 +931,16 @@ fn grouped_metric_column(
             return Ok("*".into());
         }
     }
-    parser.word()
+    let column = parser.word()?;
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Star | Token::Slash | Token::Percent | Token::Plus | Token::Minus)
+    ) {
+        return Err(ParseError(
+            "computed grouped aggregate arguments are not yet supported".into(),
+        ));
+    }
+    Ok(column)
 }
 
 // SUM(CASE WHEN ... THEN metric ELSE 0 END) is equivalent to a
@@ -1019,6 +1033,9 @@ fn grouped_metric_value(
 fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     if !parser.keyword("SELECT") {
+        if matches!(parser.tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("WITH")) {
+            return Err(ParseError("WITH common table expressions are not yet supported".into()));
+        }
         return Err(ParseError("only SELECT statements are supported".into()));
     }
     let mut distinct = parser.keyword("DISTINCT")
@@ -1570,6 +1587,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     };
 
     let source = if parser.keyword("FROM") {
+        if parser.tokens.get(parser.index) == Some(&Token::LParen) {
+            return Err(ParseError("derived tables in FROM are not yet supported".into()));
+        }
         let name = parser.word()?;
         if name.eq_ignore_ascii_case("DUAL")
             && matches!(projection, Projection::Literal(_) | Projection::Constants(_))
@@ -1713,6 +1733,23 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             return Err(ParseError("source alias requires FROM".into()));
         }
         parser.bounded_word()?;
+    }
+    if source.is_some() && parser.tokens.get(parser.index) == Some(&Token::Comma) {
+        return Err(ParseError(
+            "comma-separated FROM tables are not yet supported; use explicit JOIN".into(),
+        ));
+    }
+    if source.is_none()
+        && matches!(projection, Projection::Aggregate { .. } | Projection::MultipleAggregates(_))
+        && matches!(parser.tokens.get(parser.index), Some(Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Percent))
+    {
+        return Err(ParseError("arithmetic on aggregate results is not yet supported".into()));
+    }
+    if source.is_none()
+        && matches!(projection, Projection::Constants(_))
+        && matches!(parser.tokens.get(parser.index), Some(Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Percent))
+    {
+        return Err(ParseError("arithmetic after SELECT decimal constants is not yet supported".into()));
     }
     if source.is_none()
         && !matches!(
@@ -2494,5 +2531,83 @@ mod parenthesized_predicate_literal_tests {
         }
         let nested = format!("{}1{}", "(".repeat(17), ")".repeat(17));
         assert!(parse_select(&format!("SELECT count(*) FROM t WHERE number = {nested}")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_7 {
+    use super::parse_select;
+
+    #[test]
+    fn reports_the_unsupported_sql_feature() {
+        let err = parse_select("SELECT 100.00 * sum(l_extendedprice) FROM lineitem").unwrap_err();
+        assert!(err.0.contains("arithmetic after SELECT decimal constants"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_6 {
+    use super::parse_select;
+
+    #[test]
+    fn reports_the_unsupported_sql_feature() {
+        let err = parse_select("SELECT sum(l_extendedprice) / 7.0 AS avg_yearly FROM lineitem").unwrap_err();
+        assert!(err.0.contains("arithmetic on aggregate results"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_5 {
+    use super::parse_select;
+
+    #[test]
+    fn reports_the_unsupported_sql_feature() {
+        let err = parse_select("SELECT nation FROM (SELECT n_name AS nation FROM nation) AS x").unwrap_err();
+        assert!(err.0.contains("derived tables in FROM"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_4 {
+    use super::parse_select;
+
+    #[test]
+    fn unsupported_construct_has_specific_error() {
+        let error = parse_select("WITH revenue AS (SELECT supplier_no FROM supplier) SELECT supplier_no FROM revenue").unwrap_err();
+        assert!(error.0.contains("WITH common table expressions"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_3 {
+    use super::parse_select;
+
+    #[test]
+    fn unsupported_construct_has_specific_error() {
+        let error = parse_select("SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID) FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10").unwrap_err();
+        assert!(error.0.contains("mixed grouped COUNT(DISTINCT)"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_2 {
+    use super::parse_select;
+
+    #[test]
+    fn unsupported_construct_has_specific_error() {
+        let error = parse_select("SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category").unwrap_err();
+        assert!(error.0.contains("computed grouped aggregate arguments"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod tpch_comma_from_diagnostics {
+    use super::parse_select;
+
+    #[test]
+    fn comma_sources_are_not_reported_as_missing_group_by() {
+        let sql = "SELECT l_shipmode, sum(CASE WHEN priority = 'hi' THEN 1 ELSE 0 END) FROM orders, lineitem GROUP BY l_shipmode";
+        let error = parse_select(sql).unwrap_err();
+        assert!(error.0.contains("comma-separated FROM tables"), "{error}");
     }
 }
