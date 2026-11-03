@@ -1141,7 +1141,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 return Err(ParseError("SELECT supports at most 64 constants".into()));
             }
             let value = match parser.tokens.get(parser.index) {
-                Some(Token::Number(number)) if number.contains(['.', 'e', 'E']) => {
+                Some(Token::Number(number)) if number.contains('.') || number.contains('e') || number.contains('E') => {
                     let number = number.clone();
                     if !number.parse::<f64>().is_ok_and(f64::is_finite) {
                         return Err(ParseError("SELECT decimal literal must be finite".into()));
