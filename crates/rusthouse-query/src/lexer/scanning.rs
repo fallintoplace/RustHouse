@@ -118,6 +118,13 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             return Err(ParseError("unterminated string literal".into()));
         };
         cursor += distance;
+        // ClickHouse consumes \N without appending a character.
+        if bytes[cursor] == b'\\' && bytes.get(cursor + 1) == Some(&b'N') {
+            value.push_str(&sql[start..cursor]);
+            cursor += 2;
+            start = cursor;
+            continue;
+        }
         let escaped = match (bytes[cursor], bytes.get(cursor + 1)) {
             (b'\\', Some(b'\'' | b'\\')) => Some(bytes[cursor + 1]),
             (b'\\', Some(b'n')) => Some(b'\n'),
@@ -266,6 +273,27 @@ pub(super) fn punctuation_token(byte: u8) -> Token {
         b')' => Token::RParen,
         b';' => Token::Semicolon,
         _ => unreachable!("only supported punctuation reaches this helper"),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_null_marker_escape_tests {
+    use super::*;
+
+    #[test]
+    fn consumes_null_marker_escape_without_losing_surrounding_text() {
+        for (sql, expected) in [
+            (r"'a\Nb'", "ab"),
+            (r"'\N'", ""),
+            (r"'a\\Nb'", "a\\Nb"),
+        ] {
+            let mut index = 0;
+            assert_eq!(
+                scan_string(sql, &mut index).unwrap(),
+                Token::String(expected.into())
+            );
+            assert_eq!(index, sql.len());
+        }
     }
 }
 
