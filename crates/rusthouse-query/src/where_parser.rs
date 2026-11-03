@@ -500,6 +500,38 @@ fn parse_or(
     Ok(branches)
 }
 
+// A NUL cannot occur in a SQL identifier. Encode qualified join references
+// without changing the single-table predicate representation.
+pub(crate) fn parse_join_where(parser: &mut Parser) -> Result<Branches, ParseError> {
+    let mut tokens = Vec::new();
+    let mut positions = vec![parser.index];
+    let mut index = parser.index;
+    while index < parser.tokens.len() {
+        fn name(token: &Token) -> Option<&str> {
+            match token {
+                Token::Word(name) | Token::QuotedWord(name) => Some(name),
+                _ => None,
+            }
+        }
+        if let (Some(left), Some(Token::Dot), Some(right)) = (
+            parser.tokens.get(index).and_then(name),
+            parser.tokens.get(index + 1),
+            parser.tokens.get(index + 2).and_then(name),
+        ) {
+            tokens.push(Token::QuotedWord(format!("{left}\0{right}")));
+            index += 3;
+        } else {
+            tokens.push(parser.tokens[index].clone());
+            index += 1;
+        }
+        positions.push(index);
+    }
+    let mut local = Parser { tokens, index: 0 };
+    let branches = parse_where(&mut local)?;
+    parser.index = positions[local.index];
+    Ok(branches)
+}
+
 /// Parse a WHERE clause already past the WHERE keyword.
 pub(crate) fn parse_where(parser: &mut Parser) -> Result<Branches, ParseError> {
     let mut conditions = 0;

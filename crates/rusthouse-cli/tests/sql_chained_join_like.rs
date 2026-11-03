@@ -64,7 +64,6 @@ fn chained_join_applies_like_before_order_and_aggregation() {
         "SELECT f.id FROM f JOIN d ON f.fk = d.dk JOIN e ON d.next = e.ek WHERE missing LIKE 'A%' LIMIT 0",
         "SELECT f.id FROM f JOIN d ON f.fk = d.dk JOIN e ON d.next = e.ek WHERE score LIKE 'A%' LIMIT 0",
         "SELECT f.id FROM f LEFT JOIN d ON f.fk = d.dk JOIN e ON d.next = e.ek WHERE word LIKE 'A%'",
-        "SELECT f.id FROM f JOIN d ON f.fk = d.dk JOIN e ON d.next = e.ek WHERE d.word LIKE 'A%'",
         "SELECT f.id FROM f JOIN d ON f.fk = d.dk JOIN e ON d.next = e.ek WHERE word LIKE 'A%' AND score NOT BETWEEN 1 AND 3",
     ] {
         assert!(!sql(query).status.success(), "{query}");
