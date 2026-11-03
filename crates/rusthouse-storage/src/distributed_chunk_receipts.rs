@@ -1,5 +1,6 @@
 //! Sliding receive window for replica-transfer chunk acknowledgements.
 //! Only externally verified checksums may be recorded as receipts.
+use crate::distributed_transfer_journal::JournalReceipt;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
@@ -17,6 +18,29 @@ impl ChunkReceipts {
             return Err("invalid replica receive window");
         }
         Ok(Self { total, next: 0, window, buffered: BTreeMap::new() })
+    }
+
+
+    /// Rebuild receive progress from an independently verified receipt journal.
+    ///
+    /// This only restores checksums and cursor metadata, not the transferred
+    /// bytes. The caller must verify and durably retain those bytes separately.
+    pub fn restore(
+        total: u64,
+        window: u64,
+        records: &[JournalReceipt],
+    ) -> Result<Self, &'static str> {
+        if records.len() > 4096 || records.len() as u64 > total {
+            return Err("too many transfer receipts to restore");
+        }
+        let mut restored = Self::new(total, window)?;
+        for (index, record) in records.iter().enumerate() {
+            if record.sequence != index as u64 + 1 {
+                return Err("noncanonical transfer receipt journal sequence");
+            }
+            restored.acknowledge(record.chunk_index, record.payload_crc32c)?;
+        }
+        Ok(restored)
     }
 
     pub fn contiguous_received(&self) -> u64 { self.next }
@@ -124,5 +148,42 @@ mod sparse_receipt_gap_tests {
         }
         assert_eq!(window.contiguous_received(), 4);
         assert_eq!(window.missing_ranges(), vec![4..2000, 2001..4095]);
+    }
+}
+
+#[cfg(test)]
+mod journal_replay_tests {
+    use super::*;
+
+    #[test]
+    fn replay_preserves_contiguous_cursor_and_missing_ranges() {
+        let records = [
+            JournalReceipt { sequence: 1, chunk_index: 2, payload_crc32c: 22 },
+            JournalReceipt { sequence: 2, chunk_index: 0, payload_crc32c: 10 },
+            JournalReceipt { sequence: 3, chunk_index: 1, payload_crc32c: 11 },
+        ];
+        let mut restored = ChunkReceipts::restore(5, 3, &records).unwrap();
+        assert_eq!(restored.contiguous_received(), 3);
+        assert_eq!(restored.missing_ranges(), vec![3..5]);
+        restored.acknowledge(3, 30).unwrap();
+        restored.acknowledge(4, 40).unwrap();
+        assert!(restored.complete());
+    }
+
+    #[test]
+    fn corrupted_or_out_of_window_journals_fail_closed() {
+        let bad_sequence = [JournalReceipt {
+            sequence: 2, chunk_index: 0, payload_crc32c: 0,
+        }];
+        assert!(ChunkReceipts::restore(3, 2, &bad_sequence).is_err());
+        let out_of_window = [JournalReceipt {
+            sequence: 1, chunk_index: 2, payload_crc32c: 0,
+        }];
+        assert!(ChunkReceipts::restore(3, 2, &out_of_window).is_err());
+        let duplicate = [
+            JournalReceipt { sequence: 1, chunk_index: 1, payload_crc32c: 7 },
+            JournalReceipt { sequence: 2, chunk_index: 1, payload_crc32c: 8 },
+        ];
+        assert!(ChunkReceipts::restore(3, 2, &duplicate).is_err());
     }
 }
