@@ -47,16 +47,29 @@ pub(super) fn scan_radix_number(
     let bytes = sql.as_bytes();
     let start = *index + 2;
     *index = start;
-    while bytes
-        .get(*index)
-        .is_some_and(|&byte| (byte as char).to_digit(radix).is_some())
-    {
-        *index += 1;
+    let mut has_separator = false;
+    while let Some(&byte) = bytes.get(*index) {
+        if (byte as char).to_digit(radix).is_some() {
+            *index += 1;
+        } else if byte == b'_'
+            && *index > start
+            && bytes.get(*index + 1).is_some_and(|&next| (next as char).to_digit(radix).is_some())
+        {
+            has_separator = true;
+            *index += 1;
+        } else {
+            break;
+        }
     }
     if *index == start {
         return Err(ParseError("numeric base prefix requires digits".into()));
     }
-    let number = u64::from_str_radix(&sql[start..*index], radix)
+    let digits: std::borrow::Cow<'_, str> = if has_separator {
+        std::borrow::Cow::Owned(sql[start..*index].replace('_', ""))
+    } else {
+        std::borrow::Cow::Borrowed(&sql[start..*index])
+    };
+    let number = u64::from_str_radix(&digits, radix)
         .map_err(|_| ParseError("prefixed numeric literal exceeds UInt64".into()))?;
     Ok(Token::Number(number.to_string()))
 }
@@ -485,5 +498,24 @@ mod doubled_equals_tests {
             "SELECT number FROM numbers(4) WHERE number === 2"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod radix_digit_separator_tests {
+    use super::*;
+
+    #[test]
+    fn permits_readability_underscores_between_prefixed_digits() {
+        assert_eq!(
+            super::super::tokenize("SELECT 0xAB_CD, 0b1010_1100").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("43981".into()),
+                Token::Comma,
+                Token::Number("172".into()),
+            ]
+        );
+        assert!(super::super::tokenize("SELECT 0x_FF").is_err());
     }
 }
