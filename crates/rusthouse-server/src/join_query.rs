@@ -758,3 +758,67 @@ fn format_response(
         Err(error) => Response::text("400 Bad Request", &format!("{error}\n")),
     }
 }
+
+pub(super) fn try_substring_antijoin(
+    sql: &str,
+    explain: bool,
+    format: QueryFormat,
+    config: &Config,
+) -> Option<Response> {
+    match rusthouse_query::has_substring_antijoin(sql) {
+        Ok(true) => {}
+        Ok(false) => return None,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    }
+    if config.part.is_some() && config.database.is_some() {
+        return Some(Response::text(
+            "400 Bad Request",
+            "choose --part or --database, not both\n",
+        ));
+    }
+    let Some(database) = config.database.as_deref() else {
+        return Some(Response::text(
+            "400 Bad Request",
+            "substring anti-join requires a database\n",
+        ));
+    };
+    let _lock = match rusthouse_storage::acquire_database_lock(database, false) {
+        Ok(lock) => lock,
+        Err(error) => return Some(Response::text("409 Conflict", &format!("{error}\n"))),
+    };
+    let plan = rusthouse_query::parse_substring_antijoin_with_schema(sql, |table| {
+        let path = resolve_database_table(database, table).map_err(rusthouse_query::ParseError)?;
+        rusthouse_storage::inspect_query_source(&path)
+            .map(|metadata| {
+                metadata
+                    .columns
+                    .into_iter()
+                    .map(|column| column.name)
+                    .collect()
+            })
+            .map_err(|error| rusthouse_query::ParseError(error.to_string()))
+    });
+    let mut plan = match plan {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return None,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    };
+    if explain {
+        return Some(Response::text(
+            "400 Bad Request",
+            "substring anti-join cannot use --explain yet\n",
+        ));
+    }
+    plan.cap_rows(config.max_rows.min(250_000));
+    let source = match resolve_database_table(database, &plan.table) {
+        Ok(path) => path,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    };
+    let lookup = match resolve_database_table(database, &plan.lookup_table) {
+        Ok(path) => path,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    };
+    Some(format_response(format, |mut output| {
+        rusthouse_query::execute_substring_antijoin(&plan, &source, &lookup, &mut output)
+    }))
+}

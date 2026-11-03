@@ -451,6 +451,11 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if let Some(response) = join_query::try_cte_max(&sql, path == "/explain", format, config) {
         return response;
     }
+    if let Some(response) =
+        join_query::try_substring_antijoin(&sql, path == "/explain", format, config)
+    {
+        return response;
+    }
     if let Some(response) = join_query::try_derived_count(&sql, path == "/explain", format, config)
     {
         return response;

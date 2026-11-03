@@ -476,6 +476,47 @@ pub(super) fn run(
     result.map_err(|error| error.to_string())
 }
 
+pub(super) fn run_substring_antijoin(
+    database: &Path,
+    plan: &rusthouse_query::SubstringAntiJoin,
+    format: SqlOutputFormat,
+    output_path: Option<PathBuf>,
+    time: bool,
+    read_lock: Option<rusthouse_storage::DatabaseLock>,
+) -> Result<(), String> {
+    let _lock = if read_lock.is_some() {
+        read_lock
+    } else if database.is_dir() {
+        Some(crate::database::read_lock(database)?)
+    } else {
+        None
+    };
+    let source = crate::database::select_source(database, &plan.table)?;
+    let lookup = crate::database::select_source(database, &plan.lookup_table)?;
+    let started = std::time::Instant::now();
+    let mut output = open_output(output_path.as_deref())?;
+    let result = execute_formatted_join(
+        |mut writer| {
+            rusthouse_query::execute_substring_antijoin(plan, &source, &lookup, &mut writer)
+        },
+        format,
+        output.as_mut(),
+    );
+    if time {
+        eprintln!(
+            "Elapsed: {:.3} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    if result.is_err() {
+        drop(output);
+        if let Some(path) = output_path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    result.map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

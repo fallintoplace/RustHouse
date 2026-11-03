@@ -79,6 +79,8 @@ pub use multi_join::{
 use sort::{MAX_SORTED_ROWS, SortedRows};
 mod multi_aggregate;
 mod string_length;
+mod substring_antijoin;
+pub use substring_antijoin::execute_substring_antijoin;
 mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};

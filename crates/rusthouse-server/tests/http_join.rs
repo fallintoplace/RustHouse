@@ -1122,3 +1122,69 @@ fn sql_http_executes_tpch_q20() {
     );
     fs::remove_dir_all(database).unwrap();
 }
+
+#[test]
+fn sql_http_executes_tpch_q22() {
+    let database = std::env::temp_dir().join(format!("rusthouse-http-q22-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    let cols = |values: &[(&str, &str)]| {
+        values
+            .iter()
+            .map(|(name, kind)| Column {
+                name: (*name).into(),
+                data_type: (*kind).into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| Some((*value).into()))
+            .collect::<Vec<_>>()
+    };
+    table(
+        &database,
+        "customer",
+        &cols(&[
+            ("c_custkey", "UInt64"),
+            ("c_phone", "String"),
+            ("c_acctbal", "Float64"),
+        ]),
+        &[
+            row(&["1", "13-a", "100"]),
+            row(&["2", "13-b", "300"]),
+            row(&["3", "31-a", "500"]),
+        ],
+    );
+    table(
+        &database,
+        "orders",
+        &cols(&[("o_custkey", "UInt64")]),
+        &[row(&["2"])],
+    );
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let query = include_str!("../../../bench/tpch/queries/q22.sql");
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"cntrycode\tnumcust\ttotacctbal\n31\t1\t500\n");
+    let limited = handle_request(
+        "POST",
+        "/?format=tsv-no-header",
+        query.as_bytes(),
+        &Config {
+            max_rows: 0,
+            ..config.clone()
+        },
+    );
+    assert_eq!(limited.status, "200 OK");
+    assert!(limited.body.is_empty());
+    assert_eq!(
+        handle_request("POST", "/explain", query.as_bytes(), &config).status,
+        "400 Bad Request"
+    );
+    fs::remove_dir_all(database).unwrap();
+}
