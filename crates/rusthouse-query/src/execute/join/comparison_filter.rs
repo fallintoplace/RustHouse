@@ -30,6 +30,10 @@ fn matches_pattern(
     }
 }
 
+fn is_cross_input(filter: &BoundFilter, width: usize) -> bool {
+    matches!(filter.target, FilterTarget::Column(index) if (filter.column < width) != (index < width))
+}
+
 struct CaseMetric {
     tests: Vec<(crate::Operator, typed::Cell)>,
     all: bool,
@@ -121,7 +125,7 @@ fn prefilter_dimension_rows(
         rows.retain(|row| {
             filters
                 .iter()
-                .filter(|filter| filter.column >= left_width)
+                .filter(|filter| filter.column >= left_width && !is_cross_input(filter, left_width))
                 .all(|filter| {
                     let candidate = &row[filter.column - left_width];
                     match &filter.target {
@@ -247,7 +251,7 @@ fn scan<W: Write>(
             // to evaluate before hashing, including for ANY joins.
             if !filters
                 .iter()
-                .filter(|filter| filter.column < width)
+                .filter(|filter| filter.column < width && !is_cross_input(filter, width))
                 .all(|filter| {
                     let candidate = typed::cell(&batch[source_to_batch[filter.column]], row_index);
                     match &filter.target {
@@ -283,7 +287,7 @@ fn scan<W: Write>(
                 // Filtering build rows first would change first-match semantics.
                 if !filters
                     .iter()
-                    .filter(|filter| filter.column >= width)
+                    .filter(|filter| filter.column >= width && !is_cross_input(filter, width))
                     .all(|filter| {
                         let candidate = &right_rows[right_index][filter.column - width];
                         match &filter.target {
@@ -302,6 +306,29 @@ fn scan<W: Write>(
                                 matches_pattern(candidate, pattern, *insensitive, *negated)
                             }
                         }
+                    })
+                {
+                    continue;
+                }
+                if !filters
+                    .iter()
+                    .filter(|filter| is_cross_input(filter, width))
+                    .all(|filter| {
+                        let FilterTarget::Column(other) = filter.target else {
+                            unreachable!()
+                        };
+                        let value = |index: usize| {
+                            if index < width {
+                                typed::cell(&batch[source_to_batch[index]], row_index)
+                            } else {
+                                right_rows[right_index][index - width].clone()
+                            }
+                        };
+                        typed::matches_comparison(
+                            &value(filter.column),
+                            &value(other),
+                            filter.operator,
+                        )
                     })
                 {
                     continue;
@@ -406,16 +433,15 @@ pub(super) fn execute<W: Write>(
     for (left, operator, right) in &query.where_column_comparisons {
         let left_index = resolve(query, left, left_names, right_names)?;
         let right_index = resolve(query, right, left_names, right_names)?;
-        if (left_index < width) != (right_index < width) {
-            return Err(invalid("JOIN column comparisons must use one input table"));
-        }
-        let (metadata, left_local, right_local) = if left_index < width {
-            (&left_meta, left_index, right_index)
-        } else {
-            (&right_meta, left_index - width, right_index - width)
+        let column_type = |index: usize| {
+            if index < width {
+                base_type(&left_meta.columns[index].data_type)
+            } else {
+                base_type(&right_meta.columns[index - width].data_type)
+            }
         };
-        let left_type = base_type(&metadata.columns[left_local].data_type);
-        let right_type = base_type(&metadata.columns[right_local].data_type);
+        let left_type = column_type(left_index);
+        let right_type = column_type(right_index);
         let numeric = |kind: &str| {
             matches!(
                 kind,
