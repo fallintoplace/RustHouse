@@ -3,6 +3,7 @@
 mod correlated;
 mod correlated_avg;
 mod derived_count;
+mod derived_ratio;
 mod derived_sum;
 mod exists_lookup;
 mod implicit;
@@ -1334,7 +1335,7 @@ fn parse_join_tokens(
         let where_tokens = parser.tokens[parser.index..].iter().take_while(|token| !matches!(token, Token::Word(word) if ["GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))).collect::<Vec<_>>();
         let chained_boolean = !steps.is_empty() && kind == JoinType::Inner
             && steps.iter().all(|step| step.kind == JoinType::Inner)
-            && where_tokens.iter().any(|token| matches!(token, Token::Word(word) if ["LIKE", "ILIKE", "OR"].iter().any(|keyword| word.eq_ignore_ascii_case(keyword))))
+            && where_tokens.iter().any(|token| matches!(token, Token::Word(word) if ["LIKE", "ILIKE", "OR", "BETWEEN"].iter().any(|keyword| word.eq_ignore_ascii_case(keyword))))
             && !where_tokens.iter().any(|token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("SELECT")));
         let complex = grouped_distinct.is_some() || chained_boolean || (scalar_sum.is_some() || scalar_formula.is_some()) && where_tokens.iter().any(|token| matches!(token, Token::Word(word) if ["OR", "IN", "BETWEEN", "LIKE", "ILIKE"].iter().any(|name| word.eq_ignore_ascii_case(name))));
         if grouped_distinct.is_some() {
