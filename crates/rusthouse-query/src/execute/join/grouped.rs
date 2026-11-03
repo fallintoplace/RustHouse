@@ -282,20 +282,29 @@ fn execute_multi<W: Write>(
     }
 
     let ordering = if query.order_by.is_empty() {
-        (0..indices.len()).map(|index| (index, false, Some(false))).collect::<Vec<_>>()
+        (0..indices.len()).map(|index| (Some(index), false, Some(false))).collect::<Vec<_>>()
     } else {
         query.order_by.iter().map(|(column, descending, nulls)| {
-            let index = columns.iter().position(|key| key == column)
-                .ok_or_else(|| invalid("JOIN ORDER BY must use a group key"))?;
+            let index = if column.is_count_order() {
+                None
+            } else {
+                Some(columns.iter().position(|key| key == column)
+                    .ok_or_else(|| invalid("JOIN ORDER BY must use a group key"))?)
+            };
             Ok((index, *descending, *nulls))
         }).collect::<Result<Vec<_>, ExecutionError>>()?
     };
     let mut rows = groups.into_values().collect::<Vec<_>>();
     rows.sort_by(|left, right| {
         for &(index, descending, nulls_first) in &ordering {
-            let order = typed::compare_order_cells(
-                &left.0[index], &right.0[index], descending, nulls_first,
-            );
+            let order = if let Some(index) = index {
+                typed::compare_order_cells(
+                    &left.0[index], &right.0[index], descending, nulls_first,
+                )
+            } else {
+                let value = left.1.cmp(&right.1);
+                if descending { value.reverse() } else { value }
+            };
             if !order.is_eq() {
                 return order;
             }
@@ -421,13 +430,22 @@ pub(super) fn execute<W: Write>(
         )?;
     }
     let mut rows = groups.into_values().collect::<Vec<_>>();
-    let (desc, nulls) = query
-        .order_by
-        .first()
-        .map(|(_, desc, nulls)| (*desc, *nulls))
-        .unwrap_or((false, Some(false)));
-    let compare = |(left, _): &(typed::Cell, u64), (right, _): &(typed::Cell, u64)| {
-        typed::compare_order_cells(left, right, desc, nulls)
+    let compare = |left: &(typed::Cell, u64), right: &(typed::Cell, u64)| {
+        if query.order_by.is_empty() {
+            return typed::compare_order_cells(&left.0, &right.0, false, Some(false));
+        }
+        for (column, descending, nulls) in &query.order_by {
+            let order = if column.is_count_order() {
+                let value = left.1.cmp(&right.1);
+                if *descending { value.reverse() } else { value }
+            } else {
+                typed::compare_order_cells(&left.0, &right.0, *descending, *nulls)
+            };
+            if !order.is_eq() {
+                return order;
+            }
+        }
+        std::cmp::Ordering::Equal
     };
     // A paginated GROUP BY only needs its first OFFSET + LIMIT keys.
     // Preserve the original stable tie order through sorted_group_positions.

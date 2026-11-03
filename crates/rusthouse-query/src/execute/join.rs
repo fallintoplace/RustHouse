@@ -1513,8 +1513,12 @@ pub fn execute_join<W: Write>(
         .order_by
         .iter()
         .map(|(column, descending, nulls_first)| {
-            resolve(query, column, &left_names, &right_names)
-                .map(|index| (index, *descending, *nulls_first))
+            if column.is_count_order() && query.grouped_count.is_some() {
+                Ok((usize::MAX, *descending, *nulls_first))
+            } else {
+                resolve(query, column, &left_names, &right_names)
+                    .map(|index| (index, *descending, *nulls_first))
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
     let null_filter = query
