@@ -256,6 +256,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             if !parser.take(Token::Comma) {
                 break;
             }
+            if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+                break;
+            }
         }
         if !parser.take(Token::RParen) {
             return Err(ParseError("JOIN USING requires ')'".into()));
@@ -366,6 +369,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                 }
                 names.push(name);
                 if !parser.take(Token::Comma) {
+                    break;
+                }
+                if parser.tokens.get(parser.index) == Some(&Token::RParen) {
                     break;
                 }
             }
@@ -1231,7 +1237,6 @@ mod tests {
             "SELECT * FROM l JOIN r USING id",
             "SELECT * FROM l JOIN r USING ()",
             "SELECT * FROM l JOIN r USING (id, id)",
-            "SELECT * FROM l JOIN r USING (id,) ",
             "SELECT * FROM l JOIN r USING (id) ON l.id = r.id",
         ] {
             assert!(parse_join(sql).is_err(), "{sql}");
@@ -1420,5 +1425,22 @@ mod tests {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
         assert!(parse_join("SELECT a.*, b.id FROM lefts a JOIN rights b ON a.id = b.id").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod join_using_trailing_comma_tests {
+    use super::*;
+
+    #[test]
+    fn trailing_comma_preserves_using_key_names_in_chains() {
+        let query = parse_join("SELECT * FROM l JOIN r USING (id,) JOIN t USING (id, )")
+            .unwrap().unwrap();
+        assert_eq!(query.using_keys, ["id"]);
+        assert_eq!(query.steps.len(), 1);
+        assert_eq!(query.steps[0].using_keys, ["id"]);
+        for invalid in ["USING (,)", "USING (id,,)"] {
+            assert!(parse_join(&format!("SELECT * FROM l JOIN r {invalid}")).is_err());
+        }
     }
 }
