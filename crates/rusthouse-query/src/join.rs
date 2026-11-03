@@ -94,17 +94,26 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     if !matches!(tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT")) {
         return Ok(None);
     }
-    let Some(from) = tokens
-        .iter()
-        .position(|token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("FROM")))
-    else {
-        return Ok(None);
-    };
-    if !tokens
-        .iter()
-        .skip(from + 1)
-        .any(|token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("JOIN")))
-    {
+    // A JOIN inside a derived table or EXISTS is not an outer JOIN.
+    // Inspect only top-level keywords before selecting the JOIN parser.
+    let mut depth = 0usize;
+    let mut seen_from = false;
+    let mut outer_join = false;
+    for token in &tokens {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("FROM") => {
+                seen_from = true;
+            }
+            Token::Word(word) if depth == 0 && seen_from && word.eq_ignore_ascii_case("JOIN") => {
+                outer_join = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    if !outer_join {
         return Ok(None);
     }
     let mut parser = Parser { tokens, index: 0 };

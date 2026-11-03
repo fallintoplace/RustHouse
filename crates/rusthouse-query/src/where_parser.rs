@@ -241,6 +241,9 @@ fn parse_atom(
     }
     let mut predicates = Vec::new();
     let prefix_not = parser.keyword("NOT");
+    if parser.keyword("EXISTS") {
+        return Err(ParseError("EXISTS and NOT EXISTS subqueries are not yet supported".into()));
+    }
     let column = parser.word()?;
     let postfix_not = parser.keyword("NOT");
     let negate_in = prefix_not ^ postfix_not;
@@ -361,6 +364,9 @@ fn parse_atom(
     } else if parser.keyword("IN") {
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected '(' after IN".into()));
+        }
+        if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT")) {
+            return Err(ParseError("IN (SELECT ...) and NOT IN (SELECT ...) are not yet supported".into()));
         }
         let mut values = Vec::new();
         loop {
@@ -810,5 +816,27 @@ mod tpch_where_subquery_diagnostic_10 {
     fn unsupported_subquery_has_specific_diagnostic() {
         let err = parse_select("SELECT count(*) FROM partsupp WHERE ps_supplycost = (SELECT min(ps_supplycost) FROM partsupp)").unwrap_err();
         assert!(err.0.contains("scalar WHERE subqueries"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod tpch_where_subquery_diagnostic_9 {
+    use crate::parse_select;
+
+    #[test]
+    fn unsupported_subquery_has_specific_diagnostic() {
+        let err = parse_select("SELECT count(*) FROM orders WHERE o_orderkey IN (SELECT l_orderkey FROM lineitem)").unwrap_err();
+        assert!(err.0.contains("IN (SELECT ...) and NOT IN"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod tpch_where_subquery_diagnostic_8 {
+    use crate::parse_select;
+
+    #[test]
+    fn unsupported_subquery_has_specific_diagnostic() {
+        let err = parse_select("SELECT count(*) FROM orders WHERE EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey)").unwrap_err();
+        assert!(err.0.contains("EXISTS and NOT EXISTS subqueries"), "{err}");
     }
 }
