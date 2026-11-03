@@ -76,6 +76,12 @@ pub enum GroupedSum {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupedSumHaving {
+    pub operator: crate::Operator,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinAggregateFormula {
     pub sums: Vec<crate::ScalarExpr>,
     pub expression: crate::ScalarExpr,
@@ -112,6 +118,7 @@ pub struct JoinSelect {
     pub grouped_sum: Option<GroupedSum>,
     /// Position of the grouped SUM in the SELECT list.
     pub grouped_sum_position: Option<usize>,
+    pub grouped_sum_having: Option<GroupedSumHaving>,
     /// A scalar SUM over a numeric expression in an INNER join.
     pub scalar_sum: Option<crate::ScalarExpr>,
     /// Arithmetic over scalar SUM results.
@@ -1129,6 +1136,61 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     } else {
         None
     };
+    let grouped_sum_having = if parser.keyword("HAVING") {
+        let metric = grouped_sum
+            .as_ref()
+            .ok_or_else(|| ParseError("JOIN HAVING requires a grouped SUM".into()))?;
+        if parser.keyword("SUM") {
+            if !parser.take(Token::LParen) {
+                return Err(ParseError("HAVING SUM requires '('".into()));
+            }
+            let start = parser.index;
+            let column = projected(&mut parser).ok().filter(|column| {
+                column.name != "*" && parser.tokens.get(parser.index) == Some(&Token::RParen)
+            });
+            let having_metric = if let Some(column) = column {
+                GroupedSum::Column(column)
+            } else {
+                parser.index = start;
+                GroupedSum::Expression(crate::expression::parse_expression_tokens(&mut parser)?)
+            };
+            if !parser.take(Token::RParen) || &having_metric != metric {
+                return Err(ParseError("HAVING SUM must match the selected SUM".into()));
+            }
+        } else {
+            let name = parser.word()?;
+            if !aggregate_alias
+                .as_ref()
+                .is_some_and(|alias| alias.eq_ignore_ascii_case(&name))
+            {
+                return Err(ParseError("JOIN HAVING must use the SUM alias".into()));
+            }
+            if columns.as_ref().is_some_and(|columns| {
+                columns
+                    .iter()
+                    .any(|column| column.name.eq_ignore_ascii_case(&name))
+            }) {
+                return Err(ParseError(
+                    "JOIN HAVING SUM alias conflicts with a group key".into(),
+                ));
+            }
+        }
+        let operator = parser.operator()?;
+        let value = parser.number()?;
+        let valid = if value.contains(['.', 'e', 'E']) {
+            value.parse::<f64>().is_ok_and(f64::is_finite)
+        } else if value.starts_with('-') {
+            value.parse::<i128>().is_ok()
+        } else {
+            value.parse::<u128>().is_ok()
+        };
+        if !valid {
+            return Err(ParseError("invalid JOIN HAVING number".into()));
+        }
+        Some(GroupedSumHaving { operator, value })
+    } else {
+        None
+    };
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
@@ -1541,6 +1603,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         grouped_case_counts,
         grouped_sum,
         grouped_sum_position,
+        grouped_sum_having,
         scalar_sum,
         scalar_formula,
         scalar_where,
@@ -1753,6 +1816,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
     }
     if let Some(branches) = &query.scalar_where {
         plan.push_str(&format!("\nFilter: {} boolean branches", branches.len()));
+    }
+    if let Some(having) = &query.grouped_sum_having {
+        plan.push_str(&format!(
+            "\nHaving: SUM {:?} {}",
+            having.operator, having.value
+        ));
     }
     if let Some(expression) = &query.scalar_sum {
         plan.push_str(&format!(
