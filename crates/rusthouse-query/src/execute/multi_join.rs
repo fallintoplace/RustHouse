@@ -92,6 +92,11 @@ impl Bucket {
     }
 }
 
+struct BoundSum {
+    expression: super::multi_aggregate::BoundExpr,
+    indices: Vec<usize>,
+}
+
 struct Relation {
     alias: String,
     names: Vec<String>,
@@ -481,27 +486,59 @@ pub fn execute_multi_join<W: Write>(
     let grouped_sum = query
         .grouped_sum
         .as_ref()
-        .map(|column| {
-            let index = column_index(&relations, column)?;
-            let kind = typed::base_type(column_type(&relations, index));
-            if !matches!(
-                kind,
-                "UInt8"
-                    | "UInt16"
-                    | "UInt32"
-                    | "UInt64"
-                    | "UInt128"
-                    | "Int8"
-                    | "Int16"
-                    | "Int32"
-                    | "Int64"
-                    | "Int128"
-                    | "Float32"
-                    | "Float64"
-            ) {
-                return Err(invalid("grouped SUM requires a numeric column"));
+        .map(|metric| {
+            let (expression, names) = match metric {
+                crate::join::GroupedSum::Column(column) => {
+                    let index = column_index(&relations, column)?;
+                    (
+                        super::multi_aggregate::BoundExpr::Column(index),
+                        vec![index],
+                    )
+                }
+                crate::join::GroupedSum::Expression(expression) => {
+                    let mut columns = Vec::new();
+                    expression.referenced_columns(&mut columns);
+                    let mut indices = HashMap::new();
+                    let mut names = Vec::new();
+                    for name in columns {
+                        let column = JoinColumn {
+                            relation: String::new(),
+                            name: name.clone(),
+                        };
+                        let index = column_index(&relations, &column)?;
+                        indices.insert(name, index);
+                        names.push(index);
+                    }
+                    (
+                        super::multi_aggregate::BoundExpr::bind(expression, &indices)?,
+                        names,
+                    )
+                }
+            };
+            for &index in &names {
+                let kind = typed::base_type(column_type(&relations, index));
+                if !matches!(
+                    kind,
+                    "UInt8"
+                        | "UInt16"
+                        | "UInt32"
+                        | "UInt64"
+                        | "UInt128"
+                        | "Int8"
+                        | "Int16"
+                        | "Int32"
+                        | "Int64"
+                        | "Int128"
+                        | "Float32"
+                        | "Float64"
+                ) {
+                    return Err(invalid("grouped SUM requires numeric columns"));
+                }
             }
-            Ok(index)
+            Ok(BoundSum {
+                expression,
+                indices: names,
+            })
         })
         .transpose()?;
     let count_column = if let Some(crate::JoinAggregate::CountColumn(column)) = &query.aggregate {
@@ -621,7 +658,7 @@ pub fn execute_multi_join<W: Write>(
             &initial_step,
             &comparisons,
             &column_comparisons,
-            grouped_sum,
+            grouped_sum.as_ref(),
             output,
         );
     }

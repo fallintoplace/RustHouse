@@ -64,9 +64,30 @@ struct OutputSpec<'a> {
     comparisons: &'a [(usize, crate::Operator, typed::Cell)],
     column_comparisons: &'a [(usize, crate::Operator, usize)],
     group_indices: Option<Vec<usize>>,
-    sum_index: Option<usize>,
+    sum: Option<&'a BoundSum>,
     offset: usize,
     limit: Option<usize>,
+}
+
+fn compare_sum_values(
+    left: Option<super::super::Number>,
+    right: Option<super::super::Number>,
+    descending: bool,
+    nulls_first: Option<bool>,
+) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let order = super::super::multi_aggregate::compare_expression_numbers(left, right)
+                .unwrap_or_else(|| super::super::compare_numbers(left, right));
+            if descending { order.reverse() } else { order }
+        }
+        (left, right) => typed::compare_order_cells(
+            &left.map_or(typed::Cell::Null, typed::Cell::Numeric),
+            &right.map_or(typed::Cell::Null, typed::Cell::Numeric),
+            descending,
+            nulls_first,
+        ),
+    }
 }
 
 fn visit<W: Write>(
@@ -104,10 +125,12 @@ fn visit<W: Write>(
             for &index in indices {
                 state.group_key.push(row[index].key());
             }
-            let value = spec.sum_index.and_then(|index| match row[index] {
-                typed::Cell::Numeric(value) => Some(value),
-                _ => None,
-            });
+            let value = match spec.sum {
+                Some(sum) => {
+                    super::super::multi_aggregate::eval_row_arithmetic(&sum.expression, row)?
+                }
+                None => None,
+            };
             if let Some((_, count, sum)) = state.groups.get_mut(state.group_key.as_slice()) {
                 if let Some(value) = value {
                     *sum = Some(match *sum {
@@ -217,7 +240,7 @@ pub(super) fn execute<W: Write>(
     initial_step: &JoinStep,
     comparisons: &[(usize, crate::Operator, typed::Cell)],
     column_comparisons: &[(usize, crate::Operator, usize)],
-    sum_index: Option<usize>,
+    sum: Option<&BoundSum>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if relations[0].names.is_empty() {
@@ -238,7 +261,7 @@ pub(super) fn execute<W: Write>(
         null_filter,
         comparisons,
         column_comparisons,
-        sum_index,
+        sum,
         group_indices: query
             .grouped_count
             .as_ref()
@@ -282,8 +305,10 @@ pub(super) fn execute<W: Write>(
         referenced[*left] = true;
         referenced[*right] = true;
     }
-    if let Some(index) = sum_index {
-        referenced[index] = true;
+    if let Some(sum) = sum {
+        for &index in &sum.indices {
+            referenced[index] = true;
+        }
     }
     let projections = relations
         .iter()
@@ -455,10 +480,8 @@ pub(super) fn execute<W: Write>(
                             nulls_first,
                         )
                     } else {
-                        if sum_index.is_some() {
-                            let left = left.2.map_or(typed::Cell::Null, typed::Cell::Numeric);
-                            let right = right.2.map_or(typed::Cell::Null, typed::Cell::Numeric);
-                            typed::compare_order_cells(&left, &right, descending, nulls_first)
+                        if sum.is_some() {
+                            compare_sum_values(left.2, right.2, descending, nulls_first)
                         } else {
                             let count_order = left.1.cmp(&right.1);
                             if descending {
@@ -502,7 +525,7 @@ pub(super) fn execute<W: Write>(
                 typed::write_typed_value(output, value, spec.types[source])?;
             }
             output.write_all(b"\t")?;
-            if sum_index.is_some() {
+            if spec.sum.is_some() {
                 typed::write_value(output, &sum.map_or(typed::Cell::Null, typed::Cell::Numeric))?;
                 writeln!(output)?;
             } else {

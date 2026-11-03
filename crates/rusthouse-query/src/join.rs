@@ -70,6 +70,12 @@ pub enum JoinAggregate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupedSum {
+    Column(JoinColumn),
+    Expression(crate::ScalarExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinSelect {
     pub left: String,
     pub right: String,
@@ -88,7 +94,7 @@ pub struct JoinSelect {
     /// SUM(CASE WHEN ... THEN 1 ELSE 0 END) metrics for one grouped key.
     pub grouped_case_counts: Vec<(crate::GroupedFilter, String)>,
     /// A numeric SUM over a column of a chained INNER join.
-    pub grouped_sum: Option<JoinColumn>,
+    pub grouped_sum: Option<GroupedSum>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
@@ -244,18 +250,51 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                     if !parser.take(Token::LParen) {
                         return Err(ParseError("JOIN SUM requires '('".into()));
                     }
-                    let column = projected(&mut parser)?;
-                    if column.name == "*" || !parser.take(Token::RParen) {
-                        return Err(ParseError(
-                            "JOIN grouped SUM requires a numeric column".into(),
-                        ));
+                    let start = parser.index;
+                    let column = projected(&mut parser).ok().filter(|column| {
+                        column.name != "*"
+                            && parser.tokens.get(parser.index) == Some(&Token::RParen)
+                    });
+                    let metric = if let Some(column) = column {
+                        GroupedSum::Column(column)
+                    } else {
+                        parser.index = start;
+                        let expression = crate::expression::parse_expression_tokens(&mut parser)?;
+                        fn arithmetic(expression: &crate::ScalarExpr) -> bool {
+                            match expression {
+                                crate::ScalarExpr::Column(_)
+                                | crate::ScalarExpr::Integer(_)
+                                | crate::ScalarExpr::Decimal(_) => true,
+                                crate::ScalarExpr::Add(a, b)
+                                | crate::ScalarExpr::Subtract(a, b)
+                                | crate::ScalarExpr::Multiply(a, b)
+                                | crate::ScalarExpr::Divide(a, b)
+                                | crate::ScalarExpr::Modulo(a, b) => arithmetic(a) && arithmetic(b),
+                                _ => false,
+                            }
+                        }
+                        if !arithmetic(&expression) {
+                            return Err(ParseError(
+                                "JOIN SUM requires a numeric arithmetic expression".into(),
+                            ));
+                        }
+                        GroupedSum::Expression(expression)
+                    };
+                    if !parser.take(Token::RParen) {
+                        return Err(ParseError("JOIN grouped SUM requires ')'".into()));
                     }
+                    let name = match &metric {
+                        GroupedSum::Column(column) => column.display_name(),
+                        GroupedSum::Expression(expression) => {
+                            crate::multi_aggregate::render_expr(expression)
+                        }
+                    };
                     aggregate_alias = if parser.keyword("AS") {
                         Some(parser.bounded_word()?)
                     } else {
-                        Some(format!("sum({})", column.display_name()))
+                        Some(format!("sum({name})"))
                     };
-                    grouped_sum = Some(column);
+                    grouped_sum = Some(metric);
                     grouped_count_projection = true;
                     break;
                 }
@@ -809,7 +848,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             )));
         }
     }
-    if let Some(column) = &grouped_sum {
+    if let Some(GroupedSum::Column(column)) = &grouped_sum {
         if !column.relation.is_empty() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
                 "unknown JOIN qualifier: {}",
@@ -1244,10 +1283,15 @@ pub fn explain_join(query: &JoinSelect) -> String {
             .map(JoinColumn::display_name)
             .collect::<Vec<_>>()
             .join(", ");
-        if let Some(column) = &query.grouped_sum {
+        if let Some(metric) = &query.grouped_sum {
+            let expression = match metric {
+                GroupedSum::Column(column) => column.display_name(),
+                GroupedSum::Expression(expression) => {
+                    crate::multi_aggregate::render_expr(expression)
+                }
+            };
             plan.push_str(&format!(
-                "\nAggregate: GROUP BY {keys} with SUM({})",
-                column.display_name()
+                "\nAggregate: GROUP BY {keys} with SUM({expression})"
             ));
         } else if query.grouped_case_counts.is_empty() {
             plan.push_str(&format!("\nAggregate: GROUP BY {keys} with COUNT(*)"));

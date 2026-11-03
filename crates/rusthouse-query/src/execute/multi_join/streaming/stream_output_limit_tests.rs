@@ -22,7 +22,7 @@ fn streaming_inner_joins_can_emit_more_than_the_materialized_row_cap() {
         comparisons: &[],
         column_comparisons: &[],
         group_indices: None,
-        sum_index: None,
+        sum: None,
         offset: 0,
         limit: None,
     };
@@ -68,7 +68,7 @@ fn streaming_inner_join_still_respects_explicit_limit() {
         comparisons: &[],
         column_comparisons: &[],
         group_indices: None,
-        sum_index: None,
+        sum: None,
         offset: 0,
         limit: Some(2),
     };
@@ -89,4 +89,23 @@ fn streaming_inner_join_still_respects_explicit_limit() {
         .unwrap();
     }
     assert_eq!(state.emitted, 2);
+}
+
+#[test]
+fn grouped_sum_orders_mixed_full_width_values_numerically() {
+    use std::cmp::Ordering;
+    let negative = Some(Number::Signed(-1));
+    let large = Some(Number::Unsigned(u128::MAX));
+    assert_eq!(
+        compare_sum_values(negative, large, false, None),
+        Ordering::Less
+    );
+    assert_eq!(
+        compare_sum_values(negative, large, true, None),
+        Ordering::Greater
+    );
+    assert_eq!(
+        compare_sum_values(None, large, false, Some(false)),
+        Ordering::Greater
+    );
 }
