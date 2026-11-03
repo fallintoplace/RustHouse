@@ -165,3 +165,69 @@ fn sql_http_binds_grouped_in_subquery_for_explicit_join() {
     assert_eq!(result.body, b"ak\ttotal\n1\t8\n");
     fs::remove_dir_all(database).unwrap();
 }
+
+#[test]
+fn sql_http_filters_grouped_distinct_with_not_in_subquery() {
+    let database =
+        std::env::temp_dir().join(format!("rusthouse-http-join-not-in-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    table(
+        &database,
+        "products",
+        &[
+            Column {
+                name: "p_id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "brand".into(),
+                data_type: "String".into(),
+            },
+        ],
+        &[vec![Some("1".into()), Some("A".into())]],
+    );
+    table(
+        &database,
+        "supplies",
+        &[
+            Column {
+                name: "product".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "supplier".into(),
+                data_type: "Nullable(UInt64)".into(),
+            },
+        ],
+        &[
+            vec![Some("1".into()), Some("10".into())],
+            vec![Some("1".into()), Some("11".into())],
+            vec![Some("1".into()), None],
+        ],
+    );
+    table(
+        &database,
+        "blocked",
+        &[
+            Column {
+                name: "bad".into(),
+                data_type: "Nullable(UInt64)".into(),
+            },
+            Column {
+                name: "note".into(),
+                data_type: "String".into(),
+            },
+        ],
+        &[vec![Some("10".into()), Some("x".into())]],
+    );
+    let query = "SELECT brand, COUNT(DISTINCT supplier) AS n FROM products p JOIN supplies s ON p.p_id = s.product WHERE supplier NOT IN (SELECT bad FROM blocked WHERE note LIKE '%x%') GROUP BY brand";
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"brand\tn\nA\t1\n");
+    fs::remove_dir_all(database).unwrap();
+}

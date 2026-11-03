@@ -85,6 +85,7 @@ pub struct JoinAggregateFormula {
 pub struct JoinInSubquery {
     pub column: JoinColumn,
     pub inner: Box<crate::Select>,
+    pub negated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +118,7 @@ pub struct JoinSelect {
     pub scalar_formula: Option<JoinAggregateFormula>,
     /// Bounded OR-of-AND predicates for scalar sums over joins.
     pub scalar_where: Option<Vec<Vec<crate::Predicate>>>,
-    /// A grouped single-table IN subquery that must be bound before execution.
+    /// A bounded single-table IN or NOT IN subquery, bound before execution.
     pub in_subquery: Option<JoinInSubquery>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
@@ -322,6 +323,124 @@ fn parse_join_formula(
     }
     let alias = parser.bounded_word()?;
     Ok(Some((JoinAggregateFormula { sums, expression }, alias)))
+}
+
+type JoinedSubqueryFilter = (JoinInSubquery, Vec<Vec<crate::Predicate>>);
+
+fn parse_distinct_not_in(parser: &mut Parser) -> Result<Option<JoinedSubqueryFilter>, ParseError> {
+    let mut end = parser.index;
+    let mut depth = 0usize;
+    let mut between = false;
+    let mut has_top_or = false;
+    let mut pieces = Vec::new();
+    let mut piece_start = end;
+    while let Some(token) = parser.tokens.get(end) {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(word)
+                if depth == 0
+                    && ["GROUP", "ORDER", "LIMIT", "OFFSET", "HAVING"]
+                        .iter()
+                        .any(|name| word.eq_ignore_ascii_case(name)) =>
+            {
+                break;
+            }
+            Token::Semicolon if depth == 0 => break,
+            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("OR") => has_top_or = true,
+            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("BETWEEN") => {
+                between = true
+            }
+            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("AND") => {
+                if between {
+                    between = false;
+                } else {
+                    pieces.push(&parser.tokens[piece_start..end]);
+                    piece_start = end + 1;
+                }
+            }
+            _ => {}
+        }
+        end += 1;
+    }
+    pieces.push(&parser.tokens[piece_start..end]);
+    if pieces.iter().any(|piece| piece.is_empty()) {
+        return Err(ParseError("JOIN WHERE requires complete predicates".into()));
+    }
+    let mut found = None;
+    let mut remainder = Vec::new();
+    for piece in pieces {
+        let candidate = piece.len() >= 6
+            && matches!(&piece[0], Token::Word(_) | Token::QuotedWord(_))
+            && matches!(&piece[1], Token::Word(word) if word.eq_ignore_ascii_case("NOT"))
+            && matches!(&piece[2], Token::Word(word) if word.eq_ignore_ascii_case("IN"))
+            && piece[3] == Token::LParen
+            && matches!(&piece[4], Token::Word(word) if word.eq_ignore_ascii_case("SELECT"))
+            && piece.last() == Some(&Token::RParen);
+        if candidate {
+            if found.is_some() {
+                return Err(ParseError("JOIN supports one NOT IN subquery".into()));
+            }
+            let name = match &piece[0] {
+                Token::Word(name) | Token::QuotedWord(name) => name.clone(),
+                _ => unreachable!(),
+            };
+            let inner = crate::parse_select_tokens(piece[4..piece.len() - 1].to_vec())?;
+            if !matches!(&inner.source, Some(crate::Source::Table(_)))
+                || !matches!(&inner.projection, crate::Projection::Columns(columns) if columns.len() == 1)
+                || inner
+                    .predicates
+                    .iter()
+                    .chain(inner.or_predicates.iter().flatten())
+                    .any(|predicate| matches!(predicate, crate::Predicate::ColumnComparison { .. }))
+            {
+                return Err(ParseError(
+                    "JOIN NOT IN requires an uncorrelated single-column subquery".into(),
+                ));
+            }
+            found = Some(JoinInSubquery {
+                column: JoinColumn {
+                    relation: String::new(),
+                    name,
+                },
+                inner: Box::new(inner),
+                negated: true,
+            });
+        } else {
+            if !remainder.is_empty() {
+                remainder.push(Token::Word("AND".into()));
+            }
+            remainder.extend_from_slice(piece);
+        }
+    }
+    let Some(subquery) = found else {
+        return Ok(None);
+    };
+    if has_top_or {
+        return Err(ParseError(
+            "JOIN NOT IN subquery requires a conjunctive WHERE".into(),
+        ));
+    }
+    let branches = if remainder.is_empty() {
+        vec![vec![]]
+    } else {
+        let mut rest = Parser {
+            tokens: remainder,
+            index: 0,
+        };
+        let branches = crate::where_parser::parse_where(&mut rest)?;
+        if rest.index != rest.tokens.len() {
+            return Err(ParseError("invalid JOIN WHERE after NOT IN".into()));
+        }
+        branches
+    };
+    if branches.len() > 1 {
+        return Err(ParseError(
+            "JOIN NOT IN subquery requires a conjunctive WHERE".into(),
+        ));
+    }
+    parser.index = end;
+    Ok(Some((subquery, branches)))
 }
 
 fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseError> {
@@ -831,7 +950,14 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
     let mut in_subquery = None;
     if parser.keyword("WHERE") {
         let complex = grouped_distinct.is_some() || (scalar_sum.is_some() || scalar_formula.is_some()) && parser.tokens[parser.index..].iter().take_while(|token| !matches!(token, Token::Word(word) if ["GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))).any(|token| matches!(token, Token::Word(word) if ["OR", "IN", "BETWEEN", "LIKE", "ILIKE"].iter().any(|name| word.eq_ignore_ascii_case(name))));
-        if complex {
+        if grouped_distinct.is_some() {
+            if let Some((subquery, branches)) = parse_distinct_not_in(&mut parser)? {
+                in_subquery = Some(subquery);
+                scalar_where = Some(branches);
+            } else {
+                scalar_where = Some(crate::where_parser::parse_where(&mut parser)?);
+            }
+        } else if complex {
             scalar_where = Some(crate::where_parser::parse_where(&mut parser)?);
         } else {
             let mut count = 0;
@@ -901,6 +1027,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                         in_subquery = Some(JoinInSubquery {
                             column,
                             inner: Box::new(inner),
+                            negated: false,
                         });
                     } else {
                         let mut values = Vec::new();
@@ -1351,17 +1478,21 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         }
         None
     };
-    if in_subquery.is_some()
-        && (steps.is_empty()
+    if let Some(subquery) = &in_subquery {
+        let supported = if subquery.negated {
+            grouped_distinct.is_some() && scalar_where.is_some()
+        } else {
+            !steps.is_empty() && grouped_sum.is_some() && scalar_where.is_none()
+        };
+        if !supported
             || kind != JoinType::Inner
             || steps.iter().any(|step| step.kind != JoinType::Inner)
-            || grouped_sum.is_none()
             || where_null.is_some()
-            || scalar_where.is_some())
-    {
-        return Err(ParseError(
-            "JOIN IN subquery requires a grouped INNER join chain".into(),
-        ));
+        {
+            return Err(ParseError(
+                "JOIN subquery requires a supported grouped INNER join".into(),
+            ));
+        }
     }
     // COUNT(column) can use bounded materialization for an all-INNER chain.
     if matches!(aggregate.as_ref(), Some(JoinAggregate::CountColumn(_)))
@@ -1615,8 +1746,9 @@ pub fn explain_join(query: &JoinSelect) -> String {
     }
     if let Some(subquery) = &query.in_subquery {
         plan.push_str(&format!(
-            "\nFilter: {} IN grouped subquery",
-            subquery.column.display_name()
+            "\nFilter: {} {}IN subquery",
+            subquery.column.display_name(),
+            if subquery.negated { "NOT " } else { "" }
         ));
     }
     if let Some(branches) = &query.scalar_where {

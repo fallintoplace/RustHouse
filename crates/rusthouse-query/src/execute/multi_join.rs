@@ -573,7 +573,7 @@ impl Write for SubqueryOutput {
     }
 }
 
-/// Bind one uncorrelated grouped SUM subquery while callers hold a database read lock.
+/// Bind one supported uncorrelated IN subquery while callers hold a database read lock.
 pub fn bind_join_in_subquery(
     query: &mut JoinSelect,
     inner_path: &std::path::Path,
@@ -583,8 +583,20 @@ pub fn bind_join_in_subquery(
         .in_subquery
         .as_ref()
         .ok_or_else(|| invalid("JOIN IN subquery is missing"))?;
-    if query.scalar_where.is_some()
-        || query.grouped_sum.is_none()
+    let supported = if subquery.negated {
+        query.grouped_distinct.is_some()
+            && query.grouped_sum.is_none()
+            && query
+                .scalar_where
+                .as_ref()
+                .is_some_and(|branches| branches.len() <= 1)
+    } else {
+        query.grouped_sum.is_some()
+            && query.grouped_distinct.is_none()
+            && !query.steps.is_empty()
+            && query.scalar_where.is_none()
+    };
+    if !supported
         || query.grouped_count.is_none()
         || query.aggregate.is_some()
         || query.scalar_sum.is_some()
@@ -592,7 +604,6 @@ pub fn bind_join_in_subquery(
         || !query.grouped_case_counts.is_empty()
         || !query.where_in_filters.is_empty()
         || !query.where_like_filters.is_empty()
-        || query.steps.is_empty()
         || query.kind != JoinType::Inner
         || query.steps.iter().any(|step| step.kind != JoinType::Inner)
         || query.where_null.is_some()
@@ -602,23 +613,32 @@ pub fn bind_join_in_subquery(
         return Err(invalid("JOIN IN subquery has an unsupported shape"));
     }
     let inner = &subquery.inner;
-    let crate::Projection::GroupedAggregate {
-        column: inner_key,
-        function: crate::AggregateFunction::Sum,
-        ..
-    } = &inner.projection
-    else {
-        return Err(invalid("JOIN IN subquery requires grouped SUM"));
+    let inner_key = match (&inner.projection, subquery.negated) {
+        (
+            crate::Projection::GroupedAggregate {
+                column,
+                function: crate::AggregateFunction::Sum,
+                ..
+            },
+            false,
+        ) if inner.hidden_aggregate => column,
+        (crate::Projection::Columns(columns), true)
+            if columns.len() == 1 && !inner.hidden_aggregate =>
+        {
+            &columns[0]
+        }
+        _ => return Err(invalid("JOIN IN subquery has an unsupported projection")),
     };
-    if !inner.hidden_aggregate
-        || !matches!(inner.source, Some(crate::Source::Table(_)))
+    if !matches!(inner.source, Some(crate::Source::Table(_)))
         || inner
             .predicates
             .iter()
             .chain(inner.or_predicates.iter().flatten())
             .any(|predicate| matches!(predicate, crate::Predicate::ColumnComparison { .. }))
     {
-        return Err(invalid("JOIN IN subquery requires a stored table"));
+        return Err(invalid(
+            "JOIN IN subquery requires an uncorrelated stored table",
+        ));
     }
     let inner_metadata = inspect_query_source(inner_path)?;
     let inner_column = inner_metadata
@@ -667,8 +687,11 @@ pub fn bind_join_in_subquery(
     let text =
         std::str::from_utf8(&output.0).map_err(|_| invalid("invalid JOIN IN subquery output"))?;
     let mut values = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut contains_null = false;
     for value in text.lines().skip(1) {
         if value == "\\N" {
+            contains_null = true;
             continue;
         }
         if value.is_empty()
@@ -679,16 +702,38 @@ pub fn bind_join_in_subquery(
         {
             return Err(invalid("invalid JOIN IN subquery integer"));
         }
-        if values.len() >= MAX_IN_SUBQUERY_KEYS {
-            return Err(invalid("JOIN IN subquery supports at most 100000 keys"));
+        if seen.insert(value.to_owned()) {
+            if values.len() >= MAX_IN_SUBQUERY_KEYS {
+                return Err(invalid("JOIN IN subquery supports at most 100000 keys"));
+            }
+            values.push(value.to_owned());
         }
-        values.push(value.to_owned());
     }
     let name = subquery.column.name.clone();
-    query.scalar_where = Some(vec![vec![crate::Predicate::In {
-        column: name,
-        values,
-    }]]);
+    if subquery.negated {
+        // An empty IN predicate is always false, while preserving the other
+        // filters so their columns and types are still validated.
+        let predicate = if contains_null {
+            crate::Predicate::In {
+                column: name,
+                values: Vec::new(),
+            }
+        } else {
+            crate::Predicate::NotIn {
+                column: name,
+                values,
+            }
+        };
+        let branches = query.scalar_where.get_or_insert_with(|| vec![vec![]]);
+        if let Some(branch) = branches.first_mut() {
+            branch.push(predicate);
+        }
+    } else {
+        query.scalar_where = Some(vec![vec![crate::Predicate::In {
+            column: name,
+            values,
+        }]]);
+    }
     query.in_subquery = None;
     Ok(())
 }
@@ -1380,5 +1425,22 @@ mod grouped_distinct_plan_tests {
         ));
         let error = execute_multi_join(&altered, &paths, &mut Vec::new()).unwrap_err();
         assert!(error.to_string().contains("INNER grouped plan"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod not_in_binding_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_multiple_residual_branches_before_reading_sources() {
+        let sql = "SELECT ak, COUNT(DISTINCT value) AS n FROM a JOIN b ON a.ak = b.bk WHERE value NOT IN (SELECT ik FROM keys) GROUP BY ak";
+        let mut query = crate::parse_join(sql).unwrap().unwrap();
+        query.scalar_where = Some(vec![vec![], vec![]]);
+        let paths = vec![PathBuf::from("missing-a"), PathBuf::from("missing-b")];
+        let error =
+            bind_join_in_subquery(&mut query, std::path::Path::new("missing-inner"), &paths)
+                .unwrap_err();
+        assert!(error.to_string().contains("unsupported shape"), "{error}");
     }
 }

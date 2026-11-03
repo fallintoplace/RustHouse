@@ -157,10 +157,14 @@ impl RowFilters {
                         typed::matches_comparison(value, &row[*other], *operator)
                     }
                     RowTest::In(values, negated) => {
-                        !matches!(value, typed::Cell::Null)
-                            && (values.iter().any(|target| {
-                                typed::matches_comparison(value, target, Operator::Eq)
-                            }) != *negated)
+                        if values.is_empty() {
+                            *negated
+                        } else {
+                            !matches!(value, typed::Cell::Null)
+                                && (values.iter().any(|target| {
+                                    typed::matches_comparison(value, target, Operator::Eq)
+                                }) != *negated)
+                        }
                     }
                     RowTest::IntegerSet(values, negated) => {
                         !matches!(value, typed::Cell::Null)
