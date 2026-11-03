@@ -649,11 +649,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                 "GROUP BY must match the selected JOIN keys".into(),
             ));
         }
-        if !matches!(kind, JoinType::Inner | JoinType::Left) || !steps.is_empty()
+        if !matches!(kind, JoinType::Inner | JoinType::Left)
             || (projected_keys.len() > 1 && kind != JoinType::Inner)
+            || (!steps.is_empty()
+                && (kind != JoinType::Inner
+                    || steps.iter().any(|step| step.kind != JoinType::Inner)))
         {
             return Err(ParseError(
-                "grouped JOIN COUNT requires two tables (multiple keys require INNER JOIN)".into(),
+                "chained grouped JOIN COUNT requires INNER joins".into(),
             ));
         }
         if order_by
