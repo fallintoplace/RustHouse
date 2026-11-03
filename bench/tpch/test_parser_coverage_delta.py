@@ -25,6 +25,18 @@ class ParserCoverageDeltaTests(unittest.TestCase):
         }])
         self.assertFalse(outcome["official_tpch_score"])
 
+    def test_requires_matching_sql_when_fingerprints_are_available(self):
+        older, newer = report("parse_error"), report("parsed")
+        older["query_sha256"] = "a" * 64
+        newer["query_sha256"] = "b" * 64
+        with self.assertRaisesRegex(ValueError, "fingerprints"):
+            compare(older, newer)
+        newer.pop("query_sha256")
+        with self.assertRaisesRegex(ValueError, "fingerprints"):
+            compare(older, newer)
+        newer["query_sha256"] = older["query_sha256"]
+        self.assertEqual(compare(older, newer)["parsed_after"], 22)
+
     def test_rejects_missing_duplicate_and_invalid_status(self):
         older = report("parsed")
         newer = report("parsed")
