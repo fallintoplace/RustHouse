@@ -110,50 +110,68 @@ pub(super) fn execute<W: Write>(
             "invalid CASE grouping header".into(),
         ));
     }
-    let mut groups = HashMap::<Vec<Vec<u8>>, u64>::new();
+    // A fixed-size key removes the outer Vec allocation on each input row.
+    let mut groups = HashMap::<[Vec<u8>; 5], u64>::new();
     let mut retained = 0usize;
     for line in lines {
         if line.is_empty() {
             continue;
         }
-        let fields = line.split(|&byte| byte == b'\t').collect::<Vec<_>>();
-        if fields.len() != 6 {
+        let mut fields = line.split(|&byte| byte == b'\t');
+        let (Some(first), Some(flag1), Some(flag2), Some(destination), Some(last), Some(raw_count)) =
+            (
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+            )
+        else {
+            return Err(ExecutionError::Invalid("invalid CASE grouping row".into()));
+        };
+        if fields.next().is_some() {
             return Err(ExecutionError::Invalid("invalid CASE grouping row".into()));
         }
-        let case_value = if fields[1] == b"0" && fields[2] == b"0" {
-            fields[3]
+        let case_value = if flag1 == b"0" && flag2 == b"0" {
+            destination
         } else {
             b""
         };
-        let key = vec![
-            fields[0].to_vec(),
-            fields[1].to_vec(),
-            fields[2].to_vec(),
+        let key = [
+            first.to_vec(),
+            flag1.to_vec(),
+            flag2.to_vec(),
             case_value.to_vec(),
-            fields[4].to_vec(),
+            last.to_vec(),
         ];
-        let count = std::str::from_utf8(fields[5])
+        let count = std::str::from_utf8(raw_count)
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .ok_or_else(|| ExecutionError::Invalid("invalid CASE grouping count".into()))?;
-        if !groups.contains_key(&key) {
-            if groups.len() >= MAX_GROUPS {
-                return Err(ExecutionError::Invalid(
-                    "CASE grouping exceeds 200000 groups".into(),
-                ));
+        let group_count = groups.len();
+        let group = match groups.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                if group_count >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "CASE grouping exceeds 200000 groups".into(),
+                    ));
+                }
+                let bytes = entry
+                    .key()
+                    .iter()
+                    .try_fold(192usize, |sum, value| {
+                        sum.checked_add(value.len().saturating_mul(2))
+                    })
+                    .ok_or_else(|| ExecutionError::Invalid("CASE group memory overflow".into()))?;
+                retained = retained
+                    .checked_add(bytes)
+                    .filter(|&n| n <= MAX_GROUP_BYTES)
+                    .ok_or_else(|| ExecutionError::Invalid("CASE groups exceed 64 MiB".into()))?;
+                entry.insert(0)
             }
-            let bytes = key
-                .iter()
-                .try_fold(192usize, |sum, value| {
-                    sum.checked_add(value.len().saturating_mul(2))
-                })
-                .ok_or_else(|| ExecutionError::Invalid("CASE group memory overflow".into()))?;
-            retained = retained
-                .checked_add(bytes)
-                .filter(|&n| n <= MAX_GROUP_BYTES)
-                .ok_or_else(|| ExecutionError::Invalid("CASE groups exceed 64 MiB".into()))?;
-        }
-        let group = groups.entry(key).or_insert(0);
+        };
         *group = group
             .checked_add(count)
             .ok_or_else(|| ExecutionError::Invalid("CASE grouping count overflow".into()))?;
