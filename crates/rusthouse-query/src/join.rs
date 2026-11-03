@@ -145,8 +145,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         if parser.keyword("AS") {
             Some(parser.bounded_word()?)
         } else if matches!(
-            parser.tokens.get(parser.index + 1),
-            Some(Token::Word(word)) if word.eq_ignore_ascii_case("FROM")
+            (
+                parser.tokens.get(parser.index),
+                parser.tokens.get(parser.index + 1)
+            ),
+            (
+                Some(Token::Word(alias) | Token::QuotedWord(alias)),
+                Some(Token::Word(after))
+            ) if !alias.eq_ignore_ascii_case("FROM") && after.eq_ignore_ascii_case("FROM")
         ) {
             Some(parser.bounded_word()?)
         } else {
@@ -1469,6 +1475,9 @@ mod join_bare_aggregate_alias_tests {
             .unwrap()
             .unwrap();
         assert!(query.aggregate_alias.is_none());
+        assert!(
+            parse_join("SELECT COUNT(*) FROM FROM a JOIN b ON a.id = b.id").is_err()
+        );
     }
 
     #[test]
