@@ -362,8 +362,13 @@ mod radix_digit_separator_tests {
             ("0B1_1", "3"),
         ] {
             let mut index = 0;
+            let radix = if matches!(sql.as_bytes()[1], b'b' | b'B') {
+                2
+            } else {
+                16
+            };
             assert_eq!(
-                scan_radix_number(sql, &mut index, if sql.as_bytes()[1] == b'b' || sql.as_bytes()[1] == b'B' { 2 } else { 16 }).unwrap(),
+                scan_radix_number(sql, &mut index, radix).unwrap(),
                 Token::Number(expected.into())
             );
             assert_eq!(index, sql.len());
