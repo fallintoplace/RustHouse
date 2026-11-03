@@ -22,13 +22,22 @@ pub(super) fn qualified(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
 }
 
 pub(super) fn projected(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
-    let relation = qualified_relation(parser)?;
+    let first = parser.bounded_word()?;
+    if !parser.take(Token::Dot) {
+        return Ok(JoinColumn {
+            relation: String::new(),
+            name: first,
+        });
+    }
     let name = if parser.take(Token::Star) {
         "*".to_owned()
     } else {
         parser.bounded_word()?
     };
-    Ok(JoinColumn { relation, name })
+    Ok(JoinColumn {
+        relation: first,
+        name,
+    })
 }
 
 pub(super) fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {

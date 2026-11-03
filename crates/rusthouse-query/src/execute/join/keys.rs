@@ -35,6 +35,16 @@ pub(super) fn resolve(
     left_names: &[String],
     right_names: &[String],
 ) -> Result<usize, ExecutionError> {
+    if column.relation.is_empty() {
+        let left = left_names.iter().position(|name| name == &column.name);
+        let right = right_names.iter().position(|name| name == &column.name);
+        return match (left, right) {
+            (Some(index), None) => Ok(index),
+            (None, Some(index)) => Ok(left_names.len() + index),
+            (Some(_), Some(_)) => Err(invalid(format!("ambiguous JOIN column: {}", column.name))),
+            (None, None) => Err(invalid(format!("unknown JOIN column: {}", column.name))),
+        };
+    }
     let (names, start) = if column.relation == query.left_alias {
         (left_names, 0)
     } else if column.relation == query.right_alias {

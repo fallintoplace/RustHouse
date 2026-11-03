@@ -101,6 +101,17 @@ struct Relation {
 }
 
 fn column_index(relations: &[Relation], column: &JoinColumn) -> Result<usize, ExecutionError> {
+    if column.relation.is_empty() {
+        let mut found = None;
+        for relation in relations {
+            if let Some(index) = relation.names.iter().position(|name| name == &column.name) {
+                if found.replace(relation.start + index).is_some() {
+                    return Err(invalid(format!("ambiguous JOIN column: {}", column.name)));
+                }
+            }
+        }
+        return found.ok_or_else(|| invalid(format!("unknown JOIN column: {}", column.name)));
+    }
     let relation = relations
         .iter()
         .find(|relation| relation.alias == column.relation)
@@ -287,7 +298,11 @@ fn output_columns(
             } else {
                 selected.push((
                     column_index(relations, column)?,
-                    format!("{}.{}", column.relation, column.name),
+                    if column.relation.is_empty() {
+                        column.name.clone()
+                    } else {
+                        format!("{}.{}", column.relation, column.name)
+                    },
                     None,
                 ));
             }

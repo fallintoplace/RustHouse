@@ -10,7 +10,7 @@ Join two local tables with an INNER JOIN:
 cargo run -p rusthouse-cli -- sql "SELECT u.id, t.label FROM users u JOIN teams t ON u.team_id = t.id ORDER BY u.id LIMIT 10" --database ./mydb
 ```
 
-Use qualified names for join columns, such as `u.team_id`. NULL join keys do not match. RustHouse supports INNER, LEFT, RIGHT, and FULL joins, with up to eight tables and eight equality keys per join. Aliases, projections, ORDER BY, LIMIT, and OFFSET are also supported.
+Use qualified names for join keys, such as `u.team_id`. Projection columns may omit the table name when the column is unique across the joined tables. NULL join keys do not match. RustHouse supports INNER, LEFT, RIGHT, and FULL joins, with up to eight tables and eight equality keys per join. Aliases, projections, ORDER BY, LIMIT, and OFFSET are also supported.
 
 You can also write an inner equi-join as `FROM users u, teams t WHERE u.team_id = t.id`. Every added table needs an equality key joined to a previous table. In CLI database mode, an equality with two unqualified keys is resolved from the table schemas when each name is unique. Other join columns still need qualified names. The same join limits apply. Comma joins with `OR` are not supported.
 
