@@ -8,6 +8,9 @@ import stat
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import file_change_time_ns
+
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 
 
@@ -28,7 +31,7 @@ def load_report(path):
 
     def identity(info):
         return (info.st_dev, info.st_ino, info.st_size,
-                info.st_mtime_ns, info.st_ctime_ns)
+                info.st_mtime_ns, file_change_time_ns(info))
 
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags)

@@ -92,8 +92,15 @@ class AnalyticsSuiteTests(unittest.TestCase):
                 nonlocal count
                 count += 1
                 if count == 2:
-                    path.unlink()
-                    replacement.rename(path)
+                    try:
+                        path.unlink()
+                        replacement.rename(path)
+                    except PermissionError:
+                        # Windows may deny replacing a file held open. Simulate
+                        # the changed metadata to exercise the same guard.
+                        from unittest.mock import Mock
+                        actual = original_fstat(fd)
+                        return Mock(wraps=actual, st_size=actual.st_size + 1)
                 return original_fstat(fd)
 
             with patch("bench.analytics.suite_runner.os.fstat",

@@ -208,13 +208,16 @@ class ClickHouseDifferentialTests(unittest.TestCase):
             cells = lines[2].split("\t")
             cells[COLUMNS.index("coupon")] = r"\\N"
             lines[2] = "\t".join(cells)
-            path.write_text("\n".join(lines) + "\n")
+            path.write_text("\n".join(lines) + "\n", newline="")
             accounts = root / "accounts.tsv"
             account_lines = accounts.read_text().splitlines()
             first_account = account_lines[1].split("\t")
             first_account[1] = r"new\tplan"
             account_lines[1] = "\t".join(first_account)
-            accounts.write_text("\n".join(account_lines) + "\n")
+            accounts.write_text("\n".join(account_lines) + "\n", newline="")
+            # COPY TSV may use CRLF record separators on Windows.
+            for source in (path, accounts):
+                source.write_bytes(source.read_bytes().replace(b"\n", b"\r\n"))
             event_json, account_json = fixture_json(root, 5)
             rows = [json.loads(row) for row in event_json.read_text().splitlines()]
             self.assertEqual(rows[0]["amount"], 777)

@@ -51,7 +51,7 @@ def summarize(seconds):
 def copy_sql(source, format_name):
     if format_name not in ("TSV", "SSV"):
         raise ValueError("format must be TSV or SSV")
-    escaped = str(source).replace("'", "''")
+    escaped = Path(source).as_posix().replace("'", "''")
     return f"COPY measurements FROM '{escaped}' WITH (FORMAT {format_name})"
 
 
