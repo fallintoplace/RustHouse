@@ -467,7 +467,19 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             if terms.len() == 8 {
                 return Err(ParseError("JOIN ORDER BY supports at most 8 keys".into()));
             }
-            let key = qualified(&mut parser)?;
+            let key = if matches!(
+                parser.tokens.get(parser.index),
+                Some(Token::Number(_))
+            ) {
+                let position = bound(&mut parser, "JOIN ORDER BY position")?;
+                columns
+                    .as_ref()
+                    .and_then(|projected| position.checked_sub(1).and_then(|index| projected.get(index)))
+                    .cloned()
+                    .ok_or_else(|| ParseError("JOIN ORDER BY position is out of range".into()))?
+            } else {
+                qualified(&mut parser)?
+            };
             let descending = if parser.keyword("DESC") {
                 true
             } else {
@@ -1438,5 +1450,35 @@ mod join_count_one_tests {
             assert!(matches!(query.aggregate, Some(JoinAggregate::CountStar)), "{sql}");
         }
         assert!(parse_join("SELECT COUNT(2) FROM l JOIN r ON l.id = r.id").is_err());
+    }
+}
+
+#[cfg(test)]
+mod join_order_by_position_tests {
+    use super::*;
+
+    #[test]
+    fn join_order_positions_resolve_projected_columns() {
+        let prefix = "SELECT a.id, b.value FROM a JOIN b ON a.id = b.id ORDER BY ";
+        for (position, name) in [("1", "a.id"), ("2", "b.value")] {
+            let numeric = parse_join(&format!("{prefix}{position} DESC"))
+                .unwrap()
+                .unwrap();
+            let qualified = parse_join(&format!("{prefix}{name} DESC"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(numeric.order_by, qualified.order_by);
+        }
+    }
+
+    #[test]
+    fn invalid_join_order_positions_fail() {
+        let prefix = "SELECT a.id, b.value FROM a JOIN b ON a.id = b.id ORDER BY ";
+        for position in ["0", "3", "-1", "99999999999999999999999"] {
+            assert!(parse_join(&format!("{prefix}{position}")).is_err());
+        }
+        assert!(
+            parse_join("SELECT * FROM a JOIN b ON a.id = b.id ORDER BY 1").is_err()
+        );
     }
 }
