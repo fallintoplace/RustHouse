@@ -1,3 +1,4 @@
+pub mod spill_partition;
 mod copy;
 mod date_scalar;
 mod ddl;
