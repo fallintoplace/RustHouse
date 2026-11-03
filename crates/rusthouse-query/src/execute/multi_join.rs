@@ -841,7 +841,7 @@ pub fn execute_multi_join<W: Write>(
     paths: &[PathBuf],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    execute_multi_join_inner(query, paths, None, None, None, None, output)
+    execute_multi_join_inner(query, paths, None, None, None, None, false, output)
 }
 
 /// Execute a complete correlated join plan. Callers hold a read lock across all paths.
@@ -858,6 +858,7 @@ pub fn execute_correlated_join<W: Write>(
         None,
         None,
         None,
+        false,
         output,
     )
 }
@@ -876,6 +877,7 @@ pub fn execute_correlated_avg<W: Write>(
         Some((plan, inner)),
         None,
         None,
+        false,
         output,
     )
 }
@@ -894,6 +896,7 @@ pub fn execute_correlated_min<W: Write>(
         None,
         Some((plan, inner_paths)),
         None,
+        false,
         output,
     )
 }
@@ -912,10 +915,30 @@ pub fn execute_correlated_sum<W: Write>(
         None,
         None,
         Some((plan, inner)),
+        false,
         output,
     )
 }
 
+fn execute_nested_correlated_sum<W: Write>(
+    plan: &crate::JoinCorrelatedSum,
+    paths: &[PathBuf],
+    inner: &std::path::Path,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    execute_multi_join_inner(
+        plan.outer(),
+        paths,
+        None,
+        None,
+        None,
+        Some((plan, inner)),
+        true,
+        output,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_multi_join_inner<W: Write>(
     query: &JoinSelect,
     paths: &[PathBuf],
@@ -923,6 +946,7 @@ fn execute_multi_join_inner<W: Write>(
     avg_plan: Option<(&crate::JoinCorrelatedAvg, &std::path::Path)>,
     min_plan: Option<(&crate::JoinCorrelatedMin, &[PathBuf])>,
     sum_plan: Option<(&crate::JoinCorrelatedSum, &std::path::Path)>,
+    stream_buffered_sum: bool,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if query
@@ -1061,6 +1085,7 @@ fn execute_multi_join_inner<W: Write>(
                 None,
                 None,
                 None,
+                stream_buffered_sum,
                 output,
             );
         }
@@ -1441,7 +1466,7 @@ fn execute_multi_join_inner<W: Write>(
         && (query.order_by.is_empty() || query.grouped_count.is_some())
         && query.aggregate.is_none()
         && min_filter.is_none()
-        && sum_filter.is_none()
+        && (sum_filter.is_none() || stream_buffered_sum)
     {
         return streaming::execute(
             query,
@@ -1456,6 +1481,7 @@ fn execute_multi_join_inner<W: Write>(
             row_filters.as_ref(),
             &exists,
             avg.as_ref(),
+            sum_filter.as_ref(),
             output,
         );
     }
