@@ -39,6 +39,18 @@ class FeatureStatusMatrixTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "distinct"):
             summarize(f, e)
 
+    def test_rejects_different_sql_corpora(self):
+        f, e = features(), execution()
+        f["query_sha256"] = "a" * 64
+        e["query_sha256"] = "b" * 64
+        with self.assertRaisesRegex(ValueError, "fingerprints"):
+            summarize(f, e)
+        e.pop("query_sha256")
+        with self.assertRaisesRegex(ValueError, "fingerprints"):
+            summarize(f, e)
+        e["query_sha256"] = f["query_sha256"]
+        self.assertEqual(summarize(f, e)["total_queries"], 22)
+
     def test_rejects_duplicate_feature_names_and_invalid_statuses(self):
         f, e = features(), execution()
         f["results"][0]["features"] = ["case", "case"]
