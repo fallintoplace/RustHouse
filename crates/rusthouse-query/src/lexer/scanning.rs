@@ -52,12 +52,24 @@ pub(super) fn scan_radix_number(
         .is_some_and(|&byte| (byte as char).to_digit(radix).is_some())
     {
         *index += 1;
+        if bytes.get(*index) == Some(&b'_')
+            && bytes
+                .get(*index + 1)
+                .is_some_and(|&next| (next as char).to_digit(radix).is_some())
+        {
+            *index += 1;
+        }
     }
     if *index == start {
         return Err(ParseError("numeric base prefix requires digits".into()));
     }
-    let number = u64::from_str_radix(&sql[start..*index], radix)
-        .map_err(|_| ParseError("prefixed numeric literal exceeds UInt64".into()))?;
+    let raw = &sql[start..*index];
+    let number = if raw.contains('_') {
+        u64::from_str_radix(&raw.replace('_', ""), radix)
+    } else {
+        u64::from_str_radix(raw, radix)
+    }
+    .map_err(|_| ParseError("prefixed numeric literal exceeds UInt64".into()))?;
     Ok(Token::Number(number.to_string()))
 }
 
@@ -485,5 +497,30 @@ mod doubled_equals_tests {
             "SELECT number FROM numbers(4) WHERE number === 2"
         )
         .is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod prefixed_numeric_separator_tests {
+    use super::*;
+
+    #[test]
+    fn permits_digit_separators_in_hex_and_binary_literals() {
+        assert_eq!(
+            crate::lexer::tokenize("SELECT 0xDE_AD, 0b1010_0011").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("57005".into()),
+                Token::Comma,
+                Token::Number("163".into()),
+            ]
+        );
+        let query = crate::parse_select("SELECT 0x2A_00").unwrap();
+        assert_eq!(query.projection, crate::Projection::Literal(10752));
+
+        for invalid in ["0x_", "0b_", "0x_F", "0b_1", "0xFF_FF_FF_FF_FF_FF_FF_FF_FF"] {
+            assert!(crate::lexer::tokenize(invalid).is_err(), "{invalid}");
+        }
     }
 }
