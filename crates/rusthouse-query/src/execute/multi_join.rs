@@ -241,6 +241,9 @@ struct Relation {
     rows: u64,
 }
 
+type BoundSubstringComparison =
+    (usize, usize, usize, crate::Operator, usize, usize, usize);
+
 fn column_index(relations: &[Relation], column: &JoinColumn) -> Result<usize, ExecutionError> {
     if column.relation.is_empty() {
         let mut found = None;
@@ -1381,6 +1384,25 @@ fn execute_multi_join_inner<W: Write>(
         })
         .collect::<Result<Vec<_>, ExecutionError>>()?;
 
+    // Bind both source columns and require textual types before early returns.
+    let substring_comparisons = query
+        .where_substring_comparisons
+        .iter()
+        .map(|(left, start, length, operator, right, right_start, right_length)| {
+            let left_index = column_index(&relations, left)?;
+            let right_index = column_index(&relations, right)?;
+            if typed::base_type(column_type(&relations, left_index)) != "String"
+                || typed::base_type(column_type(&relations, right_index)) != "String"
+            {
+                return Err(invalid("SUBSTRING JOIN comparisons require String columns"));
+            }
+            Ok((
+                left_index, *start, *length, *operator,
+                right_index, *right_start, *right_length,
+            ))
+        })
+        .collect::<Result<Vec<BoundSubstringComparison>, ExecutionError>>()?;
+
     // Two-table parsers may store IN and LIKE separately from boolean branches.
     // Correlated plans also use this executor, so retain those conjuncts here.
     let row_filters = if query.scalar_where.is_some()
@@ -1475,6 +1497,7 @@ fn execute_multi_join_inner<W: Write>(
             &initial_step,
             &comparisons,
             &column_comparisons,
+            &substring_comparisons,
             grouped_sum.as_ref(),
             formula.as_ref(),
             distinct_index,
