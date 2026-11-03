@@ -20,27 +20,12 @@ pub struct JointCommitObservation {
     pub can_commit: bool,
 }
 
-/// Verify every accepted acknowledgement refers to the exact proposed
-/// immutable generation and fingerprint, not only the generation number.
-/// Shared members contribute their own configured weight in each membership.
-pub fn observe_joint_commit(
+fn acknowledged_weights(
     old_members: &[Member],
-    old_policy: WeightedQuorumPolicy,
     new_members: &[Member],
-    new_policy: WeightedQuorumPolicy,
     proposed: SnapshotVersion,
     acknowledgements: &[SnapshotAck<'_>],
-) -> Result<JointCommitObservation, &'static str> {
-    validate_membership(old_members)?;
-    validate_membership(new_members)?;
-    WeightedQuorumPolicy::new(old_members, old_policy.reads, old_policy.writes)?;
-    WeightedQuorumPolicy::new(new_members, new_policy.reads, new_policy.writes)?;
-    if proposed.epoch == 0
-        || proposed.generation == 0
-        || acknowledgements.len() > old_members.len() + new_members.len()
-    {
-        return Err("invalid proposed snapshot or joint ACK count");
-    }
+) -> Result<(u64, u64), &'static str> {
     let mut old_weight = 0u64;
     let mut new_weight = 0u64;
     let mut seen = HashSet::new();
@@ -63,6 +48,32 @@ pub fn observe_joint_commit(
             new_weight += u64::from(member.weight);
         }
     }
+    Ok((old_weight, new_weight))
+}
+
+/// Verify every accepted acknowledgement refers to the exact proposed
+/// immutable generation and fingerprint, not only the generation number.
+/// Shared members contribute their own configured weight in each membership.
+pub fn observe_joint_commit(
+    old_members: &[Member],
+    old_policy: WeightedQuorumPolicy,
+    new_members: &[Member],
+    new_policy: WeightedQuorumPolicy,
+    proposed: SnapshotVersion,
+    acknowledgements: &[SnapshotAck<'_>],
+) -> Result<JointCommitObservation, &'static str> {
+    validate_membership(old_members)?;
+    validate_membership(new_members)?;
+    WeightedQuorumPolicy::new(old_members, old_policy.reads, old_policy.writes)?;
+    WeightedQuorumPolicy::new(new_members, new_policy.reads, new_policy.writes)?;
+    if proposed.epoch == 0
+        || proposed.generation == 0
+        || acknowledgements.len() > old_members.len() + new_members.len()
+    {
+        return Err("invalid proposed snapshot or joint ACK count");
+    }
+    let (old_weight, new_weight) =
+        acknowledged_weights(old_members, new_members, proposed, acknowledgements)?;
     let old_quorum = old_weight >= old_policy.writes;
     let new_quorum = new_weight >= new_policy.writes;
     Ok(JointCommitObservation {
