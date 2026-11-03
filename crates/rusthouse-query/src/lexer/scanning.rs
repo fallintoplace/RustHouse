@@ -454,6 +454,24 @@ mod escaped_string_bulk_span_tests {
 }
 
 #[cfg(test)]
+mod clickhouse_escape_character_tests {
+    use super::*;
+
+    #[test]
+    fn reads_escape_control_byte_without_changing_other_escapes() {
+        for (sql, expected) in [
+            (r"'one\etwo'", "one\u{001b}two"),
+            (r"'\e'", "\u{001b}"),
+            (r"'\e\n\_x'", "\u{001b}\n\\_x"),
+        ] {
+            let mut cursor = 0;
+            assert_eq!(scan_string(sql, &mut cursor).unwrap(), Token::String(expected.into()));
+            assert_eq!(cursor, sql.len());
+        }
+    }
+}
+
+#[cfg(test)]
 mod clickhouse_control_escape_tests {
     use super::*;
 
@@ -489,20 +507,3 @@ mod doubled_equals_tests {
     }
 }
 
-#[cfg(test)]
-mod clickhouse_escape_character_tests {
-    use super::*;
-
-    #[test]
-    fn reads_escape_control_byte_without_changing_other_escapes() {
-        for (sql, expected) in [
-            (r"'one\etwo'", "one\u{001b}two"),
-            (r"'\e'", "\u{001b}"),
-            (r"'\e\n\_x'", "\u{001b}\n\\_x"),
-        ] {
-            let mut cursor = 0;
-            assert_eq!(scan_string(sql, &mut cursor).unwrap(), Token::String(expected.into()));
-            assert_eq!(cursor, sql.len());
-        }
-    }
-}
