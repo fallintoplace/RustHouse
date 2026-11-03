@@ -18,7 +18,7 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "SMALLINT" => "Int16",
         "INTEGER" | "INT" => "Int32",
         "BIGINT" => "Int64",
-        "TEXT" | "VARCHAR" | "CHARACTER" | "CHAR" | "NCHAR" | "NVARCHAR" => "String",
+        "TEXT" | "VARCHAR" | "CHARACTER" | "CHAR" | "NCHAR" | "NVARCHAR" | "CLOB" => "String",
         "TIMESTAMP" => "DateTime",
         "REAL" | "FLOAT" | "FLOAT4" => "Float32",
         "DOUBLE" | "FLOAT8" => "Float64",
