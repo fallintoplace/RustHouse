@@ -2,6 +2,7 @@
 """Compare two 22-query TPC-H compatibility reports without claiming a TPC score."""
 import argparse
 import json
+import re
 from pathlib import Path
 
 from feature_gaps import load_report
@@ -11,6 +12,7 @@ STATUSES = frozenset((
     "unsupported_query", "mismatch", "timeout", "reference_error", "error",
 ))
 LEVEL = {"passed": 2, "unverified": 1}
+FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _statuses(report):
@@ -34,6 +36,12 @@ def _statuses(report):
 def compare(before, after):
     older = _statuses(before)
     newer = _statuses(after)
+    older_hash, newer_hash = before.get("query_sha256"), after.get("query_sha256")
+    if (older_hash is not None or newer_hash is not None) and (
+        not isinstance(older_hash, str) or not isinstance(newer_hash, str)
+        or not FINGERPRINT.fullmatch(older_hash) or older_hash != newer_hash
+    ):
+        raise ValueError("TPC-H coverage comparison requires matching SQL fingerprints")
     changes = []
     error_transitions = []
     older_errors = {row["query"]: row.get("error") for row in before["results"]}
