@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from subprocess import CompletedProcess
 
 from parser_inventory import inventory, parse_statement
 
@@ -40,6 +42,12 @@ class ParserInventoryTests(unittest.TestCase):
             self.assertEqual(report["results"][0]["status"], "invalid_query")
             self.assertEqual(report["results"][1]["status"], "invalid_query")
             self.assertEqual(seen, [])
+
+    def test_parse_statement_rejects_empty_success_output(self):
+        with patch("parser_inventory.subprocess.run", return_value=CompletedProcess([], 0)):
+            parsed, error = parse_statement("unused", "SELECT 1")
+        self.assertFalse(parsed)
+        self.assertIn("without an AST", error)
 
     def test_parse_statement_refuses_invalid_timeout(self):
         for timeout in (0, -1, float("nan"), float("inf"), True):
