@@ -16,7 +16,7 @@ You can also write an inner equi-join as `FROM users u, teams t WHERE u.team_id 
 
 For a two-table INNER JOIN, scalar `COUNT(column)`, `SUM`, `AVG`, `MIN`, and `MAX` accept an unqualified argument when the column name is unique.
 
-Two to eight INNER-joined tables support grouped `COUNT(DISTINCT integer_column)` with bounded memory. It skips NULLs and supports boolean filters on unqualified columns.
+Two to eight INNER-joined tables support grouped `COUNT(DISTINCT integer_column)` with bounded memory. It skips NULLs and supports boolean filters on unqualified columns. A conjunctive filter can include one uncorrelated `NOT IN (SELECT integer_key FROM table WHERE ...)` subquery with matching integer types; it is limited to 100,000 keys and 16 MiB of output.
 
 A chain of three to eight INNER joins supports up to 16 AND-connected comparisons between columns or against literals in `WHERE`, with projections, ordering, scalar `COUNT`, or grouped `COUNT(*)`. Unordered projections and grouped counts stream the first input; other paths materialize inputs and intermediate results within the existing chained-join row and memory limits. Grouped queries can also use one `SUM` of a numeric column or arithmetic expression using unqualified numeric columns, with NULL values skipped and up to eight grouping keys.
 
