@@ -80,6 +80,9 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
         advance_ascii_digits(bytes, index);
     }
     scan_exponent(bytes, index)?;
+    if bytes.get(*index) == Some(&b'_') {
+        return Err(ParseError("numeric separators must be between digits".into()));
+    }
     let raw = &sql[start..*index];
     // Preserve the fast path for ordinary numbers, while passing canonical
     // digits to every downstream Int64/Float64 literal and cast parser.
@@ -485,5 +488,25 @@ mod doubled_equals_tests {
             "SELECT number FROM numbers(4) WHERE number === 2"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod invalid_decimal_separator_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_underscores_outside_decimal_digit_runs() {
+        for bad in ["1_", "1__2", "1_.2", ".5_", "1e2_", "1e2__3"] {
+            assert!(super::super::tokenize(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn retains_valid_readable_decimal_and_exponent_literals() {
+        assert_eq!(
+            super::super::tokenize("1_2.3_4e+5_6").unwrap(),
+            vec![Token::Number("12.34e+56".into())],
+        );
     }
 }
