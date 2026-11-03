@@ -467,9 +467,46 @@ pub fn execute<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let mut buffered = BufWriter::new(output);
-    execute_into(query, part, &mut buffered)?;
+    if let Some(literal) = query.grouped_literal {
+        let mut prefixed = GroupedLiteralWriter {
+            inner: &mut buffered,
+            prefix: format!("{literal}\t"),
+            at_start: true,
+        };
+        execute_into(query, part, &mut prefixed)?;
+    } else {
+        execute_into(query, part, &mut buffered)?;
+    }
     buffered.flush()?;
     Ok(())
+}
+
+struct GroupedLiteralWriter<'a, W> {
+    inner: &'a mut W,
+    prefix: String,
+    at_start: bool,
+}
+impl<W: Write> Write for GroupedLiteralWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut start = 0;
+        while start < buf.len() {
+            if self.at_start {
+                self.inner.write_all(self.prefix.as_bytes())?;
+                self.at_start = false;
+            }
+            let end = buf[start..]
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .map_or(buf.len(), |index| start + index + 1);
+            self.inner.write_all(&buf[start..end])?;
+            self.at_start = buf[end - 1] == b'\n';
+            start = end;
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Atomically hand out independent part indices to workers. This avoids
