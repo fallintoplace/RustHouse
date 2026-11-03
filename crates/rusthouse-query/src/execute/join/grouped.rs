@@ -84,6 +84,8 @@ fn probe_grouped_left<F>(
     hash: &HashMap<Vec<typed::Key>, Bucket>,
     group_index: usize,
     null_filter: Option<(usize, bool)>,
+    comparison_filter: Option<(usize, crate::Operator, &typed::Cell)>,
+    preserve_unmatched: bool,
     any: bool,
     mut emit: F,
 ) -> Result<(), ExecutionError>
@@ -99,6 +101,9 @@ where
         if column < width {
             retained.push(column);
         }
+    }
+    if let Some((column, _, _)) = comparison_filter {
+        retained.push(column);
     }
     retained.sort_unstable();
     retained.dedup();
@@ -123,6 +128,13 @@ where
     let null = typed::Cell::Null;
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
+            if let Some((column, operator, literal)) = comparison_filter {
+                let batch_index = retained.binary_search(&column).expect("comparison retained");
+                let value = typed::cell(&batch[batch_index], row);
+                if !typed::matches_comparison(&value, literal, operator) {
+                    continue;
+                }
+            }
             let left_group = group_batch.map(|column| typed::cell(&batch[column], row));
             let mut matched = false;
             if batch_key_into(&batch, row, &key_indices, &mut key) {
@@ -152,7 +164,7 @@ where
                     }
                 }
             }
-            if !matched {
+            if !matched && preserve_unmatched {
                 // Every unmatched row has NULL in all right-side columns.
                 if let Some((_, not_null)) = null_filter {
                     let is_null = if let Some(index) = filter_batch {
@@ -195,6 +207,19 @@ pub(super) fn execute<W: Write>(
         inspect_query_source(right_path)?.columns[index - width].data_type.clone()
     };
     let group_name = format!("{}.{}", key_column.relation, key_column.name);
+    let comparison_filter = query
+        .where_comparison
+        .as_ref()
+        .map(|(column, operator, text)| {
+            let index = resolve(query, column, left_names, right_names)?;
+            if index >= width {
+                return Err(invalid("grouped JOIN comparison filter must reference the fact table"));
+            }
+            let metadata = inspect_query_source(left_path)?;
+            let literal = typed::parse_literal(&metadata.columns[index].data_type, text)?;
+            Ok((index, *operator, literal))
+        })
+        .transpose()?;
     if query.limit == Some(0) {
         writeln!(output, "{group_name}\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
         return Ok(());
@@ -215,7 +240,7 @@ pub(super) fn execute<W: Write>(
     let mut groups: HashMap<typed::Key, (typed::Cell, u64)> = HashMap::new();
     let mut group_count = 0usize;
     let mut bytes = 0usize;
-    if query.kind == JoinType::Left {
+    if query.kind == JoinType::Left || comparison_filter.is_some() {
         probe_grouped_left(
             left_path,
             left_names,
@@ -224,6 +249,8 @@ pub(super) fn execute<W: Write>(
             &hash,
             index,
             null_filter,
+            comparison_filter.as_ref().map(|(column, operator, literal)| (*column, *operator, literal)),
+            query.kind == JoinType::Left,
             query.any,
             |value| add_group(&mut groups, value, &mut group_count, &mut bytes),
         )?;

@@ -591,13 +591,17 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     if where_comparison.is_some()
         && (kind != JoinType::Inner
             || !steps.is_empty()
-            || !order_by.is_empty()
-            || !matches!(aggregate.as_ref(), None | Some(JoinAggregate::CountStar))
-            || grouped_count_projection
-            || group_by.is_some())
+            || (grouped_count_projection
+                && where_comparison
+                    .as_ref()
+                    .is_some_and(|(column, _, _)| column.relation != left_alias))
+            || (!grouped_count_projection
+                && (!order_by.is_empty()
+                    || !matches!(aggregate.as_ref(), None | Some(JoinAggregate::CountStar))
+                    || group_by.is_some())))
     {
         return Err(ParseError(
-            "JOIN comparison WHERE supports unordered two-table INNER joins with at most COUNT(*)"
+            "JOIN comparison WHERE requires an unordered two-table INNER JOIN, or grouped COUNT(*) with a fact-side filter"
                 .into(),
         ));
     }
