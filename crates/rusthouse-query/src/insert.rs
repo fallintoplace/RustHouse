@@ -119,7 +119,7 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
             rows: vec![Vec::new()],
         }));
     }
-    if !parser.keyword("VALUES") {
+    if !parser.keyword("VALUES") && !parser.keyword("VALUE") {
         return Err(ParseError("expected VALUES after INSERT table".into()));
     }
     let mut rows = Vec::new();
@@ -319,5 +319,20 @@ mod insert_trailing_column_comma_tests {
         ] {
             assert!(parse_insert(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod singular_value_keyword_tests {
+    use super::*;
+
+    #[test]
+    fn singular_value_spelling_uses_normal_row_parser() {
+        let parsed = parse_insert("INSERT INTO events (id) VALUE (7)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.columns, Some(vec!["id".into()]));
+        assert_eq!(parsed.rows, vec![vec![Some("7".into())]]);
+        assert!(parse_insert("INSERT INTO events VALUE 7").is_err());
     }
 }
