@@ -141,6 +141,9 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
             if !parser.take(Token::Comma) {
                 break;
             }
+            if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+                break;
+            }
         }
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after row values".into()));
@@ -316,6 +319,29 @@ mod insert_trailing_column_comma_tests {
             "INSERT INTO t (,) VALUES (1)",
             "INSERT INTO t (id,,) VALUES (1)",
             "INSERT INTO t (id,id,) VALUES (1,2)",
+        ] {
+            assert!(parse_insert(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod insert_values_trailing_comma_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_single_trailing_comma_per_values_row() {
+        let with_commas = parse_insert("INSERT INTO t VALUES (1, 'a',), (2, 'b',)")
+            .unwrap();
+        let plain = parse_insert("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+            .unwrap();
+        assert_eq!(with_commas, plain);
+
+        for invalid in [
+            "INSERT INTO t VALUES (,)",
+            "INSERT INTO t VALUES (1,,)",
+            "INSERT INTO t VALUES (1, 2,,)",
         ] {
             assert!(parse_insert(invalid).is_err(), "{invalid}");
         }
