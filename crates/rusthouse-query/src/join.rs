@@ -3,6 +3,7 @@
 mod correlated;
 mod correlated_avg;
 mod derived_count;
+mod derived_sum;
 mod exists_lookup;
 mod implicit;
 mod syntax;
@@ -24,6 +25,7 @@ pub use correlated_avg::{
 pub use derived_count::{
     DerivedJoinCount, has_derived_join_count, parse_derived_join_count_with_schema,
 };
+pub use derived_sum::parse_derived_join_sum_with_schema;
 pub use exists_lookup::{JoinExistsKey, JoinExistsLookup};
 
 use super::{ParseError, Parser, Token, tokenize};
