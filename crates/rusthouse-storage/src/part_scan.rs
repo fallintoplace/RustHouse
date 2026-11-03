@@ -92,6 +92,11 @@ impl NumericPartReader {
             ));
         }
         let part = part.as_ref();
+        if crate::is_compact_part(part)? {
+            return Err(PartError::InvalidScan(
+                "compact MergeTree part requires a compact-part reader".into(),
+            ));
+        }
         let metadata = inspect_part(part)?;
         // A narrow projection does not need a hash table for every schema
         // field. Wide projections still resolve columns through one index.
