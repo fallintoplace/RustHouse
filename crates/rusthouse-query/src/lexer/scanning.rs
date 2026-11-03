@@ -132,6 +132,13 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             return Err(ParseError("unterminated string literal".into()));
         };
         cursor += distance;
+        // ClickHouse reserves \\N as an empty escape sequence.
+        if bytes[cursor] == b'\\' && bytes.get(cursor + 1) == Some(&b'N') {
+            value.push_str(&sql[start..cursor]);
+            cursor += 2;
+            start = cursor;
+            continue;
+        }
         let escaped = match (bytes[cursor], bytes.get(cursor + 1)) {
             (b'\\', Some(b'\'' | b'\\')) => Some(bytes[cursor + 1]),
             (b'\\', Some(b'n')) => Some(b'\n'),
@@ -454,6 +461,26 @@ mod quoted_identifier_fast_path_tests {
             scan_quoted_identifier("`ok_42`", &mut 0).unwrap(),
             Token::QuotedWord("ok_42".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod reserved_null_escape_tests {
+    use super::*;
+
+    #[test]
+    fn clickhouse_reserved_uppercase_n_escape_contributes_no_characters() {
+        for (sql, expected) in [
+            (r"'a\Nb'", "ab"),
+            (r"'\N'", ""),
+            (r"'pre\Npost''fix'", "prepost'fix"),
+            (r"'a\nb'", "a\nb"),
+            (r"'a\_b'", r"a\_b"),
+        ] {
+            let mut index = 0;
+            assert_eq!(scan_string(sql, &mut index).unwrap(), Token::String(expected.into()));
+            assert_eq!(index, sql.len());
+        }
     }
 }
 
