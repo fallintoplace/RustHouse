@@ -1190,13 +1190,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             ConstantValue::Text(name.into())
         }
         "POSITION" => {
-            let haystack = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "position requires two arguments")?;
-            let needle = text_arg(parser, depth + 1)?;
-            let start = if parser.take(Token::Comma) {
-                integer_arg(parser, depth + 1)?
+            let first = text_arg(parser, depth + 1)?;
+            // SQL-standard POSITION(needle IN haystack), alongside the
+            // existing ClickHouse POSITION(haystack, needle[, start]).
+            let (haystack, needle, start) = if parser.keyword("IN") {
+                (text_arg(parser, depth + 1)?, first, Some(1))
             } else {
-                Some(1)
+                require(parser, Token::Comma, "position requires two arguments")?;
+                let needle = text_arg(parser, depth + 1)?;
+                let start = if parser.take(Token::Comma) {
+                    integer_arg(parser, depth + 1)?
+                } else {
+                    Some(1)
+                };
+                (first, needle, start)
             };
             require(
                 parser,
