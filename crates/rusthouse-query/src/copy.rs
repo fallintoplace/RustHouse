@@ -66,9 +66,9 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
     if !parser.keyword("HEADER") {
         return Err(ParseError("expected HEADER after CSV".into()));
     }
-    if parser.keyword("TRUE") {
+    if parser.keyword("TRUE") || parser.keyword("YES") {
         Ok(true)
-    } else if parser.keyword("FALSE") {
+    } else if parser.keyword("FALSE") || parser.keyword("NO") {
         Ok(false)
     } else if parser.tokens.get(parser.index) == Some(&Token::RParen) {
         Ok(true)
@@ -237,5 +237,20 @@ mod tests {
             parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)")
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod copy_header_yes_no_tests {
+    use super::parse_copy_from;
+
+    #[test]
+    fn accepts_boolean_word_header_aliases() {
+        for (value, expected) in [("YES", true), ("NO", false)] {
+            let sql = format!("COPY events FROM 'rows.csv' WITH (FORMAT CSV, HEADER {value})");
+            let parsed = parse_copy_from(&sql).unwrap().unwrap();
+            assert_eq!(parsed.header, expected);
+        }
+        assert!(parse_copy_from("COPY events FROM 'rows.csv' WITH (FORMAT CSV, HEADER MAYBE)").is_err());
     }
 }
