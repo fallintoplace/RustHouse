@@ -39,6 +39,9 @@ fn parse_copy_column_list(parser: &mut Parser) -> Result<Option<Vec<String>>, Pa
         if !parser.take(Token::Comma) {
             break;
         }
+        if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+            break;
+        }
     }
     if !parser.take(Token::RParen) {
         return Err(ParseError("expected ')' after COPY columns".into()));
@@ -282,6 +285,27 @@ mod copy_header_first_tests {
         for invalid in [
             "COPY events FROM 'rows.csv' WITH (HEADER TRUE, HEADER FALSE)",
             "COPY events FROM 'rows.csv' WITH (HEADER TRUE, FORMAT JSONEACHROW)",
+        ] {
+            assert!(parse_copy_from(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod copy_column_trailing_comma_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_single_trailing_copy_column_comma() {
+        let with_comma = parse_copy_from("COPY t (id, name,) FROM 'rows.csv'").unwrap();
+        let plain = parse_copy_from("COPY t (id, name) FROM 'rows.csv'").unwrap();
+        assert_eq!(with_comma, plain);
+
+        for invalid in [
+            "COPY t (,) FROM 'rows.csv'",
+            "COPY t (id,,) FROM 'rows.csv'",
+            "COPY t (id, id,) FROM 'rows.csv'",
         ] {
             assert!(parse_copy_from(invalid).is_err(), "{invalid}");
         }
