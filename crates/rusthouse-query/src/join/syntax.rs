@@ -6,7 +6,7 @@ const RESERVED_ALIAS_KEYWORDS: &[&str] = &[
 ];
 
 fn qualified_relation(parser: &mut Parser) -> Result<String, ParseError> {
-    let relation = parser.word()?;
+    let relation = parser.bounded_word()?;
     if !parser.take(Token::Dot) {
         return Err(ParseError(
             "JOIN columns must be qualified (alias.column)".into(),
@@ -17,7 +17,7 @@ fn qualified_relation(parser: &mut Parser) -> Result<String, ParseError> {
 
 pub(super) fn qualified(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
     let relation = qualified_relation(parser)?;
-    let name = parser.word()?;
+    let name = parser.bounded_word()?;
     Ok(JoinColumn { relation, name })
 }
 
@@ -26,7 +26,7 @@ pub(super) fn projected(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
     let name = if parser.take(Token::Star) {
         "*".to_owned()
     } else {
-        parser.word()?
+        parser.bounded_word()?
     };
     Ok(JoinColumn { relation, name })
 }
@@ -110,4 +110,26 @@ pub(super) fn bound(parser: &mut Parser, label: &str) -> Result<usize, ParseErro
     number
         .parse::<usize>()
         .map_err(|_| ParseError(format!("{label} exceeds address space")))
+}
+
+#[cfg(test)]
+mod bounded_join_column_tests {
+    use super::*;
+
+    #[test]
+    fn reject_oversized_qualified_column_names() {
+        let allowed = "a".repeat(128);
+        let oversized = "a".repeat(129);
+        let query = format!(
+            "SELECT l.{allowed} FROM lefts l JOIN rights r ON l.id = r.id"
+        );
+        assert!(parse_join(&query).is_ok());
+        for query in [
+            format!("SELECT l.{oversized} FROM lefts l JOIN rights r ON l.id = r.id"),
+            format!("SELECT l.id FROM lefts l JOIN rights r ON l.{oversized} = r.id"),
+            format!("SELECT l.id FROM lefts l JOIN rights r ON l.id = r.{oversized}"),
+        ] {
+            assert!(parse_join(&query).is_err(), "{query}");
+        }
+    }
 }
