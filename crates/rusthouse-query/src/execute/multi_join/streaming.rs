@@ -369,7 +369,7 @@ pub(super) fn execute<W: Write>(
             }).collect::<Result<Vec<_>, ExecutionError>>()?
         };
         let mut rows = state.groups.into_values().collect::<Vec<_>>();
-        rows.sort_by(|left, right| {
+        let compare = |left: &(Vec<typed::Cell>, u64), right: &(Vec<typed::Cell>, u64)| {
             for &(index, descending, nulls_first) in &ordering {
                 let result = if let Some(index) = index {
                     typed::compare_order_cells(
@@ -384,7 +384,12 @@ pub(super) fn execute<W: Write>(
                 }
             }
             std::cmp::Ordering::Equal
-        });
+        };
+        let bounded = query
+            .limit
+            .and_then(|limit| query.offset.checked_add(limit))
+            .filter(|&end| end < rows.len())
+            .map(|end| super::super::sorted_group_positions(&rows, end, &compare));
         for (index, (_, name, _)) in selected.iter().enumerate() {
             if index != 0 {
                 output.write_all(b"\t")?;
@@ -392,7 +397,7 @@ pub(super) fn execute<W: Write>(
             output.write_all(name.as_bytes())?;
         }
         writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
-        for (values, count) in rows.iter().skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+        let mut write_group = |values: &[typed::Cell], count: u64| -> Result<(), ExecutionError> {
             for (index, value) in values.iter().enumerate() {
                 if index > 0 {
                     output.write_all(b"\t")?;
@@ -401,6 +406,22 @@ pub(super) fn execute<W: Write>(
                 typed::write_typed_value(output, value, spec.types[source])?;
             }
             writeln!(output, "\t{count}")?;
+            Ok(())
+        };
+        if let Some(positions) = bounded {
+            for index in positions.into_iter().skip(query.offset) {
+                let (values, count) = &rows[index];
+                write_group(values, *count)?;
+            }
+        } else {
+            rows.sort_by(compare);
+            for (values, count) in rows
+                .iter()
+                .skip(query.offset)
+                .take(query.limit.unwrap_or(usize::MAX))
+            {
+                write_group(values, *count)?;
+            }
         }
     }
     Ok(())
