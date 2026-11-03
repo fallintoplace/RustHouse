@@ -10,9 +10,9 @@ Join two local tables with an INNER JOIN:
 cargo run -p rusthouse-cli -- sql "SELECT u.id, t.label FROM users u JOIN teams t ON u.team_id = t.id ORDER BY u.id LIMIT 10" --database ./mydb
 ```
 
-Use qualified names for join keys, such as `u.team_id`. Projection columns may omit the table name when the column is unique across the joined tables. NULL join keys do not match. RustHouse supports INNER, LEFT, RIGHT, and FULL joins, with up to eight tables and eight equality keys per join. Aliases, projections, ORDER BY, LIMIT, and OFFSET are also supported.
+Use qualified names for join keys, such as `u.team_id`. Projection and supported WHERE filter columns may omit the table name when the column is unique across the joined tables. NULL join keys do not match. RustHouse supports INNER, LEFT, RIGHT, and FULL joins, with up to eight tables and eight equality keys per join. Aliases, projections, ORDER BY, LIMIT, and OFFSET are also supported.
 
-You can also write an inner equi-join as `FROM users u, teams t WHERE u.team_id = t.id`. The equality keys must connect all tables. RustHouse can reorder the joins to connect them; use explicit projections if reordering is needed. In CLI database mode, an equality with two unqualified keys is resolved from the table schemas when each name is unique. Other join columns still need qualified names. The same join limits apply. Comma joins with `OR` are not supported.
+You can also write an inner equi-join as `FROM users u, teams t WHERE u.team_id = t.id`. The equality keys must connect all tables. RustHouse can reorder the joins to connect them; use explicit projections if reordering is needed. In CLI database mode, an equality with two unqualified keys is resolved from the table schemas when each name is unique. Other join keys, grouping keys, and sort keys still need qualified names. The same join limits apply. Comma joins with `OR` are not supported.
 
 **Limits for two-table joins:**
 
