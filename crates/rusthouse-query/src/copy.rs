@@ -67,6 +67,7 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
     if !parser.keyword("HEADER") {
         return Err(ParseError("expected HEADER after CSV".into()));
     }
+    let assigned = parser.take(Token::Operator(crate::Operator::Eq));
     if parser.keyword("TRUE") || parser.keyword("YES") {
         Ok(true)
     } else if parser.keyword("FALSE") || parser.keyword("NO") {
@@ -79,7 +80,7 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
         };
         parser.index += 1;
         Ok(enabled)
-    } else if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+    } else if !assigned && parser.tokens.get(parser.index) == Some(&Token::RParen) {
         Ok(true)
     } else {
         Err(ParseError("HEADER must be TRUE, FALSE, 0 or 1".into()))
@@ -282,6 +283,33 @@ mod copy_header_first_tests {
         for invalid in [
             "COPY events FROM 'rows.csv' WITH (HEADER TRUE, HEADER FALSE)",
             "COPY events FROM 'rows.csv' WITH (HEADER TRUE, FORMAT JSONEACHROW)",
+        ] {
+            assert!(parse_copy_from(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod copy_header_assignment_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_equals_before_boolean_header_values() {
+        let enabled = parse_copy_from("COPY t FROM 'rows.csv' WITH (FORMAT CSV, HEADER = TRUE)")
+            .unwrap()
+            .unwrap();
+        assert!(enabled.header);
+        let disabled = parse_copy_from("COPY t FROM 'rows.tsv' WITH (HEADER = 0, FORMAT TSV)")
+            .unwrap()
+            .unwrap();
+        assert!(!disabled.header);
+        assert_eq!(disabled.format, CopyFormat::Tsv);
+
+        for invalid in [
+            "COPY t FROM 'rows.csv' WITH (HEADER =)",
+            "COPY t FROM 'rows.csv' WITH (HEADER = MAYBE)",
+            "COPY t FROM 'rows.csv' WITH (HEADER = 2)",
         ] {
             assert!(parse_copy_from(invalid).is_err(), "{invalid}");
         }
