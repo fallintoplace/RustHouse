@@ -551,11 +551,15 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
     }
     let (limit, comma_offset) = if parser.keyword("LIMIT") {
-        let first = bound(&mut parser, "LIMIT")?;
-        if parser.take(Token::Comma) {
-            (Some(bound(&mut parser, "LIMIT")?), Some(first))
+        if parser.keyword("ALL") {
+            (None, None)
         } else {
-            (Some(first), None)
+            let first = bound(&mut parser, "LIMIT")?;
+            if parser.take(Token::Comma) {
+                (Some(bound(&mut parser, "LIMIT")?), Some(first))
+            } else {
+                (Some(first), None)
+            }
         }
     } else {
         (None, None)
@@ -1420,5 +1424,21 @@ mod tests {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
         assert!(parse_join("SELECT a.*, b.id FROM lefts a JOIN rights b ON a.id = b.id").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod join_limit_all_tests {
+    use super::*;
+
+    #[test]
+    fn limit_all_preserves_unbounded_join_and_offset() {
+        for suffix in ["LIMIT ALL", "LIMIT ALL OFFSET 4"] {
+            let query = parse_join(&format!("SELECT * FROM l JOIN r ON l.id = r.id {suffix}"))
+                .unwrap().unwrap();
+            assert_eq!(query.limit, None, "{suffix}");
+            assert_eq!(query.offset, if suffix.contains("OFFSET") { 4 } else { 0 });
+        }
+        assert!(parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT ALL, 2").is_err());
     }
 }
