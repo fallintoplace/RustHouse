@@ -158,6 +158,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             if !parser.take(Token::Comma) {
                 break;
             }
+            if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("FROM")) {
+                break;
+            }
             if parser.keyword("COUNT") {
                 if !parser.take(Token::LParen)
                     || !parser.take(Token::Star)
@@ -1420,5 +1423,19 @@ mod tests {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
         assert!(parse_join("SELECT a.*, b.id FROM lefts a JOIN rights b ON a.id = b.id").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod join_projection_trailing_comma_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_trailing_comma_before_join_from() {
+        let query = parse_join("SELECT l.id, r.label, FROM l JOIN r ON l.id = r.id")
+            .unwrap().unwrap();
+        assert_eq!(query.columns.unwrap().len(), 2);
+        assert!(parse_join("SELECT l.id,, FROM l JOIN r ON l.id = r.id").is_err());
+        assert!(parse_join("SELECT , FROM l JOIN r ON l.id = r.id").is_err());
     }
 }
