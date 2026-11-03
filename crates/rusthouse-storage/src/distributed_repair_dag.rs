@@ -19,6 +19,33 @@ pub struct RepairWave {
     pub bytes: u64,
 }
 
+fn build_dependency_graph(
+    tasks: &[RepairTask],
+    by_id: &HashMap<&str, usize>,
+) -> Result<(Vec<Vec<usize>>, Vec<usize>), &'static str> {
+    let mut edges: Vec<Vec<usize>> = vec![Vec::new(); tasks.len()];
+    let mut indegree = vec![0usize; tasks.len()];
+    let mut total_edges = 0usize;
+    for (index, task) in tasks.iter().enumerate() {
+        let mut seen = HashSet::new();
+        for dep in &task.depends_on {
+            let parent = *by_id
+                .get(dep.as_str())
+                .ok_or("unknown repair prerequisite")?;
+            if parent == index || !seen.insert(parent) {
+                return Err("self-dependent or repeated repair prerequisite");
+            }
+            total_edges += 1;
+            if total_edges > MAX_DEPENDENCIES {
+                return Err("repair dependency graph exceeds limit");
+            }
+            edges[parent].push(index);
+            indegree[index] += 1;
+        }
+    }
+    Ok((edges, indegree))
+}
+
 pub fn plan_repair_waves(
     tasks: &[RepairTask],
     max_parallel: usize,
@@ -46,26 +73,7 @@ pub fn plan_repair_waves(
             return Err("invalid repair task identity or size");
         }
     }
-    let mut edges: Vec<Vec<usize>> = vec![Vec::new(); tasks.len()];
-    let mut indegree = vec![0usize; tasks.len()];
-    let mut total_edges = 0usize;
-    for (index, task) in tasks.iter().enumerate() {
-        let mut seen = HashSet::new();
-        for dep in &task.depends_on {
-            let parent = *by_id
-                .get(dep.as_str())
-                .ok_or("unknown repair prerequisite")?;
-            if parent == index || !seen.insert(parent) {
-                return Err("self-dependent or repeated repair prerequisite");
-            }
-            total_edges += 1;
-            if total_edges > MAX_DEPENDENCIES {
-                return Err("repair dependency graph exceeds limit");
-            }
-            edges[parent].push(index);
-            indegree[index] += 1;
-        }
-    }
+    let (edges, mut indegree) = build_dependency_graph(tasks, &by_id)?;
 
     let mut completed = vec![false; tasks.len()];
     let mut count = 0usize;
