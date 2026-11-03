@@ -268,7 +268,7 @@ pub(super) fn execute<W: Write>(
         }
         // A skewed build can contain far fewer distinct keys than input
         // rows. Reserve a small table, then charge each retained key.
-        let mut hash = HashMap::with_capacity(right_rows.len().min(4096));
+        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len().min(4096));
         let mut scratch_key = Vec::with_capacity(right_keys.len());
         for (index, row) in right_rows.iter().enumerate() {
             if !row_key_into(row, &right_keys, &mut scratch_key) {
