@@ -7,6 +7,9 @@ use std::collections::hash_map::Entry;
 
 use super::super::join::read_projected_build_rows;
 
+const MAX_STREAM_GROUPS: usize = 100_000;
+const MAX_STREAM_GROUP_BYTES: usize = 64 * 1024 * 1024;
+
 // Conservatively charge hash buckets, key vectors and owned payloads as
 // well as the already-accounted retained dimension rows.
 fn hash_key_bytes(key: &[typed::Key]) -> Result<usize, ExecutionError> {
@@ -49,6 +52,9 @@ struct Stage {
 struct OutputState {
     seen: u64,
     emitted: usize,
+    groups: HashMap<Vec<typed::Key>, (Vec<typed::Cell>, u64)>,
+    group_key: Vec<typed::Key>,
+    group_bytes: usize,
 }
 
 struct OutputSpec<'a> {
@@ -56,6 +62,7 @@ struct OutputSpec<'a> {
     /// Physical source types, including projected USING fallbacks.
     types: Vec<&'a str>,
     null_filter: Option<(usize, bool)>,
+    group_indices: Option<Vec<usize>>,
     offset: usize,
     limit: Option<usize>,
 }
@@ -78,6 +85,44 @@ fn visit<W: Write>(
             if is_null == not_null {
                 return Ok(());
             }
+        }
+        if let Some(indices) = &spec.group_indices {
+            state.group_key.clear();
+            for &index in indices {
+                state.group_key.push(row[index].key());
+            }
+            if let Some((_, count)) = state.groups.get_mut(state.group_key.as_slice()) {
+                *count = count.checked_add(1)
+                    .ok_or_else(|| invalid("chained JOIN group count overflow"))?;
+            } else {
+                if state.groups.len() >= MAX_STREAM_GROUPS {
+                    return Err(invalid("chained JOIN supports at most 100000 groups"));
+                }
+                let variable = indices.iter().try_fold(0usize, |total, &index| {
+                    let len = match &row[index] {
+                        typed::Cell::Text(value) => value.len(),
+                        typed::Cell::Uuid(value) => value.len(),
+                        _ => 0,
+                    };
+                    len.checked_mul(2).and_then(|bytes| total.checked_add(bytes))
+                        .ok_or_else(|| invalid("chained JOIN grouped key size overflow"))
+                })?;
+                let fixed = indices.len().checked_mul(
+                    std::mem::size_of::<typed::Key>() + std::mem::size_of::<typed::Cell>()
+                ).and_then(|bytes| bytes.checked_add(
+                    std::mem::size_of::<(Vec<typed::Key>, Vec<typed::Cell>, u64)>()
+                )).ok_or_else(|| invalid("chained JOIN group size overflow"))?;
+                state.group_bytes = state.group_bytes
+                    .checked_add(fixed)
+                    .and_then(|bytes| bytes.checked_add(variable))
+                    .filter(|&bytes| bytes <= MAX_STREAM_GROUP_BYTES)
+                    .ok_or_else(|| invalid("chained JOIN grouped memory budget exceeded"))?;
+                state.groups.insert(
+                    state.group_key.clone(),
+                    (indices.iter().map(|&index| row[index].clone()).collect(), 1),
+                );
+            }
+            return Ok(());
         }
         state.seen = state
             .seen
@@ -148,6 +193,9 @@ pub(super) fn execute<W: Write>(
             .flat_map(|relation| relation.types.iter().map(String::as_str))
             .collect(),
         null_filter,
+        group_indices: query.grouped_count.as_ref().map(|_| {
+            selected.iter().map(|(index, _, _)| *index).collect()
+        }),
         offset: query.offset,
         limit: query.limit,
     };
@@ -246,11 +294,22 @@ pub(super) fn execute<W: Write>(
             any: step.any,
         });
     }
-    write_join_header(output, &selected)?;
+    if spec.group_indices.is_none() {
+        write_join_header(output, &selected)?;
+    }
     // A build can contain physical rows but no legal JOIN keys (only NULL
     // or NaN). In an INNER chain that is as empty as a zero-row dimension,
     // so do not read or decode the potentially enormous fact table.
     if stages.iter().any(|stage| stage.hash.is_empty()) {
+        if query.grouped_count.is_some() {
+            for (index, (_, name, _)) in selected.iter().enumerate() {
+                if index != 0 {
+                    output.write_all(b"\t")?;
+                }
+                output.write_all(name.as_bytes())?;
+            }
+            writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+        }
         return Ok(());
     }
     let mut scratch_keys = stages
@@ -294,6 +353,55 @@ pub(super) fn execute<W: Write>(
     }
     if scanned != relations[0].rows {
         return Err(invalid("JOIN input row count changed during scan"));
+    }
+    if let Some(group_columns) = &query.grouped_count {
+        let ordering = if query.order_by.is_empty() {
+            (0..group_columns.len()).map(|index| (Some(index), false, Some(false))).collect::<Vec<_>>()
+        } else {
+            query.order_by.iter().map(|(column, descending, nulls)| {
+                let index = if column.is_count_order() {
+                    None
+                } else {
+                    Some(group_columns.iter().position(|group| group == column)
+                        .ok_or_else(|| invalid("grouped JOIN ORDER BY must use a key or count"))?)
+                };
+                Ok((index, *descending, *nulls))
+            }).collect::<Result<Vec<_>, ExecutionError>>()?
+        };
+        let mut rows = state.groups.into_values().collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            for &(index, descending, nulls_first) in &ordering {
+                let result = if let Some(index) = index {
+                    typed::compare_order_cells(
+                        &left.0[index], &right.0[index], descending, nulls_first,
+                    )
+                } else {
+                    let count_order = left.1.cmp(&right.1);
+                    if descending { count_order.reverse() } else { count_order }
+                };
+                if !result.is_eq() {
+                    return result;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+        for (index, (_, name, _)) in selected.iter().enumerate() {
+            if index != 0 {
+                output.write_all(b"\t")?;
+            }
+            output.write_all(name.as_bytes())?;
+        }
+        writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+        for (values, count) in rows.iter().skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    output.write_all(b"\t")?;
+                }
+                let source = selected[index].0;
+                typed::write_typed_value(output, value, spec.types[source])?;
+            }
+            writeln!(output, "\t{count}")?;
+        }
     }
     Ok(())
 }
