@@ -137,18 +137,35 @@ pub enum GroupedFilter {
         operator: Operator,
         literal: String,
     },
+    /// Multiple comparisons of the same column in a CASE ... THEN 1 ELSE 0.
+    CaseElseZeroCombined {
+        column: String,
+        comparisons: Vec<(Operator, String)>,
+        all: bool,
+    },
 }
 
 impl GroupedFilter {
     pub(crate) fn column(&self) -> &str {
         match self {
-            Self::Truthy(column) | Self::Comparison { column, .. } | Self::CaseElseZero { column, .. } => column,
+            Self::Truthy(column) | Self::Comparison { column, .. } | Self::CaseElseZero { column, .. }
+            | Self::CaseElseZeroCombined { column, .. } => column,
         }
     }
 
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Truthy(column) => column.clone(),
+            Self::CaseElseZeroCombined { column, comparisons, all } => {
+                let separator = if *all { " AND " } else { " OR " };
+                comparisons.iter().map(|(operator, literal)| {
+                    let symbol = match operator {
+                        Operator::Eq => "=", Operator::Ne => "!=", Operator::Lt => "<",
+                        Operator::Le => "<=", Operator::Gt => ">", Operator::Ge => ">=", _ => "?",
+                    };
+                    format!("{column} {symbol} {literal}")
+                }).collect::<Vec<_>>().join(separator)
+            }
             Self::Comparison { column, operator, literal }
             | Self::CaseElseZero { column, operator, literal } => {
                 let symbol = match operator {
@@ -928,6 +945,33 @@ fn grouped_metric_value(
         return Err(ParseError("grouped CASE requires a comparison condition".into()));
     }
     let literal = parser.literal()?;
+    let mut comparisons = vec![(operator, literal.clone())];
+    let mut all = None;
+    loop {
+        let conjunction = if parser.keyword("AND") {
+            true
+        } else if parser.keyword("OR") {
+            false
+        } else {
+            break;
+        };
+        if all.is_some_and(|previous| previous != conjunction) {
+            return Err(ParseError("grouped CASE cannot mix AND and OR without parentheses".into()));
+        }
+        all = Some(conjunction);
+        if comparisons.len() >= 8 {
+            return Err(ParseError("grouped CASE supports at most 8 comparisons".into()));
+        }
+        let next_column = parser.bounded_word()?;
+        if next_column != column {
+            return Err(ParseError("grouped CASE comparisons must use the same column".into()));
+        }
+        let next_operator = parser.operator()?;
+        if !matches!(next_operator, Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge) {
+            return Err(ParseError("grouped CASE requires a comparison condition".into()));
+        }
+        comparisons.push((next_operator, parser.literal()?));
+    }
     if !parser.keyword("THEN") {
         return Err(ParseError("grouped CASE requires THEN".into()));
     }
@@ -956,7 +1000,12 @@ fn grouped_metric_value(
     if unit_count && !else_zero {
         return Err(ParseError("SUM(CASE ... THEN 1) requires ELSE 0".into()));
     }
-    let filter = if else_zero {
+    let filter = if let Some(all) = all {
+        if !unit_count || !else_zero {
+            return Err(ParseError("combined grouped CASE requires THEN 1 ELSE 0".into()));
+        }
+        GroupedFilter::CaseElseZeroCombined { column, comparisons, all }
+    } else if else_zero {
         GroupedFilter::CaseElseZero { column, operator, literal }
     } else {
         GroupedFilter::Comparison { column, operator, literal }
