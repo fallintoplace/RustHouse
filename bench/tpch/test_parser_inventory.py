@@ -30,6 +30,19 @@ class ParserInventoryTests(unittest.TestCase):
             self.assertEqual(report["results"][1]["status"], "missing_query")
             self.assertEqual(seen, ["SELECT 1", "SELECT failure"])
 
+    def test_canonical_option_verifies_source_before_parser(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            (folder / "q01.sql").write_text("SELECT 1;")
+            observed = []
+            with patch("parser_inventory.verify_canonical_sql",
+                       side_effect=ValueError("noncanonical SQL")) as verify:
+                with self.assertRaisesRegex(ValueError, "noncanonical"):
+                    inventory("unused", folder, parse=lambda sql: observed.append(sql),
+                              require_canonical=True)
+            verify.assert_called_once_with(folder)
+            self.assertEqual(observed, [])
+
     def test_rejects_symlinked_and_empty_queries_without_parser_call(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
