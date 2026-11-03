@@ -61,6 +61,18 @@ pub(super) fn scan_radix_number(
     Ok(Token::Number(number.to_string()))
 }
 
+pub(super) fn scan_signed_radix_number(
+    sql: &str,
+    index: &mut usize,
+    radix: u32,
+) -> Result<Token, ParseError> {
+    *index += 1;
+    let Token::Number(value) = scan_radix_number(sql, index, radix)? else {
+        unreachable!("radix scanner always returns a number")
+    };
+    Ok(Token::Number(format!("-{value}")))
+}
+
 pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
     let start = *index;
