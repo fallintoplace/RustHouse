@@ -71,6 +71,17 @@ fn parse_update_assignment_value(
                 _ => Err(ParseError("UPDATE + requires a numeric literal".into())),
             }
         }
+        Some(Token::Minus) => {
+            parser.index += 1;
+            match parser.tokens.get(parser.index) {
+                Some(Token::Number(value)) if !value.starts_with('-') => {
+                    let value = format!("-{value}");
+                    parser.index += 1;
+                    Ok(UpdateValue::Literal(Some(value)))
+                }
+                _ => Err(ParseError("UPDATE - requires a numeric literal".into())),
+            }
+        }
         _ => Err(ParseError(
             "UPDATE SET accepts literals, NULL, or checked same-column integer offsets".into(),
         )),
@@ -326,5 +337,22 @@ mod update_boolean_literals_tests {
         assert!(
             parse_update("UPDATE flags SET active = TRUTH").is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod update_spaced_negative_tests {
+    use super::*;
+
+    #[test]
+    fn update_literal_may_have_whitespace_after_minus() {
+        let parsed = parse_update("UPDATE readings SET value = - 12")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parsed.assignments,
+            vec![("value".into(), UpdateValue::Literal(Some("-12".into())))]
+        );
+        assert!(parse_update("UPDATE readings SET value = - - 12").is_err());
     }
 }
