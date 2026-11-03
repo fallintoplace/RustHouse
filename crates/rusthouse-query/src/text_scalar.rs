@@ -2772,11 +2772,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "OVERLAY" | "OVERLAYUTF8" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "OVERLAY requires replacement text")?;
+            // Standard OVERLAY(text PLACING replacement FROM start [FOR length]).
+            let standard = name == "OVERLAY" && parser.keyword("PLACING");
+            if !standard {
+                require(parser, Token::Comma, "OVERLAY requires replacement text")?;
+            }
             let replacement = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "OVERLAY requires a start position")?;
+            if standard {
+                if !parser.keyword("FROM") {
+                    return Err(ParseError("OVERLAY requires FROM after PLACING".into()));
+                }
+            } else {
+                require(parser, Token::Comma, "OVERLAY requires a start position")?;
+            }
             let start = integer_arg(parser, depth + 1)?;
-            let length = if parser.take(Token::Comma) {
+            let length = if (standard && parser.keyword("FOR"))
+                || (!standard && parser.take(Token::Comma))
+            {
                 Some(integer_arg(parser, depth + 1)?)
             } else {
                 None
