@@ -10,8 +10,6 @@ pub struct CapacityLink {
     pub bytes_per_second: u64,
 }
 
-/// Return the maximum aggregate source-to-sink capacity in bytes per second.
-/// Antiparallel and repeated links are allowed and combined without overflow.
 // Each vertex enters this bounded BFS queue at most once.
 fn find_augmenting_path(
     residual: &[Vec<u128>],
@@ -41,6 +39,8 @@ fn find_augmenting_path(
     (parent[sink] != usize::MAX).then_some(parent)
 }
 
+/// Return the maximum aggregate source-to-sink capacity in bytes per second.
+/// Antiparallel and repeated links are allowed and combined without overflow.
 pub fn maximum_replica_flow(
     vertices: usize,
     links: &[CapacityLink],
