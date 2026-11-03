@@ -5,7 +5,7 @@ use rusthouse_query::{
     ExecutionError, JoinSelect, Source, bind_join_having_subquery, bind_join_in_subquery,
     execute_correlated_avg, execute_correlated_join, execute_correlated_min,
     execute_correlated_sum, execute_cte_max_join, execute_derived_join_count, execute_join,
-    execute_multi_join, explain_join,
+    execute_multi_join, execute_nested_join_sum, explain_join,
 };
 
 pub(super) fn try_cte_max(
@@ -250,6 +250,100 @@ pub(super) fn try_correlated_avg(
     };
     Some(format_response(format, |mut output| {
         execute_correlated_avg(&plan, &paths, &inner, &mut output)
+    }))
+}
+
+pub(super) fn try_nested_sum(
+    sql: &str,
+    explain: bool,
+    format: QueryFormat,
+    config: &Config,
+) -> Option<Response> {
+    match rusthouse_query::has_nested_join_sum(sql) {
+        Ok(true) => {}
+        Ok(false) => return None,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    }
+    let is_join = match (
+        rusthouse_query::has_implicit_join(sql),
+        rusthouse_query::has_explicit_join(sql),
+    ) {
+        (Ok(implicit), Ok(explicit)) => implicit || explicit,
+        (Err(error), _) | (_, Err(error)) => {
+            return Some(Response::text("400 Bad Request", &format!("{error}\n")));
+        }
+    };
+    if !is_join {
+        return None;
+    }
+    if config.part.is_some() && config.database.is_some() {
+        return Some(Response::text(
+            "400 Bad Request",
+            "choose --part or --database, not both\n",
+        ));
+    }
+    let Some(database) = config.database.as_deref() else {
+        return Some(Response::text(
+            "400 Bad Request",
+            "JOIN requires a database\n",
+        ));
+    };
+    let _lock = match rusthouse_storage::acquire_database_lock(database, false) {
+        Ok(lock) => lock,
+        Err(error) => return Some(Response::text("409 Conflict", &format!("{error}\n"))),
+    };
+    let plan = rusthouse_query::parse_nested_join_sum_with_schema(sql, |table| {
+        let path = resolve_database_table(database, table).map_err(rusthouse_query::ParseError)?;
+        rusthouse_storage::inspect_query_source(&path)
+            .map(|metadata| {
+                metadata
+                    .columns
+                    .into_iter()
+                    .map(|column| column.name)
+                    .collect()
+            })
+            .map_err(|error| rusthouse_query::ParseError(error.to_string()))
+    });
+    let mut plan = match plan {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return None,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    };
+    if explain {
+        return Some(Response::text(
+            "400 Bad Request",
+            "nested JOIN SUM cannot use --explain yet\n",
+        ));
+    }
+    plan.cap_rows(config.max_rows.min(250_000));
+    let query = plan.outer();
+    let tables = [&query.left, &query.right]
+        .into_iter()
+        .chain(query.steps.iter().map(|step| &step.table));
+    let paths = match tables
+        .map(|table| resolve_database_table(database, table))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(paths) => paths,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    };
+    let query = plan.inner().outer();
+    let tables = [&query.left, &query.right]
+        .into_iter()
+        .chain(query.steps.iter().map(|step| &step.table));
+    let inner = match tables
+        .map(|table| resolve_database_table(database, table))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(paths) => paths,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    };
+    let sum = match resolve_database_table(database, &plan.inner().table) {
+        Ok(path) => path,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    };
+    Some(format_response(format, |mut output| {
+        execute_nested_join_sum(&plan, &paths, &inner, &sum, &mut output)
     }))
 }
 

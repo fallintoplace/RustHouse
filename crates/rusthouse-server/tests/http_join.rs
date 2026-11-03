@@ -1033,3 +1033,92 @@ fn sql_http_executes_correlated_pair_sum() {
     );
     fs::remove_dir_all(database).unwrap();
 }
+
+#[test]
+fn sql_http_executes_tpch_q20() {
+    let database = std::env::temp_dir().join(format!("rusthouse-http-q20-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    let cols = |values: &[(&str, &str)]| {
+        values
+            .iter()
+            .map(|(name, kind)| Column {
+                name: (*name).into(),
+                data_type: (*kind).into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |values: &[&str]| values.iter().map(|v| Some((*v).into())).collect::<Vec<_>>();
+    table(
+        &database,
+        "supplier",
+        &cols(&[
+            ("s_suppkey", "UInt64"),
+            ("s_nationkey", "UInt64"),
+            ("s_name", "String"),
+            ("s_address", "String"),
+        ]),
+        &[row(&["1", "1", "A", "a"]), row(&["2", "1", "B", "b"])],
+    );
+    table(
+        &database,
+        "nation",
+        &cols(&[("n_nationkey", "UInt64"), ("n_name", "String")]),
+        &[row(&["1", "CANADA"])],
+    );
+    table(
+        &database,
+        "part",
+        &cols(&[("p_partkey", "UInt64"), ("p_name", "String")]),
+        &[row(&["1", "forest green"])],
+    );
+    table(
+        &database,
+        "partsupp",
+        &cols(&[
+            ("ps_suppkey", "UInt64"),
+            ("ps_partkey", "UInt64"),
+            ("ps_availqty", "Int64"),
+        ]),
+        &[row(&["1", "1", "11"]), row(&["2", "1", "11"])],
+    );
+    table(
+        &database,
+        "lineitem",
+        &cols(&[
+            ("l_partkey", "UInt64"),
+            ("l_suppkey", "UInt64"),
+            ("l_quantity", "Float64"),
+            ("l_shipdate", "Date"),
+        ]),
+        &[
+            row(&["1", "1", "20", "1994-01-01"]),
+            row(&["1", "2", "20", "1994-12-31"]),
+        ],
+    );
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let query = include_str!("../../../bench/tpch/queries/q20.sql");
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"s_name\ts_address\nA\ta\nB\tb\n");
+    let limited = handle_request(
+        "POST",
+        "/?format=tsv-no-header",
+        query.as_bytes(),
+        &Config {
+            max_rows: 1,
+            ..config.clone()
+        },
+    );
+    assert_eq!(limited.status, "200 OK", "{:?}", limited.body);
+    assert_eq!(limited.body, b"A\ta\n");
+    let invalid = query.replace("sum(l_quantity)", "sum(missing)");
+    assert_eq!(
+        handle_request("POST", "/", invalid.as_bytes(), &config).status,
+        "400 Bad Request"
+    );
+    fs::remove_dir_all(database).unwrap();
+}

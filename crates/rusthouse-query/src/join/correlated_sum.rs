@@ -31,7 +31,10 @@ fn keyword(token: &Token, name: &str) -> bool {
 
 /// Detect a top-level comparison to a factored SUM subquery.
 pub fn has_join_correlated_sum(sql: &str) -> Result<bool, ParseError> {
-    let tokens = tokenize(sql)?;
+    Ok(has_tokens(&tokenize(sql)?))
+}
+
+fn has_tokens(tokens: &[Token]) -> bool {
     let mut depth = 0usize;
     let mut in_where = false;
     for (index, token) in tokens.iter().enumerate() {
@@ -56,7 +59,7 @@ pub fn has_join_correlated_sum(sql: &str) -> Result<bool, ParseError> {
             && tokens.get(index + 5).is_some_and(|t| keyword(t, "SUM"))
             && tokens.get(index + 6) == Some(&Token::LParen)
         {
-            return Ok(true);
+            return true;
         }
         match token {
             Token::LParen => depth += 1,
@@ -64,7 +67,7 @@ pub fn has_join_correlated_sum(sql: &str) -> Result<bool, ParseError> {
             _ => {}
         }
     }
-    Ok(false)
+    false
 }
 
 /// Parse one comparison against a filtered two-key SUM lookup.
@@ -72,10 +75,16 @@ pub fn parse_join_correlated_sum_with_schema(
     sql: &str,
     mut resolve: impl FnMut(&str) -> Result<Vec<String>, ParseError>,
 ) -> Result<Option<JoinCorrelatedSum>, ParseError> {
-    if !has_join_correlated_sum(sql)? {
+    parse_tokens(tokenize(sql)?, &mut resolve)
+}
+
+pub(super) fn parse_tokens(
+    tokens: Vec<Token>,
+    resolve: &mut dyn FnMut(&str) -> Result<Vec<String>, ParseError>,
+) -> Result<Option<JoinCorrelatedSum>, ParseError> {
+    if !has_tokens(&tokens) {
         return Ok(None);
     }
-    let tokens = tokenize(sql)?;
     let mut depth = 0usize;
     let mut where_index = None;
     let mut end = tokens.len();
@@ -310,7 +319,7 @@ pub fn parse_join_correlated_sum_with_schema(
         }
     }
     outer.extend_from_slice(&tokens[end..]);
-    let outer = parse_join_resolved(outer, Some(&mut resolve))?
+    let outer = parse_join_resolved(outer, Some(resolve))?
         .ok_or_else(|| ParseError("correlated SUM requires an outer JOIN".into()))?;
     if outer.kind != JoinType::Inner
         || outer.steps.iter().any(|step| step.kind != JoinType::Inner)
