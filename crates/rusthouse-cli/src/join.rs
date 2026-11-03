@@ -4,7 +4,9 @@ use crate::{
     csv, csv_no_header, html, json_array, json_compact_each_row, json_seq, jsonl, markdown,
     sql_values, vertical,
 };
-use rusthouse_query::{JoinSelect, execute_join, execute_multi_join};
+use rusthouse_query::{
+    JoinSelect, Source, bind_join_in_subquery, execute_join, execute_multi_join,
+};
 use std::path::{Path, PathBuf};
 
 fn execute_selected_join<W: std::io::Write>(
@@ -136,9 +138,18 @@ pub(super) fn run(
     for step in &query.steps {
         paths.push(crate::database::select_source(database, &step.table)?);
     }
-    let mut output = open_output(output_path.as_deref())?;
     let query_started_at = std::time::Instant::now();
-    let result = execute_formatted_join(query, &paths, format, output.as_mut());
+    let mut bound = query.clone();
+    if let Some(subquery) = &bound.in_subquery {
+        let Some(Source::Table(table)) = &subquery.inner.source else {
+            return Err("JOIN IN subquery requires a stored table".into());
+        };
+        let inner_path = crate::database::select_source(database, table)?;
+        bind_join_in_subquery(&mut bound, &inner_path, &paths)
+            .map_err(|error| error.to_string())?;
+    }
+    let mut output = open_output(output_path.as_deref())?;
+    let result = execute_formatted_join(&bound, &paths, format, output.as_mut());
     if time {
         eprintln!(
             "Elapsed: {:.3} ms",

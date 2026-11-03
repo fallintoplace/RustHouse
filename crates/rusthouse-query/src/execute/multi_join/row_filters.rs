@@ -1,11 +1,13 @@
 //! Bounded boolean predicates over a fully matched join row.
 use super::*;
 use crate::{Operator, Predicate};
+use std::collections::HashSet;
 
 enum RowTest {
     Compare(Operator, typed::Cell),
     Column(Operator, usize),
     In(Vec<typed::Cell>, bool),
+    IntegerSet(HashSet<typed::Key>, bool),
     Null(bool),
     Like(typed::TextPattern, bool, bool),
 }
@@ -93,7 +95,28 @@ impl RowFilters {
                             .iter()
                             .map(|value| typed::parse_literal(kind, value))
                             .collect::<Result<Vec<_>, _>>()?;
-                        RowTest::In(values, matches!(predicate, Predicate::NotIn { .. }))
+                        let negated = matches!(predicate, Predicate::NotIn { .. });
+                        let integer = matches!(
+                            typed::base_type(kind),
+                            "UInt8"
+                                | "UInt16"
+                                | "UInt32"
+                                | "UInt64"
+                                | "UInt128"
+                                | "Int8"
+                                | "Int16"
+                                | "Int32"
+                                | "Int64"
+                                | "Int128"
+                        );
+                        if integer && values.len() >= 16 {
+                            RowTest::IntegerSet(
+                                values.iter().map(typed::Cell::key).collect(),
+                                negated,
+                            )
+                        } else {
+                            RowTest::In(values, negated)
+                        }
                     }
                     Predicate::IsNull { negated, .. } => RowTest::Null(*negated),
                     Predicate::Like {
@@ -138,6 +161,10 @@ impl RowFilters {
                             && (values.iter().any(|target| {
                                 typed::matches_comparison(value, target, Operator::Eq)
                             }) != *negated)
+                    }
+                    RowTest::IntegerSet(values, negated) => {
+                        !matches!(value, typed::Cell::Null)
+                            && (values.contains(&value.key()) != *negated)
                     }
                     RowTest::Null(negated) => matches!(value, typed::Cell::Null) != *negated,
                     RowTest::Like(pattern, insensitive, negated) => match value {

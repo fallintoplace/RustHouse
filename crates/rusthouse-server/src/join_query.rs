@@ -1,7 +1,10 @@
 //! Bounded read-only JOIN queries through the SQL HTTP interface.
 
 use super::*;
-use rusthouse_query::{ExecutionError, JoinSelect, execute_join, execute_multi_join, explain_join};
+use rusthouse_query::{
+    ExecutionError, JoinSelect, Source, bind_join_in_subquery, execute_join, execute_multi_join,
+    explain_join,
+};
 
 fn finish_output<T>(
     result: Result<(), ExecutionError>,
@@ -47,6 +50,21 @@ pub(super) fn handle(
         match resolve_database_table(database, table) {
             Ok(path) => paths.push(path),
             Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+        }
+    }
+    if let Some(subquery) = &query.in_subquery {
+        let Some(Source::Table(table)) = &subquery.inner.source else {
+            return Response::text(
+                "400 Bad Request",
+                "JOIN IN subquery requires a stored table\n",
+            );
+        };
+        let path = match resolve_database_table(database, table) {
+            Ok(path) => path,
+            Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+        };
+        if let Err(error) = bind_join_in_subquery(query, &path, &paths) {
+            return Response::text("400 Bad Request", &format!("{error}\n"));
         }
     }
     let mut writer = LimitedWriter::new();
