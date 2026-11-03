@@ -399,6 +399,8 @@ pub struct Having {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Select {
     pub projection: Projection,
+    /// An integer literal projected before the grouped source columns.
+    pub grouped_literal: Option<i64>,
     /// Computed arguments aligned with grouped aggregate metrics, when present.
     pub grouped_expressions: Vec<Option<ScalarExpr>>,
     /// Whether the grouped metric is used only for HAVING.
@@ -945,7 +947,135 @@ pub fn split_clickhouse_format(sql: &str) -> Result<(&str, Option<&str>), ParseE
 }
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
-    parse_select_tokens(tokenize(sql)?)
+    let mut tokens = tokenize(sql)?;
+    let literal = match tokens.as_slice() {
+        [
+            Token::Word(select),
+            Token::Number(number),
+            Token::Comma,
+            Token::Word(_),
+            ..,
+        ] if select.eq_ignore_ascii_case("SELECT") => number.parse::<i64>().ok(),
+        _ => None,
+    };
+    if let Some(literal) = literal {
+        let mut depth = 0usize;
+        let mut group = None;
+        for (index, token) in tokens.iter().enumerate() {
+            match token {
+                Token::LParen => depth += 1,
+                Token::RParen => depth = depth.saturating_sub(1),
+                Token::Word(word)
+                    if depth == 0
+                        && word.eq_ignore_ascii_case("GROUP")
+                        && matches!(tokens.get(index + 1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
+                {
+                    group = Some(index);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if let Some(group) = group {
+            if matches!(tokens.get(group + 2), Some(Token::Number(n)) if n == "1")
+                && matches!(tokens.get(group + 3), Some(Token::Comma))
+            {
+                let mut index = group + 4;
+                loop {
+                    if let Some(Token::Number(n)) = tokens.get_mut(index) {
+                        let pos = n
+                            .parse::<usize>()
+                            .map_err(|_| ParseError("GROUP BY position is too large".into()))?;
+                        if pos <= 1 {
+                            return Err(ParseError(
+                                "duplicate or invalid GROUP BY position".into(),
+                            ));
+                        }
+                        *n = (pos - 1).to_string();
+                    }
+                    index += 1;
+                    if !matches!(tokens.get(index), Some(Token::Comma)) {
+                        break;
+                    }
+                    index += 1;
+                }
+                let mut depth = 0usize;
+                let mut order_start = None;
+                for (index, token) in tokens.iter().enumerate() {
+                    match token {
+                        Token::LParen => depth += 1,
+                        Token::RParen => depth = depth.saturating_sub(1),
+                        Token::Word(word)
+                            if depth == 0
+                                && word.eq_ignore_ascii_case("ORDER")
+                                && matches!(tokens.get(index + 1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
+                        {
+                            order_start = Some(index + 2);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(mut index) = order_start {
+                    let mut depth = 0usize;
+                    let mut term_start = true;
+                    while index < tokens.len() {
+                        match &mut tokens[index] {
+                            Token::Word(word)
+                                if depth == 0
+                                    && ["LIMIT", "OFFSET", "FETCH", "FORMAT"]
+                                        .iter()
+                                        .any(|end| word.eq_ignore_ascii_case(end)) =>
+                            {
+                                break;
+                            }
+                            Token::Semicolon if depth == 0 => break,
+                            Token::Number(number) if depth == 0 && term_start => {
+                                let position = number.parse::<usize>().map_err(|_| {
+                                    ParseError("ORDER BY position is too large".into())
+                                })?;
+                                if position <= 1 {
+                                    return Err(ParseError(
+                                        "ORDER BY constant position is unsupported".into(),
+                                    ));
+                                }
+                                *number = (position - 1).to_string();
+                                term_start = false;
+                            }
+                            Token::Comma if depth == 0 => term_start = true,
+                            Token::LParen => {
+                                depth += 1;
+                                term_start = false;
+                            }
+                            Token::RParen => depth = depth.saturating_sub(1),
+                            _ => term_start = false,
+                        }
+                        index += 1;
+                    }
+                }
+                tokens.drain(group + 2..group + 4);
+                tokens.drain(1..3);
+                let mut select = parse_select_tokens(tokens)?;
+                if !matches!(
+                    select.projection,
+                    Projection::GroupedCount { .. }
+                        | Projection::GroupedMultiCount { .. }
+                        | Projection::GroupedDistinctCount { .. }
+                        | Projection::GroupedMultiDistinctCount { .. }
+                        | Projection::GroupedAggregate { .. }
+                        | Projection::GroupedAggregates { .. }
+                        | Projection::GroupedMultiAggregates { .. }
+                ) {
+                    return Err(ParseError(
+                        "constant grouped projection requires grouped aggregates".into(),
+                    ));
+                }
+                select.grouped_literal = Some(literal);
+                return Ok(select);
+            }
+        }
+    }
+    parse_select_tokens(tokens)
 }
 
 // COUNT(*), COUNT(), and COUNT(non-NULL constants) share a grouped marker.
@@ -2561,6 +2691,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     }
     Ok(Select {
         projection,
+        grouped_literal: None,
         grouped_expressions,
         hidden_aggregate,
         alias,

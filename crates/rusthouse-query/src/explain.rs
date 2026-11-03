@@ -191,6 +191,9 @@ pub fn explain_select(query: &Select) -> String {
     }
 
     steps.push(describe_projection(&query.projection));
+    if let Some(literal) = query.grouped_literal {
+        steps.push(format!("Project grouped constant: {literal}"));
+    }
     if let Some((source, target)) = &query.rename {
         steps.push(format!("Rename: {source} -> {target}"));
     }
