@@ -43,6 +43,26 @@ fn skip_line_comment(bytes: &[u8], index: &mut usize) {
         .unwrap_or(remaining.len());
 }
 
+fn scan_negative_radix_number(
+    sql: &str,
+    index: &mut usize,
+    radix: u32,
+) -> Result<Token, ParseError> {
+    // A unary minus applies to the same magnitude that the unsigned scanner
+    // already validates, but the signed result must fit in Int64.
+    *index += 1;
+    let Token::Number(magnitude) = scan_radix_number(sql, index, radix)? else {
+        unreachable!("radix scanner only produces numbers");
+    };
+    let magnitude: u64 = magnitude
+        .parse()
+        .map_err(|_| ParseError("invalid radix magnitude".into()))?;
+    if magnitude > (1_u64 << 63) {
+        return Err(ParseError("negative radix literal exceeds Int64".into()));
+    }
+    Ok(Token::Number((-(magnitude as i128)).to_string()))
+}
+
 fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseError> {
     if sql.len() > max_bytes {
         return Err(ParseError(format!(
@@ -128,6 +148,16 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             b'-' if follows_binary_minus_context(&tokens) => {
                 index += 1;
                 Token::Minus
+            }
+            b'-' if bytes.get(index + 1) == Some(&b'0')
+                && matches!(bytes.get(index + 2), Some(b'x' | b'X')) =>
+            {
+                scan_negative_radix_number(sql, &mut index, 16)?
+            }
+            b'-' if bytes.get(index + 1) == Some(&b'0')
+                && matches!(bytes.get(index + 2), Some(b'b' | b'B')) =>
+            {
+                scan_negative_radix_number(sql, &mut index, 2)?
             }
             b'-' if bytes.get(index + 1) == Some(&b'.') => {
                 if is_ascii_digit_at(bytes, index + 2) {
@@ -570,6 +600,37 @@ mod bulk_comment_span_tests {
     }
 }
 
+
+#[cfg(test)]
+mod signed_radix_literal_tests {
+    use super::*;
+
+    #[test]
+    fn reads_negative_binary_and_hex_values_in_signed_range() {
+        assert_eq!(
+            tokenize("SELECT -0x2A, -0B101, -0x8000000000000000").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("-42".into()),
+                Token::Comma,
+                Token::Number("-5".into()),
+                Token::Comma,
+                Token::Number(i64::MIN.to_string()),
+            ]
+        );
+        assert_eq!(
+            tokenize("10-0xF").unwrap(),
+            vec![
+                Token::Number("10".into()),
+                Token::Minus,
+                Token::Number("15".into()),
+            ]
+        );
+        for invalid in ["-0x", "-0b2", "-0x8000000000000001", "-0b10000000000000000000000000000000000000000000000000000000000000000"] {
+            assert!(tokenize(invalid).is_err(), "{invalid}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod radix_literal_tests {
