@@ -344,7 +344,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 if index + 1 == args.len() || index % 2 == 1 {
                     let current_is_text = match arg {
                         ConstantValue::Text(_) => Some(true),
-                        ConstantValue::Integer(_) => Some(false),
+                        ConstantValue::Integer(_) | ConstantValue::Decimal(_) => Some(false),
                         ConstantValue::Null => None,
                     };
                     if let Some(current_is_text) = current_is_text {
@@ -765,6 +765,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 match constant_arg(parser, depth + 1)? {
                     ConstantValue::Text(value) => args.push(value),
                     ConstantValue::Integer(value) => args.push(value.to_string()),
+                    ConstantValue::Decimal(value) => args.push(value),
                     ConstantValue::Null => {
                         has_null = true;
                         args.push(String::new());
@@ -1184,6 +1185,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "toTypeName requires one argument")?;
             let name = match input {
                 ConstantValue::Integer(_) => "Int64",
+                ConstantValue::Decimal(_) => "Float64",
                 ConstantValue::Text(_) => "String",
                 ConstantValue::Null => "Nullable(Nothing)",
             };
@@ -1575,6 +1577,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         all.iter().take_while(|&&byte| byte == 0).count().min(7)
                     };
                     all[skip..].to_vec()
+                }
+                ConstantValue::Decimal(_) => {
+                    return Err(ParseError("HEX does not support floating-point literals".into()));
                 }
                 ConstantValue::Null => return Ok(ConstantValue::Null),
             };
@@ -3004,6 +3009,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     match parse_at_depth(parser, depth + 1)? {
                         ConstantValue::Text(value) => Some(value),
                         ConstantValue::Integer(value) => Some(value.to_string()),
+                        ConstantValue::Decimal(value) => Some(value),
                         ConstantValue::Null => None,
                     }
                 }
@@ -3022,6 +3028,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let number = match input {
                 ConstantValue::Null => None,
                 ConstantValue::Integer(value) => Some(i128::from(value)),
+                ConstantValue::Decimal(_) => {
+                    return Err(ParseError("integer conversion requires an integer or string".into()));
+                }
                 ConstantValue::Text(value) => Some(
                     value
                         .parse::<i128>()
@@ -3866,6 +3875,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     };
                     ConstantValue::Text(binary_string(&bytes[skip..])?)
                 }
+                ConstantValue::Decimal(_) => {
+                    return Err(ParseError("bin does not support floating-point literals".into()));
+                }
                 ConstantValue::Null => ConstantValue::Null,
             }
         }
@@ -4575,6 +4587,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let number = match input {
                 ConstantValue::Null => None,
                 ConstantValue::Integer(value) => Some(value as u128),
+                ConstantValue::Decimal(_) => {
+                    return Err(ParseError("unsigned conversion requires an integer or string".into()));
+                }
                 ConstantValue::Text(value) => Some(
                     value
                         .parse::<u128>()
@@ -5274,7 +5289,7 @@ pub(super) fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i6
         return match parse_at_depth(parser, depth)? {
             ConstantValue::Integer(value) => Ok(Some(value)),
             ConstantValue::Null => Ok(None),
-            ConstantValue::Text(_) => Err(ParseError("expected an integer expression".into())),
+            ConstantValue::Text(_) | ConstantValue::Decimal(_) => Err(ParseError("expected an integer expression".into())),
         };
     }
     Ok(Some(super::scalar::parse(parser)?))
@@ -5294,7 +5309,7 @@ pub(super) fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<Strin
         Some(Token::Word(word)) if is_function(word) => match parse_at_depth(parser, depth)? {
             ConstantValue::Text(value) => Ok(Some(value)),
             ConstantValue::Null => Ok(None),
-            ConstantValue::Integer(_) => Err(ParseError("expected a string expression".into())),
+            ConstantValue::Integer(_) | ConstantValue::Decimal(_) => Err(ParseError("expected a string expression".into())),
         },
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
