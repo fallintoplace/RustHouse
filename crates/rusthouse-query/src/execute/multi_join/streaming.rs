@@ -229,8 +229,8 @@ fn visit<W: Write>(
             };
             let mut average_values = [None; 8];
             for (index, &column) in spec.avg_indices.iter().enumerate() {
-                average_values[index] = match row[column] {
-                    typed::Cell::Numeric(value) => Some(value),
+                average_values[index] = match &row[column] {
+                    typed::Cell::Numeric(value) => Some(*value),
                     typed::Cell::Null => None,
                     _ => return Err(invalid("grouped AVG requires numeric values")),
                 };
@@ -479,6 +479,23 @@ pub(super) fn execute<W: Write>(
         .as_ref()
         .map(|(column, not_null)| column_index(relations, column).map(|index| (index, *not_null)))
         .transpose()?;
+    let avg_indices = query
+        .grouped_avg_metrics
+        .iter()
+        .map(|(column, _)| {
+            let index = column_index(relations, column)?;
+            let kind = typed::base_type(column_type(relations, index));
+            if !matches!(
+                kind,
+                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+                    | "Float32" | "Float64"
+            ) {
+                return Err(invalid("grouped JOIN AVG requires numeric columns"));
+            }
+            Ok(index)
+        })
+        .collect::<Result<Vec<_>, ExecutionError>>()?;
     let spec = OutputSpec {
         selected: &selected,
         types: relations
@@ -511,6 +528,7 @@ pub(super) fn execute<W: Write>(
             .grouped_count
             .as_ref()
             .map(|_| selected.iter().map(|(index, _, _)| *index).collect()),
+        avg_indices,
         offset: query.offset,
         limit: query.limit,
     };
@@ -563,6 +581,9 @@ pub(super) fn execute<W: Write>(
         }
     }
     if let Some(index) = distinct_index {
+        referenced[index] = true;
+    }
+    for &index in &spec.avg_indices {
         referenced[index] = true;
     }
     if let Some(filters) = row_filters {
