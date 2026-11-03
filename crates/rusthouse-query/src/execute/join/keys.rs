@@ -140,10 +140,6 @@ pub(super) fn batch_key_into(
 ) -> bool {
     result.reserve(indices.len().saturating_sub(result.len()));
     for (position, &index) in indices.iter().enumerate() {
-        if typed::is_null_at(&batch[index], row) {
-            result.clear();
-            return false;
-        }
         match &batch[index] {
             TypedColumn::Uuid(values) => {
                 put_key(
@@ -152,14 +148,41 @@ pub(super) fn batch_key_into(
                     typed::Key::UuidBytes(*values[row].as_bytes()),
                 );
             }
-            TypedColumn::Text(values) | TypedColumn::NullableText { values, .. } => {
+            TypedColumn::Text(values) => {
                 put_text_key(
                     result,
                     position,
                     values.get(row).expect("validated typed string row"),
                 );
             }
-            TypedColumn::Numeric(values) | TypedColumn::NullableNumeric { values, .. } => {
+            TypedColumn::NullableText { values, nulls } => {
+                if nulls[row] != 0 {
+                    result.clear();
+                    return false;
+                }
+                put_text_key(
+                    result,
+                    position,
+                    values.get(row).expect("validated typed string row"),
+                );
+            }
+            TypedColumn::Numeric(values) => {
+                let value = super::super::number_at(values, row);
+                if matches!(value, Number::Float(number) if number.is_nan()) {
+                    result.clear();
+                    return false;
+                }
+                put_key(
+                    result,
+                    position,
+                    typed::Key::Numeric(numeric_join_key(value)),
+                );
+            }
+            TypedColumn::NullableNumeric { values, nulls } => {
+                if nulls[row] != 0 {
+                    result.clear();
+                    return false;
+                }
                 let value = super::super::number_at(values, row);
                 if matches!(value, Number::Float(number) if number.is_nan()) {
                     result.clear();
