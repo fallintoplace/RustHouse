@@ -923,6 +923,16 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
 
 // COUNT(*), COUNT(), and COUNT(non-NULL constants) share a grouped marker.
 // The executor counts rows without reading a synthetic data column.
+// A lone distinct count uses the specialized executor. A following metric
+// must instead use the multi-aggregate plan.
+fn distinct_count_has_following_metric(parser: &Parser) -> bool {
+    let mut index = parser.index + 5;
+    if matches!(parser.tokens.get(index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("AS")) {
+        index += 2;
+    }
+    parser.tokens.get(index) == Some(&Token::Comma)
+}
+
 fn grouped_metric_filter(parser: &mut Parser) -> Result<GroupedFilter, ParseError> {
     let column = parser.bounded_word()?;
     if let Some(Token::Operator(operator)) = parser.tokens.get(parser.index) {
@@ -1381,6 +1391,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     parser.tokens.get(parser.index + 2),
                     Some(Token::Word(word)) if word.eq_ignore_ascii_case("DISTINCT")
                 )
+                && !distinct_count_has_following_metric(&parser)
             {
                 // Keep the specialized COUNT(DISTINCT column) projection.
                 if columns.len() > 8 {

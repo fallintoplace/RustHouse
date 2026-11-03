@@ -36,6 +36,22 @@ fn mixed_grouped_distinct_counts_skip_nulls_and_duplicates() {
         assert!(output.status.success(), "{query}: {output:?}");
         assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
     }
+    let first = sql(
+        "SELECT region, COUNT(DISTINCT user) AS users, SUM(value) AS total FROM hits GROUP BY region ORDER BY region",
+    );
+    assert!(first.status.success(), "{first:?}");
+    assert_eq!(first.stdout, b"region\tusers\ttotal\n1\t2\t35\n2\t0\t10\n");
+    let first_without_alias = sql(
+        "SELECT region, COUNT(DISTINCT user), SUM(value) AS total FROM hits GROUP BY region ORDER BY region",
+    );
+    assert!(
+        first_without_alias.status.success(),
+        "{first_without_alias:?}"
+    );
+    assert_eq!(
+        first_without_alias.stdout,
+        b"region\tcountDistinct(user)\ttotal\n1\t2\t35\n2\t0\t10\n"
+    );
     let empty = sql(
         "SELECT region, SUM(value) AS total, COUNT(DISTINCT user) AS users FROM hits WHERE value > 100 GROUP BY region ORDER BY region",
     );
