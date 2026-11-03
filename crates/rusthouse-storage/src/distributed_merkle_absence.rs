@@ -20,15 +20,22 @@ pub struct MerkleAbsenceProof {
 
 /// Produce authenticated immediate neighbors of an absent key.
 ///
-/// An existing key cannot be proven absent. An empty inventory must instead
-/// be verified through an authenticated empty-tree root.
+/// An existing key cannot be proven absent. Empty inventories have a zero-leaf
+/// proof which must be checked against the authenticated empty-tree root.
 pub fn prove_absence(
     inventory: &MerkleInventory,
     key: &str,
 ) -> Result<MerkleAbsenceProof, &'static str> {
     let objects = inventory.objects();
-    if key.is_empty() || objects.is_empty() {
-        return Err("absence proof requires a nonempty inventory and key");
+    if key.is_empty() {
+        return Err("absence proof requires a key");
+    }
+    if objects.is_empty() {
+        return Ok(MerkleAbsenceProof {
+            leaf_count: 0,
+            before: None,
+            after: None,
+        });
     }
     let insertion = objects.partition_point(|entry| entry.key.as_str() < key);
     if objects.get(insertion).is_some_and(|entry| entry.key == key) {
@@ -55,8 +62,14 @@ pub fn verify_absence(
     key: &str,
     proof: &MerkleAbsenceProof,
 ) -> bool {
-    if key.is_empty() || proof.leaf_count == 0 {
+    if key.is_empty() {
         return false;
+    }
+    if proof.leaf_count == 0 {
+        return proof.before.is_none()
+            && proof.after.is_none()
+            && MerkleInventory::new(&[])
+                .is_ok_and(|inventory| inventory.root() == trusted_root);
     }
     let verified = |neighbor: &ProvenNeighbor| {
         neighbor.proof.leaf_count == proof.leaf_count
@@ -149,5 +162,37 @@ mod tests {
         let mut bad_first = first;
         bad_first.after.as_mut().unwrap().proof.leaf_index = 1;
         assert!(!verify_absence(inventory.root(), "0", &bad_first));
+    }
+}
+
+#[cfg(test)]
+mod empty_inventory_absence_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_authenticated_empty_root_proves_empty_inventory_absence() {
+        let inventory = MerkleInventory::new(&[]).unwrap();
+        let proof = prove_absence(&inventory, "missing").unwrap();
+        assert_eq!(proof.leaf_count, 0);
+        assert!(proof.before.is_none());
+        assert!(proof.after.is_none());
+        assert!(verify_absence(inventory.root(), "missing", &proof));
+        assert!(!verify_absence([0; 32], "missing", &proof));
+        assert!(!verify_absence(inventory.root(), "", &proof));
+
+        let mut forged = proof.clone();
+        forged.leaf_count = 1;
+        assert!(!verify_absence(inventory.root(), "missing", &forged));
+        assert!(prove_absence(&inventory, "").is_err());
+    }
+
+    #[test]
+    fn nonempty_inventory_root_cannot_validate_empty_proof() {
+        let empty = MerkleInventory::new(&[]).unwrap();
+        let nonempty = MerkleInventory::new(&[ObjectMetadata {
+            key: "part/data.bin".into(), bytes: 1, crc32c: 1,
+        }]).unwrap();
+        let proof = prove_absence(&empty, "missing").unwrap();
+        assert!(!verify_absence(nonempty.root(), "missing", &proof));
     }
 }
