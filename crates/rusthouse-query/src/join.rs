@@ -85,6 +85,8 @@ pub struct JoinSelect {
     pub aggregate_alias: Option<String>,
     /// Exactly one qualified GROUP BY key with COUNT(*) projected last.
     pub grouped_count: Option<Vec<JoinColumn>>,
+    /// SUM(CASE WHEN ... THEN 1 ELSE 0 END) metrics for one grouped key.
+    pub grouped_case_counts: Vec<(crate::GroupedFilter, String)>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
@@ -213,6 +215,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         None
     };
     let mut grouped_count_projection = false;
+    let mut grouped_case_counts = Vec::new();
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
     } else {
@@ -225,6 +228,51 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             }
             columns.push(projected(&mut parser)?);
             if !parser.take(Token::Comma) {
+                break;
+            }
+            if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("SUM"))
+                && matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
+            {
+                parser.keyword("SUM");
+                loop {
+                    if grouped_case_counts.len() == 8 {
+                        return Err(ParseError(
+                            "JOIN supports at most 8 grouped CASE metrics".into(),
+                        ));
+                    }
+                    if !parser.take(Token::LParen) {
+                        return Err(ParseError("JOIN SUM requires '('".into()));
+                    }
+                    let (metric, filter) =
+                        super::grouped_metric_value(&mut parser, crate::AggregateFunction::Sum)?;
+                    if metric != "*"
+                        || !matches!(
+                            filter,
+                            Some(
+                                crate::GroupedFilter::CaseElseZero { .. }
+                                    | crate::GroupedFilter::CaseElseZeroCombined { .. }
+                            )
+                        )
+                    {
+                        return Err(ParseError(
+                            "JOIN grouped SUM requires CASE THEN 1 ELSE 0".into(),
+                        ));
+                    }
+                    if !parser.take(Token::RParen) || !parser.keyword("AS") {
+                        return Err(ParseError(
+                            "JOIN grouped CASE requires a closing ')' and alias".into(),
+                        ));
+                    }
+                    grouped_case_counts
+                        .push((filter.expect("CASE filter checked"), parser.bounded_word()?));
+                    if !parser.take(Token::Comma) {
+                        break;
+                    }
+                    if !parser.keyword("SUM") {
+                        return Err(ParseError("JOIN grouped CASE expects SUM metrics".into()));
+                    }
+                }
+                grouped_count_projection = true;
                 break;
             }
             if parser.keyword("COUNT") {
@@ -621,6 +669,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                 return Err(ParseError("JOIN ORDER BY supports at most 8 keys".into()));
             }
             let next_is_count_alias = grouped_count_projection
+                && grouped_case_counts.is_empty()
                 && matches!(parser.tokens.get(parser.index), Some(Token::Word(name))
                     if name.eq_ignore_ascii_case(aggregate_alias.as_deref().unwrap_or("count")))
                 && !matches!(
@@ -630,7 +679,10 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             let key = if next_is_count_alias {
                 parser.index += 1;
                 JoinColumn::count_order()
-            } else if grouped_count_projection && parser.keyword("COUNT") {
+            } else if grouped_count_projection
+                && grouped_case_counts.is_empty()
+                && parser.keyword("COUNT")
+            {
                 if !parser.take(Token::LParen)
                     || !parser.take(Token::Star)
                     || !parser.take(Token::RParen)
@@ -792,9 +844,10 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
-    if (where_comparison.is_some()
-        || !where_column_comparisons.is_empty()
-        || !where_in_filters.is_empty())
+    if grouped_case_counts.is_empty()
+        && (where_comparison.is_some()
+            || !where_column_comparisons.is_empty()
+            || !where_in_filters.is_empty())
         && (kind != JoinType::Inner
             || !steps.is_empty()
             || (grouped_count_projection
@@ -813,12 +866,23 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         ));
     }
     if grouped_count_projection
+        && grouped_case_counts.is_empty()
         && (!where_comparisons_extra.is_empty()
             || !where_column_comparisons.is_empty()
             || !where_in_filters.is_empty())
     {
         return Err(ParseError(
             "grouped JOIN supports one comparison filter".into(),
+        ));
+    }
+    if !grouped_case_counts.is_empty()
+        && (kind != JoinType::Inner
+            || !steps.is_empty()
+            || where_null.is_some()
+            || columns.as_ref().is_none_or(|keys| keys.len() != 1))
+    {
+        return Err(ParseError(
+            "JOIN grouped CASE requires one key and two INNER inputs".into(),
         ));
     }
     let grouped_count = if grouped_count_projection {
@@ -900,6 +964,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         aggregate,
         aggregate_alias,
         grouped_count,
+        grouped_case_counts,
         keys,
         using_keys,
         where_null,
@@ -1093,10 +1158,22 @@ pub fn explain_join(query: &JoinSelect) -> String {
     if let Some(columns) = &query.grouped_count {
         let keys = columns
             .iter()
-            .map(|column| format!("{}.{}", column.relation, column.name))
+            .map(JoinColumn::display_name)
             .collect::<Vec<_>>()
             .join(", ");
-        plan.push_str(&format!("\nAggregate: GROUP BY {keys} with COUNT(*)"));
+        if query.grouped_case_counts.is_empty() {
+            plan.push_str(&format!("\nAggregate: GROUP BY {keys} with COUNT(*)"));
+        } else {
+            let aliases = query
+                .grouped_case_counts
+                .iter()
+                .map(|(_, alias)| alias.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            plan.push_str(&format!(
+                "\nAggregate: GROUP BY {keys} with conditional sums ({aliases})"
+            ));
+        }
     }
     if query.offset > 0 {
         plan.push_str(&format!("\nOffset: {}", query.offset));

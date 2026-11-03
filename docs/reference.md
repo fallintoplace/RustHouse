@@ -18,6 +18,8 @@ For a two-table INNER JOIN, scalar `COUNT(column)`, `SUM`, `AVG`, `MIN`, and `MA
 
 An unordered two-table INNER JOIN supports up to 16 AND-connected filters in `WHERE`: comparisons against literals, comparisons between two columns from the same input table, and `IN` lists of up to 64 non-NULL literals. This path supports projections and `COUNT(*)`; grouped queries support one fact-side literal comparison. `IS NULL` filters cannot be combined with comparisons in this form.
 
+Two-table INNER joins also support one grouping key with up to eight `SUM(CASE WHEN ... THEN 1 ELSE 0 END)` metrics. Each CASE condition compares one unqualified column against literals with AND or OR, and each metric needs an alias. The result is bounded to 100,000 groups and 64 MiB of retained group data.
+
 **Limits for two-table joins:**
 
 - An unordered INNER JOIN can build a hash table with up to **262,144 rows** and **32 MiB** of retained cells. It can stream the other input without a fixed row limit.
