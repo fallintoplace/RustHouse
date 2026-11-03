@@ -251,6 +251,9 @@ mod copy_header_yes_no_tests {
             let parsed = parse_copy_from(&sql).unwrap().unwrap();
             assert_eq!(parsed.header, expected);
         }
-        assert!(parse_copy_from("COPY events FROM 'rows.csv' WITH (FORMAT CSV, HEADER MAYBE)").is_err());
+        assert!(
+            parse_copy_from("COPY events FROM 'rows.csv' WITH (FORMAT CSV, HEADER MAYBE)")
+                .is_err()
+        );
     }
 }
