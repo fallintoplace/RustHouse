@@ -62,7 +62,7 @@ pub struct JoinSelect {
     /// User-provided name for a scalar aggregate result column.
     pub aggregate_alias: Option<String>,
     /// Exactly one qualified GROUP BY key with COUNT(*) projected last.
-    pub grouped_count: Option<JoinColumn>,
+    pub grouped_count: Option<Vec<JoinColumn>>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
@@ -460,7 +460,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("JOIN GROUP requires BY".into()));
         }
-        Some(qualified(&mut parser)?)
+        let mut keys = vec![qualified(&mut parser)?];
+        while parser.take(Token::Comma) {
+            if keys.len() >= 8 {
+                return Err(ParseError("grouped JOIN supports at most 8 keys".into()));
+            }
+            keys.push(qualified(&mut parser)?);
+        }
+        Some(keys)
     } else {
         None
     };
@@ -592,9 +599,10 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         && (kind != JoinType::Inner
             || !steps.is_empty()
             || (grouped_count_projection
-                && where_comparison
-                    .as_ref()
-                    .is_some_and(|(column, _, _)| column.relation != left_alias))
+                && (columns.as_ref().is_none_or(|keys| keys.len() != 1)
+                    || where_comparison
+                        .as_ref()
+                        .is_some_and(|(column, _, _)| column.relation != left_alias)))
             || (!grouped_count_projection
                 && (!order_by.is_empty()
                     || !matches!(aggregate.as_ref(), None | Some(JoinAggregate::CountStar))
@@ -606,26 +614,27 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         ));
     }
     let grouped_count = if grouped_count_projection {
-        let projected_key = columns
+        let projected_keys = columns
             .as_ref()
-            .and_then(|columns| (columns.len() == 1).then_some(&columns[0]))
-            .ok_or_else(|| ParseError("grouped JOIN projects one key and COUNT(*)".into()))?;
-        if group_by.as_ref() != Some(projected_key) {
+            .ok_or_else(|| ParseError("grouped JOIN requires projected keys".into()))?;
+        if group_by.as_ref() != Some(projected_keys) {
             return Err(ParseError(
-                "GROUP BY must match the selected JOIN key".into(),
+                "GROUP BY must match the selected JOIN keys".into(),
             ));
         }
-        if !matches!(kind, JoinType::Inner | JoinType::Left) || !steps.is_empty() {
+        if !matches!(kind, JoinType::Inner | JoinType::Left) || !steps.is_empty()
+            || (projected_keys.len() > 1 && kind != JoinType::Inner)
+        {
             return Err(ParseError(
-                "grouped JOIN COUNT requires a two-table INNER or LEFT JOIN".into(),
+                "grouped JOIN COUNT requires two tables (multiple keys require INNER JOIN)".into(),
             ));
         }
         if order_by
             .iter()
-            .any(|(column, _, _)| column != projected_key)
+            .any(|(column, _, _)| !projected_keys.contains(column))
         {
             return Err(ParseError(
-                "grouped JOIN ORDER BY must use the group key".into(),
+                "grouped JOIN ORDER BY must use a group key".into(),
             ));
         }
         group_by
@@ -817,11 +826,13 @@ pub fn explain_join(query: &JoinSelect) -> String {
             .join(", ");
         plan.push_str(&format!("\nOrder: {terms}"));
     }
-    if let Some(column) = &query.grouped_count {
-        plan.push_str(&format!(
-            "\nAggregate: GROUP BY {}.{} with COUNT(*)",
-            column.relation, column.name,
-        ));
+    if let Some(columns) = &query.grouped_count {
+        let keys = columns
+            .iter()
+            .map(|column| format!("{}.{}", column.relation, column.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        plan.push_str(&format!("\nAggregate: GROUP BY {keys} with COUNT(*)"));
     }
     if query.offset > 0 {
         plan.push_str(&format!("\nOffset: {}", query.offset));
