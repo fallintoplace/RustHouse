@@ -38,6 +38,14 @@ fn grouped_arithmetic_handles_null_and_multiple_keys() {
     let output = sql(query);
     assert!(output.status.success(), "{query}: {output:?}");
     assert_eq!(output.stdout, b"category\trevenue\tn\n1\t25\t3\n2\t2\t1\n");
+    let mixed = sql(
+        "SELECT category, kind, COUNT(DISTINCT price) AS unique_prices, SUM(price * (1 - discount)) AS revenue FROM items GROUP BY category, kind ORDER BY category, kind",
+    );
+    assert!(mixed.status.success(), "{mixed:?}");
+    assert_eq!(
+        mixed.stdout,
+        b"category\tkind\tunique_prices\trevenue\n1\t1\t2\t25\n1\t2\t1\tNULL\n2\t1\t1\t2\n"
+    );
     let bad = sql("SELECT category, SUM(price / 0) AS total FROM items GROUP BY category");
     assert!(!bad.status.success(), "{bad:?}");
     assert!(String::from_utf8_lossy(&bad.stderr).contains("division by zero"));

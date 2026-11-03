@@ -1004,7 +1004,11 @@ fn grouped_metric_with_expression(
     {
         let expression = expression::parse_expression_tokens(parser)?;
         if !matches!(expression, ScalarExpr::Column(_)) {
-            return Ok((multi_aggregate::render_expr(&expression), None, Some(expression)));
+            return Ok((
+                multi_aggregate::render_expr(&expression),
+                None,
+                Some(expression),
+            ));
         }
         parser.index = start;
     }
@@ -1470,7 +1474,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         } else {
                             function
                         };
-                                        let (value_column, case_filter, expr) = grouped_metric_with_expression(&mut parser, function)?;
+                    let (value_column, case_filter, expr) =
+                        grouped_metric_with_expression(&mut parser, function)?;
                     let function = if function == AggregateFunction::Sum && value_column == "*" {
                         AggregateFunction::Count
                     } else {
@@ -1547,8 +1552,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             } else {
                                 function
                             };
-                                                let (value_column, case_filter, expr) = grouped_metric_with_expression(&mut parser, function)?;
-                        let function = if function == AggregateFunction::Sum && value_column == "*" {
+                        let (value_column, case_filter, expr) =
+                            grouped_metric_with_expression(&mut parser, function)?;
+                        let function = if function == AggregateFunction::Sum && value_column == "*"
+                        {
                             AggregateFunction::Count
                         } else {
                             function
@@ -2771,8 +2778,12 @@ mod tpch_parser_first_stop_2 {
 
     #[test]
     fn unsupported_construct_has_specific_error() {
-        parse_select("SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category").unwrap();
-        parse_select("SELECT category, SUM(price * (1 - discount)) AS total FROM sales GROUP BY category").unwrap();
+        parse_select("SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category")
+            .unwrap();
+        parse_select(
+            "SELECT category, SUM(price * (1 - discount)) AS total FROM sales GROUP BY category",
+        )
+        .unwrap();
     }
 }
 

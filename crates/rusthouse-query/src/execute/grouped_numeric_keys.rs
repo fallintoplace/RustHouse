@@ -540,7 +540,9 @@ pub(super) fn execute<W: Write>(
                     continue;
                 }
                 if let Some(Some(expression)) = bound_expressions.get(metric) {
-                    if let Some(value) = super::multi_aggregate::eval_number(expression, &batch, row)? {
+                    if let Some(value) =
+                        super::multi_aggregate::eval_number(expression, &batch, row)?
+                    {
                         if *function == AggregateFunction::Median {
                             charge_median_value(&mut retained_median_bytes)?;
                         }
