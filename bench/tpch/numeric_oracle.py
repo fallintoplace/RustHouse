@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Verify TSV reference rows using exact text or arbitrary-precision numbers."""
 import argparse
+import re
 from decimal import (Decimal, DecimalException, InvalidOperation, localcontext,
                      ROUND_DOWN, ROUND_UP, MAX_EMAX, MIN_EMIN)
 from pathlib import Path
 
 MAX_INPUT_BYTES = 16 * 1024 * 1024
+NUMERIC_LITERAL = re.compile(rb"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
 
 
 def read_input(path):
@@ -36,6 +38,8 @@ def numeric_equal(left, right, tolerance=Decimal("0")):
             return Decimal(left.decode("ascii")).is_finite()
         except (UnicodeDecodeError, InvalidOperation):
             return True
+    if not NUMERIC_LITERAL.fullmatch(left) or not NUMERIC_LITERAL.fullmatch(right):
+        return False
     try:
         lhs = Decimal(left.decode("ascii"))
         rhs = Decimal(right.decode("ascii"))

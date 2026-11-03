@@ -44,6 +44,13 @@ class NumericOracleTests(unittest.TestCase):
         self.assertFalse(numeric_equal(b"1e999999999999", b"0", Decimal("1")))
         self.assertTrue(numeric_equal(b"0.0010", b"0.001", Decimal("0")))
 
+    def test_rejects_non_sql_numeric_spellings(self):
+        for malformed in (b" 10", b"10 ", b"1_0", b"\t10", b"1\n0"):
+            with self.subTest(value=malformed):
+                self.assertFalse(numeric_equal(malformed, b"10"))
+        self.assertTrue(numeric_equal(b"+1e1", b"10"))
+        self.assertTrue(numeric_equal(b".50", b"0.5"))
+
     def test_text_and_structure_stay_strict(self):
         self.assertTrue(compare_tsv(b"1.00\tEUROPE\n", b"1\tEUROPE\n"))
         self.assertFalse(compare_tsv(b"1\tEUROPE\n", b"1\tASIA\n"))
