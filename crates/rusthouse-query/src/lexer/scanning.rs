@@ -247,9 +247,12 @@ pub(super) fn follows_binary_minus_context(tokens: &[Token]) -> bool {
     match tokens.last() {
         Some(Token::Number(_) | Token::RParen) => true,
         Some(Token::QuotedWord(_)) => true,
-        Some(Token::Word(word)) => !["SELECT", "BETWEEN", "AND", "OR", "WHERE", "NOT", "IN"]
-            .iter()
-            .any(|keyword| word.eq_ignore_ascii_case(keyword)),
+        Some(Token::Word(word)) => ![
+            "SELECT", "BETWEEN", "AND", "OR", "WHERE", "NOT", "IN",
+            "WHEN", "THEN", "ELSE",
+        ]
+        .iter()
+        .any(|keyword| word.eq_ignore_ascii_case(keyword)),
         _ => false,
     }
 }
@@ -485,5 +488,46 @@ mod doubled_equals_tests {
             "SELECT number FROM numbers(4) WHERE number === 2"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod case_negative_literal_tests {
+    use super::*;
+
+    #[test]
+    fn numbers_after_case_keywords_keep_their_unary_minus() {
+        assert_eq!(
+            tokenize("CASE WHEN -1 THEN -2 ELSE -3 END").unwrap(),
+            vec![
+                Token::Word("CASE".into()),
+                Token::Word("WHEN".into()),
+                Token::Number("-1".into()),
+                Token::Word("THEN".into()),
+                Token::Number("-2".into()),
+                Token::Word("ELSE".into()),
+                Token::Number("-3".into()),
+                Token::Word("END".into()),
+            ],
+        );
+        assert_eq!(
+            tokenize("CASE WHEN score-1 THEN value-2 ELSE cost-3 END").unwrap(),
+            vec![
+                Token::Word("CASE".into()),
+                Token::Word("WHEN".into()),
+                Token::Word("score".into()),
+                Token::Minus,
+                Token::Number("1".into()),
+                Token::Word("THEN".into()),
+                Token::Word("value".into()),
+                Token::Minus,
+                Token::Number("2".into()),
+                Token::Word("ELSE".into()),
+                Token::Word("cost".into()),
+                Token::Minus,
+                Token::Number("3".into()),
+                Token::Word("END".into()),
+            ],
+        );
     }
 }
