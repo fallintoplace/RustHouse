@@ -350,7 +350,10 @@ fn compare_signed_float(integer: i128, float: f64) -> Option<std::cmp::Ordering>
 
 /// SQL expression comparisons must compare numeric values, not the
 /// internal Number enum variant order used by mixed-type sort keys.
-fn compare_expression_numbers(left: Number, right: Number) -> Option<std::cmp::Ordering> {
+pub(super) fn compare_expression_numbers(
+    left: Number,
+    right: Number,
+) -> Option<std::cmp::Ordering> {
     match (left, right) {
         (Number::Unsigned(left), Number::Signed(right)) => Some(match u128::try_from(right) {
             Ok(right) => left.cmp(&right),
